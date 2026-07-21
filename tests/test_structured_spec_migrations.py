@@ -63,6 +63,9 @@ from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID,
     TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
+    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,
+    RUNPOD_PREFLIGHT_BASE_EVIDENCE_SCHEMA_ID,
 )
 from feedbax.contracts.descriptors import (
     COMPONENT_DESCRIPTOR_SCHEMA_VERSION,
@@ -133,12 +136,16 @@ from feedbax.execution.models import (
     EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
     EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
     EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1,
+    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V2,
+)
+from feedbax.orchestration.repo_realization import (
+    REPO_REALIZATION_PLAN_SCHEMA_ID,
+    REPO_REALIZATION_PLAN_SCHEMA_VERSION,
 )
 from feedbax.objectives.spec import validate_objective_spec
 from feedbax.orchestration.events import RUN_EVENT_SCHEMA_ID, RUN_EVENT_SCHEMA_VERSION
 from feedbax.orchestration.drivers.runpod import (
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
-    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
 )
 from feedbax.training.diagnostics import (
     NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID,
@@ -806,7 +813,7 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["ExecutionSpec"].identity == "feedbax.spec.execution"
     assert families["ExecutionSpec"].current_version == "feedbax.spec.execution.v2"
     assert families["ExecutionPlan"].identity == "feedbax.manifest.execution_plan"
-    assert families["ExecutionPlan"].current_version == "feedbax.manifest.execution.v3"
+    assert families["ExecutionPlan"].current_version == "feedbax.manifest.execution.v4"
     assert families["ExecutionCloudPayload"].identity == EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID
     assert (
         families["ExecutionCloudPayload"].current_version == EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION
@@ -815,6 +822,15 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert (
         families["ExecutionReproducibility"].current_version
         == EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION
+    )
+    assert families["RepoRealizationPlan"].identity == REPO_REALIZATION_PLAN_SCHEMA_ID
+    assert (
+        families["RepoRealizationPlan"].current_version
+        == REPO_REALIZATION_PLAN_SCHEMA_VERSION
+    )
+    assert (
+        families["RunPodPreflightBaseEvidence"].identity
+        == RUNPOD_PREFLIGHT_BASE_EVIDENCE_SCHEMA_ID
     )
     assert families["LocalExecutionResult"].identity == "feedbax.manifest.local_execution_result"
     assert families["LocalExecutionResult"].current_version == "feedbax.manifest.execution.v3"
@@ -862,14 +878,24 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
             f"{TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID}.v0",
         ),
         (
+            "RunPodPreflightBaseEvidence",
+            RUNPOD_PREFLIGHT_BASE_EVIDENCE_SCHEMA_ID,
+            RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,
+        ),
+        (
             "RunPodPreflightEvidence",
             RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
-            RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
+            RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,
         ),
         (
             "RunPodPreflightEvidence",
             RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
             RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+        ),
+        (
+            "RunPodPreflightEvidence",
+            RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
+            RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
         ),
     ],
 )
@@ -1490,6 +1516,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert extraction_policy.rejected_old_versions == ("feedbax.spec.extraction_product.v0",)
     assert execution_plan_policy is not None
     assert execution_plan_policy.rejected_old_versions == (
+        "feedbax.manifest.execution.v3",
         "feedbax.manifest.execution.v2",
         "feedbax.manifest.execution.v1",
     )
@@ -1501,6 +1528,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert reproducibility_policy.rejected_old_versions == (
         "feedbax.manifest.execution_reproducibility.v0",
         EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1,
+        EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V2,
     )
     assert local_execution_result_policy is not None
     assert local_execution_result_policy.rejected_old_versions == (

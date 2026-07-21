@@ -30,10 +30,11 @@ from typing import Any, Literal, Protocol
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.contracts.run_matrix import (
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
-    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1,
+    RUNPOD_PREFLIGHT_BASE_EVIDENCE_SCHEMA_ID,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
+    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V4,
     TrainingRunMatrixPreflightBinding,
     training_run_matrix_preflight_binding_sha256,
 )
@@ -70,12 +71,18 @@ from feedbax.orchestration.matrix_authority import (
 )
 from feedbax.orchestration.repo_snapshot import (
     RepoSnapshotError,
-    RepoSnapshotManifest,
     SealedRepoSnapshots,
     restore_repo_snapshots,
-    seal_repo_snapshots,
-    snapshot_manifest_digest,
     verify_repo_snapshot,
+)
+from feedbax.orchestration.repo_realization import (
+    EditableSourceResolution,
+    RepoRealizationEntry,
+    RepoRealizationError,
+    RepoRealizationPlan,
+    read_sealed_lock_bytes,
+    seal_local_repo_realizations,
+    validate_non_overlapping_remote_roots,
 )
 from feedbax.orchestration.schedule_eval import compare_continuation_schedule_projections
 from feedbax.orchestration.state import PreflightCheckEntry, RunSetState, utc_now
@@ -544,6 +551,7 @@ class RunPodOrchestrationDriver:
         self.collection_recovery_bindings = tuple(collection_recovery_bindings)
         self._collection_recovery_evidence: dict[str, Mapping[str, object]] = {}
         self._repo_snapshots: SealedRepoSnapshots | None = None
+        self._repo_realization_plan: RepoRealizationPlan | None = None
         self._preflight_passed = False
         self._pod_id = self.config.pod_id
         self._provided_pod = self.config.pod_id is not None
@@ -640,6 +648,19 @@ class RunPodOrchestrationDriver:
 
     def preflight_checks(self, bundle: RunBundle) -> list[PreflightCheckEntry]:
         """Run named, non-mutating RunPod checks before any billable action."""
+        lockfile_error = runpod_lockfile_declaration_error(
+            bundle.environment.lockfile_hashes
+        )
+        if lockfile_error is not None:
+            self._preflight_passed = False
+            return [
+                _preflight_check(
+                    "runpod-lockfiles-declared",
+                    False,
+                    detail=lockfile_error,
+                    observed=dict(sorted(bundle.environment.lockfile_hashes.items())),
+                )
+            ]
         if is_training_matrix_bundle(bundle):
             try:
                 build_training_run_matrix_authority(
@@ -657,8 +678,17 @@ class RunPodOrchestrationDriver:
                     )
                 ]
         try:
-            self.seal_repo_snapshots(bundle)
-        except RepoSnapshotError as exc:
+            self.seal_repo_realization_plan(bundle)
+        except RunPodDriverError as exc:
+            self._preflight_passed = False
+            return [
+                _preflight_check(
+                    "runpod-remote-layout-vs-lock",
+                    False,
+                    detail=str(exc),
+                )
+            ]
+        except (RepoSnapshotError, RepoRealizationError) as exc:
             self._preflight_passed = False
             return [
                 _preflight_check(
@@ -670,7 +700,7 @@ class RunPodOrchestrationDriver:
         snapshot_check = _preflight_check(
             "runpod-repo-snapshots",
             True,
-            observed=self.repo_snapshot_manifest().model_dump(mode="json"),
+            observed=self.repo_realization_plan().model_dump(mode="json"),
         )
         failures, observed = preflight_input_provider_bindings(
             bundle, self.input_provider_bindings
@@ -712,10 +742,11 @@ class RunPodOrchestrationDriver:
             self._preflight_passed = False
             return checks
 
-        layout_error, layout_observed = runpod_remote_layout_vs_lock_error(
+        layout_error, layout_observed = validate_runpod_repo_realization_plan(
             bundle,
             self.config,
-            source_roots=self._local_repos(),
+            self.repo_realization_plan(),
+            self._repo_snapshots,
         )
         checks.append(
             _preflight_check(
@@ -844,17 +875,20 @@ class RunPodOrchestrationDriver:
             return legacy
         return self._matrix_preflight_evidence(bundle, legacy)
 
-    def seal_repo_snapshots(self, bundle: RunBundle) -> RepoSnapshotManifest:
-        """Seal configured tracked working trees before any provisioning action."""
-        self._repo_snapshots = seal_repo_snapshots(
-            self._local_repos(),
+    def seal_repo_realization_plan(self, bundle: RunBundle) -> RepoRealizationPlan:
+        """Build the complete provider-free realization authority before provisioning."""
+        plan, snapshots = build_runpod_repo_realization_plan(
+            bundle,
+            self.config,
             snapshot_parent=bundle.run_set_dir / ".repo-snapshots",
         )
-        return self._repo_snapshots.manifest
+        self._repo_realization_plan = plan
+        self._repo_snapshots = snapshots
+        return plan
 
-    def repo_snapshot_manifest(self) -> RepoSnapshotManifest | None:
-        """Return the current sealed transfer authority, if available."""
-        return self._repo_snapshots.manifest if self._repo_snapshots is not None else None
+    def repo_realization_plan(self) -> RepoRealizationPlan | None:
+        """Return the current complete realization authority, if available."""
+        return self._repo_realization_plan
 
     def restore_completed_preflight(self, bundle: RunBundle, state: RunSetState) -> bool:
         """Restore only cryptographically bound completed preflight authority.
@@ -862,18 +896,23 @@ class RunPodOrchestrationDriver:
         This is deliberately offline: it validates persisted evidence without
         querying RunPod or repeating mutable credential/balance observations.
         """
-        if state.repo_snapshot_manifest is None:
-            raise RunPodDriverError("completed PREFLIGHT lacks sealed repo snapshot authority")
+        if state.repo_realization_plan is None:
+            raise RunPodDriverError("completed PREFLIGHT lacks repo realization authority")
+        self._repo_realization_plan = state.repo_realization_plan
         try:
             self._repo_snapshots = restore_repo_snapshots(
-                self._local_repos(),
-                state.repo_snapshot_manifest,
+                {
+                    name: entry.local_root
+                    for name, entry in state.repo_realization_plan.repos.items()
+                },
+                state.repo_realization_plan.snapshot_manifest,
                 snapshot_parent=bundle.run_set_dir / ".repo-snapshots",
             )
         except RepoSnapshotError as exc:
             raise RunPodDriverError(str(exc)) from exc
         stage = state.stage("PREFLIGHT")
         evidence = stage.outputs.get("driver_evidence")
+        _require_preflight_plan_digest(evidence, state.repo_realization_plan.plan_digest)
         persisted_checks = stage.outputs.get("checks")
         if persisted_checks != [check.model_dump(mode="json") for check in stage.checks]:
             raise RunPodDriverError("completed PREFLIGHT checks are internally inconsistent")
@@ -887,7 +926,11 @@ class RunPodOrchestrationDriver:
             is_training_matrix_bundle(bundle)
             and isinstance(evidence, Mapping)
             and evidence.get("schema_id") == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID
-            and evidence.get("schema_version") == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2
+            and evidence.get("schema_version")
+            in {
+                RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+                RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
+            }
         ):
             return False
         assemble_completed = state.stage("ASSEMBLE").completed_at
@@ -928,8 +971,8 @@ class RunPodOrchestrationDriver:
         )
         payload = {
             "schema_id": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
-            "schema_version": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
-            "v1": dict(legacy),
+            "schema_version": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V4,
+            "base": dict(legacy),
             "matrix_binding": binding.model_dump(mode="json", exclude_none=True),
             "matrix_binding_sha256": training_run_matrix_preflight_binding_sha256(binding),
         }
@@ -971,17 +1014,17 @@ class RunPodOrchestrationDriver:
         if not isinstance(assemble_sha256, str) or assemble_sha256 != bundle_sha256:
             raise RunPodDriverError("completed PREFLIGHT bundle binding is missing or mismatched")
         self._validate_preflight_checks(bundle, checks)
-        snapshot_manifest = state.repo_snapshot_manifest or self.repo_snapshot_manifest()
-        if snapshot_manifest is None:
-            raise RunPodDriverError("completed PREFLIGHT lacks sealed repo snapshot authority")
+        realization_plan = state.repo_realization_plan or self.repo_realization_plan()
+        if realization_plan is None:
+            raise RunPodDriverError("completed PREFLIGHT lacks repo realization authority")
         return {
-            "schema_id": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1,
+            "schema_id": RUNPOD_PREFLIGHT_BASE_EVIDENCE_SCHEMA_ID,
             "schema_version": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
             "run_set_id": bundle.run_set_id,
             "bundle_sha256": bundle_sha256,
             "checks_sha256": _sha256_json([check.model_dump(mode="json") for check in checks]),
             "driver_contract": self._preflight_driver_contract(),
-            "repo_snapshot_manifest_sha256": snapshot_manifest_digest(snapshot_manifest),
+            "repo_realization_plan_digest": realization_plan.plan_digest,
         }
 
     def _preflight_driver_contract(self) -> dict[str, Any]:
@@ -1063,8 +1106,8 @@ class RunPodOrchestrationDriver:
             raise RunPodDriverError("RunPod driver image does not match the bundle")
         expected_checks = {
             "runpod-repo-snapshots": (
-                self.repo_snapshot_manifest().model_dump(mode="json")
-                if self.repo_snapshot_manifest() is not None
+                self.repo_realization_plan().model_dump(mode="json")
+                if self.repo_realization_plan() is not None
                 else None
             ),
             "runpod-image-immutable": image,
@@ -1081,10 +1124,11 @@ class RunPodOrchestrationDriver:
             if named[name].observed != observed:
                 raise RunPodDriverError(f"{name} observation does not match current declarations")
 
-        layout_error, layout_observed = runpod_remote_layout_vs_lock_error(
+        layout_error, layout_observed = validate_runpod_repo_realization_plan(
             bundle,
             self.config,
-            source_roots=self._local_repos(),
+            self.repo_realization_plan(),
+            self._repo_snapshots,
         )
         if layout_error is not None:
             raise RunPodDriverError(
@@ -1121,21 +1165,26 @@ class RunPodOrchestrationDriver:
     def realize_env(self, bundle: RunBundle, state: RunSetState) -> str:
         """Synchronize code and realize the remote Python environment."""
         require_deterministic_runpod_environment(bundle)
-        snapshot_manifest = state.repo_snapshot_manifest or self.repo_snapshot_manifest()
-        if snapshot_manifest is None:
+        realization_plan = state.repo_realization_plan or self.repo_realization_plan()
+        if realization_plan is None:
             raise RunPodDriverError(
-                "RunPod REALIZE_ENV requires repo snapshots sealed during PREFLIGHT"
+                "RunPod REALIZE_ENV requires a repo realization plan from PREFLIGHT"
             )
+        _require_preflight_plan_digest(
+            state.stage("PREFLIGHT").outputs.get("driver_evidence"),
+            realization_plan.plan_digest,
+        )
+        self._repo_realization_plan = realization_plan
         try:
             self._repo_snapshots = restore_repo_snapshots(
-                self._local_repos(),
-                snapshot_manifest,
+                {name: entry.local_root for name, entry in realization_plan.repos.items()},
+                realization_plan.snapshot_manifest,
                 snapshot_parent=bundle.run_set_dir / ".repo-snapshots",
             )
         except RepoSnapshotError as exc:
             raise RunPodDriverError(str(exc)) from exc
         declaration_fingerprint = compute_runpod_environment_fingerprint(
-            bundle, self._repo_snapshots.manifest
+            bundle, realization_plan
         )
         remote_run_dir = self._remote_run_dir(bundle)
         self._ssh(
@@ -1150,7 +1199,7 @@ class RunPodOrchestrationDriver:
             return reused_fingerprint
 
         for name, snapshot in self._repo_snapshots.snapshots.items():
-            remote_root = self._remote_repos()[name]
+            remote_root = realization_plan.repos[name].remote_root
             self._ssh(
                 f"mkdir -p {_sq(remote_root)} && chmod -R u+w {_sq(remote_root)}"
             )
@@ -2337,88 +2386,151 @@ def runpod_lockfile_declaration_error(lockfile_hashes: Mapping[str, str]) -> str
     return None
 
 
-def runpod_remote_layout_vs_lock_error(
+def build_runpod_repo_realization_plan(
     bundle: RunBundle,
     config: RunPodDriverConfig,
     *,
-    source_roots: Mapping[str, Path | str] | None = None,
-) -> tuple[str | None, Mapping[str, Any]]:
-    """Verify local lock bytes and their path sources against the remote layout.
-
-    ``source_roots`` lets callers validate a sealed staging tree rather than the
-    configured live checkouts. Keys still represent repo identity and must match
-    the configured remote repo keys exactly.
-    """
-    local_repos = dict(source_roots if source_roots is not None else _local_repos(config))
+    snapshot_parent: Path | str,
+) -> tuple[RepoRealizationPlan, SealedRepoSnapshots]:
+    """Resolve all local repository identities once against sealed transfer bytes."""
+    local_repos = dict(_local_repos(config))
     remote_repos = dict(_remote_repos(config))
-    local_keys = set(local_repos)
-    remote_keys = set(remote_repos)
-    observed: dict[str, Any] = {
-        "local_repo_keys": sorted(local_keys),
-        "remote_repos": {name: remote_repos[name] for name in sorted(remote_repos)},
-        "lockfile_hashes": dict(sorted(bundle.environment.lockfile_hashes.items())),
-        "path_sources": [],
+    if set(local_repos) != set(remote_repos):
+        raise RunPodDriverError(
+            "local/remote repo key mismatch: "
+            f"local={sorted(local_repos)!r}, remote={sorted(remote_repos)!r}"
+        )
+    primary_repo = _primary_repo_name(config, local_repos)
+    normalized_remote_roots = validate_non_overlapping_remote_roots(remote_repos)
+    lock_paths = {primary_repo: sorted(bundle.environment.lockfile_hashes)}
+    expected_lock_digests = {
+        primary_repo: dict(sorted(bundle.environment.lockfile_hashes.items()))
     }
-
-    try:
-        primary_repo = _primary_repo_name(config, local_keys)
-    except RunPodDriverError as exc:
-        return str(exc), observed
-    observed["primary_repo"] = primary_repo
-
-    local_roots = {name: Path(root).resolve() for name, root in local_repos.items()}
-    consumer_root = local_roots[primary_repo]
-    parsed_sources: list[tuple[str, str, str, Path]] = []
-    for lock_relative_path, expected_digest in sorted(bundle.environment.lockfile_hashes.items()):
-        lock_path = consumer_root / Path(lock_relative_path)
-        try:
-            lock_bytes = lock_path.read_bytes()
-        except OSError as exc:
-            return f"cannot read declared lockfile {lock_path}: {exc}", observed
-        actual_digest = hashlib.sha256(lock_bytes).hexdigest()
-        if actual_digest != expected_digest:
-            return (
-                f"declared lockfile hash mismatch for {lock_path}: "
-                f"expected {expected_digest}, observed {actual_digest}",
-                observed,
-            )
+    manifest, components = seal_local_repo_realizations(
+        local_repos,
+        lock_relative_paths=lock_paths,
+        expected_lock_digests=expected_lock_digests,
+        snapshot_parent=snapshot_parent,
+    )
+    snapshots = SealedRepoSnapshots(
+        manifest=manifest,
+        snapshots={name: component.snapshot for name, component in components.items()},
+    )
+    local_roots = {name: Path(root).expanduser().resolve() for name, root in local_repos.items()}
+    resolutions: list[EditableSourceResolution] = []
+    for lock_relative_path in sorted(bundle.environment.lockfile_hashes):
+        component = components[primary_repo]
+        lock_path = component.snapshot.staging_root / lock_relative_path
+        lock_bytes = read_sealed_lock_bytes(
+            component.snapshot.staging_root, lock_relative_path
+        )
         try:
             document = tomllib.loads(lock_bytes.decode("utf-8"))
         except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-            return f"malformed TOML in declared lockfile {lock_path}: {exc}", observed
-        try:
-            sources = _local_lock_sources(document, lock_path=lock_path)
-        except RunPodDriverError as exc:
-            return str(exc), observed
-
-        parsed_sources.extend(
-            (lock_relative_path, form, spelling, lock_path) for form, spelling in sources
+            raise RunPodDriverError(f"malformed TOML in sealed lockfile {lock_path}: {exc}") from exc
+        for form, spelling in _local_lock_sources(document, lock_path=lock_path):
+            source_path = PurePosixPath(spelling)
+            if source_path.is_absolute():
+                raise RunPodDriverError(
+                    f"absolute {form} source {spelling!r} in {lock_path} is unsupported"
+                )
+            if not spelling or spelling != source_path.as_posix():
+                raise RunPodDriverError(
+                    f"non-canonical {form} source spelling {spelling!r} in {lock_path}"
+                )
+            resolved_target = (
+                local_roots[primary_repo] / Path(*source_path.parts)
+            ).resolve()
+            matches = [
+                name
+                for name, repo_root in local_roots.items()
+                if resolved_target == repo_root or resolved_target.is_relative_to(repo_root)
+            ]
+            if len(matches) != 1:
+                qualifier = "ambiguous" if matches else "unmatched"
+                roots = ", ".join(
+                    f"{name}={root}" for name, root in sorted(local_roots.items())
+                )
+                raise RunPodDriverError(
+                    f"{qualifier} local target for lock source {spelling!r}: consumer "
+                    f"{local_roots[primary_repo]} resolves to {resolved_target}; "
+                    f"configured local repos are {roots}"
+                )
+            target_repo = matches[0]
+            target_subpath = resolved_target.relative_to(local_roots[target_repo]).as_posix()
+            resolutions.append(
+                EditableSourceResolution(
+                    consumer_repo=primary_repo,
+                    lock_relative_path=lock_relative_path,
+                    source_form=form,
+                    spelling=spelling,
+                    target_repo=target_repo,
+                    target_subpath=target_subpath,
+                )
+            )
+    entries = {
+        name: RepoRealizationEntry(
+            local_root=str(component.snapshot.source_root),
+            staging_root=str(component.snapshot.staging_root),
+            remote_root=normalized_remote_roots[name],
+            snapshot=component.snapshot.record,
+            sealed_lock_digests=dict(component.sealed_lock_digests),
         )
+        for name, component in components.items()
+    }
+    plan = RepoRealizationPlan.create(
+        primary_repo=primary_repo,
+        repos=entries,
+        editable_source_resolutions=resolutions,
+        snapshot_manifest=manifest,
+    )
+    error, _observed = validate_runpod_repo_realization_plan(
+        bundle, config, plan, snapshots
+    )
+    if error is not None:
+        raise RunPodDriverError(error)
+    return plan, snapshots
 
-    if local_keys != remote_keys:
-        return (
-            "local/remote repo key mismatch: "
-            f"local={sorted(local_keys)!r}, remote={sorted(remote_keys)!r}",
-            observed,
-        )
-    normalized_remote_roots: dict[str, str] = {}
-    root_owners: dict[str, list[str]] = {}
-    for name, raw_root in remote_repos.items():
-        root = PurePosixPath(raw_root)
-        if not root.is_absolute():
-            return f"remote repo root for {name!r} must be absolute: {raw_root!r}", observed
-        normalized = posixpath.normpath(root.as_posix())
-        normalized_remote_roots[name] = normalized
-        root_owners.setdefault(normalized, []).append(name)
-    duplicates = {root: names for root, names in root_owners.items() if len(names) > 1}
-    if duplicates:
-        root, names = next(iter(sorted(duplicates.items())))
-        return f"duplicate remote repo root {root!r} for keys {sorted(names)!r}", observed
+
+def validate_runpod_repo_realization_plan(
+    bundle: RunBundle,
+    config: RunPodDriverConfig,
+    plan: RepoRealizationPlan | None,
+    snapshots: SealedRepoSnapshots | None,
+) -> tuple[str | None, Mapping[str, Any]]:
+    """Validate a recorded plan against sealed roots and the keyed remote layout."""
+    observed: dict[str, Any] = {"path_sources": []}
+    if plan is None or snapshots is None:
+        return "repo realization plan or sealed snapshots are unavailable", observed
+    local_keys = set(_local_repos(config))
+    remote_repos = dict(_remote_repos(config))
+    if set(plan.repos) != local_keys or set(plan.repos) != set(remote_repos):
+        return "repo realization plan keys no longer match configured repos", observed
+    try:
+        primary_repo = _primary_repo_name(config, local_keys)
+        normalized_remote_roots = validate_non_overlapping_remote_roots(remote_repos)
+    except (RunPodDriverError, RepoRealizationError, ValueError) as exc:
+        return str(exc), observed
+    if plan.primary_repo != primary_repo:
+        return "repo realization plan primary repo no longer matches configuration", observed
+    if {
+        name: entry.remote_root for name, entry in plan.repos.items()
+    } != normalized_remote_roots:
+        return "repo realization plan remote roots no longer match configuration", observed
+    declared = dict(sorted(bundle.environment.lockfile_hashes.items()))
+    if plan.repos[primary_repo].sealed_lock_digests != declared:
+        return "sealed lock digests do not match the environment declaration", observed
+    if any(
+        entry.sealed_lock_digests
+        for name, entry in plan.repos.items()
+        if name != primary_repo
+    ):
+        return "non-primary repo carries undeclared sealed lock digests", observed
 
     remote_consumer_root = normalized_remote_roots[primary_repo]
     lock_paths = {
         posixpath.normpath(posixpath.join(remote_consumer_root, relative_path))
-        for relative_path in bundle.environment.lockfile_hashes
+        for relative_path in declared
     }
     for remote_file, _patch_from, _patch_to in config.path_patches:
         normalized_file = posixpath.normpath(remote_file)
@@ -2430,68 +2542,58 @@ def runpod_remote_layout_vs_lock_error(
             and basename.endswith((".txt", ".in"))
         )
         if dependency_target:
-            return (
-                f"path_patches may not target a lock or dependency file: {remote_file!r}",
-                observed,
-            )
+            return f"path_patches may not target a lock or dependency file: {remote_file!r}", observed
 
-    path_source_evidence: list[dict[str, str]] = []
-    for lock_relative_path, form, spelling, lock_path in parsed_sources:
-        source_path = PurePosixPath(spelling)
-        if source_path.is_absolute():
+    evidence: list[dict[str, str]] = []
+    for resolution in plan.editable_source_resolutions:
+        target_snapshot = snapshots.snapshots[resolution.target_repo]
+        target = target_snapshot.staging_root.joinpath(
+            *PurePosixPath(resolution.target_subpath).parts
+        )
+        if not target.exists() and not target.is_symlink():
             return (
-                f"absolute {form} source {spelling!r} in {lock_path} is unsupported",
+                f"recorded lock resolution target is absent from sealed repo "
+                f"{resolution.target_repo!r}: {resolution.target_subpath!r}",
                 observed,
             )
-        if not spelling or spelling != source_path.as_posix():
-            return (
-                f"non-canonical {form} source spelling {spelling!r} in {lock_path}",
-                observed,
-            )
-        resolved_target = (consumer_root / Path(*source_path.parts)).resolve()
-        matches = [
-            name
-            for name, repo_root in local_roots.items()
-            if resolved_target == repo_root or resolved_target.is_relative_to(repo_root)
-        ]
-        if len(matches) != 1:
-            qualifier = "ambiguous" if matches else "unmatched"
-            return (
-                f"{qualifier} local target for lock source {spelling!r}: consumer "
-                f"{consumer_root} resolves to {resolved_target}; configured local repos are "
-                + ", ".join(f"{name}={root}" for name, root in sorted(local_roots.items())),
-                observed,
-            )
-        target_repo = matches[0]
-        subpath = resolved_target.relative_to(local_roots[target_repo])
-        planned_from_spelling = posixpath.normpath(posixpath.join(remote_consumer_root, spelling))
+        planned_from_spelling = posixpath.normpath(
+            posixpath.join(remote_consumer_root, resolution.spelling)
+        )
         keyed_remote_target = posixpath.normpath(
-            posixpath.join(normalized_remote_roots[target_repo], subpath.as_posix())
+            posixpath.join(
+                normalized_remote_roots[resolution.target_repo],
+                resolution.target_subpath,
+            )
         )
         if planned_from_spelling != keyed_remote_target:
             return (
-                f"lock source {spelling!r} resolves locally to {resolved_target} in repo "
-                f"{target_repo!r}, but planned remote spelling from {remote_consumer_root!r} "
-                f"resolves to {planned_from_spelling!r}, not keyed target "
-                f"{keyed_remote_target!r}; planned remote repos are "
-                f"{dict(sorted(normalized_remote_roots.items()))!r}",
+                f"lock source {resolution.spelling!r} resolves to remote path "
+                f"{planned_from_spelling!r}, not keyed target {keyed_remote_target!r}",
                 observed,
             )
-        path_source_evidence.append(
+        evidence.append(
             {
-                "lockfile": lock_relative_path,
-                "form": form,
-                "spelling": spelling,
-                "target_repo": target_repo,
-                "target_subpath": subpath.as_posix(),
+                "consumer_repo": resolution.consumer_repo,
+                "lockfile": resolution.lock_relative_path,
+                "form": resolution.source_form,
+                "spelling": resolution.spelling,
+                "target_repo": resolution.target_repo,
+                "target_subpath": resolution.target_subpath,
                 "planned_remote_target": keyed_remote_target,
             }
         )
-    observed["path_sources"] = sorted(
-        path_source_evidence,
-        key=lambda item: (item["lockfile"], item["form"], item["spelling"]),
+    observed.update(
+        {
+            "primary_repo": primary_repo,
+            "local_repo_keys": sorted(local_keys),
+            "remote_repos": normalized_remote_roots,
+            "lockfile_hashes": declared,
+            "path_sources": evidence,
+            "repo_realization_plan_digest": plan.plan_digest,
+        }
     )
     return None, observed
+
 
 
 def _local_lock_sources(
@@ -2671,16 +2773,31 @@ def _python_version_matches(declared: str, observed: str) -> bool:
     )
 
 
+def _require_preflight_plan_digest(evidence: Any, plan_digest: str) -> None:
+    """Fail closed unless persisted preflight evidence binds the exact plan."""
+    if not isinstance(evidence, Mapping):
+        raise RunPodDriverError("PREFLIGHT evidence lacks repo realization plan binding")
+    payload: Mapping[str, Any] = evidence
+    if evidence.get("schema_id") == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID:
+        nested = evidence.get("base")
+        if not isinstance(nested, Mapping):
+            raise RunPodDriverError("matrix PREFLIGHT evidence lacks its base payload")
+        payload = nested
+    observed = payload.get("repo_realization_plan_digest")
+    if observed != plan_digest:
+        raise RunPodDriverError(
+            "repo realization plan digest mismatch between PREFLIGHT and REALIZE_ENV: "
+            f"expected {plan_digest}, observed {observed!r}"
+        )
+
+
 def compute_runpod_environment_fingerprint(
     bundle: RunBundle,
-    snapshot_manifest: RepoSnapshotManifest,
+    realization_plan: RepoRealizationPlan,
 ) -> str:
     """Compute the declared remote environment fingerprint."""
     payload = environment_declaration_identity_projection(bundle.environment)
-    payload["repo_snapshot_content_sha256"] = {
-        name: record.content_sha256
-        for name, record in sorted(snapshot_manifest.repos.items())
-    }
+    payload["repo_realization_plan_digest"] = realization_plan.plan_digest
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 

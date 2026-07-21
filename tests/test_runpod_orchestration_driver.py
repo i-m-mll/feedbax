@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shlex
@@ -65,12 +66,17 @@ from feedbax.orchestration.drivers.runpod import (
     endpoint_classification,
     project_runpod_provision_facts,
     rank_datacenters_for_gpu,
-    runpod_remote_layout_vs_lock_error,
     runpod_row_workdir,
+    validate_runpod_repo_realization_plan,
 )
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
 from feedbax.orchestration.drivers.base import ProvisioningAttemptError
 from feedbax.orchestration.input_materialization import InputProviderRootBinding
+from feedbax.orchestration.repo_realization import (
+    EditableSourceResolution,
+    RepoRealizationError,
+    RepoRealizationPlan,
+)
 from feedbax.training.interruption import CancellationDecision
 from feedbax.orchestration.conformance import CheckEntry, CheckRegistry
 from feedbax.orchestration.stages import (
@@ -249,7 +255,7 @@ def _bundle(
     baseline: bool = True,
 ) -> RunBundle:
     lockfile = tmp_path / "uv.lock"
-    lockfile.write_text("version = 1\n", encoding="utf-8")
+    lockfile.write_bytes((Path.cwd() / "uv.lock").read_bytes())
     lockfile_sha256 = hashlib.sha256(lockfile.read_bytes()).hexdigest()
     _git_seal_ready(tmp_path, "uv.lock")
     training_config = None
@@ -354,6 +360,20 @@ def _layout_case(
     )
 
 
+def _realization_layout_error(
+    bundle: RunBundle,
+    config: RunPodDriverConfig,
+) -> tuple[str | None, Mapping[str, Any]]:
+    driver = RunPodOrchestrationDriver(config=config, transport=FakeRunPodTransport())
+    try:
+        plan = driver.seal_repo_realization_plan(bundle)
+    except (RepoRealizationError, RunPodDriverError) as exc:
+        return str(exc), {}
+    return validate_runpod_repo_realization_plan(
+        bundle, config, plan, driver._repo_snapshots
+    )
+
+
 def _realized_fingerprint(declaration: dict[str, Any]) -> str:
     return json.dumps(
         {
@@ -399,8 +419,22 @@ def _sealed_state(
     driver: RunPodOrchestrationDriver,
     bundle: RunBundle,
 ) -> RunSetState:
-    manifest = driver.seal_repo_snapshots(bundle)
-    return _state(bundle).model_copy(update={"repo_snapshot_manifest": manifest})
+    plan = driver.seal_repo_realization_plan(bundle)
+    return _state(bundle).model_copy(
+        update={
+            "repo_realization_plan": plan,
+            "stages": {
+                "PREFLIGHT": StageState(
+                    status="completed",
+                    outputs={
+                        "driver_evidence": {
+                            "repo_realization_plan_digest": plan.plan_digest,
+                        }
+                    },
+                )
+            },
+        }
+    )
 
 
 def _init_snapshot_repo(root: Path) -> None:
@@ -415,7 +449,8 @@ def _init_snapshot_repo(root: Path) -> None:
         check=True,
     )
     (root / "tracked.txt").write_text("tracked\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(root), "add", "tracked.txt"], check=True)
+    (root / "uv.lock").write_bytes((Path.cwd() / "uv.lock").read_bytes())
+    subprocess.run(["git", "-C", str(root), "add", "tracked.txt", "uv.lock"], check=True)
     subprocess.run(
         ["git", "-C", str(root), "commit", "-m", "fixture"],
         check=True,
@@ -1011,7 +1046,7 @@ def test_provided_endpoint_certify_fails_without_provider_realization_facts(
     )
     provision_record = dict(driver.provision(bundle, _state(bundle)))
     declaration_fingerprint = compute_runpod_environment_fingerprint(
-        bundle, driver.seal_repo_snapshots(bundle)
+        bundle, driver.seal_repo_realization_plan(bundle)
     )
     fingerprint = _realized_fingerprint(
         {
@@ -1208,7 +1243,7 @@ def test_accepted_datacenter_persists_into_realized_deployment_evidence(
     )
     declaration = {
         "declaration_sha256": compute_runpod_environment_fingerprint(
-            bundle, driver.seal_repo_snapshots(bundle)
+            bundle, driver.seal_repo_realization_plan(bundle)
         ),
         "image_id": bundle.environment.image_id,
         "lockfile_hashes": bundle.environment.lockfile_hashes,
@@ -1607,7 +1642,7 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
             remote_repos={"feedbax": "/workspace/dev repos/feedbax [dev]"},
             path_patches=(
                 (
-                    "/workspace/feedbax/pyproject.toml",
+                    "/workspace/feedbax/runtime.cfg",
                     "/Users/mll/local feedbax",
                     "/workspace/feedbax",
                 ),
@@ -1626,7 +1661,7 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
     source, target, delete, excludes = transport.rsync_calls[0]
     assert source.endswith("/")
     assert source != str(local_repo) + "/"
-    assert Path(source).name == driver.repo_snapshot_manifest().repos[
+    assert Path(source).name == driver.repo_realization_plan().snapshot_manifest.repos[
         "feedbax"
     ].content_sha256
     assert target == "/workspace/dev repos/feedbax [dev]/"
@@ -1651,19 +1686,119 @@ def test_runpod_snapshot_digest_changes_environment_reuse_key(tmp_path: Path) ->
     config = RunPodDriverConfig(local_repos={"feedbax": local_repo})
     (local_repo / "tracked.txt").write_text("dirty one\n", encoding="utf-8")
     first_driver = RunPodOrchestrationDriver(config=config, transport=FakeRunPodTransport())
-    first_manifest = first_driver.seal_repo_snapshots(bundle)
-    first_fingerprint = compute_runpod_environment_fingerprint(bundle, first_manifest)
+    first_plan = first_driver.seal_repo_realization_plan(bundle)
+    first_fingerprint = compute_runpod_environment_fingerprint(bundle, first_plan)
     (local_repo / "tracked.txt").write_text("dirty two\n", encoding="utf-8")
     second_driver = RunPodOrchestrationDriver(config=config, transport=FakeRunPodTransport())
-    second_manifest = second_driver.seal_repo_snapshots(bundle)
-    second_fingerprint = compute_runpod_environment_fingerprint(bundle, second_manifest)
+    second_plan = second_driver.seal_repo_realization_plan(bundle)
+    second_fingerprint = compute_runpod_environment_fingerprint(bundle, second_plan)
 
-    first = first_manifest.repos["feedbax"]
-    second = second_manifest.repos["feedbax"]
+    first = first_plan.repos["feedbax"].snapshot
+    second = second_plan.repos["feedbax"].snapshot
     assert first.commit == second.commit
     assert first.dirty is second.dirty is True
     assert first.content_sha256 != second.content_sha256
     assert first_fingerprint != second_fingerprint
+
+
+def test_runpod_plan_root_and_resolution_changes_invalidate_reuse_key(
+    tmp_path: Path,
+) -> None:
+    lock_text = (
+        'version = 1\n[[package]]\nname = "consumer"\n'
+        'source = { editable = "../provider" }\n'
+    )
+    bundle, config = _layout_case(
+        tmp_path,
+        lock_text,
+        local_repos={
+            "consumer": tmp_path / "consumer",
+            "provider": tmp_path / "provider",
+        },
+        remote_repos={
+            "consumer": "/workspace/consumer",
+            "provider": "/workspace/provider",
+        },
+    )
+    driver = RunPodOrchestrationDriver(config=config, transport=FakeRunPodTransport())
+    plan = driver.seal_repo_realization_plan(bundle)
+    changed_entries = dict(plan.repos)
+    changed_entries["provider"] = changed_entries["provider"].model_copy(
+        update={"remote_root": "/workspace/provider-changed"}
+    )
+    changed_root = RepoRealizationPlan.create(
+        primary_repo=plan.primary_repo,
+        repos=changed_entries,
+        editable_source_resolutions=plan.editable_source_resolutions,
+        snapshot_manifest=plan.snapshot_manifest,
+    )
+    original_resolution = plan.editable_source_resolutions[0]
+    changed_resolution = RepoRealizationPlan.create(
+        primary_repo=plan.primary_repo,
+        repos=plan.repos,
+        editable_source_resolutions=[
+            original_resolution.model_copy(update={"target_subpath": "variant"})
+        ],
+        snapshot_manifest=plan.snapshot_manifest,
+    )
+
+    original = compute_runpod_environment_fingerprint(bundle, plan)
+    assert compute_runpod_environment_fingerprint(bundle, changed_root) != original
+    assert compute_runpod_environment_fingerprint(bundle, changed_resolution) != original
+
+
+def test_plan_records_deduplicated_lock_sources_with_complete_keys(tmp_path: Path) -> None:
+    repeated = (
+        'version = 1\n[[package]]\nname = "one"\n'
+        'source = { editable = "../provider" }\n'
+        '[[package]]\nname = "two"\nsource = { editable = "../provider" }\n'
+    )
+    bundle, config = _layout_case(
+        tmp_path,
+        repeated,
+        local_repos={
+            "consumer": tmp_path / "consumer",
+            "provider": tmp_path / "provider",
+        },
+        remote_repos={
+            "consumer": "/workspace/consumer",
+            "provider": "/workspace/provider",
+        },
+    )
+    plan = RunPodOrchestrationDriver(
+        config=config, transport=FakeRunPodTransport()
+    ).seal_repo_realization_plan(bundle)
+
+    assert plan.editable_source_resolutions == [
+        EditableSourceResolution(
+            consumer_repo="consumer",
+            lock_relative_path="uv.lock",
+            source_form="editable",
+            spelling="../provider",
+            target_repo="provider",
+            target_subpath=".",
+        )
+    ]
+
+
+def test_realize_env_rejects_preflight_plan_digest_mismatch(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(transport=transport)
+    state = _sealed_state(driver, bundle)
+    preflight = state.stage(STAGE_PREFLIGHT).model_copy(
+        update={
+            "outputs": {
+                "driver_evidence": {"repo_realization_plan_digest": "0" * 64}
+            }
+        }
+    )
+    state = state.model_copy(update={"stages": {STAGE_PREFLIGHT: preflight}})
+
+    with pytest.raises(RunPodDriverError, match="between PREFLIGHT and REALIZE_ENV"):
+        driver.realize_env(bundle, state)
+
+    assert transport.ssh_commands == []
 
 
 def test_runpod_wholesale_snapshot_sync_deletes_stale_secret(tmp_path: Path) -> None:
@@ -1713,7 +1848,7 @@ def test_runpod_wholesale_snapshot_sync_deletes_stale_secret(tmp_path: Path) -> 
         config=RunPodDriverConfig(local_repos={"feedbax": local_repo}),
         transport=transport,
     )
-    manifest = driver.seal_repo_snapshots(bundle)
+    manifest = driver.seal_repo_realization_plan(bundle).snapshot_manifest
     snapshot_root = driver._repo_snapshots.snapshots["feedbax"].staging_root
 
     driver._rsync_repo(str(snapshot_root), str(remote))
@@ -1721,8 +1856,48 @@ def test_runpod_wholesale_snapshot_sync_deletes_stale_secret(tmp_path: Path) -> 
     assert not (remote / "stale.secret").exists()
     assert not (remote / "local.secret").exists()
     assert (remote / "tracked.txt").read_text(encoding="utf-8") == "tracked\n"
-    assert manifest.repos["feedbax"].file_count == 2
+    assert manifest.repos["feedbax"].file_count == 3
     assert transport.rsync_calls == [(f"{snapshot_root}/", f"{remote}/", True, ())]
+
+
+@pytest.mark.parametrize("repo_order", [("outer", "inner"), ("inner", "outer")])
+def test_nested_remote_destinations_fail_before_wholesale_sync_in_both_orders(
+    tmp_path: Path,
+    repo_order: tuple[str, str],
+) -> None:
+    local_repos = {
+        "outer": tmp_path / "local-outer",
+        "inner": tmp_path / "local-inner",
+    }
+    bundle, _config = _layout_case(
+        tmp_path,
+        "version = 1\n",
+        local_repos=local_repos,
+        remote_repos={"outer": "/unused/outer", "inner": "/unused/inner"},
+        primary_repo="outer",
+    )
+    destination = tmp_path / "remote" / "a"
+    nested = destination / "b"
+    nested.mkdir(parents=True)
+    marker = nested / "must-survive.txt"
+    marker.write_text("preserve\n", encoding="utf-8")
+    remote_roots = {
+        name: str(destination if name == "outer" else nested) for name in repo_order
+    }
+    config = RunPodDriverConfig(
+        local_repos=local_repos,
+        remote_repos=remote_roots,
+        primary_repo="outer",
+    )
+    transport = FakeRunPodTransport()
+
+    with pytest.raises(RepoRealizationError, match="overlapping remote repo roots"):
+        RunPodOrchestrationDriver(
+            config=config, transport=transport
+        ).seal_repo_realization_plan(bundle)
+
+    assert marker.read_text(encoding="utf-8") == "preserve\n"
+    assert transport.rsync_calls == []
 
 
 def test_realize_env_fails_closed_when_repo_rsync_fails(tmp_path: Path) -> None:
@@ -1839,7 +2014,7 @@ def test_realize_env_fingerprint_match_skips_environment_steps(tmp_path: Path) -
     driver = RunPodOrchestrationDriver(transport=transport)
     state = _sealed_state(driver, bundle)
     declaration_fingerprint = compute_runpod_environment_fingerprint(
-        bundle, driver.repo_snapshot_manifest()
+        bundle, driver.repo_realization_plan()
     )
     declaration = {
         "declaration_sha256": declaration_fingerprint,
@@ -2391,7 +2566,7 @@ def test_remote_layout_lock_without_path_sources_passes_after_digest_verificatio
 ) -> None:
     bundle, config = _layout_case(tmp_path, "version = 1\n")
 
-    error, observed = runpod_remote_layout_vs_lock_error(bundle, config)
+    error, observed = _realization_layout_error(bundle, config)
 
     assert error is None
     assert observed["path_sources"] == []
@@ -2426,7 +2601,7 @@ def test_remote_layout_rejects_invalid_lock_content(
 ) -> None:
     bundle, config = _layout_case(tmp_path, lock_text)
 
-    error, _ = runpod_remote_layout_vs_lock_error(bundle, config)
+    error, _ = _realization_layout_error(bundle, config)
 
     assert error is not None
     assert expected in error
@@ -2434,14 +2609,22 @@ def test_remote_layout_rejects_invalid_lock_content(
 
 def test_remote_layout_rejects_missing_or_hash_mismatched_lock(tmp_path: Path) -> None:
     missing_bundle, config = _layout_case(tmp_path, "version = 1\n", write_lock=False)
-    config = config.__class__(**{**config.__dict__, "remote_repos": {"wrong": "/workspace/wrong"}})
-    missing_error, _ = runpod_remote_layout_vs_lock_error(missing_bundle, config)
+    missing_error, _ = _realization_layout_error(missing_bundle, config)
     assert missing_error is not None
-    assert "cannot read declared lockfile" in missing_error
+    assert "cannot inspect sealed lock" in missing_error
 
     lock_path = Path(config.local_repos["consumer"]) / "uv.lock"
     lock_path.write_text("version = 2\n", encoding="utf-8")
-    mismatch_error, _ = runpod_remote_layout_vs_lock_error(missing_bundle, config)
+    subprocess.run(
+        ["git", "-C", str(lock_path.parent), "add", "uv.lock"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(lock_path.parent), "commit", "-m", "add mismatched lock"],
+        check=True,
+        capture_output=True,
+    )
+    mismatch_error, _ = _realization_layout_error(missing_bundle, config)
     assert mismatch_error is not None
     assert "hash mismatch" in mismatch_error
 
@@ -2453,7 +2636,7 @@ def test_remote_layout_handles_self_local_source(tmp_path: Path, form: str) -> N
         f'version = 1\n[[package]]\nname = "consumer"\nsource = {{ {form} = "." }}\n',
     )
 
-    error, observed = runpod_remote_layout_vs_lock_error(bundle, config)
+    error, observed = _realization_layout_error(bundle, config)
 
     assert error is None
     assert observed["path_sources"][0]["spelling"] == "."
@@ -2461,26 +2644,21 @@ def test_remote_layout_handles_self_local_source(tmp_path: Path, form: str) -> N
     assert str(tmp_path) not in json.dumps(observed)
 
 
-def test_remote_layout_can_validate_explicit_staging_source_roots(tmp_path: Path) -> None:
+def test_remote_layout_uses_sealed_bytes_after_live_mutation(tmp_path: Path) -> None:
     live_root = tmp_path / "live" / "consumer"
-    staging_root = tmp_path / "sealed" / "consumer"
     bundle, config = _layout_case(
         tmp_path,
         'version = 1\n[[package]]\nname = "consumer"\nsource = { editable = "." }\n',
-        local_repos={"consumer": staging_root},
+        local_repos={"consumer": live_root},
     )
-    config = config.__class__(**{**config.__dict__, "local_repos": {"consumer": live_root}})
-
-    live_error, _ = runpod_remote_layout_vs_lock_error(bundle, config)
-    staged_error, _ = runpod_remote_layout_vs_lock_error(
-        bundle,
-        config,
-        source_roots={"consumer": staging_root},
+    driver = RunPodOrchestrationDriver(config=config, transport=FakeRunPodTransport())
+    plan = driver.seal_repo_realization_plan(bundle)
+    (live_root / "uv.lock").write_text("version = 999\n", encoding="utf-8")
+    sealed_error, _ = validate_runpod_repo_realization_plan(
+        bundle, config, plan, driver._repo_snapshots
     )
 
-    assert live_error is not None
-    assert "cannot read declared lockfile" in live_error
-    assert staged_error is None
+    assert sealed_error is None
 
 
 def test_remote_layout_preserves_exact_spaced_sibling_spelling(tmp_path: Path) -> None:
@@ -2503,7 +2681,7 @@ def test_remote_layout_preserves_exact_spaced_sibling_spelling(tmp_path: Path) -
         primary_repo="rlrmp2",
     )
 
-    error, observed = runpod_remote_layout_vs_lock_error(bundle, config)
+    error, observed = _realization_layout_error(bundle, config)
 
     assert error is None
     assert observed["path_sources"][0]["spelling"] == "../20 Feedbax/feedbax"
@@ -2522,11 +2700,10 @@ def test_remote_layout_mismatch_names_spelling_and_both_planned_targets(
         primary_repo="rlrmp2",
     )
 
-    error, _ = runpod_remote_layout_vs_lock_error(bundle, config)
+    error, _ = _realization_layout_error(bundle, config)
 
     assert error is not None
     assert "../feedbax" in error
-    assert str(target) in error
     assert "/workspace/feedbax" in error
     assert "/workspace/wrong-name" in error
 
@@ -2540,7 +2717,7 @@ def test_remote_layout_rejects_ambiguous_repo_containment(tmp_path: Path) -> Non
         remote_repos={"outer": "/workspace/outer", "consumer": "/workspace/consumer"},
     )
 
-    error, _ = runpod_remote_layout_vs_lock_error(bundle, config)
+    error, _ = _realization_layout_error(bundle, config)
 
     assert error is not None
     assert "ambiguous local target" in error
@@ -2553,7 +2730,7 @@ def test_remote_layout_rejects_mapping_mismatch_duplicate_roots_and_lock_patch(
     mismatch = config.__class__(
         **{**config.__dict__, "remote_repos": {"other": "/workspace/other"}}
     )
-    mismatch_error, _ = runpod_remote_layout_vs_lock_error(bundle, mismatch)
+    mismatch_error, _ = _realization_layout_error(bundle, mismatch)
     assert mismatch_error is not None
     assert "repo key mismatch" in mismatch_error
 
@@ -2564,9 +2741,9 @@ def test_remote_layout_rejects_mapping_mismatch_duplicate_roots_and_lock_patch(
             "remote_repos": {"consumer": "/workspace/same", "other": "/workspace/same"},
         }
     )
-    duplicate_error, _ = runpod_remote_layout_vs_lock_error(bundle, duplicate)
+    duplicate_error, _ = _realization_layout_error(bundle, duplicate)
     assert duplicate_error is not None
-    assert "duplicate remote repo root" in duplicate_error
+    assert "overlapping remote repo roots" in duplicate_error
 
     patched = config.__class__(
         **{
@@ -2574,7 +2751,7 @@ def test_remote_layout_rejects_mapping_mismatch_duplicate_roots_and_lock_patch(
             "path_patches": (("/workspace/consumer/uv.lock", "old", "new"),),
         }
     )
-    patch_error, _ = runpod_remote_layout_vs_lock_error(bundle, patched)
+    patch_error, _ = _realization_layout_error(bundle, patched)
     assert patch_error is not None
     assert "path_patches" in patch_error
     assert "uv.lock" in patch_error
@@ -2661,7 +2838,7 @@ def test_realize_env_rejects_runtime_provenance_mismatch(
     driver = RunPodOrchestrationDriver(transport=transport)
     state = _sealed_state(driver, bundle)
     declaration_sha256 = compute_runpod_environment_fingerprint(
-        bundle, driver.repo_snapshot_manifest()
+        bundle, driver.repo_realization_plan()
     )
     mismatched = json.loads(
         _realized_fingerprint(
@@ -2890,7 +3067,7 @@ def test_fresh_runpod_driver_rejects_invalid_completed_preflight_before_provisio
     assert resume_transport.operations == []
 
 
-def test_fresh_runpod_driver_restores_legacy_completed_preflight_offline(tmp_path: Path) -> None:
+def test_fresh_runpod_driver_rejects_unbound_completed_preflight_offline(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path, keep_alive=True, baseline=False)
     store = RunSetStateStore(bundle.run_set_dir / "state.json")
     first_transport = FakeRunPodTransport()
@@ -2943,25 +3120,22 @@ def test_fresh_runpod_driver_restores_legacy_completed_preflight_offline(tmp_pat
             return {"driver": "fake-legacy-restored-runpod"}
 
     resume_transport = FakeRunPodTransport()
-    resumed = StageEngine(
-        bundle=bundle,
-        driver=LegacyRestoredDriver(
-            config=RunPodDriverConfig(
-                gpu_id="NVIDIA GeForce RTX 4090",
-                image=bundle.environment.image_id or "",
-                local_repos={"feedbax": tmp_path},
+    with pytest.raises(PreflightFailed, match="lacks repo realization plan binding"):
+        StageEngine(
+            bundle=bundle,
+            driver=LegacyRestoredDriver(
+                config=RunPodDriverConfig(
+                    gpu_id="NVIDIA GeForce RTX 4090",
+                    image=bundle.environment.image_id or "",
+                    local_repos={"feedbax": tmp_path},
+                ),
+                transport=resume_transport,
             ),
-            transport=resume_transport,
-        ),
-        store=store,
-    ).run(stop_after_stage="PROVISION")
+            store=store,
+        ).run(stop_after_stage="PROVISION")
 
-    assert resumed.stage(STAGE_PROVISION).status == "completed"
-    assert LegacyRestoredDriver.provision_calls == 1
+    assert LegacyRestoredDriver.provision_calls == 0
     assert resume_transport.operations == []
-    assert resumed.abort_reason is None
-    assert resumed.provisioning_stop_reason is None
-    assert "provisioning_stop_reason" not in resumed.budget_counters
 
 
 def test_completed_preflight_rejects_evidence_predating_layout_check(tmp_path: Path) -> None:
@@ -2994,13 +3168,13 @@ def test_completed_preflight_rejects_evidence_predating_layout_check(tmp_path: P
         preflight.model_copy(update={"checks": old_checks, "outputs": old_outputs}),
     )
 
-    with pytest.raises(RunPodDriverError, match="unique RunPod check set"):
+    with pytest.raises(RunPodDriverError, match="lacks repo realization plan binding"):
         RunPodOrchestrationDriver(
             config=config, transport=FakeRunPodTransport()
         ).restore_completed_preflight(bundle, old_state)
 
 
-def test_separate_process_existing_run_restores_legacy_preflight(tmp_path: Path) -> None:
+def test_separate_process_existing_run_rejects_legacy_preflight(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path, keep_alive=True, baseline=False)
     store = RunSetStateStore(bundle.run_set_dir / "state.json")
     transport = FakeRunPodTransport()
@@ -3085,17 +3259,13 @@ print(json.dumps({
     env = {**os.environ, "FEEDBAX_ORCHESTRATION_ROOT": str(tmp_path)}
     result = subprocess.run(
         [sys.executable, "-c", script, bundle.run_set_id],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         env=env,
     )
-    observed = json.loads(result.stdout)
-    assert observed == {
-        "abort_reason": None,
-        "provisioning_stop_reason": None,
-        "provision_status": "completed",
-    }
+    assert result.returncode != 0
+    assert "lacks repo realization plan binding" in result.stderr
 
 
 @pytest.mark.parametrize(

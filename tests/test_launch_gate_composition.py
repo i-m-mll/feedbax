@@ -22,9 +22,9 @@ from feedbax.orchestration.drivers.runpod import (
     RunPodDriverConfig,
     RunPodDriverError,
     RunPodOrchestrationDriver,
-    runpod_remote_layout_vs_lock_error,
+    validate_runpod_repo_realization_plan,
 )
-from feedbax.orchestration.repo_snapshot import seal_repo_snapshots, verify_repo_snapshot
+from feedbax.orchestration.repo_snapshot import verify_repo_snapshot
 from feedbax.orchestration.schedule_eval import compare_continuation_schedule_projections
 from feedbax.orchestration.stages import (
     STAGE_PREFLIGHT,
@@ -54,59 +54,51 @@ from tests.test_training_run_executor import (
 )
 
 
-def test_layout_validation_uses_the_exact_sealed_snapshot_bytes(tmp_path: Path) -> None:
-    """Cover only the single-repo sealed-root invariant.
-
-    Multi-repo sealed-root composition (relative ``../sibling`` path sources
-    resolved across independently content-addressed staging roots) is deferred to
-    the RepoRealizationPlan work; see feedbax issue afb7f8b. This test uses a
-    self-referential ``editable = "."`` source, which resolves within one sealed
-    root, so it deliberately does not exercise the deferred multi-repo path.
-    """
+def test_layout_validation_composes_two_exact_sealed_repo_roots(tmp_path: Path) -> None:
+    """Resolve live adjacency once, then validate only the keyed sealed roots."""
     lock_text = (
         'version = 1\n[[package]]\nname = "consumer"\n'
-        'source = { editable = "." }\n'
+        'source = { editable = "../provider" }\n'
     )
-    bundle, config = _layout_case(tmp_path, lock_text)
-    live_root = Path(config.local_repos["consumer"])
-    sealed = seal_repo_snapshots(
-        {"consumer": live_root},
-        snapshot_parent=tmp_path / "sealed-snapshots",
+    consumer = tmp_path / "consumer"
+    provider = tmp_path / "provider"
+    bundle, config = _layout_case(
+        tmp_path,
+        lock_text,
+        local_repos={"consumer": consumer, "provider": provider},
+        remote_repos={
+            "consumer": "/workspace/consumer",
+            "provider": "/workspace/provider",
+        },
     )
-    snapshot = sealed.snapshots["consumer"]
-    source_roots = {"consumer": snapshot.staging_root}
-
-    sealed_error, sealed_observed = runpod_remote_layout_vs_lock_error(
-        bundle,
-        config,
-        source_roots=source_roots,
+    driver = RunPodOrchestrationDriver(config=config, transport=FakeRunPodTransport())
+    plan = driver.seal_repo_realization_plan(bundle)
+    sealed_error, sealed_observed = validate_runpod_repo_realization_plan(
+        bundle, config, plan, driver._repo_snapshots
     )
-    (live_root / "uv.lock").write_text(
+    (consumer / "uv.lock").write_text(
         'version = 1\n[[package]]\nname = "missing"\n'
         'source = { editable = "../missing-sibling" }\n',
         encoding="utf-8",
     )
-    after_live_mutation_error, after_live_mutation_observed = (
-        runpod_remote_layout_vs_lock_error(
-            bundle,
-            config,
-            source_roots=source_roots,
-        )
+    after_live_mutation_error, after_live_mutation_observed = validate_runpod_repo_realization_plan(
+        bundle, config, plan, driver._repo_snapshots
     )
-    live_error, _ = runpod_remote_layout_vs_lock_error(bundle, config)
 
     assert sealed_error is None
     assert after_live_mutation_error is None
     assert after_live_mutation_observed == sealed_observed
-    assert live_error is not None
-    shipped = sealed.manifest.repos["consumer"]
-    assert snapshot.record.content_sha256 == shipped.content_sha256
-    assert snapshot.staging_root.name == shipped.content_sha256
-    verify_repo_snapshot(
-        snapshot.staging_root,
-        content_sha256=shipped.content_sha256,
-        file_count=shipped.file_count,
-    )
+    assert plan.editable_source_resolutions[0].target_repo == "provider"
+    assert plan.editable_source_resolutions[0].target_subpath == "."
+    for name, snapshot in driver._repo_snapshots.snapshots.items():
+        shipped = plan.snapshot_manifest.repos[name]
+        assert snapshot.record.content_sha256 == shipped.content_sha256
+        assert snapshot.staging_root.name == shipped.content_sha256
+        verify_repo_snapshot(
+            snapshot.staging_root,
+            content_sha256=shipped.content_sha256,
+            file_count=shipped.file_count,
+        )
 
 
 class _OwnedPodTransport(FakeRunPodTransport):

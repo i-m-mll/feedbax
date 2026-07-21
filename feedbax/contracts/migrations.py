@@ -101,9 +101,12 @@ from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID,
     TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
+    RUNPOD_PREFLIGHT_BASE_EVIDENCE_SCHEMA_ID,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
+    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
+    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V4,
 )
 from feedbax.contracts.shadow_launch import (
     SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
@@ -265,9 +268,11 @@ from feedbax.execution.models import (
     EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
     EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION,
     EXECUTION_PLAN_SCHEMA_VERSION,
+    EXECUTION_PLAN_SCHEMA_VERSION_V3,
     EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
     EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
     EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1,
+    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V2,
     EXECUTION_SPEC_SCHEMA_VERSION,
     LOCAL_EXECUTION_RESULT_SCHEMA_VERSION,
 )
@@ -294,6 +299,11 @@ from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_ID,
     RUN_SET_STATE_SCHEMA_VERSION,
     RUN_SET_STATE_SCHEMA_VERSION_V1,
+    RUN_SET_STATE_SCHEMA_VERSION_V2,
+)
+from feedbax.orchestration.repo_realization import (
+    REPO_REALIZATION_PLAN_SCHEMA_ID,
+    REPO_REALIZATION_PLAN_SCHEMA_VERSION,
 )
 from feedbax.orchestration.repo_snapshot import (
     REPO_SNAPSHOT_MANIFEST_SCHEMA_ID,
@@ -3043,6 +3053,24 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         ),
         _family(
+            "RepoRealizationPlan",
+            REPO_REALIZATION_PLAN_SCHEMA_ID,
+            REPO_REALIZATION_PLAN_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.repo_realization",
+            emitted_by=(
+                "feedbax.orchestration.drivers.runpod.build_runpod_repo_realization_plan",
+            ),
+            consumed_by=(
+                "feedbax.orchestration.drivers.runpod.RunPodOrchestrationDriver",
+            ),
+            description="Content-addressed multi-repository realization authority.",
+            rejected_old_versions=(f"{REPO_REALIZATION_PLAN_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_repo_realization.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
             "RunSetState",
             RUN_SET_STATE_SCHEMA_ID,
             RUN_SET_STATE_SCHEMA_VERSION,
@@ -3056,6 +3084,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             rejected_old_versions=(
                 "feedbax.orchestration.run_set_state.v0",
                 RUN_SET_STATE_SCHEMA_VERSION_V1,
+                RUN_SET_STATE_SCHEMA_VERSION_V2,
             ),
             required_tests=(
                 "tests/test_orchestration_core.py",
@@ -3083,16 +3112,28 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         ),
         _family(
+            "RunPodPreflightBaseEvidence",
+            RUNPOD_PREFLIGHT_BASE_EVIDENCE_SCHEMA_ID,
+            RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.drivers.runpod",
+            emitted_by=("RunPodOrchestrationDriver.preflight_evidence",),
+            consumed_by=("RunPodOrchestrationDriver.restore_completed_preflight",),
+            description="Plan-bound provider preflight evidence payload.",
+            rejected_old_versions=(RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,),
+            required_tests=("tests/test_runpod_matrix_preflight_binding.py",),
+        ),
+        _family(
             "RunPodPreflightEvidence",
             RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
-            RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
+            RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V4,
             owner_module="feedbax.orchestration.drivers.runpod",
             emitted_by=("RunPodOrchestrationDriver.preflight_evidence",),
             consumed_by=("RunPodOrchestrationDriver.restore_completed_preflight",),
             description="Matrix-bound RunPod preflight evidence envelope.",
             rejected_old_versions=(
-                RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
+                RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,
                 RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+                RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
             ),
             required_tests=("tests/test_runpod_matrix_preflight_binding.py",),
         ),
@@ -3781,7 +3822,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "ExecutionPlan",
             "feedbax.manifest.execution_plan",
             EXECUTION_PLAN_SCHEMA_VERSION,
-            ("feedbax.manifest.execution.v2", "feedbax.manifest.execution.v1"),
+            (
+                EXECUTION_PLAN_SCHEMA_VERSION_V3,
+                "feedbax.manifest.execution.v2",
+                "feedbax.manifest.execution.v1",
+            ),
             "Inspectable concrete execution plan.",
         ),
         (
@@ -3798,6 +3843,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             (
                 "feedbax.manifest.execution_reproducibility.v0",
                 EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1,
+                EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V2,
             ),
             "Typed reproducibility payload embedded in an execution plan.",
         ),
