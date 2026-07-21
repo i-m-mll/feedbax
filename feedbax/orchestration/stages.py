@@ -12,9 +12,10 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from feedbax.contracts.manifest import (
     ParentRef,
@@ -226,6 +227,7 @@ class _ScopedSignalSupervisor:
         self._installed = False
         self._previous: dict[int, Any] = {}
         self._received: int | None = None
+        self._deferring = False
 
     def __enter__(self) -> "_ScopedSignalSupervisor":
         if threading.current_thread() is not threading.main_thread():
@@ -246,9 +248,26 @@ class _ScopedSignalSupervisor:
             # terminates normally; Python's default SIGINT handler re-raises
             # KeyboardInterrupt. A custom prior handler retains its semantics.
             signal.raise_signal(exc.signum)
+            if exc.signum == signal.SIGINT:
+                raise KeyboardInterrupt
+            raise SystemExit(128 + exc.signum)
         return False
 
+    @contextmanager
+    def defer_signals(self) -> Iterator[None]:
+        """Defer operator signals until the bounded cleanup scope exits."""
+        self._deferring = True
+        try:
+            yield
+        finally:
+            self._deferring = False
+        if self._received is not None:
+            raise _DeferredOperatorSignal(self._received)
+
     def _handle(self, signum: int, _frame: Any) -> None:
+        if self._deferring:
+            self._received = signum
+            return
         if self._received is None:
             self._received = signum
             raise _DeferredOperatorSignal(signum)
@@ -359,7 +378,7 @@ class StageEngine:
         ambiguous are outside this process-level contract.
         """
         initial = self._initial_state()
-        with _ScopedSignalSupervisor():
+        with _ScopedSignalSupervisor() as signal_supervisor:
             with self.store.lock(break_stale=break_stale_lock):
                 state = self.store.initialize(initial)
                 state = self._hydrate_completed_assembly(state)
@@ -373,7 +392,11 @@ class StageEngine:
                     for stage_id in STAGE_ORDER:
                         if state.stage(stage_id).status == "completed":
                             continue
-                        state = self._run_stage(stage_id, state)
+                        if stage_id == STAGE_TEARDOWN:
+                            with signal_supervisor.defer_signals():
+                                state = self._run_stage(stage_id, state)
+                        else:
+                            state = self._run_stage(stage_id, state)
                         if stop_after_stage == stage_id:
                             break
                     return state
@@ -389,7 +412,8 @@ class StageEngine:
                             )
                         )
                     ):
-                        self._run_teardown(latest, abort=True)
+                        with signal_supervisor.defer_signals():
+                            self._run_teardown(latest, abort=True)
                     raise
 
     @staticmethod

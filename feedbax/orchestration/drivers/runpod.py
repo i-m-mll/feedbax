@@ -1507,7 +1507,11 @@ class RunPodOrchestrationDriver:
         self, pod_id: str, *, deadline: float | None = None
     ) -> Mapping[str, Any]:
         """Boundedly prove that one exact orchestration-owned pod is absent."""
-        deadline = deadline or self._monotonic() + self.config.teardown_absence_timeout_seconds
+        deadline = (
+            deadline
+            if deadline is not None
+            else self._monotonic() + self.config.teardown_absence_timeout_seconds
+        )
         polls = 0
         while self._monotonic() < deadline:
             remaining = deadline - self._monotonic()

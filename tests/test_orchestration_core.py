@@ -3980,3 +3980,96 @@ StageEngine(bundle=bundle, driver=Driver()).run()
     persisted = RunSetStateStore(bundle.run_set_dir / "state.json").load()
     assert persisted.stage(STAGE_TEARDOWN).status == "completed"
     assert persisted.stage(STAGE_TEARDOWN).outputs["pod_absence"]["verified"] is True
+
+
+def test_first_real_sigint_during_exception_teardown_is_deferred(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    bundle_path = tmp_path / "bundle.json"
+    bundle_path.write_text(bundle.model_dump_json(), encoding="utf-8")
+    cleanup_started_path = tmp_path / "cleanup.started"
+    teardown_path = tmp_path / "teardown.json"
+    reraised_path = tmp_path / "signal.reraised"
+    script_path = tmp_path / "signal_exception_teardown.py"
+    script_path.write_text(
+        """
+import json
+import signal
+import sys
+import time
+from pathlib import Path
+
+from feedbax.orchestration.bundle import RunBundle
+from feedbax.orchestration.drivers.base import DriverRowProbe
+from feedbax.orchestration.stages import StageEngine
+
+bundle = RunBundle.model_validate_json(Path(sys.argv[1]).read_text())
+cleanup_started = Path(sys.argv[2])
+teardown = Path(sys.argv[3])
+reraised = Path(sys.argv[4])
+
+def prior_handler(received, _frame):
+    reraised.write_text(str(received))
+    raise SystemExit(128 + received)
+
+signal.signal(signal.SIGINT, prior_handler)
+
+class Driver:
+    def provision(self, bundle, state):
+        return {"driver": "fixture", "pod_id": "pod-exception-signal"}
+    def realize_env(self, bundle, state):
+        return "fixture-fingerprint"
+    def stage_inputs(self, bundle, state):
+        raise RuntimeError("ordinary stage failure")
+    def teardown(self, bundle, state):
+        cleanup_started.write_text("started")
+        time.sleep(0.3)
+        outputs = {
+            "teardown": "removed",
+            "pod_absence": {"verified": True, "pod_id": "pod-exception-signal"},
+        }
+        teardown.write_text(json.dumps(outputs))
+        return outputs
+    def launch_row(self, bundle, row, state):
+        return {}
+    def probe(self, bundle, row, state):
+        return DriverRowProbe(status="completed")
+    def stop_row(self, bundle, row, state):
+        return {}
+    def collect(self, bundle, row, state):
+        return {}
+
+StageEngine(bundle=bundle, driver=Driver()).run()
+""".lstrip(),
+        encoding="utf-8",
+    )
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(script_path),
+            str(bundle_path),
+            str(cleanup_started_path),
+            str(teardown_path),
+            str(reraised_path),
+        ],
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                filter(None, (str(Path.cwd()), os.environ.get("PYTHONPATH")))
+            ),
+        },
+    )
+    deadline = time.monotonic() + 8
+    while not cleanup_started_path.exists() and time.monotonic() < deadline:
+        if process.poll() is not None:
+            pytest.fail(f"signal fixture exited early with {process.returncode}")
+        time.sleep(0.02)
+    assert cleanup_started_path.exists()
+
+    process.send_signal(signal.SIGINT)
+
+    assert process.wait(timeout=8) == 128 + signal.SIGINT
+    assert json.loads(teardown_path.read_text())["pod_absence"]["verified"] is True
+    assert reraised_path.read_text() == str(int(signal.SIGINT))
+    persisted = RunSetStateStore(bundle.run_set_dir / "state.json").load()
+    assert persisted.stage(STAGE_TEARDOWN).status == "completed"
+    assert persisted.stage(STAGE_TEARDOWN).outputs["pod_absence"]["verified"] is True
