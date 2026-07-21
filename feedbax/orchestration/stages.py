@@ -508,6 +508,13 @@ class StageEngine:
         driver_preflight = getattr(self.driver, "preflight_checks", None)
         if callable(driver_preflight):
             checks.extend(driver_preflight(self.bundle))
+        snapshot_manifest = getattr(self.driver, "repo_snapshot_manifest", None)
+        if callable(snapshot_manifest):
+            manifest = snapshot_manifest()
+            if manifest is not None:
+                state = state.model_copy(
+                    update={"repo_snapshot_manifest": manifest, "updated_at": utc_now()}
+                )
         stage = state.stage(STAGE_PREFLIGHT).model_copy(update={"checks": checks})
         state = state.with_stage(STAGE_PREFLIGHT, stage)
         self.store.save(state)
@@ -519,6 +526,8 @@ class StageEngine:
         evidence = getattr(self.driver, "preflight_evidence", None)
         if callable(evidence):
             outputs["driver_evidence"] = dict(evidence(self.bundle, state, checks))
+        if state.repo_snapshot_manifest is not None:
+            outputs["repo_snapshot_manifest"] = state.repo_snapshot_manifest.model_dump(mode="json")
         return state, outputs
 
     def _stage_provision(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:

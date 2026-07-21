@@ -1,0 +1,196 @@
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from feedbax.orchestration.repo_snapshot import (
+    RepoSnapshotError,
+    RepoSnapshotManifest,
+    restore_repo_snapshots,
+    seal_repo_snapshot,
+)
+
+
+def _git(root: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+    ).stdout.strip()
+
+
+def _repo(tmp_path: Path) -> Path:
+    root = tmp_path / "tracked repo"
+    root.mkdir()
+    _git(root, "init")
+    _git(root, "config", "user.email", "snapshot@example.invalid")
+    _git(root, "config", "user.name", "Snapshot Test")
+    (root / ".gitignore").write_text("*.secret\nignored-dir/\n", encoding="utf-8")
+    (root / "tracked.txt").write_text("committed\n", encoding="utf-8")
+    (root / "space name.txt").write_text("space\n", encoding="utf-8")
+    _git(root, "add", ".gitignore", "tracked.txt", "space name.txt")
+    _git(root, "commit", "-m", "fixture")
+    return root
+
+
+def test_snapshot_contains_only_tracked_working_tree_bytes(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    (root / "tracked.txt").write_text("modified\n", encoding="utf-8")
+    (root / "ignored.secret").write_text("never ship\n", encoding="utf-8")
+    (root / "ignored-dir").mkdir()
+    (root / "ignored-dir" / "novel-cache.bin").write_bytes(b"never ship")
+
+    snapshot = seal_repo_snapshot("repo", root, snapshot_parent=tmp_path / "snapshots")
+
+    assert (snapshot.staging_root / "tracked.txt").read_text(encoding="utf-8") == "modified\n"
+    assert (snapshot.staging_root / "space name.txt").read_text(encoding="utf-8") == "space\n"
+    assert not (snapshot.staging_root / "ignored.secret").exists()
+    assert not (snapshot.staging_root / "ignored-dir").exists()
+    assert snapshot.record.dirty
+    assert snapshot.record.file_count == 3
+    assert snapshot.staging_root.stat().st_mode & 0o222 == 0
+    assert snapshot.staging_root.joinpath("tracked.txt").stat().st_mode & 0o222 == 0
+
+
+def test_snapshot_is_immutable_after_seal_and_distinguishes_dirty_bytes(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    (root / "tracked.txt").write_text("dirty one\n", encoding="utf-8")
+    first = seal_repo_snapshot("repo", root, snapshot_parent=tmp_path / "snapshots")
+    (root / "tracked.txt").write_text("dirty two\n", encoding="utf-8")
+    second = seal_repo_snapshot("repo", root, snapshot_parent=tmp_path / "snapshots")
+
+    assert (first.staging_root / "tracked.txt").read_text(encoding="utf-8") == "dirty one\n"
+    assert first.record.commit == second.record.commit
+    assert first.record.dirty is second.record.dirty is True
+    assert first.record.content_sha256 != second.record.content_sha256
+
+
+def test_snapshot_omits_tracked_deletion_and_preserves_symlink(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    (root / "target.txt").write_text("target bytes\n", encoding="utf-8")
+    (root / "tracked-link").symlink_to("target.txt")
+    (root / "deleted.txt").write_text("delete me\n", encoding="utf-8")
+    _git(root, "add", "target.txt", "tracked-link", "deleted.txt")
+    _git(root, "commit", "-m", "link and deletion fixture")
+    (root / "deleted.txt").unlink()
+
+    snapshot = seal_repo_snapshot("repo", root, snapshot_parent=tmp_path / "snapshots")
+
+    link = snapshot.staging_root / "tracked-link"
+    assert link.is_symlink()
+    assert os.readlink(link) == "target.txt"
+    assert not (snapshot.staging_root / "deleted.txt").exists()
+
+    (root / "tracked-link").unlink()
+    (root / "tracked-link").write_text("now regular\n", encoding="utf-8")
+    converted = seal_repo_snapshot("repo", root, snapshot_parent=tmp_path / "snapshots")
+    assert converted.staging_root.joinpath("tracked-link").is_file()
+    assert not converted.staging_root.joinpath("tracked-link").is_symlink()
+
+
+def test_snapshot_preserves_unstaged_working_tree_type_and_executable_edits(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    tracked = root / "tracked.txt"
+    tracked.chmod(0o755)
+    executable = seal_repo_snapshot("repo", root, snapshot_parent=tmp_path / "snapshots")
+    assert executable.record.dirty
+    assert executable.staging_root.joinpath("tracked.txt").stat().st_mode & 0o111
+
+    tracked.unlink()
+    tracked.symlink_to("space name.txt")
+    symlink = seal_repo_snapshot("repo", root, snapshot_parent=tmp_path / "snapshots")
+    assert symlink.staging_root.joinpath("tracked.txt").is_symlink()
+    assert os.readlink(symlink.staging_root / "tracked.txt") == "space name.txt"
+
+    tracked.unlink()
+    tracked.write_text("regular again\n", encoding="utf-8")
+    regular = seal_repo_snapshot("repo", root, snapshot_parent=tmp_path / "snapshots")
+    assert regular.staging_root.joinpath("tracked.txt").is_file()
+    assert not regular.staging_root.joinpath("tracked.txt").is_symlink()
+
+
+def test_restored_snapshot_rejects_staging_byte_mutation(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    snapshot_parent = tmp_path / "snapshots"
+    snapshot = seal_repo_snapshot("repo", root, snapshot_parent=snapshot_parent)
+    snapshot.staging_root.chmod(0o755)
+    tracked = snapshot.staging_root / "tracked.txt"
+    tracked.chmod(0o644)
+    tracked.write_text("tampered\n", encoding="utf-8")
+    manifest = RepoSnapshotManifest(repos={"repo": snapshot.record})
+
+    with pytest.raises(RepoSnapshotError, match="digest mismatch"):
+        restore_repo_snapshots(
+            {"repo": root},
+            manifest,
+            snapshot_parent=snapshot_parent,
+        )
+
+
+def test_snapshot_fails_closed_for_non_top_level_and_gitlink(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    nested = root / "nested"
+    nested.mkdir()
+    with pytest.raises(RepoSnapshotError, match="must equal the Git top level"):
+        seal_repo_snapshot("repo", nested, snapshot_parent=tmp_path / "snapshots")
+
+    commit = _git(root, "rev-parse", "HEAD")
+    _git(root, "update-index", "--add", "--cacheinfo", f"160000,{commit},vendor/sub")
+    with pytest.raises(RepoSnapshotError, match="gitlink/submodule"):
+        seal_repo_snapshot("repo", root, snapshot_parent=tmp_path / "snapshots")
+
+
+def test_wholesale_local_rsync_deletes_stale_ungoverned_file(tmp_path: Path) -> None:
+    rsync = shutil.which("rsync")
+    assert rsync is not None, "rsync is required for the governed-transfer contract test"
+    root = _repo(tmp_path)
+    (root / "ignored.secret").write_text("local secret\n", encoding="utf-8")
+    snapshot = seal_repo_snapshot("repo", root, snapshot_parent=tmp_path / "snapshots")
+    remote = tmp_path / "remote set"
+    remote.mkdir()
+    (remote / "ignored.secret").write_text("stale remote secret\n", encoding="utf-8")
+    (remote / "space name.txt").write_text("stale mode\n", encoding="utf-8")
+    (remote / "space name.txt").chmod(0o755)
+
+    subprocess.run(
+        [
+            rsync,
+            "-a",
+            "--delete",
+            f"{snapshot.staging_root}/",
+            f"{remote}/",
+        ],
+        check=True,
+    )
+    subprocess.run(["chmod", "-R", "u+w", remote], check=True)
+    assert not (remote / "ignored.secret").exists()
+    assert not remote.joinpath("space name.txt").stat().st_mode & 0o111
+
+    (root / "tracked.txt").unlink()
+    after_deletion = seal_repo_snapshot(
+        "repo", root, snapshot_parent=tmp_path / "snapshots"
+    )
+    subprocess.run(
+        [
+            rsync,
+            "-a",
+            "--delete",
+            f"{after_deletion.staging_root}/",
+            f"{remote}/",
+        ],
+        check=True,
+    )
+    subprocess.run(["chmod", "-R", "u+w", remote], check=True)
+
+    assert not (remote / "tracked.txt").exists()
+    assert (remote / "space name.txt").read_text(encoding="utf-8") == "space\n"

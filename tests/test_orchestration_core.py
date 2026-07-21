@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import pytest
+from pydantic import ValidationError
 
 from feedbax.orchestration import AuthorizedBatchStop, RowConformanceRuntimeInputs
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
@@ -123,6 +124,7 @@ from feedbax.orchestration.stages import (
 from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_ID,
     RUN_SET_STATE_SCHEMA_VERSION,
+    RUN_SET_STATE_SCHEMA_VERSION_V1,
     RowState,
     RunSetState,
     RunSetStateStore,
@@ -1089,6 +1091,13 @@ def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> N
     assert (
         default_spec_registry.resolve("RunSetState").current_version == RUN_SET_STATE_SCHEMA_VERSION
     )
+    stale_state = old.model_dump(mode="json")
+    stale_state["schema_version"] = RUN_SET_STATE_SCHEMA_VERSION_V1
+    store.path.write_text(json.dumps(stale_state), encoding="utf-8")
+    with pytest.raises(ValidationError, match=RUN_SET_STATE_SCHEMA_VERSION_V1):
+        store.load()
+    with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
+        default_spec_registry.migrate("RunSetState", stale_state)
     old_payload = _bundle(tmp_path).model_dump(mode="json")
     for old_version in (
         RUN_BUNDLE_SCHEMA_VERSION_V1,

@@ -63,19 +63,18 @@ from feedbax.orchestration.matrix_authority import (
     build_training_run_matrix_authority,
     is_training_matrix_bundle,
 )
+from feedbax.orchestration.repo_snapshot import (
+    RepoSnapshotError,
+    RepoSnapshotManifest,
+    SealedRepoSnapshots,
+    restore_repo_snapshots,
+    seal_repo_snapshots,
+    snapshot_manifest_digest,
+    verify_repo_snapshot,
+)
 from feedbax.orchestration.state import PreflightCheckEntry, RunSetState, utc_now
 
 
-RUNPOD_CODE_EXCLUDES = (
-    ".git",
-    ".venv",
-    "__pycache__",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    "_artifacts",
-    "web/node_modules",
-)
 LATEST_BATCH_KEYS = (
     "completed_training_batches",
     "completed_batches",
@@ -94,6 +93,7 @@ RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION = (
 _RUNPOD_PREFLIGHT_CHECK_NAMES = frozenset(
     {
         "input-provider-bindings",
+        "runpod-repo-snapshots",
         "runpod-image-immutable",
         "runpod-image-tag-exists",
         "runpod-lockfiles-declared",
@@ -503,6 +503,7 @@ class RunPodOrchestrationDriver:
         self.input_provider_bindings = tuple(input_provider_bindings)
         self.collection_recovery_bindings = tuple(collection_recovery_bindings)
         self._collection_recovery_evidence: dict[str, Mapping[str, object]] = {}
+        self._repo_snapshots: SealedRepoSnapshots | None = None
         self._preflight_passed = False
         self._pod_id = self.config.pod_id
         self._provided_endpoint = bool(self.config.ssh_host and self.config.ssh_port)
@@ -610,6 +611,22 @@ class RunPodOrchestrationDriver:
                         detail=str(exc),
                     )
                 ]
+        try:
+            self.seal_repo_snapshots(bundle)
+        except RepoSnapshotError as exc:
+            self._preflight_passed = False
+            return [
+                _preflight_check(
+                    "runpod-repo-snapshots",
+                    False,
+                    detail=str(exc),
+                )
+            ]
+        snapshot_check = _preflight_check(
+            "runpod-repo-snapshots",
+            True,
+            observed=self.repo_snapshot_manifest().model_dump(mode="json"),
+        )
         failures, observed = preflight_input_provider_bindings(
             bundle, self.input_provider_bindings
         )
@@ -622,7 +639,7 @@ class RunPodOrchestrationDriver:
         if failures:
             self._preflight_passed = False
             return [binding_check]
-        checks: list[PreflightCheckEntry] = [binding_check]
+        checks: list[PreflightCheckEntry] = [snapshot_check, binding_check]
         image = bundle.environment.image_id
         image_is_immutable = is_immutable_runpod_image_id(image)
         checks.append(
@@ -749,12 +766,34 @@ class RunPodOrchestrationDriver:
             return legacy
         return self._matrix_preflight_evidence(bundle, legacy)
 
+    def seal_repo_snapshots(self, bundle: RunBundle) -> RepoSnapshotManifest:
+        """Seal configured tracked working trees before any provisioning action."""
+        self._repo_snapshots = seal_repo_snapshots(
+            self._local_repos(),
+            snapshot_parent=bundle.run_set_dir / ".repo-snapshots",
+        )
+        return self._repo_snapshots.manifest
+
+    def repo_snapshot_manifest(self) -> RepoSnapshotManifest | None:
+        """Return the current sealed transfer authority, if available."""
+        return self._repo_snapshots.manifest if self._repo_snapshots is not None else None
+
     def restore_completed_preflight(self, bundle: RunBundle, state: RunSetState) -> None:
         """Restore only cryptographically bound completed preflight authority.
 
         This is deliberately offline: it validates persisted evidence without
         querying RunPod or repeating mutable credential/balance observations.
         """
+        if state.repo_snapshot_manifest is None:
+            raise RunPodDriverError("completed PREFLIGHT lacks sealed repo snapshot authority")
+        try:
+            self._repo_snapshots = restore_repo_snapshots(
+                self._local_repos(),
+                state.repo_snapshot_manifest,
+                snapshot_parent=bundle.run_set_dir / ".repo-snapshots",
+            )
+        except RepoSnapshotError as exc:
+            raise RunPodDriverError(str(exc)) from exc
         stage = state.stage("PREFLIGHT")
         evidence = stage.outputs.get("driver_evidence")
         persisted_checks = stage.outputs.get("checks")
@@ -842,6 +881,9 @@ class RunPodOrchestrationDriver:
         if not isinstance(assemble_sha256, str) or assemble_sha256 != bundle_sha256:
             raise RunPodDriverError("completed PREFLIGHT bundle binding is missing or mismatched")
         self._validate_preflight_checks(bundle, checks)
+        snapshot_manifest = state.repo_snapshot_manifest or self.repo_snapshot_manifest()
+        if snapshot_manifest is None:
+            raise RunPodDriverError("completed PREFLIGHT lacks sealed repo snapshot authority")
         return {
             "schema_id": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1,
             "schema_version": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
@@ -849,6 +891,7 @@ class RunPodOrchestrationDriver:
             "bundle_sha256": bundle_sha256,
             "checks_sha256": _sha256_json([check.model_dump(mode="json") for check in checks]),
             "driver_contract": self._preflight_driver_contract(),
+            "repo_snapshot_manifest_sha256": snapshot_manifest_digest(snapshot_manifest),
         }
 
     def _preflight_driver_contract(self) -> dict[str, Any]:
@@ -922,6 +965,11 @@ class RunPodOrchestrationDriver:
         if self.config.image != image:
             raise RunPodDriverError("RunPod driver image does not match the bundle")
         expected_checks = {
+            "runpod-repo-snapshots": (
+                self.repo_snapshot_manifest().model_dump(mode="json")
+                if self.repo_snapshot_manifest() is not None
+                else None
+            ),
             "runpod-image-immutable": image,
             "runpod-image-tag-exists": image,
             "runpod-lockfiles-declared": dict(sorted(bundle.environment.lockfile_hashes.items())),
@@ -958,7 +1006,22 @@ class RunPodOrchestrationDriver:
     def realize_env(self, bundle: RunBundle, state: RunSetState) -> str:
         """Synchronize code and realize the remote Python environment."""
         require_deterministic_runpod_environment(bundle)
-        declaration_fingerprint = compute_runpod_environment_fingerprint(bundle)
+        snapshot_manifest = state.repo_snapshot_manifest or self.repo_snapshot_manifest()
+        if snapshot_manifest is None:
+            raise RunPodDriverError(
+                "RunPod REALIZE_ENV requires repo snapshots sealed during PREFLIGHT"
+            )
+        try:
+            self._repo_snapshots = restore_repo_snapshots(
+                self._local_repos(),
+                snapshot_manifest,
+                snapshot_parent=bundle.run_set_dir / ".repo-snapshots",
+            )
+        except RepoSnapshotError as exc:
+            raise RunPodDriverError(str(exc)) from exc
+        declaration_fingerprint = compute_runpod_environment_fingerprint(
+            bundle, self._repo_snapshots.manifest
+        )
         remote_run_dir = self._remote_run_dir(bundle)
         self._ssh(
             f"mkdir -p {_sq(remote_run_dir)} {_sq(self._remote_sentinel_dir(bundle))} "
@@ -971,10 +1034,20 @@ class RunPodOrchestrationDriver:
         if reused_fingerprint is not None:
             return reused_fingerprint
 
-        for name, local_root in self._local_repos().items():
+        for name, snapshot in self._repo_snapshots.snapshots.items():
             remote_root = self._remote_repos()[name]
-            self._ssh(f"mkdir -p {_sq(remote_root)}")
-            self._rsync_repo(str(Path(local_root)), remote_root)
+            self._ssh(
+                f"mkdir -p {_sq(remote_root)} && chmod -R u+w {_sq(remote_root)}"
+            )
+            try:
+                verify_repo_snapshot(
+                    snapshot.staging_root,
+                    content_sha256=snapshot.record.content_sha256,
+                    file_count=snapshot.record.file_count,
+                )
+            except RepoSnapshotError as exc:
+                raise RunPodDriverError(str(exc)) from exc
+            self._rsync_repo(str(snapshot.staging_root), remote_root)
 
         for remote_file, patch_from, patch_to in self.config.path_patches:
             self._ssh(build_literal_path_patch_command(remote_file, patch_from, patch_to))
@@ -1598,8 +1671,8 @@ class RunPodOrchestrationDriver:
             source.rstrip("/") + "/",
             target.rstrip("/") + "/",
             delete=True,
-            excludes=RUNPOD_CODE_EXCLUDES,
         ).check(f"rsync repo {source}")
+        self._ssh(f"chmod -R u+w {_sq(target)}")
 
     def _reused_remote_environment_fingerprint(
         self,
@@ -2043,9 +2116,16 @@ def _python_version_matches(declared: str, observed: str) -> bool:
     )
 
 
-def compute_runpod_environment_fingerprint(bundle: RunBundle) -> str:
+def compute_runpod_environment_fingerprint(
+    bundle: RunBundle,
+    snapshot_manifest: RepoSnapshotManifest,
+) -> str:
     """Compute the declared remote environment fingerprint."""
     payload = environment_declaration_identity_projection(bundle.environment)
+    payload["repo_snapshot_content_sha256"] = {
+        name: record.content_sha256
+        for name, record in sorted(snapshot_manifest.repos.items())
+    }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 

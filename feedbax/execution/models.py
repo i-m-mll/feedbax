@@ -32,7 +32,10 @@ LOCAL_EXECUTION_RESULT_SCHEMA_VERSION = "feedbax.manifest.execution.v3"
 EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID = "feedbax.manifest.execution_cloud_payload"
 EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION = "feedbax.manifest.execution_cloud_payload.v1"
 EXECUTION_REPRODUCIBILITY_SCHEMA_ID = "feedbax.manifest.execution_reproducibility"
-EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION = "feedbax.manifest.execution_reproducibility.v1"
+EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1 = (
+    "feedbax.manifest.execution_reproducibility.v1"
+)
+EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION = "feedbax.manifest.execution_reproducibility.v2"
 
 ExecutionBackend = Literal["local", "ssh", "runpod", "modal"]
 ExecutionKind = Literal["training", "evaluation", "analysis", "report", "custom"]
@@ -447,6 +450,17 @@ class ExecutionCloudPayload(MappingModel):
         return self
 
 
+class LocalRsyncSnapshotProvenance(ExecutionModel):
+    """Governed working-tree snapshot recorded by planning local-rsync."""
+
+    name: str
+    local_path: str
+    commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    dirty: bool
+    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    file_count: int = Field(ge=0)
+
+
 class ExecutionReproducibility(MappingModel):
     """Versioned reproducibility payload embedded in an execution plan."""
 
@@ -463,6 +477,7 @@ class ExecutionReproducibility(MappingModel):
     generated_at: str = ""
     training_run_spec: Optional[dict[str, Any]] = None
     local_embed_sources: list[dict[str, Any]] = Field(default_factory=list)
+    local_rsync_snapshots: list[LocalRsyncSnapshotProvenance] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod

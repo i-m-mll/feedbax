@@ -15,10 +15,12 @@ from typing import Any, Literal
 from pydantic import Field
 
 from feedbax.contracts.manifest import StrictModel
+from feedbax.orchestration.repo_snapshot import RepoSnapshotManifest
 
 
 RUN_SET_STATE_SCHEMA_ID = "feedbax.orchestration.run_set_state"
-RUN_SET_STATE_SCHEMA_VERSION = "feedbax.orchestration.run_set_state.v1"
+RUN_SET_STATE_SCHEMA_VERSION_V1 = "feedbax.orchestration.run_set_state.v1"
+RUN_SET_STATE_SCHEMA_VERSION = "feedbax.orchestration.run_set_state.v2"
 ROW_STATUSES = ("pending", "launched", "ready", "running", "completed", "failed", "stopped")
 STAGE_STATUSES = ("pending", "running", "completed", "failed", "skipped")
 
@@ -76,7 +78,7 @@ class RunSetState(StrictModel):
 
     schema_id: Literal["feedbax.orchestration.run_set_state"] = RUN_SET_STATE_SCHEMA_ID
     schema_version: Literal[
-        "feedbax.orchestration.run_set_state.v1"
+        "feedbax.orchestration.run_set_state.v2"
     ] = RUN_SET_STATE_SCHEMA_VERSION
     run_set_id: str
     created_at: datetime = Field(default_factory=utc_now)
@@ -88,6 +90,7 @@ class RunSetState(StrictModel):
     provisioning_attempts: list[dict[str, Any]] = Field(default_factory=list)
     provisioning_stop_reason: str | None = None
     environment_fingerprint: str | None = None
+    repo_snapshot_manifest: RepoSnapshotManifest | None = None
     budget_counters: dict[str, Any] = Field(default_factory=dict)
     certificate_ref: str | None = None
     registration_payload: dict[str, Any] | None = None
