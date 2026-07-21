@@ -55,6 +55,14 @@ from tests.test_training_run_executor import (
 
 
 def test_layout_validation_uses_the_exact_sealed_snapshot_bytes(tmp_path: Path) -> None:
+    """Cover only the single-repo sealed-root invariant.
+
+    Multi-repo sealed-root composition (relative ``../sibling`` path sources
+    resolved across independently content-addressed staging roots) is deferred to
+    the RepoRealizationPlan work; see feedbax issue afb7f8b. This test uses a
+    self-referential ``editable = "."`` source, which resolves within one sealed
+    root, so it deliberately does not exercise the deferred multi-repo path.
+    """
     lock_text = (
         'version = 1\n[[package]]\nname = "consumer"\n'
         'source = { editable = "." }\n'
