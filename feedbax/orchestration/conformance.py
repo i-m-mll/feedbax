@@ -1366,7 +1366,7 @@ def _normalize_lr_trace_steps(
 
     steps = [step for samples in trace.values() for step in samples]
     segment_local = all(1 <= step <= segment_completed for step in steps)
-    cumulative = all(resume_origin <= step <= cumulative_completed for step in steps)
+    cumulative = all(resume_origin < step <= cumulative_completed for step in steps)
     if segment_local and cumulative:
         raise ValueError(
             "ambiguous lr_trace continuation coordinate frame: all samples fit both "
@@ -1374,7 +1374,7 @@ def _normalize_lr_trace_steps(
         )
     if not segment_local and not cumulative:
         batch_frame_membership = [
-            1 <= step <= segment_completed or resume_origin <= step <= cumulative_completed
+            1 <= step <= segment_completed or resume_origin < step <= cumulative_completed
             for step in steps
         ]
         if not any(batch_frame_membership) and event_log is not None:
@@ -1406,7 +1406,7 @@ def _normalize_lr_trace_steps(
                     "completed-batch coordinates"
                 )
             if not all(
-                resume_origin <= step <= cumulative_completed
+                resume_origin < step <= cumulative_completed
                 for step in ordered_completed_batches
             ):
                 raise ValueError(
@@ -1424,7 +1424,10 @@ def _normalize_lr_trace_steps(
             "wholly segment-local or wholly cumulative"
         )
     if cumulative:
-        return {coordinates: dict(samples) for coordinates, samples in trace.items()}
+        return {
+            coordinates: {step - 1: value for step, value in samples.items()}
+            for coordinates, samples in trace.items()
+        }
     return {
         coordinates: {resume_origin + step - 1: value for step, value in samples.items()}
         for coordinates, samples in trace.items()
