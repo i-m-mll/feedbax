@@ -1276,11 +1276,18 @@ def test_lr_trace_normalizes_segment_local_continuation_steps() -> None:
     )
 
 
-def test_lr_trace_preserves_cumulative_continuation_steps() -> None:
+def test_lr_trace_normalizes_cumulative_continuation_steps() -> None:
     optimizer = OptimizerSpec(
         type="adamw",
         params={"weight_decay": 0.0},
-        lr_schedule=LrScheduleSpec(kind="constant", learning_rate_0=3e-5),
+        lr_schedule=LrScheduleSpec(
+            kind="warmup_cosine",
+            learning_rate_0=3e-3,
+            constant_lr_iterations=1_000,
+            total_steps=8_000,
+            cosine_annealing_alpha=0.01,
+            warmup_init_fraction=0.01,
+        ),
     ).model_dump(mode="json")
     result = check_lr_trace(
         _row(
@@ -1293,15 +1300,25 @@ def test_lr_trace_preserves_cumulative_continuation_steps() -> None:
                 },
             },
             training_diagnostics={
-                "segment_completed_batches": 4_500,
-                "cumulative_completed_batches": 16_500,
-                "lr_trace": {12_500: 3e-5, 14_500: 3e-5, 16_500: 3e-5},
+                "segment_completed_batches": 9_000,
+                "cumulative_completed_batches": 21_000,
+                "lr_trace": {
+                    12_500: 0.001512030023150146,
+                    17_000: 0.0011852059978991747,
+                    21_000: 0.000029999999242136255,
+                },
             },
         )
     )
 
     assert result.status == "pass"
-    assert result.observed == pytest.approx({12_500: 3e-5, 14_500: 3e-5, 16_500: 3e-5})
+    assert result.observed == pytest.approx(
+        {
+            12_499: 0.001512030023150146,
+            16_999: 0.0011852059978991747,
+            20_999: 0.000029999999242136255,
+        }
+    )
 
 
 @pytest.mark.parametrize(

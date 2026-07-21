@@ -1424,7 +1424,10 @@ def _normalize_lr_trace_steps(
             "wholly segment-local or wholly cumulative"
         )
     if cumulative:
-        return {coordinates: dict(samples) for coordinates, samples in trace.items()}
+        return {
+            coordinates: {step - 1: value for step, value in samples.items()}
+            for coordinates, samples in trace.items()
+        }
     return {
         coordinates: {resume_origin + step - 1: value for step, value in samples.items()}
         for coordinates, samples in trace.items()
