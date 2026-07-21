@@ -45,6 +45,8 @@ from feedbax.contracts.manifest import (
     write_manifest,
 )
 from feedbax.contracts.nan_attribution import (
+    MAX_ATTRIBUTION_AXIS_SIZE,
+    MAX_SCHEDULES,
     NAN_ATTRIBUTION_ARTIFACT_ROLE,
     NAN_RESTORATION_ARTIFACT_ROLE,
     AxisNonFiniteSummary,
@@ -2292,14 +2294,6 @@ def _nan_attribution_detection(
         for name in sorted(host_slots)
         if _projection_attribution_count(host_slots[name]) > 0
     ]
-    schedule_descriptor = resolved_method.descriptor or DEFAULT_TRAINING_METHOD_REGISTRY.descriptor(
-        run_spec.method_ref
-    )
-    schedule_method = (
-        resolved_method
-        if resolved_method.descriptor is not None
-        else replace(resolved_method, descriptor=schedule_descriptor)
-    )
     batch_progress = run_spec.worker_execution.effective_phase.phase_program.batch_progress
     if batch_progress is None:
         observed_completed_batches = None
@@ -2322,15 +2316,29 @@ def _nan_attribution_detection(
         if observed_completed_batches is not None
         else schedule_lineage.start_batch
     )
-    full_schedule_state = project_training_schedules(
-        run_spec,
-        coordinates=(schedule_coordinate,),
-        lineage=schedule_lineage,
-        resolved_method=schedule_method,
-    )
-    schedule_items = sorted(full_schedule_state.schedules.items())
+    try:
+        schedule_descriptor = (
+            resolved_method.descriptor
+            or DEFAULT_TRAINING_METHOD_REGISTRY.descriptor(run_spec.method_ref)
+        )
+        schedule_method = (
+            resolved_method
+            if resolved_method.descriptor is not None
+            else replace(resolved_method, descriptor=schedule_descriptor)
+        )
+        full_schedule_state = project_training_schedules(
+            run_spec,
+            coordinates=(schedule_coordinate,),
+            lineage=schedule_lineage,
+            resolved_method=schedule_method,
+        )
+        schedule_items = sorted(full_schedule_state.schedules.items())
+        schedule_projection_error = None
+    except Exception as exc:
+        schedule_items = []
+        schedule_projection_error = f"{type(exc).__name__}: {exc}"[:2048]
     schedule_state = ScheduleProjection(
-        schedules=dict(schedule_items[:64]),
+        schedules=dict(schedule_items[:MAX_SCHEDULES]),
     )
     return NanAttributionDetection(
         run_id=run_id,
@@ -2359,8 +2367,9 @@ def _nan_attribution_detection(
             if observed_completed_batches is not None
             else "segment_start_fallback"
         ),
+        schedule_projection_error=schedule_projection_error,
         total_schedules=len(schedule_items),
-        schedule_state_truncated=len(schedule_items) > 64,
+        schedule_state_truncated=len(schedule_items) > MAX_SCHEDULES,
     )
 
 
@@ -2530,10 +2539,10 @@ def _projection_attribution_count(projected: Sequence[Mapping[str, Any]]) -> int
 
 def _bounded_axis_indices(*counts: np.ndarray) -> tuple[int, ...]:
     size = len(counts[0])
-    if size <= 1024:
+    if size <= MAX_ATTRIBUTION_AXIS_SIZE:
         return tuple(range(size))
     offending = np.flatnonzero(np.logical_or.reduce([value > 0 for value in counts]))
-    return tuple(int(index) for index in offending[:1024])
+    return tuple(int(index) for index in offending[:MAX_ATTRIBUTION_AXIS_SIZE])
 
 
 def _bounded_leaf_path(path: tuple[Any, ...]) -> str:

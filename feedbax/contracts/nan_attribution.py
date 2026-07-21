@@ -314,6 +314,7 @@ class NanAttributionDetection(StrictModel):
     slots_truncated: bool = False
     schedule_state: ScheduleProjection
     schedule_coordinate_source: Literal["observed_batch_authority", "segment_start_fallback"]
+    schedule_projection_error: str | None = Field(default=None, max_length=2048)
     total_schedules: int = Field(ge=0)
     schedule_state_truncated: bool = False
 

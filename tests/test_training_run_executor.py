@@ -4725,6 +4725,52 @@ def test_nan_restore_failure_keeps_linked_detection_record(tmp_path: Path) -> No
     assert restoration.restore_failure is not None
 
 
+def test_nan_schedule_projection_failure_still_finalizes_with_linked_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, _program = _nan_registry(nan_on_program_step=1)
+    spec = _run_spec().model_copy(update={"on_nan": "halt_restore_checkpoint"})
+
+    def fail_schedule_projection(*args, **kwargs):
+        raise ValueError("simulated incomplete schedule projector")
+
+    monkeypatch.setattr(
+        training_executor,
+        "project_training_schedules",
+        fail_schedule_projection,
+    )
+    result = execute_training_run_spec(
+        spec,
+        run_id="nan-schedule-projection-failure",
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path / "runs",
+        checkpoint_root=tmp_path / "checkpoints",
+        registry=registry,
+    )
+
+    assert result.status == "failed"
+    detection_ref = next(
+        item for item in result.manifest.artifacts if item.role == NAN_ATTRIBUTION_ARTIFACT_ROLE
+    )
+    restoration_ref = next(
+        item for item in result.manifest.artifacts if item.role == NAN_RESTORATION_ARTIFACT_ROLE
+    )
+    detection = NanAttributionDetection.model_validate_json(
+        Path(detection_ref.uri).read_text(encoding="utf-8")
+    )
+    restoration = NanAttributionRestorationOutcome.model_validate_json(
+        Path(restoration_ref.uri).read_text(encoding="utf-8")
+    )
+    assert detection.schedule_state.schedules == {}
+    assert detection.total_schedules == 0
+    assert detection.schedule_state_truncated is False
+    assert detection.schedule_projection_error == (
+        "ValueError: simulated incomplete schedule projector"
+    )
+    assert restoration.detection_artifact_sha256 == detection_ref.sha256
+
+
 def test_nan_detection_persistence_failure_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
