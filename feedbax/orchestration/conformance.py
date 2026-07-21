@@ -1391,14 +1391,23 @@ def _normalize_lr_trace_steps(
                 program_step: completed_batches_by_program_step[program_step]
                 for program_step in set(steps)
             }
-            translated_steps = list(translated.values())
-            if len(set(translated_steps)) != len(translated_steps):
+            ordered_completed_batches = [
+                translated[program_step] for program_step in sorted(translated)
+            ]
+            if any(
+                current <= previous
+                for previous, current in zip(
+                    ordered_completed_batches,
+                    ordered_completed_batches[1:],
+                )
+            ):
                 raise ValueError(
-                    "lr_trace program-step frame maps multiple steps to one completed-batch "
-                    "coordinate"
+                    "lr_trace program-step frame must map to strictly increasing "
+                    "completed-batch coordinates"
                 )
             if not all(
-                resume_origin <= step <= cumulative_completed for step in translated_steps
+                resume_origin <= step <= cumulative_completed
+                for step in ordered_completed_batches
             ):
                 raise ValueError(
                     "lr_trace program-step frame maps outside the cumulative continuation range"
@@ -1438,10 +1447,14 @@ def _event_completed_batches_by_program_step(
         completed_batches = _path(coordinate, "completed_batches")
         if program_step is _MISSING or completed_batches is _MISSING:
             continue
-        program_step_int = int(program_step)
-        completed_batches_int = int(completed_batches)
-        if program_step_int < 0 or completed_batches_int < 0:
-            raise ValueError("run-event progress coordinates must be non-negative")
+        program_step_int = _exact_nonnegative_event_coordinate(
+            program_step,
+            name="program_step",
+        )
+        completed_batches_int = _exact_nonnegative_event_coordinate(
+            completed_batches,
+            name="completed_batches",
+        )
         previous = completed_batches_by_program_step.setdefault(
             program_step_int,
             completed_batches_int,
@@ -1452,6 +1465,14 @@ def _event_completed_batches_by_program_step(
                 f"{program_step_int}: {previous} != {completed_batches_int}"
             )
     return completed_batches_by_program_step
+
+
+def _exact_nonnegative_event_coordinate(value: Any, *, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"run-event coordinate {name} must be an exact integer")
+    if value < 0:
+        raise ValueError(f"run-event coordinate {name} must be non-negative")
+    return value
 
 
 def _selected_lr_samples(

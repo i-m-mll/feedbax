@@ -1439,6 +1439,84 @@ def test_lr_trace_legacy_program_steps_require_complete_unambiguous_event_eviden
     assert conflicting.status == "fail"
     assert "run events disagree" in str(conflicting.detail)
 
+    reversed_mapping = check_lr_trace(
+        _row(
+            bundle_row_spec={"optimizer": optimizer},
+            training_diagnostics=diagnostics,
+            event_log=[
+                {
+                    "payload": {
+                        "coordinate": {
+                            "program_step": step,
+                            "completed_batches": completed_batches,
+                        }
+                    }
+                }
+                for step, completed_batches in (
+                    (5_000, 19_000),
+                    (7_000, 17_000),
+                    (9_000, 21_000),
+                )
+            ],
+        )
+    )
+    assert reversed_mapping.status == "fail"
+    assert "strictly increasing completed-batch" in str(reversed_mapping.detail)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("program_step", 5_000.5),
+        ("program_step", True),
+        ("completed_batches", 17_000.5),
+        ("completed_batches", False),
+    ],
+)
+def test_lr_trace_legacy_event_coordinates_require_exact_integers(
+    field: str,
+    value: object,
+) -> None:
+    optimizer = OptimizerSpec(
+        type="adamw",
+        params={"weight_decay": 0.0},
+        lr_schedule=LrScheduleSpec(kind="constant", learning_rate_0=3e-5),
+    ).model_dump(mode="json")
+    coordinate = {"program_step": 5_000, "completed_batches": 17_000}
+    coordinate[field] = value
+    result = check_lr_trace(
+        _row(
+            bundle_row_spec={"optimizer": optimizer},
+            training_diagnostics={
+                "segment_completed_batches": 4_500,
+                "cumulative_completed_batches": 21_000,
+                "lr_trace": {5_000: 3e-5, 7_000: 3e-5, 9_000: 3e-5},
+            },
+            event_log=[
+                {"payload": {"coordinate": coordinate}},
+                {
+                    "payload": {
+                        "coordinate": {
+                            "program_step": 7_000,
+                            "completed_batches": 19_000,
+                        }
+                    }
+                },
+                {
+                    "payload": {
+                        "coordinate": {
+                            "program_step": 9_000,
+                            "completed_batches": 21_000,
+                        }
+                    }
+                },
+            ],
+        )
+    )
+
+    assert result.status == "fail"
+    assert f"run-event coordinate {field} must be an exact integer" in str(result.detail)
+
 
 def test_lr_trace_rejects_conflicting_governed_optimizer_authorities() -> None:
     optimizer = OptimizerSpec(
