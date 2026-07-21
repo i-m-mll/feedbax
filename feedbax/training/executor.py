@@ -2401,10 +2401,15 @@ def _realized_lr_trace(
         metrics = event.get("metrics")
         if not isinstance(coordinate, Mapping) or not isinstance(metrics, Mapping):
             continue
-        step = coordinate.get("program_step")
         learning_rate = metrics.get("learning_rate", metrics.get("lr"))
-        if step is None or learning_rate is None:
+        if learning_rate is None:
             continue
+        step = coordinate.get("completed_batches")
+        if step is None:
+            raise TrainingRunExecutorError(
+                "learning-rate diagnostics require coordinate.completed_batches "
+                "training-batch authority"
+            )
         if (
             isinstance(learning_rate, Mapping)
             and learning_rate.get("schema_id") == "feedbax.manifest.mapped_metric_value"

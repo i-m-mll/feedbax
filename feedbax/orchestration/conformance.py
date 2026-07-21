@@ -1261,7 +1261,11 @@ def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
         return missing_input_check(check_id, *missing_context)
 
     try:
-        trace = _normalize_lr_trace_steps(trace, row.training_diagnostics)
+        trace = _normalize_lr_trace_steps(
+            trace,
+            row.training_diagnostics,
+            event_log=row.event_log,
+        )
         eval_context = require_schedule_context(
             (
                 {
@@ -1335,6 +1339,8 @@ def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
 def _normalize_lr_trace_steps(
     trace: Mapping[tuple[tuple[str, int], ...], Mapping[int, float]],
     training_diagnostics: Mapping[str, Any] | None,
+    *,
+    event_log: Path | str | Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
 ) -> dict[tuple[tuple[str, int], ...], dict[int, float]]:
     """Normalize completed-batch segment samples to their cumulative update steps."""
     segment_raw = _path(training_diagnostics, "segment_completed_batches")
@@ -1367,6 +1373,52 @@ def _normalize_lr_trace_steps(
             "segment-local and cumulative ranges"
         )
     if not segment_local and not cumulative:
+        batch_frame_membership = [
+            1 <= step <= segment_completed or resume_origin <= step <= cumulative_completed
+            for step in steps
+        ]
+        if not any(batch_frame_membership) and event_log is not None:
+            completed_batches_by_program_step = _event_completed_batches_by_program_step(
+                event_log
+            )
+            missing = sorted(set(steps) - completed_batches_by_program_step.keys())
+            if missing:
+                raise ValueError(
+                    "lr_trace program-step frame lacks immutable completed-batch evidence for "
+                    f"steps {missing!r}"
+                )
+            translated = {
+                program_step: completed_batches_by_program_step[program_step]
+                for program_step in set(steps)
+            }
+            ordered_completed_batches = [
+                translated[program_step] for program_step in sorted(translated)
+            ]
+            if any(
+                current <= previous
+                for previous, current in zip(
+                    ordered_completed_batches,
+                    ordered_completed_batches[1:],
+                )
+            ):
+                raise ValueError(
+                    "lr_trace program-step frame must map to strictly increasing "
+                    "completed-batch coordinates"
+                )
+            if not all(
+                resume_origin <= step <= cumulative_completed
+                for step in ordered_completed_batches
+            ):
+                raise ValueError(
+                    "lr_trace program-step frame maps outside the cumulative continuation range"
+                )
+            return {
+                coordinates: {
+                    translated[program_step]: value
+                    for program_step, value in samples.items()
+                }
+                for coordinates, samples in trace.items()
+            }
         raise ValueError(
             "mixed or out-of-range lr_trace continuation coordinate frame: samples must be "
             "wholly segment-local or wholly cumulative"
@@ -1377,6 +1429,61 @@ def _normalize_lr_trace_steps(
         coordinates: {resume_origin + step - 1: value for step, value in samples.items()}
         for coordinates, samples in trace.items()
     }
+
+
+def _event_completed_batches_by_program_step(
+    event_log: Path | str | Sequence[Mapping[str, Any]] | Mapping[str, Any],
+) -> dict[int, int]:
+    """Resolve explicit program-step to training-batch evidence from immutable run events."""
+    completed_batches_by_program_step: dict[int, int] = {}
+    for event in _load_events(event_log):
+        coordinate = _first_present(
+            _path(event, "payload", "coordinate"),
+            _path(event, "coordinate"),
+        )
+        if not isinstance(coordinate, Mapping):
+            continue
+        program_step = _path(coordinate, "program_step")
+        completed_batches = _path(coordinate, "completed_batches")
+        if program_step is _MISSING or completed_batches is _MISSING:
+            continue
+        program_step_int = _exact_nonnegative_event_coordinate(
+            program_step,
+            name="program_step",
+        )
+        completed_batches_int = _exact_nonnegative_event_coordinate(
+            completed_batches,
+            name="completed_batches",
+        )
+        previous = completed_batches_by_program_step.setdefault(
+            program_step_int,
+            completed_batches_int,
+        )
+        if previous != completed_batches_int:
+            raise ValueError(
+                "run events disagree on completed_batches for program_step "
+                f"{program_step_int}: {previous} != {completed_batches_int}"
+            )
+    ordered_mapping = sorted(completed_batches_by_program_step.items())
+    if any(
+        current_batches <= previous_batches
+        for (_, previous_batches), (_, current_batches) in zip(
+            ordered_mapping,
+            ordered_mapping[1:],
+        )
+    ):
+        raise ValueError(
+            "run-event completed_batches must be strictly increasing in program_step order"
+        )
+    return completed_batches_by_program_step
+
+
+def _exact_nonnegative_event_coordinate(value: Any, *, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"run-event coordinate {name} must be an exact integer")
+    if value < 0:
+        raise ValueError(f"run-event coordinate {name} must be non-negative")
+    return value
 
 
 def _selected_lr_samples(

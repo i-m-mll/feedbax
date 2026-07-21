@@ -1968,7 +1968,7 @@ def test_mapped_learning_rate_trace_retains_every_instance_and_rejects_duplicate
         "leaf_policy": "all_array_leaves",
     }
     event = {
-        "coordinate": {"program_step": 3},
+        "coordinate": {"program_step": 30, "completed_batches": 3},
         "metrics": {
             "learning_rate": {
                 "schema_id": "feedbax.manifest.mapped_metric_value",
@@ -1981,10 +1981,21 @@ def test_mapped_learning_rate_trace_retains_every_instance_and_rejects_duplicate
         },
     }
     trace = _realized_lr_trace([event], declared=())
+    assert [sample.step for sample in trace] == [3, 3]
     assert [sample.learning_rate for sample in trace] == [0.1, 0.2]
     assert [sample.axis_coordinates[0].index for sample in trace] == [0, 1]
     with pytest.raises(TrainingRunExecutorError, match="duplicate coordinate/step"):
         _realized_lr_trace([event, event], declared=())
+
+    missing_batch_authority = {
+        **event,
+        "coordinate": {"program_step": 30},
+    }
+    with pytest.raises(
+        TrainingRunExecutorError,
+        match=r"coordinate\.completed_batches training-batch authority",
+    ):
+        _realized_lr_trace([missing_batch_authority], declared=())
 
 
 def test_mapped_preflight_fails_before_execution_and_batch_authority_must_sync() -> None:
