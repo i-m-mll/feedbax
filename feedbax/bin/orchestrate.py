@@ -104,9 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     preflight = subparsers.add_parser("preflight", help="Run ASSEMBLE and PREFLIGHT only")
     preflight_input = preflight.add_mutually_exclusive_group(required=True)
-    preflight_input.add_argument(
-        "--assembly-request", help="RunAssemblyRequest JSON path"
-    )
+    preflight_input.add_argument("--assembly-request", help="RunAssemblyRequest JSON path")
     preflight_input.add_argument(
         "--bundle",
         help="Content-pinned, already assembled RunBundle JSON path (authority-only)",
@@ -127,9 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.set_defaults(func=cmd_preflight)
 
     launch = subparsers.add_parser("launch", help="Launch or resume a run bundle")
-    launch.add_argument(
-        "--assembly-request", required=True, help="RunAssemblyRequest JSON path"
-    )
+    launch.add_argument("--assembly-request", required=True, help="RunAssemblyRequest JSON path")
     launch.add_argument("--driver", choices=["local", "runpod"], help="Driver override")
     launch.add_argument(
         "--dry-run",
@@ -226,9 +222,7 @@ def cmd_preflight(args: argparse.Namespace) -> int:
                 registry=build_default_assembly_registry(),
             )
         checks = (
-            run_authority_preflight_checks(bundle)
-            if args.bundle
-            else run_preflight_checks(bundle)
+            run_authority_preflight_checks(bundle) if args.bundle else run_preflight_checks(bundle)
         )
         if any(check.status == "fail" for check in checks):
             return EXIT_PREFLIGHT
@@ -331,7 +325,7 @@ def cmd_shadow_launch(args: argparse.Namespace) -> int:
         request,
         request_path=request_path,
         input_provider_bindings=_input_provider_bindings(args.input_provider),
-        native_one_update=True,
+        native_update_budget=1,
     )
     state = engine.run(stop_after_stage="COLLECT")
     if engine.bundle is None:
@@ -438,9 +432,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
     state = _run_existing(
         args.run_set,
         stop_after_stage="COLLECT",
-        collection_recovery_bindings=_collection_recovery_bindings(
-            args.recover_collected_root
-        ),
+        collection_recovery_bindings=_collection_recovery_bindings(args.recover_collected_root),
     )
     return _state_exit_code(state)
 
@@ -472,9 +464,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
             args.run_set,
             interruption_probe=interruption.poll,
             input_provider_bindings=_input_provider_bindings(args.input_provider),
-            collection_recovery_bindings=_collection_recovery_bindings(
-                args.recover_collected_root
-            ),
+            collection_recovery_bindings=_collection_recovery_bindings(args.recover_collected_root),
         )
     return _state_exit_code(state)
 
@@ -567,7 +557,7 @@ def _driver_for_bundle(
     bundle: RunBundle,
     bindings: tuple[InputProviderRootBinding, ...] = (),
     collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
-    native_one_update: bool = False,
+    native_update_budget: int | None = None,
 ) -> LocalOrchestrationDriver | RunPodOrchestrationDriver:
     driver_name = bundle.deployment_policy.driver
     if driver_name == "local":
@@ -575,11 +565,11 @@ def _driver_for_bundle(
             raise ValueError("collection recovery is only supported for a torn-down RunPod run")
         return LocalOrchestrationDriver(
             input_provider_bindings=bindings,
-            one_update=native_one_update,
+            update_budget=native_update_budget,
         )
     if driver_name == "runpod":
-        if native_one_update:
-            raise ValueError("native one-update runtime binding is local shadow-launch only")
+        if native_update_budget is not None:
+            raise ValueError("native update-budget runtime binding is local shadow-launch only")
         return RunPodOrchestrationDriver(
             config=_runpod_config_for_bundle(bundle),
             input_provider_bindings=bindings,
@@ -607,9 +597,13 @@ def _request_engine(
     run_set_id: str | None = None,
     interruption_probe: Callable[[], CancellationDecision | None] | None = None,
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
-    native_one_update: bool = False,
+    native_update_budget: int | None = None,
 ) -> StageEngine:
-    root = Path(request.orchestration_root).expanduser() if request.orchestration_root else request_path.parent
+    root = (
+        Path(request.orchestration_root).expanduser()
+        if request.orchestration_root
+        else request_path.parent
+    )
     context = AssemblyContext(
         custody_root=root / "custody",
         repo_root=Path.cwd(),
@@ -621,7 +615,7 @@ def _request_engine(
         driver_factory=lambda bundle: _driver_for_bundle(
             bundle,
             input_provider_bindings,
-            native_one_update=native_one_update,
+            native_update_budget=native_update_budget,
         ),
         run_set_id=run_set_id,
         conformance_registry=build_default_check_registry(),

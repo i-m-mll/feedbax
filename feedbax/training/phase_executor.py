@@ -92,6 +92,8 @@ class PhaseExecutionResult:
 
     slots: dict[str, Any]
     coordinate: ProgressCoordinate
+    start_completed_batches: int
+    end_completed_batches: int
     progress: list[ProgressCoordinate] = field(default_factory=list)
     checkpoints: dict[str, PhaseCheckpoint] = field(default_factory=dict)
     checkpoint_visits: tuple[PhaseCheckpoint, ...] = ()
@@ -319,8 +321,7 @@ class PhaseProgramExecutor:
         if missing_prepared:
             raise WorkerContractValidationError(
                 f"/checkpoint_barriers/{checkpoint.barrier}/slots",
-                "checkpoint slots lack prepared runtime templates "
-                f"{missing_prepared!r}",
+                f"checkpoint slots lack prepared runtime templates {missing_prepared!r}",
             )
         missing_required_prepared = [
             name for name, spec in declared.items() if spec.required and name not in slots
@@ -350,26 +351,31 @@ class PhaseProgramExecutor:
         checkpoint_interval: int | None = None,
         progress_interval: int | None = None,
         include_completed_batches_in_progress: bool = False,
-        one_update: bool = False,
+        update_budget: int | None = None,
     ) -> PhaseExecutionResult:
         """Execute phases from the start or from a checkpoint barrier.
 
         Authored intervals are evaluated against the phase program's declared
         training-batch authority, not against phase boundaries or checkpoint
-        visit ordinals. A terminal partial interval is always emitted.
+        visit ordinals. ``update_budget`` uses the same authority as a delta
+        from the entry counter and may end naturally before the budget is used.
+        A terminal partial interval is always emitted.
         """
         self._validate_interval(checkpoint_interval, name="checkpoint_interval")
         self._validate_interval(progress_interval, name="progress_interval")
-        if not isinstance(one_update, bool):
+        if update_budget is not None and (
+            isinstance(update_budget, bool)
+            or not isinstance(update_budget, int)
+            or update_budget <= 0
+        ):
             raise WorkerContractValidationError(
-                "/runtime/one_update",
-                "one_update must be a boolean",
+                "/runtime/update_budget",
+                "update_budget must be a positive non-boolean integer",
             )
         progress: list[ProgressCoordinate] = []
         checkpoint_context = dict(context or {})
         mapped_kernels = {
-            kernel_ref: self._mapped_kernel(kernel)
-            for kernel_ref, kernel in self.kernels.items()
+            kernel_ref: self._mapped_kernel(kernel) for kernel_ref, kernel in self.kernels.items()
         }
         resume_inner_step = 0
         resuming_within_phase = False
@@ -461,6 +467,10 @@ class PhaseProgramExecutor:
                         return PhaseExecutionResult(
                             slots=_copy_executor_mapping(halted_slots),
                             coordinate=halted_coordinate,
+                            start_completed_batches=initial_batch,
+                            end_completed_batches=self._completed_training_batches(
+                                halted_slots, halted_coordinate
+                            ),
                             progress=progress,
                             checkpoints=self.checkpoint_store.as_dict(),
                             checkpoint_visits=self.checkpoint_store.visits(),
@@ -497,7 +507,15 @@ class PhaseProgramExecutor:
                     last_progress_batch = completed_batches
                     if progress_callback is not None:
                         progress_callback(_copy_progress_coordinate(observed_coordinate))
-                if one_update:
+                completed_batch_delta = completed_batches - initial_batch
+                if update_budget is not None and completed_batch_delta > update_budget:
+                    raise WorkerContractValidationError(
+                        "/runtime/update_budget",
+                        "completed training batches exceeded update_budget; "
+                        f"start={initial_batch}, current={completed_batches}, "
+                        f"budget={update_budget}",
+                    )
+                if update_budget is not None and completed_batch_delta == update_budget:
                     saved_checkpoint = self._save_phase_barrier(
                         phase.name,
                         coordinate,
@@ -506,7 +524,12 @@ class PhaseProgramExecutor:
                     coordinate = coordinate.model_copy(
                         update={"completed_barrier": saved_checkpoint.barrier}
                     )
-                    return self._result(current_slots, coordinate, progress)
+                    return self._result(
+                        current_slots,
+                        coordinate,
+                        progress,
+                        start_completed_batches=initial_batch,
+                    )
                 if checkpoint_interval is not None and self._interval_due(
                     completed_batches,
                     checkpoint_interval,
@@ -526,7 +549,12 @@ class PhaseProgramExecutor:
                         stop_after_barrier=stop_after_barrier,
                         stop_after_next_barrier=stop_after_next_barrier,
                     ):
-                        return self._result(current_slots, coordinate, progress)
+                        return self._result(
+                            current_slots,
+                            coordinate,
+                            progress,
+                            start_completed_batches=initial_batch,
+                        )
 
             next_phase = self._next_phase(
                 phase.name,
@@ -577,13 +605,23 @@ class PhaseProgramExecutor:
                     stop_after_barrier=stop_after_barrier,
                     stop_after_next_barrier=stop_after_next_barrier,
                 ):
-                    return self._result(current_slots, coordinate, progress)
+                    return self._result(
+                        current_slots,
+                        coordinate,
+                        progress,
+                        start_completed_batches=initial_batch,
+                    )
 
             phase_name = next_phase
             resume_inner_step = 0
             resuming_within_phase = False
 
-        return self._result(current_slots, coordinate, progress)
+        return self._result(
+            current_slots,
+            coordinate,
+            progress,
+            start_completed_batches=initial_batch,
+        )
 
     def _validate_mapped_updates(
         self,
@@ -622,9 +660,7 @@ class PhaseProgramExecutor:
                         f"/phase_program/update_steps/{step_name}/writes/{slot}/{leaf_index}",
                         "mapped write changes array/static leaf category",
                     )
-                if source_array and (
-                    source.shape != target.shape or source.dtype != target.dtype
-                ):
+                if source_array and (source.shape != target.shape or source.dtype != target.dtype):
                     raise WorkerContractValidationError(
                         f"/phase_program/update_steps/{step_name}/writes/{slot}/{leaf_index}",
                         "mapped write changes destination shape or dtype; "
@@ -637,10 +673,15 @@ class PhaseProgramExecutor:
         slots: Mapping[str, Any],
         coordinate: ProgressCoordinate,
         progress: list[ProgressCoordinate],
+        *,
+        start_completed_batches: int,
     ) -> PhaseExecutionResult:
+        end_completed_batches = self._completed_training_batches(slots, coordinate)
         return PhaseExecutionResult(
             slots=_copy_executor_mapping(slots),
             coordinate=coordinate,
+            start_completed_batches=start_completed_batches,
+            end_completed_batches=end_completed_batches,
             progress=progress,
             checkpoints=self.checkpoint_store.as_dict(),
             checkpoint_visits=self.checkpoint_store.visits(),

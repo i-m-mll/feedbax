@@ -83,13 +83,13 @@ class LocalOrchestrationDriver:
         python_executable: str | None = None,
         freeze_lines: Sequence[str] | None = None,
         input_provider_bindings: Sequence[InputProviderRootBinding] = (),
-        one_update: bool = False,
+        update_budget: int | None = None,
     ) -> None:
         self.cwd = Path(cwd or Path.cwd())
         self.python_executable = python_executable or sys.executable
         self.freeze_lines = tuple(freeze_lines) if freeze_lines is not None else None
         self.input_provider_bindings = tuple(input_provider_bindings)
-        self.one_update = one_update
+        self.update_budget = update_budget
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
 
     def provision(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
@@ -110,8 +110,11 @@ class LocalOrchestrationDriver:
         inputs_dir = bundle.run_set_dir / "inputs"
         if os.path.lexists(inputs_dir):
             raise LocalDriverError(f"input destination already exists: {inputs_dir}")
-        attempt_root = bundle.run_set_dir / ".stage-attempts" / (
-            f"stage-inputs-{state.stage('STAGE_INPUTS').attempts}")
+        attempt_root = (
+            bundle.run_set_dir
+            / ".stage-attempts"
+            / (f"stage-inputs-{state.stage('STAGE_INPUTS').attempts}")
+        )
         try:
             staged_inputs = materialize_bundle_inputs(
                 bundle,
@@ -135,15 +138,27 @@ class LocalOrchestrationDriver:
                 )
             target = attempt_root / "inputs" / f"{row.row_id}.json"
             shutil.copy2(source, target)
-            payloads.append({"row_id": row.row_id, "source": str(source),
-                             "target": str(inputs_dir / target.name)})
-        parent_descriptor = os.open(bundle.run_set_dir, os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+            payloads.append(
+                {
+                    "row_id": row.row_id,
+                    "source": str(source),
+                    "target": str(inputs_dir / target.name),
+                }
+            )
+        parent_descriptor = os.open(
+            bundle.run_set_dir,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
         try:
             source_name = (attempt_root / "inputs").relative_to(bundle.run_set_dir).as_posix()
-            publish_directory_no_replace(parent_descriptor, source_name, "inputs",
-                expected_identity=os.stat(source_name, dir_fd=parent_descriptor,
-                                          follow_symlinks=False))
+            publish_directory_no_replace(
+                parent_descriptor,
+                source_name,
+                "inputs",
+                expected_identity=os.stat(
+                    source_name, dir_fd=parent_descriptor, follow_symlinks=False
+                ),
+            )
         finally:
             os.close(parent_descriptor)
         return {
@@ -229,7 +244,7 @@ class LocalOrchestrationDriver:
             row=row,
             payload_path=bundle.run_set_dir / "inputs" / f"{row.row_id}.json",
             collection_root=paths["row_dir"],
-            one_update=self.one_update,
+            update_budget=self.update_budget,
         )
         command = inject_native_execution_context(
             command,
