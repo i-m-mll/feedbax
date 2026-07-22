@@ -2091,7 +2091,7 @@ def test_preflight_failures_record_named_checks_and_do_not_call_driver(tmp_path:
     assert checks["schedule-realization"].status == "pass"
     assert checks["schedule-realization"].observed["row-a"] == {
         "outcome": "skipped-due-to-dependency",
-        "dependency": "manifest-payload-normalization",
+        "dependencies": ["manifest-payload-normalization"],
     }
     assert "skipped-due-to-dependency" in (checks["schedule-realization"].detail or "")
     message = str(raised.value)

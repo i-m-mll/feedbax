@@ -90,7 +90,13 @@ from feedbax.orchestration.repo_realization import (
     validate_non_overlapping_remote_roots,
 )
 from feedbax.orchestration.schedule_eval import compare_continuation_schedule_projections
-from feedbax.orchestration.state import PreflightCheckEntry, RunSetState, utc_now
+from feedbax.orchestration.state import (
+    DEPENDENCY_SKIP_OUTCOME,
+    PreflightCheckEntry,
+    RunSetState,
+    dependency_skip_observed,
+    utc_now,
+)
 from feedbax.training.checkpoint_custody import (
     authenticated_run_contract_source_projection,
     load_checkpoint_custody_documents,
@@ -2808,18 +2814,13 @@ def _dependency_skipped_preflight_check(
         name=name,
         status="pass",
         detail=detail,
-        observed={
-            "outcome": "skipped-due-to-dependency",
-            "dependencies": list(ordered_dependencies),
-        },
+        observed=dependency_skip_observed(*ordered_dependencies),
     )
 
 
 def _is_dependency_skipped_preflight_check(check: PreflightCheckEntry) -> bool:
     observed = check.observed
-    return isinstance(observed, Mapping) and observed.get("outcome") == (
-        "skipped-due-to-dependency"
-    )
+    return isinstance(observed, Mapping) and observed.get("outcome") == DEPENDENCY_SKIP_OUTCOME
 
 
 def _sha256_json(payload: Any) -> str:

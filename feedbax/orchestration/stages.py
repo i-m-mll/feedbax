@@ -70,6 +70,7 @@ from feedbax.orchestration.state import (
     RunSetState,
     RunSetStateStore,
     StageState,
+    dependency_skip_observed,
     utc_now,
 )
 from feedbax.training.checkpoint_custody import (
@@ -2696,10 +2697,7 @@ def _preflight_schedule_realization(
     payload_errors = row_payload_errors or {}
     for row in bundle.rows:
         if row.row_id in payload_errors:
-            observed[row.row_id] = {
-                "outcome": "skipped-due-to-dependency",
-                "dependency": "manifest-payload-normalization",
-            }
+            observed[row.row_id] = dependency_skip_observed("manifest-payload-normalization")
             skipped.append(f"{row.row_id} depends on manifest-payload-normalization")
             continue
         if row_payloads is None:
