@@ -677,6 +677,63 @@ def test_engine_persists_one_intent_before_each_single_create(tmp_path: Path) ->
     assert len(set(transport.create_names)) == 2
 
 
+_RUNPOD_RESOURCE_UNAVAILABLE = (
+    '{"error":"This machine does not have the resources to deploy your pod. '
+    'Please try a different machine"}\n'
+    "Usage:\n  runpodctl pod create [flags]\n\n"
+    '{"error":"failed to create pod: This machine does not have the resources to deploy '
+    'your pod. Please try a different machine"}\n'
+)
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_resource_unavailable_create_response_is_definitive(stream: str) -> None:
+    result = CommandResult(1, **{stream: _RUNPOD_RESOURCE_UNAVAILABLE})
+
+    classification, _detail = runpod_module._classify_create_failure(result, None)
+
+    assert classification == "non-retryable"
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        CommandResult(1, "This machine does not have the resources to deploy your pod"),
+        CommandResult(1, "", "transport connection lost"),
+    ],
+)
+def test_unstructured_or_lost_create_response_remains_ambiguous(result: CommandResult) -> None:
+    classification, _detail = runpod_module._classify_create_failure(result, None)
+
+    assert classification == "retryable"
+
+
+def test_resource_unavailable_create_advances_to_next_candidate(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "resource-unavailable-state.json")
+    transport = AcquisitionLeaseTransport(store)
+    transport.create_results = [
+        CommandResult(1, "", _RUNPOD_RESOURCE_UNAVAILABLE),
+        CommandResult(0, '{"id":"pod-second"}'),
+    ]
+    transport.register_on_create = [(), ("pod-second",)]
+    engine, _driver, state = _acquisition_engine(bundle, store, transport)
+
+    _state_after, outputs = engine._engine_owned_provision(state, attempt_ordinal=1)
+
+    assert outputs["pod_id"] == "pod-second"
+    persisted = store.load()
+    assert [intent.state for intent in persisted.acquisition_intents] == [
+        "failed-unacquired",
+        "acquired",
+    ]
+    assert [intent.datacenter_candidate for intent in persisted.acquisition_intents] == [
+        "CA-MTL-1",
+        "EU-CZ-1",
+    ]
+    assert len(transport.create_names) == 2
+
+
 def test_ambiguous_create_zero_match_stops_without_next_candidate(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     store = RunSetStateStore(bundle.run_set_dir / "ambiguous-state.json")

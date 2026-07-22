@@ -3622,7 +3622,23 @@ def _classify_create_failure(
     result: CommandResult, secret: str | None
 ) -> tuple[Literal["retryable", "non-retryable"], str]:
     """Classify only sanitized provider authorization and request failures."""
-    detail = _redact_secret(result.stderr or result.stdout, secret).strip()
+    stdout = _redact_secret(result.stdout, secret)
+    stderr = _redact_secret(result.stderr, secret)
+    detail = (stderr or stdout).strip()
+    resource_unavailable = (
+        "This machine does not have the resources to deploy your pod. "
+        "Please try a different machine"
+    )
+    resource_errors = (
+        resource_unavailable,
+        f"failed to create pod: {resource_unavailable}",
+    )
+    if any(
+        f'"error":{json.dumps(message)}' in stream
+        for stream in (stdout, stderr)
+        for message in resource_errors
+    ):
+        return "non-retryable", detail
     try:
         payload = json.loads(result.stdout or result.stderr)
     except json.JSONDecodeError:
