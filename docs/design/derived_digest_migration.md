@@ -2,7 +2,8 @@
 
 Status: draft, pending external critique. Owning issue: Mandible feedbax/8cab07a. Surfaced from:
 rlrmp2/5ea2a98 (rehearsal fork-proof gate) and the drift class on rlrmp2/86dc02a. Author: Claude
-Fable 5 (coordinator), from a code scout of the surfaces named below.
+Fable 5 (coordinator), from a code scout of the surfaces named below. Review provenance: revised
+after an external high-reasoning-effort critique (GPT-5.6-Sol via Codex, 2026-07-22).
 
 ## 1. Problem
 
@@ -27,71 +28,112 @@ coordinator authorization ritual, and records no provenance.
 
 Feedbax already contains both halves of the answer, asymmetrically applied. The checkpoint-resume
 path performs versioned verification and sanctioned migration
-(`_compatible_stored_canonical_projection` accepts recorded v2/v3 bindings, authenticates the
-original projection bytes, migrates the embedded `TrainingRunSpec` through
-`migrate_structured_spec_payload`, restamps v4, and compares canonical bytes). The fork path has only
-strict equality, plus a sanctioned mutator (`relock_checkpoint_fork_derived_digests`, the sole
-lock-mutating API, which refuses authored-field changes and no-op refreshes) that has no file-level
-or CLI surface — which is exactly the vacuum the downstream regex script grew into.
+(`_compatible_stored_canonical_projection`, `checkpoint_custody.py` ~5183, accepts recorded v2/v3
+bindings, authenticates the original projection bytes, migrates the embedded `TrainingRunSpec`
+through `migrate_structured_spec_payload`, restamps v4, and compares canonical bytes). The fork path
+has only strict equality, plus a sanctioned mutator (`relock_checkpoint_fork_derived_digests`, the
+sole lock-mutating API, which refuses authored-field changes and no-op refreshes) that has no
+file-level or CLI surface — which is exactly the vacuum the downstream regex script grew into.
 
-## 2. Field taxonomy and the drift-classification invariant
+## 2. Field taxonomy and the drift-classification model
 
 A lock mixes three field classes with different mutation rules:
 
 1. Authored decisions (targets, depths, schedules): never machine-changed.
    `_replace_checkpoint_fork_compatibility_locks` already enforces authored-field invariance during
-   relock.
+   relock. This is an operation-scope guard only — it proves the operation did not touch authored
+   fields; it is not historical proof that inputs are unchanged.
 2. Content pins of real inputs (parent root hashes, archive manifests): never machine-changed; a
    mismatch is a real failure.
-3. Derived digests plus their recorded algorithm-version fields: deterministic recomputations of
-   (1)+(2) under a named algorithm version. These are the only migratable fields, and only under the
-   invariant below.
+3. Derived digests: deterministic recomputations of (1)+(2) under a named algorithm. Only the
+   run-contract digest is migratable, and only under the model below.
 
-Drift-classification invariant: a derived digest whose recorded algorithm version equals the current
-algorithm must match the recomputed candidate exactly — any mismatch there is input drift and is
-never migratable. Only digests whose recorded algorithm version is older than the current one are
-candidates for migration. Co-stored digests under algorithms that did not move (in the incident:
-`slot_structural_abi_sha256` values under `feedbax.training_checkpoint.structural_abi.content.v2`)
-act as input-drift tripwires during migration of the moved fields: if they mismatch, migration
-refuses.
+### 2.1 Versioned versus fixed-sentinel digests
 
-On old-version re-verification: when the old algorithm remains computable against current inputs,
-migration should re-verify the stored old-version digests before recomputing, proving the inputs
-unchanged directly. This is not always possible — a v3 run-contract projection cannot be recomputed
-from a current `TrainingRunSpec` at all, because v4 removed the projection's input field. In that
-case migration falls back to the combination of pinned-input authentication, authored-field
-invariance, and the unchanged-algorithm tripwires above, and the audit record states which proof mode
-was used.
+`CheckpointForkCompatibilityProjection` records an algorithm version for the run-contract digest
+only. The structural-ABI and population-ID digests have no co-stored algorithm version. Therefore:
+
+- The run-contract digest is the sole allowlisted migration target. Its recorded
+  `run_contract_algorithm_version` selects a supported migration edge (§2.3).
+- The structural-ABI and population-ID digests are fixed sentinels. Any mismatch there is always
+  input drift and is never migratable. In the incident, the `slot_structural_abi_sha256` values under
+  `feedbax.training_checkpoint.structural_abi.content.v2` are such sentinels.
+
+Adding per-field algorithm identities to the other digests — via a projection-schema version bump —
+is an explicit non-goal of this spec and a possible future item.
+
+### 2.2 The migration proof model
+
+A digest whose recorded algorithm version equals the current algorithm must match the recomputed
+candidate exactly; any mismatch there is input drift. Only a run-contract digest whose recorded
+algorithm version is older than the current one, along a supported edge, is a migration candidate.
+
+Fork locks store only digests, not the underlying canonical bytes. So the proof that an
+algorithm-only move is safe cannot come from the lock itself: authenticated historical evidence is an
+input the migration operation must be handed. The sanctioned proof mirrors the resume verifier
+(`_compatible_stored_canonical_projection`):
+
+1. Obtain authenticated historical evidence — either the stored old-version canonical projection
+   bytes/payload from authenticated custody (the source checkpoint transaction, or a registered
+   immutable artifact), or immutable content pins covering every input to both algorithm versions.
+2. Migrate those historical bytes through the registered spec-schema migration.
+3. Canonicalize the migrated payload under the target algorithm.
+4. Require byte-equality between that result and the current canonical projection recomputed from
+   current inputs.
+
+Any mismatch at step 4 is input drift: refuse, never migrate. The migration record binds an
+authenticated pre-migration source-plan canonical hash so the evidence chain is auditable.
 
 No silent auto-migration, ever: derived digests are drift tripwires; recomputing them invisibly on
 schema advance would hide semantic changes underneath locked science. Migration is one sanctioned,
 explicit, audited operation.
 
+### 2.3 Shared allowlisted migration-edge registry
+
+Supported migration edges live in exactly one internal registry, keyed by `(algorithm,
+source_version, target_version, hash_domain)`, and consumed by both the resume verifier and the new
+fork-gate/migration core. The initial edges are exactly the resume path's `v2 -> v4` and `v3 -> v4`
+run-contract-binding edges. Any version that is unknown, newer than the current algorithm, or under a
+different hash domain is unsupported: the operation fails closed with a distinct error and is never
+classified as migratable algorithm drift.
+
+### 2.4 Owner-attestation path (not a migration proof)
+
+When authenticated historical evidence does not exist, a separately named manual authorization mode
+may perform the relock. It is deliberately not called a migration proof. It is entered only through
+an explicit CLI flag and is recorded in the audit record with `proof_mode = "owner-attestation"`. It
+carries mandatory requalification duties — re-running the lock's fork-proof/rehearsal tests — which
+are recorded in the record. This path exists so that a genuinely un-evidenced but owner-vouched
+relock leaves durable provenance instead of an untracked regex edit.
+
 ## 3. Changes
 
 ### 3.1 Version-aware verification at the fork gate
 
-`_prepare_checkpoint_fork_plan`'s digest comparison classifies each difference as `algorithm_drift`
-or `input_drift` per the invariant. Pure input drift raises `CheckpointCompatibilityError` as today,
-with the classification named in the message. Any algorithm drift raises a new typed error,
-`CheckpointDigestMigrationRequired`, whose message names the stored and current algorithm versions
-and the exact sanctioned migration command. Whether the new error subclasses
-`CheckpointCompatibilityError` (existing catchers, e.g. the fork-parity check in `run_matrix.py`,
-catch the parent) is an open question for critique. The resume path's existing versioned verification
-is untouched.
+`_prepare_checkpoint_fork_plan`'s digest comparison produces the shared classification result (§3.5)
+and acts on it with input-drift precedence: any input-drift signal — a fixed-sentinel mismatch or a
+historical-comparison mismatch on the run-contract field — dominates. When any input drift is present,
+the gate raises `CheckpointCompatibilityError` with the classification named in the message and does
+not advertise the migration command. Only when the run-contract field is pure supported algorithm
+drift and no input drift is present does the gate raise the new typed error
+`CheckpointDigestMigrationRequired`, whose message names the stored and current algorithm versions,
+the supported edge, and the exact sanctioned migration command. Unknown/newer/other-hash-domain
+versions fail closed with the distinct unsupported-edge error, never as migratable drift. The resume
+path's existing versioned verification is untouched.
 
 ### 3.2 Sanctioned migration core (library)
 
 A public projection-level primitive (working name `migrate_fork_compatibility_projection`) plus a
 plan-level operation building on `relock_checkpoint_fork_derived_digests`:
 
-- classifies drift per the invariant; refuses with typed errors on any input drift, authored-field
-  change, or no-op;
-- recomputes only the fields whose algorithm version moved, and updates their recorded
-  algorithm-version fields in the same operation (the field the downstream script missed);
-- emits an `ArtifactMigrationRecord` (`feedbax/contracts/manifest.py`) with source/target algorithm
-  versions, `deterministic=True`, the difference set, the caller's requalification requirements, and
-  the drift-proof mode (old-version re-verification vs pinned-input fallback) in validation/metadata;
+- consumes the shared classification result; refuses with typed errors on any input drift, unsupported
+  edge, authored-field change, or no-op;
+- performs the authenticated-evidence proof of §2.2 for the run-contract digest, and recomputes only
+  that field, updating its recorded `run_contract_algorithm_version` in the same operation (the field
+  the downstream script missed);
+- treats structural-ABI and population-ID digests as fixed sentinels: a mismatch there refuses;
+- emits the typed checkpoint-digest migration record (§3.6) with source/target plan canonical hashes,
+  migration edge, affected fields, evidence refs, proof mode, and requalification duties;
 - returns the migrated projection/plan plus the record; the caller persists both adjacently.
 
 The projection-level primitive is the downstream subsumption surface; the plan-level operation and
@@ -100,59 +142,122 @@ CLI build on it.
 ### 3.3 CLI wrapper for feedbax-native plans
 
 A `python -m feedbax checkpoint relock` subcommand following the existing `checkpoint fork-plan`
-conventions: `--check` reports the per-field classification and exits nonzero on any drift; `--write`
-performs sanctioned migration on algorithm drift only, writing the migrated plan with its migration
-record, and refuses on input drift. Where the record persists inside a `CheckpointForkPlan` (a new
-optional field with a schema-version bump and registered migration, versus extending
-`CheckpointForkProvenance`) is an implementation decision to be settled during implementation,
-honoring the repo rule that durable schema changes ship with a versioned migration rule and focused
-tests.
+conventions:
+
+- `--check` produces and reports the shared per-field classification and exits nonzero on any drift.
+- `--write` performs sanctioned migration on supported run-contract algorithm drift only, writing the
+  migrated plan with its migration record; it refuses on input drift and on unsupported edges.
+- An explicit owner-attestation flag enables the §2.4 attestation path when historical evidence is
+  absent, recording `proof_mode = "owner-attestation"` and the requalification duties.
+
+CLI write semantics: snapshot inputs, an optimistic source-plan-hash check, atomic
+temp-file-then-rename replacement, and all-targets-and-record-or-nothing transactionality — the
+migrated digests and the record land together or not at all.
 
 ### 3.4 Downstream subsumption boundary
 
 Feedbax does not parse downstream lock formats. Downstream repos embedding
 `CheckpointForkCompatibilityProjection` extract it, call the projection-level primitive with their own
-recomputation inputs, and persist the returned projection and record in their own file format.
+recomputation inputs and their own authenticated historical evidence, and persist the returned
+projection and record in their own file format. The projection-only primitive cannot enforce, and the
+caller therefore owns as explicit obligations:
+
+- authored plan fields outside the projection (the primitive sees only the projection);
+- downstream file integrity and atomic replacement of the downstream lock;
+- persistence of the returned migration record adjacent to the migrated projection.
+
+The caller must supply authenticated historical evidence; the primitive refuses to migrate without it
+(the owner-attestation path is a CLI/plan-level surface, not the pure primitive's decision).
 rlrmp2's `refresh_mapped_fork_lock.py` is replaced by a thin call in a separate, owner-approved
 follow-up rlrmp2 issue after this lands; its Mandible-artifact verification coupling stays downstream.
 
-### 3.5 Non-goals
+### 3.5 Shared structured classification result
 
-No generic lock-migration framework beyond the fork-compatibility projection. No auto-migration
-during verification or preflight. No changes to the resume path. No parsing of downstream lock
-formats. DB (Alembic) migrations untouched. Generalization to the other versioned derived digests in
-the codebase (preparation-RNG, content-integrity) is deliberately deferred until a second concrete
-incident; this spec establishes the pattern without building the framework.
+Drift classification is computed once, as one typed classification object, and consumed by the fork
+gate, the migration core, the CLI, and downstream callers. It carries the selected migration edge (or
+none), the per-field class (unchanged, migratable algorithm drift, input drift, or unsupported), the
+proof mode, and the sanction status. This removes divergent per-caller reclassification.
+
+For orientation: the `CheckpointCompatibilityError` catch at `run_matrix.py` ~243 wraps
+execution-dependency validation only; the `fork_checkpoint_plan` call at ~698 is not caught there, so
+the new migration signal does not risk being swallowed by that catcher.
+
+### 3.6 Migration record and persistence contract
+
+A typed checkpoint-digest migration record — wrapping or paralleling `ArtifactMigrationRecord`
+(`feedbax/contracts/manifest.py`), which names schema versions rather than algorithm versions — binds:
+source and target plan canonical hashes, the migration edge, the affected fields, the authenticated
+evidence refs, the proof mode (authenticated historical evidence versus owner-attestation), the
+requalification duties, and the tool name and version.
+
+The migration history persists in a top-level field of a new `CheckpointForkPlan` schema version. It
+does not live in `CheckpointForkProvenance` (that is created only in the resulting transaction, too
+late to record the pre-migration source), nor in metadata (excluded from the canonical plan hash).
+The schema-version bump ships with a registered migration rule and focused tests, per the repo rule
+that durable schema changes carry a versioned migration and tests.
+
+### 3.7 Non-goals
+
+No generic lock-migration framework beyond the fork-compatibility projection. No per-field algorithm
+identities for the structural-ABI or population-ID digests. No auto-migration during verification or
+preflight. No changes to the resume path. No parsing of downstream lock formats. DB (Alembic)
+migrations untouched. Generalization to the other versioned derived digests in the codebase
+(preparation-RNG, content-integrity) is deliberately deferred until a second concrete incident; this
+spec establishes the pattern without building the framework.
 
 ## 4. Acceptance
 
 Focused `migration_contract` tests, xdist-safe, writing only under `tmp_path`, per the repo migration
 policy's accept/migrate/reject bar:
 
-1. v3-stored plan, unchanged pinned inputs: verification raises `CheckpointDigestMigrationRequired`
-   naming the command; migration succeeds, updates digest and algorithm-version fields together,
-   emits the record; re-verification then passes strict equality under v4.
-2. v3-stored plan, authored field mutated: migration refuses via the existing authored-invariance
+1. v3-stored plan, algorithm-only move, unchanged inputs, authenticated historical evidence present:
+   verification raises `CheckpointDigestMigrationRequired` naming the supported edge and command;
+   migration succeeds via the authenticated-evidence proof, updates the run-contract digest and its
+   algorithm-version field together, emits the record; re-verification then passes strict equality
+   under v4. The test includes a companion case where the historical evidence, migrated forward, does
+   not byte-match the current canonical projection (invisible run-spec drift): the historical
+   comparison mismatches and migration refuses.
+2. Authored field mutated before migration: migration refuses via the existing authored-invariance
    check, with a distinct error.
-3. v3-stored plan, input drift (an unchanged-algorithm tripwire digest mismatches): both verification
-   and migration classify input drift; migration refuses.
-4. Current-version digest mismatch: `CheckpointCompatibilityError` with input-drift classification; no
-   migration path offered.
-5. CLI `--check`/`--write` behaviors, including no-op refusal and the input-drift refusal.
+3. Algorithm bump plus real input drift, sentinels unchanged: the run-contract field shows an
+   older algorithm version but its recomputed value under the historical-evidence proof does not
+   match; input drift dominates, both verification and migration raise the non-migratable input-drift
+   error, and the migration command is not advertised.
+4. Mixed-drift precedence: run-contract algorithm drift co-occurring with a fixed-sentinel mismatch;
+   the input-drift signal dominates, the migration command is not advertised, and migration refuses.
+5. Current-version run-contract digest mismatch: `CheckpointCompatibilityError` with input-drift
+   classification; no migration path offered.
+6. Unknown/newer version or a hash-domain change on the run-contract field: unsupported edge, fail
+   closed with the distinct error; never classified as migratable drift.
+7. Missing or invalid historical evidence: migration refuses; the owner-attestation path succeeds only
+   with the explicit flag and records `proof_mode = "owner-attestation"` plus the requalification
+   duties.
+8. Multi-target all-or-nothing: a forced mid-write failure leaves neither the migrated digests nor the
+   record persisted.
+9. Record binding and round-trip: the persisted record binds the source and target plan canonical
+   hashes and survives a plan reload under the new schema version.
+10. Stale/concurrent CLI write: the optimistic source-hash check fires when the plan changed under the
+    operation.
+11. Registry parity: the fork gate/migration core and the resume verifier consume the same
+    migration-edge registry (the shared `v2 -> v4` and `v3 -> v4` edges).
+12. CLI `--check`/`--write` behaviors, including no-op refusal and input-drift refusal.
 
-## 5. Open questions for critique
+## 5. Resolved decisions
 
-1. Error taxonomy: should `CheckpointDigestMigrationRequired` subclass `CheckpointCompatibilityError`
-   for catcher compatibility, or be a sibling so existing catchers do not accidentally swallow the
-   migration signal?
-2. Migration-record placement in `CheckpointForkPlan`: new optional field with schema bump and
-   registered migration, or extend `CheckpointForkProvenance` (schema `...fork_provenance.v2`)?
-3. Fail-closed versus accept-with-report at the fork gate: this spec chooses fail-closed (a fork lock
-   is a launch-eligibility artifact; silently accepting old-version digests would let stale locks flow
-   toward launch), while the resume path accepts old versions after authentication. Is the asymmetry
-   justified?
-4. Should the projection-level primitive require the caller to supply requalification requirements (as
-   `relock_checkpoint_fork_derived_digests` does), or may a pure algorithm-drift migration with a
-   passing tripwire set be self-qualifying?
-5. Is the pinned-input fallback proof (when the old algorithm is not recomputable) strong enough, or
-   should migration in that mode demand an additional caller-supplied attestation?
+1. Error taxonomy: `CheckpointDigestMigrationRequired` is a sibling of `CheckpointCompatibilityError`
+   under a shared `CheckpointCustodyError` base, so broad compatibility catchers do not swallow the
+   migration signal.
+2. Migration-record placement: migration history lives in a top-level field of a new
+   `CheckpointForkPlan` schema version — not in `CheckpointForkProvenance` (created only in the
+   resulting transaction, too late to bind the pre-migration source) and not in metadata (excluded
+   from the canonical plan hash).
+3. Fail-closed versus accept-with-report: the fork gate fails closed and migration is a separate
+   sanctioned operation, because a fork lock is a launch-eligibility artifact and silently accepting
+   old-version digests would let stale locks flow toward launch. The resume path may
+   authenticate-and-proceed because it rewrites nothing durable; the asymmetry is deliberate.
+4. Requalification: duties are mandatory. Migration is not self-qualifying, and the owner-attestation
+   path in particular requires re-running the lock's fork-proof/rehearsal tests, recorded in the
+   record.
+5. Un-evidenced relock: there is no weaker "pinned-input fallback" migration proof. Either
+   authenticated historical evidence supports a genuine migration (§2.2), or the explicit
+   owner-attestation path (§2.4) records a manual authorization with mandatory requalification.
