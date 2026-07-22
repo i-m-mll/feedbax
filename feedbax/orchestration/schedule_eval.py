@@ -298,6 +298,18 @@ def project_training_schedules(
         or normalized_coordinates != tuple(sorted(set(normalized_coordinates)))
     ):
         raise ValueError("schedule projection coordinates must be non-empty, unique, and sorted")
+    continuation = run_spec.checkpoint_progress.continuation
+    if continuation is not None:
+        expected_lineage = (
+            continuation.source_completed_batches,
+            continuation.additional_batches,
+        )
+        actual_lineage = (lineage.start_batch, lineage.segment_batch_count)
+        if actual_lineage != expected_lineage:
+            raise ValueError(
+                "schedule projection lineage contradicts continuation; "
+                f"lineage={actual_lineage!r}, continuation={expected_lineage!r}"
+            )
     resolved = resolved_method or run_spec.resolved_method
     descriptor = resolved.descriptor
     if descriptor is None or descriptor.schedule_projector is None:
@@ -305,7 +317,9 @@ def project_training_schedules(
             f"training method {run_spec.method_ref.key!r} has no complete schedule projector"
         )
     method_projection = descriptor.schedule_projector.project(
-        resolved.payload, normalized_coordinates
+        resolved.payload,
+        normalized_coordinates,
+        lineage=lineage,
     )
     if descriptor.optimizer_spec_projector is None:
         raise ValueError(
@@ -369,6 +383,17 @@ def compare_continuation_schedule_projections(
 ) -> tuple[list[str], dict[str, Any]]:
     """Compare source-realized and target-declared schedules over ``N..N+2``."""
     boundary = continuation.source_completed_batches
+    source_segment_end = (
+        source_manifest.segment_lineage.start_batch
+        + source_manifest.segment_lineage.segment_batch_count
+    )
+    if source_segment_end != boundary:
+        raise ValueError(
+            "source checkpoint lineage contradicts continuation boundary; "
+            f"source_segment_end={source_segment_end}, boundary={boundary}"
+        )
+    if target_run_spec.checkpoint_progress.continuation != continuation:
+        raise ValueError("target run continuation contradicts requested continuation")
     coordinates = (boundary, boundary + 1, boundary + 2)
     source = project_training_schedules(
         source_run_spec,
