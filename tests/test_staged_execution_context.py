@@ -21,10 +21,6 @@ from feedbax.analysis.evaluation import (
     register_evaluation_recipe,
     unregister_evaluation_recipe,
 )
-from feedbax.analysis.evaluation_inputs import (
-    EvaluationInputReferenceError,
-    resolve_evaluation_inputs,
-)
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
     StagedArtifactProviderRootBinding,
@@ -35,6 +31,11 @@ from feedbax.analysis.execution_context import (
     resolve_staged_execution_context,
     with_staged_parent_execution_locations,
 )
+from feedbax.analysis.evaluation_inputs import (
+    EvaluationInputReferenceError,
+    resolve_evaluation_inputs,
+)
+from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
 from feedbax.bin.analysis import main as analysis_main
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.manifest import (
@@ -46,6 +47,7 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.selection import ManifestPredicate
+from feedbax.contracts.spec_storage import training_run_execution_hash
 from feedbax.contracts.staged_execution import (
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
@@ -668,6 +670,41 @@ def test_exact_immutable_parent_uses_complete_ref_location_and_preserves_ref(
             manifest_root=tmp_path,
             execution_context=context,
         )
+
+
+def test_exact_immutable_completed_parent_preserves_valid_execution_hash(
+    tmp_path: Path,
+) -> None:
+    resolved_root = "a" * 64
+    execution_hash = training_run_execution_hash(resolved_root, [])
+    manifest = TrainingRunManifest(
+        id="feedbax-training-run:exact-completed-context",
+        status="completed",
+        resolved_semantics_root_hash=resolved_root,
+        execution_hash=execution_hash,
+    )
+    raw = manifest.model_dump_json(indent=2).encode()
+    relative = Path("exact") / "completed-training.json"
+    path = tmp_path / relative
+    path.parent.mkdir()
+    path.write_bytes(raw)
+    parent = authenticated_manifest_ref(manifest, path, "training_run")
+    context = with_staged_parent_execution_locations(
+        EMPTY_STAGED_EXECUTION_CONTEXT,
+        [
+            StagedParentExecutionLocation(
+                parent=parent,
+                root=tmp_path,
+                execution_uri=relative.as_posix(),
+            )
+        ],
+    )
+
+    resolved = context.resolve_manifest_input(parent)
+
+    assert resolved.manifest.execution_hash == execution_hash
+    with pytest.raises(ValueError, match="frozen"):
+        resolved.manifest.execution_hash = "b" * 64
 
 
 def test_staged_python_and_dry_run_receive_validated_context_without_extra_effects(
