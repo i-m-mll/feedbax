@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+import jax.numpy as jnp
 from pydantic import ValidationError
 
 from feedbax.contracts.nan_attribution import (
@@ -20,7 +21,8 @@ from feedbax.contracts.training import (
     ScheduleProjection,
     ScheduleProjectionSample,
 )
-from feedbax.contracts.worker import ProgressCoordinate
+from feedbax.contracts.worker import MaterializedSlotAxisBinding, ProgressCoordinate
+from feedbax.training import executor as training_executor
 from feedbax.training.diagnostics import (
     TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2,
     TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
@@ -119,6 +121,30 @@ def test_mapped_summary_rejects_inconsistent_axis_masks_and_counts() -> None:
                 "nan_mask": (True, False, False),
             }
         )
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        (jnp.asarray([1.0, 2.0]), "expected axis 'ensemble' size 3"),
+        (1.0, "does not have declared array_axis 0; leaf rank is 0"),
+    ],
+)
+def test_mapped_attribution_rejects_leaves_that_do_not_conform_to_axis(
+    value: object,
+    message: str,
+) -> None:
+    binding = MaterializedSlotAxisBinding(
+        axis="ensemble",
+        role="replicate",
+        size=3,
+        level=0,
+        mode="mapped",
+        array_axis=0,
+    )
+
+    with pytest.raises(training_executor.TrainingRunExecutorError, match=message):
+        training_executor._project_nonfinite_leaves(value, (binding,))
 
 
 def test_slot_leaf_inventory_is_bounded_and_reports_truncation() -> None:

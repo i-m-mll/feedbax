@@ -873,6 +873,7 @@ class StageEngine:
         attempt_ordinal: int,
     ) -> tuple[RunSetState, Mapping[str, Any]]:
         candidates = tuple(self.driver.acquisition_candidates(self.bundle))
+        driver_name = self.driver.driver_name
         if not candidates:
             raise OrchestrationStageError("engine-owned acquisition has no candidates")
         last_clean_error = "provider rejected every acquisition candidate"
@@ -913,7 +914,7 @@ class StageEngine:
                     str(exc),
                     retryable=True,
                     attempt_record={
-                        "driver": "runpod",
+                        "driver": driver_name,
                         "acquired": False,
                         "intent_id": intent.intent_id,
                         "reconciliation": "resolved-torn-down",
@@ -952,7 +953,7 @@ class StageEngine:
                         f"{exc}; automatic teardown failed: {teardown_exc}",
                         retryable=False,
                         attempt_record={
-                            "driver": "runpod",
+                            "driver": driver_name,
                             "acquired": True,
                             "pod_id": acquisition.pod_id,
                             "intent_id": intent.intent_id,
@@ -969,7 +970,7 @@ class StageEngine:
                     str(exc),
                     retryable=True,
                     attempt_record={
-                        "driver": "runpod",
+                        "driver": driver_name,
                         "acquired": True,
                         "pod_id": acquisition.pod_id,
                         "intent_id": intent.intent_id,
@@ -981,7 +982,7 @@ class StageEngine:
         raise ProvisioningAttemptError(
             last_clean_error,
             retryable=True,
-            attempt_record={"driver": "runpod", "acquired": False},
+            attempt_record={"driver": driver_name, "acquired": False},
         )
 
     def _reconcile_acquisition_intents(self, state: RunSetState) -> RunSetState:
@@ -1057,17 +1058,11 @@ class StageEngine:
                     record.pod_id,
                     timeout_seconds=max(0.0, deadline - self._monotonic()),
                 )
+                adopted_provision_record = self.driver.adopted_provision_record(
+                    original.intent_id
+                )
                 adopted_state = state.model_copy(
-                    update={
-                        "provision_record": {
-                            "driver": "runpod",
-                            "pod_id": record.pod_id,
-                            "provided_pod": False,
-                            "provided_endpoint": False,
-                            "teardown_allowed": True,
-                            "intent_id": original.intent_id,
-                        }
-                    }
+                    update={"provision_record": adopted_provision_record}
                 )
                 try:
                     teardown = dict(self.driver.teardown(self.bundle, adopted_state))
@@ -1323,15 +1318,13 @@ class StageEngine:
                 rows.append(dict(smoke_row(self.bundle, row, state)))
             except Exception as exc:
                 raw_evidence = getattr(exc, "evidence", None)
-                evidence = (
-                    dict(raw_evidence)
-                    if isinstance(raw_evidence, Mapping)
-                    else {
-                        "row_id": row.row_id,
-                        "status": "failed",
-                        "error": str(exc),
-                    }
-                )
+                if isinstance(raw_evidence, Mapping):
+                    evidence = dict(raw_evidence)
+                else:
+                    fallback_evidence = getattr(self.driver, "smoke_failure_evidence", None)
+                    if not callable(fallback_evidence):
+                        raise
+                    evidence = dict(fallback_evidence(self.bundle, row, state, exc))
                 rows.append(evidence)
                 stage_evidence = RemoteSmokeEvidence(
                     run_set_id=self.bundle.run_set_id,

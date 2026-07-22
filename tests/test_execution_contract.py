@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import copy
 import json
+import shlex
 import subprocess
 import sys
 import types
@@ -442,6 +443,9 @@ def test_runpod_plan_marks_local_rsync_as_dev_override(tmp_path: Path) -> None:
     assert "--exclude" not in sync.command
     assert str(repo) not in sync.command
     assert "feedbax.orchestration.repo_snapshot verify" in sync.command
+    assert f"&& {shlex.quote(sys.executable)} -m feedbax.orchestration.repo_snapshot verify" in (
+        sync.command
+    )
     snapshots = plan.reproducibility["local_rsync_snapshots"]
     assert snapshots == [
         {

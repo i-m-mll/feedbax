@@ -330,15 +330,13 @@ def repo_realization_plan_projection(plan: RepoRealizationPlan) -> dict[str, Any
     payload["snapshot_manifest"]["repos"] = dict(
         sorted(payload["snapshot_manifest"]["repos"].items())
     )
-    payload["editable_source_resolutions"] = sorted(
-        payload["editable_source_resolutions"],
-        key=lambda item: (
-            item["consumer_repo"],
-            item["lock_relative_path"],
-            item["source_form"],
-            item["spelling"],
-        ),
-    )
+    payload["editable_source_resolutions"] = [
+        resolution.model_dump(mode="json")
+        for resolution in sorted(
+            plan.editable_source_resolutions,
+            key=EditableSourceResolution.sort_key,
+        )
+    ]
     return payload
 
 

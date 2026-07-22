@@ -498,9 +498,6 @@ class EndpointClassification:
     ssh_command: str | None = None
 
 
-_PodAcquisition = AcquisitionResult
-
-
 @dataclass(frozen=True)
 class RunPodDriverConfig:
     """Configuration for the RunPod orchestration driver."""
@@ -576,6 +573,7 @@ class RunPodOrchestrationDriver:
 
     poll_interval_seconds = 5.0
     govern_provisioning_retries = True
+    driver_name = "runpod"
 
     def engine_acquisition_required(self) -> bool:
         """Return whether the engine must run the create WAL protocol."""
@@ -706,7 +704,7 @@ class RunPodOrchestrationDriver:
 
     def restore_from_provision_record(self, record: Mapping[str, Any]) -> None:
         """Restore process-local pod and endpoint identity from durable state."""
-        if record.get("driver") != "runpod":
+        if record.get("driver") != self.driver_name:
             return
         pod_id = record.get("pod_id")
         host = record.get("ssh_host")
@@ -735,6 +733,16 @@ class RunPodOrchestrationDriver:
         self._provided_endpoint = False
         self._endpoint = None
         self._adopted_teardown_timeout_seconds = timeout_seconds
+
+    def adopted_provision_record(self, intent_id: str) -> Mapping[str, Any]:
+        """Project an adopted intent-matched pod through the canonical record builder."""
+        if self._pod_id is None:
+            raise RunPodDriverError("cannot record an adopted pod before adopting its identity")
+        return self._provision_record(
+            {"id": self._pod_id},
+            provided_pod=False,
+            intent_id=intent_id,
+        )
 
     def acquisition_failure_evidence(self) -> Mapping[str, Any]:
         """Return sanitized provider facts observed after an acquired transition."""
@@ -1560,32 +1568,9 @@ class RunPodOrchestrationDriver:
         provenance = row.execution.row_provenance
         if provenance is None:  # Kept explicit for type narrowing and fail-closed diagnostics.
             raise RunPodDriverError(f"remote smoke row {row.row_id!r} lacks provenance")
-        remote_run_dir = self._remote_run_dir(bundle)
-        scratch_root = f"{remote_run_dir}/smoke/{row.row_id}"
-        derived_run_id = f"{provenance.planned_run_id}--smoke"
-        namespace = build_runpod_execution_namespace(
-            bundle=bundle,
-            row=row,
-            remote_run_dir=remote_run_dir,
-            remote_sentinel_dir=self._remote_sentinel_dir(bundle),
-            env_fingerprint=state.environment_fingerprint or "",
-            scratch_root=scratch_root,
-            run_identity=derived_run_id,
-            sentinel_stem=f"smoke-{row.row_id}",
-        )
-        execution_row = _execution_row(row, namespace)
-        producer_execution = execution_row.execution.model_copy(
-            update={
-                "payload": execution_row.execution.payload.model_copy(
-                    update={"uri": namespace.payload_path}
-                )
-            }
-        )
-        producer_context = NativeExecutionProducerContext(
-            execution=producer_execution,
-            environment_fingerprint=state.environment_fingerprint or "",
-            collection_root=namespace.row_root,
-        ).model_dump(mode="json", exclude_none=True)
+        namespace, producer_context = self._smoke_execution_context(bundle, row, state)
+        scratch_root = namespace.row_root
+        derived_run_id = namespace.run_identity
         protected_before = self._protected_path_content_digests(bundle, row)
         command = build_launch_row_command(
             bundle=bundle,
@@ -1679,6 +1664,73 @@ class RunPodOrchestrationDriver:
                     message += f": {detail}"
             raise RunPodRemoteSmokeError(message, evidence=evidence)
         return evidence
+
+    def smoke_failure_evidence(
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+        error: Exception,
+    ) -> Mapping[str, Any]:
+        """Return schema-valid evidence when an unexpected smoke exception escapes."""
+        del error
+        namespace, producer_context = self._smoke_execution_context(bundle, row, state)
+        provenance = row.execution.row_provenance
+        if provenance is None:
+            raise RunPodDriverError(f"remote smoke row {row.row_id!r} lacks provenance")
+        return {
+            "row_id": row.row_id,
+            "status": "failed",
+            "planned_run_id": provenance.planned_run_id,
+            "derived_run_id": namespace.run_identity,
+            "derived_producer_context": producer_context,
+            "scratch_namespace": namespace.row_root,
+            "start_completed_batches": 0,
+            "end_completed_batches": None,
+            "update_budget": bundle.smoke_update_budget,
+            "payload_binding_status": "not-run",
+            "executor_result_sha256": None,
+            "protected_paths_before": {},
+            "protected_paths_after": {},
+            "cleanup_status": "failed",
+            "deadline_seconds": bundle.smoke_deadline_seconds,
+        }
+
+    def _smoke_execution_context(
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+    ) -> tuple[RunPodExecutionNamespace, Mapping[str, Any]]:
+        """Build the identity and scratch namespace shared by smoke and fallback evidence."""
+        provenance = row.execution.row_provenance
+        if provenance is None:
+            raise RunPodDriverError(f"remote smoke row {row.row_id!r} lacks provenance")
+        remote_run_dir = self._remote_run_dir(bundle)
+        namespace = build_runpod_execution_namespace(
+            bundle=bundle,
+            row=row,
+            remote_run_dir=remote_run_dir,
+            remote_sentinel_dir=self._remote_sentinel_dir(bundle),
+            env_fingerprint=state.environment_fingerprint or "",
+            scratch_root=f"{remote_run_dir}/smoke/{row.row_id}",
+            run_identity=f"{provenance.planned_run_id}--smoke",
+            sentinel_stem=f"smoke-{row.row_id}",
+        )
+        execution_row = _execution_row(row, namespace)
+        producer_execution = execution_row.execution.model_copy(
+            update={
+                "payload": execution_row.execution.payload.model_copy(
+                    update={"uri": namespace.payload_path}
+                )
+            }
+        )
+        producer_context = NativeExecutionProducerContext(
+            execution=producer_execution,
+            environment_fingerprint=state.environment_fingerprint or "",
+            collection_root=namespace.row_root,
+        ).model_dump(mode="json", exclude_none=True)
+        return namespace, producer_context
 
     def _protected_path_content_digests(
         self, bundle: RunBundle, row: RunRowSpec
@@ -2266,7 +2318,7 @@ class RunPodOrchestrationDriver:
                 )
             )
         record = {
-            "driver": "runpod",
+            "driver": self.driver_name,
             **facts,
             "pod_id": self._pod_id,
             "provided_pod": provided_pod,
