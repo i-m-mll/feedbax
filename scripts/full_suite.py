@@ -333,7 +333,11 @@ def write_green_memo(
 
 def xdist_args() -> list[str]:
     if os.environ.get("FEEDBAX_FULL_SUITE_DISABLE_XDIST") == "1":
-        return []
+        # Explicitly force serial. The pyproject addopts default enables
+        # `-n auto`, so an empty runner list would still run in parallel; a
+        # trailing `-n 0` overrides it (last `-n` wins) and keeps the serial
+        # green-memo fingerprint honest about how the suite actually ran.
+        return ["-n", "0"]
     if distribution_version("pytest-xdist") is None:
         return []
     return ["-n", os.environ.get("FEEDBAX_FULL_SUITE_XDIST_WORKERS", "auto")]
