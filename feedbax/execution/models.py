@@ -24,10 +24,12 @@ from feedbax.contracts.training import (
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
     TrainingRunSpec,
 )
+from feedbax.orchestration.repo_snapshot import RepoSnapshotManifest, snapshot_manifest_digest
 
 
 EXECUTION_SPEC_SCHEMA_VERSION = "feedbax.spec.execution.v2"
-EXECUTION_PLAN_SCHEMA_VERSION = "feedbax.manifest.execution.v3"
+EXECUTION_PLAN_SCHEMA_VERSION_V3 = "feedbax.manifest.execution.v3"
+EXECUTION_PLAN_SCHEMA_VERSION = "feedbax.manifest.execution.v4"
 LOCAL_EXECUTION_RESULT_SCHEMA_VERSION = "feedbax.manifest.execution.v3"
 EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID = "feedbax.manifest.execution_cloud_payload"
 EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION = "feedbax.manifest.execution_cloud_payload.v1"
@@ -35,7 +37,10 @@ EXECUTION_REPRODUCIBILITY_SCHEMA_ID = "feedbax.manifest.execution_reproducibilit
 EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1 = (
     "feedbax.manifest.execution_reproducibility.v1"
 )
-EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION = "feedbax.manifest.execution_reproducibility.v2"
+EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V2 = (
+    "feedbax.manifest.execution_reproducibility.v2"
+)
+EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION = "feedbax.manifest.execution_reproducibility.v3"
 
 ExecutionBackend = Literal["local", "ssh", "runpod", "modal"]
 ExecutionKind = Literal["training", "evaluation", "analysis", "report", "custom"]
@@ -451,7 +456,11 @@ class ExecutionCloudPayload(MappingModel):
 
 
 class LocalRsyncSnapshotProvenance(ExecutionModel):
-    """Governed working-tree snapshot recorded by planning local-rsync."""
+    """Shared sealing-component provenance recorded by planning local-rsync.
+
+    This record does not assert that execution planning produced a complete
+    ``RepoRealizationPlan``.
+    """
 
     name: str
     local_path: str
@@ -478,6 +487,54 @@ class ExecutionReproducibility(MappingModel):
     training_run_spec: Optional[dict[str, Any]] = None
     local_embed_sources: list[dict[str, Any]] = Field(default_factory=list)
     local_rsync_snapshots: list[LocalRsyncSnapshotProvenance] = Field(default_factory=list)
+    local_rsync_snapshot_manifest: Optional[RepoSnapshotManifest] = Field(
+        default=None,
+        description="Shared sealed-snapshot component output, not a RepoRealizationPlan.",
+    )
+    local_rsync_snapshot_manifest_digest: Optional[str] = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+    @model_validator(mode="after")
+    def _validate_local_rsync_snapshot_provenance(self) -> "ExecutionReproducibility":
+        manifest = self.local_rsync_snapshot_manifest
+        digest = self.local_rsync_snapshot_manifest_digest
+        if (manifest is None) != (digest is None):
+            raise ValueError(
+                "local-rsync snapshot manifest and digest must be recorded together"
+            )
+        if manifest is None:
+            if self.local_rsync_snapshots:
+                raise ValueError(
+                    "local-rsync snapshot records require their component manifest"
+                )
+            return self
+        observed_digest = snapshot_manifest_digest(manifest)
+        if digest != observed_digest:
+            raise ValueError(
+                "local-rsync snapshot manifest digest mismatch: "
+                f"expected {digest}, found {observed_digest}"
+            )
+        records = {record.name: record for record in self.local_rsync_snapshots}
+        if len(records) != len(self.local_rsync_snapshots):
+            raise ValueError("local-rsync snapshot record names must be unique")
+        if set(records) != set(manifest.repos):
+            raise ValueError(
+                "local-rsync snapshot records must match the component manifest repos"
+            )
+        for name, manifest_record in manifest.repos.items():
+            record = records[name]
+            if (
+                record.commit != manifest_record.commit
+                or record.dirty != manifest_record.dirty
+                or record.content_sha256 != manifest_record.content_sha256
+                or record.file_count != manifest_record.file_count
+            ):
+                raise ValueError(
+                    f"local-rsync snapshot record does not match component manifest: {name}"
+                )
+        return self
 
     @model_validator(mode="before")
     @classmethod

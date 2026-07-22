@@ -229,7 +229,7 @@ def _scheduled_continuation_spec(
                 warmup_init_fraction=0.1,
                 cosine_annealing_alpha=0.1,
             ),
-        )
+        ),
     )
     return spec.model_copy(
         update={
@@ -267,7 +267,10 @@ def _restore_optimizer_count(state, count: int):
     hyperparams_states["learning_rate"] = hyperparams_states["learning_rate"]._replace(
         count=jnp.asarray(count, dtype=jnp.int32)
     )
-    return (*state[:-1], injected._replace(count=jnp.asarray(count), hyperparams_states=hyperparams_states))
+    return (
+        *state[:-1],
+        injected._replace(count=jnp.asarray(count), hyperparams_states=hyperparams_states),
+    )
 
 
 def _write_mapped_schedule_checkpoint(spec, root: Path, *, restored_count: int = 12_000):
@@ -288,7 +291,11 @@ def _write_mapped_schedule_checkpoint(spec, root: Path, *, restored_count: int =
         "batch_counter": jnp.full((5,), 12_000, dtype=jnp.int32),
     }
     source_spec = spec.model_copy(
-        update={"checkpoint_progress": spec.checkpoint_progress.model_copy(update={"continuation": None})}
+        update={
+            "checkpoint_progress": spec.checkpoint_progress.model_copy(
+                update={"continuation": None}
+            )
+        }
     )
     write_checkpoint_transaction(
         root,
@@ -310,7 +317,14 @@ def _write_mapped_schedule_checkpoint(spec, root: Path, *, restored_count: int =
         ({"kind": "absolute", "batch": 0}, False, 12_000, True, ValueError, "lies entirely before"),
         ({"kind": "absolute", "batch": 0}, True, 12_000, True, None, None),
         (None, False, 11_999, True, TrainingRunExecutorError, "restored optimizer count disagrees"),
-        (None, False, 12_000, False, TrainingRunExecutorError, "requires restored_schedule_context_binder"),
+        (
+            None,
+            False,
+            12_000,
+            False,
+            TrainingRunExecutorError,
+            "requires restored_schedule_context_binder",
+        ),
     ],
 )
 def test_restored_schedule_context_rebuilds_mapped_jit_optimizer(
@@ -372,7 +386,8 @@ def test_restored_schedule_context_rebuilds_mapped_jit_optimizer(
 
     worker = spec.worker_execution.model_copy(deep=True)
     worker.effective_phase = validate_worker_contract(
-        worker.method_contract, update_kernels={"feedbax.training.standard_supervised.gradient_update": kernel}
+        worker.method_contract,
+        update_kernels={"feedbax.training.standard_supervised.gradient_update": kernel},
     )
     spec = spec.model_copy(update={"worker_execution": worker})
     template_optimizer = _write_mapped_schedule_checkpoint(
@@ -382,7 +397,9 @@ def test_restored_schedule_context_rebuilds_mapped_jit_optimizer(
         standard_supervised_method_descriptor(),
         contract_compiler=lambda _payload: spec.worker_execution.method_contract,
         optimizer_step_extractor=optimizer_step,
-        update_kernels_factory=lambda _payload: {"feedbax.training.standard_supervised.gradient_update": kernel},
+        update_kernels_factory=lambda _payload: {
+            "feedbax.training.standard_supervised.gradient_update": kernel
+        },
     )
     registry = TrainingMethodRegistry()
     registry.register_descriptor(descriptor)
@@ -402,19 +419,29 @@ def test_restored_schedule_context_rebuilds_mapped_jit_optimizer(
         loss_service=None,
         resume_slot_transform=None,
         restored_schedule_context_binder=bind if binder_enabled else None,
-        coordinate_order=tuple((AxisCoordinateSpec(axis="ensemble", index=index),) for index in range(5)),
+        coordinate_order=tuple(
+            (AxisCoordinateSpec(axis="ensemble", index=index),) for index in range(5)
+        ),
     )
+
     def execute():
         return execute_training_run_spec(
-            spec, preparation=preparation, registry=registry,
-            manifest_root=tmp_path / "manifests", checkpoint_root=checkpoint_root, resume=True
+            spec,
+            preparation=preparation,
+            registry=registry,
+            manifest_root=tmp_path / "manifests",
+            checkpoint_root=checkpoint_root,
+            resume=True,
         )
+
     preflight_calls = 0
     original_preflight = PhaseProgramExecutor.preflight
+
     def counted_preflight(*args, **kwargs):
         nonlocal preflight_calls
         preflight_calls += 1
         return original_preflight(*args, **kwargs)
+
     monkeypatch.setattr(PhaseProgramExecutor, "preflight", counted_preflight)
     if error_type is not None:
         with pytest.raises(error_type, match=error):
@@ -425,22 +452,28 @@ def test_restored_schedule_context_rebuilds_mapped_jit_optimizer(
     resumed = execute()
     _, bindings = resolve_execution_mapping(spec.worker_execution)
     assert payload.gradient_clip == 0.125
-    assert _synchronized_optimizer_step(
-        optimizer_step, payload, resumed.final_slots, bindings
-    ) == 12_001
+    assert (
+        _synchronized_optimizer_step(optimizer_step, payload, resumed.final_slots, bindings)
+        == 12_001
+    )
     if origin is None:
-        assert jnp.asarray(resumed.final_slots["train_loss"]).view(jnp.uint32).tolist() == [0x37FBA890] * 5
+        assert (
+            jnp.asarray(resumed.final_slots["train_loss"]).view(jnp.uint32).tolist()
+            == [0x37FBA890] * 5
+        )
     assert not jnp.array_equal(resumed.final_slots["model"], jnp.ones((5,)))
-    assert all(jnp.all(jnp.isfinite(leaf)) for leaf in jt.leaves(resumed.final_slots) if isinstance(leaf, jax.Array))
+    assert all(
+        jnp.all(jnp.isfinite(leaf))
+        for leaf in jt.leaves(resumed.final_slots)
+        if isinstance(leaf, jax.Array)
+    )
 
 
 @pytest.mark.parametrize(
     "factory",
     [
         lambda: ExecutionPreparationResult({}, restored_schedule_context_binder=object()),
-        lambda: _mapped_plan(
-            lambda _request: None, restored_schedule_context_binder=object()
-        ),
+        lambda: _mapped_plan(lambda _request: None, restored_schedule_context_binder=object()),
     ],
 )
 def test_noncallable_restored_schedule_binder_fails_at_preparation(factory) -> None:
@@ -545,7 +578,9 @@ def _mapped_runtime_resume_preparation(
     )
 
 
-def _mapped_plan(materializer, *, restored_schedule_context_binder=None) -> ExecutionPreparationPlan:
+def _mapped_plan(
+    materializer, *, restored_schedule_context_binder=None
+) -> ExecutionPreparationPlan:
     return ExecutionPreparationPlan(
         shared_slots={},
         kernel_context={},
@@ -1251,7 +1286,9 @@ def test_native_mapped_nan_guard_fails_closed_after_batched_health_reduction(
     )
     assert isinstance(manifest, TrainingRunManifest)
     detection_ref = next(
-        artifact for artifact in manifest.artifacts if artifact.role == NAN_ATTRIBUTION_ARTIFACT_ROLE
+        artifact
+        for artifact in manifest.artifacts
+        if artifact.role == NAN_ATTRIBUTION_ARTIFACT_ROLE
     )
     detection = NanAttributionDetection.model_validate_json(
         Path(detection_ref.uri).read_text(encoding="utf-8")
@@ -1307,14 +1344,12 @@ def test_native_mapped_resume_retains_prepared_runtime_slots_and_checkpoint_auth
 
     def update(slots, coordinate, context):
         del coordinate, context
-        model, optimizer, train_loss, batch_counter, adaptive_state, runtime_trace = (
-            jitted_values(
-                slots["model"],
-                slots["optimizer"],
-                slots["batch_counter"],
-                slots["adaptive_state"],
-                slots["runtime_trace"],
-            )
+        model, optimizer, train_loss, batch_counter, adaptive_state, runtime_trace = jitted_values(
+            slots["model"],
+            slots["optimizer"],
+            slots["batch_counter"],
+            slots["adaptive_state"],
+            slots["runtime_trace"],
         )
         return {
             "model": model,
@@ -1453,8 +1488,7 @@ def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate
         expected_slots=result.final_slots,
     )
     assert all(
-        slot.source_axes == slot.target_axes
-        for slot in forked.manifest.fork_provenance.slots
+        slot.source_axes == slot.target_axes for slot in forked.manifest.fork_provenance.slots
     )
 
     def copy_blob(source, target):
@@ -1482,9 +1516,7 @@ def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate
         target_run_spec=spec,
         expected_slots=result.final_slots,
         source_slot_transforms={"model": lambda slots: dict(slots)},
-        source_transform_metadata={
-            "model": {"identity": "tests.identity", "parameters": {}}
-        },
+        source_transform_metadata={"model": {"identity": "tests.identity", "parameters": {}}},
     )
     assert serialized.slot_transfer_modes["model"] == "serialized"
     model_provenance = next(
@@ -1524,9 +1556,7 @@ def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate
         StateSlotSpec(
             name="adaptive_state",
             role="auxiliary",
-            axis_bindings=[
-                SlotAxisBindingSpec(axis="ensemble", mode="mapped", array_axis=0)
-            ],
+            axis_bindings=[SlotAxisBindingSpec(axis="ensemble", mode="mapped", array_axis=0)],
         )
     )
     add_state.worker_execution.method_contract.phase_program.checkpoint_barriers[0].slots.append(
@@ -1544,9 +1574,7 @@ def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate
         target_only_slots={"adaptive_state": {"reason": "sanctioned add-state"}},
     )
     adaptive_provenance = next(
-        slot
-        for slot in added.manifest.fork_provenance.slots
-        if slot.slot == "adaptive_state"
+        slot for slot in added.manifest.fork_provenance.slots if slot.slot == "adaptive_state"
     )
     assert adaptive_provenance.source_axes is None
     assert adaptive_provenance.target_axes[0].axis == "ensemble"
@@ -1575,9 +1603,7 @@ def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate
         ),
         (
             extra,
-            lambda records: records.append(
-                {**records[0], "slot": "undeclared_extra_slot"}
-            ),
+            lambda records: records.append({**records[0], "slot": "undeclared_extra_slot"}),
         ),
     )
     for fork_result, corrupt in corruptions:
@@ -1587,9 +1613,7 @@ def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate
         latest = json.loads(fork_result.latest_pointer_path.read_text())
         latest["manifest_sha256"] = sha256_bytes(fork_result.manifest_path.read_bytes())
         fork_result.latest_pointer_path.write_text(json.dumps(latest, sort_keys=True, indent=2))
-        with pytest.raises(
-            CheckpointCompatibilityError, match="fork provenance|target-only fork"
-        ):
+        with pytest.raises(CheckpointCompatibilityError, match="fork provenance|target-only fork"):
             load_latest_checkpoint(
                 fork_result.root,
                 expected_run_spec=(add_state if fork_result is added else spec),
@@ -1660,9 +1684,9 @@ def test_method_diagnostics_progress_observes_completed_batch_without_custody_le
     assert [
         event["coordinate"]["program_step"] for event in result.history_events
     ] == expected_steps
-    assert [
-        event["coordinate"]["completed_batches"] for event in method_observations
-    ] == list(range(initial_batch + 1, initial_batch + 5))
+    assert [event["coordinate"]["completed_batches"] for event in method_observations] == list(
+        range(initial_batch + 1, initial_batch + 5)
+    )
     assert [event["coordinate"]["program_step"] for event in method_observations] == [
         1,
         2,
@@ -1696,9 +1720,7 @@ def test_method_observation_buffer_batches_host_materialization_and_preserves_re
             completed_batches=batch,
             metrics={
                 "train_loss": {
-                    "accepted": jnp.asarray(
-                        [(batch + replica) % 2 == 0 for replica in range(5)]
-                    ),
+                    "accepted": jnp.asarray([(batch + replica) % 2 == 0 for replica in range(5)]),
                     "score": jnp.arange(5, dtype=jnp.float32) + batch,
                     "nested": {
                         "count": jnp.arange(5, dtype=jnp.int32) + batch,
@@ -1709,7 +1731,9 @@ def test_method_observation_buffer_batches_host_materialization_and_preserves_re
         )
         for batch in range(1, 8)
     ]
-    expected = [training_executor._history_event(coordinate, bindings) for coordinate in coordinates]
+    expected = [
+        training_executor._history_event(coordinate, bindings) for coordinate in coordinates
+    ]
     transfer_calls = 0
     materialized_leaves = 0
     jax_backed_asarray_calls = 0
@@ -1719,9 +1743,7 @@ def test_method_observation_buffer_batches_host_materialization_and_preserves_re
     def counted_device_get(value):
         nonlocal transfer_calls, materialized_leaves
         transfer_calls += 1
-        materialized_leaves += sum(
-            isinstance(leaf, jax.Array) for leaf in jax.tree.leaves(value)
-        )
+        materialized_leaves += sum(isinstance(leaf, jax.Array) for leaf in jax.tree.leaves(value))
         return device_get(value)
 
     def counted_asarray(value, *args, **kwargs):
@@ -1974,14 +1996,14 @@ def test_buffered_and_immediate_method_observation_contracts_are_equivalent(
     assert [record.model_dump(mode="json") for record in buffered_trace.records] == [
         record.model_dump(mode="json") for record in immediate_trace.records
     ]
-    assert [
-        (event["coordinate"], event["metrics"]) for event in buffered.history_events
-    ] == [(event["coordinate"], event["metrics"]) for event in immediate.history_events]
+    assert [(event["coordinate"], event["metrics"]) for event in buffered.history_events] == [
+        (event["coordinate"], event["metrics"]) for event in immediate.history_events
+    ]
     assert buffered.diagnostics.schema_version == immediate.diagnostics.schema_version
     assert buffered.manifest.schema_version == immediate.manifest.schema_version
-    assert [
-        write.manifest.completed_training_batches for write in buffered.checkpoint_writes
-    ] == [write.manifest.completed_training_batches for write in immediate.checkpoint_writes]
+    assert [write.manifest.completed_training_batches for write in buffered.checkpoint_writes] == [
+        write.manifest.completed_training_batches for write in immediate.checkpoint_writes
+    ]
     assert [
         [(slot.slot, slot.sha256) for slot in write.manifest.slots]
         for write in buffered.checkpoint_writes
@@ -2046,7 +2068,9 @@ def test_declared_method_trace_uses_cancelled_batch_authority(tmp_path: Path) ->
 
 
 def test_method_trace_rejects_non_cartesian_history() -> None:
-    declaration = _mapped_diagnostics_run_spec().worker_execution.method_contract.training_diagnostics
+    declaration = (
+        _mapped_diagnostics_run_spec().worker_execution.method_contract.training_diagnostics
+    )
     assert declaration is not None
     axis = {
         "axis": "ensemble",
@@ -2119,7 +2143,9 @@ def test_method_trace_rejects_non_cartesian_history() -> None:
 
 
 def test_method_trace_transposes_named_mapped_values_by_replica() -> None:
-    declaration = _mapped_diagnostics_run_spec().worker_execution.method_contract.training_diagnostics
+    declaration = (
+        _mapped_diagnostics_run_spec().worker_execution.method_contract.training_diagnostics
+    )
     assert declaration is not None
     axis = {
         "axis": "ensemble",
@@ -2139,9 +2165,7 @@ def test_method_trace_transposes_named_mapped_values_by_replica() -> None:
                 "metrics": {
                     "train_loss": {
                         "schema_id": "feedbax.manifest.structured_mapped_metric_value",
-                        "schema_version": (
-                            "feedbax.manifest.structured_mapped_metric_value.v1"
-                        ),
+                        "schema_version": ("feedbax.manifest.structured_mapped_metric_value.v1"),
                         "axes": [axis],
                         "value": {
                             "accepted": [True, False],
@@ -2317,9 +2341,7 @@ def test_sealed_mapped_preparation_rejects_copy_and_mutated_nested_content() -> 
     object.__setattr__(
         history,
         "initial_slots",
-        immutable_mapping(
-            {**history.initial_slots, "model": BatchHistory(jnp.zeros((5,)))}
-        ),
+        immutable_mapping({**history.initial_slots, "model": BatchHistory(jnp.zeros((5,)))}),
     )
     with pytest.raises(TrainingRunExecutorError, match="contains BatchHistory"):
         execute_training_run_spec(spec, preparation=history)
@@ -3519,13 +3541,13 @@ def test_native_execution_allows_non_local_payload_custody_binding(tmp_path: Pat
     assert result.payload_binding_status == "verified"
 
 
-def test_one_update_stops_after_one_native_update_without_mutating_spec(tmp_path: Path) -> None:
+def test_update_budget_stops_after_exact_completed_batch_delta_without_mutating_spec(
+    tmp_path: Path,
+) -> None:
     registry, _program = _interval_registry(total_updates=3)
     base_spec = _run_spec()
     spec = base_spec.model_copy(
-        update={
-            "training_config": base_spec.training_config.model_copy(update={"n_batches": 3})
-        }
+        update={"training_config": base_spec.training_config.model_copy(update={"n_batches": 3})}
     )
     authored_payload = spec.model_dump(mode="json", exclude_none=True)
 
@@ -3535,15 +3557,57 @@ def test_one_update_stops_after_one_native_update_without_mutating_spec(tmp_path
         registry=registry,
         manifest_root=tmp_path / "manifests",
         checkpoint_root=tmp_path / "checkpoints",
-        one_update=True,
+        update_budget=2,
     )
 
     assert result.status == "completed"
-    assert result.final_coordinate.program_step == 1
-    assert result.diagnostics.completed_batches == 1
+    assert result.final_coordinate.program_step == 2
+    assert result.start_completed_batches == 0
+    assert result.end_completed_batches == 2
+    assert result.diagnostics.completed_batches == 2
     assert len(result.checkpoint_writes) == 1
     assert spec.model_dump(mode="json", exclude_none=True) == authored_payload
     assert result.payload_binding_status == "not_bound"
+
+
+def test_update_budget_allows_natural_completion_before_budget(tmp_path: Path) -> None:
+    registry, _program = _interval_registry(total_updates=1)
+    base_spec = _run_spec()
+    spec = base_spec.model_copy(
+        update={"training_config": base_spec.training_config.model_copy(update={"n_batches": 1})}
+    )
+
+    result = execute_training_run_spec(
+        spec,
+        initial_slots=_initial_slots(arrays=True),
+        registry=registry,
+        manifest_root=tmp_path / "manifests",
+        checkpoint_root=tmp_path / "checkpoints",
+        update_budget=2,
+    )
+
+    assert result.status == "completed"
+    assert result.start_completed_batches == 0
+    assert result.end_completed_batches == 1
+    assert result.diagnostics.completed_batches == 1
+
+
+@pytest.mark.parametrize("update_budget", [True, False, 0, -1])
+def test_update_budget_rejects_non_positive_and_boolean_values(
+    tmp_path: Path,
+    update_budget: int,
+) -> None:
+    with pytest.raises(
+        TrainingRunExecutorError,
+        match="positive non-boolean integer",
+    ):
+        execute_training_run_spec(
+            _run_spec(),
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path / "manifests",
+            checkpoint_root=tmp_path / "checkpoints",
+            update_budget=update_budget,
+        )
 
 
 def test_native_execution_rejects_non_planned_run_id_before_side_effects(
@@ -4542,10 +4606,14 @@ def test_execute_training_run_spec_raises_on_nan_with_program_coordinate(
     assert "train_loss" not in manifest.summary_metrics
     assert set(manifest.summary_metrics) <= {"runtime_telemetry"}
     detection_ref = next(
-        artifact for artifact in manifest.artifacts if artifact.role == NAN_ATTRIBUTION_ARTIFACT_ROLE
+        artifact
+        for artifact in manifest.artifacts
+        if artifact.role == NAN_ATTRIBUTION_ARTIFACT_ROLE
     )
     restoration_ref = next(
-        artifact for artifact in manifest.artifacts if artifact.role == NAN_RESTORATION_ARTIFACT_ROLE
+        artifact
+        for artifact in manifest.artifacts
+        if artifact.role == NAN_RESTORATION_ARTIFACT_ROLE
     )
     detection = NanAttributionDetection.model_validate_json(
         Path(detection_ref.uri).read_text(encoding="utf-8")
@@ -4580,9 +4648,7 @@ def test_nan_detection_projects_schedules_at_observed_batch_authority(
     payload = StandardSupervisedMethodPayload.model_validate(spec.method_payload.payload)
     payload = payload.model_copy(
         update={
-            "optimizer": payload.optimizer.model_copy(
-                update={"params": {"learning_rate": 0.125}}
-            )
+            "optimizer": payload.optimizer.model_copy(update={"params": {"learning_rate": 0.125}})
         }
     )
     spec = spec.model_copy(
@@ -4612,7 +4678,9 @@ def test_nan_detection_projects_schedules_at_observed_batch_authority(
     )
     assert isinstance(manifest, TrainingRunManifest)
     detection_ref = next(
-        artifact for artifact in manifest.artifacts if artifact.role == NAN_ATTRIBUTION_ARTIFACT_ROLE
+        artifact
+        for artifact in manifest.artifacts
+        if artifact.role == NAN_ATTRIBUTION_ARTIFACT_ROLE
     )
     detection = NanAttributionDetection.model_validate_json(
         Path(detection_ref.uri).read_text(encoding="utf-8")
@@ -4720,9 +4788,12 @@ def test_execute_training_run_spec_halts_and_restores_all_checkpoint_slots_on_na
         for artifact in result.manifest.artifacts
         if artifact.role == NAN_RESTORATION_ARTIFACT_ROLE
     )
-    assert NanAttributionDetection.model_validate_json(
-        Path(detection_ref.uri).read_text(encoding="utf-8")
-    ).on_nan == "halt_restore_checkpoint"
+    assert (
+        NanAttributionDetection.model_validate_json(
+            Path(detection_ref.uri).read_text(encoding="utf-8")
+        ).on_nan
+        == "halt_restore_checkpoint"
+    )
     restoration = NanAttributionRestorationOutcome.model_validate_json(
         Path(restoration_ref.uri).read_text(encoding="utf-8")
     )
@@ -4856,9 +4927,7 @@ def test_nan_detection_persistence_failure_fails_closed(
 
     assert result.status == "failed"
     assert result.final_slots == {}
-    assert not any(
-        item.role == NAN_ATTRIBUTION_ARTIFACT_ROLE for item in result.manifest.artifacts
-    )
+    assert not any(item.role == NAN_ATTRIBUTION_ARTIFACT_ROLE for item in result.manifest.artifacts)
     restoration_ref = next(
         item for item in result.manifest.artifacts if item.role == NAN_RESTORATION_ARTIFACT_ROLE
     )
@@ -4894,12 +4963,8 @@ def test_nan_restoration_persistence_failure_keeps_detection_linked(
     )
 
     assert result.status == "failed"
-    assert any(
-        item.role == NAN_ATTRIBUTION_ARTIFACT_ROLE for item in result.manifest.artifacts
-    )
-    assert not any(
-        item.role == NAN_RESTORATION_ARTIFACT_ROLE for item in result.manifest.artifacts
-    )
+    assert any(item.role == NAN_ATTRIBUTION_ARTIFACT_ROLE for item in result.manifest.artifacts)
+    assert not any(item.role == NAN_RESTORATION_ARTIFACT_ROLE for item in result.manifest.artifacts)
     failure = result.manifest.provenance.metadata["failure"]
     assert "simulated restoration-store failure" in failure["persistence_errors"][0]
 
@@ -5143,9 +5208,7 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
         _execution_context(
             planned_run_id="feedbax-training-run:planned-cli",
             run_spec=spec,
-        ).model_dump(
-            mode="json", exclude_none=True
-        ),
+        ).model_dump(mode="json", exclude_none=True),
     )
 
     proc = subprocess.run(
@@ -5163,7 +5226,8 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
             "feedbax-training-run:planned-cli",
             "--execution-context",
             str(context_path),
-            "--one-update",
+            "--update-budget",
+            "1",
         ],
         check=False,
         stdout=subprocess.PIPE,
@@ -5184,6 +5248,8 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
     payload = json.loads(proc.stdout)
     assert payload["run_id"] == "feedbax-training-run:planned-cli"
     assert payload["status"] == "completed"
+    assert payload["start_completed_batches"] == 0
+    assert payload["end_completed_batches"] == 1
     assert payload["payload_binding_status"] == "verified"
     assert Path(payload["manifest_path"]) == row_dir / "manifest.json"
     assert Path(payload["manifest_path"]).is_file()
@@ -5237,6 +5303,8 @@ def test_execute_training_run_spec_cli_returns_nonzero_for_failed_result(
         lambda *args, **kwargs: SimpleNamespace(
             run_id="cli-failed",
             status="failed",
+            start_completed_batches=0,
+            end_completed_batches=0,
             payload_binding_status="not_bound",
             manifest_path=manifest_path,
             manifest=manifest,

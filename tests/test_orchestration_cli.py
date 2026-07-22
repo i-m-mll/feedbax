@@ -153,8 +153,7 @@ def _assembly_request(
         compiler_id=request.compiler.compiler_id,
         compiler_version=request.compiler.compiler_version,
         compiler=_FixtureCompiler(
-            launches
-            or [("row-a", RowLaunchSpec(command=[sys.executable, "-c", "pass"]))]
+            launches or [("row-a", RowLaunchSpec(command=[sys.executable, "-c", "pass"]))]
         ),
         identity_adapter=StudioTrainingIdentityAdapter(),
     )
@@ -261,18 +260,14 @@ def _plugin_training_run_payload() -> dict[str, Any]:
         "name": "orchestration_plugin",
         "version": "v1",
     }
-    method_payload = standard_supervised_method_payload().model_dump(
-        mode="json", exclude_none=True
-    )
+    method_payload = standard_supervised_method_payload().model_dump(mode="json", exclude_none=True)
     method_payload["schema_id"] = _PLUGIN_SCHEMA_ID
     method_payload["schema_version"] = _PLUGIN_SCHEMA_VERSION
     method_payload["payload"]["optimizer"]["params"]["learning_rate"] = 0.01
     payload["method_payload"] = method_payload
     worker_execution = payload["worker_execution"]
     worker_execution["method_contract"]["method_ref"] = _PLUGIN_METHOD_REF
-    worker_execution["method_contract"][
-        "method_payload_schema_version"
-    ] = _PLUGIN_SCHEMA_VERSION
+    worker_execution["method_contract"]["method_payload_schema_version"] = _PLUGIN_SCHEMA_VERSION
     worker_execution["effective_phase"]["method_ref"] = _PLUGIN_METHOD_REF
     return payload
 
@@ -421,7 +416,9 @@ def test_shadow_launch_rejects_provider_capable_request_before_engine_constructi
     monkeypatch.setattr(
         orchestrate,
         "_request_engine",
-        lambda *_args, **_kwargs: pytest.fail("provider-capable shadow launch must not build an engine"),
+        lambda *_args, **_kwargs: pytest.fail(
+            "provider-capable shadow launch must not build an engine"
+        ),
     )
     monkeypatch.setattr(
         orchestrate,
@@ -463,7 +460,10 @@ def test_shadow_launch_evidence_requires_one_verified_native_continuation_update
     state = RunSetState(
         run_set_id="shadow-run",
         rows={row_id: RowState(status="completed")},
-        stages={"MONITOR": StageState(status="completed"), "COLLECT": StageState(status="completed")},
+        stages={
+            "MONITOR": StageState(status="completed"),
+            "COLLECT": StageState(status="completed"),
+        },
     )
     monkeypatch.setattr(orchestrate, "canonical_run_bundle_sha256", lambda _bundle: "a" * 64)
 
@@ -515,9 +515,13 @@ def test_broken_installed_plugin_fails_before_builtin_matrix_engine_or_provider(
     )
 
     assert orchestrate.main(["preflight", "--assembly-request", str(request_path)]) == 1
-    assert capsys.readouterr().err.strip().endswith(
-        "Failed to load Feedbax training-method plugin "
-        "entry-point:broken-orchestration-method: broken plugin"
+    assert (
+        capsys.readouterr()
+        .err.strip()
+        .endswith(
+            "Failed to load Feedbax training-method plugin "
+            "entry-point:broken-orchestration-method: broken plugin"
+        )
     )
 
 
@@ -771,6 +775,7 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
 
     class FastLocalDriver(LocalOrchestrationDriver):
         seen_bindings = ()
+
         def __init__(self, **kwargs: Any) -> None:
             super().__init__(cwd=tmp_path, freeze_lines=("feedbax==test",), **kwargs)
             type(self).seen_bindings = self.input_provider_bindings
@@ -784,21 +789,35 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     )
 
     assert orchestrate.main(["preflight", "--assembly-request", str(request_path)]) == 0
-    assert orchestrate.main(
-        [
-            "launch",
-            "--assembly-request",
-            str(request_path),
-            "--driver",
-            "local",
-            "--resume-run-set",
-            "local-demo",
-        ]
-    ) == 0
+    assert (
+        orchestrate.main(
+            [
+                "launch",
+                "--assembly-request",
+                str(request_path),
+                "--driver",
+                "local",
+                "--resume-run-set",
+                "local-demo",
+            ]
+        )
+        == 0
+    )
     assert orchestrate.main(["status", "--run-set", "local-demo"]) == 0
     assert orchestrate.main(["certify", "--run-set", "local-demo"]) == 0
     assert orchestrate.main(["teardown", "--run-set", "local-demo"]) == 0
-    assert orchestrate.main(["resume", "--run-set", "local-demo", "--input-provider", f"checkpoint.inputs={tmp_path}"]) == 0
+    assert (
+        orchestrate.main(
+            [
+                "resume",
+                "--run-set",
+                "local-demo",
+                "--input-provider",
+                f"checkpoint.inputs={tmp_path}",
+            ]
+        )
+        == 0
+    )
     assert FastLocalDriver.seen_bindings[0].name == "checkpoint.inputs"
 
     status_lines = [
@@ -808,12 +827,12 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
         "row=row-a status=completed batch=1/1 last_loss=0.5 "
         "last_event_age_s=0 seq=2 stages=ASSEMBLE:completed,PREFLIGHT:completed,"
         "PROVISION:completed,REALIZE_ENV:completed,STAGE_INPUTS:completed,"
-        "LAUNCH:completed,MONITOR:completed,COLLECT:completed,CERTIFY:completed,"
+        "SMOKE:completed,LAUNCH:completed,MONITOR:completed,COLLECT:completed,CERTIFY:completed,"
         "TEARDOWN:completed,REGISTER:completed",
         "row=row-b status=completed batch=1/1 last_loss=0.5 "
         "last_event_age_s=0 seq=2 stages=ASSEMBLE:completed,PREFLIGHT:completed,"
         "PROVISION:completed,REALIZE_ENV:completed,STAGE_INPUTS:completed,"
-        "LAUNCH:completed,MONITOR:completed,COLLECT:completed,CERTIFY:completed,"
+        "SMOKE:completed,LAUNCH:completed,MONITOR:completed,COLLECT:completed,CERTIFY:completed,"
         "TEARDOWN:completed,REGISTER:completed",
     ]
 
@@ -902,7 +921,7 @@ def test_resume_loads_training_method_plugins_before_running(
     assert calls[1][0] == "run"
 
 
-@pytest.mark.parametrize("version", ["v1", "v2", "v3", "v4", "v5", "v6"])
+@pytest.mark.parametrize("version", ["v1", "v2", "v3", "v4", "v5", "v6", "v7"])
 def test_load_bundle_rejects_legacy_versions_for_launch(tmp_path: Path, version: str) -> None:
     path = tmp_path / "bundle-v1.json"
     payload = _bundle(tmp_path).model_dump(mode="json")
@@ -935,9 +954,10 @@ def test_launch_driver_override_conflict_fails_before_engine_creation(
         lambda *_args, **_kwargs: pytest.fail("engine must not be constructed"),
     )
 
-    assert orchestrate.main(
-        ["launch", "--assembly-request", str(path), "--driver", "runpod"]
-    ) == orchestrate.EXIT_OTHER
+    assert (
+        orchestrate.main(["launch", "--assembly-request", str(path), "--driver", "runpod"])
+        == orchestrate.EXIT_OTHER
+    )
 
 
 def test_launch_dry_run_binds_rows_without_credentials_or_stage_engine(
@@ -987,8 +1007,11 @@ def test_launch_cli_exposes_deadman_request_overrides() -> None:
             "launch",
             "--assembly-request",
             "assembly-request.json",
-            "--deadman", "--deadman-silence-seconds", "900",
-            "--input-provider", "/invalid-relative",
+            "--deadman",
+            "--deadman-silence-seconds",
+            "900",
+            "--input-provider",
+            "/invalid-relative",
         ]
     )
 

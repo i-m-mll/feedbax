@@ -31,7 +31,8 @@ RUN_BUNDLE_SCHEMA_VERSION_V3 = "feedbax.orchestration.run_bundle.v3"
 RUN_BUNDLE_SCHEMA_VERSION_V4 = "feedbax.orchestration.run_bundle.v4"
 RUN_BUNDLE_SCHEMA_VERSION_V5 = "feedbax.orchestration.run_bundle.v5"
 RUN_BUNDLE_SCHEMA_VERSION_V6 = "feedbax.orchestration.run_bundle.v6"
-RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v7"
+RUN_BUNDLE_SCHEMA_VERSION_V7 = "feedbax.orchestration.run_bundle.v7"
+RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v8"
 DEPLOYMENT_POLICY_SCHEMA_ID = "feedbax.spec.deployment_policy"
 DEPLOYMENT_POLICY_SCHEMA_VERSION = "feedbax.spec.deployment_policy.v1"
 EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID = "feedbax.spec.execution_identity_envelope"
@@ -39,9 +40,7 @@ EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1 = "feedbax.spec.execution_identity
 EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION = "feedbax.spec.execution_identity_envelope.v2"
 ROW_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_ID = "feedbax.archive.training_checkpoint_custody"
-CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_VERSION = (
-    "feedbax.archive.training_checkpoint_custody.v1"
-)
+CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_VERSION = "feedbax.archive.training_checkpoint_custody.v1"
 CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE = (
     "application/vnd.feedbax.training-checkpoint-custody.v1+tar+gzip"
 )
@@ -318,9 +317,7 @@ class DeploymentPolicy(StrictModel):
     """Versioned requested launch venue, authorization, and resource policy."""
 
     schema_id: Literal["feedbax.spec.deployment_policy"] = DEPLOYMENT_POLICY_SCHEMA_ID
-    schema_version: Literal["feedbax.spec.deployment_policy.v1"] = (
-        DEPLOYMENT_POLICY_SCHEMA_VERSION
-    )
+    schema_version: Literal["feedbax.spec.deployment_policy.v1"] = DEPLOYMENT_POLICY_SCHEMA_VERSION
     driver: Literal["local", "worker-http", "runpod"]
     venue: Literal["local", "remote"]
     cloud_authorized: bool
@@ -332,9 +329,7 @@ class DeploymentPolicy(StrictModel):
     def _validate_authority(self) -> "DeploymentPolicy":
         expected_venue = "local" if self.driver == "local" else "remote"
         if self.venue != expected_venue:
-            raise ValueError(
-                f"deployment driver {self.driver!r} requires venue={expected_venue!r}"
-            )
+            raise ValueError(f"deployment driver {self.driver!r} requires venue={expected_venue!r}")
         if self.driver == "runpod" and not self.cloud_authorized:
             raise ValueError("runpod deployment requires explicit cloud_authorized=true")
         return self
@@ -396,12 +391,12 @@ class CheckpointCustodyArchiveMaterializer(StrictModel):
     """Authenticated materialization authority for a checkpoint-custody archive."""
 
     kind: Literal["checkpoint-custody-archive"] = "checkpoint-custody-archive"
-    materializer_id: Literal[
-        "feedbax.materializer.training_checkpoint_custody_archive"
-    ] = CHECKPOINT_CUSTODY_ARCHIVE_MATERIALIZER_ID
-    materializer_version: Literal[
-        "feedbax.materializer.training_checkpoint_custody_archive.v1"
-    ] = CHECKPOINT_CUSTODY_ARCHIVE_MATERIALIZER_VERSION
+    materializer_id: Literal["feedbax.materializer.training_checkpoint_custody_archive"] = (
+        CHECKPOINT_CUSTODY_ARCHIVE_MATERIALIZER_ID
+    )
+    materializer_version: Literal["feedbax.materializer.training_checkpoint_custody_archive.v1"] = (
+        CHECKPOINT_CUSTODY_ARCHIVE_MATERIALIZER_VERSION
+    )
     expected_parent_ref: ParentRef
     expected_transaction_root_sha256: str
 
@@ -487,7 +482,7 @@ class RunBundle(StrictModel):
     """Schema-versioned orchestration request for a run set."""
 
     schema_id: Literal["feedbax.orchestration.run_bundle"] = RUN_BUNDLE_SCHEMA_ID
-    schema_version: Literal["feedbax.orchestration.run_bundle.v7"] = RUN_BUNDLE_SCHEMA_VERSION
+    schema_version: Literal["feedbax.orchestration.run_bundle.v8"] = RUN_BUNDLE_SCHEMA_VERSION
     run_set_id: str = Field(default_factory=mint_run_set_id)
     feedbax_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     deployment_policy: DeploymentPolicy
@@ -501,7 +496,17 @@ class RunBundle(StrictModel):
     keep_alive: bool = False
     deadman_enabled: bool = False
     deadman_silence_seconds: int = Field(default=1800, ge=60)
+    smoke_enabled: bool = True
+    smoke_update_budget: int = Field(default=2, ge=1)
+    smoke_deadline_seconds: int = Field(default=1800, ge=60)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("smoke_update_budget", mode="before")
+    @classmethod
+    def _validate_smoke_update_budget(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("smoke_update_budget must be a positive integer, not a boolean")
+        return value
 
     @model_validator(mode="after")
     def _validate_bundle(self) -> "RunBundle":
@@ -530,9 +535,7 @@ class RunBundle(StrictModel):
                 f"filenames: {collisions!r}"
             )
         for row in self.rows:
-            row_identities = canonicalize_immutable_input_identities(
-                row.execution.immutable_inputs
-            )
+            row_identities = canonicalize_immutable_input_identities(row.execution.immutable_inputs)
             if row_identities != canonical_identities:
                 raise ValueError(
                     f"row {row.row_id!r} immutable inputs do not match resolved_inputs"

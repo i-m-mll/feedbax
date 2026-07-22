@@ -85,6 +85,7 @@ from feedbax.orchestration.drivers.runpod import (
     _preflight_continuation_schedule_consistency,
     build_launch_row_command,
     build_native_resume_seed_command,
+    build_runpod_execution_namespace,
     dry_run_launch_bundle,
     runpod_row_workdir,
 )
@@ -259,16 +260,43 @@ def _assemble_lowered_bundle(
 
     def resolve_input(declaration: AssemblyInputDeclaration) -> ResolvedAssemblyInput:
         media_type = "application/vnd.feedbax.training-checkpoint-custody.v1+tar+gzip"
-        return ResolvedAssemblyInput.model_validate({
-            "identity": {"role": declaration.role, "kind": declaration.kind, "identifier": declaration.locator, "digest": {"value": "d" * 64}},
-            "custody": {"target_role": declaration.role, "provider": {}, "provider_binding": "checkpoint.inputs",
-                        "artifact": {"artifact_id": "artifact://sha256/" + "d" * 64, "sha256": "d" * 64,
-                                     "size_bytes": 123, "media_type": media_type, "storage_backend": "feedbax-local"},
-                        "format": {"format_id": "feedbax.archive.training_checkpoint_custody", "format_version": "feedbax.archive.training_checkpoint_custody.v1", "media_type": media_type},
-                        "materializer": {"expected_parent_ref": {"kind": "TrainingCheckpointTransactionManifest",
-                            "id": "tx-toy-v1", "role": "training_checkpoint_custody", "uri": "transactions/tx-toy-v1/manifest.json",
-                            "metadata": {"manifest_sha256": "a" * 64}},
-                            "expected_transaction_root_sha256": "b" * 64}}})
+        return ResolvedAssemblyInput.model_validate(
+            {
+                "identity": {
+                    "role": declaration.role,
+                    "kind": declaration.kind,
+                    "identifier": declaration.locator,
+                    "digest": {"value": "d" * 64},
+                },
+                "custody": {
+                    "target_role": declaration.role,
+                    "provider": {},
+                    "provider_binding": "checkpoint.inputs",
+                    "artifact": {
+                        "artifact_id": "artifact://sha256/" + "d" * 64,
+                        "sha256": "d" * 64,
+                        "size_bytes": 123,
+                        "media_type": media_type,
+                        "storage_backend": "feedbax-local",
+                    },
+                    "format": {
+                        "format_id": "feedbax.archive.training_checkpoint_custody",
+                        "format_version": "feedbax.archive.training_checkpoint_custody.v1",
+                        "media_type": media_type,
+                    },
+                    "materializer": {
+                        "expected_parent_ref": {
+                            "kind": "TrainingCheckpointTransactionManifest",
+                            "id": "tx-toy-v1",
+                            "role": "training_checkpoint_custody",
+                            "uri": "transactions/tx-toy-v1/manifest.json",
+                            "metadata": {"manifest_sha256": "a" * 64},
+                        },
+                        "expected_transaction_root_sha256": "b" * 64,
+                    },
+                },
+            }
+        )
 
     input_document = root / "resolved-input.json"
     input_document.write_text(resolve_input(request.inputs[0]).model_dump_json(), encoding="utf-8")
@@ -460,12 +488,8 @@ def test_authored_row_changes_propagate_through_assembly_identity_and_custody(
             lowerer_version="feedbax.tests.native-row-lowerer.v1",
         ),
     ]
-    assert first_provenance.axis_coordinates["run_id"] == (
-        first_provenance.planned_run_id
-    )
-    assert first_provenance.authored_payload_hash != (
-        second_provenance.authored_payload_hash
-    )
+    assert first_provenance.axis_coordinates["run_id"] == (first_provenance.planned_run_id)
+    assert first_provenance.authored_payload_hash != (second_provenance.authored_payload_hash)
     assert first_provenance.planned_run_id != second_provenance.planned_run_id
     assert first_row.execution.payload.sha256 != second_row.execution.payload.sha256
     assert first_row.execution.resolved_snapshot.root_hash != (
@@ -478,9 +502,7 @@ def test_authored_row_changes_propagate_through_assembly_identity_and_custody(
     lowered_payload = json.loads(Path(first_row.execution.payload.uri).read_text(encoding="utf-8"))
     assert lowered_payload["graph"]["inline"]["nodes"]["gain"]["params"]["gain"] == 2
     assert "compact" not in lowered_payload
-    assert [item.identifier for item in first_row.execution.immutable_inputs] == [
-        "dataset:toy:v1"
-    ]
+    assert [item.identifier for item in first_row.execution.immutable_inputs] == ["dataset:toy:v1"]
     assert first.resolved_inputs[0].identity == first_row.execution.immutable_inputs[0]
 
     snapshot = json.loads(
@@ -489,9 +511,7 @@ def test_authored_row_changes_propagate_through_assembly_identity_and_custody(
     decoded = decode_resolved_snapshot(snapshot)
     assert decoded["payload"] == lowered_payload
     assert decoded["planned_run_id"] == first_provenance.planned_run_id
-    assert decoded["row_provenance"] == first_provenance.model_dump(
-        mode="json", exclude_none=True
-    )
+    assert decoded["row_provenance"] == first_provenance.model_dump(mode="json", exclude_none=True)
 
 
 def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
@@ -525,9 +545,7 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
         identity.model_dump(mode="json", exclude_none=True)
         for identity in row.execution.immutable_inputs
     ]
-    assert result.manifest.metadata["environment_fingerprint"] == (
-        "environment:integrated-row"
-    )
+    assert result.manifest.metadata["environment_fingerprint"] == ("environment:integrated-row")
     assert result.manifest.metadata["training_row_provenance"] == (
         provenance.model_dump(mode="json", exclude_none=True)
     )
@@ -609,12 +627,16 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
         "checkpoints",
         "manifests",
     }
-    assert json.loads(Path(collected["manifest.json"]).read_text(encoding="utf-8"))[
-        "id"
-    ] == result.manifest.id
-    assert json.loads(
-        Path(collected["training-diagnostics.json"]).read_text(encoding="utf-8")
-    )["manifest_id"] == result.manifest.id
+    assert (
+        json.loads(Path(collected["manifest.json"]).read_text(encoding="utf-8"))["id"]
+        == result.manifest.id
+    )
+    assert (
+        json.loads(Path(collected["training-diagnostics.json"]).read_text(encoding="utf-8"))[
+            "manifest_id"
+        ]
+        == result.manifest.id
+    )
     history_ref = next(
         artifact for artifact in result.manifest.artifacts if artifact.role == "training_history"
     )
@@ -688,6 +710,7 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
         manifest_root=tmp_path / "resumed-manifest-root",
         checkpoint_root=checkpoint_root,
         resume=True,
+        update_budget=2,
         execution_context=_native_context(
             resumed_bundle,
             collection_root=resumed_collection_root,
@@ -699,6 +722,8 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
     assert resumed.manifest.id == resumed_provenance.planned_run_id
     assert resumed.manifest.id != result.manifest.id
     assert resumed.diagnostics.completed_batches == 2
+    assert resumed.start_completed_batches == 1
+    assert resumed.end_completed_batches == 2
     assert resumed.diagnostics.segment_completed_batches == 1
     assert resumed.diagnostics.cumulative_completed_batches == 2
     assert resumed.diagnostics.checkpoint_coordinates == [1]
@@ -716,9 +741,7 @@ def test_local_and_runpod_drivers_inject_the_canonical_native_context(
     from feedbax.orchestration.drivers import local as local_driver_module
     from feedbax.orchestration.drivers import runpod as runpod_driver_module
 
-    bundle = _without_resolved_inputs(
-        _assemble_lowered_bundle(tmp_path / "drivers", gain=2)
-    )
+    bundle = _without_resolved_inputs(_assemble_lowered_bundle(tmp_path / "drivers", gain=2))
     row = bundle.rows[0]
     state = RunSetState(
         run_set_id=bundle.run_set_id,
@@ -756,14 +779,10 @@ def test_local_and_runpod_drivers_inject_the_canonical_native_context(
         mode="json", exclude_none=True
     )
     assert local_context["execution"]["row_provenance"] == (
-        row.execution.row_provenance.model_dump(
-            mode="json", exclude_none=True
-        )
+        row.execution.row_provenance.model_dump(mode="json", exclude_none=True)
     )
     assert local_context["environment_fingerprint"] == "environment:driver-route"
-    assert local_context["collection_root"] == str(
-        bundle.run_set_dir / "rows" / row.row_id
-    )
+    assert local_context["collection_root"] == str(bundle.run_set_dir / "rows" / row.row_id)
 
     runpod_capture: dict[str, Any] = {}
 
@@ -781,11 +800,16 @@ def test_local_and_runpod_drivers_inject_the_canonical_native_context(
     build_launch_row_command(
         bundle=bundle,
         row=row,
-        remote_run_dir="/remote/run-set",
-        remote_sentinel_dir="/remote/sentinels",
         workdir="/remote/feedbax",
         env_fingerprint="environment:driver-route",
         jax_cache_dir="/remote/jax-cache",
+        execution_namespace=build_runpod_execution_namespace(
+            bundle=bundle,
+            row=row,
+            remote_run_dir="/remote/run-set",
+            remote_sentinel_dir="/remote/sentinels",
+            env_fingerprint="environment:driver-route",
+        ),
     )
     runpod_command = runpod_capture["command"]
     assert runpod_command[-2] == "--execution-context-json"
@@ -801,15 +825,13 @@ def test_local_and_runpod_drivers_inject_the_canonical_native_context(
         mode="json", exclude_none=True
     )
     assert runpod_context["execution"]["row_provenance"] == (
-        row.execution.row_provenance.model_dump(
-            mode="json", exclude_none=True
-        )
+        row.execution.row_provenance.model_dump(mode="json", exclude_none=True)
     )
     assert runpod_context["environment_fingerprint"] == "environment:driver-route"
     assert runpod_context["collection_root"] == "/remote/run-set/rows/science-row"
 
 
-def test_local_shadow_runtime_binding_adds_one_update_without_mutating_bundle(
+def test_local_shadow_runtime_binding_adds_update_budget_without_mutating_bundle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -822,7 +844,7 @@ def test_local_shadow_runtime_binding_adds_one_update_without_mutating_bundle(
         environment_fingerprint="environment:shadow-route",
         rows={row.row_id: RowState()},
     )
-    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[], one_update=True)
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[], update_budget=1)
     driver.provision(bundle, state)
     driver.stage_inputs(bundle, state)
     captured: dict[str, Any] = {}
@@ -840,11 +862,12 @@ def test_local_shadow_runtime_binding_adds_one_update_without_mutating_bundle(
     monkeypatch.setattr(local_driver_module.subprocess, "Popen", capture_popen)
     driver.launch_row(bundle, row, state)
 
-    assert captured["command"].count("--one-update") == 1
-    assert row.launch.command.count("--one-update") == 0
+    assert captured["command"].count("--update-budget") == 1
+    assert captured["command"][captured["command"].index("--update-budget") + 1] == "1"
+    assert row.launch.command.count("--update-budget") == 0
 
 
-def test_local_ordinary_runtime_binding_does_not_add_one_update(
+def test_local_ordinary_runtime_binding_does_not_add_update_budget(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -875,27 +898,25 @@ def test_local_ordinary_runtime_binding_does_not_add_one_update(
     monkeypatch.setattr(local_driver_module.subprocess, "Popen", capture_popen)
     driver.launch_row(bundle, row, state)
 
-    assert "--one-update" not in captured["command"]
+    assert "--update-budget" not in captured["command"]
 
 
-def test_shadow_runtime_binding_rejects_caller_owned_one_update(tmp_path: Path) -> None:
+def test_shadow_runtime_binding_rejects_caller_owned_update_budget(tmp_path: Path) -> None:
     bundle = _without_resolved_inputs(_assemble_lowered_bundle(tmp_path, gain=2))
     row = bundle.rows[0]
 
-    with pytest.raises(NativeExecutionContextError, match="update count is orchestration-owned"):
+    with pytest.raises(NativeExecutionContextError, match="update budget is orchestration-owned"):
         bind_native_execution_command(
-            [*row.launch.command, "--one-update"],
+            [*row.launch.command, "--update-budget", "3"],
             row=row,
             payload_path=tmp_path / "payload.json",
             collection_root=tmp_path / "row",
-            one_update=True,
+            update_budget=1,
         )
 
 
 def test_local_driver_executes_compiled_native_row_subprocess(tmp_path: Path) -> None:
-    bundle = _without_resolved_inputs(
-        _assemble_lowered_bundle(tmp_path / "subprocess", gain=2)
-    )
+    bundle = _without_resolved_inputs(_assemble_lowered_bundle(tmp_path / "subprocess", gain=2))
     row = bundle.rows[0]
     slots_path = tmp_path / "initial-slots.json"
     slots_path.write_text(
@@ -948,9 +969,7 @@ def test_local_driver_executes_compiled_native_row_subprocess(tmp_path: Path) ->
     assert command[command.index("--checkpoint-root") + 1] == str(
         bundle.run_set_dir / "rows" / row.row_id / "checkpoints"
     )
-    assert command[command.index("--run-id") + 1] == (
-        row.execution.row_provenance.planned_run_id
-    )
+    assert command[command.index("--run-id") + 1] == (row.execution.row_provenance.planned_run_id)
     row_dir = bundle.run_set_dir / "rows" / row.row_id
     assert (row_dir / "manifest.json").is_file()
     assert (row_dir / "training-diagnostics.json").is_file()
@@ -1050,11 +1069,16 @@ def test_runpod_native_resume_seeds_before_started_sentinel(tmp_path: Path) -> N
     command = build_launch_row_command(
         bundle=bundle,
         row=row,
-        remote_run_dir="/remote/run set",
-        remote_sentinel_dir="/remote/run set/sentinels",
         workdir="/remote/feedbax",
         env_fingerprint="environment:resume-seed",
         jax_cache_dir="/remote/jax cache",
+        execution_namespace=build_runpod_execution_namespace(
+            bundle=bundle,
+            row=row,
+            remote_run_dir="/remote/run set",
+            remote_sentinel_dir="/remote/run set/sentinels",
+            env_fingerprint="environment:resume-seed",
+        ),
     )
 
     assert "/remote/run set/inputs/dataset" in command
@@ -1090,11 +1114,16 @@ def test_runpod_dry_run_uses_exact_remote_builder_without_transport(tmp_path: Pa
         build_launch_row_command(
             bundle=bundle,
             row=bundle.rows[0],
-            remote_run_dir=f"/remote/runs/{bundle.run_set_id}",
-            remote_sentinel_dir=f"/remote/runs/{bundle.run_set_id}/sentinels",
             workdir=runpod_row_workdir(config, bundle.rows[0]),
             env_fingerprint="dry-run-unrealized-environment",
             jax_cache_dir="/remote/workspace/jax_cache",
+            execution_namespace=build_runpod_execution_namespace(
+                bundle=bundle,
+                row=bundle.rows[0],
+                remote_run_dir=f"/remote/runs/{bundle.run_set_id}",
+                remote_sentinel_dir=f"/remote/runs/{bundle.run_set_id}/sentinels",
+                env_fingerprint="dry-run-unrealized-environment",
+            ),
         ),
     )
 
@@ -1114,9 +1143,7 @@ def test_runpod_dry_run_and_remote_builder_reject_same_checkpoint_role_binding(
         continuation=continuation,
         input_kind="checkpoint-custody-archive",
     )
-    bundle, binding = _bind_checkpoint_archive_provider(
-        bundle, tmp_path / "provider"
-    )
+    bundle, binding = _bind_checkpoint_archive_provider(bundle, tmp_path / "provider")
     identity = bundle.resolved_inputs[0].identity
     row = bundle.rows[0].model_copy(
         update={
@@ -1135,11 +1162,16 @@ def test_runpod_dry_run_and_remote_builder_reject_same_checkpoint_role_binding(
         build_launch_row_command(
             bundle=mismatched,
             row=row,
-            remote_run_dir="/remote/run-set",
-            remote_sentinel_dir="/remote/run-set/sentinels",
             workdir="/remote/feedbax",
             env_fingerprint="",
             jax_cache_dir="/remote/jax-cache",
+            execution_namespace=build_runpod_execution_namespace(
+                bundle=mismatched,
+                row=row,
+                remote_run_dir="/remote/run-set",
+                remote_sentinel_dir="/remote/run-set/sentinels",
+                env_fingerprint="",
+            ),
         )
     with pytest.raises(NativeExecutionContextError) as dry_run_error:
         dry_run_launch_bundle(mismatched, RunPodDriverConfig(), (binding,))
@@ -1175,9 +1207,11 @@ def test_secure_checkpoint_clone_rejects_symlink_entries(
             seed_authenticated_checkpoint(source, attempt, target, resolved)
     else:
         result = subprocess.run(
-            ["bash", "-lc", build_native_resume_seed_command(
-                str(source), str(attempt), str(target), resolved
-            )],
+            [
+                "bash",
+                "-lc",
+                build_native_resume_seed_command(str(source), str(attempt), str(target), resolved),
+            ],
             capture_output=True,
             text=True,
         )
@@ -1418,9 +1452,13 @@ def test_secure_checkpoint_clone_rejects_concurrent_source_mutation(
                 seed_authenticated_checkpoint(source, attempt, target, resolved)
         else:
             result = subprocess.run(
-                ["bash", "-lc", build_native_resume_seed_command(
-                    str(source), str(attempt), str(target), resolved
-                )],
+                [
+                    "bash",
+                    "-lc",
+                    build_native_resume_seed_command(
+                        str(source), str(attempt), str(target), resolved
+                    ),
+                ],
                 capture_output=True,
                 text=True,
             )
@@ -1439,9 +1477,7 @@ def test_local_driver_executes_authenticated_custody_continuation_with_parent_li
         _assemble_lowered_bundle(tmp_path / "authenticated-parent", gain=2)
     )
     parent_row = parent_bundle.rows[0]
-    parent_payload = json.loads(
-        Path(parent_row.execution.payload.uri).read_text(encoding="utf-8")
-    )
+    parent_payload = json.loads(Path(parent_row.execution.payload.uri).read_text(encoding="utf-8"))
     parent_result = execute_training_run_spec(
         parent_payload,
         initial_slots=_initial_slots(),
@@ -1538,9 +1574,7 @@ def test_local_driver_executes_authenticated_custody_continuation_with_parent_li
     driver = LocalOrchestrationDriver(
         cwd=tmp_path,
         freeze_lines=[],
-        input_provider_bindings=[
-            InputProviderRootBinding("checkpoint.inputs", provider_root)
-        ],
+        input_provider_bindings=[InputProviderRootBinding("checkpoint.inputs", provider_root)],
     )
     driver.provision(resumed_bundle, state)
     driver.stage_inputs(resumed_bundle, state)

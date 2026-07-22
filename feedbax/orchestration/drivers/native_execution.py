@@ -356,10 +356,9 @@ def seed_authenticated_checkpoint(
 def uses_registered_native_execution(row: RunRowSpec) -> bool:
     """Return whether orchestration owns native payload and output routing for a row."""
 
-    return (
-        row.launch.payload_routing.get("kind") == "registered-execution-payload"
-        and is_native_training_command(row.launch.command)
-    )
+    return row.launch.payload_routing.get(
+        "kind"
+    ) == "registered-execution-payload" and is_native_training_command(row.launch.command)
 
 
 def missing_native_training_collection_outputs(row: RunRowSpec) -> list[str]:
@@ -427,9 +426,7 @@ def native_resume_checkpoint_authority_json(resolved: ResolvedAssemblyInput) -> 
             "expected_parent_ref": materializer.expected_parent_ref.model_dump(
                 mode="json", exclude_none=True
             ),
-            "expected_transaction_root_sha256": (
-                materializer.expected_transaction_root_sha256
-            ),
+            "expected_transaction_root_sha256": (materializer.expected_transaction_root_sha256),
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -442,7 +439,7 @@ def bind_native_execution_command(
     row: RunRowSpec,
     payload_path: Path | str,
     collection_root: Path | str,
-    one_update: bool = False,
+    update_budget: int | None = None,
 ) -> tuple[list[str], RunRowSpec]:
     """Bind one registered native row to its staged input and output roots."""
 
@@ -468,10 +465,11 @@ def bind_native_execution_command(
             "registered native row output bindings are orchestration-owned; remove "
             f"caller-supplied options {conflicting!r}"
         )
-    if one_update and "--one-update" in normalized:
+    if update_budget is not None and any(
+        part == "--update-budget" or part.startswith("--update-budget=") for part in normalized
+    ):
         raise NativeExecutionContextError(
-            "shadow native update count is orchestration-owned; remove caller-supplied "
-            "--one-update"
+            "native update budget is orchestration-owned; remove caller-supplied --update-budget"
         )
 
     staged_payload = str(payload_path)
@@ -492,8 +490,16 @@ def bind_native_execution_command(
             provenance.planned_run_id,
         ]
     )
-    if one_update:
-        normalized.append("--one-update")
+    if update_budget is not None:
+        if (
+            isinstance(update_budget, bool)
+            or not isinstance(update_budget, int)
+            or update_budget <= 0
+        ):
+            raise NativeExecutionContextError(
+                "update_budget must be a positive non-boolean integer"
+            )
+        normalized.extend(["--update-budget", str(update_budget)])
     bound_row = row.model_copy(
         update={
             "execution": row.execution.model_copy(

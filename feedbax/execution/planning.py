@@ -33,7 +33,12 @@ from feedbax.execution.models import (
     RepoSource,
     execution_artifact_ref,
 )
-from feedbax.orchestration.repo_snapshot import SealedRepoSnapshot, seal_repo_snapshots
+from feedbax.orchestration.repo_snapshot import (
+    SealedRepoSnapshot,
+    SealedRepoSnapshots,
+    seal_repo_snapshots,
+    snapshot_manifest_digest,
+)
 
 
 def default_feedbax_sources(feedbax_ref: str = "develop") -> list[RepoSource]:
@@ -71,17 +76,21 @@ def prepare_execution_plan(spec: ExecutionSpec) -> ExecutionPlan:
     training_record = training_run_spec_record(spec, run_directory)
     if training_record is not None and payload:
         payload = {**payload, "training_run_spec": training_record}
-    local_rsync_snapshots = _seal_local_rsync_sources(spec)
+    local_rsync_snapshot_component = _seal_local_rsync_sources(spec)
     bootstrap = _bootstrap_steps(
         spec,
         workspace,
         run_directory,
-        local_rsync_snapshots=local_rsync_snapshots,
+        local_rsync_snapshots=(
+            local_rsync_snapshot_component.snapshots
+            if local_rsync_snapshot_component is not None
+            else {}
+        ),
     )
     reproducibility = _reproducibility(
         spec,
         run_directory,
-        local_rsync_snapshots=local_rsync_snapshots,
+        local_rsync_snapshot_component=local_rsync_snapshot_component,
     )
     warnings = _warnings(spec, reproducibility)
     return ExecutionPlan(
@@ -599,7 +608,7 @@ def _reproducibility(
     spec: ExecutionSpec,
     run_directory: str,
     *,
-    local_rsync_snapshots: dict[str, SealedRepoSnapshot],
+    local_rsync_snapshot_component: SealedRepoSnapshots | None,
 ) -> dict[str, Any]:
     record: dict[str, Any] = {
         "schema_id": EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
@@ -628,7 +637,8 @@ def _reproducibility(
     ]
     if local_embed_sources:
         record["local_embed_sources"] = local_embed_sources
-    if local_rsync_snapshots:
+    if local_rsync_snapshot_component is not None:
+        local_rsync_snapshots = local_rsync_snapshot_component.snapshots
         record["local_rsync_snapshots"] = [
             {
                 "name": name,
@@ -637,22 +647,27 @@ def _reproducibility(
             }
             for name, snapshot in sorted(local_rsync_snapshots.items())
         ]
+        record["local_rsync_snapshot_manifest"] = (
+            local_rsync_snapshot_component.manifest.model_dump(mode="json")
+        )
+        record["local_rsync_snapshot_manifest_digest"] = snapshot_manifest_digest(
+            local_rsync_snapshot_component.manifest
+        )
     return record
 
 
-def _seal_local_rsync_sources(spec: ExecutionSpec) -> dict[str, SealedRepoSnapshot]:
+def _seal_local_rsync_sources(spec: ExecutionSpec) -> SealedRepoSnapshots | None:
     repos = {
         source.name: Path(source.local_path).expanduser()
         for source in spec.repos
         if source.install_mode == "local-rsync" and source.local_path is not None
     }
     if not repos:
-        return {}
-    sealed = seal_repo_snapshots(
+        return None
+    return seal_repo_snapshots(
         repos,
         snapshot_parent=Path(tempfile.gettempdir()) / "feedbax-repo-snapshots",
     )
-    return dict(sealed.snapshots)
 
 
 def _primary_repo(spec: ExecutionSpec) -> Optional[str]:

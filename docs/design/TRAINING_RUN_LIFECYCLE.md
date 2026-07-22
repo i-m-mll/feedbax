@@ -299,16 +299,19 @@ installed only for the run call and restored afterward; off the main thread this
 an intentional no-op. RunPod failure-log collection and provider teardown subprocesses have
 finite timeouts, so handled signals are deferred only through that bounded cleanup window.
 
-This observable-exit contract does not cover SIGKILL, loss of the local process before it learns
-the created pod ID, or an ambiguous provider create response. Acquisition intent and restart
-reconciliation cover those windows separately. No process-level guarantee can make cleanup
-unkillable; the contract is bounded best effort with either verified absence or durable
-unresolved-pod evidence.
+This observable-exit contract does not cover SIGKILL. Before each provider create invocation,
+the engine durably records a name-tagged acquisition intent. A later local process or operator
+must reconcile that intent if the creating process dies before recording the outcome or receives
+an ambiguous response. Inventory absence alone never authorizes retry because an in-flight create
+may materialize later. No process-level guarantee can make cleanup unkillable; the contract is
+bounded best effort with either verified absence or durable unresolved-pod evidence.
 
 Dead-man switch (optional, per-bundle, driver-level): drivers that bill for idle compute may
-co-launch a watchdog process ON the compute target. The RunPod watchdog is currently installed
-during REALIZE_ENV, after provisioning and endpoint readiness, and therefore does not cover the
-pre-provision or ambiguous-create windows. From installation onward it watches the recency
+co-launch a watchdog process ON the compute target. The RunPod watchdog is installed over SSH
+immediately after endpoint configuration and before GPU readiness. There is no autonomous
+coverage between create and endpoint availability; SIGKILL in that window is covered only by the
+durable intent plus a later local reconciliation or a human acting on its evidence. From
+installation onward the watchdog watches the recency
 of run-event/heartbeat output (event-file mtimes and row sentinels — signals the runners must
 emit anyway) and, after a configurable silence window with no live rows, terminates the target
 from the inside (RunPod: `runpodctl remove pod $RUNPOD_POD_ID` with in-pod credentials). This
@@ -321,7 +324,7 @@ policy surface.
 
 ## 7. Run-set state machine
 
-State document: `run_set_state.json`, schema `feedbax.orchestration.run_set_state.v1`,
+State document: `run_set_state.json`, schema `feedbax.orchestration.run_set_state.v4`,
 registered with the migrations registry. Location: `<orchestration_root>/<run_set_id>/`, where
 `orchestration_root` defaults to `~/.cache/feedbax/orchestration/` and is overridable per
 project (rlrmp: under `_artifacts/`). Writes are atomic (write temp, `os.replace`), following
@@ -459,9 +462,9 @@ Studio frontend beyond the integration points named in §9; multi-node/distribut
    file reference above a size threshold; worker SSE may inline small payloads. RESOLVED as
    proposed.
 3. Budget on unpriceable drivers: wall-clock only. Additionally, the optional driver-level
-   dead-man switch (§6) is the failsafe layer for remote drivers: it survives loss of the
-   local orchestrator by running on the compute target and keying off the signals runners
-   must emit anyway. RESOLVED.
+   dead-man switch (§6) is the post-install failsafe layer for remote drivers: once installed,
+   it survives loss of the local orchestrator by running on the compute target and keying off
+   the signals runners must emit anyway. RESOLVED.
 4. REGISTER stops at payload emission. feedbax stays ledger-agnostic (D11): no commit, auth,
    or issue-tracker action is baked into the orchestrator; those remain with sessions, and a
    user-configurable terminal-hook interface (through which, e.g., an external plugin could
