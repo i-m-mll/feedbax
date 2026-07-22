@@ -4929,13 +4929,17 @@ def test_nan_detection_persistence_failure_fails_closed(
     assert result.final_slots == {}
     assert not any(item.role == NAN_ATTRIBUTION_ARTIFACT_ROLE for item in result.manifest.artifacts)
     restoration_ref = next(
-        item for item in result.manifest.artifacts if item.role == NAN_RESTORATION_ARTIFACT_ROLE
+        (
+            item
+            for item in result.manifest.artifacts
+            if item.role == NAN_RESTORATION_ARTIFACT_ROLE
+        ),
+        None,
     )
-    restoration = NanAttributionRestorationOutcome.model_validate_json(
-        Path(restoration_ref.uri).read_text(encoding="utf-8")
-    )
-    assert restoration.status == "not_attempted"
+    assert restoration_ref is None
     failure = result.manifest.provenance.metadata["failure"]
+    assert failure["detection_artifact_sha256"] is None
+    assert failure["restoration_artifact_sha256"] is None
     assert "simulated attribution-store failure" in failure["persistence_errors"][0]
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Optional
@@ -226,7 +227,7 @@ def _repo_steps(
         local = str(snapshot.staging_root)
         verify = shlex.join(
             [
-                "python",
+                sys.executable,
                 "-m",
                 "feedbax.orchestration.repo_snapshot",
                 "verify",

@@ -187,6 +187,7 @@ def test_transfer_failure_tears_down_owned_pod_without_masking_primary(
 def test_provider_free_continuation_preflight_matches_two_realized_updates(
     tmp_path: Path,
 ) -> None:
+    transport = FakeRunPodTransport()
     spec = _scheduled_continuation_spec(origin={"kind": "run_start"})
     continuation = CheckpointContinuationRequest(
         source_completed_batches=12_000,
@@ -343,3 +344,13 @@ def test_provider_free_continuation_preflight_matches_two_realized_updates(
     )
     expected = learning_rate["target_values"]
     assert realized[:2] == pytest.approx(expected[1:3])
+    provider_call_count = sum(
+        len(calls)
+        for calls in (
+            transport.runpodctl_calls,
+            transport.ssh_commands,
+            transport.rsync_calls,
+            transport.image_exists_calls,
+        )
+    )
+    assert provider_call_count == 0
