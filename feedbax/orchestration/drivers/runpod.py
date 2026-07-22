@@ -49,7 +49,12 @@ from feedbax.orchestration.collection_recovery import (
     CollectionRecoveryBinding,
     recover_collected_outputs,
 )
-from feedbax.orchestration.drivers.base import DriverRowProbe, ProvisioningAttemptError
+from feedbax.orchestration.drivers.base import (
+    AcquisitionCreateError,
+    AcquisitionResult,
+    DriverRowProbe,
+    ProviderPodInventoryRecord,
+)
 from feedbax.orchestration.drivers.native_execution import (
     bind_native_execution_command,
     inject_native_execution_context,
@@ -483,12 +488,7 @@ class EndpointClassification:
     ssh_command: str | None = None
 
 
-@dataclass(frozen=True)
-class _PodAcquisition:
-    """Provider-observed identity returned by one accepted pod-create request."""
-
-    pod_id: str
-    accepted_datacenter: str | None
+_PodAcquisition = AcquisitionResult
 
 
 @dataclass(frozen=True)
@@ -530,6 +530,173 @@ class RunPodOrchestrationDriver:
     poll_interval_seconds = 5.0
     govern_provisioning_retries = True
 
+    def engine_acquisition_required(self) -> bool:
+        """Return whether the engine must run the create WAL protocol."""
+        return not self._provided_endpoint and not self._provided_pod
+
+    def acquisition_candidates(self, bundle: RunBundle) -> tuple[str | None, ...]:
+        """Return the ordered singleton-create datacenter candidates."""
+        del bundle
+        return tuple(self.config.datacenters) or (None,)
+
+    @property
+    def reconciliation_timeout_seconds(self) -> float:
+        """Bound engine reconciliation by the existing teardown ceiling."""
+        return self.config.teardown_absence_timeout_seconds
+
+    def acquisition_pod_name(self, intent_id: str) -> str:
+        """Return the exact provider name tag bound to one durable intent."""
+        return f"{self.config.pod_name_prefix}-{intent_id}"
+
+    def acquisition_config_identity(self, bundle: RunBundle) -> str:
+        """Return a secret-free identity for the acquisition-relevant configuration."""
+        payload = {
+            "run_set_id": bundle.run_set_id,
+            "image": self.config.image,
+            "gpu_id": self.config.gpu_id,
+            "datacenters": list(self.config.datacenters),
+            "pod_name_prefix": self.config.pod_name_prefix,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    def create_pod_once(
+        self,
+        bundle: RunBundle,
+        candidate: str | None,
+        intent_id: str,
+    ) -> AcquisitionResult:
+        """Invoke the provider exactly once for one engine-persisted intent."""
+        if not self._preflight_passed:
+            raise AcquisitionCreateError(
+                "RunPod creation requires passing named driver PREFLIGHT checks first",
+                clean_rejection=True,
+                evidence={"returncode": None, "classification": "preflight-not-passed"},
+            )
+        name = self.acquisition_pod_name(intent_id)
+        args = [
+            "pod",
+            "create",
+            "--name",
+            name,
+            "--image",
+            self.config.image,
+            "--ports",
+            "22/tcp,8080/http",
+        ]
+        if self.config.gpu_id:
+            args.extend(["--gpu-id", self.config.gpu_id])
+        if candidate:
+            args.extend(["--data-center-ids", candidate])
+        if self.config.api_key:
+            args.extend(["--env", json.dumps({"FEEDBAX_RUNPOD_API_KEY": self.config.api_key})])
+        result = self.transport.runpodctl(*args)
+        detail = _redact_secret(result.stderr or result.stdout, self.config.api_key).strip()
+        if result.returncode == 0:
+            try:
+                payload = _json_object(result.stdout)
+            except (TypeError, ValueError, RunPodDriverError) as exc:
+                raise AcquisitionCreateError(
+                    str(exc),
+                    clean_rejection=False,
+                    evidence={
+                        "returncode": result.returncode,
+                        "classification": "ambiguous-invalid-success-payload",
+                        "detail": detail,
+                    },
+                ) from exc
+            pod_id = str(payload.get("id") or payload.get("podId") or "")
+            if pod_id and _SAFE_POD_ID_PATTERN.fullmatch(pod_id):
+                return AcquisitionResult(pod_id, candidate)
+            raise AcquisitionCreateError(
+                "successful RunPod create response omitted a safe pod identity",
+                clean_rejection=False,
+                evidence={
+                    "returncode": result.returncode,
+                    "classification": "ambiguous-missing-pod-id",
+                    "detail": detail,
+                },
+            )
+        classification, classified_detail = _classify_create_failure(
+            result, self.config.api_key
+        )
+        clean_rejection = classification == "non-retryable"
+        raise AcquisitionCreateError(
+            classified_detail or f"runpodctl pod create exited {result.returncode}",
+            clean_rejection=clean_rejection,
+            evidence={
+                "returncode": result.returncode,
+                "classification": (
+                    "classified-clean-provider-rejection" if clean_rejection else "ambiguous"
+                ),
+                "detail": classified_detail,
+            },
+        )
+
+    def finish_acquired_pod(
+        self,
+        bundle: RunBundle,
+        acquisition: AcquisitionResult,
+        intent_id: str,
+    ) -> Mapping[str, Any]:
+        """Configure one acquired pod, install its watchdog, and prove GPU readiness."""
+        self._pod_id = acquisition.pod_id
+        self._provided_pod = False
+        self._last_provision_pod = None
+        self._endpoint, pod = self._wait_for_endpoint(acquisition.pod_id)
+        self._configure_subprocess_endpoint(self._endpoint)
+        remote_run_dir = self._remote_run_dir(bundle)
+        self._ssh(
+            f"mkdir -p {_sq(remote_run_dir)} {_sq(self._remote_sentinel_dir(bundle))} "
+            f"{_sq(remote_run_dir + '/logs')} && command -v setsid >/dev/null"
+        )
+        self._ensure_deadman(bundle)
+        self._require_gpu_ready()
+        return self._provision_record(
+            pod,
+            provided_pod=False,
+            accepted_datacenter=acquisition.accepted_datacenter,
+            intent_id=intent_id,
+        )
+
+    def restore_from_provision_record(self, record: Mapping[str, Any]) -> None:
+        """Restore process-local pod and endpoint identity from durable state."""
+        if record.get("driver") != "runpod":
+            return
+        pod_id = record.get("pod_id")
+        host = record.get("ssh_host")
+        port = record.get("ssh_port")
+        if not isinstance(host, str) or not isinstance(port, int):
+            raise RunPodDriverError("persisted RunPod provision record lacks a usable endpoint")
+        if record.get("provided_endpoint") is not True and (
+            not isinstance(pod_id, str) or not pod_id
+        ):
+            raise RunPodDriverError("persisted RunPod provision record lacks a pod identity")
+        self._pod_id = pod_id if isinstance(pod_id, str) and pod_id else None
+        self._provided_pod = record.get("provided_pod") is True
+        self._provided_endpoint = record.get("provided_endpoint") is True
+        self._endpoint = EndpointClassification("ssh_object", host, port)
+        self._configure_subprocess_endpoint(self._endpoint)
+
+    def adopt_owned_pod(
+        self,
+        pod_id: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> None:
+        """Adopt one intent-matched pod for the standard owned-pod teardown path."""
+        self._pod_id = pod_id
+        self._provided_pod = False
+        self._provided_endpoint = False
+        self._endpoint = None
+        self._adopted_teardown_timeout_seconds = timeout_seconds
+
+    def acquisition_failure_evidence(self) -> Mapping[str, Any]:
+        """Return sanitized provider facts observed after an acquired transition."""
+        if self._last_provision_pod is None:
+            return {}
+        return project_runpod_provision_facts(self._last_provision_pod)
+
     def __init__(
         self,
         *,
@@ -562,6 +729,7 @@ class RunPodOrchestrationDriver:
             else None
         )
         self._last_provision_pod: Mapping[str, Any] | None = None
+        self._adopted_teardown_timeout_seconds: float | None = None
 
     def provision(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Perform one acquisition attempt; the stage engine owns retries."""
@@ -582,64 +750,9 @@ class RunPodOrchestrationDriver:
             self._require_gpu_ready()
             return self._provision_record(pod, provided_pod=True)
 
-        if not self._preflight_passed:
-            raise ProvisioningAttemptError(
-                "RunPod creation requires passing named driver PREFLIGHT checks first",
-                retryable=False,
-                attempt_record={"driver": "runpod", "acquired": False},
-            )
-        pod: Mapping[str, Any] | None = None
-        self._last_provision_pod = None
-        acquired = False
-        acquisition: _PodAcquisition | None = None
-        pod_id: str | None = None
-        try:
-            acquisition = self._create_pod(bundle)
-            pod_id = acquisition.pod_id
-            acquired = True
-            self._pod_id = pod_id
-            self._endpoint, pod = self._wait_for_endpoint(pod_id)
-            self._configure_subprocess_endpoint(self._endpoint)
-            self._require_gpu_ready()
-            return self._provision_record(
-                pod,
-                provided_pod=False,
-                accepted_datacenter=acquisition.accepted_datacenter,
-            )
-        except BaseException as exc:
-            if isinstance(exc, ProvisioningAttemptError):
-                raise
-            record: dict[str, Any] = {"driver": "runpod", "acquired": acquired, "pod_id": pod_id}
-            pod = pod or self._last_provision_pod
-            if pod is not None:
-                record.update(project_runpod_provision_facts(pod))
-            if acquired:
-                try:
-                    record["cleanup"] = dict(self.teardown(bundle, state))
-                except RunPodTeardownError as teardown_exc:
-                    record["cleanup"] = dict(teardown_exc.teardown_outputs)
-                    record["cleanup_error"] = str(teardown_exc)
-                    if not isinstance(exc, Exception):
-                        raise exc
-                    raise ProvisioningAttemptError(
-                        f"{exc}; automatic teardown failed: {teardown_exc}",
-                        retryable=False,
-                        attempt_record=record,
-                        stop_reason="teardown-failure",
-                    ) from exc
-            if not isinstance(exc, Exception):
-                raise
-            if not self.has_pending_owned_resource():
-                self._pod_id = None
-                self._endpoint = None
-            raise ProvisioningAttemptError(
-                str(exc),
-                retryable=not isinstance(
-                    exc,
-                    (ValueError, TypeError, _ProvisioningIdentityError),
-                ),
-                attempt_record=record,
-            ) from exc
+        raise RunPodDriverError(
+            "new RunPod resources must be acquired by StageEngine's durable intent protocol"
+        )
 
     @property
     def provision_retry_delay_seconds(self) -> float:
@@ -1554,7 +1667,11 @@ class RunPodOrchestrationDriver:
                 "teardown": "no-pod",
                 "ownership": ownership,
             }
-        deadline = self._monotonic() + self.config.teardown_absence_timeout_seconds
+        timeout = self._adopted_teardown_timeout_seconds
+        self._adopted_teardown_timeout_seconds = None
+        deadline = self._monotonic() + (
+            self.config.teardown_absence_timeout_seconds if timeout is None else timeout
+        )
         action = "remove-requested"
         try:
             result = self.transport.runpodctl(
@@ -1688,7 +1805,7 @@ class RunPodOrchestrationDriver:
                 "pod_ids": [],
             }
         try:
-            pod_ids = _parse_runpod_pod_inventory(result.stdout)
+            pods = _parse_runpod_pod_inventory(result.stdout)
         except (TypeError, ValueError, json.JSONDecodeError):
             return {
                 "scope": "provider-account",
@@ -1699,6 +1816,7 @@ class RunPodOrchestrationDriver:
                 "pod_count": None,
                 "pod_ids": [],
             }
+        pod_ids = [pod.pod_id for pod in pods]
         if pod_ids:
             return {
                 "scope": "provider-account",
@@ -1707,7 +1825,7 @@ class RunPodOrchestrationDriver:
                 "observation_basis": basis,
                 "outcome": "non-empty",
                 "pod_count": len(pod_ids),
-                "pod_ids": list(pod_ids),
+                "pod_ids": pod_ids,
             }
         return {
             "scope": "provider-account",
@@ -1718,6 +1836,36 @@ class RunPodOrchestrationDriver:
             "pod_count": 0,
             "pod_ids": [],
         }
+
+    def observe_pod_inventory(
+        self, *, timeout_seconds: float | None = None
+    ) -> tuple[tuple[ProviderPodInventoryRecord, ...], Mapping[str, Any]]:
+        """Return typed provider inventory plus bounded observation evidence."""
+        result = self.transport.runpodctl(
+            "pod", "list", "--output", "json", timeout_seconds=timeout_seconds
+        )
+        observed_at = utc_now().isoformat()
+        basis = "runpodctl pod list --output json"
+        if result.returncode != 0:
+            raise RunPodDriverError(
+                "RunPod inventory observation is unavailable for acquisition reconciliation"
+            )
+        try:
+            records = _parse_runpod_pod_inventory(result.stdout)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RunPodDriverError(
+                "RunPod inventory observation is invalid for acquisition reconciliation"
+            ) from exc
+        evidence = {
+            "scope": "provider-account",
+            "verified": not records,
+            "observed_at": observed_at,
+            "observation_basis": basis,
+            "outcome": "non-empty" if records else "empty",
+            "pod_count": len(records),
+            "pod_ids": [record.pod_id for record in records],
+        }
+        return records, evidence
 
     def _wait_for_pod_absence(
         self, pod_id: str, *, deadline: float | None = None
@@ -1787,49 +1935,6 @@ class RunPodOrchestrationDriver:
             timeout_seconds=timeout_seconds,
         ).check("runpodctl pod get")
         return _json_object(result.stdout)
-
-    def _create_pod(self, bundle: RunBundle) -> _PodAcquisition:
-        name = f"{self.config.pod_name_prefix}-{bundle.run_set_id}"
-        datacenters = self.config.datacenters or ("",)
-        last_error = ""
-        for dc in datacenters:
-            args = [
-                "pod",
-                "create",
-                "--name",
-                name,
-                "--image",
-                self.config.image,
-                "--ports",
-                "22/tcp,8080/http",
-            ]
-            if self.config.gpu_id:
-                args.extend(["--gpu-id", self.config.gpu_id])
-            if dc:
-                args.extend(["--data-center-ids", dc])
-            if self.config.api_key:
-                args.extend(["--env", json.dumps({"FEEDBAX_RUNPOD_API_KEY": self.config.api_key})])
-            result = self.transport.runpodctl(*args)
-            if result.returncode == 0:
-                payload = _json_object(result.stdout)
-                pod_id = str(payload.get("id") or payload.get("podId") or "")
-                if pod_id:
-                    return _PodAcquisition(
-                        pod_id=pod_id,
-                        accepted_datacenter=dc or None,
-                    )
-            classification, last_error = _classify_create_failure(result, self.config.api_key)
-            if classification == "non-retryable":
-                raise ProvisioningAttemptError(
-                    last_error,
-                    retryable=False,
-                    attempt_record={"driver": "runpod", "acquired": False},
-                )
-        raise ProvisioningAttemptError(
-            last_error,
-            retryable=True,
-            attempt_record={"driver": "runpod", "acquired": False},
-        )
 
     def _wait_for_endpoint(
         self,
@@ -1903,6 +2008,7 @@ class RunPodOrchestrationDriver:
         *,
         provided_pod: bool,
         accepted_datacenter: str | None = None,
+        intent_id: str | None = None,
     ) -> dict[str, Any]:
         endpoint = self._endpoint or endpoint_classification(pod)
         facts = project_runpod_provision_facts(pod)
@@ -1926,7 +2032,7 @@ class RunPodOrchestrationDriver:
                     else "; runpodctl pod get response omitted datacenter"
                 )
             )
-        return {
+        record = {
             "driver": "runpod",
             **facts,
             "pod_id": self._pod_id,
@@ -1936,6 +2042,9 @@ class RunPodOrchestrationDriver:
             "ssh_port": endpoint.port,
             "teardown_allowed": not provided_pod,
         }
+        if intent_id is not None:
+            record["intent_id"] = intent_id
+        return record
 
     def _ssh(self, command: str) -> CommandResult:
         return self.transport.ssh(command).check("ssh")
@@ -3184,8 +3293,8 @@ def _json_object(payload: str) -> dict[str, Any]:
     raise RunPodDriverError("expected JSON object")
 
 
-def _parse_runpod_pod_inventory(payload: str) -> tuple[str, ...]:
-    """Parse supported ``runpodctl pod list`` shapes into sanitized pod IDs."""
+def _parse_runpod_pod_inventory(payload: str) -> tuple[ProviderPodInventoryRecord, ...]:
+    """Parse supported inventory shapes without discarding provider pod names."""
     loaded = json.loads(payload)
     if isinstance(loaded, list):
         pods = loaded
@@ -3209,7 +3318,7 @@ def _parse_runpod_pod_inventory(payload: str) -> tuple[str, ...]:
     if not isinstance(pods, list):
         raise TypeError("RunPod inventory wrapper must contain a list")
 
-    pod_ids: list[str] = []
+    records: list[ProviderPodInventoryRecord] = []
     for pod in pods:
         if not isinstance(pod, Mapping):
             raise TypeError("RunPod inventory entries must be objects")
@@ -3223,10 +3332,17 @@ def _parse_runpod_pod_inventory(payload: str) -> tuple[str, ...]:
         pod_id = identities.pop()
         if _SAFE_POD_ID_PATTERN.fullmatch(pod_id) is None:
             raise ValueError("RunPod inventory entry has unsafe pod identity")
-        pod_ids.append(pod_id)
+        names = [pod.get("name"), pod.get("podName")]
+        if isinstance(nested, Mapping):
+            names.append(nested.get("name"))
+        pod_names = {value for value in names if isinstance(value, str) and value}
+        if len(pod_names) != 1:
+            raise ValueError("RunPod inventory entry has ambiguous or missing pod name")
+        records.append(ProviderPodInventoryRecord(pod_id=pod_id, name=pod_names.pop()))
+    pod_ids = [record.pod_id for record in records]
     if len(pod_ids) != len(set(pod_ids)):
         raise ValueError("RunPod inventory contains duplicate pod identities")
-    return tuple(sorted(pod_ids))
+    return tuple(sorted(records, key=lambda record: record.pod_id))
 
 
 def _safe_reason(reason: str) -> str:

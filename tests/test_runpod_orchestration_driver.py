@@ -70,7 +70,7 @@ from feedbax.orchestration.drivers.runpod import (
     validate_runpod_repo_realization_plan,
 )
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
-from feedbax.orchestration.drivers.base import ProvisioningAttemptError
+from feedbax.orchestration.drivers.base import AcquisitionCreateError, ProvisioningAttemptError
 from feedbax.orchestration.input_materialization import InputProviderRootBinding
 from feedbax.orchestration.repo_realization import (
     EditableSourceResolution,
@@ -87,6 +87,8 @@ from feedbax.orchestration.stages import (
     OrchestrationStageError,
     PreflightFailed,
     StageEngine,
+    _DeferredOperatorSignal,
+    _ScopedSignalSupervisor,
 )
 from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore, StageState
 
@@ -185,6 +187,93 @@ class FakeClock:
     def sleep(self, seconds: float) -> None:
         self.sleeps.append(seconds)
         self.now += seconds
+
+
+class AcquisitionLeaseTransport(FakeRunPodTransport):
+    """State-aware fake for the engine-owned acquisition WAL protocol."""
+
+    def __init__(self, store: RunSetStateStore) -> None:
+        super().__init__()
+        self.store = store
+        self.create_results: list[CommandResult] = []
+        self.inventory: dict[str, str] = {}
+        self.create_names: list[str] = []
+        self.register_on_create: list[tuple[str, ...]] = []
+
+    def runpodctl(
+        self,
+        *args: str,
+        timeout_seconds: float | None = None,
+    ) -> CommandResult:
+        if args[:2] == ("pod", "create"):
+            self.runpodctl_calls.append(args)
+            self.runpodctl_timeouts.append(timeout_seconds)
+            name = args[args.index("--name") + 1]
+            self.create_names.append(name)
+            persisted = self.store.load()
+            assert persisted.acquisition_intents[-1].state == "intended"
+            assert name.endswith(persisted.acquisition_intents[-1].intent_id)
+            for pod_id in self.register_on_create.pop(0) if self.register_on_create else ():
+                self.inventory[pod_id] = name
+            return self.create_results.pop(0)
+        if args == ("pod", "list", "--output", "json"):
+            self.runpodctl_calls.append(args)
+            self.runpodctl_timeouts.append(timeout_seconds)
+            return CommandResult(
+                0,
+                json.dumps(
+                    [
+                        {"id": pod_id, "name": name}
+                        for pod_id, name in sorted(self.inventory.items())
+                    ]
+                ),
+            )
+        if args[:2] == ("remove", "pod"):
+            self.runpodctl_calls.append(args)
+            self.runpodctl_timeouts.append(timeout_seconds)
+            self.inventory.pop(args[2], None)
+            return CommandResult(0, "")
+        if args[:2] == ("pod", "get"):
+            self.runpodctl_calls.append(args)
+            self.runpodctl_timeouts.append(timeout_seconds)
+            pod_id = args[2]
+            if pod_id not in self.inventory:
+                return CommandResult(1, "", "pod not found")
+            return CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "id": pod_id,
+                        "name": self.inventory[pod_id],
+                        "ssh": {"ip": "203.0.113.10", "port": 22},
+                        "imageName": "runpod/pytorch:1.0.3",
+                    }
+                ),
+            )
+        return super().runpodctl(*args, timeout_seconds=timeout_seconds)
+
+
+def _acquisition_engine(
+    bundle: RunBundle,
+    store: RunSetStateStore,
+    transport: AcquisitionLeaseTransport,
+    *,
+    datacenters: tuple[str, ...] = ("CA-MTL-1", "EU-CZ-1"),
+) -> tuple[StageEngine, RunPodOrchestrationDriver, RunSetState]:
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            image=bundle.environment.image_id or "",
+            datacenters=datacenters,
+            poll_seconds=1,
+        ),
+        transport=transport,
+    )
+    driver._preflight_passed = True
+    state = _state(bundle)
+    store.save(state)
+    engine = StageEngine(bundle=bundle, driver=driver, store=store)
+    engine._signal_supervisor = _ScopedSignalSupervisor()
+    return engine, driver, state
 
 
 class _RunPodFixtureCompiler:
@@ -557,6 +646,268 @@ def test_stage_engine_governs_runpod_provisioning(tmp_path: Path) -> None:
     with pytest.raises(OrchestrationStageError, match="wall-clock"):
         engine.run(stop_after_stage=STAGE_PROVISION)
     assert driver.calls == 1 and store.load().provisioning_stop_reason == "wall-clock-exceeded"
+
+
+def test_engine_persists_one_intent_before_each_single_create(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "lease-state.json")
+    transport = AcquisitionLeaseTransport(store)
+    transport.create_results = [
+        CommandResult(400, '{"statusCode":400,"code":"invalid_request"}'),
+        CommandResult(0, '{"id":"pod-second"}'),
+    ]
+    transport.register_on_create = [(), ("pod-second",)]
+    engine, _driver, state = _acquisition_engine(bundle, store, transport)
+
+    state, outputs = engine._engine_owned_provision(state, attempt_ordinal=1)
+
+    assert outputs["pod_id"] == "pod-second"
+    persisted = store.load()
+    assert [intent.state for intent in persisted.acquisition_intents] == [
+        "failed-unacquired",
+        "acquired",
+    ]
+    assert [intent.datacenter_candidate for intent in persisted.acquisition_intents] == [
+        "CA-MTL-1",
+        "EU-CZ-1",
+    ]
+    assert len(set(transport.create_names)) == 2
+
+
+def test_ambiguous_create_zero_match_stops_without_next_candidate(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "ambiguous-state.json")
+    transport = AcquisitionLeaseTransport(store)
+    transport.create_results = [CommandResult(0, "garbage")]
+    engine, _driver, state = _acquisition_engine(bundle, store, transport)
+
+    with pytest.raises(OrchestrationStageError, match="ambiguous-acquisition-unresolved"):
+        engine._engine_owned_provision(state, attempt_ordinal=1)
+
+    persisted = store.load()
+    assert len(transport.create_names) == 1
+    assert persisted.acquisition_intents[0].state == "ambiguous-unresolved"
+    assert persisted.provisioning_stop_reason == "ambiguous-acquisition-unresolved"
+    assert "unresolved_owned_pod" in persisted.acquisition_intents[0].evidence
+
+
+@pytest.mark.parametrize("pod_ids", [("pod-lost",), ("pod-duplicate-a", "pod-duplicate-b")])
+def test_ambiguous_create_adopts_all_name_matches_before_retry(
+    tmp_path: Path,
+    pod_ids: tuple[str, ...],
+) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "lost-response-state.json")
+    transport = AcquisitionLeaseTransport(store)
+    transport.create_results = [CommandResult(0, "not-json")]
+    transport.register_on_create = [pod_ids]
+    engine, _driver, state = _acquisition_engine(bundle, store, transport)
+
+    with pytest.raises(ProvisioningAttemptError) as raised:
+        engine._engine_owned_provision(state, attempt_ordinal=1)
+
+    persisted = store.load()
+    intent = persisted.acquisition_intents[0]
+    assert raised.value.retryable is True
+    assert len(transport.create_names) == 1
+    assert intent.state == "resolved-torn-down"
+    assert intent.pod_ids == list(pod_ids)
+    assert len(intent.teardown_evidence) == len(pod_ids)
+    assert transport.inventory == {}
+    assert all(("remove", "pod", pod_id) in transport.runpodctl_calls for pod_id in pod_ids)
+
+
+def test_restart_reconciles_intended_create_before_new_acquisition(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "restart-intent-state.json")
+    first_transport = AcquisitionLeaseTransport(store)
+    first_engine, first_driver, state = _acquisition_engine(
+        bundle, store, first_transport, datacenters=("CA-MTL-1",)
+    )
+    state, intent = first_engine._new_acquisition_intent(
+        state,
+        attempt_ordinal=1,
+        candidate_ordinal=1,
+        candidate="CA-MTL-1",
+    )
+    pod_name = first_driver.acquisition_pod_name(intent.intent_id)
+
+    second_transport = AcquisitionLeaseTransport(store)
+    second_transport.inventory["pod-after-kill"] = pod_name
+    second_driver = RunPodOrchestrationDriver(
+        config=first_driver.config,
+        transport=second_transport,
+    )
+    second_engine = StageEngine(bundle=bundle, driver=second_driver, store=store)
+    reconciled = second_engine._reconcile_acquisition_intents(store.load())
+
+    assert reconciled.acquisition_intents[0].state == "resolved-torn-down"
+    assert second_transport.inventory == {}
+
+
+def test_reconciliation_defers_signal_through_bounded_verified_teardown(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "signal-reconcile-state.json")
+    transport = AcquisitionLeaseTransport(store)
+    engine, driver, state = _acquisition_engine(bundle, store, transport)
+    state, intent = engine._new_acquisition_intent(
+        state,
+        attempt_ordinal=1,
+        candidate_ordinal=1,
+        candidate="CA-MTL-1",
+    )
+    transport.inventory["pod-signal"] = driver.acquisition_pod_name(intent.intent_id)
+    supervisor = _ScopedSignalSupervisor()
+    original_observe = driver.observe_pod_inventory
+
+    def signalled_observe(**kwargs: Any) -> Any:
+        supervisor._handle(signal.SIGTERM, None)
+        return original_observe(**kwargs)
+
+    driver.observe_pod_inventory = signalled_observe
+    with pytest.raises(_DeferredOperatorSignal):
+        with supervisor.defer_signals():
+            engine._reconcile_acquisition_intents(state)
+
+    assert transport.inventory == {}
+    assert store.load().acquisition_intents[0].state == "resolved-torn-down"
+    assert all(
+        timeout is None or timeout <= driver.reconciliation_timeout_seconds
+        for timeout in transport.runpodctl_timeouts
+    )
+
+
+def test_reconciliation_primary_failure_is_not_masked_by_deferred_signal(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "signal-primary-state.json")
+    transport = AcquisitionLeaseTransport(store)
+    engine, driver, state = _acquisition_engine(bundle, store, transport)
+    state, _intent = engine._new_acquisition_intent(
+        state,
+        attempt_ordinal=1,
+        candidate_ordinal=1,
+        candidate="CA-MTL-1",
+    )
+    supervisor = _ScopedSignalSupervisor()
+
+    def failing_observe(**_kwargs: Any) -> Any:
+        supervisor._handle(signal.SIGTERM, None)
+        raise RunPodDriverError("primary inventory failure")
+
+    driver.observe_pod_inventory = failing_observe
+    with pytest.raises(RunPodDriverError, match="primary inventory failure"):
+        with supervisor.defer_signals():
+            engine._reconcile_acquisition_intents(state)
+
+
+def test_fresh_driver_restores_active_lease_endpoint_and_tears_down_real_pod(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "active-lease-state.json")
+    transport = AcquisitionLeaseTransport(store)
+    engine, driver, state = _acquisition_engine(bundle, store, transport)
+    state, intent = engine._new_acquisition_intent(
+        state,
+        attempt_ordinal=1,
+        candidate_ordinal=1,
+        candidate="CA-MTL-1",
+    )
+    state = engine._replace_acquisition_intent(
+        state, intent.intent_id, state="acquired", pod_ids=["pod-active"]
+    ).model_copy(
+        update={
+            "provision_record": {
+                "driver": "runpod",
+                "pod_id": "pod-active",
+                "ssh_host": "203.0.113.9",
+                "ssh_port": 2222,
+                "provided_pod": False,
+                "provided_endpoint": False,
+                "teardown_allowed": True,
+                "intent_id": intent.intent_id,
+            }
+        }
+    )
+    store.save(state)
+
+    fresh_transport = AcquisitionLeaseTransport(store)
+    fresh_transport.inventory["pod-active"] = driver.acquisition_pod_name(intent.intent_id)
+    fresh_driver = RunPodOrchestrationDriver(config=driver.config, transport=fresh_transport)
+    fresh_engine = StageEngine(bundle=bundle, driver=fresh_driver, store=store)
+    fresh_engine._restore_driver_from_provision_record(state)
+    assert fresh_driver._pod_id == "pod-active"
+    assert fresh_driver._endpoint is not None
+    assert fresh_driver._endpoint.ip == "203.0.113.9"
+    assert fresh_driver._endpoint.port == 2222
+    teardown = fresh_driver.teardown(bundle, state)
+
+    assert teardown["pod_id"] == "pod-active"
+    assert teardown["pod_absence"]["verified"] is True
+
+
+def test_acquired_intent_without_verified_teardown_blocks_retry(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "unverified-acquired-state.json")
+    transport = AcquisitionLeaseTransport(store)
+    engine, _driver, state = _acquisition_engine(bundle, store, transport)
+    state, intent = engine._new_acquisition_intent(
+        state,
+        attempt_ordinal=1,
+        candidate_ordinal=1,
+        candidate="CA-MTL-1",
+    )
+    state = engine._replace_acquisition_intent(
+        state, intent.intent_id, state="acquired", pod_ids=["pod-missing"]
+    )
+    store.save(state)
+
+    with pytest.raises(OrchestrationStageError, match="ambiguous-acquisition-unresolved"):
+        engine._reconcile_acquisition_intents(state)
+
+    assert store.load().acquisition_intents[0].state == "ambiguous-unresolved"
+
+
+def test_deadman_is_installed_after_endpoint_and_before_gpu_readiness(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, deadman_enabled=True)
+    store = RunSetStateStore(bundle.run_set_dir / "early-deadman-state.json")
+    transport = AcquisitionLeaseTransport(store)
+    transport.create_results = [CommandResult(0, '{"id":"pod-deadman"}')]
+    transport.register_on_create = [("pod-deadman",)]
+    engine, _driver, state = _acquisition_engine(
+        bundle, store, transport, datacenters=("CA-MTL-1",)
+    )
+
+    engine._engine_owned_provision(state, attempt_ordinal=1)
+
+    watchdog_index = next(
+        index
+        for index, command in enumerate(transport.ssh_commands)
+        if "deadman.pid" in command
+    )
+    gpu_index = transport.ssh_commands.index("nvidia-smi >/dev/null")
+    assert watchdog_index < gpu_index
+
+
+def test_provided_endpoint_never_creates_or_adopts_acquisition_intents(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(ssh_host="203.0.113.5", ssh_port=2222),
+        transport=FakeRunPodTransport(),
+    )
+    engine = StageEngine(bundle=bundle, driver=driver)
+
+    state, outputs = engine._stage_provision(_state(bundle))
+    fresh = RunPodOrchestrationDriver(transport=FakeRunPodTransport())
+    fresh.restore_from_provision_record(outputs)
+
+    assert outputs["provided_endpoint"] is True
+    assert state.acquisition_intents == []
+    assert fresh.engine_acquisition_required() is False
 
 
 @pytest.mark.parametrize(
@@ -1126,7 +1477,7 @@ def test_create_pod_uses_current_runpodctl_pod_create_surface(tmp_path: Path) ->
         "pod",
         "create",
         "--name",
-        "feedbax-orchestration-2026-01-02-deadbeef",
+        "feedbax-orchestration-intent-123",
         "--image",
         bundle.environment.image_id,
         "--ports",
@@ -1134,15 +1485,13 @@ def test_create_pod_uses_current_runpodctl_pod_create_surface(tmp_path: Path) ->
         "--gpu-id",
         "NVIDIA GeForce RTX 4090",
     )
-    first_call = (
+    expected_call = (
         *base_call,
         "--data-center-ids",
         "CA-MTL-1",
         "--env",
         '{"FEEDBAX_RUNPOD_API_KEY": "dummy-key"}',
     )
-    expected_call = (*base_call, "--data-center-ids", "EU-CZ-1", *first_call[-2:])
-    transport.queue_runpodctl(first_call, CommandResult(1, "", "no capacity"))
     transport.queue_runpodctl(expected_call, CommandResult(0, json.dumps({"id": "pod-123"})))
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
@@ -1154,11 +1503,12 @@ def test_create_pod_uses_current_runpodctl_pod_create_surface(tmp_path: Path) ->
         transport=transport,
     )
 
-    assert driver._create_pod(bundle) == _PodAcquisition(
+    driver._preflight_passed = True
+    assert driver.create_pod_once(bundle, "CA-MTL-1", "intent-123") == _PodAcquisition(
         pod_id="pod-123",
-        accepted_datacenter="EU-CZ-1",
+        accepted_datacenter="CA-MTL-1",
     )
-    assert transport.runpodctl_calls == [first_call, expected_call]
+    assert transport.runpodctl_calls == [expected_call]
     assert "dummy-key" not in repr(driver.config)
     assert "--gpuType" not in expected_call
     assert "--dataCenterId" not in expected_call
@@ -1214,11 +1564,16 @@ def test_provision_record_preserves_accepted_datacenter_when_pod_get_omits_it(
     )
     driver._preflight_passed = True
 
-    record = driver.provision(bundle, _state(bundle))
+    record = driver.finish_acquired_pod(
+        bundle,
+        _PodAcquisition("pod-123", "EU-CZ-1"),
+        "intent-accepted-datacenter",
+    )
     store = RunSetStateStore(tmp_path / "state.json")
     store.save(_state(bundle).model_copy(update={"provision_record": record}))
 
     assert store.load().provision_record["region"] == "EU-CZ-1"
+    assert record["intent_id"] == "intent-accepted-datacenter"
     assert record["provider_observation_basis"] == (
         "accepted singleton runpodctl pod create datacenter; "
         "runpodctl pod get response omitted datacenter"
@@ -1360,11 +1715,15 @@ def test_provision_conflict_tears_down_and_is_not_retried(tmp_path: Path) -> Non
     )
     driver._preflight_passed = True
 
-    with pytest.raises(ProvisioningAttemptError, match="datacenter conflicts") as raised:
-        driver.provision(bundle, _state(bundle))
+    with pytest.raises(RunPodDriverError, match="datacenter conflicts"):
+        driver.finish_acquired_pod(
+            bundle,
+            _PodAcquisition("pod-conflict", "EU-CZ-1"),
+            "intent-conflict",
+        )
+    cleanup = driver.teardown(bundle, _state(bundle))
 
-    assert raised.value.retryable is False
-    assert raised.value.attempt_record["cleanup"]["pod_absence"]["verified"] is True
+    assert cleanup["pod_absence"]["verified"] is True
     assert ("remove", "pod", "pod-conflict") in transport.runpodctl_calls
 
 
@@ -1407,8 +1766,8 @@ def test_keyboard_interrupt_during_provision_self_heals_owned_pod(
     driver._preflight_passed = True
     monkeypatch.setattr(
         driver,
-        "_create_pod",
-        lambda _bundle: _PodAcquisition("pod-interrupt", None),
+        "create_pod_once",
+        lambda _bundle, _candidate, _intent_id: _PodAcquisition("pod-interrupt", None),
     )
 
     def interrupted_endpoint(_pod_id: str) -> Any:
@@ -1416,8 +1775,14 @@ def test_keyboard_interrupt_during_provision_self_heals_owned_pod(
 
     monkeypatch.setattr(driver, "_wait_for_endpoint", interrupted_endpoint)
 
-    with pytest.raises(KeyboardInterrupt):
-        driver.provision(bundle, _state(bundle))
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    state = _state(bundle)
+    store.save(state)
+    engine = StageEngine(bundle=bundle, driver=driver, store=store)
+    with _ScopedSignalSupervisor() as supervisor:
+        engine._signal_supervisor = supervisor
+        with pytest.raises(KeyboardInterrupt):
+            engine._engine_owned_provision(state, attempt_ordinal=1)
 
     assert ("remove", "pod", "pod-interrupt") in transport.runpodctl_calls
     assert driver.has_pending_owned_resource() is False
@@ -1438,8 +1803,8 @@ def test_provision_cleanup_failure_does_not_mask_keyboard_interrupt(
     driver._preflight_passed = True
     monkeypatch.setattr(
         driver,
-        "_create_pod",
-        lambda _bundle: _PodAcquisition("pod-interrupt", None),
+        "create_pod_once",
+        lambda _bundle, _candidate, _intent_id: _PodAcquisition("pod-interrupt", None),
     )
 
     def interrupted_endpoint(_pod_id: str) -> Any:
@@ -1447,8 +1812,14 @@ def test_provision_cleanup_failure_does_not_mask_keyboard_interrupt(
 
     monkeypatch.setattr(driver, "_wait_for_endpoint", interrupted_endpoint)
 
-    with pytest.raises(KeyboardInterrupt):
-        driver.provision(bundle, _state(bundle))
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    state = _state(bundle)
+    store.save(state)
+    engine = StageEngine(bundle=bundle, driver=driver, store=store)
+    with _ScopedSignalSupervisor() as supervisor:
+        engine._signal_supervisor = supervisor
+        with pytest.raises(KeyboardInterrupt):
+            engine._engine_owned_provision(state, attempt_ordinal=1)
 
     assert driver.has_pending_owned_resource() is True
 
@@ -1484,10 +1855,21 @@ def test_provider_authorization_failure_stops_stage_once(tmp_path: Path) -> None
         transport=transport,
     )
     store = RunSetStateStore(bundle.run_set_dir / "authorization.json")
-    with pytest.raises(OrchestrationStageError, match="non-retryable-error"):
-        StageEngine(bundle=bundle, driver=driver, store=store).run(stop_after_stage=STAGE_PROVISION)
-    assert transport.runpodctl_calls.count(call) == 1
-    assert store.load().provisioning_stop_reason == "non-retryable-error"
+    state = _state(bundle)
+    store.save(state)
+    driver._preflight_passed = True
+    driver.create_pod_once = lambda *_args: (_ for _ in ()).throw(
+        AcquisitionCreateError(
+            "unauthorized",
+            clean_rejection=True,
+            evidence={"returncode": 401, "classification": "clean"},
+        )
+    )
+    engine = StageEngine(bundle=bundle, driver=driver, store=store)
+    with pytest.raises(ProvisioningAttemptError) as raised:
+        engine._engine_owned_provision(state, attempt_ordinal=1)
+    assert raised.value.retryable is True
+    assert store.load().acquisition_intents[0].state == "failed-unacquired"
 
 
 def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
@@ -1543,6 +1925,10 @@ def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
         sleep=clock.sleep,
         monotonic=clock.monotonic,
     )
+    acquisitions = iter(
+        [_PodAcquisition("pod-1", None), _PodAcquisition("pod-2", None)]
+    )
+    driver.create_pod_once = lambda *_args: next(acquisitions)
     state = StageEngine(
         bundle=bundle,
         driver=driver,
@@ -1618,9 +2004,15 @@ def test_endpoint_ready_after_deadline_is_rejected_and_torn_down(tmp_path: Path)
         monotonic=clock.monotonic,
     )
     assert all(check.status == "pass" for check in driver.preflight_checks(bundle))
-
-    with pytest.raises(ProvisioningAttemptError, match="timed out waiting.*after 2s"):
-        driver.provision(bundle, _state(bundle))
+    driver.create_pod_once = lambda *_args: _PodAcquisition("pod-late", None)
+    store = RunSetStateStore(bundle.run_set_dir / "late-state.json")
+    state = _state(bundle)
+    store.save(state)
+    engine = StageEngine(bundle=bundle, driver=driver, store=store)
+    with _ScopedSignalSupervisor() as supervisor:
+        engine._signal_supervisor = supervisor
+        with pytest.raises(ProvisioningAttemptError, match="timed out waiting.*after 2s"):
+            engine._engine_owned_provision(state, attempt_ordinal=1)
 
     assert ("remove", "pod", "pod-late") in transport.runpodctl_calls
     assert all("nvidia-smi" not in command for command in transport.ssh_commands)
@@ -2924,6 +3316,9 @@ def test_fresh_runpod_driver_restores_completed_preflight_before_provision(tmp_p
     class RestoredDriver(RunPodOrchestrationDriver):
         provision_calls = 0
 
+        def engine_acquisition_required(self) -> bool:
+            return False
+
         def provision(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
             del bundle, state
             assert self._preflight_passed is True
@@ -4065,7 +4460,7 @@ def test_teardown_records_sanitized_unverified_provider_inventory(
 @pytest.mark.parametrize(
     ("inventory_result", "expected_outcome"),
     [
-        (CommandResult(0, '[{"id":"pod-other"}]'), "non-empty"),
+        (CommandResult(0, '[{"id":"pod-other","name":"other"}]'), "non-empty"),
         (CommandResult(0, "{}"), "invalid"),
         (CommandResult(1, "", "provider unavailable"), "unavailable"),
     ],

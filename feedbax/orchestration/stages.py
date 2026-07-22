@@ -11,6 +11,7 @@ import stat
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -45,7 +46,11 @@ from feedbax.orchestration.conformance import (
     assert_certificate_allows_completed_registration,
     write_conformance_certificate,
 )
-from feedbax.orchestration.drivers.base import OrchestrationDriver, ProvisioningAttemptError
+from feedbax.orchestration.drivers.base import (
+    AcquisitionCreateError,
+    OrchestrationDriver,
+    ProvisioningAttemptError,
+)
 from feedbax.orchestration.drivers.native_execution import (
     NATIVE_TRAINING_COLLECTION_OUTPUTS,
     missing_native_training_collection_outputs,
@@ -56,6 +61,7 @@ from feedbax.orchestration.input_materialization import preflight_resolved_input
 from feedbax.orchestration.revision import FeedbaxRevisionError, assert_feedbax_revision_pin
 from feedbax.orchestration import schedule_eval
 from feedbax.orchestration.state import (
+    AcquisitionIntent,
     PreflightCheckEntry,
     RowState,
     RunSetState,
@@ -258,11 +264,15 @@ class _ScopedSignalSupervisor:
     def defer_signals(self) -> Iterator[None]:
         """Defer operator signals until the bounded cleanup scope exits."""
         self._deferring = True
+        body_failed = False
         try:
             yield
+        except BaseException:
+            body_failed = True
+            raise
         finally:
             self._deferring = False
-        if self._received is not None:
+        if self._received is not None and not body_failed:
             raise _DeferredOperatorSignal(self._received)
 
     def _handle(self, signum: int, _frame: Any) -> None:
@@ -342,6 +352,7 @@ class StageEngine:
         self._monotonic = monotonic
         self._wall_time = wall_time
         self._interruption_probe = interruption_probe
+        self._signal_supervisor: _ScopedSignalSupervisor | None = None
 
     @classmethod
     def from_request(
@@ -375,14 +386,19 @@ class StageEngine:
 
         Main-thread SIGINT/SIGTERM handling is scoped to this call. Observable
         exits run bounded cleanup before the original exception or signal is
-        re-raised. SIGKILL and provider creation responses whose pod identity is
-        ambiguous are outside this process-level contract.
+        re-raised. The durable acquisition intent is the only automatic coverage
+        for SIGKILL before an acquired pod's SSH endpoint becomes available; a
+        later local process or operator must reconcile it.
         """
         initial = self._initial_state()
         with _ScopedSignalSupervisor() as signal_supervisor:
+            self._signal_supervisor = signal_supervisor
             with self.store.lock(break_stale=break_stale_lock):
                 state = self.store.initialize(initial)
                 state = self._hydrate_completed_assembly(state)
+                self._restore_driver_from_provision_record(state)
+                with signal_supervisor.defer_signals():
+                    state = self._reconcile_acquisition_intents(state)
                 state = self._restore_completed_driver_preflight(state)
                 if retry_failed_certification:
                     retry_state = self._reset_failed_certification(state)
@@ -453,6 +469,14 @@ class StageEngine:
             ),
             stages={stage_id: StageState() for stage_id in STAGE_ORDER},
         )
+
+    def _restore_driver_from_provision_record(self, state: RunSetState) -> None:
+        """Rehydrate process-local remote identity before any resumed stage runs."""
+        if state.provision_record is None:
+            return
+        restore = getattr(self.driver, "restore_from_provision_record", None)
+        if callable(restore):
+            restore(state.provision_record)
 
     def _run_stage(self, stage_id: str, state: RunSetState) -> RunSetState:
         limit = RETRY_LIMITS.get(stage_id, 1)
@@ -646,6 +670,298 @@ class StageEngine:
             outputs["repo_realization_plan"] = state.repo_realization_plan.model_dump(mode="json")
         return state, outputs
 
+    def _uses_engine_acquisition(self) -> bool:
+        required = getattr(self.driver, "engine_acquisition_required", None)
+        return bool(callable(required) and required())
+
+    def _replace_acquisition_intent(
+        self,
+        run_state: RunSetState,
+        intent_id: str,
+        **updates: Any,
+    ) -> RunSetState:
+        intents = list(run_state.acquisition_intents)
+        for index, intent in enumerate(intents):
+            if intent.intent_id == intent_id:
+                intents[index] = intent.model_copy(
+                    update={**updates, "updated_at": utc_now()}
+                )
+                return run_state.model_copy(
+                    update={"acquisition_intents": intents, "updated_at": utc_now()}
+                )
+        raise OrchestrationStageError(f"unknown acquisition intent {intent_id!r}")
+
+    def _new_acquisition_intent(
+        self,
+        state: RunSetState,
+        *,
+        attempt_ordinal: int,
+        candidate_ordinal: int,
+        candidate: str | None,
+    ) -> tuple[RunSetState, AcquisitionIntent]:
+        identity = self.driver.acquisition_config_identity(self.bundle)
+        nonce = uuid.uuid4().hex[:12]
+        intent = AcquisitionIntent(
+            intent_id=(
+                f"{state.run_set_id}-a{attempt_ordinal}-c{candidate_ordinal}-{nonce}"
+            ),
+            datacenter_candidate=candidate,
+            config_identity=identity,
+        )
+        state = state.model_copy(
+            update={
+                "acquisition_intents": [*state.acquisition_intents, intent],
+                "updated_at": utc_now(),
+            }
+        )
+        # This save, including file and parent-directory fsync, is the WAL boundary.
+        self.store.save(state)
+        return state, intent
+
+    def _engine_owned_provision(
+        self,
+        state: RunSetState,
+        *,
+        attempt_ordinal: int,
+    ) -> tuple[RunSetState, Mapping[str, Any]]:
+        candidates = tuple(self.driver.acquisition_candidates(self.bundle))
+        if not candidates:
+            raise OrchestrationStageError("engine-owned acquisition has no candidates")
+        last_clean_error = "provider rejected every acquisition candidate"
+        for candidate_ordinal, candidate in enumerate(candidates, start=1):
+            state, intent = self._new_acquisition_intent(
+                state,
+                attempt_ordinal=attempt_ordinal,
+                candidate_ordinal=candidate_ordinal,
+                candidate=candidate,
+            )
+            try:
+                acquisition = self.driver.create_pod_once(
+                    self.bundle, candidate, intent.intent_id
+                )
+            except AcquisitionCreateError as exc:
+                if exc.clean_rejection:
+                    last_clean_error = str(exc)
+                    state = self._replace_acquisition_intent(
+                        state,
+                        intent.intent_id,
+                        state="failed-unacquired",
+                        evidence={"create": exc.evidence},
+                    )
+                    self.store.save(state)
+                    continue
+                state = self._replace_acquisition_intent(
+                    state,
+                    intent.intent_id,
+                    state="ambiguous",
+                    evidence={"create": exc.evidence},
+                )
+                self.store.save(state)
+                if self._signal_supervisor is None:
+                    raise OrchestrationStageError(
+                        "acquisition reconciliation requires the run signal supervisor"
+                    ) from exc
+                with self._signal_supervisor.defer_signals():
+                    state = self._reconcile_acquisition_intents(state)
+                raise ProvisioningAttemptError(
+                    str(exc),
+                    retryable=True,
+                    attempt_record={
+                        "driver": "runpod",
+                        "acquired": False,
+                        "intent_id": intent.intent_id,
+                        "reconciliation": "resolved-torn-down",
+                    },
+                ) from exc
+
+            state = self._replace_acquisition_intent(
+                state,
+                intent.intent_id,
+                state="acquired",
+                pod_ids=[acquisition.pod_id],
+                evidence={
+                    "create": {
+                        "classification": "acquired",
+                        "pod_id": acquisition.pod_id,
+                    }
+                },
+            )
+            self.store.save(state)
+            try:
+                outputs = dict(
+                    self.driver.finish_acquired_pod(
+                        self.bundle, acquisition, intent.intent_id
+                    )
+                )
+            except BaseException as exc:
+                cleanup: Mapping[str, Any] | None = None
+                failure_evidence = getattr(
+                    self.driver, "acquisition_failure_evidence", lambda: {}
+                )()
+                try:
+                    cleanup = self.driver.teardown(self.bundle, state)
+                except Exception as teardown_exc:
+                    cleanup = dict(getattr(teardown_exc, "teardown_outputs", {}))
+                    if not isinstance(exc, Exception):
+                        raise exc
+                    raise ProvisioningAttemptError(
+                        f"{exc}; automatic teardown failed: {teardown_exc}",
+                        retryable=False,
+                        attempt_record={
+                            "driver": "runpod",
+                            "acquired": True,
+                            "pod_id": acquisition.pod_id,
+                            "intent_id": intent.intent_id,
+                            **dict(failure_evidence),
+                            "cleanup": cleanup,
+                        },
+                        stop_reason="teardown-failure",
+                    ) from exc
+                state = self._project_intent_teardown(state, cleanup)
+                self.store.save(state)
+                if not isinstance(exc, Exception):
+                    raise
+                raise ProvisioningAttemptError(
+                    str(exc),
+                    retryable=True,
+                    attempt_record={
+                        "driver": "runpod",
+                        "acquired": True,
+                        "pod_id": acquisition.pod_id,
+                        "intent_id": intent.intent_id,
+                        **dict(failure_evidence),
+                        "cleanup": dict(cleanup),
+                    },
+                ) from exc
+            return state, outputs
+        raise ProvisioningAttemptError(
+            last_clean_error,
+            retryable=True,
+            attempt_record={"driver": "runpod", "acquired": False},
+        )
+
+    def _reconcile_acquisition_intents(self, state: RunSetState) -> RunSetState:
+        if not self._uses_engine_acquisition():
+            return state
+        provision_intent_id = (
+            state.provision_record.get("intent_id")
+            if isinstance(state.provision_record, Mapping)
+            else None
+        )
+        pending = [
+            intent
+            for intent in state.acquisition_intents
+            if intent.state in {"intended", "ambiguous", "ambiguous-unresolved"}
+            or (intent.state == "acquired" and intent.intent_id != provision_intent_id)
+        ]
+        if not pending:
+            return state
+        timeout = float(getattr(self.driver, "reconciliation_timeout_seconds", 60.0))
+        deadline = self._monotonic() + timeout
+        records, inventory_evidence = self.driver.observe_pod_inventory(
+            timeout_seconds=max(0.0, deadline - self._monotonic())
+        )
+        pod_name = getattr(self.driver, "acquisition_pod_name", None)
+        if not callable(pod_name):
+            raise OrchestrationStageError("acquisition driver does not expose intent pod names")
+        for original in pending:
+            expected_name = pod_name(original.intent_id)
+            matches = [record for record in records if record.name == expected_name]
+            evidence = {
+                **original.evidence,
+                "inventory": dict(inventory_evidence),
+                "expected_name": expected_name,
+                "matched_pod_ids": [record.pod_id for record in matches],
+            }
+            if not matches:
+                evidence["unresolved_owned_pod"] = {
+                    "pod_id": None,
+                    "name": expected_name,
+                    "last_known_state": original.state,
+                    "reason": "bounded inventory absence cannot prove create finality",
+                }
+                state = self._replace_acquisition_intent(
+                    state,
+                    original.intent_id,
+                    state="ambiguous-unresolved",
+                    evidence=evidence,
+                )
+                self.store.save(state)
+                self._stop_provisioning(
+                    state,
+                    list(state.provisioning_attempts),
+                    "ambiguous-acquisition-unresolved",
+                )
+                raise OrchestrationStageError(
+                    "provisioning stopped: ambiguous-acquisition-unresolved"
+                )
+            state = self._replace_acquisition_intent(
+                state,
+                original.intent_id,
+                state="ambiguous",
+                pod_ids=[record.pod_id for record in matches],
+                evidence=evidence,
+            )
+            self.store.save(state)
+            teardown_evidence = list(original.teardown_evidence)
+            for record in matches:
+                if self._monotonic() >= deadline:
+                    raise OrchestrationStageError(
+                        "acquisition reconciliation exceeded its teardown deadline"
+                    )
+                self.driver.adopt_owned_pod(
+                    record.pod_id,
+                    timeout_seconds=max(0.0, deadline - self._monotonic()),
+                )
+                adopted_state = state.model_copy(
+                    update={
+                        "provision_record": {
+                            "driver": "runpod",
+                            "pod_id": record.pod_id,
+                            "provided_pod": False,
+                            "provided_endpoint": False,
+                            "teardown_allowed": True,
+                            "intent_id": original.intent_id,
+                        }
+                    }
+                )
+                try:
+                    teardown = dict(self.driver.teardown(self.bundle, adopted_state))
+                except Exception as exc:
+                    outputs = dict(getattr(exc, "teardown_outputs", {}))
+                    evidence["unresolved_owned_pod"] = outputs.get(
+                        "unresolved_owned_pod",
+                        {
+                            "pod_id": record.pod_id,
+                            "last_known_state": "unknown",
+                            "reason": str(exc),
+                        },
+                    )
+                    state = self._replace_acquisition_intent(
+                        state,
+                        original.intent_id,
+                        state="ambiguous-unresolved",
+                        evidence=evidence,
+                        teardown_evidence=[*teardown_evidence, outputs],
+                    )
+                    self.store.save(state)
+                    raise
+                teardown_evidence.append(teardown)
+                state = self._replace_acquisition_intent(
+                    state,
+                    original.intent_id,
+                    teardown_evidence=teardown_evidence,
+                )
+                self.store.save(state)
+            state = self._replace_acquisition_intent(
+                state,
+                original.intent_id,
+                state="resolved-torn-down",
+                teardown_evidence=teardown_evidence,
+            )
+            self.store.save(state)
+        return state
+
     def _stage_provision(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         """Provision RunPod through one durable, budget-governed retry authority."""
         if not getattr(self.driver, "govern_provisioning_retries", False):
@@ -673,7 +989,14 @@ class StageEngine:
                 self._stop_provisioning(state, attempts, "wall-clock-exceeded")
                 raise BudgetExceeded("provisioning exceeded its wall-clock boundary")
             try:
-                outputs = dict(self.driver.provision(self.bundle, state))
+                if self._uses_engine_acquisition():
+                    state, provision_outputs = self._engine_owned_provision(
+                        state,
+                        attempt_ordinal=len(attempts) + 1,
+                    )
+                    outputs = dict(provision_outputs)
+                else:
+                    outputs = dict(self.driver.provision(self.bundle, state))
             except ProvisioningAttemptError as exc:
                 finished_at = self._wall_time()
                 attempt = {
@@ -1457,7 +1780,38 @@ class StageEngine:
             }
         )
         state = state.with_stage(STAGE_TEARDOWN, updated)
+        if status == "completed":
+            state = self._project_intent_teardown(state, teardown_outputs)
         self.store.save(state)
+        return state
+
+    def _project_intent_teardown(
+        self,
+        state: RunSetState,
+        teardown: Mapping[str, Any],
+    ) -> RunSetState:
+        """Join verified standard teardown evidence back to its owning intent."""
+        absence = teardown.get("pod_absence")
+        pod_id = teardown.get("pod_id")
+        if not (
+            isinstance(absence, Mapping)
+            and absence.get("verified") is True
+            and isinstance(pod_id, str)
+        ):
+            return state
+        intent_id = (
+            state.provision_record.get("intent_id")
+            if isinstance(state.provision_record, Mapping)
+            else None
+        )
+        for intent in state.acquisition_intents:
+            if intent.intent_id == intent_id or pod_id in intent.pod_ids:
+                return self._replace_acquisition_intent(
+                    state,
+                    intent.intent_id,
+                    state="resolved-torn-down",
+                    teardown_evidence=[*intent.teardown_evidence, dict(teardown)],
+                )
         return state
 
     def _provision_completed(self, state: RunSetState) -> bool:

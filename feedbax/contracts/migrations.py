@@ -300,6 +300,7 @@ from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_VERSION,
     RUN_SET_STATE_SCHEMA_VERSION_V1,
     RUN_SET_STATE_SCHEMA_VERSION_V2,
+    RUN_SET_STATE_SCHEMA_VERSION_V3,
 )
 from feedbax.orchestration.repo_realization import (
     REPO_REALIZATION_PLAN_SCHEMA_ID,
@@ -3085,6 +3086,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "feedbax.orchestration.run_set_state.v0",
                 RUN_SET_STATE_SCHEMA_VERSION_V1,
                 RUN_SET_STATE_SCHEMA_VERSION_V2,
+                RUN_SET_STATE_SCHEMA_VERSION_V3,
             ),
             required_tests=(
                 "tests/test_orchestration_core.py",

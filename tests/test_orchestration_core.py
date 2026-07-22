@@ -133,6 +133,7 @@ from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_VERSION,
     RUN_SET_STATE_SCHEMA_VERSION_V1,
     RUN_SET_STATE_SCHEMA_VERSION_V2,
+    RUN_SET_STATE_SCHEMA_VERSION_V3,
     RowState,
     RunSetState,
     RunSetStateStore,
@@ -1070,6 +1071,24 @@ def test_certify_rejects_resumed_state_without_completed_stage_inputs(tmp_path: 
         engine._stage_certify(state)
 
 
+def test_state_save_fsyncs_file_and_parent_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fsynced_modes: list[int] = []
+    original_fsync = os.fsync
+
+    def recording_fsync(fd: int) -> None:
+        fsynced_modes.append(os.fstat(fd).st_mode)
+        original_fsync(fd)
+
+    monkeypatch.setattr("feedbax.orchestration.state.os.fsync", recording_fsync)
+    RunSetStateStore(tmp_path / "state.json").save(RunSetState(run_set_id="set"))
+
+    assert any(mode & 0o170000 == 0o100000 for mode in fsynced_modes)
+    assert any(mode & 0o170000 == 0o040000 for mode in fsynced_modes)
+
+
 def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> None:
     store = RunSetStateStore(tmp_path / "state.json")
     old = RunSetState(run_set_id="set", rows={"row": RowState(status="pending")})
@@ -1101,7 +1120,11 @@ def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> N
     assert (
         default_spec_registry.resolve("RunSetState").current_version == RUN_SET_STATE_SCHEMA_VERSION
     )
-    for old_version in (RUN_SET_STATE_SCHEMA_VERSION_V1, RUN_SET_STATE_SCHEMA_VERSION_V2):
+    for old_version in (
+        RUN_SET_STATE_SCHEMA_VERSION_V1,
+        RUN_SET_STATE_SCHEMA_VERSION_V2,
+        RUN_SET_STATE_SCHEMA_VERSION_V3,
+    ):
         stale_state = old.model_dump(mode="json")
         stale_state["schema_version"] = old_version
         store.path.write_text(json.dumps(stale_state), encoding="utf-8")
