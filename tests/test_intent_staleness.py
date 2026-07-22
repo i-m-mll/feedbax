@@ -155,3 +155,18 @@ def test_provider_staleness_cli_current_is_strict_clean(tmp_path: Path, capsys) 
 
     assert provider_main(["staleness", str(root_path), "--strict"]) == 0
     assert capsys.readouterr().out == "No stale or unresolved contract identities.\n"
+
+
+def test_provider_staleness_cli_unresolved_only_is_strict_clean(
+    tmp_path: Path, capsys
+) -> None:
+    root = _root(
+        {"schema_id": "example.spec.unknown", "schema_version": "example.spec.unknown.v1"}
+    )
+    root_path = tmp_path / "root.json"
+    root_path.write_text(root.model_dump_json(), encoding="utf-8")
+
+    assert provider_main(["staleness", str(root_path), "--strict"]) == 0
+    output = capsys.readouterr().out
+    assert "Unresolved contract identities:" in output
+    assert "example.spec.unknown: example.spec.unknown.v1" in output
