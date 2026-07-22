@@ -8,6 +8,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from feedbax.contracts.intent_diff import StalenessReport, staleness_report
+from feedbax.contracts.run_composition import (
+    AuthoredIntentParent,
+    CompositionNode,
+    CompositionParent,
+    flatten_composition,
+)
 from feedbax.persistence.manifest_index import rebuild_manifest_index
 from feedbax.integrations.provider import health, provider_manifest, registry_snapshot, validate_spec
 from feedbax.execution.backends import write_modal_app
@@ -77,6 +84,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to write the generated Modal app",
     )
 
+    staleness_parser = subparsers.add_parser(
+        "staleness", help="Report stale contract identities in a composed spec"
+    )
+    staleness_parser.add_argument("path", help="CompositionNode JSON path, or '-' for stdin")
+    staleness_parser.add_argument("--json", action="store_true", help="Emit report JSON")
+    staleness_parser.add_argument(
+        "--strict", action="store_true", help="Exit nonzero when stale identities are found"
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "health":
@@ -113,9 +129,48 @@ def main(argv: list[str] | None = None) -> int:
         output = write_modal_app(spec, args.output)
         _write_json({"path": str(output)})
         return 0
+    if args.command == "staleness":
+        report = _composition_staleness_report(args.path)
+        if args.json:
+            _write_json(report)
+        else:
+            _write_staleness_report(report)
+        return 1 if args.strict and report.stale else 0
 
     parser.error(f"Unhandled command: {args.command}")
     return 2
+
+
+def _composition_staleness_report(path: str) -> StalenessReport:
+    root = Path.cwd() if path == "-" else Path(path).resolve().parent
+    node = CompositionNode.model_validate(_read_json(path))
+
+    def resolve_parent(parent: CompositionParent) -> CompositionNode | dict[str, Any]:
+        payload = _read_json(str(root / parent.ref))
+        if isinstance(parent, AuthoredIntentParent):
+            return CompositionNode.model_validate(payload)
+        return payload
+
+    return staleness_report(flatten_composition(node, resolve_parent))
+
+
+def _write_staleness_report(report: StalenessReport) -> None:
+    if not report.stale and not report.unresolved:
+        sys.stdout.write("No stale or unresolved contract identities.\n")
+        return
+    if report.stale:
+        sys.stdout.write("Stale contract identities:\n")
+        for entry in report.stale:
+            layer = entry.layer or "<base>"
+            sys.stdout.write(
+                f"- {entry.schema_id}: {entry.found_version} -> {entry.current_version} "
+                f"(layer: {layer})\n"
+            )
+    if report.unresolved:
+        sys.stdout.write("Unresolved contract identities:\n")
+        for entry in report.unresolved:
+            layer = entry.layer or "<base>"
+            sys.stdout.write(f"- {entry.schema_id}: {entry.schema_version} (layer: {layer})\n")
 
 
 if __name__ == "__main__":
