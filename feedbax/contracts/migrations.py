@@ -21,6 +21,7 @@ from feedbax.contracts.checkpoints import (
     CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
     CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
     CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V2,
+    CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V3,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION_V0,
@@ -1087,6 +1088,21 @@ def _migrate_checkpoint_fork_plan_v2_to_v3_payload(payload: Mapping[str, Any]) -
             "CheckpointForkPlan v2 transforms cannot migrate safely because their "
             "implementation version and sha256 were not pinned; re-author as v3"
         )
+    migrated["schema_id"] = CHECKPOINT_FORK_PLAN_SCHEMA_ID
+    migrated["schema_version"] = CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V3
+    return migrated
+
+
+def _migrate_checkpoint_fork_plan_v3_to_v4_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Add the empty derived-digest migration-history field introduced by v4.
+
+    v3 plans predate the top-level ``migration_history`` audit field. No plan
+    has yet recorded a sanctioned derived-digest migration, so the migrated plan
+    starts with an empty history; the field is hash-visible on the plan.
+    """
+    migrated = dict(payload)
+    if migrated.get("migration_history") is None:
+        migrated["migration_history"] = []
     migrated["schema_id"] = CHECKPOINT_FORK_PLAN_SCHEMA_ID
     migrated["schema_version"] = CHECKPOINT_FORK_PLAN_SCHEMA_VERSION
     return migrated
@@ -2950,6 +2966,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             supported_old_versions=(
                 CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
                 CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V2,
+                CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V3,
             ),
             rejected_old_versions=("feedbax.spec.training_checkpoint_fork_plan.v0",),
             required_tests=(
@@ -4430,10 +4447,20 @@ default_spec_registry.register_migration(
     "CheckpointForkPlan",
     SchemaMigration(
         source_version=CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V2,
-        target_version=CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
+        target_version=CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V3,
         migration_id="checkpoint-fork-plan-v2-to-v3-transform-pins",
         migrate=_migrate_checkpoint_fork_plan_v2_to_v3_payload,
         description="Preserve transform-free plans and reject unpinned transforms.",
+    ),
+)
+default_spec_registry.register_migration(
+    "CheckpointForkPlan",
+    SchemaMigration(
+        source_version=CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V3,
+        target_version=CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
+        migration_id="checkpoint-fork-plan-v3-to-v4-migration-history",
+        migrate=_migrate_checkpoint_fork_plan_v3_to_v4_payload,
+        description="Add the empty top-level derived-digest migration-history field.",
     ),
 )
 default_spec_registry.register_migration(

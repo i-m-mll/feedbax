@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import Field, model_validator
@@ -20,7 +21,9 @@ from feedbax.contracts.manifest import (
     ParentRef,
     StrictModel,
     canonical_json_bytes,
+    feedbax_version,
     sha256_bytes,
+    utc_now,
 )
 from feedbax.contracts.worker import (
     ConsistencyPredicateSpec,
@@ -89,7 +92,14 @@ CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION = "feedbax.spec.training_checkpoi
 CHECKPOINT_FORK_PLAN_SCHEMA_ID = "feedbax.spec.training_checkpoint_fork_plan"
 CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1 = "feedbax.spec.training_checkpoint_fork_plan.v1"
 CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V2 = "feedbax.spec.training_checkpoint_fork_plan.v2"
-CHECKPOINT_FORK_PLAN_SCHEMA_VERSION = "feedbax.spec.training_checkpoint_fork_plan.v3"
+CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V3 = "feedbax.spec.training_checkpoint_fork_plan.v3"
+CHECKPOINT_FORK_PLAN_SCHEMA_VERSION = "feedbax.spec.training_checkpoint_fork_plan.v4"
+CHECKPOINT_DIGEST_MIGRATION_RECORD_SCHEMA_ID = (
+    "feedbax.manifest.training_checkpoint.digest_migration"
+)
+CHECKPOINT_DIGEST_MIGRATION_RECORD_SCHEMA_VERSION = (
+    "feedbax.manifest.training_checkpoint.digest_migration.v1"
+)
 
 
 CheckpointDocumentT = TypeVar("CheckpointDocumentT")
@@ -723,6 +733,57 @@ class CheckpointForkTarget(StrictModel):
     population_member_ids_ref: str | None = None
 
 
+class CheckpointDigestMigrationRecord(StrictModel):
+    """Provenance for one sanctioned derived-digest migration of a fork plan.
+
+    This record parallels :class:`ArtifactMigrationRecord`, which names schema
+    versions rather than algorithm versions. It binds the pre- and post-migration
+    plan canonical hashes so the evidence chain that justified re-deriving the
+    run-contract digest under a newer algorithm version stays auditable.
+    """
+
+    schema_id: str = CHECKPOINT_DIGEST_MIGRATION_RECORD_SCHEMA_ID
+    schema_version: str = CHECKPOINT_DIGEST_MIGRATION_RECORD_SCHEMA_VERSION
+    migration_id: str = Field(min_length=1)
+    source_plan_canonical_sha256: str
+    target_plan_canonical_sha256: str
+    migration_algorithm: str = Field(min_length=1)
+    source_algorithm_version: str = Field(min_length=1)
+    target_algorithm_version: str = Field(min_length=1)
+    hash_domain: str = Field(min_length=1)
+    affected_fields: tuple[str, ...] = Field(min_length=1)
+    proof_mode: Literal["authenticated-historical-evidence", "owner-attestation"]
+    evidence_refs: tuple[str, ...] = ()
+    requalification_requirements: tuple[str, ...] = Field(min_length=1)
+    tool: str = "feedbax"
+    tool_version: str = Field(default_factory=feedbax_version)
+    applied_at: datetime = Field(default_factory=utc_now)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_record(self) -> "CheckpointDigestMigrationRecord":
+        if self.schema_id != CHECKPOINT_DIGEST_MIGRATION_RECORD_SCHEMA_ID:
+            raise ValueError(
+                f"unsupported checkpoint digest migration schema_id {self.schema_id!r}"
+            )
+        if self.schema_version != CHECKPOINT_DIGEST_MIGRATION_RECORD_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported checkpoint digest migration schema_version "
+                f"{self.schema_version!r}"
+            )
+        _validate_sha256(
+            self.source_plan_canonical_sha256, path="/source_plan_canonical_sha256"
+        )
+        _validate_sha256(
+            self.target_plan_canonical_sha256, path="/target_plan_canonical_sha256"
+        )
+        if any(not field for field in self.affected_fields):
+            raise ValueError("/affected_fields entries must be non-empty")
+        if any(not requirement for requirement in self.requalification_requirements):
+            raise ValueError("/requalification_requirements entries must be non-empty")
+        return self
+
+
 class CheckpointForkPlan(StrictModel):
     """Versioned portable declaration for one source and several fork targets."""
 
@@ -730,6 +791,7 @@ class CheckpointForkPlan(StrictModel):
     schema_version: str = CHECKPOINT_FORK_PLAN_SCHEMA_VERSION
     source: CheckpointForkSourcePreparation
     targets: list[CheckpointForkTarget] = Field(min_length=1)
+    migration_history: list[CheckpointDigestMigrationRecord] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
