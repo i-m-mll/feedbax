@@ -76,6 +76,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V4,
     RUN_BUNDLE_SCHEMA_VERSION_V5,
     RUN_BUNDLE_SCHEMA_VERSION_V6,
+    RUN_BUNDLE_SCHEMA_VERSION_V7,
     BudgetPolicy,
     CheckpointCustodyArchiveMaterializer,
     DeploymentPolicy,
@@ -93,6 +94,7 @@ from feedbax.orchestration.bundle import (
     RunRowSpec,
     RowLaunchSpec,
     SchemaArtifactRef,
+    canonical_run_bundle_sha256,
     environment_declaration_identity_projection,
     execution_identity_projection,
 )
@@ -116,10 +118,12 @@ from feedbax.orchestration.drivers.runpod import (
 )
 from feedbax.orchestration.stages import (
     STAGE_CERTIFY,
+    STAGE_LAUNCH,
     STAGE_ORDER,
     STAGE_PREFLIGHT,
     STAGE_PROVISION,
     STAGE_REALIZE_ENV,
+    STAGE_SMOKE,
     STAGE_STAGE_INPUTS,
     STAGE_TEARDOWN,
     OrchestrationStageError,
@@ -134,6 +138,7 @@ from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_VERSION_V1,
     RUN_SET_STATE_SCHEMA_VERSION_V2,
     RUN_SET_STATE_SCHEMA_VERSION_V3,
+    RUN_SET_STATE_SCHEMA_VERSION_V4,
     RowState,
     RunSetState,
     RunSetStateStore,
@@ -144,6 +149,7 @@ from feedbax.training.diagnostics import TRAINING_DIAGNOSTICS_SCHEMA_ID, Trainin
 from feedbax.training.interruption import CancellationAction, CancellationDecision
 from feedbax.training.manifest_preflight import preflight_training_run_manifest_payloads
 from feedbax.training.spec_storage import TrainingRunIdentityAdapter
+from feedbax.contracts.remote_smoke import RemoteSmokeEvidence
 
 
 class FakeDriver:
@@ -578,12 +584,73 @@ def test_resolve_feedbax_revision_uses_imported_package_source_and_disables_git_
     ]
 
 
-def test_run_bundle_v7_requires_feedbax_revision_pin(tmp_path: Path) -> None:
+def test_run_bundle_v8_requires_feedbax_revision_pin(tmp_path: Path) -> None:
     payload = _bundle(tmp_path).model_dump(mode="json")
     payload.pop("feedbax_revision")
 
     with pytest.raises(ValueError, match="feedbax_revision"):
         RunBundle.model_validate(payload)
+
+
+def test_run_bundle_v8_defaults_and_validates_remote_smoke_policy(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+
+    assert bundle.smoke_enabled is True
+    assert bundle.smoke_update_budget == 2
+    assert bundle.smoke_deadline_seconds == 1800
+
+    payload = bundle.model_dump(mode="json")
+    for invalid_budget in (True, False, 0, -1):
+        payload["smoke_update_budget"] = invalid_budget
+        with pytest.raises(ValidationError, match="smoke_update_budget"):
+            RunBundle.model_validate(payload)
+
+
+def test_smoke_opt_out_records_typed_per_row_evidence(tmp_path: Path) -> None:
+    bundle = _bundle(
+        tmp_path,
+        rows=[_compiled_row("row-a"), _compiled_row("row-b")],
+    ).model_copy(update={"smoke_enabled": False})
+    engine = StageEngine(bundle=bundle, driver=FakeDriver())
+
+    _state, outputs = engine._stage_smoke(
+        RunSetState(
+            run_set_id=bundle.run_set_id, rows={row.row_id: RowState() for row in bundle.rows}
+        )
+    )
+    evidence = RemoteSmokeEvidence.model_validate(outputs)
+
+    assert [row.row_id for row in evidence.rows] == ["row-a", "row-b"]
+    assert all(row.status == "opted-out" for row in evidence.rows)
+    assert all(row.opt_out_reason == "bundle smoke_enabled=false" for row in evidence.rows)
+
+
+def test_smoke_never_runs_after_launch_started(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    engine = StageEngine(bundle=bundle, driver=FakeDriver())
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        stages={STAGE_LAUNCH: StageState(status="completed")},
+    )
+
+    with pytest.raises(OrchestrationStageError, match="refuses to run after LAUNCH"):
+        engine._stage_smoke(state)
+
+
+def test_certify_rejects_missing_smoke_evidence(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={"row-a": RowState(status="completed")},
+    )
+
+    with pytest.raises(OrchestrationStageError, match="completed SMOKE evidence"):
+        engine._stage_certify(state)
 
 
 def test_preflight_fails_closed_on_missing_or_mismatched_feedbax_revision(
@@ -967,7 +1034,7 @@ def _fixture_pass_registry() -> CheckRegistry:
     )
 
 
-def _with_local_realized_proof(state: RunSetState) -> RunSetState:
+def _with_local_realized_proof(state: RunSetState, bundle: RunBundle) -> RunSetState:
     completed_at = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(seconds=1)
     started_at = completed_at - timedelta(seconds=1)
     rows = {
@@ -1001,6 +1068,30 @@ def _with_local_realized_proof(state: RunSetState) -> RunSetState:
             },
         }
     )
+    smoke = state.stage(STAGE_SMOKE).model_copy(
+        update={
+            "status": "completed",
+            "completed_at": started_at,
+            "outputs": {
+                "schema_id": "feedbax.orchestration.remote_smoke_evidence",
+                "schema_version": "feedbax.orchestration.remote_smoke_evidence.v1",
+                "run_set_id": bundle.run_set_id,
+                "bundle_sha256": canonical_run_bundle_sha256(bundle),
+                "rows": [
+                    {
+                        "row_id": row_id,
+                        "status": "opted-out",
+                        "update_budget": bundle.smoke_update_budget,
+                        "payload_binding_status": "not-run",
+                        "cleanup_status": "not-created",
+                        "deadline_seconds": bundle.smoke_deadline_seconds,
+                        "opt_out_reason": "remote smoke is inapplicable to driver 'local'",
+                    }
+                    for row_id in rows
+                ],
+            },
+        }
+    )
     return state.model_copy(
         update={
             "rows": rows,
@@ -1011,6 +1102,7 @@ def _with_local_realized_proof(state: RunSetState) -> RunSetState:
                 STAGE_PROVISION: provision,
                 STAGE_REALIZE_ENV: realize_env,
                 STAGE_STAGE_INPUTS: stage_inputs,
+                STAGE_SMOKE: smoke,
             },
         }
     )
@@ -1031,7 +1123,8 @@ def test_certify_rejects_resumed_top_level_observation_substitution(
         RunSetState(
             run_set_id=bundle.run_set_id,
             rows={"row-a": RowState(status="completed")},
-        )
+        ),
+        bundle,
     )
     if tamper_surface == "provision_record":
         state = state.model_copy(update={"provision_record": {"driver": "substituted"}})
@@ -1055,7 +1148,8 @@ def test_certify_rejects_resumed_state_without_completed_stage_inputs(tmp_path: 
         RunSetState(
             run_set_id=bundle.run_set_id,
             rows={"row-a": RowState(status="completed")},
-        )
+        ),
+        bundle,
     )
     state = state.model_copy(
         update={
@@ -1124,6 +1218,7 @@ def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> N
         RUN_SET_STATE_SCHEMA_VERSION_V1,
         RUN_SET_STATE_SCHEMA_VERSION_V2,
         RUN_SET_STATE_SCHEMA_VERSION_V3,
+        RUN_SET_STATE_SCHEMA_VERSION_V4,
     ):
         stale_state = old.model_dump(mode="json")
         stale_state["schema_version"] = old_version
@@ -1140,6 +1235,7 @@ def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> N
         RUN_BUNDLE_SCHEMA_VERSION_V4,
         RUN_BUNDLE_SCHEMA_VERSION_V5,
         RUN_BUNDLE_SCHEMA_VERSION_V6,
+        RUN_BUNDLE_SCHEMA_VERSION_V7,
     ):
         old_payload["schema_version"] = old_version
         with pytest.raises(UnsupportedSpecVersion, match="reassemble from a current"):
@@ -1168,7 +1264,9 @@ def test_stage_engine_hands_typed_row_state_and_stop_authorization_to_conformanc
         run_set_id=bundle.run_set_id,
         rows={row.row_id: stopped},
     )
-    state = _with_local_realized_proof(state).model_copy(update={"rows": {row.row_id: stopped}})
+    state = _with_local_realized_proof(state, bundle).model_copy(
+        update={"rows": {row.row_id: stopped}}
+    )
 
     artifacts = StageEngine(
         bundle=bundle,
@@ -2650,7 +2748,7 @@ def test_production_default_certificate_rejects_declared_rewarm_with_flat_lr(
         driver=FakeDriver(),
         conformance_registry=build_default_check_registry(include_plugins=False),
     )
-    state = _with_local_realized_proof(state)
+    state = _with_local_realized_proof(state, bundle)
     _state, outputs = engine._stage_certify(state)
     certificate = json.loads((bundle.run_set_dir / "conformance.json").read_text())
     checks = {entry["check_id"]: entry for entry in certificate["rows"]["rewarm"]["checks"]}
@@ -3118,7 +3216,7 @@ def test_register_derives_passing_status_from_durable_row_lifecycle(
         rows=rows,
         abort_reason=abort_reason,
     )
-    state = _with_local_realized_proof(state)
+    state = _with_local_realized_proof(state, bundle)
     state, certify_outputs = engine._stage_certify(state)
     state = state.with_stage(
         STAGE_CERTIFY,
@@ -3154,7 +3252,7 @@ def test_register_stopped_payload_reentry_is_idempotent(tmp_path: Path) -> None:
             )
         },
     )
-    state = _with_local_realized_proof(state)
+    state = _with_local_realized_proof(state, bundle)
     state, certify_outputs = engine._stage_certify(state)
     state = state.with_stage(
         STAGE_CERTIFY,
@@ -3189,7 +3287,7 @@ def test_register_requires_the_digest_recorded_by_completed_certify(
         run_set_id=bundle.run_set_id,
         rows={"row-a": RowState(status="completed")},
     )
-    state = _with_local_realized_proof(state)
+    state = _with_local_realized_proof(state, bundle)
     state, outputs = engine._stage_certify(state)
     recorded_outputs = dict(outputs)
     if tamper_certificate:
@@ -3231,7 +3329,8 @@ def test_register_binds_resumed_stage_inputs_to_completed_certify(
         RunSetState(
             run_set_id=bundle.run_set_id,
             rows={"row-a": RowState(status="completed")},
-        )
+        ),
+        bundle,
     )
     state, outputs = engine._stage_certify(state)
     state = state.with_stage(
@@ -3289,7 +3388,8 @@ def test_register_binds_certificate_to_run_rows_and_certify_path(
                 "row-a": RowState(status="completed"),
                 "row-b": RowState(status="completed"),
             },
-        )
+        ),
+        bundle,
     )
     state, outputs = engine._stage_certify(state)
     state = state.with_stage(

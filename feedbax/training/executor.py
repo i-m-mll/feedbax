@@ -139,9 +139,7 @@ from feedbax.training.worker_validation import (
 ManifestConflictPolicy = Literal["error", "reuse-identical"]
 ProgressCallback = Callable[[Mapping[str, Any]], None]
 CancellationProbe = Callable[[ProgressCoordinate], CancellationDecision | None]
-_RESERVED_KERNEL_CONTEXT_KEYS = frozenset(
-    {"run_spec", "method_payload", "schedule_projection"}
-)
+_RESERVED_KERNEL_CONTEXT_KEYS = frozenset({"run_spec", "method_payload", "schedule_projection"})
 _FEEDBAX_METADATA_NAMESPACE_PREFIX = "feedbax_"
 _METADATA_VALUE_ABSENT = object()
 _METHOD_OBSERVATION_BUFFER_CAP = 500
@@ -388,6 +386,8 @@ class TrainingRunExecutionResult:
 
     run_id: str
     status: ManifestStatus
+    start_completed_batches: int
+    end_completed_batches: int
     manifest: TrainingRunManifest
     manifest_path: Path
     diagnostics: TrainingDiagnostics
@@ -515,9 +515,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
                 "program_step": saved.coordinate.program_step,
             }
             if any(
-                name in saved.coordinate.metrics
-                and bindings
-                and bindings[0].mode == "mapped"
+                name in saved.coordinate.metrics and bindings and bindings[0].mode == "mapped"
                 for name, bindings in self.slot_axis_bindings.items()
             ):
                 checkpoint_payload["metrics"] = checkpoint_metrics
@@ -572,7 +570,7 @@ def execute_training_run_spec(
     resume: bool = False,
     resume_slot_transform: ResumeSlotTransform | None = None,
     stop_after_barrier: str | None = None,
-    one_update: bool = False,
+    update_budget: int | None = None,
     manifest_conflict_policy: ManifestConflictPolicy = "error",
     issues: Sequence[str] | None = None,
     progress_callback: ProgressCallback | None = None,
@@ -638,8 +636,10 @@ def execute_training_run_spec(
     else:
         restored_schedule_context_binder = None
     _validate_checkpoint_progress_policy(run_spec)
-    if not isinstance(one_update, bool):
-        raise TrainingRunExecutorError("one_update must be a boolean")
+    if update_budget is not None and (
+        isinstance(update_budget, bool) or not isinstance(update_budget, int) or update_budget <= 0
+    ):
+        raise TrainingRunExecutorError("update_budget must be a positive non-boolean integer")
     producer_context = _validate_execution_context(execution_context)
     payload_binding_status = _validate_execution_payload_binding(
         spec,
@@ -962,9 +962,7 @@ def execute_training_run_spec(
             context=executor_context,
             progress_callback=publish_progress,
             method_observation_callback=(
-                method_observation_buffer.append
-                if method_observation_buffer is not None
-                else None
+                method_observation_buffer.append if method_observation_buffer is not None else None
             ),
             step_guard=_executor_nan_guard(
                 run_spec=run_spec,
@@ -989,7 +987,7 @@ def execute_training_run_spec(
             checkpoint_interval=run_spec.checkpoint_progress.checkpoint_interval,
             progress_interval=run_spec.checkpoint_progress.progress_interval,
             include_completed_batches_in_progress=method_contract.training_diagnostics is not None,
-            one_update=one_update,
+            update_budget=update_budget,
         )
         if method_observation_buffer is not None:
             method_observation_buffer.flush()
@@ -1236,6 +1234,8 @@ def execute_training_run_spec(
         return TrainingRunExecutionResult(
             run_id=resolved_run_id,
             status="cancelled",
+            start_completed_batches=segment_start_batch,
+            end_completed_batches=diagnostics.completed_batches,
             manifest=manifest,
             manifest_path=manifest_path,
             diagnostics=diagnostics,
@@ -1261,6 +1261,8 @@ def execute_training_run_spec(
     return TrainingRunExecutionResult(
         run_id=resolved_run_id,
         status="cancelled" if cancellation is not None else "completed",
+        start_completed_batches=execution.start_completed_batches,
+        end_completed_batches=execution.end_completed_batches,
         manifest=manifest,
         manifest_path=manifest_path,
         diagnostics=diagnostics,
@@ -1374,7 +1376,9 @@ def _finalize_nan_guard_failure(
         stop_reason=str(failure),
         failure_details=failure_details,
     )
-    manifest_output_path = collection_root / "manifest.json" if collection_root is not None else None
+    manifest_output_path = (
+        collection_root / "manifest.json" if collection_root is not None else None
+    )
     try:
         _preflight_manifest_emission(
             manifest,
@@ -1419,9 +1423,9 @@ def _finalize_nan_guard_failure(
                 "failure_kind": "nan_guard",
                 "stopped": True,
                 "stop_reason": str(failure),
-                "coordinate": failure.coordinate.model_copy(
-                    update={"metrics": {}}
-                ).model_dump(mode="json", exclude_none=True),
+                "coordinate": failure.coordinate.model_copy(update={"metrics": {}}).model_dump(
+                    mode="json", exclude_none=True
+                ),
                 "program_step": failure.coordinate.program_step,
                 "manifest_path": str(manifest_path),
                 "manifest_id": manifest.id,
@@ -1434,6 +1438,10 @@ def _finalize_nan_guard_failure(
     return TrainingRunExecutionResult(
         run_id=run_id,
         status="failed",
+        start_completed_batches=(
+            diagnostics.completed_batches - diagnostics.segment_completed_batches
+        ),
+        end_completed_batches=diagnostics.completed_batches,
         manifest=manifest,
         manifest_path=manifest_path,
         diagnostics=diagnostics,
@@ -2121,9 +2129,7 @@ def _executor_nan_guard(
                 },
             )
         except Exception as exc:
-            persistence_errors.append(
-                f"detection persistence failed: {type(exc).__name__}: {exc}"
-            )
+            persistence_errors.append(f"detection persistence failed: {type(exc).__name__}: {exc}")
 
         loaded = None
         restore_failure: Exception | None = None
@@ -2177,9 +2183,7 @@ def _executor_nan_guard(
                 run_id=run_id,
                 detection_artifact_sha256=detection_digest,
                 status="failed",
-                restore_failure=(
-                    f"{type(restore_failure).__name__}: {restore_failure}"
-                )[:2048],
+                restore_failure=(f"{type(restore_failure).__name__}: {restore_failure}")[:2048],
             )
             message = f"{message}; no custody-consistent checkpoint could be restored"
         else:
@@ -2262,9 +2266,7 @@ def _nan_attribution_detection(
         return None
 
     projected_metrics = {
-        name: _project_nonfinite_leaves(
-            coordinate.metrics[name], slot_axis_bindings.get(name, ())
-        )
+        name: _project_nonfinite_leaves(coordinate.metrics[name], slot_axis_bindings.get(name, ()))
         for name in sorted(coordinate.metrics)
     }
     projected_slots = {
@@ -2346,9 +2348,7 @@ def _nan_attribution_detection(
         coordinate=NanGuardCoordinate(
             completed_batches_as_observed=observed_completed_batches,
             completed_batches_observation=(
-                "declared_authority"
-                if observed_completed_batches is not None
-                else "unavailable"
+                "declared_authority" if observed_completed_batches is not None else "unavailable"
             ),
             completed_batches_observation_error=observation_error,
             program_step=coordinate.program_step,
@@ -2391,7 +2391,9 @@ def _project_nonfinite_leaves(
             continue
         nan = jnp.zeros(array.shape, dtype=bool) if is_boolean else jnp.isnan(array)
         inf = jnp.zeros(array.shape, dtype=bool) if is_boolean else jnp.isinf(array)
-        predicate_false = jnp.logical_not(array) if is_boolean else jnp.zeros(array.shape, dtype=bool)
+        predicate_false = (
+            jnp.logical_not(array) if is_boolean else jnp.zeros(array.shape, dtype=bool)
+        )
         entry: dict[str, Any] = {
             "path": _bounded_leaf_path(path),
             "is_boolean": is_boolean,
@@ -2402,12 +2404,8 @@ def _project_nonfinite_leaves(
         if mapped is not None:
             assert mapped.array_axis is not None
             reduction_axes = tuple(axis for axis in range(array.ndim) if axis != mapped.array_axis)
-            entry["nan_counts_by_axis"] = jnp.sum(
-                nan, axis=reduction_axes, dtype=jnp.int32
-            )
-            entry["inf_counts_by_axis"] = jnp.sum(
-                inf, axis=reduction_axes, dtype=jnp.int32
-            )
+            entry["nan_counts_by_axis"] = jnp.sum(nan, axis=reduction_axes, dtype=jnp.int32)
+            entry["inf_counts_by_axis"] = jnp.sum(inf, axis=reduction_axes, dtype=jnp.int32)
             entry["false_counts_by_axis"] = jnp.sum(
                 predicate_false, axis=reduction_axes, dtype=jnp.int32
             )
@@ -2455,15 +2453,11 @@ def _slot_nonfinite_summary(
     projected: Sequence[Mapping[str, Any]],
     bindings: Sequence[MaterializedSlotAxisBinding],
 ) -> SlotNonFiniteSummary:
-    nonfinite = [
-        item for item in projected if int(item["nan_count"]) or int(item["inf_count"])
-    ]
+    nonfinite = [item for item in projected if int(item["nan_count"]) or int(item["inf_count"])]
     predicate_false = [
         item for item in projected if bool(item["is_boolean"]) and int(item["false_count"])
     ]
-    offending_paths = {
-        str(item["path"]) for item in (*nonfinite, *predicate_false)
-    }
+    offending_paths = {str(item["path"]) for item in (*nonfinite, *predicate_false)}
     exemplars = tuple(
         SlotLeafNonFiniteExemplar(
             leaf_path=str(item["path"]),
@@ -2990,11 +2984,7 @@ def _method_training_trace(
         if payload.get("schema_version") != expected_version:
             raise TrainingRunExecutorError("method trace metric schema version is unsupported")
         values = payload.get("value")
-        if (
-            isinstance(size, bool)
-            or not isinstance(size, int)
-            or size != replica_count
-        ):
+        if isinstance(size, bool) or not isinstance(size, int) or size != replica_count:
             raise TrainingRunExecutorError("method trace does not cover the replica axis")
         if structured:
             if not isinstance(values, Mapping):
@@ -3041,7 +3031,9 @@ def _structured_replica_value(value: Mapping[str, Any], *, index: int, size: int
             replica[name] = _structured_replica_value(item, index=index, size=size)
             continue
         if not isinstance(item, list) or len(item) != size:
-            raise TrainingRunExecutorError("structured method trace does not cover the replica axis")
+            raise TrainingRunExecutorError(
+                "structured method trace does not cover the replica axis"
+            )
         replica[name] = item[index]
     return replica
 
@@ -3148,8 +3140,7 @@ def _realized_lr_trace(
 
     def add(sample: LearningRateDiagnostic) -> None:
         coordinates = tuple(
-            (coordinate.axis, coordinate.index)
-            for coordinate in (sample.axis_coordinates or ())
+            (coordinate.axis, coordinate.index) for coordinate in (sample.axis_coordinates or ())
         )
         key = (coordinates, sample.step)
         if key in observed:
@@ -3192,9 +3183,7 @@ def _realized_lr_trace(
                     LearningRateDiagnostic(
                         step=int(step),
                         learning_rate=float(values[index]),
-                        axis_coordinates=(
-                            AxisCoordinateSpec(axis=str(axis["axis"]), index=index),
-                        ),
+                        axis_coordinates=(AxisCoordinateSpec(axis=str(axis["axis"]), index=index),),
                     )
                 )
         else:

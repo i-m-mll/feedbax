@@ -22,7 +22,8 @@ RUN_SET_STATE_SCHEMA_ID = "feedbax.orchestration.run_set_state"
 RUN_SET_STATE_SCHEMA_VERSION_V1 = "feedbax.orchestration.run_set_state.v1"
 RUN_SET_STATE_SCHEMA_VERSION_V2 = "feedbax.orchestration.run_set_state.v2"
 RUN_SET_STATE_SCHEMA_VERSION_V3 = "feedbax.orchestration.run_set_state.v3"
-RUN_SET_STATE_SCHEMA_VERSION = "feedbax.orchestration.run_set_state.v4"
+RUN_SET_STATE_SCHEMA_VERSION_V4 = "feedbax.orchestration.run_set_state.v4"
+RUN_SET_STATE_SCHEMA_VERSION = "feedbax.orchestration.run_set_state.v5"
 ROW_STATUSES = ("pending", "launched", "ready", "running", "completed", "failed", "stopped")
 STAGE_STATUSES = ("pending", "running", "completed", "failed", "skipped")
 
@@ -101,9 +102,7 @@ class RunSetState(StrictModel):
     """Atomic JSON state document for one run set."""
 
     schema_id: Literal["feedbax.orchestration.run_set_state"] = RUN_SET_STATE_SCHEMA_ID
-    schema_version: Literal[
-        "feedbax.orchestration.run_set_state.v4"
-    ] = RUN_SET_STATE_SCHEMA_VERSION
+    schema_version: Literal["feedbax.orchestration.run_set_state.v5"] = RUN_SET_STATE_SCHEMA_VERSION
     run_set_id: str
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

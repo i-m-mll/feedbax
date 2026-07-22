@@ -168,6 +168,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V4,
     RUN_BUNDLE_SCHEMA_VERSION_V5,
     RUN_BUNDLE_SCHEMA_VERSION_V6,
+    RUN_BUNDLE_SCHEMA_VERSION_V7,
 )
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.migration_contract]
@@ -384,9 +385,7 @@ def test_default_registry_registers_assemble_contract_families(
     assert family.identity == schema_id
     assert family.current_version == current_version
     assert family.policy is not None
-    assert family.policy.stance == (
-        "migrate" if kind == "TrainingDiagnostics" else "reject"
-    )
+    assert family.policy.stance == ("migrate" if kind == "TrainingDiagnostics" else "reject")
     accepted = default_spec_registry.migrate(
         kind,
         {"schema_id": schema_id, "schema_version": current_version},
@@ -446,9 +445,7 @@ def test_native_execution_documents_have_explicit_rejection_policy(
     assert family.current_version == current_version
     assert family.policy is not None
     assert family.policy.owner_module.startswith("feedbax.training.diagnostics.")
-    assert family.policy.stance == (
-        "migrate" if kind == "TrainingDiagnostics" else "reject"
-    )
+    assert family.policy.stance == ("migrate" if kind == "TrainingDiagnostics" else "reject")
     assert family.policy.emitted_by
     assert family.policy.consumed_by
 
@@ -584,10 +581,13 @@ def test_nan_attribution_families_are_versioned_and_reject_unknown_versions(
     assert family.current_version == schema_version
     assert family.policy is not None
     assert family.policy.stance == "reject"
-    assert default_spec_registry.migrate(
-        kind,
-        {"schema_id": schema_id, "schema_version": schema_version},
-    ).target_version == schema_version
+    assert (
+        default_spec_registry.migrate(
+            kind,
+            {"schema_id": schema_id, "schema_version": schema_version},
+        ).target_version
+        == schema_version
+    )
 
     with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
         default_spec_registry.migrate(
@@ -605,6 +605,7 @@ def test_nan_attribution_families_are_versioned_and_reject_unknown_versions(
         RUN_BUNDLE_SCHEMA_VERSION_V4,
         RUN_BUNDLE_SCHEMA_VERSION_V5,
         RUN_BUNDLE_SCHEMA_VERSION_V6,
+        RUN_BUNDLE_SCHEMA_VERSION_V7,
     ],
 )
 def test_run_bundle_old_versions_require_reassembly(old_version: str) -> None:
@@ -625,11 +626,34 @@ def test_run_bundle_old_versions_require_reassembly(old_version: str) -> None:
 
 def test_run_bundle_v6_rejection_requires_feedbax_revision_pin() -> None:
     with pytest.raises(UnsupportedSpecVersion) as excinfo:
-        default_spec_registry.migrate(
-            "RunBundle", {"schema_version": RUN_BUNDLE_SCHEMA_VERSION_V6}
-        )
+        default_spec_registry.migrate("RunBundle", {"schema_version": RUN_BUNDLE_SCHEMA_VERSION_V6})
 
     assert "v6 lacks the required Feedbax revision pin" in str(excinfo.value)
+
+
+def test_run_bundle_v7_rejection_requires_remote_smoke_policy() -> None:
+    with pytest.raises(UnsupportedSpecVersion) as excinfo:
+        default_spec_registry.migrate("RunBundle", {"schema_version": RUN_BUNDLE_SCHEMA_VERSION_V7})
+
+    assert "v7 lacks default pre-launch remote smoke policy" in str(excinfo.value)
+
+
+def test_remote_smoke_evidence_registry_explicitly_rejects_v0() -> None:
+    from feedbax.contracts.remote_smoke import (
+        REMOTE_SMOKE_EVIDENCE_SCHEMA_ID,
+        REMOTE_SMOKE_EVIDENCE_SCHEMA_VERSION,
+    )
+
+    family = default_spec_registry.resolve("RemoteSmokeEvidence")
+    assert family.identity == REMOTE_SMOKE_EVIDENCE_SCHEMA_ID
+    assert family.current_version == REMOTE_SMOKE_EVIDENCE_SCHEMA_VERSION
+    assert family.policy is not None
+    assert family.policy.rejected_old_versions == (f"{REMOTE_SMOKE_EVIDENCE_SCHEMA_ID}.v0",)
+    with pytest.raises(UnsupportedSpecVersion):
+        default_spec_registry.migrate(
+            "RemoteSmokeEvidence",
+            {"schema_version": f"{REMOTE_SMOKE_EVIDENCE_SCHEMA_ID}.v0"},
+        )
 
 
 def test_legacy_assembly_request_requires_reauthorization() -> None:
@@ -696,9 +720,7 @@ def test_row_lowering_contracts_have_explicit_schema_policy(
         )
 
     rejected_v1 = {
-        "TrainingRowPlanningProvenance": (
-            TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION_V1
-        ),
+        "TrainingRowPlanningProvenance": (TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION_V1),
         "TrainingRowProvenance": TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1,
     }.get(kind)
     if rejected_v1 is not None:
@@ -779,7 +801,9 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert matrix_preflight.current_version == (
         TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION
     )
-    assert families["TrainingRunMatrixAuthority"].identity == TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID
+    assert (
+        families["TrainingRunMatrixAuthority"].identity == TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID
+    )
     assert families["TrainingRunMatrixAuthority"].current_version == (
         TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_VERSION
     )
@@ -824,13 +848,9 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
         == EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION
     )
     assert families["RepoRealizationPlan"].identity == REPO_REALIZATION_PLAN_SCHEMA_ID
+    assert families["RepoRealizationPlan"].current_version == REPO_REALIZATION_PLAN_SCHEMA_VERSION
     assert (
-        families["RepoRealizationPlan"].current_version
-        == REPO_REALIZATION_PLAN_SCHEMA_VERSION
-    )
-    assert (
-        families["RunPodPreflightBaseEvidence"].identity
-        == RUNPOD_PREFLIGHT_BASE_EVIDENCE_SCHEMA_ID
+        families["RunPodPreflightBaseEvidence"].identity == RUNPOD_PREFLIGHT_BASE_EVIDENCE_SCHEMA_ID
     )
     assert families["LocalExecutionResult"].identity == "feedbax.manifest.local_execution_result"
     assert families["LocalExecutionResult"].current_version == "feedbax.manifest.execution.v3"
@@ -899,7 +919,9 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
         ),
     ],
 )
-def test_matrix_preflight_contracts_reject_old_versions(kind: str, schema_id: str, old_version: str) -> None:
+def test_matrix_preflight_contracts_reject_old_versions(
+    kind: str, schema_id: str, old_version: str
+) -> None:
     assert default_spec_registry.resolve(kind).identity == schema_id
     with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
         default_spec_registry.migrate(kind, {"schema_id": schema_id, "schema_version": old_version})
@@ -1301,13 +1323,21 @@ def test_checkpoint_fork_plan_v1_migration_preserves_modes_and_guards_v2_mode() 
             {
                 "schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
                 "source": {"checkpoint_root_ref": "source"},
-                "targets": [{
-                    "target_id": "target", "checkpoint_root_ref": "target", "run_spec_ref": "run",
-                    "slot_template_ref": "slots", "history_policy": policy,
-                    "compatibility": {"run_contract_algorithm_version": "v1", "run_contract_hash_domain": "test",
-                        "run_contract_projection_sha256": "a" * 64,
-                        "slot_structural_abi_sha256": {"model": "b" * 64}},
-                }],
+                "targets": [
+                    {
+                        "target_id": "target",
+                        "checkpoint_root_ref": "target",
+                        "run_spec_ref": "run",
+                        "slot_template_ref": "slots",
+                        "history_policy": policy,
+                        "compatibility": {
+                            "run_contract_algorithm_version": "v1",
+                            "run_contract_hash_domain": "test",
+                            "run_contract_projection_sha256": "a" * 64,
+                            "slot_structural_abi_sha256": {"model": "b" * 64},
+                        },
+                    }
+                ],
             },
         )
         assert result.payload["schema_version"] == CHECKPOINT_FORK_PLAN_SCHEMA_VERSION
@@ -1324,15 +1354,21 @@ def test_checkpoint_fork_plan_v1_migration_preserves_modes_and_guards_v2_mode() 
                 },
             )
     with pytest.raises(ValueError, match="re-author/rebind"):
-        default_spec_registry.migrate("CheckpointForkPlan", {
-            "schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
-            "targets": [{"history_policy": {"mode": "continue_segment"}}],
-        })
+        default_spec_registry.migrate(
+            "CheckpointForkPlan",
+            {
+                "schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
+                "targets": [{"history_policy": {"mode": "continue_segment"}}],
+            },
+        )
     with pytest.raises(ValueError, match="implementation version and sha256"):
-        default_spec_registry.migrate("CheckpointForkPlan", {
-            "schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V2,
-            "source": {"transforms": [{}]},
-        })
+        default_spec_registry.migrate(
+            "CheckpointForkPlan",
+            {
+                "schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V2,
+                "source": {"transforms": [{}]},
+            },
+        )
 
 
 def test_immutable_blob_provider_family_has_canonical_reject_policy() -> None:
@@ -1491,9 +1527,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     )
     assert lr_schedule_policy is not None
     assert lr_schedule_policy.stance == "migrate"
-    assert lr_schedule_policy.supported_old_versions == (
-        "feedbax.spec.training.lr_schedule.v1",
-    )
+    assert lr_schedule_policy.supported_old_versions == ("feedbax.spec.training.lr_schedule.v1",)
     assert lr_schedule_policy.rejected_old_versions == ("feedbax.spec.training.lr_schedule.v0",)
     assert checkpoint_policy is not None
     assert checkpoint_policy.stance == "migrate"
@@ -1502,9 +1536,9 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
-            TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
-            TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
-            TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
     )
     assert execution_policy is not None
     assert execution_policy.rejected_old_versions == ("feedbax.spec.execution.v1",)

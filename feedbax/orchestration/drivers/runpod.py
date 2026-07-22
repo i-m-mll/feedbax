@@ -96,6 +96,7 @@ from feedbax.training.checkpoint_custody import (
     load_checkpoint_custody_documents,
     validate_checkpoint_continuation_source_count,
 )
+from feedbax.training.diagnostics import NativeExecutionProducerContext
 
 
 LATEST_BATCH_KEYS = (
@@ -125,6 +126,7 @@ _RUNPOD_PREFLIGHT_CHECK_NAMES = frozenset(
         "runpod-credentials",
         "runpod-balance-floor",
         "runpod-deadman-credentials",
+        "runpod-remote-smoke-applicability",
     }
 )
 _IMMUTABLE_IMAGE_PATTERN = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
@@ -269,6 +271,14 @@ class RunPodTeardownError(RunPodDriverError):
     def __init__(self, message: str, *, teardown_outputs: Mapping[str, Any]) -> None:
         super().__init__(message)
         self.teardown_outputs = dict(teardown_outputs)
+
+
+class RunPodRemoteSmokeError(RunPodDriverError):
+    """A bounded remote smoke failure with stage-persistable evidence."""
+
+    def __init__(self, message: str, *, evidence: Mapping[str, Any]) -> None:
+        super().__init__(message)
+        self.evidence = dict(evidence)
 
 
 class _ProvisioningIdentityError(RunPodDriverError):
@@ -524,6 +534,43 @@ class RunPodDriverConfig:
     auto_teardown: bool = True
 
 
+@dataclass(frozen=True)
+class RunPodExecutionNamespace:
+    """Orchestration-owned paths and identity for one native execution.
+
+    Both the durable launch and its bounded smoke use this contract.  Keeping
+    every writable path here makes scratch confinement reviewable at the call
+    site instead of relying on independent command-line overrides.
+    """
+
+    row_root: str
+    manifest_root: str
+    checkpoint_root: str
+    events_dir: str
+    sentinel_dir: str
+    log_path: str
+    payload_path: str
+    run_identity: str
+    sentinel_stem: str
+    seed_source: str | None = None
+    seed_attempt: str | None = None
+    seed_target: str | None = None
+    env_exports: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.manifest_root != f"{self.row_root}/manifests":
+            raise ValueError("manifest_root must be namespaced below row_root")
+        if self.checkpoint_root != f"{self.row_root}/checkpoints":
+            raise ValueError("checkpoint_root must be namespaced below row_root")
+        seed_values = (self.seed_source, self.seed_attempt, self.seed_target)
+        if any(value is not None for value in seed_values) and not all(
+            value is not None for value in seed_values
+        ):
+            raise ValueError(
+                "checkpoint seed source, attempt, and target must be supplied together"
+            )
+
+
 class RunPodOrchestrationDriver:
     """Synchronous RunPod implementation of the orchestration driver protocol."""
 
@@ -617,9 +664,7 @@ class RunPodOrchestrationDriver:
                     "detail": detail,
                 },
             )
-        classification, classified_detail = _classify_create_failure(
-            result, self.config.api_key
-        )
+        classification, classified_detail = _classify_create_failure(result, self.config.api_key)
         clean_rejection = classification == "non-retryable"
         raise AcquisitionCreateError(
             classified_detail or f"runpodctl pod create exited {result.returncode}",
@@ -761,9 +806,7 @@ class RunPodOrchestrationDriver:
 
     def preflight_checks(self, bundle: RunBundle) -> list[PreflightCheckEntry]:
         """Run named, non-mutating RunPod checks before any billable action."""
-        lockfile_error = runpod_lockfile_declaration_error(
-            bundle.environment.lockfile_hashes
-        )
+        lockfile_error = runpod_lockfile_declaration_error(bundle.environment.lockfile_hashes)
         if lockfile_error is not None:
             self._preflight_passed = False
             return [
@@ -815,9 +858,7 @@ class RunPodOrchestrationDriver:
             True,
             observed=self.repo_realization_plan().model_dump(mode="json"),
         )
-        failures, observed = preflight_input_provider_bindings(
-            bundle, self.input_provider_bindings
-        )
+        failures, observed = preflight_input_provider_bindings(bundle, self.input_provider_bindings)
         binding_check = _preflight_check(
             "input-provider-bindings",
             not failures,
@@ -828,6 +869,29 @@ class RunPodOrchestrationDriver:
             self._preflight_passed = False
             return [binding_check]
         checks: list[PreflightCheckEntry] = [snapshot_check, binding_check]
+        non_native_smoke_rows = [
+            row.row_id
+            for row in bundle.rows
+            if bundle.smoke_enabled and not _row_uses_registered_native_execution(row)
+        ]
+        smoke_applicability_check = _preflight_check(
+            "runpod-remote-smoke-applicability",
+            not non_native_smoke_rows,
+            detail=(
+                None
+                if not non_native_smoke_rows
+                else "remote smoke requires registered native execution; non-native rows: "
+                + ", ".join(repr(row_id) for row_id in non_native_smoke_rows)
+            ),
+            observed={
+                "smoke_enabled": bundle.smoke_enabled,
+                "non_native_rows": non_native_smoke_rows,
+            },
+        )
+        checks.append(smoke_applicability_check)
+        if non_native_smoke_rows:
+            self._preflight_passed = False
+            return checks
         schedule_failures, schedule_observed = _preflight_continuation_schedule_consistency(
             bundle,
             self.input_provider_bindings,
@@ -1031,9 +1095,7 @@ class RunPodOrchestrationDriver:
             raise RunPodDriverError("completed PREFLIGHT checks are internally inconsistent")
         if state.run_set_id != bundle.run_set_id:
             raise RunPodDriverError("completed PREFLIGHT run-set binding is mismatched")
-        if not any(
-            check.name == "continuation-schedule-consistency" for check in stage.checks
-        ):
+        if not any(check.name == "continuation-schedule-consistency" for check in stage.checks):
             return False
         if (
             is_training_matrix_bundle(bundle)
@@ -1296,9 +1358,7 @@ class RunPodOrchestrationDriver:
             )
         except RepoSnapshotError as exc:
             raise RunPodDriverError(str(exc)) from exc
-        declaration_fingerprint = compute_runpod_environment_fingerprint(
-            bundle, realization_plan
-        )
+        declaration_fingerprint = compute_runpod_environment_fingerprint(bundle, realization_plan)
         remote_run_dir = self._remote_run_dir(bundle)
         self._ssh(
             f"mkdir -p {_sq(remote_run_dir)} {_sq(self._remote_sentinel_dir(bundle))} "
@@ -1313,9 +1373,7 @@ class RunPodOrchestrationDriver:
 
         for name, snapshot in self._repo_snapshots.snapshots.items():
             remote_root = realization_plan.repos[name].remote_root
-            self._ssh(
-                f"mkdir -p {_sq(remote_root)} && chmod -R u+w {_sq(remote_root)}"
-            )
+            self._ssh(f"mkdir -p {_sq(remote_root)} && chmod -R u+w {_sq(remote_root)}")
             try:
                 verify_repo_snapshot(
                     snapshot.staging_root,
@@ -1469,18 +1527,193 @@ class RunPodOrchestrationDriver:
         state: RunSetState,
     ) -> Mapping[str, Any]:
         """Launch one row under nohup with sentinel files."""
-        command = build_launch_row_command(
+        namespace = build_runpod_execution_namespace(
             bundle=bundle,
             row=row,
             remote_run_dir=self._remote_run_dir(bundle),
             remote_sentinel_dir=self._remote_sentinel_dir(bundle),
+            env_fingerprint=state.environment_fingerprint or "",
+        )
+        command = build_launch_row_command(
+            bundle=bundle,
+            row=row,
             workdir=self._row_workdir(row),
             env_fingerprint=state.environment_fingerprint or "",
             jax_cache_dir=f"{self.config.volume_mount}/jax_cache",
+            execution_namespace=namespace,
         )
         self._ssh(command)
         pid = self._read_remote_pid(bundle, row.row_id)
         return {"row_id": row.row_id, "pid": pid, "command": command}
+
+    def smoke_row(
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+    ) -> Mapping[str, Any]:
+        """Run one bounded native execution in an authenticated scratch namespace."""
+        if not _row_uses_registered_native_execution(row):
+            raise RunPodDriverError(
+                f"remote smoke row {row.row_id!r} is not registered native execution"
+            )
+        provenance = row.execution.row_provenance
+        if provenance is None:  # Kept explicit for type narrowing and fail-closed diagnostics.
+            raise RunPodDriverError(f"remote smoke row {row.row_id!r} lacks provenance")
+        remote_run_dir = self._remote_run_dir(bundle)
+        scratch_root = f"{remote_run_dir}/smoke/{row.row_id}"
+        derived_run_id = f"{provenance.planned_run_id}--smoke"
+        namespace = build_runpod_execution_namespace(
+            bundle=bundle,
+            row=row,
+            remote_run_dir=remote_run_dir,
+            remote_sentinel_dir=self._remote_sentinel_dir(bundle),
+            env_fingerprint=state.environment_fingerprint or "",
+            scratch_root=scratch_root,
+            run_identity=derived_run_id,
+            sentinel_stem=f"smoke-{row.row_id}",
+        )
+        execution_row = _execution_row(row, namespace)
+        producer_execution = execution_row.execution.model_copy(
+            update={
+                "payload": execution_row.execution.payload.model_copy(
+                    update={"uri": namespace.payload_path}
+                )
+            }
+        )
+        producer_context = NativeExecutionProducerContext(
+            execution=producer_execution,
+            environment_fingerprint=state.environment_fingerprint or "",
+            collection_root=namespace.row_root,
+        ).model_dump(mode="json", exclude_none=True)
+        protected_before = self._protected_path_content_digests(bundle, row)
+        command = build_launch_row_command(
+            bundle=bundle,
+            row=row,
+            workdir=self._row_workdir(row),
+            env_fingerprint=state.environment_fingerprint or "",
+            jax_cache_dir=f"{self.config.volume_mount}/jax_cache",
+            execution_namespace=namespace,
+            update_budget=bundle.smoke_update_budget,
+        )
+        status = "running"
+        result: Mapping[str, Any] = {
+            "start_completed_batches": 0,
+            "end_completed_batches": None,
+            "payload_binding_status": "not-run",
+            "executor_result_sha256": None,
+        }
+        detail = ""
+        cleanup = "not-created"
+        try:
+            cleanup = "failed"
+            self._ssh(command)
+            deadline = self._monotonic() + bundle.smoke_deadline_seconds
+            while status not in {"completed", "failed", "deadline_exceeded"}:
+                probe = parse_probe_report(
+                    self._ssh(
+                        build_probe_command(namespace.sentinel_dir, namespace.sentinel_stem)
+                    ).stdout
+                )
+                status = str(
+                    probe.get("rows", {}).get(namespace.sentinel_stem, {}).get("status", "pending")
+                )
+                if status in {"completed", "failed"}:
+                    break
+                remaining = deadline - self._monotonic()
+                if remaining <= 0:
+                    self._ssh(build_bounded_remote_termination_command(namespace))
+                    status = "deadline_exceeded"
+                    break
+                self._sleep(min(self.poll_interval_seconds, remaining))
+            if status == "completed":
+                result = self._read_smoke_result(namespace)
+            else:
+                detail = self.transport.ssh(
+                    f"tail -n 80 -- {_sq(namespace.log_path)}"
+                ).stdout.strip()
+        except RunPodDriverError as exc:
+            status = "failed"
+            detail = str(exc)
+        finally:
+            try:
+                cleanup = self._cleanup_smoke_namespace(namespace, scratch_root)
+            except RunPodDriverError:
+                cleanup = "failed"
+
+        protected_after = self._protected_path_content_digests(bundle, row)
+        evidence = {
+            "row_id": row.row_id,
+            "status": "passed" if status == "completed" else "failed",
+            "derived_run_id": derived_run_id,
+            "planned_run_id": provenance.planned_run_id,
+            "derived_producer_context": producer_context,
+            "scratch_namespace": scratch_root,
+            "update_budget": bundle.smoke_update_budget,
+            "deadline_seconds": bundle.smoke_deadline_seconds,
+            "payload_binding_status": result["payload_binding_status"],
+            "start_completed_batches": result["start_completed_batches"],
+            "end_completed_batches": result["end_completed_batches"],
+            "executor_result_sha256": result["executor_result_sha256"],
+            "protected_paths_before": protected_before,
+            "protected_paths_after": protected_after,
+            "cleanup_status": cleanup,
+        }
+        if protected_before != protected_after:
+            evidence["status"] = "failed"
+            raise RunPodRemoteSmokeError(
+                f"remote smoke changed protected launch paths for row {row.row_id!r}",
+                evidence=evidence,
+            )
+        if status != "completed" or cleanup != "removed":
+            if status == "deadline_exceeded":
+                message = (
+                    f"remote smoke row {row.row_id!r} exceeded wall-clock deadline "
+                    f"{bundle.smoke_deadline_seconds:g}s; failed sentinel recorded"
+                )
+            elif cleanup != "removed":
+                message = f"remote smoke cleanup failed for row {row.row_id!r}"
+            else:
+                message = f"remote smoke row {row.row_id!r} failed"
+                if detail:
+                    message += f": {detail}"
+            raise RunPodRemoteSmokeError(message, evidence=evidence)
+        return evidence
+
+    def _protected_path_content_digests(
+        self, bundle: RunBundle, row: RunRowSpec
+    ) -> Mapping[str, str]:
+        remote_run_dir = self._remote_run_dir(bundle)
+        paths = {
+            "staged_inputs": f"{remote_run_dir}/inputs",
+            "row_roots": f"{remote_run_dir}/rows",
+            "events": f"{remote_run_dir}/events",
+            "sentinels": self._remote_sentinel_dir(bundle),
+        }
+        result = self._ssh(build_remote_content_digest_command(paths))
+        payload = _json_object(result.stdout)
+        return {str(key): str(value) for key, value in payload.items()}
+
+    def _read_smoke_result(self, namespace: RunPodExecutionNamespace) -> Mapping[str, Any]:
+        result = self._ssh(build_remote_smoke_result_command(namespace.log_path))
+        payload = _json_object(result.stdout)
+        return {
+            "start_completed_batches": int(payload["start_completed_batches"]),
+            "end_completed_batches": int(payload["end_completed_batches"]),
+            "payload_binding_status": str(payload["payload_binding_status"]),
+            "executor_result_sha256": str(payload["executor_result_sha256"]),
+        }
+
+    def _cleanup_smoke_namespace(
+        self, namespace: RunPodExecutionNamespace, scratch_root: str
+    ) -> str:
+        stem = f"{namespace.sentinel_dir}/{namespace.sentinel_stem}"
+        self._ssh(
+            f"rm -rf -- {_sq(scratch_root)} && "
+            f"rm -f -- {_sq(stem + '.started')} {_sq(stem + '.done')} "
+            f"{_sq(stem + '.failed')} {_sq(stem + '.pid')}"
+        )
+        return "removed"
 
     def probe(
         self,
@@ -2512,9 +2745,7 @@ def build_runpod_repo_realization_plan(
     primary_repo = _primary_repo_name(config, local_repos)
     normalized_remote_roots = validate_non_overlapping_remote_roots(remote_repos)
     lock_paths = {primary_repo: sorted(bundle.environment.lockfile_hashes)}
-    expected_lock_digests = {
-        primary_repo: dict(sorted(bundle.environment.lockfile_hashes.items()))
-    }
+    expected_lock_digests = {primary_repo: dict(sorted(bundle.environment.lockfile_hashes.items()))}
     manifest, components = seal_local_repo_realizations(
         local_repos,
         lock_relative_paths=lock_paths,
@@ -2530,13 +2761,13 @@ def build_runpod_repo_realization_plan(
     for lock_relative_path in sorted(bundle.environment.lockfile_hashes):
         component = components[primary_repo]
         lock_path = component.snapshot.staging_root / lock_relative_path
-        lock_bytes = read_sealed_lock_bytes(
-            component.snapshot.staging_root, lock_relative_path
-        )
+        lock_bytes = read_sealed_lock_bytes(component.snapshot.staging_root, lock_relative_path)
         try:
             document = tomllib.loads(lock_bytes.decode("utf-8"))
         except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-            raise RunPodDriverError(f"malformed TOML in sealed lockfile {lock_path}: {exc}") from exc
+            raise RunPodDriverError(
+                f"malformed TOML in sealed lockfile {lock_path}: {exc}"
+            ) from exc
         for form, spelling in _local_lock_sources(document, lock_path=lock_path):
             source_path = PurePosixPath(spelling)
             if source_path.is_absolute():
@@ -2547,9 +2778,7 @@ def build_runpod_repo_realization_plan(
                 raise RunPodDriverError(
                     f"non-canonical {form} source spelling {spelling!r} in {lock_path}"
                 )
-            resolved_target = (
-                local_roots[primary_repo] / Path(*source_path.parts)
-            ).resolve()
+            resolved_target = (local_roots[primary_repo] / Path(*source_path.parts)).resolve()
             matches = [
                 name
                 for name, repo_root in local_roots.items()
@@ -2557,9 +2786,7 @@ def build_runpod_repo_realization_plan(
             ]
             if len(matches) != 1:
                 qualifier = "ambiguous" if matches else "unmatched"
-                roots = ", ".join(
-                    f"{name}={root}" for name, root in sorted(local_roots.items())
-                )
+                roots = ", ".join(f"{name}={root}" for name, root in sorted(local_roots.items()))
                 raise RunPodDriverError(
                     f"{qualifier} local target for lock source {spelling!r}: consumer "
                     f"{local_roots[primary_repo]} resolves to {resolved_target}; "
@@ -2593,9 +2820,7 @@ def build_runpod_repo_realization_plan(
         editable_source_resolutions=resolutions,
         snapshot_manifest=manifest,
     )
-    error, _observed = validate_runpod_repo_realization_plan(
-        bundle, config, plan, snapshots
-    )
+    error, _observed = validate_runpod_repo_realization_plan(bundle, config, plan, snapshots)
     if error is not None:
         raise RunPodDriverError(error)
     return plan, snapshots
@@ -2622,18 +2847,12 @@ def validate_runpod_repo_realization_plan(
         return str(exc), observed
     if plan.primary_repo != primary_repo:
         return "repo realization plan primary repo no longer matches configuration", observed
-    if {
-        name: entry.remote_root for name, entry in plan.repos.items()
-    } != normalized_remote_roots:
+    if {name: entry.remote_root for name, entry in plan.repos.items()} != normalized_remote_roots:
         return "repo realization plan remote roots no longer match configuration", observed
     declared = dict(sorted(bundle.environment.lockfile_hashes.items()))
     if plan.repos[primary_repo].sealed_lock_digests != declared:
         return "sealed lock digests do not match the environment declaration", observed
-    if any(
-        entry.sealed_lock_digests
-        for name, entry in plan.repos.items()
-        if name != primary_repo
-    ):
+    if any(entry.sealed_lock_digests for name, entry in plan.repos.items() if name != primary_repo):
         return "non-primary repo carries undeclared sealed lock digests", observed
 
     remote_consumer_root = normalized_remote_roots[primary_repo]
@@ -2651,7 +2870,10 @@ def validate_runpod_repo_realization_plan(
             and basename.endswith((".txt", ".in"))
         )
         if dependency_target:
-            return f"path_patches may not target a lock or dependency file: {remote_file!r}", observed
+            return (
+                f"path_patches may not target a lock or dependency file: {remote_file!r}",
+                observed,
+            )
 
     evidence: list[dict[str, str]] = []
     for resolution in plan.editable_source_resolutions:
@@ -2702,7 +2924,6 @@ def validate_runpod_repo_realization_plan(
         }
     )
     return None, observed
-
 
 
 def _local_lock_sources(
@@ -2984,39 +3205,131 @@ def _normalize_explicit_native_launch_command(command: Sequence[str]) -> list[st
     return normalized
 
 
-def build_launch_row_command(
+def _row_launch_command_parts(row: RunRowSpec) -> list[str]:
+    return (
+        [str(part) for part in row.launch.command]
+        if row.launch.command
+        else ["uv", "run", "--no-sync", "python", row.launch.entry or ""]
+    )
+
+
+def _row_uses_registered_native_execution(row: RunRowSpec) -> bool:
+    return (
+        row.launch.payload_routing.get("kind") == "registered-execution-payload"
+        and is_native_training_command(_row_launch_command_parts(row))
+        and row.execution.row_provenance is not None
+    )
+
+
+def build_runpod_execution_namespace(
     *,
     bundle: RunBundle,
     row: RunRowSpec,
     remote_run_dir: str,
     remote_sentinel_dir: str,
+    env_fingerprint: str,
+    scratch_root: str | None = None,
+    run_identity: str | None = None,
+    sentinel_stem: str | None = None,
+) -> RunPodExecutionNamespace:
+    """Construct the sole writable-path contract for a real or smoke execution."""
+    provenance = row.execution.row_provenance
+    row_root = scratch_root or f"{remote_run_dir}/rows/{row.row_id}"
+    checkpoint_source = native_resume_checkpoint_source(bundle, row)
+    seed_source = (
+        f"{remote_run_dir}/inputs/{checkpoint_source.custody.target_role}"
+        if checkpoint_source is not None
+        else None
+    )
+    stem = sentinel_stem or row.row_id
+    return RunPodExecutionNamespace(
+        row_root=row_root,
+        manifest_root=f"{row_root}/manifests",
+        checkpoint_root=f"{row_root}/checkpoints",
+        events_dir=(
+            f"{row_root}/events" if scratch_root is not None else f"{remote_run_dir}/events"
+        ),
+        sentinel_dir=remote_sentinel_dir,
+        log_path=(
+            f"{row_root}/smoke.log"
+            if scratch_root is not None
+            else f"{remote_run_dir}/logs/{row.row_id}.log"
+        ),
+        payload_path=f"{remote_run_dir}/inputs/{row.row_id}.json",
+        run_identity=run_identity
+        or (provenance.planned_run_id if provenance is not None else row.row_id),
+        sentinel_stem=stem,
+        seed_source=seed_source,
+        seed_attempt=f"{row_root}/.checkpoint-seed-attempt" if seed_source else None,
+        seed_target=f"{row_root}/checkpoints" if seed_source else None,
+        env_exports=(
+            ("FEEDBAX_RUN_SET_ID", bundle.run_set_id),
+            ("FEEDBAX_ROW_ID", row.row_id),
+            (
+                "FEEDBAX_RUN_EVENTS_DIR",
+                f"{row_root}/events" if scratch_root else f"{remote_run_dir}/events",
+            ),
+            ("FEEDBAX_ENV_FINGERPRINT", env_fingerprint),
+            ("FEEDBAX_ROW_DIR", row_root),
+        ),
+    )
+
+
+def _execution_row(row: RunRowSpec, namespace: RunPodExecutionNamespace) -> RunRowSpec:
+    """Derive producer context identity without mutating the real planned identity."""
+    provenance = row.execution.row_provenance
+    if not _row_uses_registered_native_execution(row):
+        return row
+    if provenance is None:
+        raise RunPodDriverError(f"native execution row {row.row_id!r} lacks provenance")
+    if namespace.run_identity == provenance.planned_run_id:
+        return row
+    return row.model_copy(
+        update={
+            "execution": row.execution.model_copy(
+                update={
+                    "row_provenance": provenance.model_copy(
+                        update={"planned_run_id": namespace.run_identity}
+                    )
+                }
+            )
+        }
+    )
+
+
+def build_launch_row_command(
+    *,
+    bundle: RunBundle,
+    row: RunRowSpec,
     workdir: str,
     env_fingerprint: str,
     jax_cache_dir: str,
+    execution_namespace: RunPodExecutionNamespace,
+    update_budget: int | None = None,
 ) -> str:
     """Build the row launch command with RunPod sentinel and event exports."""
-    done_file = f"{remote_sentinel_dir}/{row.row_id}.done"
-    failed_file = f"{remote_sentinel_dir}/{row.row_id}.failed"
-    started_file = f"{remote_sentinel_dir}/{row.row_id}.started"
-    pid_file = f"{remote_sentinel_dir}/{row.row_id}.pid"
-    log_file = f"{remote_run_dir}/logs/{row.row_id}.log"
-    events_dir = f"{remote_run_dir}/events"
-    row_dir = f"{remote_run_dir}/rows/{row.row_id}"
+    namespace = execution_namespace
+    stem = f"{namespace.sentinel_dir}/{namespace.sentinel_stem}"
+    done_file = f"{stem}.done"
+    failed_file = f"{stem}.failed"
+    started_file = f"{stem}.started"
+    pid_file = f"{stem}.pid"
+    log_file = namespace.log_path
+    events_dir = namespace.events_dir
+    row_dir = namespace.row_root
     checkpoint_source = native_resume_checkpoint_source(bundle, row)
-    command_parts = (
-        [str(part) for part in row.launch.command]
-        if row.launch.command
-        else ["uv", "run", "--no-sync", "python", row.launch.entry or ""]
-    )
-    command_parts, row = bind_native_execution_command(
+    command_parts = _row_launch_command_parts(row)
+    execution_row = _execution_row(row, namespace)
+    command_parts, execution_row = bind_native_execution_command(
         command_parts,
-        row=row,
-        payload_path=f"{remote_run_dir}/inputs/{row.row_id}.json",
+        row=execution_row,
+        payload_path=namespace.payload_path,
         collection_root=row_dir,
+        update_budget=update_budget,
     )
     command_parts = inject_native_execution_context(
         command_parts,
-        row=row,
+        row=execution_row,
         environment_fingerprint=env_fingerprint,
         collection_root=row_dir,
     )
@@ -3034,25 +3347,23 @@ def build_launch_row_command(
         f"echo $$ > {_sq(pid_file)} && "
         "export XLA_PYTHON_CLIENT_PREALLOCATE=false "
         f"JAX_COMPILATION_CACHE_DIR={_sq(jax_cache_dir)} "
-        f"FEEDBAX_RUN_SET_ID={_sq(bundle.run_set_id)} "
-        f"FEEDBAX_ROW_ID={_sq(row.row_id)} "
-        f"FEEDBAX_RUN_EVENTS_DIR={_sq(events_dir)} "
-        f"FEEDBAX_ENV_FINGERPRINT={_sq(env_fingerprint)} "
-        f"FEEDBAX_ROW_DIR={_sq(row_dir)} && "
+        + " ".join(f"{key}={_sq(value)}" for key, value in namespace.env_exports)
+        + " && "
         f'( {command} ) & child=$!; wait "$child"; rc=$?; child=; '
         f'if [ "$rc" -eq 0 ]; then success=1; touch {_sq(done_file)}; '
         f'else touch {_sq(failed_file)}; exit "$rc"; fi'
     )
     seed_command = ""
     if checkpoint_source is not None:
-        source = f"{remote_run_dir}/inputs/{checkpoint_source.custody.target_role}"
-        attempt = f"{row_dir}/.checkpoint-seed-attempt"
-        target = f"{row_dir}/checkpoints"
+        assert namespace.seed_source is not None
+        assert namespace.seed_attempt is not None
+        assert namespace.seed_target is not None
         seed_command = (
-            f"{build_native_resume_seed_command(source, attempt, target, checkpoint_source)} && "
+            f"{build_native_resume_seed_command(namespace.seed_source, namespace.seed_attempt, namespace.seed_target, checkpoint_source)} "
+            "&& "
         )
     return (
-        f"mkdir -p {_sq(remote_sentinel_dir)} {_sq(remote_run_dir + '/logs')} "
+        f"mkdir -p {_sq(namespace.sentinel_dir)} {_sq(str(PurePosixPath(log_file).parent))} "
         f"{_sq(events_dir)} {_sq(row_dir)} {_sq(jax_cache_dir)} && "
         f"if [ -f {_sq(done_file)} ] || [ -f {_sq(failed_file)} ]; then exit 0; fi && "
         f"if [ -f {_sq(started_file)} ]; then "
@@ -3067,6 +3378,82 @@ def build_launch_row_command(
         "i=$((i+1)); sleep 0.05; done; "
         f"[ -s {_sq(pid_file)} ]"
     )
+
+
+def build_bounded_remote_termination_command(namespace: RunPodExecutionNamespace) -> str:
+    """Build bounded process-group TERM-to-KILL escalation for a smoke deadline."""
+    stem = f"{namespace.sentinel_dir}/{namespace.sentinel_stem}"
+    pid_file = f"{stem}.pid"
+    return (
+        f"pid=$(cat {_sq(pid_file)} 2>/dev/null || true); "
+        'if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then '
+        'kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; '
+        'i=0; while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 20 ]; do '
+        "i=$((i+1)); sleep 0.05; done; "
+        'kill -KILL -- "-$pid" 2>/dev/null || '
+        'kill -KILL "$pid" 2>/dev/null || true; fi; '
+        f"touch {_sq(stem + '.failed')}"
+    )
+
+
+def build_remote_content_digest_command(paths: Mapping[str, str]) -> str:
+    """Hash path names, entry kinds, symlink targets, and file bytes, not metadata."""
+    script = r"""
+import hashlib,json,os,sys
+paths=json.loads(sys.argv[1])
+def digest(root):
+    h=hashlib.sha256()
+    if not os.path.lexists(root):
+        h.update(b"missing\0")
+        return h.hexdigest()
+    if os.path.isfile(root) and not os.path.islink(root):
+        entries=[("file",".",root)]
+    else:
+        entries=[]
+        for base,dirs,files in os.walk(root,followlinks=False):
+            dirs.sort(); files.sort()
+            for name in dirs+files:
+                path=os.path.join(base,name)
+                rel=os.path.relpath(path,root)
+                kind="link" if os.path.islink(path) else ("dir" if os.path.isdir(path) else "file")
+                entries.append((kind,rel,path))
+    for kind,rel,path in entries:
+        h.update(kind.encode()+b"\0"+rel.encode()+b"\0")
+        if kind=="file":
+            with open(path,"rb") as handle:
+                for chunk in iter(lambda:handle.read(1024*1024),b""): h.update(chunk)
+        elif kind=="link": h.update(os.readlink(path).encode())
+        h.update(b"\0")
+    return h.hexdigest()
+print(json.dumps({name:digest(path) for name,path in paths.items()},sort_keys=True))
+""".strip()
+    payload = json.dumps(dict(paths), sort_keys=True, separators=(",", ":"))
+    return f"python3 -c {_sq(script)} {_sq(payload)}"
+
+
+def build_remote_smoke_result_command(log_path: str) -> str:
+    """Extract and hash the native executor's JSON result from its smoke log."""
+    script = r"""
+import hashlib,json,sys
+text=open(sys.argv[1],encoding="utf-8",errors="replace").read()
+decoder=json.JSONDecoder(); candidates=[]
+for index,char in enumerate(text):
+    if char!="{": continue
+    try: value,_=decoder.raw_decode(text[index:])
+    except json.JSONDecodeError: continue
+    if isinstance(value,dict) and {"start_completed_batches","end_completed_batches"}<=value.keys():
+        candidates.append(value)
+if not candidates: raise RuntimeError("smoke executor log lacks a typed result")
+result=candidates[-1]
+canonical=json.dumps(result,sort_keys=True,separators=(",",":")).encode()
+print(json.dumps({
+    "start_completed_batches":result["start_completed_batches"],
+    "end_completed_batches":result["end_completed_batches"],
+    "payload_binding_status":result.get("payload_binding_status"),
+    "executor_result_sha256":hashlib.sha256(canonical).hexdigest(),
+},sort_keys=True))
+""".strip()
+    return f"python3 -c {_sq(script)} {_sq(log_path)}"
 
 
 def runpod_row_workdir(config: RunPodDriverConfig, row: RunRowSpec) -> str:
@@ -3093,11 +3480,16 @@ def dry_run_launch_bundle(
         build_launch_row_command(
             bundle=bundle,
             row=row,
-            remote_run_dir=remote_run_dir,
-            remote_sentinel_dir=remote_sentinel_dir,
             workdir=runpod_row_workdir(config, row),
             env_fingerprint="dry-run-unrealized-environment",
             jax_cache_dir=f"{config.volume_mount}/jax_cache",
+            execution_namespace=build_runpod_execution_namespace(
+                bundle=bundle,
+                row=row,
+                remote_run_dir=remote_run_dir,
+                remote_sentinel_dir=remote_sentinel_dir,
+                env_fingerprint="dry-run-unrealized-environment",
+            ),
         )
         for row in bundle.rows
     )

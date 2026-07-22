@@ -57,8 +57,10 @@ from feedbax.orchestration.drivers.runpod import (
     RunPodDriverConfig,
     RunPodDriverError,
     RunPodOrchestrationDriver,
+    RunPodRemoteSmokeError,
     SubprocessRunPodTransport,
     build_launch_row_command,
+    build_runpod_execution_namespace,
     build_literal_path_patch_command,
     build_remote_nohup_sentinel_command,
     classify_pod_state,
@@ -83,6 +85,7 @@ from feedbax.orchestration.stages import (
     STAGE_PREFLIGHT,
     STAGE_PROVISION,
     STAGE_REALIZE_ENV,
+    STAGE_SMOKE,
     STAGE_STAGE_INPUTS,
     OrchestrationStageError,
     PreflightFailed,
@@ -342,6 +345,7 @@ def _bundle(
     keep_alive: bool = False,
     deadman_enabled: bool = False,
     baseline: bool = True,
+    smoke_enabled: bool = False,
 ) -> RunBundle:
     lockfile = tmp_path / "uv.lock"
     lockfile.write_bytes((Path.cwd() / "uv.lock").read_bytes())
@@ -405,12 +409,13 @@ def _bundle(
         compiler=_RunPodFixtureCompiler(),
         identity_adapter=StudioTrainingIdentityAdapter(),
     )
-    return assemble_run_bundle(
+    bundle = assemble_run_bundle(
         request,
         run_set_id="2026-01-02-deadbeef",
         context=AssemblyContext(custody_root=tmp_path / "custody"),
         registry=registry,
     )
+    return bundle.model_copy(update={"smoke_enabled": smoke_enabled})
 
 
 def _layout_case(
@@ -458,9 +463,7 @@ def _realization_layout_error(
         plan = driver.seal_repo_realization_plan(bundle)
     except (RepoRealizationError, RunPodDriverError) as exc:
         return str(exc), {}
-    return validate_runpod_repo_realization_plan(
-        bundle, config, plan, driver._repo_snapshots
-    )
+    return validate_runpod_repo_realization_plan(bundle, config, plan, driver._repo_snapshots)
 
 
 def _realized_fingerprint(declaration: dict[str, Any]) -> str:
@@ -885,9 +888,7 @@ def test_deadman_is_installed_after_endpoint_and_before_gpu_readiness(tmp_path: 
     engine._engine_owned_provision(state, attempt_ordinal=1)
 
     watchdog_index = next(
-        index
-        for index, command in enumerate(transport.ssh_commands)
-        if "deadman.pid" in command
+        index for index, command in enumerate(transport.ssh_commands) if "deadman.pid" in command
     )
     gpu_index = transport.ssh_commands.index("nvidia-smi >/dev/null")
     assert watchdog_index < gpu_index
@@ -1389,7 +1390,7 @@ def test_provision_reuses_provided_endpoint_and_disables_teardown(tmp_path: Path
 def test_provided_endpoint_certify_fails_without_provider_realization_facts(
     tmp_path: Path,
 ) -> None:
-    bundle = _bundle(tmp_path)
+    bundle = _bundle(tmp_path).model_copy(update={"smoke_enabled": False})
     transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
@@ -1453,6 +1454,13 @@ def test_provided_endpoint_certify_fails_without_provider_realization_facts(
         driver=driver,
         conformance_registry=CheckRegistry(
             {"fixture": lambda row: CheckEntry(check_id="fixture", status="pass")}
+        ),
+    )
+    state, smoke_outputs = engine._stage_smoke(state)
+    state = state.with_stage(
+        STAGE_SMOKE,
+        state.stage(STAGE_SMOKE).model_copy(
+            update={"status": "completed", "outputs": dict(smoke_outputs)}
         ),
     )
 
@@ -1925,9 +1933,7 @@ def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
         sleep=clock.sleep,
         monotonic=clock.monotonic,
     )
-    acquisitions = iter(
-        [_PodAcquisition("pod-1", None), _PodAcquisition("pod-2", None)]
-    )
+    acquisitions = iter([_PodAcquisition("pod-1", None), _PodAcquisition("pod-2", None)])
     driver.create_pod_once = lambda *_args: next(acquisitions)
     state = StageEngine(
         bundle=bundle,
@@ -2053,9 +2059,10 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
     source, target, delete, excludes = transport.rsync_calls[0]
     assert source.endswith("/")
     assert source != str(local_repo) + "/"
-    assert Path(source).name == driver.repo_realization_plan().snapshot_manifest.repos[
-        "feedbax"
-    ].content_sha256
+    assert (
+        Path(source).name
+        == driver.repo_realization_plan().snapshot_manifest.repos["feedbax"].content_sha256
+    )
     assert target == "/workspace/dev repos/feedbax [dev]/"
     assert delete is True
     assert excludes == ()
@@ -2097,8 +2104,7 @@ def test_runpod_plan_root_and_resolution_changes_invalidate_reuse_key(
     tmp_path: Path,
 ) -> None:
     lock_text = (
-        'version = 1\n[[package]]\nname = "consumer"\n'
-        'source = { editable = "../provider" }\n'
+        'version = 1\n[[package]]\nname = "consumer"\nsource = { editable = "../provider" }\n'
     )
     bundle, config = _layout_case(
         tmp_path,
@@ -2179,11 +2185,7 @@ def test_realize_env_rejects_preflight_plan_digest_mismatch(tmp_path: Path) -> N
     driver = RunPodOrchestrationDriver(transport=transport)
     state = _sealed_state(driver, bundle)
     preflight = state.stage(STAGE_PREFLIGHT).model_copy(
-        update={
-            "outputs": {
-                "driver_evidence": {"repo_realization_plan_digest": "0" * 64}
-            }
-        }
+        update={"outputs": {"driver_evidence": {"repo_realization_plan_digest": "0" * 64}}}
     )
     state = state.model_copy(update={"stages": {STAGE_PREFLIGHT: preflight}})
 
@@ -2273,9 +2275,7 @@ def test_nested_remote_destinations_fail_before_wholesale_sync_in_both_orders(
     nested.mkdir(parents=True)
     marker = nested / "must-survive.txt"
     marker.write_text("preserve\n", encoding="utf-8")
-    remote_roots = {
-        name: str(destination if name == "outer" else nested) for name in repo_order
-    }
+    remote_roots = {name: str(destination if name == "outer" else nested) for name in repo_order}
     config = RunPodDriverConfig(
         local_repos=local_repos,
         remote_repos=remote_roots,
@@ -2284,9 +2284,9 @@ def test_nested_remote_destinations_fail_before_wholesale_sync_in_both_orders(
     transport = FakeRunPodTransport()
 
     with pytest.raises(RepoRealizationError, match="overlapping remote repo roots"):
-        RunPodOrchestrationDriver(
-            config=config, transport=transport
-        ).seal_repo_realization_plan(bundle)
+        RunPodOrchestrationDriver(config=config, transport=transport).seal_repo_realization_plan(
+            bundle
+        )
 
     assert marker.read_text(encoding="utf-8") == "preserve\n"
     assert transport.rsync_calls == []
@@ -2622,11 +2622,16 @@ def test_launch_row_command_returns_before_buffered_child_and_replaces_stale_pid
     command = build_launch_row_command(
         bundle=bundle,
         row=row,
-        remote_run_dir=str(remote_run_dir),
-        remote_sentinel_dir=str(sentinel_dir),
         workdir=str(tmp_path),
         jax_cache_dir=str(tmp_path / "jax-cache"),
         env_fingerprint="fingerprint-123",
+        execution_namespace=build_runpod_execution_namespace(
+            bundle=bundle,
+            row=row,
+            remote_run_dir=str(remote_run_dir),
+            remote_sentinel_dir=str(sentinel_dir),
+            env_fingerprint="fingerprint-123",
+        ),
     )
 
     started = time.monotonic()
@@ -2896,6 +2901,7 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
     assert [check.name for check in checks] == [
         "runpod-repo-snapshots",
         "input-provider-bindings",
+        "runpod-remote-smoke-applicability",
         "continuation-schedule-consistency",
         "runpod-lockfiles-declared",
         "runpod-remote-layout-vs-lock",
@@ -2909,6 +2915,150 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
     ]
     assert all(check.status == "pass" for check in checks)
     assert transport.runpodctl_calls == [("user", "--output", "json")]
+
+
+class RemoteSmokeTransport(FakeRunPodTransport):
+    def __init__(self, *, probe_status: str) -> None:
+        super().__init__()
+        self.probe_status = probe_status
+
+    def ssh(self, command: str) -> CommandResult:
+        self.ssh_commands.append(command)
+        if "paths=json.loads(sys.argv[1])" in command:
+            digest = "d" * 64
+            return CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "events": digest,
+                        "row_roots": digest,
+                        "sentinels": digest,
+                        "staged_inputs": digest,
+                    }
+                ),
+            )
+        if "reports={}" in command:
+            return CommandResult(
+                0,
+                json.dumps({"rows": {"smoke-warm": {"status": self.probe_status}}}),
+            )
+        if "smoke executor log lacks a typed result" in command:
+            return CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "start_completed_batches": 0,
+                        "end_completed_batches": 2,
+                        "payload_binding_status": "verified",
+                        "executor_result_sha256": "e" * 64,
+                    }
+                ),
+            )
+        return CommandResult(0, "")
+
+
+def _native_smoke_bundle(tmp_path: Path, *, deadline_seconds: int = 1800) -> RunBundle:
+    bundle = _bundle(tmp_path, smoke_enabled=True)
+    original = bundle.rows[0]
+    provenance = TrainingRowProvenance(
+        row_id=original.row_id,
+        row_index=0,
+        planned_run_id="feedbax-training-run:remote-smoke-test",
+        authored_payload_hash="a" * 64,
+        lowered_execution_payload_hash=original.execution.payload.sha256,
+        axis_coordinates={},
+        lowerer_identities=[
+            RowLowererIdentity(lowerer_id="feedbax.tests.remote-smoke", lowerer_version="v1")
+        ],
+    )
+    row = original.model_copy(
+        update={
+            "execution": original.execution.model_copy(update={"row_provenance": provenance}),
+            "launch": original.launch.model_copy(
+                update={"command": ["python", "-m", "feedbax", "execute-training-run-spec"]}
+            ),
+        }
+    )
+    return bundle.model_copy(update={"rows": [row], "smoke_deadline_seconds": deadline_seconds})
+
+
+def test_runpod_remote_smoke_records_derived_bounded_evidence(tmp_path: Path) -> None:
+    bundle = _native_smoke_bundle(tmp_path)
+    transport = RemoteSmokeTransport(probe_status="completed")
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            pod_id="pod-smoke",
+            remote_run_root="/remote/runs",
+            local_repos={"feedbax": tmp_path},
+        ),
+        transport=transport,
+    )
+
+    evidence = driver.smoke_row(bundle, bundle.rows[0], _state(bundle))
+
+    assert evidence["status"] == "passed"
+    assert evidence["start_completed_batches"] == 0
+    assert evidence["end_completed_batches"] == 2
+    assert evidence["payload_binding_status"] == "verified"
+    assert evidence["cleanup_status"] == "removed"
+    assert evidence["protected_paths_before"] == evidence["protected_paths_after"]
+    assert evidence["derived_run_id"] != evidence["planned_run_id"]
+    provenance = evidence["derived_producer_context"]["execution"]["row_provenance"]
+    assert provenance["planned_run_id"] == evidence["derived_run_id"]
+    launch = next(command for command in transport.ssh_commands if "--update-budget" in command)
+    assert "--update-budget 2" in launch
+    assert "/smoke/warm" in launch
+    assert "/rows/warm/checkpoints" not in launch
+    assert "/sentinels/smoke-warm.started" in launch
+
+
+def test_runpod_remote_smoke_deadline_escalates_and_records_failure(tmp_path: Path) -> None:
+    bundle = _native_smoke_bundle(tmp_path, deadline_seconds=60)
+    transport = RemoteSmokeTransport(probe_status="running")
+    clock = FakeClock()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            pod_id="pod-smoke",
+            remote_run_root="/remote/runs",
+            local_repos={"feedbax": tmp_path},
+        ),
+        transport=transport,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+    )
+
+    with pytest.raises(RunPodRemoteSmokeError, match="wall-clock deadline") as raised:
+        driver.smoke_row(bundle, bundle.rows[0], _state(bundle))
+
+    assert raised.value.evidence["status"] == "failed"
+    assert raised.value.evidence["cleanup_status"] == "removed"
+    termination = next(command for command in transport.ssh_commands if "kill -TERM" in command)
+    assert "kill -KILL" in termination
+    assert "/sentinels/smoke-warm.failed" in termination
+
+
+def test_runpod_preflight_rejects_non_native_smoke_row_by_name(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, smoke_enabled=True)
+    row = bundle.rows[0].model_copy(
+        update={"launch": bundle.rows[0].launch.model_copy(update={"command": ["echo", "full"]})}
+    )
+    bundle = bundle.model_copy(update={"rows": [row]})
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            image=bundle.environment.image_id or "",
+            local_repos={"feedbax": tmp_path},
+        ),
+        transport=FakeRunPodTransport(),
+    )
+
+    checks = driver.preflight_checks(bundle)
+
+    applicability = next(
+        check for check in checks if check.name == "runpod-remote-smoke-applicability"
+    )
+    assert applicability.status == "fail"
+    assert "warm" in (applicability.detail or "")
 
 
 def test_declared_continuation_without_source_custody_fails_before_transport(
@@ -2946,6 +3096,7 @@ def test_declared_continuation_without_source_custody_fails_before_transport(
     assert [check.name for check in checks] == [
         "runpod-repo-snapshots",
         "input-provider-bindings",
+        "runpod-remote-smoke-applicability",
         "continuation-schedule-consistency",
     ]
     assert checks[-1].status == "fail"
@@ -3590,7 +3741,7 @@ def test_separate_process_existing_run_rejects_legacy_preflight(tmp_path: Path) 
         ),
         store=store,
     ).run(stop_after_stage=STAGE_PREFLIGHT)
-    assert len(state.stage(STAGE_PREFLIGHT).checks) == 23
+    assert len(state.stage(STAGE_PREFLIGHT).checks) == 24
     preflight = state.stage(STAGE_PREFLIGHT)
     preflight = preflight.model_copy(
         update={

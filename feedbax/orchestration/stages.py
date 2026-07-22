@@ -23,6 +23,7 @@ from feedbax.contracts.manifest import (
     TrainingRunManifest,
     load_manifest_bytes,
 )
+from feedbax.contracts.remote_smoke import RemoteSmokeEvidence, RemoteSmokeRowEvidence
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
@@ -88,6 +89,7 @@ STAGE_PREFLIGHT = "PREFLIGHT"
 STAGE_PROVISION = "PROVISION"
 STAGE_REALIZE_ENV = "REALIZE_ENV"
 STAGE_STAGE_INPUTS = "STAGE_INPUTS"
+STAGE_SMOKE = "SMOKE"
 STAGE_LAUNCH = "LAUNCH"
 STAGE_MONITOR = "MONITOR"
 STAGE_COLLECT = "COLLECT"
@@ -100,6 +102,7 @@ STAGE_ORDER = (
     STAGE_PROVISION,
     STAGE_REALIZE_ENV,
     STAGE_STAGE_INPUTS,
+    STAGE_SMOKE,
     STAGE_LAUNCH,
     STAGE_MONITOR,
     STAGE_COLLECT,
@@ -683,9 +686,7 @@ class StageEngine:
         intents = list(run_state.acquisition_intents)
         for index, intent in enumerate(intents):
             if intent.intent_id == intent_id:
-                intents[index] = intent.model_copy(
-                    update={**updates, "updated_at": utc_now()}
-                )
+                intents[index] = intent.model_copy(update={**updates, "updated_at": utc_now()})
                 return run_state.model_copy(
                     update={"acquisition_intents": intents, "updated_at": utc_now()}
                 )
@@ -702,9 +703,7 @@ class StageEngine:
         identity = self.driver.acquisition_config_identity(self.bundle)
         nonce = uuid.uuid4().hex[:12]
         intent = AcquisitionIntent(
-            intent_id=(
-                f"{state.run_set_id}-a{attempt_ordinal}-c{candidate_ordinal}-{nonce}"
-            ),
+            intent_id=(f"{state.run_set_id}-a{attempt_ordinal}-c{candidate_ordinal}-{nonce}"),
             datacenter_candidate=candidate,
             config_identity=identity,
         )
@@ -736,9 +735,7 @@ class StageEngine:
                 candidate=candidate,
             )
             try:
-                acquisition = self.driver.create_pod_once(
-                    self.bundle, candidate, intent.intent_id
-                )
+                acquisition = self.driver.create_pod_once(self.bundle, candidate, intent.intent_id)
             except AcquisitionCreateError as exc:
                 if exc.clean_rejection:
                     last_clean_error = str(exc)
@@ -789,9 +786,7 @@ class StageEngine:
             self.store.save(state)
             try:
                 outputs = dict(
-                    self.driver.finish_acquired_pod(
-                        self.bundle, acquisition, intent.intent_id
-                    )
+                    self.driver.finish_acquired_pod(self.bundle, acquisition, intent.intent_id)
                 )
             except BaseException as exc:
                 cleanup: Mapping[str, Any] | None = None
@@ -1124,6 +1119,87 @@ class StageEngine:
     def _stage_stage_inputs(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         return state, dict(self.driver.stage_inputs(self.bundle, state))
 
+    def _stage_smoke(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
+        launch = state.stage(STAGE_LAUNCH)
+        if launch.status != "pending" or launch.started_at is not None:
+            raise OrchestrationStageError(
+                "SMOKE refuses to run after LAUNCH has started; pre-launch evidence is missing"
+            )
+
+        if not self.bundle.smoke_enabled:
+            evidence = RemoteSmokeEvidence(
+                run_set_id=self.bundle.run_set_id,
+                bundle_sha256=canonical_run_bundle_sha256(self.bundle),
+                rows=tuple(
+                    RemoteSmokeRowEvidence(
+                        row_id=row.row_id,
+                        status="opted-out",
+                        update_budget=self.bundle.smoke_update_budget,
+                        payload_binding_status="not-run",
+                        cleanup_status="not-created",
+                        deadline_seconds=self.bundle.smoke_deadline_seconds,
+                        opt_out_reason="bundle smoke_enabled=false",
+                    )
+                    for row in self.bundle.rows
+                ),
+            )
+            return state, evidence.model_dump(mode="json")
+
+        smoke_row = getattr(self.driver, "smoke_row", None)
+        if not callable(smoke_row):
+            evidence = RemoteSmokeEvidence(
+                run_set_id=self.bundle.run_set_id,
+                bundle_sha256=canonical_run_bundle_sha256(self.bundle),
+                rows=tuple(
+                    RemoteSmokeRowEvidence(
+                        row_id=row.row_id,
+                        status="opted-out",
+                        update_budget=self.bundle.smoke_update_budget,
+                        payload_binding_status="not-run",
+                        cleanup_status="not-created",
+                        deadline_seconds=self.bundle.smoke_deadline_seconds,
+                        opt_out_reason=(
+                            "remote smoke is inapplicable to driver "
+                            f"{self.bundle.deployment_policy.driver!r}"
+                        ),
+                    )
+                    for row in self.bundle.rows
+                ),
+            )
+            return state, evidence.model_dump(mode="json")
+
+        rows: list[dict[str, Any]] = []
+        for row in self.bundle.rows:
+            try:
+                rows.append(dict(smoke_row(self.bundle, row, state)))
+            except Exception as exc:
+                raw_evidence = getattr(exc, "evidence", None)
+                evidence = (
+                    dict(raw_evidence)
+                    if isinstance(raw_evidence, Mapping)
+                    else {
+                        "row_id": row.row_id,
+                        "status": "failed",
+                        "error": str(exc),
+                    }
+                )
+                rows.append(evidence)
+                stage_evidence = RemoteSmokeEvidence(
+                    run_set_id=self.bundle.run_set_id,
+                    bundle_sha256=canonical_run_bundle_sha256(self.bundle),
+                    rows=tuple(RemoteSmokeRowEvidence.model_validate(item) for item in rows),
+                )
+                raise _PrimaryExecutorFailure(
+                    f"remote smoke failed for row {row.row_id!r}: {exc}",
+                    stage_outputs=stage_evidence.model_dump(mode="json"),
+                ) from exc
+        evidence = RemoteSmokeEvidence(
+            run_set_id=self.bundle.run_set_id,
+            bundle_sha256=canonical_run_bundle_sha256(self.bundle),
+            rows=tuple(RemoteSmokeRowEvidence.model_validate(item) for item in rows),
+        )
+        return state, evidence.model_dump(mode="json")
+
     def _stage_launch(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         state, spend_exceeded = self._apply_spend_budget(state)
         self.store.save(state)
@@ -1325,6 +1401,38 @@ class StageEngine:
         return state, stage_outputs
 
     def _stage_certify(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
+        smoke = state.stage(STAGE_SMOKE)
+        if smoke.status != "completed":
+            raise OrchestrationStageError("CERTIFY requires completed SMOKE evidence")
+        try:
+            smoke_evidence = RemoteSmokeEvidence.model_validate(smoke.outputs)
+        except ValueError as exc:
+            raise OrchestrationStageError("CERTIFY requires typed per-row SMOKE evidence") from exc
+        if smoke_evidence.run_set_id != self.bundle.run_set_id:
+            raise OrchestrationStageError("CERTIFY rejected SMOKE run-set identity")
+        if smoke_evidence.bundle_sha256 != canonical_run_bundle_sha256(self.bundle):
+            raise OrchestrationStageError("CERTIFY rejected SMOKE bundle identity")
+        smoke_by_row = {item.row_id: item for item in smoke_evidence.rows}
+        missing_smoke = [row.row_id for row in self.bundle.rows if row.row_id not in smoke_by_row]
+        invalid_smoke = [
+            row.row_id
+            for row in self.bundle.rows
+            if row.row_id in smoke_by_row
+            and smoke_by_row[row.row_id].status not in {"passed", "opted-out"}
+        ]
+        invalid_opt_out = [
+            row.row_id
+            for row in self.bundle.rows
+            if row.row_id in smoke_by_row
+            and smoke_by_row[row.row_id].status == "opted-out"
+            and not smoke_by_row[row.row_id].opt_out_reason
+        ]
+        if missing_smoke or invalid_smoke or invalid_opt_out:
+            raise OrchestrationStageError(
+                "CERTIFY rejected SMOKE evidence: "
+                f"missing={missing_smoke!r}, invalid={invalid_smoke!r}, "
+                f"opt_out_without_reason={invalid_opt_out!r}"
+            )
         if len(self.conformance_registry) == 0:
             raise OrchestrationStageError(
                 "CERTIFY requires at least one registered conformance check"

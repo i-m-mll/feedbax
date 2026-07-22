@@ -80,6 +80,14 @@ class OrchestrationDriver(Protocol):
     def stage_inputs(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Stage immutable inputs required by rows."""
 
+    def smoke_row(
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+    ) -> Mapping[str, Any]:
+        """Run one bounded pre-launch remote smoke execution."""
+
     def launch_row(
         self,
         bundle: RunBundle,
