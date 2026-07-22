@@ -258,7 +258,10 @@ def test_green_memo_cannot_alias_serial_runner(monkeypatch, tmp_path: Path) -> N
     serial = full_suite.build_fingerprint(repo, runner_args=serial_args)
 
     assert parallel_args == ["-n", "auto"]
-    assert serial_args == []
+    # Serial must force `-n 0`, not an empty runner list: the pyproject addopts
+    # default enables `-n auto`, so only an explicit `-n 0` makes the disabled
+    # path actually run serially and keeps the serial fingerprint truthful.
+    assert serial_args == ["-n", "0"]
     assert full_suite.has_green_memo(memo_dir, parallel)
     assert not full_suite.has_green_memo(memo_dir, serial)
 
