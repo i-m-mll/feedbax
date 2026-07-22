@@ -3959,6 +3959,57 @@ def migrate_checkpoint_fork_plan_derived_digests(
     )
 
 
+@dataclass(frozen=True)
+class _LoadedForkPlanFile:
+    plan: CheckpointForkPlan
+    source_plan_canonical_sha256: str
+
+
+def _load_checkpoint_fork_plan_file(plan_path: Path) -> _LoadedForkPlanFile:
+    raw = json.loads(plan_path.read_text(encoding="utf-8"))
+    plan = _coerce_checkpoint_fork_plan(raw)
+    return _LoadedForkPlanFile(
+        plan=plan,
+        source_plan_canonical_sha256=checkpoint_fork_plan_sha256(plan),
+    )
+
+
+def relock_checkpoint_fork_plan_file(
+    plan_path: str | Path,
+    bindings: CheckpointForkPlanBindings,
+    *,
+    requalification_requirements: Sequence[str],
+    historical_evidence: Mapping[str, RunContractProjectionEvidence] | None = None,
+    owner_attestation: bool = False,
+) -> CheckpointForkPlanMigrationResult:
+    """Migrate a fork-plan file's stale run-contract digests in place.
+
+    The write is transactional: the migration is computed entirely in memory, an
+    optimistic source-plan-hash check re-reads the file to detect a concurrent
+    change, and the migrated plan (with its bound migration record) is written by
+    atomic temp-file-then-rename so the migrated digests and the record land
+    together or not at all.
+    """
+    plan_path = Path(plan_path)
+    snapshot = _load_checkpoint_fork_plan_file(plan_path)
+    result = migrate_checkpoint_fork_plan_derived_digests(
+        snapshot.plan,
+        bindings,
+        requalification_requirements=requalification_requirements,
+        historical_evidence=historical_evidence,
+        owner_attestation=owner_attestation,
+    )
+    current = _load_checkpoint_fork_plan_file(plan_path)
+    if current.source_plan_canonical_sha256 != snapshot.source_plan_canonical_sha256:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork plan changed under the relock operation; "
+            f"snapshot_source_hash={snapshot.source_plan_canonical_sha256!r} "
+            f"current_source_hash={current.source_plan_canonical_sha256!r}"
+        )
+    _write_json_atomic(plan_path, result.plan.model_dump(mode="json", exclude_none=True))
+    return result
+
+
 def _coerce_checkpoint_fork_plan(
     value: CheckpointForkPlan | Mapping[str, Any],
 ) -> CheckpointForkPlan:
