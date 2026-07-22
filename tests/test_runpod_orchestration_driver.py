@@ -695,10 +695,31 @@ def test_resource_unavailable_create_response_is_definitive(stream: str) -> None
     assert classification == "non-retryable"
 
 
+_RUNPOD_NO_INSTANCES_AVAILABLE = (
+    '{"error":"There are no longer any instances available with the requested '
+    'specifications. Please refresh and try again."}\n'
+)
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_no_instances_available_create_response_is_definitive(stream: str) -> None:
+    """EU-RO-1 variant surfaced from rlrmp2/5ea2a98: a distinct RunPod no-capacity message."""
+    result = CommandResult(1, **{stream: _RUNPOD_NO_INSTANCES_AVAILABLE})
+
+    classification, _detail = runpod_module._classify_create_failure(result, None)
+
+    assert classification == "non-retryable"
+
+
 @pytest.mark.parametrize(
     "result",
     [
         CommandResult(1, "This machine does not have the resources to deploy your pod"),
+        CommandResult(
+            1,
+            "There are no longer any instances available with the requested specifications.",
+        ),
+        CommandResult(1, '{"error":"pod limit exceeded for this account"}'),
         CommandResult(1, "", "transport connection lost"),
     ],
 )

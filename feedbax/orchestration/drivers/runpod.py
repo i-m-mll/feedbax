@@ -3618,6 +3618,51 @@ def _redact_secret(value: str, secret: str | None) -> str:
     return value.replace(secret, "<redacted>") if secret else value
 
 
+_NO_CAPACITY_MESSAGE_SUBSTRINGS = (
+    "does not have the resources to deploy your pod",
+    "no longer any instances available",
+)
+
+
+def _iter_structured_error_messages(text: str) -> Iterable[str]:
+    """Yield RunPod ``error`` field values from a JSON-lines create response.
+
+    ``runpodctl`` create failures interleave JSON error objects with plain-text
+    usage/log lines, so each line is parsed independently rather than the
+    whole stream at once.
+    """
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, Mapping):
+            message = payload.get("error")
+            if isinstance(message, str):
+                yield message
+
+
+def _is_no_capacity_create_response(stdout: str, stderr: str) -> bool:
+    """Definitive provider rejection: no capacity, so no pod was created.
+
+    Matches structurally on the provider's JSON ``error`` field rather than
+    full-string equality against a specific message, since RunPod's wording
+    varies by datacenter (e.g. "does not have the resources to deploy your
+    pod" vs. "no longer any instances available"). Only structured error
+    objects are considered so an incidental substring match in unparseable or
+    lost-transport output stays ambiguous (fail-closed).
+    """
+    return any(
+        substring in message
+        for stream in (stdout, stderr)
+        for message in _iter_structured_error_messages(stream)
+        for substring in _NO_CAPACITY_MESSAGE_SUBSTRINGS
+    )
+
+
 def _classify_create_failure(
     result: CommandResult, secret: str | None
 ) -> tuple[Literal["retryable", "non-retryable"], str]:
@@ -3625,19 +3670,7 @@ def _classify_create_failure(
     stdout = _redact_secret(result.stdout, secret)
     stderr = _redact_secret(result.stderr, secret)
     detail = (stderr or stdout).strip()
-    resource_unavailable = (
-        "This machine does not have the resources to deploy your pod. "
-        "Please try a different machine"
-    )
-    resource_errors = (
-        resource_unavailable,
-        f"failed to create pod: {resource_unavailable}",
-    )
-    if any(
-        f'"error":{json.dumps(message)}' in stream
-        for stream in (stdout, stderr)
-        for message in resource_errors
-    ):
+    if _is_no_capacity_create_response(stdout, stderr):
         return "non-retryable", detail
     try:
         payload = json.loads(result.stdout or result.stderr)
