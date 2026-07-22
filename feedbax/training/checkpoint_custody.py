@@ -3703,11 +3703,14 @@ def _fork_digest_migration_required_message(
         repr(classification.target_id) for classification in classifications
     )
     return (
-        "checkpoint fork run-contract digest requires sanctioned migration for targets "
-        f"[{targets}] along supported edge(s) {edge_text}; run "
-        "'python -m feedbax checkpoint relock --plan <plan.json> "
-        "--bindings <bindings.json> --write' with authenticated historical evidence, "
-        "or add the explicit owner-attestation flag when evidence is unavailable"
+        "checkpoint fork run-contract digest for targets "
+        f"[{targets}] records an older algorithm version on a supported migration edge "
+        f"({edge_text}); the fork gate holds no historical evidence, so input drift "
+        "cannot be ruled out at this stage. Run 'python -m feedbax checkpoint relock "
+        "--plan <plan.json> --bindings <bindings.json> --write' to adjudicate: "
+        "authenticated historical evidence either proves the science is unchanged or "
+        "refuses the migration as input drift; --owner-attestation is a deliberate "
+        "no-evidence override that carries mandatory re-qualification duties"
     )
 
 
@@ -3789,21 +3792,30 @@ def migrate_fork_compatibility_projection(
     edge = classification.migration_edge
     assert edge is not None  # migratable_algorithm_drift always carries an edge.
 
-    if owner_attestation:
-        proof_mode = _OWNER_ATTESTATION_PROOF_MODE
-        evidence_refs: tuple[str, ...] = (
-            historical_evidence.evidence_refs if historical_evidence is not None else ()
-        )
-    else:
+    # Owner-attestation is strictly a no-evidence fallback. Whenever historical
+    # evidence is supplied it always adjudicates: an input-drift proof was already
+    # refused above, so reaching here with evidence present means it must have
+    # authenticated. Evidence that cannot authenticate is refused even under the
+    # attestation flag, because the flag only applies when no evidence exists.
+    if historical_evidence is not None:
         if classification.proof_mode != _AUTHENTICATED_HISTORICAL_EVIDENCE_PROOF_MODE:
             raise CheckpointCompatibilityError(
                 "checkpoint fork derived-digest migration requires authenticated historical "
-                "evidence that migrates forward to the current canonical projection; supply "
-                "valid evidence or pass the explicit owner-attestation flag"
+                "evidence that migrates forward to the current canonical projection; the "
+                "supplied evidence did not authenticate. Owner-attestation applies only when "
+                "no historical evidence is provided at all"
             )
         proof_mode = _AUTHENTICATED_HISTORICAL_EVIDENCE_PROOF_MODE
-        assert historical_evidence is not None
-        evidence_refs = historical_evidence.evidence_refs
+        evidence_refs: tuple[str, ...] = historical_evidence.evidence_refs
+    elif owner_attestation:
+        proof_mode = _OWNER_ATTESTATION_PROOF_MODE
+        evidence_refs = ()
+    else:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork derived-digest migration requires authenticated historical "
+            "evidence that migrates forward to the current canonical projection; supply "
+            "valid evidence or pass the explicit owner-attestation flag"
+        )
 
     migrated_projection = stored.model_copy(
         update={
@@ -3847,6 +3859,13 @@ def migrate_checkpoint_fork_plan_derived_digests(
     no-op, or missing/invalid evidence (unless the explicit owner-attestation
     path is chosen). It updates the run-contract digest and its algorithm-version
     field together and appends one bound migration record to the plan history.
+
+    Migration-record hash self-reference convention: ``source_plan_canonical_sha256``
+    is the canonical hash of the pre-migration plan, and ``target_plan_canonical_sha256``
+    is the canonical hash of the migrated plan computed BEFORE its migration record
+    is appended. The persisted plan therefore hashes differently from the recorded
+    target hash (it carries the extra record); an auditor recomputing the target
+    hash must strip the final ``migration_history`` entry first.
     """
     requirements = tuple(requirement.strip() for requirement in requalification_requirements)
     if not requirements or any(not requirement for requirement in requirements):

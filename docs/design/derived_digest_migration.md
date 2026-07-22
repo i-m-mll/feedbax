@@ -111,15 +111,22 @@ relock leaves durable provenance instead of an untracked regex edit.
 ### 3.1 Version-aware verification at the fork gate
 
 `_prepare_checkpoint_fork_plan`'s digest comparison produces the shared classification result (§3.5)
-and acts on it with input-drift precedence: any input-drift signal — a fixed-sentinel mismatch or a
-historical-comparison mismatch on the run-contract field — dominates. When any input drift is present,
-the gate raises `CheckpointCompatibilityError` with the classification named in the message and does
-not advertise the migration command. Only when the run-contract field is pure supported algorithm
-drift and no input drift is present does the gate raise the new typed error
-`CheckpointDigestMigrationRequired`, whose message names the stored and current algorithm versions,
-the supported edge, and the exact sanctioned migration command. Unknown/newer/other-hash-domain
-versions fail closed with the distinct unsupported-edge error, never as migratable drift. The resume
-path's existing versioned verification is untouched.
+and acts on it with input-drift precedence. The fork gate runs during execution and holds no
+historical evidence, so it decides on the version-level classification only: a fixed-sentinel
+mismatch is unconditional input drift and dominates, and the gate raises `CheckpointCompatibilityError`
+with the classification named in the message and does not advertise the migration command. When the
+run-contract field carries a stored algorithm version that is older along a supported edge and the
+fixed sentinels are clean, the gate raises the new typed error `CheckpointDigestMigrationRequired`.
+Because the gate cannot run the authenticated-historical-evidence proof, this signal deliberately does
+**not** assert the drift is algorithm-only: its message states that the stored algorithm version is
+older on the named supported edge, that input drift cannot be ruled out without historical evidence,
+and that the `checkpoint relock` operation will adjudicate — authenticated evidence either proves the
+science is unchanged or refuses the move as input drift, while `--owner-attestation` is a deliberate
+no-evidence override carrying mandatory re-qualification duties. Historical-comparison input-drift
+detection on the run-contract field is asserted at the evidence-bearing classify/migrate layer and the
+CLI (§4.1, §4.3), not at the evidence-free gate. Unknown/newer/other-hash-domain versions fail closed
+with the distinct unsupported-edge error, never as migratable drift. The resume path's existing
+versioned verification is untouched.
 
 ### 3.2 Sanctioned migration core (library)
 
@@ -221,8 +228,15 @@ policy's accept/migrate/reject bar:
    check, with a distinct error.
 3. Algorithm bump plus real input drift, sentinels unchanged: the run-contract field shows an
    older algorithm version but its recomputed value under the historical-evidence proof does not
-   match; input drift dominates, both verification and migration raise the non-migratable input-drift
-   error, and the migration command is not advertised.
+   match. Because the fork gate holds no historical evidence, it cannot detect this drift and instead
+   raises `CheckpointDigestMigrationRequired` on the clean-sentinel supported version drift — its
+   message names the supported edge, states input drift cannot be ruled out without evidence, and
+   points at the `checkpoint relock` adjudication (never asserting the drift is algorithm-only). The
+   input-drift refusal is then asserted at the evidence-bearing layer: the classify/migrate core and
+   the CLI, handed the authenticated historical evidence, find the historical comparison mismatches,
+   let input drift dominate, raise the non-migratable input-drift error, and do not persist any
+   migration. The test pins this end to end (gate signal, then evidence-bearing refusal on the same
+   plan).
 4. Mixed-drift precedence: run-contract algorithm drift co-occurring with a fixed-sentinel mismatch;
    the input-drift signal dominates, the migration command is not advertised, and migration refuses.
 5. Current-version run-contract digest mismatch: `CheckpointCompatibilityError` with input-drift

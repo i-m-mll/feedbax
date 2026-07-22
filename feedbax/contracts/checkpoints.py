@@ -740,6 +740,14 @@ class CheckpointDigestMigrationRecord(StrictModel):
     versions rather than algorithm versions. It binds the pre- and post-migration
     plan canonical hashes so the evidence chain that justified re-deriving the
     run-contract digest under a newer algorithm version stays auditable.
+
+    Hash self-reference convention: ``source_plan_canonical_sha256`` is the
+    canonical hash of the pre-migration plan and ``target_plan_canonical_sha256``
+    is the canonical hash of the migrated plan computed BEFORE this record is
+    appended to ``migration_history``. Because the record lives in the
+    hash-visible ``migration_history`` field, the persisted plan hashes
+    differently from ``target_plan_canonical_sha256``; an auditor recomputing that
+    hash must strip the plan's final migration-history entry first.
     """
 
     schema_id: str = CHECKPOINT_DIGEST_MIGRATION_RECORD_SCHEMA_ID

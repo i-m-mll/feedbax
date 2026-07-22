@@ -476,7 +476,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     relock_parser.add_argument("--plan", required=True, help="CheckpointForkPlan JSON path")
     relock_parser.add_argument("--bindings", required=True, help="Runtime bindings v1 JSON")
-    relock_mode = relock_parser.add_mutually_exclusive_group()
+    relock_mode = relock_parser.add_mutually_exclusive_group(required=True)
     relock_mode.add_argument(
         "--check",
         action="store_true",
