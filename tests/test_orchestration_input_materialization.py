@@ -115,8 +115,14 @@ def test_runtime_binding_preflight_fails_before_runpod_queries(tmp_path: Path) -
         config=RunPodDriverConfig(local_repos={"feedbax": repo_root}),
         transport=transport,
     )
-    check = driver.preflight_checks(bundle)[0]
-    assert check.name == "input-provider-bindings" and check.status == "fail" and not transport.operations
+    checks = {check.name: check for check in driver.preflight_checks(bundle)}
+    assert checks["input-provider-bindings"].status == "fail"
+    assert checks["continuation-schedule-consistency"].status == "pass"
+    assert checks["continuation-schedule-consistency"].observed == "no-continuations"
+    assert checks["runpod-credentials"].observed["outcome"] == (
+        "skipped-due-to-dependency"
+    )
+    assert not transport.operations
 
 
 def test_materialization_rejects_wrong_transaction_authority(tmp_path: Path) -> None:
@@ -139,7 +145,9 @@ def test_missing_artifact_preflight_fails_before_runpod_queries(tmp_path: Path) 
     transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
         transport=transport, input_provider_bindings=[InputProviderRootBinding("checkpoint.inputs", root)])
-    assert driver.preflight_checks(bundle)[0].status == "fail" and transport.operations == []
+    checks = {check.name: check for check in driver.preflight_checks(bundle)}
+    assert checks["input-provider-bindings"].status == "fail"
+    assert transport.operations == []
 
 
 def test_preflight_rejects_invalid_target_role(tmp_path: Path) -> None:

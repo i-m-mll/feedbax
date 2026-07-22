@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -70,6 +70,7 @@ from feedbax.orchestration.state import (
     RunSetState,
     RunSetStateStore,
     StageState,
+    dependency_skip_observed,
     utc_now,
 )
 from feedbax.training.checkpoint_custody import (
@@ -796,7 +797,19 @@ class StageEngine:
         self.store.save(state)
         failed = [check for check in checks if check.status == "fail"]
         if failed:
-            raise PreflightFailed(f"preflight failed: {', '.join(check.name for check in failed)}")
+            driver_static_preflight = getattr(self.driver, "static_preflight_checks", None)
+            if callable(driver_static_preflight):
+                checks.extend(
+                    driver_static_preflight(
+                        self.bundle,
+                        upstream_failures=tuple(check.name for check in failed),
+                    )
+                )
+                stage = state.stage(STAGE_PREFLIGHT).model_copy(update={"checks": checks})
+                state = state.with_stage(STAGE_PREFLIGHT, stage)
+                self.store.save(state)
+                failed = [check for check in checks if check.status == "fail"]
+            raise PreflightFailed(_format_preflight_failures(failed))
         driver_preflight = getattr(self.driver, "preflight_checks", None)
         if callable(driver_preflight):
             checks.extend(driver_preflight(self.bundle))
@@ -812,8 +825,7 @@ class StageEngine:
         self.store.save(state)
         failed = [check for check in checks if check.status == "fail"]
         if failed:
-            names = ", ".join(check.name for check in failed)
-            raise PreflightFailed(f"preflight failed: {names}")
+            raise PreflightFailed(_format_preflight_failures(failed))
         outputs: dict[str, Any] = {"checks": [check.model_dump(mode="json") for check in checks]}
         evidence = getattr(self.driver, "preflight_evidence", None)
         if callable(evidence):
@@ -873,6 +885,7 @@ class StageEngine:
         attempt_ordinal: int,
     ) -> tuple[RunSetState, Mapping[str, Any]]:
         candidates = tuple(self.driver.acquisition_candidates(self.bundle))
+        driver_name = self.driver.driver_name
         if not candidates:
             raise OrchestrationStageError("engine-owned acquisition has no candidates")
         last_clean_error = "provider rejected every acquisition candidate"
@@ -913,7 +926,7 @@ class StageEngine:
                     str(exc),
                     retryable=True,
                     attempt_record={
-                        "driver": "runpod",
+                        "driver": driver_name,
                         "acquired": False,
                         "intent_id": intent.intent_id,
                         "reconciliation": "resolved-torn-down",
@@ -952,7 +965,7 @@ class StageEngine:
                         f"{exc}; automatic teardown failed: {teardown_exc}",
                         retryable=False,
                         attempt_record={
-                            "driver": "runpod",
+                            "driver": driver_name,
                             "acquired": True,
                             "pod_id": acquisition.pod_id,
                             "intent_id": intent.intent_id,
@@ -969,7 +982,7 @@ class StageEngine:
                     str(exc),
                     retryable=True,
                     attempt_record={
-                        "driver": "runpod",
+                        "driver": driver_name,
                         "acquired": True,
                         "pod_id": acquisition.pod_id,
                         "intent_id": intent.intent_id,
@@ -981,7 +994,7 @@ class StageEngine:
         raise ProvisioningAttemptError(
             last_clean_error,
             retryable=True,
-            attempt_record={"driver": "runpod", "acquired": False},
+            attempt_record={"driver": driver_name, "acquired": False},
         )
 
     def _reconcile_acquisition_intents(self, state: RunSetState) -> RunSetState:
@@ -1057,17 +1070,11 @@ class StageEngine:
                     record.pod_id,
                     timeout_seconds=max(0.0, deadline - self._monotonic()),
                 )
+                adopted_provision_record = self.driver.adopted_provision_record(
+                    original.intent_id
+                )
                 adopted_state = state.model_copy(
-                    update={
-                        "provision_record": {
-                            "driver": "runpod",
-                            "pod_id": record.pod_id,
-                            "provided_pod": False,
-                            "provided_endpoint": False,
-                            "teardown_allowed": True,
-                            "intent_id": original.intent_id,
-                        }
-                    }
+                    update={"provision_record": adopted_provision_record}
                 )
                 try:
                     teardown = dict(self.driver.teardown(self.bundle, adopted_state))
@@ -1323,15 +1330,13 @@ class StageEngine:
                 rows.append(dict(smoke_row(self.bundle, row, state)))
             except Exception as exc:
                 raw_evidence = getattr(exc, "evidence", None)
-                evidence = (
-                    dict(raw_evidence)
-                    if isinstance(raw_evidence, Mapping)
-                    else {
-                        "row_id": row.row_id,
-                        "status": "failed",
-                        "error": str(exc),
-                    }
-                )
+                if isinstance(raw_evidence, Mapping):
+                    evidence = dict(raw_evidence)
+                else:
+                    fallback_evidence = getattr(self.driver, "smoke_failure_evidence", None)
+                    if not callable(fallback_evidence):
+                        raise
+                    evidence = dict(fallback_evidence(self.bundle, row, state, exc))
                 rows.append(evidence)
                 stage_evidence = RemoteSmokeEvidence(
                     run_set_id=self.bundle.run_set_id,
@@ -2470,7 +2475,18 @@ def _run_static_preflight_checks(
     include_manifest_payload_normalization: bool,
 ) -> list[PreflightCheckEntry]:
     checks: list[PreflightCheckEntry] = []
-    checks.append(_check("schema-current", bundle.schema_version == RUN_BUNDLE_SCHEMA_VERSION))
+    schema_current = bundle.schema_version == RUN_BUNDLE_SCHEMA_VERSION
+    checks.append(
+        _check(
+            "schema-current",
+            schema_current,
+            detail=(
+                None
+                if schema_current
+                else f"expected {RUN_BUNDLE_SCHEMA_VERSION}, observed {bundle.schema_version}"
+            ),
+        )
+    )
     try:
         observed_revision = assert_feedbax_revision_pin(bundle.feedbax_revision)
     except FeedbaxRevisionError as exc:
@@ -2478,17 +2494,39 @@ def _run_static_preflight_checks(
     else:
         checks.append(_check("feedbax-revision-pin", True, observed=observed_revision))
     checks.append(_check("row-identity", True, observed=[row.row_id for row in bundle.rows]))
-    checks.append(_check("budget-presence", bundle.budget.max_wall_clock_seconds > 0))
+    budget_present = bundle.budget.max_wall_clock_seconds > 0
+    checks.append(
+        _check(
+            "budget-presence",
+            budget_present,
+            detail=None if budget_present else "budget.max_wall_clock_seconds must be positive",
+        )
+    )
+    driver_supported = bundle.deployment_policy.driver in {"local", "worker-http", "runpod"}
     checks.append(
         _check(
             "driver-preconditions",
-            bundle.deployment_policy.driver in {"local", "worker-http", "runpod"},
+            driver_supported,
+            detail=(
+                None
+                if driver_supported
+                else f"unsupported deployment driver: {bundle.deployment_policy.driver!r}"
+            ),
             observed=bundle.deployment_policy.driver,
         )
     )
     env_complete = bool(bundle.environment.python_version)
     checks.append(
-        _check("environment-declaration", env_complete, observed=bundle.environment.python_version)
+        _check(
+            "environment-declaration",
+            env_complete,
+            detail=(
+                None
+                if env_complete
+                else "environment.python_version is required for deterministic realization"
+            ),
+            observed=bundle.environment.python_version,
+        )
     )
     input_failures, input_observed = preflight_resolved_inputs(bundle)
     checks.append(
@@ -2532,11 +2570,23 @@ def _run_static_preflight_checks(
         )
     )
 
+    row_payloads: dict[str, dict[str, Any] | None] = {}
+    row_payload_errors: dict[str, str] = {}
+    for row in bundle.rows:
+        try:
+            row_payloads[row.row_id] = _row_payload(row)
+        except (OSError, ValueError) as exc:
+            row_payloads[row.row_id] = None
+            row_payload_errors[row.row_id] = str(exc)
+
     if include_manifest_payload_normalization:
         manifest_failures: list[str] = []
         normalized: dict[str, Any] = {}
         for row in bundle.rows:
-            run_spec = _row_payload(row)
+            if row.row_id in row_payload_errors:
+                manifest_failures.append(f"{row.row_id}: {row_payload_errors[row.row_id]}")
+                continue
+            run_spec = row_payloads[row.row_id]
             if _is_training_run_payload(run_spec):
                 try:
                     payloads = preflight_training_run_manifest_payloads(
@@ -2554,12 +2604,25 @@ def _run_static_preflight_checks(
                 observed=normalized or "no-inline-run-specs",
             )
         )
-    schedule_failures, schedule_observed = _preflight_schedule_realization(bundle)
+    schedule_failures, schedule_observed, schedule_skips = _preflight_schedule_realization(
+        bundle,
+        row_payloads=row_payloads,
+        row_payload_errors=(row_payload_errors if include_manifest_payload_normalization else {}),
+    )
+    if not include_manifest_payload_normalization:
+        schedule_failures = [
+            *(f"{row_id}: {detail}" for row_id, detail in row_payload_errors.items()),
+            *schedule_failures,
+        ]
+    schedule_detail = "; ".join(schedule_failures) if schedule_failures else None
+    if schedule_skips:
+        skip_detail = "skipped-due-to-dependency: " + ", ".join(schedule_skips)
+        schedule_detail = f"{schedule_detail}; {skip_detail}" if schedule_detail else skip_detail
     checks.append(
         _check(
             "schedule-realization",
             not schedule_failures,
-            detail="; ".join(schedule_failures) if schedule_failures else None,
+            detail=schedule_detail,
             observed=schedule_observed or "no-inline-optimizer-specs",
         )
     )
@@ -2614,11 +2677,30 @@ def _is_training_run_payload(payload: Any) -> bool:
     return isinstance(payload, Mapping) and payload.get("schema_id") == "feedbax.spec.training_run"
 
 
-def _preflight_schedule_realization(bundle: RunBundle) -> tuple[list[str], dict[str, Any]]:
+def _preflight_schedule_realization(
+    bundle: RunBundle,
+    *,
+    row_payloads: Mapping[str, dict[str, Any] | None] | None = None,
+    row_payload_errors: Mapping[str, str] | None = None,
+) -> tuple[list[str], dict[str, Any], list[str]]:
     failures: list[str] = []
     observed: dict[str, Any] = {}
+    skipped: list[str] = []
+    payloads = row_payloads or {}
+    payload_errors = row_payload_errors or {}
     for row in bundle.rows:
-        run_spec = _row_payload(row)
+        if row.row_id in payload_errors:
+            observed[row.row_id] = dependency_skip_observed("manifest-payload-normalization")
+            skipped.append(f"{row.row_id} depends on manifest-payload-normalization")
+            continue
+        if row_payloads is None:
+            try:
+                run_spec = _row_payload(row)
+            except (OSError, ValueError) as exc:
+                failures.append(f"{row.row_id}: {exc}")
+                continue
+        else:
+            run_spec = payloads[row.row_id]
         if not _is_training_run_payload(run_spec):
             continue
         optimizer_payloads = _optimizer_payloads(run_spec)
@@ -2642,7 +2724,15 @@ def _preflight_schedule_realization(bundle: RunBundle) -> tuple[list[str], dict[
                         f"{row.row_id}[{index}]: learning-rate mismatch: {mismatches!r}"
                     )
         observed[row.row_id] = row_observed
-    return failures, observed
+    return failures, observed, skipped
+
+
+def _format_preflight_failures(failed: Sequence[PreflightCheckEntry]) -> str:
+    """Render ordered named failures with their actionable details."""
+    rendered = [
+        f"{check.name}: {check.detail}" if check.detail else check.name for check in failed
+    ]
+    return f"preflight failed: {'; '.join(rendered)}"
 
 
 def _evaluate_optimizer_schedule_at_preflight(

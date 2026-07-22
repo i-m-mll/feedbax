@@ -20,6 +20,7 @@ import pytest
 import feedbax.orchestration.collection_recovery as collection_recovery
 import feedbax.orchestration.drivers.runpod as runpod_module
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
+from feedbax.contracts.remote_smoke import RemoteSmokeEvidence
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes
 from feedbax.contracts.studio_training import (
@@ -51,9 +52,8 @@ from feedbax.orchestration.collection_recovery import (
     CollectionRecoveryError,
 )
 from feedbax.orchestration.drivers.runpod import (
-    CommandResult,
-    _PodAcquisition,
     _run_command,
+    CommandResult,
     RunPodDriverConfig,
     RunPodDriverError,
     RunPodOrchestrationDriver,
@@ -72,7 +72,11 @@ from feedbax.orchestration.drivers.runpod import (
     validate_runpod_repo_realization_plan,
 )
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
-from feedbax.orchestration.drivers.base import AcquisitionCreateError, ProvisioningAttemptError
+from feedbax.orchestration.drivers.base import (
+    AcquisitionCreateError,
+    AcquisitionResult,
+    ProvisioningAttemptError,
+)
 from feedbax.orchestration.input_materialization import InputProviderRootBinding
 from feedbax.orchestration.repo_realization import (
     EditableSourceResolution,
@@ -511,6 +515,7 @@ def _sealed_state(
     driver: RunPodOrchestrationDriver,
     bundle: RunBundle,
 ) -> RunSetState:
+    assert driver.config.local_repos, "snapshot tests must configure explicit fixture repos"
     plan = driver.seal_repo_realization_plan(bundle)
     return _state(bundle).model_copy(
         update={
@@ -1512,7 +1517,7 @@ def test_create_pod_uses_current_runpodctl_pod_create_surface(tmp_path: Path) ->
     )
 
     driver._preflight_passed = True
-    assert driver.create_pod_once(bundle, "CA-MTL-1", "intent-123") == _PodAcquisition(
+    assert driver.create_pod_once(bundle, "CA-MTL-1", "intent-123") == AcquisitionResult(
         pod_id="pod-123",
         accepted_datacenter="CA-MTL-1",
     )
@@ -1574,7 +1579,7 @@ def test_provision_record_preserves_accepted_datacenter_when_pod_get_omits_it(
 
     record = driver.finish_acquired_pod(
         bundle,
-        _PodAcquisition("pod-123", "EU-CZ-1"),
+        AcquisitionResult("pod-123", "EU-CZ-1"),
         "intent-accepted-datacenter",
     )
     store = RunSetStateStore(tmp_path / "state.json")
@@ -1726,7 +1731,7 @@ def test_provision_conflict_tears_down_and_is_not_retried(tmp_path: Path) -> Non
     with pytest.raises(RunPodDriverError, match="datacenter conflicts"):
         driver.finish_acquired_pod(
             bundle,
-            _PodAcquisition("pod-conflict", "EU-CZ-1"),
+            AcquisitionResult("pod-conflict", "EU-CZ-1"),
             "intent-conflict",
         )
     cleanup = driver.teardown(bundle, _state(bundle))
@@ -1775,7 +1780,7 @@ def test_keyboard_interrupt_during_provision_self_heals_owned_pod(
     monkeypatch.setattr(
         driver,
         "create_pod_once",
-        lambda _bundle, _candidate, _intent_id: _PodAcquisition("pod-interrupt", None),
+        lambda _bundle, _candidate, _intent_id: AcquisitionResult("pod-interrupt", None),
     )
 
     def interrupted_endpoint(_pod_id: str) -> Any:
@@ -1812,7 +1817,7 @@ def test_provision_cleanup_failure_does_not_mask_keyboard_interrupt(
     monkeypatch.setattr(
         driver,
         "create_pod_once",
-        lambda _bundle, _candidate, _intent_id: _PodAcquisition("pod-interrupt", None),
+        lambda _bundle, _candidate, _intent_id: AcquisitionResult("pod-interrupt", None),
     )
 
     def interrupted_endpoint(_pod_id: str) -> Any:
@@ -1933,7 +1938,7 @@ def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
         sleep=clock.sleep,
         monotonic=clock.monotonic,
     )
-    acquisitions = iter([_PodAcquisition("pod-1", None), _PodAcquisition("pod-2", None)])
+    acquisitions = iter([AcquisitionResult("pod-1", None), AcquisitionResult("pod-2", None)])
     driver.create_pod_once = lambda *_args: next(acquisitions)
     state = StageEngine(
         bundle=bundle,
@@ -2010,7 +2015,7 @@ def test_endpoint_ready_after_deadline_is_rejected_and_torn_down(tmp_path: Path)
         monotonic=clock.monotonic,
     )
     assert all(check.status == "pass" for check in driver.preflight_checks(bundle))
-    driver.create_pod_once = lambda *_args: _PodAcquisition("pod-late", None)
+    driver.create_pod_once = lambda *_args: AcquisitionResult("pod-late", None)
     store = RunSetStateStore(bundle.run_set_dir / "late-state.json")
     state = _state(bundle)
     store.save(state)
@@ -2182,7 +2187,10 @@ def test_plan_records_deduplicated_lock_sources_with_complete_keys(tmp_path: Pat
 def test_realize_env_rejects_preflight_plan_digest_mismatch(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
-    driver = RunPodOrchestrationDriver(transport=transport)
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(local_repos={"feedbax": tmp_path}),
+        transport=transport,
+    )
     state = _sealed_state(driver, bundle)
     preflight = state.stage(STAGE_PREFLIGHT).model_copy(
         update={"outputs": {"driver_evidence": {"repo_realization_plan_digest": "0" * 64}}}
@@ -2332,6 +2340,7 @@ def test_realize_env_waits_for_delayed_done_sentinel(tmp_path: Path) -> None:
             overlay_steps=(),
             poll_seconds=2,
             env_step_timeout_seconds=10,
+            local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
         sleep=clock.sleep,
@@ -2365,7 +2374,10 @@ def test_realize_env_failed_sentinel_raises_with_remote_log_tail(tmp_path: Path)
     transport.sentinel_results = [CommandResult(0, "failed")]
     transport.log_tail_result = CommandResult(0, "line 49\nimportant failure detail\n")
     driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(overlay_steps=()),
+        config=RunPodDriverConfig(
+            overlay_steps=(),
+            local_repos={"feedbax": tmp_path},
+        ),
         transport=transport,
     )
 
@@ -2388,6 +2400,7 @@ def test_realize_env_sentinel_timeout_raises(tmp_path: Path) -> None:
             overlay_steps=(),
             poll_seconds=1,
             env_step_timeout_seconds=3,
+            local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
         sleep=clock.sleep,
@@ -2403,7 +2416,10 @@ def test_realize_env_sentinel_timeout_raises(tmp_path: Path) -> None:
 def test_realize_env_fingerprint_match_skips_environment_steps(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
-    driver = RunPodOrchestrationDriver(transport=transport)
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(local_repos={"feedbax": tmp_path}),
+        transport=transport,
+    )
     state = _sealed_state(driver, bundle)
     declaration_fingerprint = compute_runpod_environment_fingerprint(
         bundle, driver.repo_realization_plan()
@@ -2858,6 +2874,7 @@ def test_deadman_is_verified_and_started_once_during_environment_realization(
             pod_id="pod-123",
             ssh_host="198.51.100.10",
             ssh_port=2222,
+            local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
     )
@@ -2917,6 +2934,247 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
     assert transport.runpodctl_calls == [("user", "--output", "json")]
 
 
+def test_runpod_preflight_reports_independent_static_failures_in_canonical_order(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    bundle = bundle.model_copy(
+        update={
+            "environment": bundle.environment.model_copy(
+                update={
+                    "image_id": "runpod/pytorch:mutable",
+                    "lockfile_hashes": {},
+                    "python_version": None,
+                }
+            )
+        }
+    )
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(local_repos={"feedbax": tmp_path}),
+        transport=transport,
+    )
+
+    checks = driver.preflight_checks(bundle)
+
+    assert [check.name for check in checks] == [
+        "runpod-repo-snapshots",
+        "input-provider-bindings",
+        "runpod-remote-smoke-applicability",
+        "continuation-schedule-consistency",
+        "runpod-lockfiles-declared",
+        "runpod-remote-layout-vs-lock",
+        "runpod-image-immutable",
+        "runpod-image-tag-exists",
+        "runpod-python-version-declared",
+        "runpod-gpu-policy-declared",
+        "runpod-credentials",
+        "runpod-balance-floor",
+        "runpod-deadman-credentials",
+    ]
+    assert [check.name for check in checks if check.status == "fail"] == [
+        "runpod-lockfiles-declared",
+        "runpod-image-immutable",
+        "runpod-python-version-declared",
+        "runpod-gpu-policy-declared",
+    ]
+    image_check = next(check for check in checks if check.name == "runpod-image-tag-exists")
+    assert image_check.observed == {
+        "outcome": "skipped-due-to-dependency",
+        "dependencies": ["runpod-lockfiles-declared", "runpod-image-immutable"],
+    }
+    credential_check = next(check for check in checks if check.name == "runpod-credentials")
+    assert credential_check.observed == {
+        "outcome": "skipped-due-to-dependency",
+        "dependencies": ["runpod-lockfiles-declared"],
+    }
+    assert transport.operations == []
+    assert driver._preflight_passed is False
+
+
+def test_stage_preflight_composes_core_and_runpod_static_failures_before_provider_queries(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    bundle = bundle.model_copy(
+        update={
+            "environment": bundle.environment.model_copy(
+                update={
+                    "image_id": "runpod/pytorch:mutable",
+                    "python_version": None,
+                }
+            )
+        }
+    )
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            local_repos={"feedbax": tmp_path},
+        ),
+        transport=transport,
+    )
+
+    with pytest.raises(PreflightFailed) as raised:
+        StageEngine(bundle=bundle, driver=driver).run()
+
+    state = RunSetStateStore(bundle.run_set_dir / "state.json").load()
+    checks = state.stage(STAGE_PREFLIGHT).checks
+    assert [check.name for check in checks if check.status == "fail"] == [
+        "environment-declaration",
+        "runpod-image-immutable",
+        "runpod-python-version-declared",
+    ]
+    message = str(raised.value)
+    assert message.index("environment-declaration") < message.index(
+        "runpod-image-immutable"
+    ) < message.index("runpod-python-version-declared")
+    provider_check = next(check for check in checks if check.name == "runpod-credentials")
+    assert provider_check.observed["outcome"] == "skipped-due-to-dependency"
+    assert provider_check.observed["dependencies"] == [
+        "environment-declaration",
+    ]
+    assert transport.operations == []
+
+
+def test_runpod_preflight_queries_credentials_despite_independent_declaration_failures(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path, deadman_enabled=True)
+    bundle = bundle.model_copy(
+        update={
+            "environment": bundle.environment.model_copy(update={"python_version": None})
+        }
+    )
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("user", "--output", "json"),
+        CommandResult(0, json.dumps({"clientBalance": 12.5})),
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            image=bundle.environment.image_id or "",
+            local_repos={"feedbax": tmp_path},
+        ),
+        transport=transport,
+    )
+
+    checks = driver.preflight_checks(bundle)
+    named = {check.name: check for check in checks}
+
+    assert [check.name for check in checks if check.status == "fail"] == [
+        "runpod-python-version-declared",
+        "runpod-gpu-policy-declared",
+        "runpod-deadman-credentials",
+    ]
+    assert named["runpod-credentials"].status == "pass"
+    assert named["runpod-balance-floor"].status == "pass"
+    assert transport.runpodctl_calls == [("user", "--output", "json")]
+
+
+def test_runpod_preflight_collects_image_probe_exception_and_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    monkeypatch.setattr(
+        transport,
+        "image_exists",
+        lambda _image: (_ for _ in ()).throw(RuntimeError("registry unavailable")),
+    )
+    transport.queue_runpodctl(
+        ("user", "--output", "json"),
+        CommandResult(0, json.dumps({"clientBalance": 12.5})),
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            image=bundle.environment.image_id or "",
+            local_repos={"feedbax": tmp_path},
+        ),
+        transport=transport,
+    )
+
+    checks = driver.preflight_checks(bundle)
+    named = {check.name: check for check in checks}
+
+    assert named["runpod-image-tag-exists"].status == "fail"
+    assert named["runpod-image-tag-exists"].detail == (
+        "image existence query raised RuntimeError: registry unavailable"
+    )
+    assert named["runpod-credentials"].status == "pass"
+    assert named["runpod-balance-floor"].status == "pass"
+    assert [check.name for check in checks].index("runpod-image-tag-exists") < [
+        check.name for check in checks
+    ].index("runpod-credentials")
+
+
+def test_completed_preflight_validation_rejects_dependency_skip_sentinel(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("user", "--output", "json"),
+        CommandResult(0, json.dumps({"clientBalance": 12.5})),
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            image=bundle.environment.image_id or "",
+            local_repos={"feedbax": tmp_path},
+        ),
+        transport=transport,
+    )
+    checks = driver.preflight_checks(bundle)
+    balance_index = next(
+        index for index, check in enumerate(checks) if check.name == "runpod-balance-floor"
+    )
+    checks[balance_index] = checks[balance_index].model_copy(
+        update={
+            "detail": "skipped-due-to-dependency: runpod-credentials",
+            "observed": {
+                "outcome": "skipped-due-to-dependency",
+                "dependencies": ["runpod-credentials"],
+            },
+        }
+    )
+
+    with pytest.raises(RunPodDriverError, match="includes a failing check"):
+        driver._validate_preflight_checks(bundle, checks)
+
+
+def test_runpod_preflight_records_balance_skip_after_credential_failure(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("user", "--output", "json"),
+        CommandResult(1, "", "credential rejected"),
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            image=bundle.environment.image_id or "",
+            local_repos={"feedbax": tmp_path},
+        ),
+        transport=transport,
+    )
+
+    named = {check.name: check for check in driver.preflight_checks(bundle)}
+
+    assert named["runpod-credentials"].status == "fail"
+    assert named["runpod-credentials"].detail == "credential rejected"
+    assert named["runpod-balance-floor"].status == "pass"
+    assert named["runpod-balance-floor"].observed == {
+        "outcome": "skipped-due-to-dependency",
+        "dependencies": ["runpod-credentials"],
+    }
+    assert driver._preflight_passed is False
+
+
 class RemoteSmokeTransport(FakeRunPodTransport):
     def __init__(self, *, probe_status: str) -> None:
         super().__init__()
@@ -2940,7 +3198,14 @@ class RemoteSmokeTransport(FakeRunPodTransport):
         if "reports={}" in command:
             return CommandResult(
                 0,
-                json.dumps({"rows": {"smoke-warm": {"status": self.probe_status}}}),
+                json.dumps(
+                    {
+                        "rows": {
+                            f"smoke-{row_id}": {"status": self.probe_status}
+                            for row_id in ("warm", "cool", "hot")
+                        }
+                    }
+                ),
             )
         if "smoke executor log lacks a typed result" in command:
             return CommandResult(
@@ -3012,6 +3277,137 @@ def test_runpod_remote_smoke_records_derived_bounded_evidence(tmp_path: Path) ->
     assert "/sentinels/smoke-warm.started" in launch
 
 
+def test_smoke_policy_does_not_change_real_launch_identity(tmp_path: Path) -> None:
+    smoke_bundle = _native_smoke_bundle(tmp_path)
+    no_smoke_bundle = smoke_bundle.model_copy(update={"smoke_enabled": False})
+    row = smoke_bundle.rows[0]
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(pod_id="pod-smoke"),
+        transport=FakeRunPodTransport(),
+    )
+
+    def launch_command(bundle: RunBundle) -> str:
+        namespace = build_runpod_execution_namespace(
+            bundle=bundle,
+            row=row,
+            remote_run_dir=driver._remote_run_dir(bundle),
+            remote_sentinel_dir=driver._remote_sentinel_dir(bundle),
+            env_fingerprint="fingerprint-123",
+        )
+        return build_launch_row_command(
+            bundle=bundle,
+            row=row,
+            workdir=driver._row_workdir(row),
+            env_fingerprint="fingerprint-123",
+            jax_cache_dir="/workspace/jax_cache",
+            execution_namespace=namespace,
+        )
+
+    assert launch_command(smoke_bundle) == launch_command(no_smoke_bundle)
+    assert row.execution.row_provenance is not None
+    assert row.execution.row_provenance.planned_run_id in launch_command(smoke_bundle)
+
+
+def test_smoke_launch_copies_declared_continuation_seed_into_scratch_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _native_smoke_bundle(tmp_path)
+    row = bundle.rows[0]
+    source = SimpleNamespace(custody=SimpleNamespace(target_role="checkpoint"))
+    monkeypatch.setattr(runpod_module, "native_resume_checkpoint_source", lambda *_: source)
+    monkeypatch.setattr(
+        runpod_module,
+        "build_native_resume_seed_command",
+        lambda source_path, attempt, target, resolved: (
+            f"SEED {source_path} {attempt} {target} {resolved is source}"
+        ),
+    )
+    namespace = build_runpod_execution_namespace(
+        bundle=bundle,
+        row=row,
+        remote_run_dir="/remote/runs",
+        remote_sentinel_dir="/remote/runs/sentinels",
+        env_fingerprint="fingerprint-123",
+        scratch_root="/remote/runs/smoke/warm",
+        run_identity="feedbax-training-run:remote-smoke-test--smoke",
+        sentinel_stem="smoke-warm",
+    )
+
+    command = build_launch_row_command(
+        bundle=bundle,
+        row=row,
+        workdir="/workspace/feedbax",
+        env_fingerprint="fingerprint-123",
+        jax_cache_dir="/workspace/jax_cache",
+        execution_namespace=namespace,
+        update_budget=2,
+    )
+
+    assert "SEED /remote/runs/inputs/" in command
+    assert "/remote/runs/smoke/warm/.checkpoint-seed-attempt" in command
+    assert "/remote/runs/smoke/warm/checkpoints True" in command
+    assert command.index("SEED ") < command.index("touch /remote/runs/sentinels/smoke-warm.started")
+
+
+def test_stage_smoke_internal_exception_records_valid_failure_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _native_smoke_bundle(tmp_path)
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(pod_id="pod-smoke"),
+        transport=FakeRunPodTransport(),
+    )
+    monkeypatch.setattr(
+        driver,
+        "smoke_row",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("internal smoke defect")),
+    )
+
+    with pytest.raises(OrchestrationStageError, match="internal smoke defect") as raised:
+        StageEngine(bundle=bundle, driver=driver)._stage_smoke(_state(bundle))
+
+    evidence = RemoteSmokeEvidence.model_validate(raised.value.stage_outputs)
+    assert evidence.rows[0].status == "failed"
+    assert evidence.rows[0].cleanup_status == "failed"
+    assert evidence.rows[0].payload_binding_status == "not-run"
+
+
+def test_stage_smoke_records_evidence_for_every_non_opted_out_row(tmp_path: Path) -> None:
+    bundle = _native_smoke_bundle(tmp_path)
+    first = bundle.rows[0]
+    assert first.execution.row_provenance is not None
+    rows = [
+        first.model_copy(
+            update={
+                "row_id": row_id,
+                "execution": first.execution.model_copy(
+                    update={
+                        "row_provenance": first.execution.row_provenance.model_copy(
+                            update={"row_id": row_id, "row_index": index}
+                        )
+                    }
+                ),
+            }
+        )
+        for index, row_id in enumerate(("warm", "cool", "hot"))
+    ]
+    bundle = bundle.model_copy(update={"rows": rows})
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(pod_id="pod-smoke"),
+        transport=RemoteSmokeTransport(probe_status="completed"),
+    )
+
+    _state_after, outputs = StageEngine(bundle=bundle, driver=driver)._stage_smoke(
+        _state(bundle)
+    )
+    evidence = RemoteSmokeEvidence.model_validate(outputs)
+
+    assert [row.row_id for row in evidence.rows] == ["warm", "cool", "hot"]
+    assert all(row.status == "passed" for row in evidence.rows)
+
+
 def test_runpod_remote_smoke_deadline_escalates_and_records_failure(tmp_path: Path) -> None:
     bundle = _native_smoke_bundle(tmp_path, deadline_seconds=60)
     transport = RemoteSmokeTransport(probe_status="running")
@@ -3035,6 +3431,26 @@ def test_runpod_remote_smoke_deadline_escalates_and_records_failure(tmp_path: Pa
     termination = next(command for command in transport.ssh_commands if "kill -TERM" in command)
     assert "kill -KILL" in termination
     assert "/sentinels/smoke-warm.failed" in termination
+
+
+def test_runpod_remote_smoke_failed_probe_records_failure(tmp_path: Path) -> None:
+    bundle = _native_smoke_bundle(tmp_path)
+    transport = RemoteSmokeTransport(probe_status="failed")
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            pod_id="pod-smoke",
+            remote_run_root="/remote/runs",
+            local_repos={"feedbax": tmp_path},
+        ),
+        transport=transport,
+    )
+
+    with pytest.raises(RunPodRemoteSmokeError, match="remote smoke row 'warm' failed") as raised:
+        driver.smoke_row(bundle, bundle.rows[0], _state(bundle))
+
+    assert raised.value.evidence["status"] == "failed"
+    assert raised.value.evidence["cleanup_status"] == "removed"
+    assert not any("kill -TERM" in command for command in transport.ssh_commands)
 
 
 def test_runpod_preflight_rejects_non_native_smoke_row_by_name(tmp_path: Path) -> None:
@@ -3087,20 +3503,24 @@ def test_declared_continuation_without_source_custody_fails_before_transport(
         config=RunPodDriverConfig(
             gpu_id="NVIDIA GeForce RTX 4090",
             image=bundle.environment.image_id or "",
+            local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
     )
 
     checks = driver.preflight_checks(bundle)
 
-    assert [check.name for check in checks] == [
-        "runpod-repo-snapshots",
-        "input-provider-bindings",
-        "runpod-remote-smoke-applicability",
-        "continuation-schedule-consistency",
-    ]
-    assert checks[-1].status == "fail"
-    assert "no exact authenticated resume checkpoint source" in (checks[-1].detail or "")
+    assert len(checks) == 13
+    schedule_check = next(
+        check for check in checks if check.name == "continuation-schedule-consistency"
+    )
+    assert schedule_check.status == "fail"
+    assert "no exact authenticated resume checkpoint source" in (schedule_check.detail or "")
+    provider_check = next(check for check in checks if check.name == "runpod-credentials")
+    assert provider_check.observed == {
+        "outcome": "skipped-due-to-dependency",
+        "dependencies": ["continuation-schedule-consistency"],
+    }
     assert transport.operations == []
 
 
@@ -3307,8 +3727,19 @@ def test_layout_failure_short_circuits_before_all_provider_queries(tmp_path: Pat
 
     checks = driver.preflight_checks(bundle)
 
-    assert checks[-1].name == "runpod-remote-layout-vs-lock"
-    assert checks[-1].status == "fail"
+    assert len(checks) == 13
+    named = {check.name: check for check in checks}
+    assert named["runpod-remote-layout-vs-lock"].status == "fail"
+    assert named["runpod-repo-snapshots"].observed == {
+        "outcome": "skipped-due-to-dependency",
+        "dependencies": ["repo-realization-plan-sealing"],
+    }
+    assert named["runpod-image-tag-exists"].observed["outcome"] == (
+        "skipped-due-to-dependency"
+    )
+    assert named["runpod-credentials"].observed["dependencies"] == [
+        "runpod-remote-layout-vs-lock"
+    ]
     assert transport.image_exists_calls == []
     assert transport.runpodctl_calls == []
     assert transport.operations == []
@@ -3378,7 +3809,10 @@ def test_realize_env_rejects_runtime_provenance_mismatch(
     transport = FakeRunPodTransport()
     transport.queue_ssh(CommandResult(0, ""))
     transport.queue_ssh(CommandResult(1, ""))
-    driver = RunPodOrchestrationDriver(transport=transport)
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(local_repos={"feedbax": tmp_path}),
+        transport=transport,
+    )
     state = _sealed_state(driver, bundle)
     declaration_sha256 = compute_runpod_environment_fingerprint(
         bundle, driver.repo_realization_plan()
@@ -3684,7 +4118,7 @@ def test_fresh_runpod_driver_rejects_unbound_completed_preflight_offline(tmp_pat
     assert resume_transport.operations == []
 
 
-def test_completed_preflight_rejects_evidence_predating_layout_check(tmp_path: Path) -> None:
+def test_completed_preflight_rejects_evidence_without_repo_plan_binding(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path, baseline=False)
     config = RunPodDriverConfig(
         gpu_id="NVIDIA GeForce RTX 4090",

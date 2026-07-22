@@ -172,7 +172,7 @@ class _NanGuardFailure(Exception):
         coordinate: ProgressCoordinate,
         detection: NanAttributionDetection,
         detection_ref: ArtifactRef | None,
-        restoration: NanAttributionRestorationOutcome,
+        restoration: NanAttributionRestorationOutcome | None,
         restoration_ref: ArtifactRef | None,
         restored_slots: Mapping[str, Any] | None = None,
         restored_coordinate: ProgressCoordinate | None = None,
@@ -2113,9 +2113,6 @@ def _executor_nan_guard(
         )
         persistence_errors: list[str] = []
         detection_payload = detection.model_dump(mode="json")
-        detection_digest = sha256_bytes(
-            json.dumps(detection_payload, indent=2, sort_keys=True).encode() + b"\n"
-        )
         detection_ref: ArtifactRef | None = None
         try:
             detection_ref = store_json_artifact(
@@ -2152,7 +2149,10 @@ def _executor_nan_guard(
 
         restored_slots: dict[str, Any] | None = None
         restored_coordinate: ProgressCoordinate | None = None
-        if loaded is not None:
+        linked_detection_digest = detection_ref.sha256 if detection_ref is not None else None
+        if detection_ref is None:
+            restoration = None
+        elif loaded is not None:
             metric_slots = set(coordinate.metrics)
             restored_slots = {
                 slot: value
@@ -2170,7 +2170,7 @@ def _executor_nan_guard(
                 )
             restoration = NanAttributionRestorationOutcome(
                 run_id=run_id,
-                detection_artifact_sha256=detection_digest,
+                detection_artifact_sha256=linked_detection_digest,
                 status="restored",
                 restored_transaction=RestoredCheckpointIdentity(
                     transaction_id=loaded.manifest.transaction_id,
@@ -2181,7 +2181,7 @@ def _executor_nan_guard(
         elif restore_failure is not None:
             restoration = NanAttributionRestorationOutcome(
                 run_id=run_id,
-                detection_artifact_sha256=detection_digest,
+                detection_artifact_sha256=linked_detection_digest,
                 status="failed",
                 restore_failure=(f"{type(restore_failure).__name__}: {restore_failure}")[:2048],
             )
@@ -2190,28 +2190,29 @@ def _executor_nan_guard(
             assert not_attempted_reason is not None
             restoration = NanAttributionRestorationOutcome(
                 run_id=run_id,
-                detection_artifact_sha256=detection_digest,
+                detection_artifact_sha256=linked_detection_digest,
                 status="not_attempted",
                 not_attempted_reason=not_attempted_reason,
             )
 
         restoration_ref: ArtifactRef | None = None
-        try:
-            restoration_ref = store_json_artifact(
-                restoration.model_dump(mode="json"),
-                root=artifact_root,
-                role=NAN_RESTORATION_ARTIFACT_ROLE,
-                logical_name=f"feedbax_nan_restoration_{run_id}.json",
-                metadata={
-                    "schema_id": restoration.schema_id,
-                    "schema_version": restoration.schema_version,
-                    "detection_artifact_sha256": detection_digest,
-                },
-            )
-        except Exception as exc:
-            persistence_errors.append(
-                f"restoration persistence failed: {type(exc).__name__}: {exc}"
-            )
+        if restoration is not None:
+            try:
+                restoration_ref = store_json_artifact(
+                    restoration.model_dump(mode="json"),
+                    root=artifact_root,
+                    role=NAN_RESTORATION_ARTIFACT_ROLE,
+                    logical_name=f"feedbax_nan_restoration_{run_id}.json",
+                    metadata={
+                        "schema_id": restoration.schema_id,
+                        "schema_version": restoration.schema_version,
+                        "detection_artifact_sha256": linked_detection_digest,
+                    },
+                )
+            except Exception as exc:
+                persistence_errors.append(
+                    f"restoration persistence failed: {type(exc).__name__}: {exc}"
+                )
         if persistence_errors:
             message = f"{message}; {'; '.join(persistence_errors)}"
         raise _NanGuardFailure(
@@ -2403,7 +2404,19 @@ def _project_nonfinite_leaves(
         }
         if mapped is not None:
             assert mapped.array_axis is not None
-            reduction_axes = tuple(axis for axis in range(array.ndim) if axis != mapped.array_axis)
+            if not -array.ndim <= mapped.array_axis < array.ndim:
+                raise TrainingRunExecutorError(
+                    f"mapped attribution leaf {entry['path']!r} does not have declared "
+                    f"array_axis {mapped.array_axis}; leaf rank is {array.ndim}"
+                )
+            array_axis = mapped.array_axis % array.ndim
+            if array.shape[array_axis] != mapped.size:
+                raise TrainingRunExecutorError(
+                    f"mapped attribution leaf {entry['path']!r} has size "
+                    f"{array.shape[array_axis]} on declared array_axis {mapped.array_axis}; "
+                    f"expected axis {mapped.axis!r} size {mapped.size}"
+                )
+            reduction_axes = tuple(axis for axis in range(array.ndim) if axis != array_axis)
             entry["nan_counts_by_axis"] = jnp.sum(nan, axis=reduction_axes, dtype=jnp.int32)
             entry["inf_counts_by_axis"] = jnp.sum(inf, axis=reduction_axes, dtype=jnp.int32)
             entry["false_counts_by_axis"] = jnp.sum(
