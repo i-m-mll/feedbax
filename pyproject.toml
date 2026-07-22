@@ -188,7 +188,7 @@ line-length = 88
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--strict-markers -m 'not optional_mjx and not optional_ppo'"
+addopts = "--strict-markers -n auto -m 'not optional_mjx and not optional_ppo'"
 markers = [
     "slow: tests that are too expensive for every local or CI pass",
     "optional_mjx: MJX simulation and integration tests run only when explicitly selected",

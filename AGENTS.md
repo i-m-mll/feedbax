@@ -139,6 +139,10 @@ behavior.
 - While iterating on a fix, run the narrowest relevant tests first: explicit
   node IDs or paths, `-k`, `pytest --lf`, or the repo's selective runner when
   one exists.
+- The routine `python -m pytest tests` bar distributes across cores by default
+  (`-n auto` in the `pyproject.toml` addopts). For fast single-node-id
+  iteration, add `-n0` to run in-process without pytest-xdist worker startup
+  overhead.
 - Run the repo's full integration bar only at lane closeout before work lands
   on an integration or auth path, and at most once or twice per lane when a
   rerun is justified. Do not use the full bar to check whether a single fix
