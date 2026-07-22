@@ -167,6 +167,9 @@ def test_verification_signals_migration_and_authenticated_migration_succeeds(
     assert _RUN_CONTRACT_BINDING_ALGORITHM_V3 in message
     assert _RUN_CONTRACT_BINDING_ALGORITHM_V4 in message
     assert "checkpoint relock" in message
+    # The evidence-free gate must not assert the drift is algorithm-only.
+    assert "algorithm-only" not in message
+    assert "input drift cannot be ruled out" in message
 
     classification = classify_checkpoint_fork_plan_derived_digests(plan, bindings)
     assert classification.classifications[0].is_migratable_algorithm_drift
@@ -257,6 +260,16 @@ def test_algorithm_bump_with_real_input_drift_refuses(tmp_path: Path) -> None:
     plan = _fork_plan({"target-a": stored})
     bindings = _bindings(run_spec, slots, plan, tmp_path)
 
+    # The evidence-free fork gate cannot detect the hidden science drift: it
+    # raises the migration-required signal on the clean-sentinel version drift
+    # without asserting the drift is algorithm-only (spec §4.3, §3.1).
+    with pytest.raises(CheckpointDigestMigrationRequired) as excinfo:
+        fork_checkpoint_plan(plan, bindings)
+    gate_message = str(excinfo.value)
+    assert "algorithm-only" not in gate_message
+    assert "input drift cannot be ruled out" in gate_message
+
+    # The evidence-bearing classify/migrate layer adjudicates and refuses.
     classification = classify_checkpoint_fork_plan_derived_digests(
         plan, bindings, historical_evidence={"target-a": evidence}
     )
@@ -361,7 +374,7 @@ def test_unsupported_edge_fails_closed(update: dict[str, Any], tmp_path: Path) -
 def test_missing_and_invalid_evidence_refused_and_attestation_opt_in(tmp_path: Path) -> None:
     run_spec = _run_spec(minimax=True)
     slots = _minimax_slots()
-    _, recorded_sha256, _evidence = _historical_v3_evidence(run_spec)
+    _, recorded_sha256, _ = _historical_v3_evidence(run_spec)
     stored = _stored_v3_projection(run_spec, slots, recorded_sha256)
     plan = _fork_plan({"target-a": stored})
     bindings = _bindings(run_spec, slots, plan, tmp_path)
@@ -390,7 +403,7 @@ def test_missing_and_invalid_evidence_refused_and_attestation_opt_in(tmp_path: P
             historical_evidence={"target-a": invalid_evidence},
         )
 
-    # Owner-attestation opt-in succeeds and records the proof mode and duties.
+    # Owner-attestation opt-in (no evidence) succeeds and records mode and duties.
     result = migrate_checkpoint_fork_plan_derived_digests(
         plan,
         bindings,
@@ -408,6 +421,58 @@ def test_missing_and_invalid_evidence_refused_and_attestation_opt_in(tmp_path: P
             plan,
             bindings,
             requalification_requirements=[],
+            owner_attestation=True,
+        )
+
+
+def test_supplied_evidence_always_adjudicates_over_attestation_flag(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    slots = _minimax_slots()
+    _, recorded_sha256, valid_evidence = _historical_v3_evidence(run_spec)
+    stored = _stored_v3_projection(run_spec, slots, recorded_sha256)
+    plan = _fork_plan({"target-a": stored})
+    bindings = _bindings(run_spec, slots, plan, tmp_path)
+
+    # Evidence + flag + valid evidence: the authenticated proof mode is recorded,
+    # the attestation flag does not downgrade it.
+    result = migrate_checkpoint_fork_plan_derived_digests(
+        plan,
+        bindings,
+        requalification_requirements=["re-run rehearsal"],
+        historical_evidence={"target-a": valid_evidence},
+        owner_attestation=True,
+    )
+    assert result.record.proof_mode == "authenticated-historical-evidence"
+
+    # Evidence + flag + evidence that proves input drift: refuse even with the flag.
+    drifted = _drifted_run_spec(run_spec, learning_rate_delta=0.004)
+    _, drift_sha256, drift_evidence = _historical_v3_evidence(drifted)
+    drift_stored = _stored_v3_projection(run_spec, slots, drift_sha256)
+    drift_plan = _fork_plan({"target-a": drift_stored})
+    drift_bindings = _bindings(run_spec, slots, drift_plan, tmp_path)
+    with pytest.raises(CheckpointCompatibilityError, match="input drift"):
+        migrate_checkpoint_fork_plan_derived_digests(
+            drift_plan,
+            drift_bindings,
+            requalification_requirements=["re-run rehearsal"],
+            historical_evidence={"target-a": drift_evidence},
+            owner_attestation=True,
+        )
+
+    # Invalid evidence + flag: refuse (attestation applies only with no evidence).
+    invalid_evidence = RunContractProjectionEvidence(
+        canonical_projection={"schema_id": "wrong"},
+        recorded_sha256="c" * 64,
+        recorded_algorithm_version=_RUN_CONTRACT_BINDING_ALGORITHM_V3,
+        training_run_spec_schema_id=TRAINING_RUN_SPEC_SCHEMA_ID,
+        training_run_spec_schema_version=TRAINING_RUN_SPEC_SCHEMA_VERSION_V3,
+    )
+    with pytest.raises(CheckpointCompatibilityError, match="did not authenticate"):
+        migrate_checkpoint_fork_plan_derived_digests(
+            plan,
+            bindings,
+            requalification_requirements=["re-run rehearsal"],
+            historical_evidence={"target-a": invalid_evidence},
             owner_attestation=True,
         )
 
@@ -476,6 +541,50 @@ def test_record_binds_plan_hashes_and_survives_reload(tmp_path: Path) -> None:
     assert reloaded.migration_history[0].source_plan_canonical_sha256 == (
         record.source_plan_canonical_sha256
     )
+
+    # Hash self-reference convention: the target hash is the persisted plan's
+    # canonical hash with its final migration-history entry stripped.
+    stripped = reloaded.model_copy(
+        update={"migration_history": reloaded.migration_history[:-1]}
+    )
+    assert record.target_plan_canonical_sha256 == custody_module.checkpoint_fork_plan_sha256(
+        stripped
+    )
+    assert record.target_plan_canonical_sha256 != custody_module.checkpoint_fork_plan_sha256(
+        reloaded
+    )
+
+
+def test_heterogeneous_stored_versions_refused(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    slots = _minimax_slots()
+    candidate = derive_checkpoint_fork_compatibility_projection(
+        run_spec, _phase_program(run_spec), slots
+    )
+    # One target stored at v2, one at v3: both are supported migratable edges with
+    # clean sentinels, so the plan-level op reaches the single-edge requirement.
+    stored_v2 = candidate.model_copy(
+        update={
+            "run_contract_algorithm_version": _RUN_CONTRACT_BINDING_ALGORITHM_V2,
+            "run_contract_projection_sha256": "a" * 64,
+        }
+    )
+    stored_v3 = candidate.model_copy(
+        update={
+            "run_contract_algorithm_version": _RUN_CONTRACT_BINDING_ALGORITHM_V3,
+            "run_contract_projection_sha256": "b" * 64,
+        }
+    )
+    plan = _fork_plan({"target-a": stored_v2, "target-b": stored_v3})
+    bindings = _bindings(run_spec, slots, plan, tmp_path)
+
+    with pytest.raises(CheckpointCompatibilityError, match="one shared migration edge"):
+        migrate_checkpoint_fork_plan_derived_digests(
+            plan,
+            bindings,
+            requalification_requirements=["re-run rehearsal"],
+            owner_attestation=True,
+        )
 
 
 def test_stale_concurrent_write_detected(
@@ -665,6 +774,19 @@ def test_cli_check_and_write_behaviors(tmp_path: Path, capsys: pytest.CaptureFix
         feedbax_main.main(
             ["checkpoint", "relock", "--plan", str(plan_path), "--bindings", str(bindings_path),
              "--write", "--requalification", "re-run rehearsal"]
+        )
+
+
+def test_cli_requires_exactly_one_mode(tmp_path: Path) -> None:
+    # argparse fails before the handler when neither or both modes are given.
+    with pytest.raises(SystemExit):
+        feedbax_main.main(
+            ["checkpoint", "relock", "--plan", "plan.json", "--bindings", "bindings.json"]
+        )
+    with pytest.raises(SystemExit):
+        feedbax_main.main(
+            ["checkpoint", "relock", "--plan", "plan.json", "--bindings", "bindings.json",
+             "--check", "--write"]
         )
 
 
