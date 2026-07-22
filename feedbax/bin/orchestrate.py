@@ -54,6 +54,13 @@ from feedbax.orchestration.drivers.runpod import (
     load_runpod_api_key,
 )
 from feedbax.orchestration.input_materialization import InputProviderRootBinding
+from feedbax.orchestration.payload_report import (
+    MeasurementBindingExpectation,
+    assert_measurement_binding,
+    build_payload_report,
+    format_measurement_assertion_mismatches,
+    format_payload_report,
+)
 from feedbax.orchestration.stages import (
     BudgetExceeded,
     PreflightFailed,
@@ -161,6 +168,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--input-provider", action="append", default=[], metavar="NAME=ABSOLUTE_PATH"
     )
     shadow_launch.set_defaults(func=cmd_shadow_launch)
+
+    describe = subparsers.add_parser(
+        "describe",
+        help="Describe the scientific payload in an assembled run bundle",
+    )
+    describe.add_argument("--bundle", required=True, help="RunBundle JSON path")
+    describe.add_argument("--json", action="store_true", help="Emit report JSON")
+    describe.add_argument(
+        "--assert-measurement",
+        metavar="TRACE_SCHEMA_ID[@VERSION]",
+        help="Fail when a row does not match the expected measurement binding",
+    )
+    describe.set_defaults(func=cmd_describe)
 
     status = subparsers.add_parser("status", help="Print current run-set status")
     status.add_argument("--run-set", required=True, help="Run-set id")
@@ -400,6 +420,25 @@ def _shadow_launch_evidence(bundle: RunBundle, state: RunSetState) -> ShadowLaun
     )
 
 
+def cmd_describe(args: argparse.Namespace) -> int:
+    """Render and optionally assert the scientific payload of a run bundle."""
+    report = build_payload_report(_load_bundle(args.bundle))
+    if args.json:
+        _write_json(report)
+    else:
+        print(format_payload_report(report))
+    if args.assert_measurement is None:
+        return EXIT_SUCCESS
+    result = assert_measurement_binding(
+        report,
+        _parse_measurement_expectation(args.assert_measurement),
+    )
+    if result.matches:
+        return EXIT_SUCCESS
+    print(format_measurement_assertion_mismatches(result), file=sys.stderr)
+    return EXIT_PREFLIGHT
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     state = _load_state(args.run_set)
     if args.json:
@@ -633,6 +672,21 @@ def _input_provider_bindings(values: list[str]) -> tuple[InputProviderRootBindin
         validate_staged_binding_name(name)
         bindings.append(InputProviderRootBinding(name, root))
     return tuple(bindings)
+
+
+def _parse_measurement_expectation(value: str) -> MeasurementBindingExpectation:
+    schema_id, separator, schema_version = value.rpartition("@")
+    if not separator:
+        schema_id = value
+        schema_version = ""
+    if not schema_id or (separator and not schema_version):
+        raise ValueError(
+            "--assert-measurement requires TRACE_SCHEMA_ID or TRACE_SCHEMA_ID@VERSION"
+        )
+    return MeasurementBindingExpectation(
+        trace_schema_id=schema_id,
+        trace_schema_version=schema_version or None,
+    )
 
 
 def _collection_recovery_bindings(
