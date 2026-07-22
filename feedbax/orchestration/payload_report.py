@@ -280,6 +280,12 @@ def assert_measurement_binding(
 ) -> MeasurementBindingAssertionResult:
     """Compare actual row bindings with one uniform or per-row expectation."""
 
+    if not report.rows:
+        raise ValueError(
+            "cannot assert measurement bindings against an empty payload report: "
+            "the report has no rows"
+        )
+
     def expectation(value: Any) -> MeasurementBindingExpectation:
         if isinstance(value, MeasurementBindingExpectation):
             return value

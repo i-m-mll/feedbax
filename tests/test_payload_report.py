@@ -17,6 +17,7 @@ from feedbax.contracts.worker import (
 )
 from feedbax.orchestration.payload_report import (
     MeasurementBindingExpectation,
+    RunPayloadReport,
     assert_measurement_binding,
     build_payload_report,
     format_measurement_assertion_mismatches,
@@ -241,6 +242,108 @@ def test_measurement_assertion_reports_only_the_mismatching_row(tmp_path: Path) 
 
     assert result.matches is False
     assert [row.row_id for row in result.rows if not row.matches] == ["mismatching"]
+
+
+def test_measurement_assertion_fails_when_training_diagnostics_is_absent(
+    tmp_path: Path,
+) -> None:
+    report = build_payload_report(
+        _report_bundle(tmp_path, ("row-a", _standard_training_run_payload()))
+    )
+
+    row = report.rows[0]
+    assert row.measurement_binding is None
+
+    result = assert_measurement_binding(
+        report,
+        MeasurementBindingExpectation(trace_schema_id=TRACE_SCHEMA_ID),
+    )
+
+    assert result.matches is False
+    assert result.rows[0].row_id == "row-a"
+    assert result.rows[0].matches is False
+    assert result.rows[0].actual is None
+    message = format_measurement_assertion_mismatches(result)
+    assert "actual=<not declared>" in message
+
+
+def test_measurement_assertion_fails_when_method_contract_is_absent(
+    tmp_path: Path,
+) -> None:
+    payload = _standard_training_run_payload()
+    del payload["worker_execution"]["method_contract"]
+    report = build_payload_report(_report_bundle(tmp_path, ("row-a", payload)))
+
+    row = report.rows[0]
+    assert row.measurement_binding is None
+
+    result = assert_measurement_binding(
+        report,
+        MeasurementBindingExpectation(trace_schema_id=TRACE_SCHEMA_ID),
+    )
+
+    assert result.matches is False
+    assert result.rows[0].row_id == "row-a"
+    assert result.rows[0].matches is False
+    assert result.rows[0].actual is None
+    message = format_measurement_assertion_mismatches(result)
+    assert "actual=<not declared>" in message
+
+
+def test_measurement_steps_report_all_steps_deterministically(tmp_path: Path) -> None:
+    payload = _standard_training_run_payload()
+    run_spec = TrainingRunSpec.model_validate(payload)
+    contract = run_spec.worker_execution.method_contract
+    zeta_step = UpdateStepSpec(
+        name="zeta_measurement",
+        kind="measurement",
+        kernel=UpdateKernelSpec(kernel_ref="tests.measure_zeta"),
+        reads=["model"],
+        writes=["zeta_metric"],
+    )
+    alpha_step = UpdateStepSpec(
+        name="alpha_measurement",
+        kind="measurement",
+        kernel=UpdateKernelSpec(kernel_ref="tests.measure_alpha"),
+        reads=["model"],
+        writes=["alpha_metric"],
+    )
+    phase_program = contract.phase_program.model_copy(
+        update={
+            "update_steps": [*contract.phase_program.update_steps, zeta_step, alpha_step],
+        }
+    )
+    contract = contract.model_copy(update={"phase_program": phase_program})
+    updated = run_spec.model_copy(
+        update={
+            "worker_execution": run_spec.worker_execution.model_copy(
+                update={"method_contract": contract}
+            )
+        }
+    )
+    payload = updated.model_dump(mode="json", exclude_none=True)
+
+    report = build_payload_report(_report_bundle(tmp_path, ("row-a", payload)))
+
+    row = report.rows[0]
+    assert [(item.name, item.kind) for item in row.measurement_steps] == [
+        ("alpha_measurement", "measurement"),
+        ("zeta_measurement", "measurement"),
+    ]
+
+
+def test_measurement_assertion_rejects_empty_report() -> None:
+    report = RunPayloadReport(rows=[])
+
+    try:
+        assert_measurement_binding(
+            report,
+            MeasurementBindingExpectation(trace_schema_id=TRACE_SCHEMA_ID),
+        )
+    except ValueError as exc:
+        assert "empty" in str(exc)
+    else:
+        raise AssertionError("empty payload report was accepted by the assertion")
 
 
 def test_payload_report_rejects_unmaterialized_payload(tmp_path: Path) -> None:
