@@ -11,7 +11,10 @@ from typing import TYPE_CHECKING, Any, Dict, Generic, List, Literal, Optional, T
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from feedbax.contracts.graph import GraphSpec, ParamValue, RetentionPolicySpec
-from feedbax.contracts.checkpoints import CheckpointContinuationRequest
+from feedbax.contracts.checkpoints import (
+    CheckpointContinuationRequest,
+    CheckpointSegmentLineage,
+)
 from feedbax.contracts.manifest import StrictModel
 from feedbax.contracts.worker import (
     AxisSpec,
@@ -609,20 +612,58 @@ class TrainingMethodScheduleProjector(Generic[PayloadT]):
 
     projector_id: str
     projector_version: str
-    projector: Callable[[PayloadT, Sequence[int]], ScheduleProjection | Mapping[str, Any]]
+    projector: Callable[
+        [PayloadT, Sequence[int]], ScheduleProjection | Mapping[str, Any]
+    ] | None = None
+    lineage_projector: Callable[
+        [PayloadT, Sequence[int], CheckpointSegmentLineage],
+        ScheduleProjection | Mapping[str, Any],
+    ] | None = None
 
     def validate_structure(self) -> None:
         """Validate the stable projector identity and callable boundary."""
         identities = (self.projector_id, self.projector_version)
         if any(not isinstance(value, str) or not value.strip() for value in identities):
             raise ValueError("training method schedule projector identity must not be empty")
-        if not callable(self.projector):
-            raise TypeError("training method schedule projector projector must be callable")
+        configured = tuple(
+            name
+            for name, value in (
+                ("projector", self.projector),
+                ("lineage_projector", self.lineage_projector),
+            )
+            if value is not None
+        )
+        if len(configured) != 1:
+            raise ValueError(
+                "training method schedule projector must configure exactly one of "
+                "projector or lineage_projector"
+            )
+        value = self.projector or self.lineage_projector
+        if not callable(value):
+            raise TypeError(
+                f"training method schedule projector {configured[0]} must be callable"
+            )
 
-    def project(self, payload: PayloadT, coordinates: Sequence[int]) -> ScheduleProjection:
-        """Evaluate and validate the method-owned schedule inventory."""
+    def project(
+        self,
+        payload: PayloadT,
+        coordinates: Sequence[int],
+        *,
+        lineage: CheckpointSegmentLineage | None = None,
+    ) -> ScheduleProjection:
+        """Evaluate method schedules with optional authenticated segment lineage."""
         self.validate_structure()
-        projection = ScheduleProjection.model_validate(self.projector(payload, coordinates))
+        if self.lineage_projector is None:
+            assert self.projector is not None
+            raw_projection = self.projector(payload, coordinates)
+        else:
+            if lineage is None:
+                raise ValueError(
+                    "lineage-aware training method schedule projection requires "
+                    "CheckpointSegmentLineage"
+                )
+            raw_projection = self.lineage_projector(payload, coordinates, lineage)
+        projection = ScheduleProjection.model_validate(raw_projection)
         expected = tuple(int(coordinate) for coordinate in coordinates)
         for schedule_id, schedule in projection.schedules.items():
             actual = tuple(sample.coordinate for sample in schedule.samples)

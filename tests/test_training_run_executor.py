@@ -55,6 +55,7 @@ from feedbax.contracts.spec_storage import (
     training_spec_sha256,
 )
 from feedbax.contracts.training import (
+    GovernedScheduleProjection,
     LrScheduleSpec,
     LossTermSpec,
     ObjectiveSlotSpec,
@@ -62,9 +63,12 @@ from feedbax.contracts.training import (
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
     StandardSupervisedMethodPayload,
+    ScheduleProjection,
+    ScheduleProjectionSample,
     TaskSpec,
     TrainingConfig,
     TrainingMethodRegistration,
+    TrainingMethodScheduleProjector,
     TrainingMethodMetadataProjector,
     TrainingMethodRegistry,
     TrainingManifestMetadataProjection,
@@ -4686,6 +4690,51 @@ def test_nan_detection_projects_schedules_at_observed_batch_authority(
     learning_rate = detection.schedule_state.schedules["feedbax.learning_rate"]
     assert learning_rate.samples[0].coordinate == 2
     assert learning_rate.samples[0].value == pytest.approx(0.125)
+
+
+def test_nan_detection_projects_segment_schedule_at_later_global_coordinate() -> None:
+    spec = _run_spec()
+    resolved = spec.resolved_method
+    assert resolved.descriptor is not None
+    descriptor = replace(
+        resolved.descriptor,
+        schedule_projector=TrainingMethodScheduleProjector(
+            projector_id="tests.nan_segment_projection",
+            projector_version="v1",
+            lineage_projector=lambda _payload, coordinates, lineage: ScheduleProjection(
+                schedules={"tests.segment": GovernedScheduleProjection(
+                    origin={"kind": "segment_start"},
+                    samples=[ScheduleProjectionSample(
+                        coordinate=coordinate,
+                        value=float(coordinate - lineage.start_batch),
+                    ) for coordinate in coordinates],
+                )}
+            ),
+        ),
+    )
+    slots = _initial_slots(arrays=True)
+    slots["batch_counter"] = jnp.asarray(12, dtype=jnp.int32)
+
+    detection = training_executor._nan_attribution_detection(
+        run_spec=spec,
+        run_id="nan-segment-coordinate",
+        resolved_method=replace(resolved, descriptor=descriptor),
+        schedule_lineage=CheckpointSegmentLineage(
+            parent_transaction_id="tx-source", start_batch=10, segment_batch_count=4
+        ),
+        slots=slots,
+        coordinate=ProgressCoordinate(
+            run_id="nan-segment-coordinate",
+            phase="train_batch",
+            program_step=1,
+            metrics={"train_loss": jnp.asarray(float("nan"))},
+        ),
+        slot_axis_bindings={},
+    )
+
+    assert detection is not None
+    sample = detection.schedule_state.schedules["tests.segment"].samples[0]
+    assert (sample.coordinate, sample.value) == (12, 2.0)
 
 
 @pytest.mark.no_silent_substitution_contract

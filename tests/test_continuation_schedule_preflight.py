@@ -38,6 +38,7 @@ from feedbax.contracts.training import (
 )
 from feedbax.orchestration.schedule_eval import (
     compare_continuation_schedule_projections,
+    project_training_schedules,
 )
 from feedbax.training.checkpoint_custody import (
     CheckpointCompatibilityError,
@@ -186,6 +187,83 @@ def test_corrected_hold_at_one_projection_passes() -> None:
     assert failures == []
     assert observed["boundary_side"] == "pre_update"
     assert observed["coordinates"] == [10, 11, 12]
+
+
+def test_lineage_projector_uses_segment_origin_for_boundary_and_later_call() -> None:
+    request = _continuation()
+    run_spec = _run_spec(continuation=request)
+    resolved = run_spec.resolved_method
+    assert resolved.descriptor is not None
+
+    def project_segment_schedule(_payload, coordinates, lineage):
+        return ScheduleProjection(schedules={
+            RAMP_ID: GovernedScheduleProjection(
+                origin={"kind": "segment_start"},
+                samples=[ScheduleProjectionSample(
+                    coordinate=coordinate,
+                    value=float(coordinate - lineage.start_batch),
+                ) for coordinate in coordinates],
+            )
+        })
+
+    descriptor = replace(
+        resolved.descriptor,
+        schedule_projector=TrainingMethodScheduleProjector(
+            projector_id="tests.segment_local_projection",
+            projector_version="v1",
+            lineage_projector=project_segment_schedule,
+        ),
+    )
+    run_spec._resolved_method = replace(resolved, descriptor=descriptor)
+    run_spec._resolved_method_cache_key = run_spec._method_resolution_cache_key()
+    lineage = CheckpointSegmentLineage(
+        parent_transaction_id="tx-source",
+        start_batch=10,
+        segment_batch_count=4,
+    )
+
+    boundary = project_training_schedules(
+        run_spec, coordinates=(10, 11, 12), lineage=lineage
+    )
+    later = project_training_schedules(run_spec, coordinates=(12,), lineage=lineage)
+
+    assert [sample.coordinate for sample in boundary.schedules[RAMP_ID].samples] == [10, 11, 12]
+    assert [sample.value for sample in boundary.schedules[RAMP_ID].samples] == [0.0, 1.0, 2.0]
+    assert later.schedules[RAMP_ID].samples[0].value == 2.0
+
+
+def test_existing_global_projector_remains_two_argument_compatible() -> None:
+    projector = TrainingMethodScheduleProjector(
+        projector_id="tests.global_projection",
+        projector_version="v1",
+        projector=lambda _payload, coordinates: ScheduleProjection(),
+    )
+
+    assert projector.project(standard_supervised_method_payload().payload, (12,)).schedules == {}
+
+
+def test_lineage_projector_rejects_missing_or_contradictory_origin() -> None:
+    projector = TrainingMethodScheduleProjector(
+        projector_id="tests.missing_lineage_projection",
+        projector_version="v1",
+        lineage_projector=lambda _payload, _coordinates, _lineage: ScheduleProjection(),
+    )
+    with pytest.raises(ValueError, match="requires CheckpointSegmentLineage"):
+        projector.project(standard_supervised_method_payload().payload, (10,))
+
+    run_spec = _with_method_schedule(
+        _run_spec(continuation=_continuation()), (1.0, 1.0, 1.0)
+    )
+    with pytest.raises(ValueError, match="lineage contradicts continuation"):
+        project_training_schedules(
+            run_spec,
+            coordinates=(10, 11, 12),
+            lineage=CheckpointSegmentLineage(
+                parent_transaction_id="tx-source",
+                start_batch=9,
+                segment_batch_count=4,
+            ),
+        )
 
 
 def test_divergence_only_at_first_update_fails() -> None:
