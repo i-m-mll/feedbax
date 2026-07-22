@@ -17,6 +17,7 @@ NATIVE_TRAINING_COLLECTION_OUTPUTS = (
     "manifest.json",
     "training-diagnostics.json",
     "checkpoints",
+    "manifests",
 )
 
 
