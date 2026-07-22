@@ -60,6 +60,24 @@ class PreflightCheckEntry(StrictModel):
     observed: Any = None
 
 
+DEPENDENCY_SKIP_OUTCOME = "skipped-due-to-dependency"
+
+
+def dependency_skip_observed(*dependencies: str) -> dict[str, Any]:
+    """Build the canonical `observed` payload for a dependency-skipped preflight check.
+
+    Single-sources the sentinel shape so every writer of a dependency-skip result -
+    whether it fills a `PreflightCheckEntry.observed` field directly or a per-row
+    entry nested inside one - agrees on the same `outcome`/`dependencies` spelling
+    that `_is_dependency_skipped_preflight_check`-style readers inspect.
+    """
+    ordered_dependencies = list(dict.fromkeys(dependencies))
+    return {
+        "outcome": DEPENDENCY_SKIP_OUTCOME,
+        "dependencies": ordered_dependencies,
+    }
+
+
 class StageState(StrictModel):
     """Durable state for one orchestration stage."""
 

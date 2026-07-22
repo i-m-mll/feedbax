@@ -2934,6 +2934,247 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
     assert transport.runpodctl_calls == [("user", "--output", "json")]
 
 
+def test_runpod_preflight_reports_independent_static_failures_in_canonical_order(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    bundle = bundle.model_copy(
+        update={
+            "environment": bundle.environment.model_copy(
+                update={
+                    "image_id": "runpod/pytorch:mutable",
+                    "lockfile_hashes": {},
+                    "python_version": None,
+                }
+            )
+        }
+    )
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(local_repos={"feedbax": tmp_path}),
+        transport=transport,
+    )
+
+    checks = driver.preflight_checks(bundle)
+
+    assert [check.name for check in checks] == [
+        "runpod-repo-snapshots",
+        "input-provider-bindings",
+        "runpod-remote-smoke-applicability",
+        "continuation-schedule-consistency",
+        "runpod-lockfiles-declared",
+        "runpod-remote-layout-vs-lock",
+        "runpod-image-immutable",
+        "runpod-image-tag-exists",
+        "runpod-python-version-declared",
+        "runpod-gpu-policy-declared",
+        "runpod-credentials",
+        "runpod-balance-floor",
+        "runpod-deadman-credentials",
+    ]
+    assert [check.name for check in checks if check.status == "fail"] == [
+        "runpod-lockfiles-declared",
+        "runpod-image-immutable",
+        "runpod-python-version-declared",
+        "runpod-gpu-policy-declared",
+    ]
+    image_check = next(check for check in checks if check.name == "runpod-image-tag-exists")
+    assert image_check.observed == {
+        "outcome": "skipped-due-to-dependency",
+        "dependencies": ["runpod-lockfiles-declared", "runpod-image-immutable"],
+    }
+    credential_check = next(check for check in checks if check.name == "runpod-credentials")
+    assert credential_check.observed == {
+        "outcome": "skipped-due-to-dependency",
+        "dependencies": ["runpod-lockfiles-declared"],
+    }
+    assert transport.operations == []
+    assert driver._preflight_passed is False
+
+
+def test_stage_preflight_composes_core_and_runpod_static_failures_before_provider_queries(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    bundle = bundle.model_copy(
+        update={
+            "environment": bundle.environment.model_copy(
+                update={
+                    "image_id": "runpod/pytorch:mutable",
+                    "python_version": None,
+                }
+            )
+        }
+    )
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            local_repos={"feedbax": tmp_path},
+        ),
+        transport=transport,
+    )
+
+    with pytest.raises(PreflightFailed) as raised:
+        StageEngine(bundle=bundle, driver=driver).run()
+
+    state = RunSetStateStore(bundle.run_set_dir / "state.json").load()
+    checks = state.stage(STAGE_PREFLIGHT).checks
+    assert [check.name for check in checks if check.status == "fail"] == [
+        "environment-declaration",
+        "runpod-image-immutable",
+        "runpod-python-version-declared",
+    ]
+    message = str(raised.value)
+    assert message.index("environment-declaration") < message.index(
+        "runpod-image-immutable"
+    ) < message.index("runpod-python-version-declared")
+    provider_check = next(check for check in checks if check.name == "runpod-credentials")
+    assert provider_check.observed["outcome"] == "skipped-due-to-dependency"
+    assert provider_check.observed["dependencies"] == [
+        "environment-declaration",
+    ]
+    assert transport.operations == []
+
+
+def test_runpod_preflight_queries_credentials_despite_independent_declaration_failures(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path, deadman_enabled=True)
+    bundle = bundle.model_copy(
+        update={
+            "environment": bundle.environment.model_copy(update={"python_version": None})
+        }
+    )
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("user", "--output", "json"),
+        CommandResult(0, json.dumps({"clientBalance": 12.5})),
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            image=bundle.environment.image_id or "",
+            local_repos={"feedbax": tmp_path},
+        ),
+        transport=transport,
+    )
+
+    checks = driver.preflight_checks(bundle)
+    named = {check.name: check for check in checks}
+
+    assert [check.name for check in checks if check.status == "fail"] == [
+        "runpod-python-version-declared",
+        "runpod-gpu-policy-declared",
+        "runpod-deadman-credentials",
+    ]
+    assert named["runpod-credentials"].status == "pass"
+    assert named["runpod-balance-floor"].status == "pass"
+    assert transport.runpodctl_calls == [("user", "--output", "json")]
+
+
+def test_runpod_preflight_collects_image_probe_exception_and_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    monkeypatch.setattr(
+        transport,
+        "image_exists",
+        lambda _image: (_ for _ in ()).throw(RuntimeError("registry unavailable")),
+    )
+    transport.queue_runpodctl(
+        ("user", "--output", "json"),
+        CommandResult(0, json.dumps({"clientBalance": 12.5})),
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            image=bundle.environment.image_id or "",
+            local_repos={"feedbax": tmp_path},
+        ),
+        transport=transport,
+    )
+
+    checks = driver.preflight_checks(bundle)
+    named = {check.name: check for check in checks}
+
+    assert named["runpod-image-tag-exists"].status == "fail"
+    assert named["runpod-image-tag-exists"].detail == (
+        "image existence query raised RuntimeError: registry unavailable"
+    )
+    assert named["runpod-credentials"].status == "pass"
+    assert named["runpod-balance-floor"].status == "pass"
+    assert [check.name for check in checks].index("runpod-image-tag-exists") < [
+        check.name for check in checks
+    ].index("runpod-credentials")
+
+
+def test_completed_preflight_validation_rejects_dependency_skip_sentinel(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("user", "--output", "json"),
+        CommandResult(0, json.dumps({"clientBalance": 12.5})),
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            image=bundle.environment.image_id or "",
+            local_repos={"feedbax": tmp_path},
+        ),
+        transport=transport,
+    )
+    checks = driver.preflight_checks(bundle)
+    balance_index = next(
+        index for index, check in enumerate(checks) if check.name == "runpod-balance-floor"
+    )
+    checks[balance_index] = checks[balance_index].model_copy(
+        update={
+            "detail": "skipped-due-to-dependency: runpod-credentials",
+            "observed": {
+                "outcome": "skipped-due-to-dependency",
+                "dependencies": ["runpod-credentials"],
+            },
+        }
+    )
+
+    with pytest.raises(RunPodDriverError, match="includes a failing check"):
+        driver._validate_preflight_checks(bundle, checks)
+
+
+def test_runpod_preflight_records_balance_skip_after_credential_failure(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("user", "--output", "json"),
+        CommandResult(1, "", "credential rejected"),
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            image=bundle.environment.image_id or "",
+            local_repos={"feedbax": tmp_path},
+        ),
+        transport=transport,
+    )
+
+    named = {check.name: check for check in driver.preflight_checks(bundle)}
+
+    assert named["runpod-credentials"].status == "fail"
+    assert named["runpod-credentials"].detail == "credential rejected"
+    assert named["runpod-balance-floor"].status == "pass"
+    assert named["runpod-balance-floor"].observed == {
+        "outcome": "skipped-due-to-dependency",
+        "dependencies": ["runpod-credentials"],
+    }
+    assert driver._preflight_passed is False
+
+
 class RemoteSmokeTransport(FakeRunPodTransport):
     def __init__(self, *, probe_status: str) -> None:
         super().__init__()
@@ -3269,14 +3510,17 @@ def test_declared_continuation_without_source_custody_fails_before_transport(
 
     checks = driver.preflight_checks(bundle)
 
-    assert [check.name for check in checks] == [
-        "runpod-repo-snapshots",
-        "input-provider-bindings",
-        "runpod-remote-smoke-applicability",
-        "continuation-schedule-consistency",
-    ]
-    assert checks[-1].status == "fail"
-    assert "no exact authenticated resume checkpoint source" in (checks[-1].detail or "")
+    assert len(checks) == 13
+    schedule_check = next(
+        check for check in checks if check.name == "continuation-schedule-consistency"
+    )
+    assert schedule_check.status == "fail"
+    assert "no exact authenticated resume checkpoint source" in (schedule_check.detail or "")
+    provider_check = next(check for check in checks if check.name == "runpod-credentials")
+    assert provider_check.observed == {
+        "outcome": "skipped-due-to-dependency",
+        "dependencies": ["continuation-schedule-consistency"],
+    }
     assert transport.operations == []
 
 
@@ -3483,8 +3727,19 @@ def test_layout_failure_short_circuits_before_all_provider_queries(tmp_path: Pat
 
     checks = driver.preflight_checks(bundle)
 
-    assert checks[-1].name == "runpod-remote-layout-vs-lock"
-    assert checks[-1].status == "fail"
+    assert len(checks) == 13
+    named = {check.name: check for check in checks}
+    assert named["runpod-remote-layout-vs-lock"].status == "fail"
+    assert named["runpod-repo-snapshots"].observed == {
+        "outcome": "skipped-due-to-dependency",
+        "dependencies": ["repo-realization-plan-sealing"],
+    }
+    assert named["runpod-image-tag-exists"].observed["outcome"] == (
+        "skipped-due-to-dependency"
+    )
+    assert named["runpod-credentials"].observed["dependencies"] == [
+        "runpod-remote-layout-vs-lock"
+    ]
     assert transport.image_exists_calls == []
     assert transport.runpodctl_calls == []
     assert transport.operations == []

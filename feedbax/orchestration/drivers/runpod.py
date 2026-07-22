@@ -90,7 +90,13 @@ from feedbax.orchestration.repo_realization import (
     validate_non_overlapping_remote_roots,
 )
 from feedbax.orchestration.schedule_eval import compare_continuation_schedule_projections
-from feedbax.orchestration.state import PreflightCheckEntry, RunSetState, utc_now
+from feedbax.orchestration.state import (
+    DEPENDENCY_SKIP_OUTCOME,
+    PreflightCheckEntry,
+    RunSetState,
+    dependency_skip_observed,
+    utc_now,
+)
 from feedbax.training.checkpoint_custody import (
     authenticated_run_contract_source_projection,
     load_checkpoint_custody_documents,
@@ -112,23 +118,22 @@ METADATA_BATCH_KEYS = (
     "completedBatch",
 )
 RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION = "feedbax.runpod_environment_fingerprint.v1"
-_RUNPOD_PREFLIGHT_CHECK_NAMES = frozenset(
-    {
-        "input-provider-bindings",
-        "runpod-repo-snapshots",
-        "continuation-schedule-consistency",
-        "runpod-image-immutable",
-        "runpod-image-tag-exists",
-        "runpod-lockfiles-declared",
-        "runpod-remote-layout-vs-lock",
-        "runpod-python-version-declared",
-        "runpod-gpu-policy-declared",
-        "runpod-credentials",
-        "runpod-balance-floor",
-        "runpod-deadman-credentials",
-        "runpod-remote-smoke-applicability",
-    }
+_RUNPOD_PREFLIGHT_CHECK_ORDER = (
+    "runpod-repo-snapshots",
+    "input-provider-bindings",
+    "runpod-remote-smoke-applicability",
+    "continuation-schedule-consistency",
+    "runpod-lockfiles-declared",
+    "runpod-remote-layout-vs-lock",
+    "runpod-image-immutable",
+    "runpod-image-tag-exists",
+    "runpod-python-version-declared",
+    "runpod-gpu-policy-declared",
+    "runpod-credentials",
+    "runpod-balance-floor",
+    "runpod-deadman-credentials",
 )
+_RUNPOD_PREFLIGHT_CHECK_NAMES = frozenset(_RUNPOD_PREFLIGHT_CHECK_ORDER)
 _IMMUTABLE_IMAGE_PATTERN = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _SUPPORTED_LOCAL_LOCK_SOURCE_FORMS = frozenset({"editable", "path"})
@@ -814,17 +819,31 @@ class RunPodOrchestrationDriver:
 
     def preflight_checks(self, bundle: RunBundle) -> list[PreflightCheckEntry]:
         """Run named, non-mutating RunPod checks before any billable action."""
+        return self._run_preflight_checks(bundle)
+
+    def static_preflight_checks(
+        self,
+        bundle: RunBundle,
+        *,
+        upstream_failures: Sequence[str],
+    ) -> list[PreflightCheckEntry]:
+        """Run local checks while recording provider checks blocked by core failures."""
+        return self._run_preflight_checks(
+            bundle,
+            provider_checks_allowed=False,
+            upstream_failures=upstream_failures,
+        )
+
+    def _run_preflight_checks(
+        self,
+        bundle: RunBundle,
+        *,
+        provider_checks_allowed: bool = True,
+        upstream_failures: Sequence[str] = (),
+    ) -> list[PreflightCheckEntry]:
+        checks_by_name: dict[str, PreflightCheckEntry] = {}
+        conditional_checks: list[PreflightCheckEntry] = []
         lockfile_error = runpod_lockfile_declaration_error(bundle.environment.lockfile_hashes)
-        if lockfile_error is not None:
-            self._preflight_passed = False
-            return [
-                _preflight_check(
-                    "runpod-lockfiles-declared",
-                    False,
-                    detail=lockfile_error,
-                    observed=dict(sorted(bundle.environment.lockfile_hashes.items())),
-                )
-            ]
         if is_training_matrix_bundle(bundle):
             try:
                 build_training_run_matrix_authority(
@@ -833,56 +852,57 @@ class RunPodOrchestrationDriver:
                     protected_refs=self.config.protected_refs,
                 )
             except (OSError, ValueError, RunPodDriverError) as exc:
-                self._preflight_passed = False
-                return [
+                conditional_checks.append(
                     _preflight_check(
                         "training-matrix-authority",
                         False,
                         detail=str(exc),
                     )
-                ]
-        try:
-            self.seal_repo_realization_plan(bundle)
-        except RunPodDriverError as exc:
-            self._preflight_passed = False
-            return [
-                _preflight_check(
-                    "runpod-remote-layout-vs-lock",
-                    False,
-                    detail=str(exc),
                 )
-            ]
-        except (RepoSnapshotError, RepoRealizationError) as exc:
-            self._preflight_passed = False
-            return [
-                _preflight_check(
+
+        plan_error: tuple[str, str] | None = None
+        if lockfile_error is not None:
+            plan_error = ("runpod-lockfiles-declared", lockfile_error)
+            checks_by_name["runpod-repo-snapshots"] = _dependency_skipped_preflight_check(
+                "runpod-repo-snapshots", "runpod-lockfiles-declared"
+            )
+        else:
+            try:
+                self.seal_repo_realization_plan(bundle)
+            except RunPodDriverError as exc:
+                plan_error = ("runpod-remote-layout-vs-lock", str(exc))
+                checks_by_name["runpod-repo-snapshots"] = (
+                    _dependency_skipped_preflight_check(
+                        "runpod-repo-snapshots", "repo-realization-plan-sealing"
+                    )
+                )
+            except (RepoSnapshotError, RepoRealizationError) as exc:
+                plan_error = ("runpod-repo-snapshots", str(exc))
+                checks_by_name["runpod-repo-snapshots"] = _preflight_check(
+                    "runpod-repo-snapshots", False, detail=str(exc)
+                )
+            else:
+                plan = self.repo_realization_plan()
+                assert plan is not None
+                checks_by_name["runpod-repo-snapshots"] = _preflight_check(
                     "runpod-repo-snapshots",
-                    False,
-                    detail=str(exc),
+                    True,
+                    observed=plan.model_dump(mode="json"),
                 )
-            ]
-        snapshot_check = _preflight_check(
-            "runpod-repo-snapshots",
-            True,
-            observed=self.repo_realization_plan().model_dump(mode="json"),
-        )
+
         failures, observed = preflight_input_provider_bindings(bundle, self.input_provider_bindings)
-        binding_check = _preflight_check(
+        checks_by_name["input-provider-bindings"] = _preflight_check(
             "input-provider-bindings",
             not failures,
             detail="; ".join(failures) if failures else None,
             observed=observed or "no-resolved-inputs",
         )
-        if failures:
-            self._preflight_passed = False
-            return [binding_check]
-        checks: list[PreflightCheckEntry] = [snapshot_check, binding_check]
         non_native_smoke_rows = [
             row.row_id
             for row in bundle.rows
             if bundle.smoke_enabled and not _row_uses_registered_native_execution(row)
         ]
-        smoke_applicability_check = _preflight_check(
+        checks_by_name["runpod-remote-smoke-applicability"] = _preflight_check(
             "runpod-remote-smoke-applicability",
             not non_native_smoke_rows,
             detail=(
@@ -896,155 +916,231 @@ class RunPodOrchestrationDriver:
                 "non_native_rows": non_native_smoke_rows,
             },
         )
-        checks.append(smoke_applicability_check)
-        if non_native_smoke_rows:
-            self._preflight_passed = False
-            return checks
+
         schedule_failures, schedule_observed = _preflight_continuation_schedule_consistency(
             bundle,
             self.input_provider_bindings,
+            input_bindings_valid=not failures,
         )
-        schedule_check = _preflight_check(
-            "continuation-schedule-consistency",
-            not schedule_failures,
-            detail="; ".join(schedule_failures) if schedule_failures else None,
-            observed=schedule_observed or "no-continuations",
-        )
-        checks.append(schedule_check)
-        if schedule_failures:
-            self._preflight_passed = False
-            return checks
-        lockfile_error = runpod_lockfile_declaration_error(bundle.environment.lockfile_hashes)
-        checks.append(
-            _preflight_check(
-                "runpod-lockfiles-declared",
-                lockfile_error is None,
-                detail=lockfile_error,
-                observed=dict(sorted(bundle.environment.lockfile_hashes.items())),
+        if schedule_observed.get("outcome") == "skipped-due-to-dependency":
+            checks_by_name["continuation-schedule-consistency"] = (
+                _dependency_skipped_preflight_check(
+                    "continuation-schedule-consistency", "input-provider-bindings"
+                )
             )
-        )
-        if lockfile_error is not None:
-            self._preflight_passed = False
-            return checks
+        else:
+            checks_by_name["continuation-schedule-consistency"] = _preflight_check(
+                "continuation-schedule-consistency",
+                not schedule_failures,
+                detail="; ".join(schedule_failures) if schedule_failures else None,
+                observed=schedule_observed or "no-continuations",
+            )
 
-        layout_error, layout_observed = validate_runpod_repo_realization_plan(
-            bundle,
-            self.config,
-            self.repo_realization_plan(),
-            self._repo_snapshots,
+        checks_by_name["runpod-lockfiles-declared"] = _preflight_check(
+            "runpod-lockfiles-declared",
+            lockfile_error is None,
+            detail=lockfile_error,
+            observed=dict(sorted(bundle.environment.lockfile_hashes.items())),
         )
-        checks.append(
-            _preflight_check(
+
+        if plan_error is not None and plan_error[0] == "runpod-remote-layout-vs-lock":
+            checks_by_name["runpod-remote-layout-vs-lock"] = _preflight_check(
+                "runpod-remote-layout-vs-lock",
+                False,
+                detail=plan_error[1],
+            )
+        elif plan_error is not None and plan_error[0] == "runpod-repo-snapshots":
+            checks_by_name["runpod-remote-layout-vs-lock"] = (
+                _dependency_skipped_preflight_check(
+                    "runpod-remote-layout-vs-lock", "runpod-repo-snapshots"
+                )
+            )
+        elif plan_error is not None:
+            checks_by_name["runpod-remote-layout-vs-lock"] = (
+                _dependency_skipped_preflight_check(
+                    "runpod-remote-layout-vs-lock", "runpod-lockfiles-declared"
+                )
+            )
+        else:
+            layout_error, layout_observed = validate_runpod_repo_realization_plan(
+                bundle,
+                self.config,
+                self.repo_realization_plan(),
+                self._repo_snapshots,
+            )
+            checks_by_name["runpod-remote-layout-vs-lock"] = _preflight_check(
                 "runpod-remote-layout-vs-lock",
                 layout_error is None,
                 detail=layout_error,
                 observed=layout_observed,
             )
-        )
-        if layout_error is not None:
-            self._preflight_passed = False
-            return checks
 
         image = bundle.environment.image_id
         image_is_immutable = is_immutable_runpod_image_id(image)
-        checks.append(
-            _preflight_check(
-                "runpod-image-immutable",
-                image_is_immutable,
-                detail=(
-                    None
-                    if image_is_immutable
-                    else "environment.image_id must be an OCI image pinned by @sha256:<64 hex>"
-                ),
-                observed=image,
-            )
+        checks_by_name["runpod-image-immutable"] = _preflight_check(
+            "runpod-image-immutable",
+            image_is_immutable,
+            detail=(
+                None
+                if image_is_immutable
+                else "environment.image_id must be an OCI image pinned by @sha256:<64 hex>"
+            ),
+            observed=image,
         )
-        image_exists = bool(image_is_immutable and self.transport.image_exists(image or ""))
-        checks.append(
-            _preflight_check(
-                "runpod-image-tag-exists",
-                image_exists,
-                observed=image,
-            )
+        checks_by_name["runpod-python-version-declared"] = _preflight_check(
+            "runpod-python-version-declared",
+            bool(bundle.environment.python_version),
+            detail=(
+                None
+                if bundle.environment.python_version
+                else "environment.python_version is required for deterministic realization"
+            ),
+            observed=bundle.environment.python_version,
         )
-        checks.append(
-            _preflight_check(
-                "runpod-python-version-declared",
-                bool(bundle.environment.python_version),
-                detail=(
-                    None
-                    if bundle.environment.python_version
-                    else "environment.python_version is required for deterministic realization"
-                ),
-                observed=bundle.environment.python_version,
-            )
-        )
-
         gpu_policy = bool(self._provided_endpoint or self._pod_id or self.config.gpu_id)
-        checks.append(
-            _preflight_check(
-                "runpod-gpu-policy-declared",
-                gpu_policy,
-                observed={
-                    "gpu_id": self.config.gpu_id,
-                    "datacenter_fallbacks": list(self.config.datacenters),
-                    "provided_target": bool(self._provided_endpoint or self._pod_id),
-                },
-            )
+        checks_by_name["runpod-gpu-policy-declared"] = _preflight_check(
+            "runpod-gpu-policy-declared",
+            gpu_policy,
+            detail=None if gpu_policy else "a GPU policy or existing target is required",
+            observed={
+                "gpu_id": self.config.gpu_id,
+                "datacenter_fallbacks": list(self.config.datacenters),
+                "provided_target": bool(self._provided_endpoint or self._pod_id),
+            },
+        )
+        checks_by_name["runpod-deadman-credentials"] = _preflight_check(
+            "runpod-deadman-credentials",
+            not bundle.deadman_enabled or bool(self.config.api_key),
+            detail=(
+                None
+                if not bundle.deadman_enabled or self.config.api_key
+                else "dead-man teardown requires an API credential"
+            ),
+            observed="available" if self.config.api_key else "not-required-or-missing",
         )
 
-        credentials_required = not self._provided_endpoint or bundle.deadman_enabled
-        user_result = (
-            self.transport.runpodctl("user", "--output", "json")
-            if credentials_required
-            else CommandResult(0, '{"provided_endpoint": true}')
-        )
-        credentials_ok = user_result.returncode == 0
-        checks.append(
-            _preflight_check(
+        structural_check_names = {
+            "training-matrix-authority",
+            "input-provider-bindings",
+            "runpod-repo-snapshots",
+            "runpod-remote-smoke-applicability",
+            "continuation-schedule-consistency",
+            "runpod-lockfiles-declared",
+            "runpod-remote-layout-vs-lock",
+        }
+        structural_failure_names = [
+            *upstream_failures,
+            *(
+                check.name
+                for check in [*conditional_checks, *checks_by_name.values()]
+                if check.status == "fail" and check.name in structural_check_names
+            ),
+        ]
+        image_dependencies = [
+            *structural_failure_names,
+            *([] if image_is_immutable else ["runpod-image-immutable"]),
+        ]
+        if not provider_checks_allowed or image_dependencies:
+            checks_by_name["runpod-image-tag-exists"] = _dependency_skipped_preflight_check(
+                "runpod-image-tag-exists", *image_dependencies
+            )
+        else:
+            try:
+                image_exists = bool(self.transport.image_exists(image or ""))
+            except Exception as exc:
+                checks_by_name["runpod-image-tag-exists"] = _preflight_check(
+                    "runpod-image-tag-exists",
+                    False,
+                    detail=f"image existence query raised {type(exc).__name__}: {exc}",
+                    observed=image,
+                )
+            else:
+                checks_by_name["runpod-image-tag-exists"] = _preflight_check(
+                    "runpod-image-tag-exists",
+                    image_exists,
+                    detail=None if image_exists else "immutable image was not found by RunPod",
+                    observed=image,
+                )
+
+        if not provider_checks_allowed or structural_failure_names:
+            checks_by_name["runpod-credentials"] = _dependency_skipped_preflight_check(
+                "runpod-credentials", *structural_failure_names
+            )
+            checks_by_name["runpod-balance-floor"] = _dependency_skipped_preflight_check(
+                "runpod-balance-floor", "runpod-credentials"
+            )
+        else:
+            credentials_required = not self._provided_endpoint or bundle.deadman_enabled
+            try:
+                user_result = (
+                    self.transport.runpodctl("user", "--output", "json")
+                    if credentials_required
+                    else CommandResult(0, '{"provided_endpoint": true}')
+                )
+            except Exception as exc:
+                user_result = CommandResult(
+                    1,
+                    "",
+                    f"credential query raised {type(exc).__name__}: {exc}",
+                )
+            credentials_ok = user_result.returncode == 0
+            credentials_check = _preflight_check(
                 "runpod-credentials",
                 credentials_ok,
-                detail=None if credentials_ok else (user_result.stderr or user_result.stdout),
-                observed="verified" if credentials_required else "not-required-provided-endpoint",
-            )
-        )
-
-        balance_required = not self._provided_endpoint and not self._pod_id
-        try:
-            user_payload = _json_object(user_result.stdout) if credentials_ok else {}
-        except RunPodDriverError:
-            user_payload = {}
-            credentials_ok = False
-            checks[-1] = _preflight_check(
-                "runpod-credentials",
-                False,
-                detail="runpodctl user returned invalid JSON",
-                observed="invalid-response",
-            )
-        balance = user_balance(user_payload)
-        balance_ok = not balance_required or (
-            balance is not None and balance >= self.config.min_balance_usd
-        )
-        checks.append(
-            _preflight_check(
-                "runpod-balance-floor",
-                balance_ok,
                 detail=(
                     None
-                    if balance_ok
-                    else f"RunPod balance must be at least {self.config.min_balance_usd:g}"
+                    if credentials_ok
+                    else user_result.stderr
+                    or user_result.stdout
+                    or "runpodctl user failed without diagnostic output"
                 ),
-                observed=balance if balance_required else "not-required-existing-target",
+                observed="verified" if credentials_required else "not-required-provided-endpoint",
             )
+            user_payload: Mapping[str, Any] = {}
+            if credentials_ok:
+                try:
+                    user_payload = _json_object(user_result.stdout)
+                except RunPodDriverError:
+                    credentials_ok = False
+                    credentials_check = _preflight_check(
+                        "runpod-credentials",
+                        False,
+                        detail="runpodctl user returned invalid JSON",
+                        observed="invalid-response",
+                    )
+            checks_by_name["runpod-credentials"] = credentials_check
+
+            if not credentials_ok:
+                checks_by_name["runpod-balance-floor"] = (
+                    _dependency_skipped_preflight_check(
+                        "runpod-balance-floor", "runpod-credentials"
+                    )
+                )
+            else:
+                balance_required = not self._provided_endpoint and not self._pod_id
+                balance = user_balance(user_payload)
+                balance_ok = not balance_required or (
+                    balance is not None and balance >= self.config.min_balance_usd
+                )
+                checks_by_name["runpod-balance-floor"] = _preflight_check(
+                    "runpod-balance-floor",
+                    balance_ok,
+                    detail=(
+                        None
+                        if balance_ok
+                        else f"RunPod balance must be at least {self.config.min_balance_usd:g}"
+                    ),
+                    observed=balance if balance_required else "not-required-existing-target",
+                )
+
+        checks = [
+            *conditional_checks,
+            *(checks_by_name[name] for name in _RUNPOD_PREFLIGHT_CHECK_ORDER),
+        ]
+        self._preflight_passed = all(
+            check.status == "pass" and not _is_dependency_skipped_preflight_check(check)
+            for check in checks
         )
-        checks.append(
-            _preflight_check(
-                "runpod-deadman-credentials",
-                not bundle.deadman_enabled or bool(self.config.api_key),
-                observed="available" if self.config.api_key else "not-required-or-missing",
-            )
-        )
-        self._preflight_passed = all(check.status == "pass" for check in checks)
         return checks
 
     def preflight_evidence(
@@ -1264,7 +1360,10 @@ class RunPodOrchestrationDriver:
             for check in named.values()
         ):
             raise RunPodDriverError("completed PREFLIGHT lacks a unique RunPod check set")
-        if any(check.status != "pass" for check in checks):
+        if any(
+            check.status != "pass" or _is_dependency_skipped_preflight_check(check)
+            for check in checks
+        ):
             raise RunPodDriverError("completed PREFLIGHT includes a failing check")
 
         failures, resolved_observed = preflight_input_provider_bindings(
@@ -2654,6 +2753,8 @@ def project_runpod_provision_facts(pod: Mapping[str, Any]) -> dict[str, Any]:
 def _preflight_continuation_schedule_consistency(
     bundle: RunBundle,
     input_provider_bindings: Sequence[InputProviderRootBinding],
+    *,
+    input_bindings_valid: bool = True,
 ) -> tuple[list[str], dict[str, Any]]:
     """Authenticate and compare continuation schedules without provider transport calls."""
     failures: list[str] = []
@@ -2670,6 +2771,11 @@ def _preflight_continuation_schedule_consistency(
         continuation_rows.append((row, run_spec))
     if failures or not continuation_rows:
         return failures, observed
+    if not input_bindings_valid:
+        return [], {
+            "outcome": "skipped-due-to-dependency",
+            "dependencies": ["input-provider-bindings"],
+        }
 
     with tempfile.TemporaryDirectory(prefix="feedbax-continuation-preflight-") as temp_dir:
         try:
@@ -2747,6 +2853,26 @@ def _preflight_check(
         detail=detail,
         observed=observed,
     )
+
+
+def _dependency_skipped_preflight_check(
+    name: str,
+    *dependencies: str,
+) -> PreflightCheckEntry:
+    """Record a dependency skip without expanding the durable check-status schema."""
+    ordered_dependencies = tuple(dict.fromkeys(dependencies))
+    detail = "skipped-due-to-dependency: " + ", ".join(ordered_dependencies)
+    return PreflightCheckEntry(
+        name=name,
+        status="pass",
+        detail=detail,
+        observed=dependency_skip_observed(*ordered_dependencies),
+    )
+
+
+def _is_dependency_skipped_preflight_check(check: PreflightCheckEntry) -> bool:
+    observed = check.observed
+    return isinstance(observed, Mapping) and observed.get("outcome") == DEPENDENCY_SKIP_OUTCOME
 
 
 def _sha256_json(payload: Any) -> str:

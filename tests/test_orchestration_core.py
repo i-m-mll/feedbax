@@ -130,6 +130,7 @@ from feedbax.orchestration.stages import (
     PreflightFailed,
     StageEngine,
     _ScopedSignalSupervisor,
+    run_authority_preflight_checks,
     run_preflight_checks,
 )
 from feedbax.orchestration.state import (
@@ -2070,16 +2071,52 @@ def test_preflight_failures_record_named_checks_and_do_not_call_driver(tmp_path:
         ],
         python_version=None,
     )
+    payload_path = Path(invalid.rows[0].execution.payload.uri or "")
+    payload_path.unlink()
     driver = FakeDriver()
 
-    with pytest.raises(PreflightFailed):
+    with pytest.raises(PreflightFailed) as raised:
         StageEngine(bundle=invalid, driver=driver).run()
 
     state = RunSetStateStore(invalid.run_set_dir / "state.json").load()
-    checks = {check.name: check for check in state.stage(STAGE_PREFLIGHT).checks}
+    ordered_checks = state.stage(STAGE_PREFLIGHT).checks
+    checks = {check.name: check for check in ordered_checks}
+    assert [check.name for check in ordered_checks if check.status == "fail"] == [
+        "environment-declaration",
+        "manifest-payload-normalization",
+    ]
     assert checks["environment-declaration"].status == "fail"
     assert checks["manifest-payload-normalization"].status == "fail"
+    assert str(payload_path) in (checks["manifest-payload-normalization"].detail or "")
+    assert checks["schedule-realization"].status == "pass"
+    assert checks["schedule-realization"].observed["row-a"] == {
+        "outcome": "skipped-due-to-dependency",
+        "dependencies": ["manifest-payload-normalization"],
+    }
+    assert "skipped-due-to-dependency" in (checks["schedule-realization"].detail or "")
+    message = str(raised.value)
+    assert message.index("environment-declaration") < message.index(
+        "manifest-payload-normalization"
+    )
+    assert str(payload_path) in message
     assert driver.calls == []
+
+
+def test_authority_preflight_aggregates_payload_and_environment_failures(
+    tmp_path: Path,
+) -> None:
+    invalid = _bundle(tmp_path, python_version=None)
+    payload_path = Path(invalid.rows[0].execution.payload.uri or "")
+    payload_path.unlink()
+
+    checks = run_authority_preflight_checks(invalid)
+
+    assert [check.name for check in checks if check.status == "fail"] == [
+        "environment-declaration",
+        "schedule-realization",
+    ]
+    schedule = next(check for check in checks if check.name == "schedule-realization")
+    assert str(payload_path) in (schedule.detail or "")
 
 
 def test_preflight_consumes_only_deployment_policy(tmp_path: Path) -> None:
