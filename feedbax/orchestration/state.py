@@ -15,18 +15,29 @@ from typing import Any, Literal
 from pydantic import Field
 
 from feedbax.contracts.manifest import StrictModel
-from feedbax.orchestration.repo_snapshot import RepoSnapshotManifest
+from feedbax.orchestration.repo_realization import RepoRealizationPlan
 
 
 RUN_SET_STATE_SCHEMA_ID = "feedbax.orchestration.run_set_state"
 RUN_SET_STATE_SCHEMA_VERSION_V1 = "feedbax.orchestration.run_set_state.v1"
-RUN_SET_STATE_SCHEMA_VERSION = "feedbax.orchestration.run_set_state.v2"
+RUN_SET_STATE_SCHEMA_VERSION_V2 = "feedbax.orchestration.run_set_state.v2"
+RUN_SET_STATE_SCHEMA_VERSION_V3 = "feedbax.orchestration.run_set_state.v3"
+RUN_SET_STATE_SCHEMA_VERSION_V4 = "feedbax.orchestration.run_set_state.v4"
+RUN_SET_STATE_SCHEMA_VERSION = "feedbax.orchestration.run_set_state.v5"
 ROW_STATUSES = ("pending", "launched", "ready", "running", "completed", "failed", "stopped")
 STAGE_STATUSES = ("pending", "running", "completed", "failed", "skipped")
 
 RowStatusName = Literal["pending", "launched", "ready", "running", "completed", "failed", "stopped"]
 StageStatusName = Literal["pending", "running", "completed", "failed", "skipped"]
 CheckStatusName = Literal["pass", "fail"]
+AcquisitionIntentState = Literal[
+    "intended",
+    "acquired",
+    "failed-unacquired",
+    "ambiguous",
+    "resolved-torn-down",
+    "ambiguous-unresolved",
+]
 
 
 def utc_now() -> datetime:
@@ -73,13 +84,25 @@ class RowState(StrictModel):
     error: str | None = None
 
 
+class AcquisitionIntent(StrictModel):
+    """One durable engine-owned record for exactly one provider create invocation."""
+
+    intent_id: str
+    datacenter_candidate: str | None = None
+    config_identity: str
+    intended_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    state: AcquisitionIntentState = "intended"
+    pod_ids: list[str] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    teardown_evidence: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class RunSetState(StrictModel):
     """Atomic JSON state document for one run set."""
 
     schema_id: Literal["feedbax.orchestration.run_set_state"] = RUN_SET_STATE_SCHEMA_ID
-    schema_version: Literal[
-        "feedbax.orchestration.run_set_state.v2"
-    ] = RUN_SET_STATE_SCHEMA_VERSION
+    schema_version: Literal["feedbax.orchestration.run_set_state.v5"] = RUN_SET_STATE_SCHEMA_VERSION
     run_set_id: str
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -88,9 +111,10 @@ class RunSetState(StrictModel):
     rows: dict[str, RowState] = Field(default_factory=dict)
     provision_record: dict[str, Any] | None = None
     provisioning_attempts: list[dict[str, Any]] = Field(default_factory=list)
+    acquisition_intents: list[AcquisitionIntent] = Field(default_factory=list)
     provisioning_stop_reason: str | None = None
     environment_fingerprint: str | None = None
-    repo_snapshot_manifest: RepoSnapshotManifest | None = None
+    repo_realization_plan: RepoRealizationPlan | None = None
     budget_counters: dict[str, Any] = Field(default_factory=dict)
     certificate_ref: str | None = None
     registration_payload: dict[str, Any] | None = None
@@ -146,6 +170,11 @@ class RunSetStateStore:
             if crash_before_replace:
                 return tmp_path
             os.replace(tmp_path, self.path)
+            directory_fd = os.open(self.path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
             return self.path
         finally:
             if crash_before_replace:

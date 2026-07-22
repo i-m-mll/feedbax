@@ -35,7 +35,7 @@ from feedbax.orchestration.bundle import (
 )
 from feedbax.orchestration.drivers.runpod import (
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
-    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
+    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V4,
     RunPodDriverConfig,
     RunPodDriverError,
     RunPodOrchestrationDriver,
@@ -232,13 +232,13 @@ def _completed_preflight(bundle: RunBundle, repo: Path, root: Path) -> Any:
     return StageEngine(bundle=bundle, driver=_driver(bundle, repo, RecordingTransport()), store=store).run(stop_after_stage=STAGE_PREFLIGHT)
 
 
-def test_matrix_preflight_emits_canonical_v3_without_private_paths(tmp_path: Path) -> None:
+def test_matrix_preflight_emits_canonical_v4_without_private_paths(tmp_path: Path) -> None:
     repo, revision = _authority_repo(tmp_path)
     bundle = _matrix_bundle(tmp_path, revision=revision)
     state = _completed_preflight(bundle, repo, tmp_path)
     evidence = state.stage(STAGE_PREFLIGHT).outputs["driver_evidence"]
-    assert evidence["schema_version"] == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3
-    assert evidence["v1"]["schema_version"] == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION
+    assert evidence["schema_version"] == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V4
+    assert evidence["base"]["schema_version"] == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION
     binding = evidence["matrix_binding"]
     assert [row["row_id"] for row in binding["rows"]] == ["first", "second"]
     assert [row["locked_training_depth"] for row in binding["rows"]] == [7, 7]
@@ -331,7 +331,10 @@ def test_authority_only_cli_is_isolated_and_matches_real_runpod_evidence(
         STAGE_PREFLIGHT,
         stage.model_copy(update={"outputs": {**stage.outputs, "driver_evidence": neutral}}),
     )
-    with pytest.raises(RunPodDriverError, match="matrix PREFLIGHT|invalid shape"):
+    with pytest.raises(
+        RunPodDriverError,
+        match="matrix PREFLIGHT|invalid shape|repo realization plan",
+    ):
         _driver(bundle, repo, RecordingTransport()).restore_completed_preflight(bundle, state)
     assert git_calls >= 6
 
@@ -575,7 +578,7 @@ def test_matrix_restore_rejects_missing_legacy_or_tampered_evidence(
     if tamper == "missing":
         outputs = {"checks": preflight.outputs["checks"]}
     elif tamper == "v1-only":
-        outputs = {**preflight.outputs, "driver_evidence": evidence["v1"]}
+        outputs = {**preflight.outputs, "driver_evidence": evidence["base"]}
     else:
         if tamper == "row":
             evidence["matrix_binding"]["rows"].pop()
@@ -586,6 +589,9 @@ def test_matrix_restore_rejects_missing_legacy_or_tampered_evidence(
         outputs = {**preflight.outputs, "driver_evidence": evidence}
     state = state.with_stage(STAGE_PREFLIGHT, preflight.model_copy(update={"outputs": outputs}))
     transport = RecordingTransport()
-    with pytest.raises(RunPodDriverError, match="matrix PREFLIGHT|invalid shape|code authority"):
+    with pytest.raises(
+        RunPodDriverError,
+        match="matrix PREFLIGHT|PREFLIGHT evidence|invalid shape|code authority",
+    ):
         _driver(bundle, repo, transport).restore_completed_preflight(bundle, state)
     assert transport.operations == []

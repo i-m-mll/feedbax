@@ -37,6 +37,37 @@ class ProvisioningAttemptError(RuntimeError):
         self.stop_reason = stop_reason
 
 
+@dataclass(frozen=True)
+class AcquisitionResult:
+    """Provider identity returned by exactly one successful create invocation."""
+
+    pod_id: str
+    accepted_datacenter: str | None
+
+
+@dataclass(frozen=True)
+class ProviderPodInventoryRecord:
+    """Typed provider inventory row retaining both identity and name tag."""
+
+    pod_id: str
+    name: str
+
+
+class AcquisitionCreateError(RuntimeError):
+    """Classified result of one provider create invocation."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        clean_rejection: bool,
+        evidence: Mapping[str, Any],
+    ) -> None:
+        super().__init__(message)
+        self.clean_rejection = clean_rejection
+        self.evidence = dict(evidence)
+
+
 class OrchestrationDriver(Protocol):
     """Synchronous idempotent driver interface used by the stage engine."""
 
@@ -48,6 +79,14 @@ class OrchestrationDriver(Protocol):
 
     def stage_inputs(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Stage immutable inputs required by rows."""
+
+    def smoke_row(
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+    ) -> Mapping[str, Any]:
+        """Run one bounded pre-launch remote smoke execution."""
 
     def launch_row(
         self,

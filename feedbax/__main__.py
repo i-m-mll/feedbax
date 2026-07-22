@@ -78,8 +78,13 @@ def _load_checkpoint_fork_plan_bindings(path: str) -> CheckpointForkPlanBindings
         return {key: loader(str(resolved(value))) for key, value in payload.get(name, {}).items()}
 
     return CheckpointForkPlanBindings(
-        checkpoint_roots={key: resolved(value) for key, value in payload["checkpoint_roots"].items()},
-        run_specs={key: TrainingRunSpec.model_validate(value) for key, value in loaded("run_specs", _read_json).items()},
+        checkpoint_roots={
+            key: resolved(value) for key, value in payload["checkpoint_roots"].items()
+        },
+        run_specs={
+            key: TrainingRunSpec.model_validate(value)
+            for key, value in loaded("run_specs", _read_json).items()
+        },
         slot_templates=loaded("slot_templates", _read_pickle),
         segment_history_templates=loaded("segment_history_templates", _read_pickle),
         population_member_ids=loaded("population_member_ids", _read_json),
@@ -264,9 +269,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     execute_parser.add_argument("--resume", action="store_true")
     execute_parser.add_argument("--stop-after-barrier")
     execute_parser.add_argument(
-        "--one-update",
-        action="store_true",
-        help="Execute one native update, checkpoint it, and exit successfully.",
+        "--update-budget",
+        type=int,
+        help=(
+            "Execute at most this positive delta in completed training batches, "
+            "checkpoint the terminal batch, and exit successfully."
+        ),
     )
     execute_parser.add_argument(
         "--no-progress",
@@ -609,7 +617,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     manifest_metadata_projection=metadata_projection,
                     resume=args.resume,
                     stop_after_barrier=args.stop_after_barrier,
-                    one_update=args.one_update,
+                    update_budget=args.update_budget,
                     progress_callback=(
                         None if args.no_progress else _console_progress_printer(started_at)
                     ),
@@ -626,6 +634,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             {
                 "run_id": result.run_id,
                 "status": result.status,
+                "start_completed_batches": result.start_completed_batches,
+                "end_completed_batches": result.end_completed_batches,
                 "payload_binding_status": result.payload_binding_status,
                 "manifest_path": str(result.manifest_path),
                 "manifest_payload": result.manifest.model_dump(mode="json", exclude_none=True),
@@ -760,7 +770,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 default_spec_registry.migrate("CheckpointForkPlan", _read_json(args.plan)).payload
             )
             dependency_json = (
-                args.dependencies if args.dependencies.lstrip().startswith("[")
+                args.dependencies
+                if args.dependencies.lstrip().startswith("[")
                 else Path(args.dependencies).read_text(encoding="utf-8")
             )
             dependencies = TypeAdapter(list[ExecutionDependency]).validate_json(dependency_json)

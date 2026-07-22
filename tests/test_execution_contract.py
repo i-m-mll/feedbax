@@ -21,9 +21,11 @@ from feedbax.execution.models import (
     EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
     EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
     EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1,
+    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V2,
     EXECUTION_SPEC_SCHEMA_VERSION,
     ExecutionCloudPayload,
     ExecutionCell,
+    ExecutionPlan,
     ExecutionReproducibility,
     ExecutionSpec,
     LOCAL_EXECUTION_RESULT_SCHEMA_VERSION,
@@ -300,11 +302,37 @@ def test_execution_plan_nested_payloads_require_schema_identity() -> None:
     }.items():
         with pytest.raises(UnsupportedSpecVersion, match=version):
             default_spec_registry.migrate(kind, {"schema_version": version})
-    with pytest.raises(UnsupportedSpecVersion, match=EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1):
-        default_spec_registry.migrate(
-            "ExecutionReproducibility",
-            {"schema_version": EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1},
+    for version in (
+        EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1,
+        EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V2,
+    ):
+        with pytest.raises(UnsupportedSpecVersion, match=version):
+            default_spec_registry.migrate(
+                "ExecutionReproducibility",
+                {"schema_version": version},
+            )
+
+
+def test_execution_plan_and_reproducibility_reject_prior_schema_versions() -> None:
+    plan = prepare_execution_plan(
+        ExecutionSpec(
+            backend="local",
+            job_id="schema-rejection",
+            command="python train.py",
         )
+    )
+    plan_payload = plan.model_dump(mode="json")
+    plan_payload["schema_version"] = "feedbax.manifest.execution.v3"
+    with pytest.raises(ValidationError, match="feedbax.manifest.execution.v4"):
+        ExecutionPlan.model_validate(plan_payload)
+
+    reproducibility_payload = plan.reproducibility.model_dump(mode="json")
+    reproducibility_payload["schema_version"] = EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V2
+    with pytest.raises(
+        ValidationError,
+        match=EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
+    ):
+        ExecutionReproducibility.model_validate(reproducibility_payload)
 
 
 def test_runpod_plan_uses_ssh_worker_contract() -> None:
@@ -431,6 +459,23 @@ def test_runpod_plan_marks_local_rsync_as_dev_override(tmp_path: Path) -> None:
         }
     ]
     assert len(snapshots[0]["content_sha256"]) == 64
+    manifest = plan.reproducibility["local_rsync_snapshot_manifest"]
+    assert manifest["schema_id"] == "feedbax.orchestration.repo_snapshot_manifest"
+    assert manifest["schema_version"] == "feedbax.orchestration.repo_snapshot_manifest.v1"
+    assert manifest["repos"] == {
+        "feedbax": {
+            "commit": snapshots[0]["commit"],
+            "dirty": True,
+            "content_sha256": snapshots[0]["content_sha256"],
+            "file_count": 1,
+        }
+    }
+    assert len(plan.reproducibility["local_rsync_snapshot_manifest_digest"]) == 64
+
+    tampered = plan.reproducibility.model_dump(mode="json")
+    tampered["local_rsync_snapshot_manifest"]["repos"]["feedbax"]["dirty"] = False
+    with pytest.raises(ValidationError, match="manifest digest mismatch"):
+        ExecutionReproducibility.model_validate(tampered)
 
 
 def test_modal_plan_represents_parallel_cells_without_ssh() -> None:
