@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.training.checkpoint_custody import produce_checkpoint_custody_archive
 from tests.test_checkpoint_custody import _resolver_parent_ref, _write_resolver_checkpoint
 from tests.test_orchestration_core import _bundle
-from tests.test_runpod_orchestration_driver import FakeRunPodTransport
+from tests.test_runpod_orchestration_driver import FakeRunPodTransport, _git_seal_ready
 
 
 def _authenticated_bundle(tmp_path: Path) -> tuple[contracts.RunBundle, Path]:
@@ -100,8 +101,21 @@ def test_existing_materialization_rejects_symlink_target(
 
 def test_runtime_binding_preflight_fails_before_runpod_queries(tmp_path: Path) -> None:
     bundle, _ = _authenticated_bundle(tmp_path)
+    repo_root = tmp_path / "repo"
+    lockfile = repo_root / "uv.lock"
+    lockfile.parent.mkdir()
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+    _git_seal_ready(repo_root, "uv.lock")
+    environment = bundle.environment.model_copy(
+        update={"lockfile_hashes": {"uv.lock": hashlib.sha256(lockfile.read_bytes()).hexdigest()}}
+    )
+    bundle = bundle.model_copy(update={"environment": environment})
     transport = FakeRunPodTransport()
-    check = RunPodOrchestrationDriver(transport=transport).preflight_checks(bundle)[0]
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(local_repos={"feedbax": repo_root}),
+        transport=transport,
+    )
+    check = driver.preflight_checks(bundle)[0]
     assert check.name == "input-provider-bindings" and check.status == "fail" and not transport.operations
 
 

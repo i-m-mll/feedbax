@@ -7,8 +7,8 @@ from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
+from feedbax.contracts.execution_context import NativeExecutionProducerContext
 from feedbax.contracts.manifest import StrictModel
-from feedbax.training.diagnostics import NativeExecutionProducerContext
 
 
 REMOTE_SMOKE_EVIDENCE_SCHEMA_ID = "feedbax.orchestration.remote_smoke_evidence"

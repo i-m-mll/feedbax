@@ -63,6 +63,10 @@ from feedbax.contracts.expressions import (
     PATH_EXPRESSION_SCHEMA_ID,
     PATH_EXPRESSION_SCHEMA_VERSION,
 )
+from feedbax.contracts.execution_context import (
+    NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID,
+    NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION,
+)
 from feedbax.contracts.domain import (
     DOMAIN_COMPILE_REPORT_SCHEMA_ID,
     DOMAIN_COMPILE_REPORT_SCHEMA_VERSION,
@@ -333,8 +337,6 @@ RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1 = "feedbax.spec.run_assembly_request.v1"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v2"
 STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID = "feedbax.spec.studio.training_assembly"
 STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION = "feedbax.spec.studio.training_assembly.v1"
-NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID = "feedbax.spec.native_execution_context"
-NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION = "feedbax.spec.native_execution_context.v1"
 TRAINING_DIAGNOSTICS_SCHEMA_ID = "feedbax.manifest.training_diagnostics"
 TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V1 = "feedbax.manifest.training_diagnostics.v1"
 TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2 = "feedbax.manifest.training_diagnostics.v2"
@@ -2421,7 +2423,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "NativeExecutionProducerContext",
             NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID,
             NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION,
-            owner_module="feedbax.training.diagnostics.NativeExecutionProducerContext",
+            owner_module="feedbax.contracts.execution_context.NativeExecutionProducerContext",
             emitted_by=(
                 "feedbax.orchestration.drivers.native_execution.inject_native_execution_context",
             ),

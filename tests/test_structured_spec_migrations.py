@@ -421,17 +421,19 @@ def test_execution_identity_envelope_v1_migrates_with_unavailable_provenance() -
 
 
 @pytest.mark.parametrize(
-    ("kind", "schema_id", "current_version"),
+    ("kind", "schema_id", "current_version", "owner_module"),
     [
         (
             "NativeExecutionProducerContext",
             NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID,
             NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION,
+            "feedbax.contracts.execution_context.NativeExecutionProducerContext",
         ),
         (
             "TrainingDiagnostics",
             TRAINING_DIAGNOSTICS_SCHEMA_ID,
             TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4,
+            "feedbax.training.diagnostics.TrainingDiagnostics",
         ),
     ],
 )
@@ -439,12 +441,13 @@ def test_native_execution_documents_have_explicit_rejection_policy(
     kind: str,
     schema_id: str,
     current_version: str,
+    owner_module: str,
 ) -> None:
     family = default_spec_registry.resolve(kind)
     assert family.identity == schema_id
     assert family.current_version == current_version
     assert family.policy is not None
-    assert family.policy.owner_module.startswith("feedbax.training.diagnostics.")
+    assert family.policy.owner_module == owner_module
     assert family.policy.stance == ("migrate" if kind == "TrainingDiagnostics" else "reject")
     assert family.policy.emitted_by
     assert family.policy.consumed_by
