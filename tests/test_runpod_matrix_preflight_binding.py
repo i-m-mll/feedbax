@@ -557,7 +557,31 @@ def test_invalid_matrix_authority_stops_before_transport(tmp_path: Path, invalid
         driver = _driver(bundle, repo, transport)
 
     checks = driver.preflight_checks(bundle)
-    assert [(check.name, check.status) for check in checks] == [("training-matrix-authority", "fail")]
+    assert checks[0].name == "training-matrix-authority"
+    assert checks[0].status == "fail"
+    assert checks[0].detail
+    assert [check.name for check in checks[1:]] == [
+        "runpod-repo-snapshots",
+        "input-provider-bindings",
+        "runpod-remote-smoke-applicability",
+        "continuation-schedule-consistency",
+        "runpod-lockfiles-declared",
+        "runpod-remote-layout-vs-lock",
+        "runpod-image-immutable",
+        "runpod-image-tag-exists",
+        "runpod-python-version-declared",
+        "runpod-gpu-policy-declared",
+        "runpod-credentials",
+        "runpod-balance-floor",
+        "runpod-deadman-credentials",
+    ]
+    named = {check.name: check for check in checks}
+    assert named["runpod-credentials"].observed["outcome"] == (
+        "skipped-due-to-dependency"
+    )
+    assert "training-matrix-authority" in named["runpod-credentials"].observed[
+        "dependencies"
+    ]
     assert transport.operations == []
 
 
