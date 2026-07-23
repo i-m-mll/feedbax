@@ -189,6 +189,23 @@ def test_corrected_hold_at_one_projection_passes() -> None:
     assert observed["coordinates"] == [10, 11, 12]
 
 
+def test_source_history_projection_accepts_continuation_bearing_run_spec() -> None:
+    request = _continuation()
+    failures, observed = compare_continuation_schedule_projections(
+        source_run_spec=_with_method_schedule(
+            _run_spec(continuation=request), (1.0, 1.0, 1.0)
+        ),
+        target_run_spec=_with_method_schedule(
+            _run_spec(continuation=request), (1.0, 1.0, 1.0)
+        ),
+        source_manifest=_source_manifest(),
+        continuation=request,
+    )
+
+    assert failures == []
+    assert observed["coordinates"] == [10, 11, 12]
+
+
 def test_lineage_projector_uses_segment_origin_for_boundary_and_later_call() -> None:
     request = _continuation()
     run_spec = _run_spec(continuation=request)

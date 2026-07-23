@@ -566,6 +566,7 @@ def test_lowered_payload_and_provenance_drive_storage_and_assembly(tmp_path: Pat
         "manifest.json",
         "training-diagnostics.json",
         "checkpoints",
+        "manifests",
     ]
 
 
