@@ -178,7 +178,7 @@ def test_sweep_matrix_rejects_grouped_designs_that_omit_declared_axes() -> None:
 def test_sweep_matrix_rejects_typo_axis_path_without_creating_fields() -> None:
     graph_spec, training_spec, task_spec = _base_specs()
 
-    with pytest.raises(SweepMatrixError, match="cannot set missing field 'weigth'"):
+    with pytest.raises(SweepMatrixError, match="targets a missing key/index.*weigth"):
         expand_sweep_matrix(
             {
                 "axes": [
