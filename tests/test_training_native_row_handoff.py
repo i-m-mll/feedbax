@@ -529,7 +529,7 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
     result = execute_training_run_spec(
         payload,
         initial_slots=_initial_slots(),
-        manifest_root=tmp_path / "manifest-root",
+        manifest_root=collection_root / "manifests",
         checkpoint_root=checkpoint_root,
         execution_context=context,
     )
@@ -551,7 +551,6 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
     )
     assert result.manifest_path == collection_root / "manifest.json"
     assert result.diagnostics_path == collection_root / "training-diagnostics.json"
-    assert not (tmp_path / "manifest-root" / "manifests" / "training_runs").exists()
     assert list(collection_root.glob("*manifest*.json")) == [result.manifest_path]
 
     diagnostics = result.diagnostics.model_dump(mode="json", exclude_none=True)
@@ -626,6 +625,7 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
         "manifest.json",
         "training-diagnostics.json",
         "checkpoints",
+        "manifests",
     }
     assert (
         json.loads(Path(collected["manifest.json"]).read_text(encoding="utf-8"))["id"]
@@ -637,6 +637,15 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
         ]
         == result.manifest.id
     )
+    history_ref = next(
+        artifact for artifact in result.manifest.artifacts if artifact.role == "training_history"
+    )
+    history_relative_path = Path(history_ref.uri).relative_to(collection_root / "manifests")
+    collected_manifest_root = Path(collected["manifests"])
+    assert (collected_manifest_root / history_relative_path).read_bytes() == Path(
+        history_ref.uri
+    ).read_bytes()
+    assert not (collected_manifest_root / "manifests").exists()
     collected_checkpoint_root = Path(collected["checkpoints"])
     assert (collected_checkpoint_root / "latest.json").is_file()
     assert (collected_checkpoint_root / "transactions").is_dir()

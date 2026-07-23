@@ -286,6 +286,7 @@ def project_training_schedules(
     coordinates: Sequence[int],
     lineage: CheckpointSegmentLineage,
     resolved_method: ResolvedTrainingMethod[Any] | None = None,
+    validate_continuation_lineage: bool = True,
 ) -> ScheduleProjection:
     """Build the complete sampled schedule table consumed by runtime and preflight.
 
@@ -299,7 +300,7 @@ def project_training_schedules(
     ):
         raise ValueError("schedule projection coordinates must be non-empty, unique, and sorted")
     continuation = run_spec.checkpoint_progress.continuation
-    if continuation is not None:
+    if validate_continuation_lineage and continuation is not None:
         expected_lineage = (
             continuation.source_completed_batches,
             continuation.additional_batches,
@@ -399,6 +400,7 @@ def compare_continuation_schedule_projections(
         source_run_spec,
         coordinates=coordinates,
         lineage=source_manifest.segment_lineage,
+        validate_continuation_lineage=False,
     )
     target = project_training_schedules(
         target_run_spec,
