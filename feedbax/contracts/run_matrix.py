@@ -759,22 +759,42 @@ def _apply_patch(root: dict[str, Any], patch: OverridePatch) -> None:
     parts = patch.path.split(".")
     parent = _resolve_parent(root, parts, path=patch.path)
     leaf = parts[-1]
+    if patch.op == "add" and isinstance(parent, list) and _is_list_append_token(parent, leaf):
+        parent.append(deepcopy(patch.value))
+        return
     exists = _contains_key(parent, leaf)
     if patch.op == "add":
         if exists:
-            raise ValueError(f"add patch path already exists: {patch.path!r}")
+            raise ValueError(f"override add patch path already exists: {patch.path!r}")
         _set_child(parent, leaf, deepcopy(patch.value), path=patch.path)
         return
     if patch.op == "replace":
         if not exists:
             raise ValueError(
-                f"replace patch cannot set missing field {leaf!r}: {patch.path!r}"
+                f"override replace patch targets a missing key/index: {patch.path!r}"
             )
         _set_child(parent, leaf, deepcopy(patch.value), path=patch.path)
         return
     if not exists:
-        raise ValueError(f"remove patch path is missing: {patch.path!r}")
+        raise ValueError(
+            f"override remove patch targets a missing key/index: {patch.path!r}"
+        )
     _remove_child(parent, leaf, path=patch.path)
+
+
+def _is_list_append_token(parent: list[Any], leaf: str) -> bool:
+    """Return whether ``leaf`` names the JSON-Patch list-append position.
+
+    Follows JSON-Patch ``add`` semantics (RFC 6902 section 4.1): the literal
+    ``-`` token, or a numeric index exactly equal to the list's current
+    length, both mean "insert after the last element". Any other index —
+    in range or beyond it — targets a specific position and is handled by
+    the existing add/replace/remove-at-index path, which still rejects
+    beyond-range indices.
+    """
+    if leaf == "-":
+        return True
+    return leaf.isdigit() and int(leaf) == len(parent)
 
 
 def _resolve_parent(root: Any, parts: list[str], *, path: str) -> Any:

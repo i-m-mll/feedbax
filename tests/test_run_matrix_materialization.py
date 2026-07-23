@@ -13,7 +13,9 @@ from feedbax.contracts.run_matrix import (
     RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+    MatrixCompositionDelta,
     TrainingRunMatrixSpec,
+    apply_composition_deltas,
     apply_override_patches,
 )
 from feedbax.contracts.training import (
@@ -121,6 +123,144 @@ def test_apply_override_patches_is_fail_closed() -> None:
         apply_override_patches(base, [{"path": "a.x", "op": "replace", "value": 2}])  # type: ignore[list-item]
 
 
+def test_apply_override_patches_append_via_numeric_index() -> None:
+    base = {"items": [0, 1]}
+
+    patched = apply_override_patches(
+        base, [{"path": "items.2", "op": "add", "value": 2}]  # type: ignore[list-item]
+    )
+
+    assert patched == {"items": [0, 1, 2]}
+    assert base == {"items": [0, 1]}
+
+
+def test_apply_override_patches_append_via_dash_token() -> None:
+    base = {"items": [0, 1]}
+
+    patched = apply_override_patches(
+        base, [{"path": "items.-", "op": "add", "value": 2}]  # type: ignore[list-item]
+    )
+
+    assert patched == {"items": [0, 1, 2]}
+
+
+def test_apply_override_patches_nested_append_into_deltas_patches_list() -> None:
+    base = {
+        "deltas": [
+            {
+                "layer_id": "warm",
+                "patches": [{"path": "lr", "op": "replace", "value": 0.1}],
+            }
+        ]
+    }
+
+    patched = apply_override_patches(
+        base,
+        [
+            {
+                "path": "deltas.0.patches.1",
+                "op": "add",
+                "value": {"path": "batch_size", "op": "add", "value": 64},
+            }
+        ],  # type: ignore[list-item]
+    )
+
+    assert patched["deltas"][0]["patches"] == [
+        {"path": "lr", "op": "replace", "value": 0.1},
+        {"path": "batch_size", "op": "add", "value": 64},
+    ]
+    assert len(base["deltas"][0]["patches"]) == 1
+
+
+def test_apply_override_patches_beyond_range_index_still_rejected() -> None:
+    base = {"items": [0, 1]}
+
+    with pytest.raises(ValueError, match="items.5"):
+        apply_override_patches(
+            base, [{"path": "items.5", "op": "add", "value": 2}]  # type: ignore[list-item]
+        )
+
+
+def test_apply_override_patches_replace_and_remove_semantics_unchanged() -> None:
+    base = {"items": [0, 1, 2]}
+
+    replaced = apply_override_patches(
+        base, [{"path": "items.1", "op": "replace", "value": 9}]  # type: ignore[list-item]
+    )
+    assert replaced == {"items": [0, 9, 2]}
+
+    removed = apply_override_patches(base, [{"path": "items.2", "op": "remove"}])  # type: ignore[list-item]
+    assert removed == {"items": [0, 1]}
+
+    with pytest.raises(ValueError, match="missing key/index"):
+        apply_override_patches(base, [{"path": "items.9", "op": "replace", "value": 1}])  # type: ignore[list-item]
+
+    with pytest.raises(ValueError, match="missing key/index"):
+        apply_override_patches(base, [{"path": "items.9", "op": "remove"}])  # type: ignore[list-item]
+
+
+def test_continuation_matrix_authoring_contract_worked_example() -> None:
+    """Runnable twin of the worked example in docs/design/run_matrix_continuation_contract.md.
+
+    Keep this test and that document's example in sync: this is the "maintained
+    minimal example" the continuation matrix-authoring contract doc points to.
+    """
+    # An ancestor matrix spec's `deltas`, as a plain serialized JSON document.
+    ancestor_spec_document = {
+        "deltas": [
+            {
+                "layer_id": "warm_restart",
+                "patches": [
+                    {"path": "training_config.n_batches", "op": "replace", "value": 150},
+                ],
+            }
+        ],
+    }
+
+    # Author the continuation by appending a new patch to the existing delta's
+    # `patches` list instead of replacing the whole list. This is the capability
+    # this contract adds: an `add` targeting index == len(list), or "-".
+    continuation_spec_document = apply_override_patches(
+        ancestor_spec_document,
+        [
+            {
+                "path": "deltas.0.patches.1",
+                "op": "add",
+                "value": {"path": "training_config.batch_size", "op": "add", "value": 64},
+            }
+        ],
+    )
+    assert continuation_spec_document["deltas"][0]["patches"] == [
+        {"path": "training_config.n_batches", "op": "replace", "value": 150},
+        {"path": "training_config.batch_size", "op": "add", "value": 64},
+    ]
+    assert ancestor_spec_document["deltas"][0]["patches"] == [
+        {"path": "training_config.n_batches", "op": "replace", "value": 150},
+    ]  # the ancestor document is untouched; the continuation is a distinct document
+
+    # Canonicalize/hash/pin the base (elided here), then flatten the deltas onto it.
+    deltas = [
+        MatrixCompositionDelta.model_validate(delta)
+        for delta in continuation_spec_document["deltas"]
+    ]
+    base_payload = {"training_config": {"learning_rate": 0.01, "n_batches": 100}}
+    resolved_base, _attribution, _written = apply_composition_deltas(base_payload, deltas)
+    assert resolved_base == {
+        "training_config": {"learning_rate": 0.01, "n_batches": 150, "batch_size": 64},
+    }
+
+    # Each row applies its own override on top of the pinned base; the row's
+    # identity derives from this patched result, not from the base hash unchanged.
+    row_payload = apply_override_patches(
+        resolved_base,
+        [{"path": "training_config.learning_rate", "op": "replace", "value": 0.02}],
+    )
+    assert row_payload == {
+        "training_config": {"learning_rate": 0.02, "n_batches": 150, "batch_size": 64},
+    }
+    assert training_spec_sha256(row_payload) != training_spec_sha256(resolved_base)
+
+
 def test_materialize_explicit_rows_plans_stable_ids_and_writes_deterministic_bytes(
     tmp_path: Path,
 ) -> None:
@@ -146,6 +286,23 @@ def test_materialize_explicit_rows_plans_stable_ids_and_writes_deterministic_byt
         "lowered_execution_payload_hash"
     ] == training_spec_sha256(materialized.rows[0].payload)
     assert (tmp_path / "first" / "lr_hi.json").read_text().startswith('{"wrapped"')
+
+
+def test_materialize_explicit_row_override_failure_names_row_and_violation(
+    tmp_path: Path,
+) -> None:
+    matrix = _matrix(_training_run_payload())
+    broken_row = matrix.rows[0].model_copy(
+        update={
+            "overrides": [
+                {"path": "training_config.missing_field", "op": "replace", "value": 1}
+            ]
+        }
+    )
+    matrix = matrix.model_copy(update={"rows": [broken_row, matrix.rows[1]]})
+
+    with pytest.raises(RunMatrixError, match=r"/rows/lr_hi/overrides.*missing key/index"):
+        materialize_run_matrix(matrix, repo_root=tmp_path)
 
 
 def test_materialize_sweep_mode_uses_shared_axes_and_coordinates(tmp_path: Path) -> None:
