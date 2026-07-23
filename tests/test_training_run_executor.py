@@ -1441,7 +1441,7 @@ def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate
         emitter.close()
 
     history = result.history_events[0]
-    assert "completed_batches" not in history["coordinate"]
+    assert history["coordinate"]["completed_batches"] == 1
     assert "train_loss" not in history["coordinate"]["metrics"]
     assert history["metrics"]["train_loss"]["value"] == [0.0] * 5
     assert result.manifest.summary_metrics["train_loss"]["axes"][0]["axis"] == "ensemble"
@@ -2226,6 +2226,85 @@ def test_mapped_learning_rate_trace_retains_every_instance_and_rejects_duplicate
         match=r"coordinate\.completed_batches training-batch authority",
     ):
         _realized_lr_trace([missing_batch_authority], declared=())
+
+
+def _scalar_lr_kernel(slots, coordinate, context):
+    del coordinate, context
+    return {
+        "model": slots["model"] + 1,
+        "optimizer": slots["optimizer"],
+        "prng": slots["prng"],
+        "train_loss": 0.5,
+        "learning_rate": 3e-4,
+        "batch_counter": slots["batch_counter"] + 1,
+    }
+
+
+def _scalar_lr_run_spec(*, batch_progress: bool = True) -> TrainingRunSpec:
+    """Non-mapped method emitting a learning_rate metric, without training_diagnostics."""
+    spec = _run_spec()
+    worker = spec.worker_execution.model_copy(deep=True)
+    contract = worker.method_contract
+    contract.state_slots.append(StateSlotSpec(name="learning_rate", role="metric", required=False))
+    program = contract.phase_program
+    program.phases[0].writes.append("learning_rate")
+    program.update_steps[0].writes.append("learning_rate")
+    if not batch_progress:
+        program.batch_progress = None
+    worker.effective_phase = validate_worker_contract(
+        contract,
+        update_kernels={
+            "feedbax.training.standard_supervised.gradient_update": _scalar_lr_kernel
+        },
+    )
+    return spec.model_copy(update={"worker_execution": worker})
+
+
+def test_batch_progress_method_without_mapped_diagnostics_keys_lr_trace_by_batch_authority(
+    tmp_path: Path,
+) -> None:
+    spec = _scalar_lr_run_spec()
+    assert spec.worker_execution.method_contract.training_diagnostics is None
+
+    result = execute_training_run_spec(
+        spec,
+        run_id="scalar-lr-batch-progress",
+        initial_slots=_initial_slots(),
+        manifest_root=tmp_path / "manifest",
+        checkpoint_root=tmp_path / "checkpoint",
+        registry=_mapped_test_registry(spec, _scalar_lr_kernel),
+        update_budget=1,
+    )
+
+    assert [event["coordinate"]["completed_batches"] for event in result.history_events] == [1]
+    assert [
+        (sample.step, sample.learning_rate) for sample in result.diagnostics.lr_trace
+    ] == [(1, 3e-4)]
+    assert result.diagnostics.completed_batches == 1
+    assert result.diagnostics.cumulative_completed_batches == 1
+
+
+def test_lr_metric_without_batch_authority_or_mapped_diagnostics_fails_closed(
+    tmp_path: Path,
+) -> None:
+    spec = _scalar_lr_run_spec(batch_progress=False)
+    contract = spec.worker_execution.method_contract
+    assert contract.training_diagnostics is None
+    assert contract.phase_program.batch_progress is None
+
+    with pytest.raises(
+        TrainingRunExecutorError,
+        match=r"coordinate\.completed_batches training-batch authority",
+    ):
+        execute_training_run_spec(
+            spec,
+            run_id="scalar-lr-no-authority",
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path / "manifest",
+            checkpoint_root=tmp_path / "checkpoint",
+            registry=_mapped_test_registry(spec, _scalar_lr_kernel),
+            update_budget=1,
+        )
 
 
 def test_mapped_preflight_fails_before_execution_and_batch_authority_must_sync() -> None:
@@ -3367,7 +3446,7 @@ def test_native_execution_context_emits_one_identity_manifest_and_typed_diagnost
     assert diagnostics["kind"] == "TrainingDiagnostics"
     assert diagnostics["schema_version"] == "feedbax.manifest.training_diagnostics.v2"
     assert "method_trace" not in diagnostics
-    assert "completed_batches" not in result.history_events[0]["coordinate"]
+    assert result.history_events[0]["coordinate"]["completed_batches"] == 1
     assert diagnostics["manifest_id"] == manifest.id
     assert diagnostics["completed_batches"] == 1
     assert diagnostics["segment_completed_batches"] == 1
