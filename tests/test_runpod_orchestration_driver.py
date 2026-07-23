@@ -1039,6 +1039,57 @@ def test_acquired_intent_without_verified_teardown_blocks_retry(tmp_path: Path) 
     assert store.load().acquisition_intents[0].state == "ambiguous-unresolved"
 
 
+def test_post_provision_early_failure_retains_identity_and_verifies_teardown(
+    tmp_path: Path,
+) -> None:
+    """Regression for feedbax/9e44e27.
+
+    A failure in the provision-to-SMOKE window (here, REALIZE_ENV) must not
+    orphan the pod that PROVISION already acquired: ``run`` must retain the
+    acquired pod's identity, execute teardown through the driver, and prove
+    provider-side absence before the acquisition intent is considered
+    resolved.
+    """
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "post-provision-failure-state.json")
+    transport = AcquisitionLeaseTransport(store)
+    transport.create_results = [CommandResult(0, '{"id":"pod-early-failure"}')]
+    transport.register_on_create = [("pod-early-failure",)]
+    transport.queue_runpodctl(
+        ("user", "--output", "json"), CommandResult(0, '{"clientBalance": 10}')
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            image=bundle.environment.image_id or "",
+            datacenters=("CA-MTL-1",),
+            poll_seconds=1,
+        ),
+        transport=transport,
+    )
+    engine = StageEngine(bundle=bundle, driver=driver, store=store)
+
+    def _fail_realize_env(_state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
+        raise RuntimeError("simulated post-provision failure before SMOKE")
+
+    engine._stage_realize_env = _fail_realize_env
+
+    with pytest.raises(RuntimeError, match="simulated post-provision failure before SMOKE"):
+        engine.run()
+
+    final = store.load()
+    teardown = final.stage("TEARDOWN")
+    assert teardown.status == "completed"
+    assert teardown.outputs["abort_path"] is True
+    assert teardown.outputs["pod_id"] == "pod-early-failure"
+    assert teardown.outputs["pod_absence"]["verified"] is True
+    assert transport.inventory == {}
+    intent = final.acquisition_intents[0]
+    assert intent.state == "resolved-torn-down"
+    assert intent.pod_ids == ["pod-early-failure"]
+    assert any(("remove", "pod", "pod-early-failure") == call for call in transport.runpodctl_calls)
+
+
 def test_deadman_is_installed_after_endpoint_and_before_gpu_readiness(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path, deadman_enabled=True)
     store = RunSetStateStore(bundle.run_set_dir / "early-deadman-state.json")
