@@ -70,7 +70,11 @@ from feedbax.contracts.training import (
     TrainingManifestMetadataProjection,
     TrainingRunSpec,
 )
-from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
+from feedbax.contracts.spec_storage import (
+    canonical_training_run_spec_projection,
+    training_spec_canonical_bytes,
+    training_spec_sha256,
+)
 from feedbax.contracts.worker import (
     AxisCoordinateSpec,
     BarrierArtifactSinkSpec,
@@ -1722,7 +1726,7 @@ def _validate_execution_payload_binding(
     if execution_context is None:
         return "not_bound"
     payload = (
-        run_spec.model_dump(mode="json", exclude_none=True)
+        canonical_training_run_spec_projection(run_spec)
         if isinstance(supplied_spec, TrainingRunSpec)
         else dict(supplied_spec)
     )

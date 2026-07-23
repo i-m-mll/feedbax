@@ -24,6 +24,10 @@ from feedbax.contracts.manifest import (
     load_manifest_bytes,
 )
 from feedbax.contracts.remote_smoke import RemoteSmokeEvidence, RemoteSmokeRowEvidence
+from feedbax.contracts.spec_storage import (
+    canonical_training_run_spec_bytes,
+    training_spec_canonical_bytes,
+)
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
@@ -826,7 +830,12 @@ class StageEngine:
         failed = [check for check in checks if check.status == "fail"]
         if failed:
             raise PreflightFailed(_format_preflight_failures(failed))
-        outputs: dict[str, Any] = {"checks": [check.model_dump(mode="json") for check in checks]}
+        outputs: dict[str, Any] = {
+            "checks": [check.model_dump(mode="json") for check in checks],
+            "payload_canonical_digests": {
+                row.row_id: row.execution.payload.sha256 for row in self.bundle.rows
+            },
+        }
         evidence = getattr(self.driver, "preflight_evidence", None)
         if callable(evidence):
             outputs["driver_evidence"] = dict(evidence(self.bundle, state, checks))
@@ -1275,12 +1284,36 @@ class StageEngine:
     def _stage_stage_inputs(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         return state, dict(self.driver.stage_inputs(self.bundle, state))
 
+    def _assert_preflight_payload_handoff(self, state: RunSetState) -> None:
+        """Fail closed if a row payload changed identity between PREFLIGHT and SMOKE.
+
+        PREFLIGHT records the executable-payload digest it validated as canonical for
+        every row. SMOKE consumes ``row.execution.payload`` from the immutable bundle;
+        if any row's current digest differs from the recorded PREFLIGHT digest, the
+        payload was restaged or reserialized between the stages and the preflight
+        canonical-identity result no longer applies.
+        """
+        recorded = state.stage(STAGE_PREFLIGHT).outputs.get("payload_canonical_digests")
+        if not isinstance(recorded, Mapping):
+            return
+        for row in self.bundle.rows:
+            expected = recorded.get(row.row_id)
+            actual = row.execution.payload.sha256
+            if expected is not None and expected != actual:
+                raise OrchestrationStageError(
+                    "SMOKE payload identity diverged from the PREFLIGHT-validated digest for row "
+                    f"{row.row_id!r}: preflight={expected} smoke={actual}; the executable payload "
+                    "was restaged or reserialized between stages, so the preflight result is invalid"
+                )
+
     def _stage_smoke(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         launch = state.stage(STAGE_LAUNCH)
         if launch.status != "pending" or launch.started_at is not None:
             raise OrchestrationStageError(
                 "SMOKE refuses to run after LAUNCH has started; pre-launch evidence is missing"
             )
+
+        self._assert_preflight_payload_handoff(state)
 
         if not self.bundle.smoke_enabled:
             evidence = RemoteSmokeEvidence(
@@ -2604,6 +2637,27 @@ def _run_static_preflight_checks(
                 observed=normalized or "no-inline-run-specs",
             )
         )
+        identity_failures, identity_observed, identity_skips = (
+            _preflight_payload_canonical_identity(
+                bundle,
+                row_payloads=row_payloads,
+                row_payload_errors=row_payload_errors,
+            )
+        )
+        identity_detail = "; ".join(identity_failures) if identity_failures else None
+        if identity_skips:
+            skip_detail = "skipped-due-to-dependency: " + ", ".join(identity_skips)
+            identity_detail = (
+                f"{identity_detail}; {skip_detail}" if identity_detail else skip_detail
+            )
+        checks.append(
+            _check(
+                "payload-canonical-identity",
+                not identity_failures,
+                detail=identity_detail,
+                observed=identity_observed or "no-inline-run-specs",
+            )
+        )
     schedule_failures, schedule_observed, schedule_skips = _preflight_schedule_realization(
         bundle,
         row_payloads=row_payloads,
@@ -2675,6 +2729,61 @@ def _row_payload(row: RunRowSpec) -> dict[str, Any] | None:
 def _is_training_run_payload(payload: Any) -> bool:
     """Return whether generic payload checks apply to a TrainingRunSpec row."""
     return isinstance(payload, Mapping) and payload.get("schema_id") == "feedbax.spec.training_run"
+
+
+def _preflight_payload_canonical_identity(
+    bundle: RunBundle,
+    *,
+    row_payloads: Mapping[str, dict[str, Any] | None],
+    row_payload_errors: Mapping[str, str],
+) -> tuple[list[str], dict[str, Any], list[str]]:
+    """Verify each staged executable payload is the canonical null-omitted projection.
+
+    At SMOKE the training executor recomputes the payload identity through the single
+    ``canonical_training_run_spec_*`` source and compares it to the staged artifact's
+    recorded digest. This check runs that same single source over the actual staged
+    artifact PREFLIGHT loads, so a non-canonical staged payload (for example one
+    serialized with explicit null fields instead of omitting them) or a recorded digest
+    that disagrees with the canonical digest fails here rather than at the billable
+    SMOKE stage.
+    """
+    failures: list[str] = []
+    observed: dict[str, Any] = {}
+    skipped: list[str] = []
+    for row in bundle.rows:
+        if row.row_id in row_payload_errors:
+            observed[row.row_id] = dependency_skip_observed("manifest-payload-normalization")
+            skipped.append(f"{row.row_id} depends on manifest-payload-normalization")
+            continue
+        payload = row_payloads.get(row.row_id)
+        if not _is_training_run_payload(payload):
+            continue
+        ref = row.execution.payload
+        try:
+            canonical_bytes = canonical_training_run_spec_bytes(payload)
+        except Exception as exc:
+            failures.append(
+                f"{row.row_id}: staged executable payload is not a valid TrainingRunSpec: {exc}"
+            )
+            continue
+        canonical_digest = hashlib.sha256(canonical_bytes).hexdigest()
+        observed[row.row_id] = {
+            "recorded_sha256": ref.sha256,
+            "canonical_sha256": canonical_digest,
+        }
+        if ref.sha256 == canonical_digest:
+            continue
+        if training_spec_canonical_bytes(payload) != canonical_bytes:
+            reason = (
+                "staged executable payload is not the canonical null-omitted projection "
+                "(explicit null fields present)"
+            )
+        else:
+            reason = "recorded payload digest does not match the canonical projection digest"
+        failures.append(
+            f"{row.row_id}: {reason}; recorded={ref.sha256} canonical={canonical_digest}"
+        )
+    return failures, observed, skipped
 
 
 def _preflight_schedule_realization(
