@@ -18,7 +18,8 @@ import tarfile
 import tempfile
 import uuid
 import zlib
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -320,6 +321,16 @@ class CheckpointContractBindingError(CheckpointCustodyError):
 
 class CheckpointConsistencyError(CheckpointCustodyError):
     """Raised when slot coordinates violate the method-declared consistency predicate."""
+
+
+class CheckpointCustodyMutationError(CheckpointCustodyError):
+    """Raised when a custody directory that must stay immutable was mutated.
+
+    This is the mutation tripwire for side-effect-free rehearsal probes: it
+    fires when a directory fingerprinted as an immutable probe input differs
+    afterwards, so an isolation regression is reported at probe time rather than
+    discovered later when custody archiving refuses a stale ``latest.json``.
+    """
 
 
 @dataclass(frozen=True)
@@ -1065,6 +1076,190 @@ def produce_checkpoint_custody_archive(
         artifact_ref=_immutable_model_snapshot(artifact),
         evidence=evidence,
     )
+
+
+@dataclass(frozen=True)
+class CheckpointCustodyFingerprint:
+    """Immutable identity of a checkpoint custody directory's inputs.
+
+    ``paths`` is the sorted tuple of every regular file's POSIX-relative path
+    under the custody root, so structural mutation — a new transaction
+    directory, an advanced ``latest.json`` write, or a removed blob — changes the
+    fingerprint. ``metadata_digests`` carries ``(relative_path, sha256)`` pairs
+    over the mutable custody metadata (``latest.json`` and every transaction
+    ``manifest.json``), and over every regular file when ``digested_blobs`` is
+    set, so in-place content edits are detected too. Large immutable blob trees
+    are enumerated but not re-hashed by default.
+    """
+
+    root_present: bool
+    digested_blobs: bool
+    paths: tuple[str, ...]
+    metadata_digests: tuple[tuple[str, str], ...]
+
+
+def _is_custody_metadata_file(relative: PurePosixPath) -> bool:
+    return relative.name in (LATEST_POINTER_NAME, MANIFEST_NAME)
+
+
+def fingerprint_checkpoint_custody_inputs(
+    root: str | Path,
+    *,
+    digest_blobs: bool = False,
+) -> CheckpointCustodyFingerprint:
+    """Fingerprint a checkpoint custody directory before a side-effecting probe.
+
+    The fingerprint enumerates every regular file for structural identity and
+    digests the mutable custody metadata (``latest.json`` and transaction
+    manifests) by default. ``digest_blobs`` extends the content digests to every
+    regular file for full byte identity at the cost of hashing blob trees.
+    Symlinks are recorded by path but never followed, so a probe can never write
+    through a shared link into the source unnoticed.
+    """
+    root_path = Path(root).expanduser()
+    if not root_path.exists():
+        return CheckpointCustodyFingerprint(
+            root_present=False,
+            digested_blobs=digest_blobs,
+            paths=(),
+            metadata_digests=(),
+        )
+    paths: list[str] = []
+    digests: list[tuple[str, str]] = []
+    for path in sorted(root_path.rglob("*")):
+        relative = path.relative_to(root_path).as_posix()
+        if path.is_symlink():
+            paths.append(relative)
+            continue
+        if not path.is_file():
+            continue
+        paths.append(relative)
+        if digest_blobs or _is_custody_metadata_file(PurePosixPath(relative)):
+            digests.append((relative, _sha256_file(path)))
+    return CheckpointCustodyFingerprint(
+        root_present=True,
+        digested_blobs=digest_blobs,
+        paths=tuple(paths),
+        metadata_digests=tuple(digests),
+    )
+
+
+def _describe_custody_fingerprint_difference(
+    before: CheckpointCustodyFingerprint,
+    after: CheckpointCustodyFingerprint,
+) -> str:
+    parts: list[str] = []
+    if before.root_present != after.root_present:
+        parts.append(f"root_present {before.root_present}->{after.root_present}")
+    added = sorted(set(after.paths) - set(before.paths))
+    removed = sorted(set(before.paths) - set(after.paths))
+    if added:
+        parts.append(f"added={added[:8]!r}")
+    if removed:
+        parts.append(f"removed={removed[:8]!r}")
+    before_digests = dict(before.metadata_digests)
+    after_digests = dict(after.metadata_digests)
+    changed = sorted(
+        name
+        for name in before_digests.keys() & after_digests.keys()
+        if before_digests[name] != after_digests[name]
+    )
+    if changed:
+        parts.append(f"changed={changed[:8]!r}")
+    return "; ".join(parts) or "custody content digests differ"
+
+
+def assert_checkpoint_custody_unchanged(
+    root: str | Path,
+    before: CheckpointCustodyFingerprint,
+) -> CheckpointCustodyFingerprint:
+    """Assert a custody directory still matches a prior fingerprint.
+
+    Returns the freshly computed fingerprint on success. Raises
+    ``CheckpointCustodyMutationError`` with a compact difference summary when the
+    custody inputs changed, using the same ``digest_blobs`` depth captured in
+    ``before``.
+    """
+    after = fingerprint_checkpoint_custody_inputs(root, digest_blobs=before.digested_blobs)
+    if after == before:
+        return after
+    raise CheckpointCustodyMutationError(
+        f"checkpoint custody inputs at {Path(root)} changed during a probe: "
+        f"{_describe_custody_fingerprint_difference(before, after)}"
+    )
+
+
+@dataclass(frozen=True)
+class IsolatedCheckpointProbe:
+    """Read-only source root and disposable output namespace for one probe."""
+
+    source_root: Path
+    output_root: Path
+
+
+def _remove_probe_namespace(output_root: Path) -> OSError | None:
+    try:
+        shutil.rmtree(output_root)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return exc
+    return None
+
+
+@contextmanager
+def isolated_checkpoint_probe(
+    source_root: str | Path,
+    *,
+    output_parent: str | Path | None = None,
+    digest_blobs: bool = False,
+) -> Iterator[IsolatedCheckpointProbe]:
+    """Run a bounded checkpoint probe without mutating its source directory.
+
+    The source custody directory is treated as immutable input: its inputs are
+    fingerprinted on entry and re-asserted on a clean exit (the mutation
+    tripwire). A fresh disposable output namespace is created for the probe to
+    write every new transaction and its ``latest.json`` pointer into, and it is
+    removed on both success and failure; a cleanup failure is surfaced but never
+    endangers the source. Pass the yielded ``source_root`` as the executor's
+    ``checkpoint_source_root`` and ``output_root`` as its ``checkpoint_root`` so
+    the executor resumes from the read-only source and diverges every write into
+    the disposable namespace.
+    """
+    source = Path(source_root).expanduser().resolve()
+    if not (source / LATEST_POINTER_NAME).is_file():
+        raise CheckpointCustodyError(
+            f"isolated checkpoint probe source has no published latest pointer: {source}"
+        )
+    before = fingerprint_checkpoint_custody_inputs(source, digest_blobs=digest_blobs)
+    parent = (
+        Path(output_parent).expanduser().resolve()
+        if output_parent is not None
+        else source.parent
+    )
+    parent.mkdir(parents=True, exist_ok=True)
+    output_root = Path(tempfile.mkdtemp(prefix=".rehearsal-probe-", dir=parent))
+    probe = IsolatedCheckpointProbe(source_root=source, output_root=output_root)
+    body_error: BaseException | None = None
+    try:
+        yield probe
+    except BaseException as exc:  # re-raised below after tripwire and cleanup
+        body_error = exc
+        raise
+    finally:
+        cleanup_error = _remove_probe_namespace(output_root)
+        try:
+            assert_checkpoint_custody_unchanged(source, before)
+        except CheckpointCustodyMutationError:
+            if body_error is None:
+                raise
+            _LOGGER.error(
+                "checkpoint probe source %s was mutated during a failed probe", source
+            )
+        if cleanup_error is not None:
+            if body_error is None:
+                raise cleanup_error
+            _LOGGER.error("checkpoint probe namespace cleanup failed: %s", cleanup_error)
 
 
 def materialize_checkpoint_custody_archive(
