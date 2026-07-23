@@ -1010,7 +1010,10 @@ def execute_training_run_spec(
             ),
             checkpoint_interval=run_spec.checkpoint_progress.checkpoint_interval,
             progress_interval=run_spec.checkpoint_progress.progress_interval,
-            include_completed_batches_in_progress=method_contract.training_diagnostics is not None,
+            include_completed_batches_in_progress=(
+                method_contract.training_diagnostics is not None
+                or program.batch_progress is not None
+            ),
             update_budget=update_budget,
         )
         if method_observation_buffer is not None:
