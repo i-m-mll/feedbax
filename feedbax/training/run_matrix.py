@@ -1067,7 +1067,10 @@ def _materialize_explicit_rows(
     explicit_records: list[dict[str, Any]] = []
     coordinates: list[TrainingRunAxisCoordinate] = []
     for index, row in enumerate(matrix.rows):
-        authored_payload = apply_override_patches(base_payload, row.overrides)
+        try:
+            authored_payload = apply_override_patches(base_payload, row.overrides)
+        except ValueError as error:
+            raise RunMatrixError(f"/rows/{row.row_id}/overrides: {error}") from error
         _apply_row_derivations(
             matrix.derivations,
             authored_payload,

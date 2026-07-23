@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from feedbax.contracts.checkpoint_history import BatchHistory
 from feedbax.contracts.training import TrainingRunSpec
-from feedbax.contracts.spec_storage import training_spec_sha256
+from feedbax.contracts.spec_storage import canonical_training_run_spec_sha256
 from feedbax.contracts.worker import (
     AxisCoordinateSpec,
     EffectivePhaseSpec,
@@ -382,7 +382,7 @@ def derive_preparation_rng_scope(
 
 
 def _run_spec_sha256(run_spec: TrainingRunSpec) -> str:
-    return training_spec_sha256(run_spec.model_dump(mode="json", exclude_none=True))
+    return canonical_training_run_spec_sha256(run_spec)
 
 
 def _identity_projection(identity: MaterializedPreparationIdentity) -> dict[str, Any]:

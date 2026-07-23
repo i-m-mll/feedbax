@@ -6,9 +6,12 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from pydantic import Field, model_validator
+
+if TYPE_CHECKING:
+    from feedbax.contracts.training import TrainingRunSpec
 
 from feedbax.contracts.manifest import ArtifactRef, StrictModel
 from feedbax.contracts.resolved_snapshot_decoder import (
@@ -157,6 +160,39 @@ def training_spec_canonical_bytes(value: Any) -> bytes:
 def training_spec_sha256(value: Any) -> str:
     """Return the canonical content identity of a new spec-storage value."""
     return hashlib.sha256(training_spec_canonical_bytes(value)).hexdigest()
+
+
+def canonical_training_run_spec_projection(
+    spec: "TrainingRunSpec | Mapping[str, Any]",
+) -> dict[str, Any]:
+    """Return the single canonical executable-payload projection of a TrainingRunSpec.
+
+    Accepts a validated ``TrainingRunSpec`` or a mapping that validates as one and
+    returns its null-omitted JSON projection (``mode="json"``, ``exclude_none=True``).
+    This is the one definition of an executable payload's field content: payload
+    staging, orchestration PREFLIGHT, and the training executor's SMOKE-time
+    payload-identity check all project through it, so an explicit-null-versus-omitted
+    divergence between producer and verifier cannot reappear.
+    """
+    from feedbax.contracts.training import TrainingRunSpec
+
+    validated = spec if isinstance(spec, TrainingRunSpec) else TrainingRunSpec.model_validate(spec)
+    return validated.model_dump(mode="json", exclude_none=True)
+
+
+def canonical_training_run_spec_bytes(spec: "TrainingRunSpec | Mapping[str, Any]") -> bytes:
+    """Return the one canonical executable-payload bytes of a TrainingRunSpec.
+
+    Composes :func:`canonical_training_run_spec_projection` with the shared
+    :func:`training_spec_canonical_bytes` encoding. The byte format is unchanged;
+    only the projection step is single-sourced here.
+    """
+    return training_spec_canonical_bytes(canonical_training_run_spec_projection(spec))
+
+
+def canonical_training_run_spec_sha256(spec: "TrainingRunSpec | Mapping[str, Any]") -> str:
+    """Return the canonical content identity of a TrainingRunSpec executable payload."""
+    return hashlib.sha256(canonical_training_run_spec_bytes(spec)).hexdigest()
 
 
 def training_run_intent_envelope(authored: Mapping[str, Any]) -> dict[str, Any]:

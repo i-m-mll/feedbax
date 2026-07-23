@@ -17,7 +17,10 @@ from feedbax.contracts.run_matrix import (
     RowLowererIdentity,
     TrainingRowLoweringResult,
 )
-from feedbax.contracts.spec_storage import training_spec_sha256
+from feedbax.contracts.spec_storage import (
+    canonical_training_run_spec_projection,
+    training_spec_sha256,
+)
 from feedbax.contracts.training import (
     ArtifactPolicySpec,
     CheckpointProgressPolicySpec,
@@ -362,7 +365,7 @@ def compile_training_method_authoring(
         ),
         metadata=domain,
     )
-    canonical_payload = run_spec.model_dump(mode="json", exclude_none=True)
+    canonical_payload = canonical_training_run_spec_projection(run_spec)
 
     lowering_result = TrainingRowLoweringResult(
         execution_payload=canonical_payload,

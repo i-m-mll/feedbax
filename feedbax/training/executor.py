@@ -70,7 +70,11 @@ from feedbax.contracts.training import (
     TrainingManifestMetadataProjection,
     TrainingRunSpec,
 )
-from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
+from feedbax.contracts.spec_storage import (
+    canonical_training_run_spec_projection,
+    training_spec_canonical_bytes,
+    training_spec_sha256,
+)
 from feedbax.contracts.worker import (
     AxisCoordinateSpec,
     BarrierArtifactSinkSpec,
@@ -555,6 +559,7 @@ def execute_training_run_spec(
     kernel_context: Mapping[str, Any] | None = None,
     manifest_root: Path | str | None = None,
     checkpoint_root: Path | str | None = None,
+    checkpoint_source_root: Path | str | None = None,
     registry: TrainingMethodRegistry | None = None,
     loss_service: LossService | None = None,
     environment: WorkerExecutabilityEnvironment | None = None,
@@ -594,6 +599,15 @@ def execute_training_run_spec(
     ``cancellation_probe`` is checked at progress boundaries. A ``stop``
     decision completes the next durable checkpoint before returning a cancelled
     manifest; ``terminate`` emits a cancelled manifest immediately.
+
+    ``checkpoint_source_root`` (only valid with ``resume=True``) resumes from a
+    read-only checkpoint custody directory that is distinct from
+    ``checkpoint_root``, so a bounded rehearsal/one-update probe writes every new
+    transaction and its ``latest.json`` pointer into the disposable
+    ``checkpoint_root`` output namespace and never mutates the source. Omitting
+    it resumes and writes under the same custody root as before. Pair it with
+    ``isolated_checkpoint_probe`` for the mutation tripwire and namespace
+    cleanup.
     """
     run_spec = _validate_spec(spec)
     mapping_levels, slot_axis_bindings = resolve_execution_mapping(run_spec.worker_execution)
@@ -804,6 +818,16 @@ def execute_training_run_spec(
         configured_root=checkpoint_root or run_spec.artifacts.artifact_root,
         run_id=resolved_run_id,
     )
+    if checkpoint_source_root is not None and not resume:
+        raise TrainingRunExecutorError(
+            "checkpoint_source_root requires resume=True; it names a read-only "
+            "checkpoint source that is distinct from the checkpoint output namespace"
+        )
+    resume_source_root = (
+        Path(checkpoint_source_root).expanduser()
+        if checkpoint_source_root is not None
+        else custody_root
+    )
     resume_barrier: str | None = None
     parent_lineage: list[CheckpointLineageRef] = []
     loaded_resume_checkpoint: PhaseCheckpoint | None = None
@@ -812,7 +836,7 @@ def execute_training_run_spec(
     segment_parent_transaction_id: str | None = None
     if resume:
         loaded = load_latest_checkpoint(
-            custody_root,
+            resume_source_root,
             expected_run_spec=run_spec,
             expected_phase_program=program,
             expected_slots=slots,
@@ -998,7 +1022,9 @@ def execute_training_run_spec(
             materialize_concatenated_checkpoint_histories(
                 custody_root,
                 custody_root / "derived" / f"{resolved_run_id}-stitched-histories.pkl",
-                parent_roots={lineage.transaction_id: custody_root for lineage in parent_lineage},
+                parent_roots={
+                    lineage.transaction_id: resume_source_root for lineage in parent_lineage
+                },
             )
         barrier_artifacts = checkpoint_store.barrier_artifacts
         history_events = live_history_events
@@ -1722,7 +1748,7 @@ def _validate_execution_payload_binding(
     if execution_context is None:
         return "not_bound"
     payload = (
-        run_spec.model_dump(mode="json", exclude_none=True)
+        canonical_training_run_spec_projection(run_spec)
         if isinstance(supplied_spec, TrainingRunSpec)
         else dict(supplied_spec)
     )
