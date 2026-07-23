@@ -4175,7 +4175,7 @@ def test_separate_process_existing_run_rejects_legacy_preflight(tmp_path: Path) 
         ),
         store=store,
     ).run(stop_after_stage=STAGE_PREFLIGHT)
-    assert len(state.stage(STAGE_PREFLIGHT).checks) == 24
+    assert len(state.stage(STAGE_PREFLIGHT).checks) == 25
     preflight = state.stage(STAGE_PREFLIGHT)
     preflight = preflight.model_copy(
         update={
