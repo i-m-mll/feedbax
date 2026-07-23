@@ -39,8 +39,11 @@ from feedbax.training.manifest_preflight import (
 )
 from feedbax.training.checkpoint_custody import (
     CheckpointForkPlanBindings,
+    RunContractProjectionEvidence,
+    classify_checkpoint_fork_plan_derived_digests,
     fork_checkpoint_plan,
     fork_checkpoint_transaction,
+    relock_checkpoint_fork_plan_file,
     validate_checkpoint_fork_execution_dependencies,
 )
 from feedbax.training.legacy_checkpoint_adoption import (
@@ -89,6 +92,27 @@ def _load_checkpoint_fork_plan_bindings(path: str) -> CheckpointForkPlanBindings
         segment_history_templates=loaded("segment_history_templates", _read_pickle),
         population_member_ids=loaded("population_member_ids", _read_json),
     )
+
+
+def _load_run_contract_historical_evidence(
+    path: str | None,
+) -> dict[str, RunContractProjectionEvidence]:
+    """Load a JSON mapping of target_id to authenticated historical evidence."""
+    if path is None:
+        return {}
+    payload = _read_json(path)
+    entries = payload.get("targets", payload) if isinstance(payload, Mapping) else {}
+    evidence: dict[str, RunContractProjectionEvidence] = {}
+    for target_id, item in entries.items():
+        evidence[target_id] = RunContractProjectionEvidence(
+            canonical_projection=item["canonical_projection"],
+            recorded_sha256=item["recorded_sha256"],
+            recorded_algorithm_version=item["recorded_algorithm_version"],
+            training_run_spec_schema_id=item["training_run_spec_schema_id"],
+            training_run_spec_schema_version=item["training_run_spec_schema_version"],
+            evidence_refs=tuple(item.get("evidence_refs", ())),
+        )
+    return evidence
 
 
 def _load_path_mapping(
@@ -446,6 +470,48 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="append",
         help="Import a module that registers methods or durable fork transforms.",
     )
+    relock_parser = checkpoint_subparsers.add_parser(
+        "relock",
+        help="Classify or migrate a content-pinned checkpoint fork plan's derived digests.",
+    )
+    relock_parser.add_argument("--plan", required=True, help="CheckpointForkPlan JSON path")
+    relock_parser.add_argument("--bindings", required=True, help="Runtime bindings v1 JSON")
+    relock_mode = relock_parser.add_mutually_exclusive_group(required=True)
+    relock_mode.add_argument(
+        "--check",
+        action="store_true",
+        help="Report the per-field drift classification and exit nonzero on any drift.",
+    )
+    relock_mode.add_argument(
+        "--write",
+        action="store_true",
+        help="Migrate supported run-contract algorithm drift and rewrite the plan in place.",
+    )
+    relock_parser.add_argument(
+        "--historical-evidence",
+        help=(
+            "JSON path mapping target_id to authenticated historical run-contract "
+            "projection evidence."
+        ),
+    )
+    relock_parser.add_argument(
+        "--requalification",
+        action="append",
+        help="Required re-qualification duty recorded with the migration; may be repeated.",
+    )
+    relock_parser.add_argument(
+        "--owner-attestation",
+        action="store_true",
+        help=(
+            "Enter the explicit owner-attestation path when authenticated historical "
+            "evidence is unavailable; records proof_mode 'owner-attestation'."
+        ),
+    )
+    relock_parser.add_argument(
+        "--plugin",
+        action="append",
+        help="Import a module that registers methods before run-spec validation.",
+    )
 
     harness_parser = subparsers.add_parser(
         "matrix-harness",
@@ -793,6 +859,61 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print()
             return 0
+        if args.checkpoint_command == "relock":
+            _load_training_method_plugins(args.plugin)
+            bindings = _load_checkpoint_fork_plan_bindings(args.bindings)
+            evidence = _load_run_contract_historical_evidence(args.historical_evidence)
+            if args.write:
+                result = relock_checkpoint_fork_plan_file(
+                    args.plan,
+                    bindings,
+                    requalification_requirements=args.requalification or (),
+                    historical_evidence=evidence,
+                    owner_attestation=args.owner_attestation,
+                )
+                json.dump(
+                    {
+                        "status": "migrated",
+                        "source_plan_canonical_sha256": result.source_plan_canonical_sha256,
+                        "target_plan_canonical_sha256": result.target_plan_canonical_sha256,
+                        "record": result.record.model_dump(mode="json", exclude_none=True),
+                    },
+                    fp=sys.stdout,
+                    indent=2,
+                    sort_keys=True,
+                )
+                print()
+                return 0
+            plan = CheckpointForkPlan.model_validate(
+                default_spec_registry.migrate("CheckpointForkPlan", _read_json(args.plan)).payload
+            )
+            classification = classify_checkpoint_fork_plan_derived_digests(
+                plan, bindings, historical_evidence=evidence
+            )
+            has_drift = any(
+                not item.is_unchanged for item in classification.classifications
+            )
+            json.dump(
+                {
+                    "status": "drift" if has_drift else "clean",
+                    "targets": {
+                        item.target_id: {
+                            "run_contract_class": item.run_contract_class,
+                            "sentinel_input_drift_paths": list(
+                                item.sentinel_input_drift_paths
+                            ),
+                            "proof_mode": item.proof_mode,
+                            "difference_paths": list(item.difference_paths),
+                        }
+                        for item in classification.classifications
+                    },
+                },
+                fp=sys.stdout,
+                indent=2,
+                sort_keys=True,
+            )
+            print()
+            return 1 if has_drift else 0
         if args.checkpoint_command == "fork":
             _load_training_method_plugins(args.plugin)
             expected_slots = _read_pickle(args.expected_slots) if args.expected_slots else None
