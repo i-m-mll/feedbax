@@ -471,7 +471,23 @@ class StageEngine:
         )
 
     def _preserve_failed_registration_history(self, state: RunSetState) -> None:
-        """Preserve the failed registration before an explicit certification retry."""
+        """Preserve failed governance artifacts before an explicit certification retry.
+
+        A certify retry is permitted whenever the current registration outcome is
+        failed, including a retry after a previous failed retry. A governed retry
+        chain legitimately leaves the current failing certificate different from
+        the certificate the persisted registration references: a failing retry is
+        never registered (REGISTER refuses ``completed`` for a failing
+        certificate), so ``registration.json`` keeps pointing at the earlier
+        failing certificate. That divergence is not tampering.
+
+        Every superseded failing certificate is archived content-addressed under
+        ``certificate-history/`` before ``_reset_failed_certification`` lets the
+        re-certify overwrite ``conformance.json``, and the failed registration is
+        preserved in ``registration-history.json``. Genuinely inconsistent state
+        still fails closed, and the failed-to-pass REGISTER transition is
+        unaffected because the registration history keeps exactly one entry.
+        """
         certify = state.stage(STAGE_CERTIFY)
         if certify.status != "completed" or certify.outputs.get("overall") != "fail":
             return
@@ -506,24 +522,88 @@ class StageEngine:
             raise OrchestrationStageError(
                 "failed CERTIFY retry requires valid prior registration JSON"
             ) from exc
+        registration_certificate_sha256 = registration_payload.get("certificate_sha256")
         if (
             persisted_registration != dict(registration_payload)
             or registration_payload.get("status") != "failed"
             or registration_payload.get("certificate_overall") != "fail"
-            or registration_payload.get("certificate_sha256") != certificate_sha256
+            or not isinstance(registration_certificate_sha256, str)
             or hashlib.sha256(certificate_bytes).hexdigest() != certificate_sha256
         ):
             raise OrchestrationStageError(
                 "failed CERTIFY retry prior registration or certificate identity mismatch"
             )
-        self._write_or_verify_registration_history(
-            self._registration_history(
-                run_set_id=state.run_set_id,
-                registration_payload=registration_payload,
-                registration_bytes=registration_bytes,
-            ),
-            mismatch_label="failed CERTIFY retry",
+        history = self._registration_history(
+            run_set_id=state.run_set_id,
+            registration_payload=registration_payload,
+            registration_bytes=registration_bytes,
         )
+        if registration_certificate_sha256 == certificate_sha256:
+            # First retry: the persisted registration references the current
+            # failing certificate, so preserve it now (idempotent on re-entry).
+            self._write_or_verify_registration_history(
+                history, mismatch_label="failed CERTIFY retry"
+            )
+        else:
+            # Retry after a failed retry: the persisted registration references an
+            # earlier failing certificate that a prior retry already preserved,
+            # while the current failing certificate was never registered. Require
+            # the earlier registration to be durably preserved already, so a
+            # fabricated registration referencing an unknown certificate still
+            # fails closed.
+            self._require_preserved_registration_history(
+                history, mismatch_label="failed CERTIFY retry"
+            )
+        self._archive_superseded_certificate(
+            certificate_bytes=certificate_bytes,
+            certificate_sha256=certificate_sha256,
+        )
+
+    def _require_preserved_registration_history(
+        self,
+        history: RegistrationHistory,
+        *,
+        mismatch_label: str,
+    ) -> None:
+        """Require the prior failed registration to be already preserved in history."""
+        history_path = self.bundle.run_set_dir / "registration-history.json"
+        if not history_path.exists():
+            raise OrchestrationStageError(
+                f"{mismatch_label} references a prior registration that was never preserved"
+            )
+        self._write_or_verify_registration_history(history, mismatch_label=mismatch_label)
+
+    def _archive_superseded_certificate(
+        self,
+        *,
+        certificate_bytes: bytes,
+        certificate_sha256: str,
+    ) -> None:
+        """Durably archive a superseded failing certificate by content address."""
+        archive_dir = self.bundle.run_set_dir / "certificate-history"
+        archive_path = archive_dir / f"{certificate_sha256}.json"
+        if archive_path.exists():
+            if hashlib.sha256(archive_path.read_bytes()).hexdigest() != certificate_sha256:
+                raise OrchestrationStageError(
+                    f"superseded certificate archive is corrupt at {archive_path}"
+                )
+            return
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{certificate_sha256}.",
+            suffix=".tmp",
+            dir=str(archive_dir),
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(certificate_bytes)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, archive_path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
 
     def _recover_post_pass_registration_history(
         self,

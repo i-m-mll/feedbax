@@ -3186,6 +3186,139 @@ def test_explicit_recertification_rejects_tampered_registration_history(
         engine.run(retry_failed_certification=True)
 
 
+def _failing_registry(check_id: str) -> CheckRegistry:
+    return CheckRegistry(
+        {
+            check_id: lambda _row, check_id=check_id: CheckEntry(
+                check_id=check_id,
+                status="fail",
+                expected="pass",
+                observed="fail",
+            )
+        }
+    )
+
+
+def test_explicit_recertification_after_failed_retry_is_permitted(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    register_path = bundle.run_set_dir / "registration.json"
+    certificate_path = bundle.run_set_dir / "conformance.json"
+    history_path = bundle.run_set_dir / "registration-history.json"
+    archive_dir = bundle.run_set_dir / "certificate-history"
+
+    # Initial run fails and writes a failed registration referencing cert C1.
+    with pytest.raises(ValueError, match="phase=completed"):
+        StageEngine(
+            bundle=bundle,
+            driver=FakeDriver(),
+            store=store,
+            conformance_registry=_failing_registry("fixture_fail_one"),
+        ).run()
+    first_registration_bytes = register_path.read_bytes()
+    first_certificate_sha256 = json.loads(first_registration_bytes)["certificate_sha256"]
+
+    # A first governed retry still fails, producing a *different* failing cert C2.
+    # A failing retry cannot register a second failing outcome over the preserved
+    # one, so it stops with the run wedged: registration.json still references C1,
+    # conformance.json now holds C2, and C1 is preserved in history and archived.
+    with pytest.raises(OrchestrationStageError, match="registration payload mismatch"):
+        StageEngine(
+            bundle=bundle,
+            driver=FakeDriver(),
+            store=store,
+            conformance_registry=_failing_registry("fixture_fail_two"),
+        ).run(retry_failed_certification=True)
+    second_certificate_sha256 = hashlib.sha256(certificate_path.read_bytes()).hexdigest()
+    assert second_certificate_sha256 != first_certificate_sha256
+    # registration.json is unchanged: the failing retry was never registered.
+    assert register_path.read_bytes() == first_registration_bytes
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    assert len(history["entries"]) == 1
+    assert history["entries"][0]["certificate_sha256"] == first_certificate_sha256
+    assert (archive_dir / f"{first_certificate_sha256}.json").exists()
+
+    # The wedge is not terminal: a further governed retry is now permitted. Before
+    # the fix, _preserve_failed_registration_history rejected the C2/C1 identity
+    # divergence (a governed retry chain) as tampering and blocked it.
+    passed = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        store=store,
+        conformance_registry=_fixture_pass_registry(),
+    ).run(retry_failed_certification=True)
+    assert passed.registration_payload
+    assert passed.registration_payload["status"] == "completed"
+    assert passed.registration_payload["certificate_overall"] == "pass"
+    assert passed.registration_payload["certificate_sha256"] not in {
+        first_certificate_sha256,
+        second_certificate_sha256,
+    }
+
+    # The original failed registration (referencing C1) remains preserved in
+    # history as the single failed-to-pass authorization entry.
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    assert len(history["entries"]) == 1
+    assert history["entries"][0]["certificate_sha256"] == first_certificate_sha256
+    assert history["entries"][0]["registration_payload"] == json.loads(first_registration_bytes)
+    # Both prior failing certificates remain durably preserved as archived bytes.
+    assert (archive_dir / f"{first_certificate_sha256}.json").exists()
+    assert (archive_dir / f"{second_certificate_sha256}.json").exists()
+
+    # Re-entry is idempotent.
+    registration_bytes = register_path.read_bytes()
+    history_bytes = history_path.read_bytes()
+    reentered = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        store=store,
+        conformance_registry=_fixture_pass_registry(),
+    ).run()
+    assert reentered.registration_payload == passed.registration_payload
+    assert register_path.read_bytes() == registration_bytes
+    assert history_path.read_bytes() == history_bytes
+
+
+def test_explicit_recertification_after_failed_retry_requires_preserved_history(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    history_path = bundle.run_set_dir / "registration-history.json"
+
+    with pytest.raises(ValueError, match="phase=completed"):
+        StageEngine(
+            bundle=bundle,
+            driver=FakeDriver(),
+            store=store,
+            conformance_registry=_failing_registry("fixture_fail_one"),
+        ).run()
+    with pytest.raises(OrchestrationStageError, match="registration payload mismatch"):
+        StageEngine(
+            bundle=bundle,
+            driver=FakeDriver(),
+            store=store,
+            conformance_registry=_failing_registry("fixture_fail_two"),
+        ).run(retry_failed_certification=True)
+
+    # Delete the preserved history so registration.json now references an earlier
+    # failing certificate with no durable record: a further retry must fail closed
+    # rather than silently proceed on unaccounted state.
+    history_path.unlink()
+    with pytest.raises(
+        OrchestrationStageError,
+        match="never preserved",
+    ):
+        StageEngine(
+            bundle=bundle,
+            driver=FakeDriver(),
+            store=store,
+            conformance_registry=_fixture_pass_registry(),
+        ).run(retry_failed_certification=True)
+
+
 def _recertified_state_without_registration_history(
     tmp_path: Path,
 ) -> tuple[RunBundle, RunSetStateStore, StageEngine, RunSetState, bytes]:
