@@ -290,7 +290,9 @@ class MatrixMaterializerHarness:
 def main(argv: Sequence[str] | None = None) -> int:
     """Materialize a serialized evaluation matrix through the standard harness."""
     parser = argparse.ArgumentParser(prog="feedbax matrix-harness")
-    parser.add_argument("spec", help="EvaluationRunMatrixSpec JSON path")
+    parser.add_argument(
+        "spec", help="EvaluationRunMatrixSpec or EvaluationRunMatrixDeltaSpec JSON path"
+    )
     parser.add_argument("--manifest-root", required=True)
     parser.add_argument("--repo-root")
     parser.add_argument("--plugin", action="append")
@@ -311,7 +313,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--locked-spec",
         help=(
             "Require the runtime matrix's exact ordered row_id sequence to equal the locked "
-            "EvaluationRunMatrixSpec sequence."
+            "evaluation matrix sequence; the locked document may be either authoring kind."
         ),
     )
     parser.add_argument(
@@ -335,7 +337,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     load_training_method_plugins(modules=args.plugin)
     from feedbax.analysis.evaluation import (
         EvaluationBatchExecution,
-        EvaluationRunMatrixSpec,
         execute_evaluation_run_matrix,
         materialize_evaluation_run_matrix,
     )
@@ -364,9 +365,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 description="locked evaluation matrix spec",
             )
             locked_payload = locked_document.get("evaluation_matrix", locked_document)
-            locked_matrix = EvaluationRunMatrixSpec.model_validate(locked_payload)
             locked_rows = materialize_evaluation_run_matrix(
-                locked_matrix,
+                locked_payload,
                 repo_root=args.repo_root,
             )
             runtime_rows = materialize_evaluation_run_matrix(

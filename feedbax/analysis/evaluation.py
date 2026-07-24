@@ -61,6 +61,13 @@ from feedbax.contracts.manifest import (
     canonical_json_bytes,
     sha256_bytes,
 )
+from feedbax.contracts.evaluation_composition import (
+    EvaluationRunMatrixDeltaSpec,
+    FlattenedEvaluationMatrix,
+    evaluation_matrix_composition_provenance,
+    flatten_evaluation_run_matrix_delta,
+    is_evaluation_run_matrix_delta_payload,
+)
 from feedbax.contracts.extraction import SourceBinding
 from feedbax.contracts.matrix_core import (
     ContentPinnedJsonBase,
@@ -251,12 +258,12 @@ class EvaluationRunMatrixSpec(StrictModel):
 
 
 def compile_evaluation_run_matrix(
-    spec: EvaluationRunMatrixSpec | Mapping[str, Any],
+    spec: "EvaluationRunMatrixSpec | EvaluationRunMatrixDeltaSpec | Mapping[str, Any]",
     *,
     repo_root: Path | str | None = None,
 ) -> RowMatrixSpec[EvaluationRunSpec]:
     """Compile durable evaluation authoring to the explicit shared row contract."""
-    matrix = _coerce_evaluation_run_matrix_spec(spec)
+    matrix = _coerce_evaluation_run_matrix_spec(spec, repo_root=repo_root)
     if isinstance(matrix.base, EvaluationRunSpec):
         base = matrix.base
         rows = matrix.rows
@@ -325,26 +332,52 @@ def _validate_evaluation_authoring(
             ) from exc
 
 
-def _coerce_evaluation_run_matrix_spec(
-    spec: EvaluationRunMatrixSpec | Mapping[str, Any],
-) -> EvaluationRunMatrixSpec:
+def resolve_evaluation_matrix_authoring(
+    spec: "EvaluationRunMatrixSpec | EvaluationRunMatrixDeltaSpec | Mapping[str, Any]",
+    *,
+    repo_root: Path | str | None = None,
+) -> tuple[EvaluationRunMatrixSpec, FlattenedEvaluationMatrix | None]:
+    """Resolve either evaluation authoring kind to one strict matrix spec.
+
+    Delta-authored documents are flattened against their content-pinned parents
+    and then validated as the unchanged ``EvaluationRunMatrixSpec`` contract, so
+    every downstream compiler, materializer, and executor path stays identical.
+    """
     if isinstance(spec, EvaluationRunMatrixSpec):
-        return spec
+        return spec, None
+    if isinstance(spec, EvaluationRunMatrixDeltaSpec) or is_evaluation_run_matrix_delta_payload(
+        spec
+    ):
+        delta = (
+            spec
+            if isinstance(spec, EvaluationRunMatrixDeltaSpec)
+            else EvaluationRunMatrixDeltaSpec.model_validate(spec)
+        )
+        flattened = flatten_evaluation_run_matrix_delta(delta, repo_root=repo_root)
+        return EvaluationRunMatrixSpec.model_validate(flattened.payload), flattened
     migrated = default_spec_registry.migrate(
         "EvaluationRunMatrixSpec",
         spec,
         assume_current=True,
     )
-    return EvaluationRunMatrixSpec.model_validate(migrated.payload)
+    return EvaluationRunMatrixSpec.model_validate(migrated.payload), None
+
+
+def _coerce_evaluation_run_matrix_spec(
+    spec: "EvaluationRunMatrixSpec | EvaluationRunMatrixDeltaSpec | Mapping[str, Any]",
+    *,
+    repo_root: Path | str | None = None,
+) -> EvaluationRunMatrixSpec:
+    return resolve_evaluation_matrix_authoring(spec, repo_root=repo_root)[0]
 
 
 def materialize_evaluation_run_matrix(
-    spec: EvaluationRunMatrixSpec | Mapping[str, Any],
+    spec: "EvaluationRunMatrixSpec | EvaluationRunMatrixDeltaSpec | Mapping[str, Any]",
     *,
     repo_root: Path | str | None = None,
 ) -> list[MaterializedMatrixRow[EvaluationRunSpec]]:
     """Resolve an evaluation matrix into executable evaluation requests."""
-    matrix = _coerce_evaluation_run_matrix_spec(spec)
+    matrix = _coerce_evaluation_run_matrix_spec(spec, repo_root=repo_root)
     compiled = compile_evaluation_run_matrix(matrix, repo_root=repo_root)
     rows = materialize_matrix_rows(compiled, repo_root=repo_root)
     _validate_matrix_staged_parent_references(matrix, rows)
@@ -352,7 +385,10 @@ def materialize_evaluation_run_matrix(
 
 
 def execute_evaluation_run_matrix(
-    spec: EvaluationRunMatrixSpec | EvaluationRunSpec | Mapping[str, Any],
+    spec: (
+        "EvaluationRunMatrixSpec | EvaluationRunMatrixDeltaSpec | EvaluationRunSpec "
+        "| Mapping[str, Any]"
+    ),
     *,
     root: Path | str,
     repo_root: Path | str | None = None,
@@ -387,8 +423,10 @@ def execute_evaluation_run_matrix(
             checkpoint_custody_bindings=checkpoint_custody_bindings,
         )
     else:
-        matrix = _coerce_evaluation_run_matrix_spec(spec)
-        executable_spec = matrix.model_dump(mode="json", exclude_none=True)
+        matrix, composition = resolve_evaluation_matrix_authoring(spec, repo_root=repo_root)
+        flattened_spec = matrix.model_dump(mode="json", exclude_none=True)
+        # Delta-authored runs replay the authored envelope, not its flattened result.
+        executable_spec = flattened_spec if composition is None else composition.authored
         compiled = compile_evaluation_run_matrix(matrix, repo_root=repo_root)
         materialized_rows = materialize_matrix_rows(compiled, repo_root=repo_root)
         _validate_matrix_staged_parent_references(matrix, materialized_rows)
@@ -404,7 +442,7 @@ def execute_evaluation_run_matrix(
             matrix_metadata["axis_expansion"] = {
                 "schema_id": EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID,
                 "schema_version": EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION,
-                "authored_matrix_sha256": sha256_bytes(canonical_json_bytes(executable_spec)),
+                "authored_matrix_sha256": sha256_bytes(canonical_json_bytes(flattened_spec)),
                 "pinned_base": matrix.base.model_dump(mode="json"),
                 "ordered_axes": [
                     {
@@ -431,6 +469,18 @@ def execute_evaluation_run_matrix(
                     for row in materialized_rows
                 },
             }
+        if composition is not None:
+            matrix_metadata["matrix_composition"] = evaluation_matrix_composition_provenance(
+                composition,
+                flattened_matrix=flattened_spec,
+                canonical_row_order=[row.row_id for row in materialized_rows],
+                canonical_payload_sha256={
+                    row.row_id: sha256_bytes(
+                        canonical_json_bytes(row.payload.model_dump(mode="json", exclude_none=True))
+                    )
+                    for row in materialized_rows
+                },
+            )
         if matrix.staged_parents:
             matrix_metadata["staged_parents"] = {
                 name: prerequisite.model_dump(mode="json", exclude_none=True)
