@@ -726,7 +726,7 @@ class TrainingRunManifest(BaseManifest):
                     f"never be overwritten; archived={self.execution_hash!r}, "
                     f"computed={expected!r}"
                 )
-            self.execution_hash = expected
+            object.__setattr__(self, "execution_hash", expected)
         projection = self.metadata_projection_custody
         if projection is not None:
             if self.training_spec is None:
