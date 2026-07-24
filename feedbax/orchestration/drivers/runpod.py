@@ -1399,7 +1399,12 @@ class RunPodOrchestrationDriver:
             "runpod-gpu-policy-declared": {
                 "gpu_id": self.config.gpu_id,
                 "datacenter_fallbacks": list(self.config.datacenters),
-                "provided_target": bool(self._provided_endpoint or self._pod_id),
+                # provided_target is a user declaration observed at pre-acquisition
+                # preflight, not acquisition state. Reconstruct it from the original
+                # provided-target declarations so an acquired-pod run whose _pod_id was
+                # restored from the provision record still matches its persisted
+                # observation; a later-acquired pod must not flip this to True.
+                "provided_target": bool(self._provided_endpoint or self._provided_pod),
             },
         }
         for name, observed in expected_checks.items():
@@ -1427,7 +1432,11 @@ class RunPodOrchestrationDriver:
         )
         if named["runpod-credentials"].observed != expected_credentials:
             raise RunPodDriverError("credential preflight observation is inconsistent")
-        balance_required = not self._provided_endpoint and not self._pod_id
+        # Whether a balance floor was required is a pre-acquisition declaration:
+        # an acquiring run observes a numeric balance at preflight. Reconstruct it
+        # from the provided-target declarations so a restored acquired-pod _pod_id
+        # does not retroactively flip this to the existing-target branch.
+        balance_required = not self._provided_endpoint and not self._provided_pod
         balance = named["runpod-balance-floor"].observed
         if balance_required:
             if isinstance(balance, bool) or not isinstance(balance, (int, float)):
