@@ -1,0 +1,328 @@
+"""Declared-colorbar render, trace-family composition, and fail-closed tests."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+from pydantic import ValidationError
+
+from feedbax.analysis.figures import (
+    FigureSpecExecutionError,
+    execute_figure_spec,
+    figure_manifest_plotly_json,
+    resolve_figure_colorbar,
+)
+from feedbax.contracts.figures import (
+    FigureColorbar,
+    FigureSpec,
+    TraceBinding,
+    TraceFamily,
+    TraceFamilyIndex,
+    TraceFamilyRange,
+)
+from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
+    ParentRef,
+    canonical_json_bytes,
+    figure_manifest_id,
+    safe_manifest_key,
+    spec_payload,
+    write_manifest,
+)
+from feedbax.plot.colors import sample_colorscale_unique
+
+pytestmark = [pytest.mark.feedbax_contract]
+
+COLORSCALE = "Viridis"
+KNOT_COUNT = 3
+
+
+def _analysis_input(root: Path) -> ParentRef:
+    manifest = AnalysisRunManifest(
+        id="feedbax-analysis-run:colorbar",
+        status="completed",
+        metadata={
+            "x": [0, 1, 2],
+            "series": [
+                [[1, 2, 3], [2, 3, 4]],
+                [[4, 3, 2], [3, 2, 1]],
+                [[2, 2, 2], [3, 3, 3]],
+            ],
+        },
+        analysis_spec=spec_payload("AnalysisRunSpec", {"analysis_type": "feedbax.test"}),
+    )
+    write_manifest(manifest, root=root)
+    return ParentRef(
+        kind=manifest.kind,
+        id=manifest.id,
+        role="analysis",
+        uri=f"manifests/analysis_runs/{safe_manifest_key(manifest.id)}.json",
+    )
+
+
+def _knot_family(**overrides: Any) -> TraceFamily:
+    declaration: dict[str, Any] = {
+        "name": "knots",
+        "index": TraceFamilyIndex(range=TraceFamilyRange(stop=KNOT_COUNT)),
+        "colorscale": COLORSCALE,
+        "trace": TraceBinding(
+            name="knot {index}",
+            constructor="feedbax.profile_band",
+            panel="main",
+            required=True,
+            data={
+                "x": {"item": "analysis", "path": "metadata.x"},
+                "y": {"item": "analysis", "path": "metadata.series.{index}"},
+            },
+            params={"label": "knot {index}", "showlegend": False},
+        ),
+    }
+    return TraceFamily(**{**declaration, **overrides})
+
+
+def _plain_trace() -> TraceBinding:
+    return TraceBinding(
+        name="baseline",
+        constructor="feedbax.profile_band",
+        panel="main",
+        data={"y": [[1, 2, 3], [2, 3, 4]]},
+    )
+
+
+def _family_colors() -> list[str]:
+    return list(sample_colorscale_unique(COLORSCALE, KNOT_COUNT, colortype="rgb"))
+
+
+def _render(spec: FigureSpec, root: Path) -> dict[str, Any]:
+    manifest, _path = execute_figure_spec(spec, root=root)
+    rendered = figure_manifest_plotly_json(manifest)
+    assert rendered is not None
+    return rendered
+
+
+def _colorbar_traces(rendered: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        trace
+        for trace in rendered["data"]
+        if trace.get("marker", {}).get("showscale") is True
+    ]
+
+
+def test_declared_colorbar_renders_a_key_without_legend_entries(tmp_path: Path) -> None:
+    spec = FigureSpec(
+        name="standalone-colorbar",
+        assembler="feedbax.grid_figure",
+        panels=[{"name": "main"}],
+        traces=[_plain_trace()],
+        colorbar=FigureColorbar(title="s", colorscale=COLORSCALE, range=(0.0, 1.0)),
+    )
+
+    rendered = _render(spec, tmp_path)
+
+    (carrier,) = _colorbar_traces(rendered)
+    assert carrier["marker"]["colorscale"] is not None
+    assert (carrier["marker"]["cmin"], carrier["marker"]["cmax"]) == (0.0, 1.0)
+    assert carrier["marker"]["colorbar"]["title"] == {"text": "s"}
+    assert carrier["showlegend"] is False
+    assert carrier["hoverinfo"] == "skip"
+    assert carrier["x"] == [None] and carrier["y"] == [None]
+
+
+def test_figures_without_a_colorbar_render_and_hash_unchanged(tmp_path: Path) -> None:
+    spec = FigureSpec(
+        name="unkeyed-figure",
+        assembler="feedbax.grid_figure",
+        panels=[{"name": "main"}],
+        traces=[_plain_trace()],
+    )
+    keyed = FigureSpec(
+        **{
+            **spec.model_dump(exclude_none=True),
+            "colorbar": FigureColorbar(colorscale=COLORSCALE, range=(0.0, 1.0)),
+        }
+    )
+
+    rendered = _render(spec, tmp_path)
+    keyed_rendered = _render(keyed, tmp_path)
+
+    assert _colorbar_traces(rendered) == []
+    assert b"colorbar" not in canonical_json_bytes(spec)
+    assert "colorbar" not in spec.model_dump(mode="json", exclude_none=True)
+    assert figure_manifest_id(spec) != figure_manifest_id(keyed)
+    assert len(keyed_rendered["data"]) == len(rendered["data"]) + 1
+    assert keyed_rendered["data"][: len(rendered["data"])] == rendered["data"]
+
+
+def test_family_bound_colorbar_reads_the_family_assigned_colors(tmp_path: Path) -> None:
+    spec = FigureSpec(
+        name="family-colorbar",
+        assembler="feedbax.grid_figure",
+        inputs=[_analysis_input(tmp_path)],
+        panels=[{"name": "main"}],
+        trace_families=[_knot_family()],
+        colorbar=FigureColorbar(title="knot", family="knots"),
+    )
+
+    resolved = resolve_figure_colorbar(spec)
+    rendered = _render(spec, tmp_path)
+
+    assert resolved is not None and resolved.family is None
+    assert resolved.colorscale == [
+        (0.0, _family_colors()[0]),
+        (0.5, _family_colors()[1]),
+        (1.0, _family_colors()[2]),
+    ]
+    assert resolved.range == (0.0, 2.0)
+    (carrier,) = _colorbar_traces(rendered)
+    assert [stop[1] for stop in carrier["marker"]["colorscale"]] == _family_colors()
+    assert (carrier["marker"]["cmin"], carrier["marker"]["cmax"]) == (0.0, 2.0)
+
+
+def test_family_bound_colorbar_relabels_the_index_domain(tmp_path: Path) -> None:
+    spec = FigureSpec(
+        name="relabelled-colorbar",
+        assembler="feedbax.grid_figure",
+        inputs=[_analysis_input(tmp_path)],
+        panels=[{"name": "main"}],
+        trace_families=[_knot_family()],
+        colorbar=FigureColorbar(title="s", family="knots", range=(0.0, 1.0)),
+    )
+
+    resolved = resolve_figure_colorbar(spec)
+
+    assert resolved is not None
+    assert resolved.range == (0.0, 1.0)
+    assert [stop[0] for stop in resolved.colorscale] == [0.0, 0.5, 1.0]
+    assert [stop[1] for stop in resolved.colorscale] == _family_colors()
+
+
+def test_family_bound_colorbar_places_uneven_indices_at_their_positions() -> None:
+    spec = FigureSpec(
+        name="uneven-colorbar",
+        assembler="feedbax.grid_figure",
+        trace_families=[_knot_family(index=TraceFamilyIndex(values=[0, 1, 3]))],
+        colorbar=FigureColorbar(family="knots"),
+    )
+
+    resolved = resolve_figure_colorbar(spec)
+
+    assert resolved is not None
+    assert [stop[0] for stop in resolved.colorscale] == [0.0, 1 / 3, 1.0]
+    assert [stop[1] for stop in resolved.colorscale] == _family_colors()
+    assert resolved.range == (0.0, 3.0)
+
+
+def test_family_bound_colorbar_keys_the_colors_its_traces_were_given(tmp_path: Path) -> None:
+    spec = FigureSpec(
+        name="agreeing-colorbar",
+        assembler="feedbax.grid_figure",
+        inputs=[_analysis_input(tmp_path)],
+        panels=[{"name": "main"}],
+        trace_families=[_knot_family()],
+        colorbar=FigureColorbar(family="knots"),
+    )
+
+    rendered = _render(spec, tmp_path)
+
+    (carrier,) = _colorbar_traces(rendered)
+    key_colors = [stop[1] for stop in carrier["marker"]["colorscale"]]
+    trace_colors = [
+        trace["line"]["color"]
+        for trace in rendered["data"]
+        if trace.get("name", "").startswith("knot ")
+    ]
+    assert key_colors == trace_colors
+
+
+@pytest.mark.parametrize(
+    ("declaration", "match"),
+    [
+        ({"title": "s"}, "either a trace family or both"),
+        ({"colorscale": COLORSCALE}, "either a trace family or both"),
+        ({"range": (0.0, 1.0)}, "either a trace family or both"),
+        (
+            {"family": "knots", "colorscale": COLORSCALE},
+            "must not declare its own colorscale",
+        ),
+        ({"colorscale": COLORSCALE, "range": (1.0, 0.0)}, "range must increase"),
+        ({"colorscale": COLORSCALE, "range": (1.0, 1.0)}, "range must increase"),
+        (
+            {
+                "schema_version": "feedbax.spec.figure_colorbar.v0",
+                "colorscale": COLORSCALE,
+                "range": (0.0, 1.0),
+            },
+            "unsupported FigureColorbar schema_version",
+        ),
+    ],
+)
+def test_malformed_colorbar_declarations_fail_closed(
+    declaration: dict[str, Any], match: str
+) -> None:
+    with pytest.raises(ValidationError, match=match):
+        FigureColorbar.model_validate(declaration)
+
+
+@pytest.mark.parametrize(
+    ("families", "colorbar", "match"),
+    [
+        (None, {"family": "knots"}, "undeclared trace family"),
+        (
+            [_knot_family(colorscale=None)],
+            {"family": "knots"},
+            "declares no colorscale",
+        ),
+        (
+            [_knot_family(index=TraceFamilyIndex(values=["slow", "fast"]))],
+            {"family": "knots"},
+            "non-numeric indices",
+        ),
+        (
+            [_knot_family(index=TraceFamilyIndex(values=[2]))],
+            {"family": "knots"},
+            "enumerates one index",
+        ),
+    ],
+)
+def test_malformed_colorbar_family_bindings_fail_closed(
+    families: list[TraceFamily] | None, colorbar: dict[str, Any], match: str
+) -> None:
+    with pytest.raises(ValidationError, match=match):
+        FigureSpec(
+            name="bad-binding",
+            assembler="feedbax.grid_figure",
+            trace_families=families,
+            colorbar=FigureColorbar.model_validate(colorbar),
+        )
+
+
+def test_colorbar_authored_as_an_assembler_param_fails_closed(tmp_path: Path) -> None:
+    spec = FigureSpec(
+        name="misplaced-colorbar",
+        assembler="feedbax.grid_figure",
+        panels=[{"name": "main"}],
+        traces=[_plain_trace()],
+        assembler_params={"colorbar": {"colorscale": COLORSCALE, "range": (0.0, 1.0)}},
+    )
+
+    with pytest.raises(FigureSpecExecutionError) as exc_info:
+        execute_figure_spec(spec, root=tmp_path)
+
+    assert "not by assembler_params" in exc_info.value.manifest.failure["message"]
+
+
+def test_colorbar_on_an_assembler_without_one_fails_closed(tmp_path: Path) -> None:
+    spec = FigureSpec(
+        name="unsupported-assembler-colorbar",
+        assembler="feedbax.trajectories_2d_row",
+        panels=[{"name": "main"}],
+        traces=[_plain_trace()],
+        colorbar=FigureColorbar(colorscale=COLORSCALE, range=(0.0, 1.0)),
+    )
+
+    with pytest.raises(FigureSpecExecutionError) as exc_info:
+        execute_figure_spec(spec, root=tmp_path)
+
+    assert "declares no colorbar parameter" in exc_info.value.manifest.failure["message"]

@@ -2635,6 +2635,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             required_tests=(
                 "tests/test_declarative_figures.py",
                 "tests/test_figure_trace_families.py",
+                "tests/test_figure_colorbar.py",
             ),
         ),
         _family(

@@ -30,6 +30,7 @@ from feedbax.contracts.expressions import (
     expression_hash,
 )
 from feedbax.contracts.figures import (
+    FigureColorbar,
     FigureInputAuthority,
     FigureSpec,
     TraceBinding,
@@ -513,11 +514,21 @@ def _build_figures(
         **(getattr(template, "assembler_params", {}) if template is not None else {}),
         **spec.assembler_params,
     }
+    if "colorbar" in assembler_params:
+        raise ValueError(
+            "a colorbar is declared by FigureSpec.colorbar, not by assembler_params, so that "
+            "its binding to a trace family is validated with the rest of the spec"
+        )
 
     facet_combinations = _facet_combinations(spec, template, context)
     custom_registration = get_figure_constructor(assembler_key)
     if custom_registration.tier == "custom_figure":
         exec_trace.constructor_versions[assembler_key] = custom_registration.version
+        if spec.colorbar is not None:
+            raise ValueError(
+                "FigureSpec declares a colorbar, which requires a registered figure "
+                f"assembler that renders one; {assembler_key!r} is a custom_figure assembler"
+            )
         params = custom_registration.params(assembler_params)
         if facet_combinations and template.facet_target == "panels":
             raise ValueError(
@@ -549,6 +560,14 @@ def _build_figures(
         panel_registration=panel_registration,
         figure_registration=figure_registration,
     )
+    colorbar = resolve_figure_colorbar(spec)
+    if colorbar is not None:
+        if "colorbar" not in figure_registration.params_model.model_fields:
+            raise ValueError(
+                "FigureSpec declares a colorbar, which requires a figure assembler that "
+                f"renders one; {assembler_key!r} declares no colorbar parameter"
+            )
+        figure_values = {**figure_values, "colorbar": colorbar}
     panel_params = panel_registration.params(panel_values)
     figure_params = figure_registration.params(figure_values)
 
@@ -699,6 +718,37 @@ def _expand_trace_family(family: TraceFamily) -> TraceFamilyExpansion:
             binding = binding.model_copy(update={"params": {**binding.params, "color": color}})
         members.append(TraceFamilyMember(index=index, color=color, binding=binding))
     return TraceFamilyExpansion(family=family, members=tuple(members))
+
+
+def resolve_figure_colorbar(spec: FigureSpec) -> FigureColorbar | None:
+    """Resolve a declared colorbar into the concrete key an assembler renders.
+
+    A standalone declaration already names its colorscale and range and is
+    returned unchanged. A family-bound declaration is resolved by reading the
+    family's expanded ``(index, color)`` pairs and placing each assigned color
+    at its index's position in the index domain, so the rendered key and the
+    traces cannot disagree about which color belongs to which index. Unevenly
+    spaced indices therefore yield an unevenly stopped scale, which is the
+    honest picture of the assignment rather than a re-sampling of the scale.
+    """
+    colorbar = spec.colorbar
+    if colorbar is None or colorbar.family is None:
+        return colorbar
+    expansions = {expansion.family.name: expansion for expansion in expand_trace_families(spec)}
+    # FigureSpec validation guarantees the named family exists, declares a
+    # colorscale, and enumerates at least two numeric indices.
+    members = expansions[colorbar.family].members
+    pairs = sorted((int(member.index), str(member.color)) for member in members)
+    low = float(pairs[0][0])
+    span = float(pairs[-1][0]) - low
+    stops = [((float(index) - low) / span, color) for index, color in pairs]
+    return colorbar.model_copy(
+        update={
+            "family": None,
+            "colorscale": stops,
+            "range": colorbar.range if colorbar.range is not None else (low, low + span),
+        }
+    )
 
 
 def _trace_bindings_for_spec(spec: FigureSpec, template: Any | None) -> list[TraceBindingPlan]:

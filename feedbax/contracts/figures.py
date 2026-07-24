@@ -8,6 +8,11 @@ Additive changelog, 2026-07-24: ``FigureSpec`` accepts optional
 expands to the traces an equivalent hand-enumerated spec declares. The field is
 an optional None-default, so canonical JSON and figure-manifest identity bytes
 for pre-existing per-trace specs are unchanged.
+
+Additive changelog, 2026-07-24: ``FigureSpec`` accepts an optional
+``colorbar``, the key that makes a figure's color mapping readable. It is
+declared either standalone or bound to a declared trace family, and is also an
+optional None-default, so pre-existing identity bytes are again unchanged.
 """
 
 from __future__ import annotations
@@ -33,6 +38,8 @@ FIGURE_PIECE_SCHEMA_ID = "feedbax.spec.figure_piece"
 FIGURE_PIECE_SCHEMA_VERSION = "feedbax.spec.figure_piece.v1"
 FIGURE_TRACE_FAMILY_SCHEMA_ID = "feedbax.spec.figure_trace_family"
 FIGURE_TRACE_FAMILY_SCHEMA_VERSION = "feedbax.spec.figure_trace_family.v1"
+FIGURE_COLORBAR_SCHEMA_ID = "feedbax.spec.figure_colorbar"
+FIGURE_COLORBAR_SCHEMA_VERSION = "feedbax.spec.figure_colorbar.v1"
 
 #: The only substitution token the figure contract understands. Trace families
 #: are indexed substitution, deliberately not a templating or expression
@@ -232,6 +239,54 @@ class TraceFamily(StrictModel):
         )
 
 
+class FigureColorbar(StrictModel):
+    """The declared key for a figure's color mapping.
+
+    A colorbar is declared in one of two forms. The standalone form names an
+    explicit ``colorscale`` and the ``range`` of values it spans. The bound
+    form names a declared trace ``family`` instead: the family's expanded
+    ``(index, color)`` pairs already are its color key, so the bound form is
+    resolved by reading them rather than by re-sampling the colorscale, and the
+    key cannot disagree with the traces it describes.
+
+    With a family, ``range`` is optional and relabels the family's index domain
+    onto the values those indices stand for, mapping the smallest index to
+    ``range[0]`` and the largest to ``range[1]`` — a fan of knot traces indexed
+    ``0..59`` can therefore be keyed by the conditioning level it sweeps.
+    Omitted, the index domain is its own value domain.
+    """
+
+    schema_id: str = FIGURE_COLORBAR_SCHEMA_ID
+    schema_version: str = FIGURE_COLORBAR_SCHEMA_VERSION
+    title: str | None = None
+    colorscale: ColorscaleSpec | None = None
+    range: tuple[float, float] | None = None
+    family: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_colorbar(self) -> "FigureColorbar":
+        if self.schema_id != FIGURE_COLORBAR_SCHEMA_ID:
+            raise ValueError(f"unsupported FigureColorbar schema_id: {self.schema_id!r}")
+        if self.schema_version != FIGURE_COLORBAR_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported FigureColorbar schema_version: {self.schema_version!r}"
+            )
+        if self.family is None:
+            if self.colorscale is None or self.range is None:
+                raise ValueError(
+                    "FigureColorbar requires either a trace family or both an explicit "
+                    "colorscale and range"
+                )
+        elif self.colorscale is not None:
+            raise ValueError(
+                f"FigureColorbar bound to trace family {self.family!r} must not declare its "
+                "own colorscale; the family's assigned colors are the key"
+            )
+        if self.range is not None and self.range[0] >= self.range[1]:
+            raise ValueError(f"FigureColorbar range must increase; got {self.range}")
+        return self
+
+
 class PanelSpec(StrictModel):
     """One subplot cell-group."""
 
@@ -389,6 +444,7 @@ class FigureSpec(StrictModel):
     # None-default so per-trace specs authored before trace families keep their
     # exact canonical JSON, spec payload, and figure-manifest identity bytes.
     trace_families: list[TraceFamily] | None = None
+    colorbar: FigureColorbar | None = None
     panels: list[PanelSpec] = Field(default_factory=list)
     pieces: list[str] = Field(default_factory=list)
     exclude_pieces: list[str] = Field(default_factory=list)
@@ -418,6 +474,7 @@ class FigureSpec(StrictModel):
         if unknown:
             raise ValueError("FigureSpec input authority parent must exactly match a declared input")
         self._validate_trace_families()
+        self._validate_colorbar_binding()
         return self
 
     def _validate_trace_families(self) -> None:
@@ -435,4 +492,31 @@ class FigureSpec(StrictModel):
         if collisions:
             raise ValueError(
                 f"FigureSpec trace family expansion collides with other trace names: {collisions}"
+            )
+
+    def _validate_colorbar_binding(self) -> None:
+        colorbar = self.colorbar
+        if colorbar is None or colorbar.family is None:
+            return
+        families = {family.name: family for family in (self.trace_families or [])}
+        family = families.get(colorbar.family)
+        if family is None:
+            raise ValueError(
+                f"FigureSpec colorbar names undeclared trace family {colorbar.family!r}"
+            )
+        if family.colorscale is None:
+            raise ValueError(
+                f"FigureSpec colorbar trace family {family.name!r} declares no colorscale, "
+                "so it assigns no colors for the key to read"
+            )
+        indices = family.index.resolve()
+        if any(not isinstance(index, int) for index in indices):
+            raise ValueError(
+                f"FigureSpec colorbar trace family {family.name!r} has non-numeric indices; "
+                "a colorbar keys a numeric index domain"
+            )
+        if len(indices) < 2:
+            raise ValueError(
+                f"FigureSpec colorbar trace family {family.name!r} enumerates one index, "
+                "which spans no range for a colorbar to key"
             )
