@@ -517,7 +517,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "matrix-harness",
         help="Materialize evaluation condition rows with manifests and custody records.",
     )
-    harness_parser.add_argument("spec", help="EvaluationRunMatrixSpec JSON path")
+    harness_parser.add_argument(
+        "spec", help="EvaluationRunMatrixSpec or EvaluationRunMatrixDeltaSpec JSON path"
+    )
     harness_parser.add_argument("--manifest-root", required=True)
     harness_parser.add_argument("--repo-root")
     harness_parser.add_argument(
@@ -548,7 +550,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--locked-spec",
         help=(
             "Require the runtime matrix's exact ordered row_id sequence to equal the locked "
-            "EvaluationRunMatrixSpec sequence."
+            "evaluation matrix sequence; the locked document may be either authoring kind."
         ),
     )
     harness_parser.add_argument(
