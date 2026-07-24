@@ -18,11 +18,12 @@ import tarfile
 import tempfile
 import uuid
 import zlib
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
 
 import equinox as eqx
@@ -36,6 +37,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from feedbax.contracts.checkpoints import (
     BatchHistory,
     CheckpointContinuationRequest,
+    CheckpointDigestMigrationRecord,
     CheckpointDocumentLoadResult,
     CheckpointForkBarrierMapping,
     CheckpointForkCompatibilityProjection,
@@ -133,6 +135,82 @@ _STRUCTURAL_ABI_SCHEMA_VERSION = StructuralAbiFingerprint.model_fields["schema_v
 _STRUCTURAL_ABI_ALGORITHM_VERSION = StructuralAbiFingerprint.model_fields[
     "fingerprint_algorithm_version"
 ].default
+_RUN_CONTRACT_BINDING_ALGORITHM = "feedbax.training_checkpoint.run_contract_binding"
+
+
+@dataclass(frozen=True)
+class RunContractMigrationEdge:
+    """One supported derived-digest migration edge for a versioned algorithm."""
+
+    algorithm: str
+    source_version: str
+    target_version: str
+    hash_domain: str
+
+    @property
+    def source_algorithm_version(self) -> str:
+        return f"{self.algorithm}.{self.source_version}"
+
+    @property
+    def target_algorithm_version(self) -> str:
+        return f"{self.algorithm}.{self.target_version}"
+
+
+def _split_algorithm_version(algorithm_version: str) -> tuple[str, str] | None:
+    """Split a fully qualified ``<algorithm>.<version>`` string into its parts."""
+    algorithm, separator, version = algorithm_version.rpartition(".")
+    if not separator or not algorithm or not version:
+        return None
+    return algorithm, version
+
+
+class _MigrationEdgeRegistry:
+    """The single internal registry of supported derived-digest migration edges.
+
+    Both the checkpoint-resume verifier and the fork-gate/migration core consume
+    this registry so that the set of sanctioned ``(algorithm, source_version,
+    target_version, hash_domain)`` edges is defined in exactly one place.
+    """
+
+    def __init__(self) -> None:
+        self._edges: dict[tuple[str, str, str, str], RunContractMigrationEdge] = {}
+
+    def register(self, edge: RunContractMigrationEdge) -> None:
+        key = (edge.algorithm, edge.source_version, edge.target_version, edge.hash_domain)
+        if key in self._edges:
+            raise ValueError(f"duplicate checkpoint migration edge {key!r}")
+        self._edges[key] = edge
+
+    def resolve(
+        self,
+        *,
+        source_algorithm_version: str,
+        target_algorithm_version: str,
+        hash_domain: str,
+    ) -> RunContractMigrationEdge | None:
+        """Return the supported edge for two versions and a hash domain, if any."""
+        source = _split_algorithm_version(source_algorithm_version)
+        target = _split_algorithm_version(target_algorithm_version)
+        if source is None or target is None or source[0] != target[0]:
+            return None
+        return self._edges.get((source[0], source[1], target[1], hash_domain))
+
+    def edges(self) -> tuple[RunContractMigrationEdge, ...]:
+        return tuple(self._edges[key] for key in sorted(self._edges))
+
+
+_RUN_CONTRACT_MIGRATION_EDGES = _MigrationEdgeRegistry()
+for _migration_source_version in ("v2", "v3"):
+    _RUN_CONTRACT_MIGRATION_EDGES.register(
+        RunContractMigrationEdge(
+            algorithm=_RUN_CONTRACT_BINDING_ALGORITHM,
+            source_version=_migration_source_version,
+            target_version="v4",
+            hash_domain=_RUN_CONTRACT_HASH_DOMAIN,
+        )
+    )
+del _migration_source_version
+
 _READ_ONLY_MODEL_TYPES: dict[type[BaseModel], type[BaseModel]] = {}
 
 
@@ -227,12 +305,32 @@ class CheckpointCompatibilityError(CheckpointCustodyError):
     """Raised when a checkpoint is structurally incompatible with resume templates."""
 
 
+class CheckpointDigestMigrationRequired(CheckpointCustodyError):
+    """Raised when a fork lock's run-contract digest needs sanctioned migration.
+
+    This is a sibling of :class:`CheckpointCompatibilityError` under the shared
+    :class:`CheckpointCustodyError` base so that broad compatibility catchers do
+    not swallow the migration signal. The fork gate raises it only for pure
+    supported run-contract algorithm-version drift with no input-drift signal.
+    """
+
+
 class CheckpointContractBindingError(CheckpointCustodyError):
     """Raised when a checkpoint belongs to a different run contract."""
 
 
 class CheckpointConsistencyError(CheckpointCustodyError):
     """Raised when slot coordinates violate the method-declared consistency predicate."""
+
+
+class CheckpointCustodyMutationError(CheckpointCustodyError):
+    """Raised when a custody directory that must stay immutable was mutated.
+
+    This is the mutation tripwire for side-effect-free rehearsal probes: it
+    fires when a directory fingerprinted as an immutable probe input differs
+    afterwards, so an isolation regression is reported at probe time rather than
+    discovered later when custody archiving refuses a stale ``latest.json``.
+    """
 
 
 @dataclass(frozen=True)
@@ -978,6 +1076,190 @@ def produce_checkpoint_custody_archive(
         artifact_ref=_immutable_model_snapshot(artifact),
         evidence=evidence,
     )
+
+
+@dataclass(frozen=True)
+class CheckpointCustodyFingerprint:
+    """Immutable identity of a checkpoint custody directory's inputs.
+
+    ``paths`` is the sorted tuple of every regular file's POSIX-relative path
+    under the custody root, so structural mutation — a new transaction
+    directory, an advanced ``latest.json`` write, or a removed blob — changes the
+    fingerprint. ``metadata_digests`` carries ``(relative_path, sha256)`` pairs
+    over the mutable custody metadata (``latest.json`` and every transaction
+    ``manifest.json``), and over every regular file when ``digested_blobs`` is
+    set, so in-place content edits are detected too. Large immutable blob trees
+    are enumerated but not re-hashed by default.
+    """
+
+    root_present: bool
+    digested_blobs: bool
+    paths: tuple[str, ...]
+    metadata_digests: tuple[tuple[str, str], ...]
+
+
+def _is_custody_metadata_file(relative: PurePosixPath) -> bool:
+    return relative.name in (LATEST_POINTER_NAME, MANIFEST_NAME)
+
+
+def fingerprint_checkpoint_custody_inputs(
+    root: str | Path,
+    *,
+    digest_blobs: bool = False,
+) -> CheckpointCustodyFingerprint:
+    """Fingerprint a checkpoint custody directory before a side-effecting probe.
+
+    The fingerprint enumerates every regular file for structural identity and
+    digests the mutable custody metadata (``latest.json`` and transaction
+    manifests) by default. ``digest_blobs`` extends the content digests to every
+    regular file for full byte identity at the cost of hashing blob trees.
+    Symlinks are recorded by path but never followed, so a probe can never write
+    through a shared link into the source unnoticed.
+    """
+    root_path = Path(root).expanduser()
+    if not root_path.exists():
+        return CheckpointCustodyFingerprint(
+            root_present=False,
+            digested_blobs=digest_blobs,
+            paths=(),
+            metadata_digests=(),
+        )
+    paths: list[str] = []
+    digests: list[tuple[str, str]] = []
+    for path in sorted(root_path.rglob("*")):
+        relative = path.relative_to(root_path).as_posix()
+        if path.is_symlink():
+            paths.append(relative)
+            continue
+        if not path.is_file():
+            continue
+        paths.append(relative)
+        if digest_blobs or _is_custody_metadata_file(PurePosixPath(relative)):
+            digests.append((relative, _sha256_file(path)))
+    return CheckpointCustodyFingerprint(
+        root_present=True,
+        digested_blobs=digest_blobs,
+        paths=tuple(paths),
+        metadata_digests=tuple(digests),
+    )
+
+
+def _describe_custody_fingerprint_difference(
+    before: CheckpointCustodyFingerprint,
+    after: CheckpointCustodyFingerprint,
+) -> str:
+    parts: list[str] = []
+    if before.root_present != after.root_present:
+        parts.append(f"root_present {before.root_present}->{after.root_present}")
+    added = sorted(set(after.paths) - set(before.paths))
+    removed = sorted(set(before.paths) - set(after.paths))
+    if added:
+        parts.append(f"added={added[:8]!r}")
+    if removed:
+        parts.append(f"removed={removed[:8]!r}")
+    before_digests = dict(before.metadata_digests)
+    after_digests = dict(after.metadata_digests)
+    changed = sorted(
+        name
+        for name in before_digests.keys() & after_digests.keys()
+        if before_digests[name] != after_digests[name]
+    )
+    if changed:
+        parts.append(f"changed={changed[:8]!r}")
+    return "; ".join(parts) or "custody content digests differ"
+
+
+def assert_checkpoint_custody_unchanged(
+    root: str | Path,
+    before: CheckpointCustodyFingerprint,
+) -> CheckpointCustodyFingerprint:
+    """Assert a custody directory still matches a prior fingerprint.
+
+    Returns the freshly computed fingerprint on success. Raises
+    ``CheckpointCustodyMutationError`` with a compact difference summary when the
+    custody inputs changed, using the same ``digest_blobs`` depth captured in
+    ``before``.
+    """
+    after = fingerprint_checkpoint_custody_inputs(root, digest_blobs=before.digested_blobs)
+    if after == before:
+        return after
+    raise CheckpointCustodyMutationError(
+        f"checkpoint custody inputs at {Path(root)} changed during a probe: "
+        f"{_describe_custody_fingerprint_difference(before, after)}"
+    )
+
+
+@dataclass(frozen=True)
+class IsolatedCheckpointProbe:
+    """Read-only source root and disposable output namespace for one probe."""
+
+    source_root: Path
+    output_root: Path
+
+
+def _remove_probe_namespace(output_root: Path) -> OSError | None:
+    try:
+        shutil.rmtree(output_root)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return exc
+    return None
+
+
+@contextmanager
+def isolated_checkpoint_probe(
+    source_root: str | Path,
+    *,
+    output_parent: str | Path | None = None,
+    digest_blobs: bool = False,
+) -> Iterator[IsolatedCheckpointProbe]:
+    """Run a bounded checkpoint probe without mutating its source directory.
+
+    The source custody directory is treated as immutable input: its inputs are
+    fingerprinted on entry and re-asserted on a clean exit (the mutation
+    tripwire). A fresh disposable output namespace is created for the probe to
+    write every new transaction and its ``latest.json`` pointer into, and it is
+    removed on both success and failure; a cleanup failure is surfaced but never
+    endangers the source. Pass the yielded ``source_root`` as the executor's
+    ``checkpoint_source_root`` and ``output_root`` as its ``checkpoint_root`` so
+    the executor resumes from the read-only source and diverges every write into
+    the disposable namespace.
+    """
+    source = Path(source_root).expanduser().resolve()
+    if not (source / LATEST_POINTER_NAME).is_file():
+        raise CheckpointCustodyError(
+            f"isolated checkpoint probe source has no published latest pointer: {source}"
+        )
+    before = fingerprint_checkpoint_custody_inputs(source, digest_blobs=digest_blobs)
+    parent = (
+        Path(output_parent).expanduser().resolve()
+        if output_parent is not None
+        else source.parent
+    )
+    parent.mkdir(parents=True, exist_ok=True)
+    output_root = Path(tempfile.mkdtemp(prefix=".rehearsal-probe-", dir=parent))
+    probe = IsolatedCheckpointProbe(source_root=source, output_root=output_root)
+    body_error: BaseException | None = None
+    try:
+        yield probe
+    except BaseException as exc:  # re-raised below after tripwire and cleanup
+        body_error = exc
+        raise
+    finally:
+        cleanup_error = _remove_probe_namespace(output_root)
+        try:
+            assert_checkpoint_custody_unchanged(source, before)
+        except CheckpointCustodyMutationError:
+            if body_error is None:
+                raise
+            _LOGGER.error(
+                "checkpoint probe source %s was mutated during a failed probe", source
+            )
+        if cleanup_error is not None:
+            if body_error is None:
+                raise cleanup_error
+            _LOGGER.error("checkpoint probe namespace cleanup failed: %s", cleanup_error)
 
 
 def materialize_checkpoint_custody_archive(
@@ -3277,6 +3559,671 @@ def relock_checkpoint_fork_derived_digests(
     )
 
 
+ForkDigestFieldClass = Literal[
+    "unchanged", "migratable_algorithm_drift", "input_drift", "unsupported"
+]
+_RUN_CONTRACT_IDENTITY_DIFFERENCE_PATHS = (
+    "/compatibility/run_contract_algorithm_version",
+    "/compatibility/run_contract_hash_domain",
+    "/compatibility/run_contract_projection_sha256",
+)
+_RUN_CONTRACT_MIGRATED_FIELD_PATHS = (
+    "/compatibility/run_contract_algorithm_version",
+    "/compatibility/run_contract_projection_sha256",
+)
+_AUTHENTICATED_HISTORICAL_EVIDENCE_PROOF_MODE = "authenticated-historical-evidence"
+_OWNER_ATTESTATION_PROOF_MODE = "owner-attestation"
+
+
+@dataclass(frozen=True)
+class ForkCompatibilityClassification:
+    """One typed drift classification for a fork target's derived digests.
+
+    Produced once from a stored lock and its recomputed candidate (and optional
+    authenticated historical evidence), then consumed by the fork gate, the
+    migration core, and the CLI so no caller re-derives drift classification.
+    """
+
+    target_id: str
+    run_contract_class: ForkDigestFieldClass
+    migration_edge: RunContractMigrationEdge | None
+    sentinel_input_drift_paths: tuple[str, ...]
+    proof_mode: str | None
+    difference_paths: tuple[str, ...]
+
+    @property
+    def has_input_drift(self) -> bool:
+        return bool(self.sentinel_input_drift_paths) or self.run_contract_class == "input_drift"
+
+    @property
+    def is_unchanged(self) -> bool:
+        return self.run_contract_class == "unchanged" and not self.sentinel_input_drift_paths
+
+    @property
+    def is_migratable_algorithm_drift(self) -> bool:
+        return (
+            self.run_contract_class == "migratable_algorithm_drift"
+            and not self.sentinel_input_drift_paths
+        )
+
+    @property
+    def is_unsupported(self) -> bool:
+        return self.run_contract_class == "unsupported"
+
+
+@dataclass(frozen=True)
+class RunContractProjectionEvidence:
+    """Authenticated historical run-contract canonical projection for one target.
+
+    A fork lock stores only the run-contract digest, not the canonical bytes, so
+    the caller supplies the old-version projection recorded when the lock was
+    authored. ``recorded_sha256`` must equal the lock's stored
+    ``run_contract_projection_sha256`` for the evidence to bind to that target.
+    """
+
+    canonical_projection: Mapping[str, Any]
+    recorded_sha256: str
+    recorded_algorithm_version: str
+    training_run_spec_schema_id: str
+    training_run_spec_schema_version: str
+    evidence_refs: tuple[str, ...] = ()
+
+
+def _forward_migrate_run_contract_projection(
+    projection: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Migrate an old run-contract projection's run spec and restamp v4."""
+    migrated_projection = copy.deepcopy(dict(projection))
+    training_run_spec = migrated_projection.get("training_run_spec")
+    if not isinstance(training_run_spec, Mapping):
+        return None
+    try:
+        from feedbax.contracts.migrations import migrate_structured_spec_payload
+
+        migrated_run_spec = migrate_structured_spec_payload(
+            "TrainingRunSpec",
+            training_run_spec,
+            path="checkpoint_binding/canonical_projection/training_run_spec",
+        ).payload
+        migrated_projection["training_run_spec"] = TrainingRunSpec.model_validate(
+            migrated_run_spec
+        ).model_dump(mode="json", exclude_none=True)
+    except (TypeError, ValueError):
+        return None
+    migrated_projection["algorithm_version"] = _RUN_CONTRACT_BINDING_ALGORITHM_V4
+    return migrated_projection
+
+
+def _historical_projection_is_coherent_fields(
+    *,
+    recorded_algorithm_version: str,
+    recorded_training_run_spec_schema_id: str,
+    recorded_training_run_spec_schema_version: str,
+    projection: Mapping[str, Any],
+) -> bool:
+    """Require a self-consistent historical binding before schema migration."""
+    if (
+        projection.get("schema_id")
+        != "feedbax.manifest.training_checkpoint.run_contract_projection"
+        or projection.get("schema_version")
+        != "feedbax.manifest.training_checkpoint.run_contract_projection.v1"
+        or projection.get("algorithm_version") != _RUN_CONTRACT_BINDING_ALGORITHM_V2
+    ):
+        return False
+    training_run_spec = projection.get("training_run_spec")
+    if not isinstance(training_run_spec, Mapping):
+        return False
+    embedded_schema_id = training_run_spec.get("schema_id")
+    embedded_schema_version = training_run_spec.get("schema_version")
+    if (
+        embedded_schema_id != TRAINING_RUN_SPEC_SCHEMA_ID
+        or recorded_training_run_spec_schema_id != embedded_schema_id
+        or recorded_training_run_spec_schema_version != embedded_schema_version
+    ):
+        return False
+    if recorded_algorithm_version == _RUN_CONTRACT_BINDING_ALGORITHM_V3:
+        return embedded_schema_version == TRAINING_RUN_SPEC_SCHEMA_VERSION_V3
+    return embedded_schema_version in {
+        TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
+        TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
+        TRAINING_RUN_SPEC_SCHEMA_VERSION_V3,
+    }
+
+
+def _run_contract_projection_migration_result(
+    *,
+    projection: Mapping[str, Any],
+    recorded_sha256: str,
+    recorded_algorithm_version: str,
+    recorded_training_run_spec_schema_id: str,
+    recorded_training_run_spec_schema_version: str,
+    expected_projection: Mapping[str, Any],
+) -> bool | None:
+    """Authenticate historical projection bytes, forward-migrate, and compare.
+
+    Returns ``True`` when the authenticated historical projection migrates
+    forward to byte-equal the expected current projection, ``False`` when it
+    authenticates but diverges (input drift), and ``None`` when the bytes cannot
+    be authenticated, are incoherent, or fail to migrate (invalid evidence).
+    """
+    valid_projection_hashes = {_run_contract_hash(projection)}
+    if recorded_algorithm_version == _RUN_CONTRACT_BINDING_ALGORITHM_V2:
+        valid_projection_hashes.add(_canonical_hash(projection))
+    if recorded_sha256 not in valid_projection_hashes:
+        return None
+    if not _historical_projection_is_coherent_fields(
+        recorded_algorithm_version=recorded_algorithm_version,
+        recorded_training_run_spec_schema_id=recorded_training_run_spec_schema_id,
+        recorded_training_run_spec_schema_version=recorded_training_run_spec_schema_version,
+        projection=projection,
+    ):
+        return None
+    migrated_projection = _forward_migrate_run_contract_projection(projection)
+    if migrated_projection is None:
+        return None
+    return canonical_json_bytes(
+        _normalize_signed_zero(migrated_projection)
+    ) == canonical_json_bytes(_normalize_signed_zero(expected_projection))
+
+
+def _run_contract_historical_evidence_result(
+    *,
+    stored: CheckpointForkCompatibilityProjection,
+    evidence: RunContractProjectionEvidence,
+    current_canonical_projection: Mapping[str, Any],
+) -> bool | None:
+    """Run the authenticated-evidence proof for a fork target's run-contract digest."""
+    if (
+        evidence.recorded_sha256 != stored.run_contract_projection_sha256
+        or evidence.recorded_algorithm_version != stored.run_contract_algorithm_version
+    ):
+        return None
+    return _run_contract_projection_migration_result(
+        projection=evidence.canonical_projection,
+        recorded_sha256=evidence.recorded_sha256,
+        recorded_algorithm_version=evidence.recorded_algorithm_version,
+        recorded_training_run_spec_schema_id=evidence.training_run_spec_schema_id,
+        recorded_training_run_spec_schema_version=evidence.training_run_spec_schema_version,
+        expected_projection=current_canonical_projection,
+    )
+
+
+def classify_fork_compatibility_projection(
+    stored: CheckpointForkCompatibilityProjection,
+    candidate: CheckpointForkCompatibilityProjection,
+    *,
+    target_id: str = "",
+    historical_evidence: RunContractProjectionEvidence | None = None,
+    current_canonical_projection: Mapping[str, Any] | None = None,
+) -> ForkCompatibilityClassification:
+    """Classify one stored lock against its recomputed candidate.
+
+    ``candidate`` carries the current run-contract algorithm version. When
+    authenticated historical evidence and the current canonical projection are
+    supplied, supported algorithm drift is resolved to migratable drift (the
+    historical projection migrates forward to the current one) or input drift (it
+    does not). Without evidence, supported algorithm drift stays classified as
+    migratable so the gate can advertise the sanctioned migration.
+    """
+    differences = _checkpoint_fork_compatibility_differences(target_id, stored, candidate)
+    difference_paths = tuple(difference.path for difference in differences)
+    sentinel_paths = tuple(
+        difference.path
+        for difference in differences
+        if difference.path not in _RUN_CONTRACT_IDENTITY_DIFFERENCE_PATHS
+    )
+
+    edge: RunContractMigrationEdge | None = None
+    proof_mode: str | None = None
+    if stored.run_contract_hash_domain != candidate.run_contract_hash_domain:
+        run_contract_class: ForkDigestFieldClass = "unsupported"
+    elif stored.run_contract_algorithm_version == candidate.run_contract_algorithm_version:
+        run_contract_class = (
+            "unchanged"
+            if stored.run_contract_projection_sha256 == candidate.run_contract_projection_sha256
+            else "input_drift"
+        )
+    else:
+        edge = _RUN_CONTRACT_MIGRATION_EDGES.resolve(
+            source_algorithm_version=stored.run_contract_algorithm_version,
+            target_algorithm_version=candidate.run_contract_algorithm_version,
+            hash_domain=stored.run_contract_hash_domain,
+        )
+        if edge is None or candidate.run_contract_hash_domain != edge.hash_domain:
+            edge = None
+            run_contract_class = "unsupported"
+        elif historical_evidence is not None and current_canonical_projection is not None:
+            proven = _run_contract_historical_evidence_result(
+                stored=stored,
+                evidence=historical_evidence,
+                current_canonical_projection=current_canonical_projection,
+            )
+            if proven is True:
+                run_contract_class = "migratable_algorithm_drift"
+                proof_mode = _AUTHENTICATED_HISTORICAL_EVIDENCE_PROOF_MODE
+            elif proven is False:
+                run_contract_class = "input_drift"
+            else:
+                # Evidence present but not authenticated/coherent: still supported
+                # algorithm drift, but unproven; the core refuses without attestation.
+                run_contract_class = "migratable_algorithm_drift"
+        else:
+            run_contract_class = "migratable_algorithm_drift"
+
+    return ForkCompatibilityClassification(
+        target_id=target_id,
+        run_contract_class=run_contract_class,
+        migration_edge=edge,
+        sentinel_input_drift_paths=sentinel_paths,
+        proof_mode=proof_mode,
+        difference_paths=difference_paths,
+    )
+
+
+@dataclass(frozen=True)
+class ForkPlanDigestClassification:
+    """Per-target classifications plus the read-only candidate rebuild."""
+
+    classifications: tuple[ForkCompatibilityClassification, ...]
+    comparison: CheckpointForkDerivedDigestComparison
+
+
+def _current_run_contract_projection(
+    bindings: CheckpointForkPlanBindings, target: CheckpointForkTarget
+) -> dict[str, Any]:
+    run_spec = _require_plan_binding(bindings.run_specs, target.run_spec_ref, kind="run spec")
+    projection = run_contract_binding(
+        run_spec, run_spec.worker_execution.method_contract.phase_program
+    ).canonical_projection
+    assert projection is not None
+    return projection
+
+
+def classify_checkpoint_fork_plan_derived_digests(
+    plan: CheckpointForkPlan,
+    bindings: CheckpointForkPlanBindings,
+    *,
+    historical_evidence: Mapping[str, RunContractProjectionEvidence] | None = None,
+) -> ForkPlanDigestClassification:
+    """Classify every fork target's derived digests without modifying ``plan``."""
+    comparison = rebuild_checkpoint_fork_derived_digests(plan, bindings)
+    evidence_by_target = dict(historical_evidence or {})
+    classifications: list[ForkCompatibilityClassification] = []
+    for target in plan.targets:
+        candidate = comparison.candidates[target.target_id]
+        evidence = evidence_by_target.get(target.target_id)
+        current_projection = (
+            _current_run_contract_projection(bindings, target) if evidence is not None else None
+        )
+        classifications.append(
+            classify_fork_compatibility_projection(
+                target.compatibility,
+                candidate,
+                target_id=target.target_id,
+                historical_evidence=evidence,
+                current_canonical_projection=current_projection,
+            )
+        )
+    return ForkPlanDigestClassification(
+        classifications=tuple(classifications),
+        comparison=comparison,
+    )
+
+
+def _format_fork_classifications(
+    classifications: Sequence[ForkCompatibilityClassification],
+) -> str:
+    return "; ".join(
+        f"target={classification.target_id!r} class={classification.run_contract_class} "
+        f"paths={list(classification.difference_paths)!r}"
+        for classification in classifications
+    )
+
+
+def _fork_digest_migration_required_message(
+    classifications: Sequence[ForkCompatibilityClassification],
+) -> str:
+    edges = sorted(
+        {
+            (
+                classification.migration_edge.source_algorithm_version,
+                classification.migration_edge.target_algorithm_version,
+            )
+            for classification in classifications
+            if classification.migration_edge is not None
+        }
+    )
+    edge_text = "; ".join(f"{source} -> {target}" for source, target in edges)
+    targets = ", ".join(
+        repr(classification.target_id) for classification in classifications
+    )
+    return (
+        "checkpoint fork run-contract digest for targets "
+        f"[{targets}] records an older algorithm version on a supported migration edge "
+        f"({edge_text}); the fork gate holds no historical evidence, so input drift "
+        "cannot be ruled out at this stage. Run 'python -m feedbax checkpoint relock "
+        "--plan <plan.json> --bindings <bindings.json> --write' to adjudicate: "
+        "authenticated historical evidence either proves the science is unchanged or "
+        "refuses the migration as input drift; --owner-attestation is a deliberate "
+        "no-evidence override that carries mandatory re-qualification duties"
+    )
+
+
+def _raise_for_fork_digest_classifications(
+    classifications: Sequence[ForkCompatibilityClassification],
+) -> None:
+    """Apply input-drift precedence and raise the typed fork-gate signal."""
+    input_drift = [item for item in classifications if item.has_input_drift]
+    if input_drift:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork compatibility lock differs from authoritative projections "
+            "(input drift dominates): " + _format_fork_classifications(input_drift)
+        )
+    unsupported = [item for item in classifications if item.is_unsupported]
+    if unsupported:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork compatibility lock has an unsupported run-contract "
+            "migration edge: " + _format_fork_classifications(unsupported)
+        )
+    migratable = [item for item in classifications if item.is_migratable_algorithm_drift]
+    if migratable:
+        raise CheckpointDigestMigrationRequired(
+            _fork_digest_migration_required_message(migratable)
+        )
+
+
+@dataclass(frozen=True)
+class ForkCompatibilityProjectionMigration:
+    """Result of migrating one fork target's compatibility projection."""
+
+    migrated_projection: CheckpointForkCompatibilityProjection
+    classification: ForkCompatibilityClassification
+    edge: RunContractMigrationEdge
+    affected_fields: tuple[str, ...]
+    proof_mode: str
+    evidence_refs: tuple[str, ...]
+
+
+def migrate_fork_compatibility_projection(
+    stored: CheckpointForkCompatibilityProjection,
+    candidate: CheckpointForkCompatibilityProjection,
+    *,
+    current_canonical_projection: Mapping[str, Any],
+    historical_evidence: RunContractProjectionEvidence | None = None,
+    owner_attestation: bool = False,
+    target_id: str = "",
+) -> ForkCompatibilityProjectionMigration:
+    """Sanctioned projection-level migration of a stale run-contract digest.
+
+    This is the downstream subsumption surface: a caller extracts a stored
+    projection, recomputes ``candidate`` and ``current_canonical_projection``
+    from its own inputs, supplies its own authenticated historical evidence, and
+    persists the returned projection. It refuses with typed errors on any input
+    drift, unsupported edge, or no-op, and migrates only the run-contract digest
+    (updating its algorithm-version field in the same operation).
+    """
+    classification = classify_fork_compatibility_projection(
+        stored,
+        candidate,
+        target_id=target_id,
+        historical_evidence=historical_evidence,
+        current_canonical_projection=current_canonical_projection,
+    )
+    if classification.has_input_drift:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork derived-digest migration refused: input drift dominates: "
+            + _format_fork_classifications([classification])
+        )
+    if classification.is_unsupported:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork derived-digest migration refused: unsupported run-contract "
+            "migration edge: " + _format_fork_classifications([classification])
+        )
+    if classification.run_contract_class == "unchanged":
+        raise CheckpointCompatibilityError(
+            "checkpoint fork derived-digest migration requires a run-contract algorithm "
+            "difference; nothing to migrate"
+        )
+    edge = classification.migration_edge
+    assert edge is not None  # migratable_algorithm_drift always carries an edge.
+
+    # Owner-attestation is strictly a no-evidence fallback. Whenever historical
+    # evidence is supplied it always adjudicates: an input-drift proof was already
+    # refused above, so reaching here with evidence present means it must have
+    # authenticated. Evidence that cannot authenticate is refused even under the
+    # attestation flag, because the flag only applies when no evidence exists.
+    if historical_evidence is not None:
+        if classification.proof_mode != _AUTHENTICATED_HISTORICAL_EVIDENCE_PROOF_MODE:
+            raise CheckpointCompatibilityError(
+                "checkpoint fork derived-digest migration requires authenticated historical "
+                "evidence that migrates forward to the current canonical projection; the "
+                "supplied evidence did not authenticate. Owner-attestation applies only when "
+                "no historical evidence is provided at all"
+            )
+        proof_mode = _AUTHENTICATED_HISTORICAL_EVIDENCE_PROOF_MODE
+        evidence_refs: tuple[str, ...] = historical_evidence.evidence_refs
+    elif owner_attestation:
+        proof_mode = _OWNER_ATTESTATION_PROOF_MODE
+        evidence_refs = ()
+    else:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork derived-digest migration requires authenticated historical "
+            "evidence that migrates forward to the current canonical projection; supply "
+            "valid evidence or pass the explicit owner-attestation flag"
+        )
+
+    migrated_projection = stored.model_copy(
+        update={
+            "run_contract_algorithm_version": candidate.run_contract_algorithm_version,
+            "run_contract_projection_sha256": candidate.run_contract_projection_sha256,
+        }
+    )
+    return ForkCompatibilityProjectionMigration(
+        migrated_projection=migrated_projection,
+        classification=classification,
+        edge=edge,
+        affected_fields=_RUN_CONTRACT_MIGRATED_FIELD_PATHS,
+        proof_mode=proof_mode,
+        evidence_refs=evidence_refs,
+    )
+
+
+@dataclass(frozen=True)
+class CheckpointForkPlanMigrationResult:
+    """Migrated fork plan, its bound record, and the per-target classification."""
+
+    plan: CheckpointForkPlan
+    record: CheckpointDigestMigrationRecord
+    classification: ForkPlanDigestClassification
+    source_plan_canonical_sha256: str
+    target_plan_canonical_sha256: str
+
+
+def migrate_checkpoint_fork_plan_derived_digests(
+    plan: CheckpointForkPlan,
+    bindings: CheckpointForkPlanBindings,
+    *,
+    requalification_requirements: Sequence[str],
+    historical_evidence: Mapping[str, RunContractProjectionEvidence] | None = None,
+    owner_attestation: bool = False,
+) -> CheckpointForkPlanMigrationResult:
+    """Sanctioned plan-level migration of stale run-contract derived digests.
+
+    Migrates only run-contract algorithm drift on supported edges. It refuses on
+    any input drift (which dominates), unsupported edge, authored-field change,
+    no-op, or missing/invalid evidence (unless the explicit owner-attestation
+    path is chosen). It updates the run-contract digest and its algorithm-version
+    field together and appends one bound migration record to the plan history.
+
+    Migration-record hash self-reference convention: ``source_plan_canonical_sha256``
+    is the canonical hash of the pre-migration plan, and ``target_plan_canonical_sha256``
+    is the canonical hash of the migrated plan computed BEFORE its migration record
+    is appended. The persisted plan therefore hashes differently from the recorded
+    target hash (it carries the extra record); an auditor recomputing the target
+    hash must strip the final ``migration_history`` entry first.
+    """
+    requirements = tuple(requirement.strip() for requirement in requalification_requirements)
+    if not requirements or any(not requirement for requirement in requirements):
+        raise CheckpointCompatibilityError(
+            "checkpoint fork derived-digest migration requires non-empty re-qualification "
+            "requirements"
+        )
+
+    source_plan_canonical_sha256 = checkpoint_fork_plan_sha256(plan)
+    classification = classify_checkpoint_fork_plan_derived_digests(
+        plan, bindings, historical_evidence=historical_evidence
+    )
+    input_drift = [item for item in classification.classifications if item.has_input_drift]
+    if input_drift:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork derived-digest migration refused: input drift dominates: "
+            + _format_fork_classifications(input_drift)
+        )
+    unsupported = [item for item in classification.classifications if item.is_unsupported]
+    if unsupported:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork derived-digest migration refused: unsupported run-contract "
+            "migration edge: " + _format_fork_classifications(unsupported)
+        )
+    migratable = [
+        item for item in classification.classifications if item.is_migratable_algorithm_drift
+    ]
+    if not migratable:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork derived-digest migration requires a run-contract algorithm "
+            "difference; nothing to migrate"
+        )
+
+    evidence_by_target = dict(historical_evidence or {})
+    target_by_id = {target.target_id: target for target in plan.targets}
+    migrated_projections: dict[str, CheckpointForkCompatibilityProjection] = {}
+    affected_fields: list[str] = []
+    evidence_refs: list[str] = []
+    edges: set[tuple[str, str, str, str]] = set()
+    proof_modes: set[str] = set()
+    for item in migratable:
+        target = target_by_id[item.target_id]
+        candidate = classification.comparison.candidates[item.target_id]
+        migration = migrate_fork_compatibility_projection(
+            target.compatibility,
+            candidate,
+            current_canonical_projection=_current_run_contract_projection(bindings, target),
+            historical_evidence=evidence_by_target.get(item.target_id),
+            owner_attestation=owner_attestation,
+            target_id=item.target_id,
+        )
+        migrated_projections[item.target_id] = migration.migrated_projection
+        affected_fields.extend(
+            f"/targets/{item.target_id}{path}" for path in migration.affected_fields
+        )
+        evidence_refs.extend(migration.evidence_refs)
+        edges.add(
+            (
+                migration.edge.algorithm,
+                migration.edge.source_version,
+                migration.edge.target_version,
+                migration.edge.hash_domain,
+            )
+        )
+        proof_modes.add(migration.proof_mode)
+
+    if len(edges) != 1:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork derived-digest migration requires one shared migration edge "
+            f"across targets; observed={sorted(edges)!r}"
+        )
+    (edge_key,) = tuple(edges)
+    edge = RunContractMigrationEdge(*edge_key)
+    (proof_mode,) = tuple(proof_modes)
+
+    migrated_targets = [
+        target.model_copy(update={"compatibility": migrated_projections[target.target_id]})
+        if target.target_id in migrated_projections
+        else target
+        for target in plan.targets
+    ]
+    migrated_plan = _replace_checkpoint_fork_compatibility_locks(plan, migrated_targets)
+    target_plan_canonical_sha256 = checkpoint_fork_plan_sha256(migrated_plan)
+
+    record = CheckpointDigestMigrationRecord(
+        migration_id=(
+            f"checkpoint-fork-derived-digest-{edge.source_version}-to-{edge.target_version}"
+        ),
+        source_plan_canonical_sha256=source_plan_canonical_sha256,
+        target_plan_canonical_sha256=target_plan_canonical_sha256,
+        migration_algorithm=edge.algorithm,
+        source_algorithm_version=edge.source_algorithm_version,
+        target_algorithm_version=edge.target_algorithm_version,
+        hash_domain=edge.hash_domain,
+        affected_fields=tuple(affected_fields),
+        proof_mode=proof_mode,
+        evidence_refs=tuple(dict.fromkeys(evidence_refs)),
+        requalification_requirements=requirements,
+        tool_version=feedbax_version(),
+    )
+    final_plan = migrated_plan.model_copy(
+        update={"migration_history": [*plan.migration_history, record]}
+    )
+    return CheckpointForkPlanMigrationResult(
+        plan=final_plan,
+        record=record,
+        classification=classification,
+        source_plan_canonical_sha256=source_plan_canonical_sha256,
+        target_plan_canonical_sha256=target_plan_canonical_sha256,
+    )
+
+
+@dataclass(frozen=True)
+class _LoadedForkPlanFile:
+    plan: CheckpointForkPlan
+    source_plan_canonical_sha256: str
+
+
+def _load_checkpoint_fork_plan_file(plan_path: Path) -> _LoadedForkPlanFile:
+    raw = json.loads(plan_path.read_text(encoding="utf-8"))
+    plan = _coerce_checkpoint_fork_plan(raw)
+    return _LoadedForkPlanFile(
+        plan=plan,
+        source_plan_canonical_sha256=checkpoint_fork_plan_sha256(plan),
+    )
+
+
+def relock_checkpoint_fork_plan_file(
+    plan_path: str | Path,
+    bindings: CheckpointForkPlanBindings,
+    *,
+    requalification_requirements: Sequence[str],
+    historical_evidence: Mapping[str, RunContractProjectionEvidence] | None = None,
+    owner_attestation: bool = False,
+) -> CheckpointForkPlanMigrationResult:
+    """Migrate a fork-plan file's stale run-contract digests in place.
+
+    The write is transactional: the migration is computed entirely in memory, an
+    optimistic source-plan-hash check re-reads the file to detect a concurrent
+    change, and the migrated plan (with its bound migration record) is written by
+    atomic temp-file-then-rename so the migrated digests and the record land
+    together or not at all.
+    """
+    plan_path = Path(plan_path)
+    snapshot = _load_checkpoint_fork_plan_file(plan_path)
+    result = migrate_checkpoint_fork_plan_derived_digests(
+        snapshot.plan,
+        bindings,
+        requalification_requirements=requalification_requirements,
+        historical_evidence=historical_evidence,
+        owner_attestation=owner_attestation,
+    )
+    current = _load_checkpoint_fork_plan_file(plan_path)
+    if current.source_plan_canonical_sha256 != snapshot.source_plan_canonical_sha256:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork plan changed under the relock operation; "
+            f"snapshot_source_hash={snapshot.source_plan_canonical_sha256!r} "
+            f"current_source_hash={current.source_plan_canonical_sha256!r}"
+        )
+    _write_json_atomic(plan_path, result.plan.model_dump(mode="json", exclude_none=True))
+    return result
+
+
 def _coerce_checkpoint_fork_plan(
     value: CheckpointForkPlan | Mapping[str, Any],
 ) -> CheckpointForkPlan:
@@ -3445,16 +4392,11 @@ def _prepare_checkpoint_fork_plan(
                 kind="segment history template",
             )
 
-    digest_comparison = rebuild_checkpoint_fork_derived_digests(plan, bindings)
-    if not digest_comparison.matches_stored_lock:
-        raise CheckpointCompatibilityError(
-            "checkpoint fork compatibility lock differs from authoritative projections: "
-            + "; ".join(
-                f"target={item.target_id!r} path={item.path} "
-                f"stored={item.stored!r} candidate={item.candidate!r}"
-                for item in digest_comparison.differences
-            )
-        )
+    # The gate runs no historical-evidence proof (execution holds no evidence):
+    # supported run-contract algorithm drift surfaces as the typed migration
+    # signal, while any input-drift signal dominates and fails closed.
+    digest_classification = classify_checkpoint_fork_plan_derived_digests(plan, bindings)
+    _raise_for_fork_digest_classifications(digest_classification.classifications)
 
     source = _load_latest_checkpoint_transaction(source_root)
     source_axes = {
@@ -5184,87 +6126,36 @@ def _compatible_stored_canonical_projection(
     recorded: RunContractBinding,
     expected: RunContractBinding,
 ) -> bool:
-    """Authenticate an old projection, migrate its run spec, and compare science."""
-    if (
-        recorded.algorithm_version
-        not in {_RUN_CONTRACT_BINDING_ALGORITHM_V2, _RUN_CONTRACT_BINDING_ALGORITHM_V3}
-        or expected.algorithm_version != _RUN_CONTRACT_BINDING_ALGORITHM_V4
-        or recorded.hash_domain != _RUN_CONTRACT_HASH_DOMAIN
-        or expected.hash_domain != _RUN_CONTRACT_HASH_DOMAIN
-    ):
+    """Authenticate an old projection, migrate its run spec, and compare science.
+
+    Edge support is decided by the shared migration-edge registry so the resume
+    verifier and the fork gate agree on the sanctioned ``v2 -> v4`` and
+    ``v3 -> v4`` run-contract-binding edges. Binding v2 predates signed-zero
+    normalization, so its bytes authenticate under either hash spelling.
+    """
+    edge = _RUN_CONTRACT_MIGRATION_EDGES.resolve(
+        source_algorithm_version=recorded.algorithm_version,
+        target_algorithm_version=expected.algorithm_version,
+        hash_domain=recorded.hash_domain,
+    )
+    if edge is None or expected.hash_domain != edge.hash_domain:
         return False
     projection = recorded.canonical_projection
     recorded_sha256 = recorded.canonical_projection_sha256
     expected_projection = expected.canonical_projection
     if projection is None or recorded_sha256 is None or expected_projection is None:
         return False
-
-    # Authenticate the original bytes before applying any migration. Binding
-    # v2 predates signed-zero normalization, while v3 requires it.
-    valid_projection_hashes = {_run_contract_hash(projection)}
-    if recorded.algorithm_version == _RUN_CONTRACT_BINDING_ALGORITHM_V2:
-        valid_projection_hashes.add(_canonical_hash(projection))
-    if recorded_sha256 not in valid_projection_hashes:
-        return False
-    if not _historical_projection_is_coherent(recorded, projection):
-        return False
-
-    migrated_projection = copy.deepcopy(projection)
-    training_run_spec = migrated_projection.get("training_run_spec")
-    if not isinstance(training_run_spec, Mapping):
-        return False
-    try:
-        from feedbax.contracts.migrations import migrate_structured_spec_payload
-
-        migrated_run_spec = migrate_structured_spec_payload(
-            "TrainingRunSpec",
-            training_run_spec,
-            path="checkpoint_binding/canonical_projection/training_run_spec",
-        ).payload
-        migrated_projection["training_run_spec"] = TrainingRunSpec.model_validate(
-            migrated_run_spec
-        ).model_dump(mode="json", exclude_none=True)
-    except (TypeError, ValueError):
-        return False
-    migrated_projection["algorithm_version"] = _RUN_CONTRACT_BINDING_ALGORITHM_V4
-    return canonical_json_bytes(
-        _normalize_signed_zero(migrated_projection)
-    ) == canonical_json_bytes(
-        _normalize_signed_zero(expected_projection)
+    return (
+        _run_contract_projection_migration_result(
+            projection=projection,
+            recorded_sha256=recorded_sha256,
+            recorded_algorithm_version=recorded.algorithm_version,
+            recorded_training_run_spec_schema_id=recorded.training_run_spec_schema_id,
+            recorded_training_run_spec_schema_version=recorded.training_run_spec_schema_version,
+            expected_projection=expected_projection,
+        )
+        is True
     )
-
-
-def _historical_projection_is_coherent(
-    recorded: RunContractBinding,
-    projection: Mapping[str, Any],
-) -> bool:
-    """Require a self-consistent historical binding before schema migration."""
-    if (
-        projection.get("schema_id")
-        != "feedbax.manifest.training_checkpoint.run_contract_projection"
-        or projection.get("schema_version")
-        != "feedbax.manifest.training_checkpoint.run_contract_projection.v1"
-        or projection.get("algorithm_version") != _RUN_CONTRACT_BINDING_ALGORITHM_V2
-    ):
-        return False
-    training_run_spec = projection.get("training_run_spec")
-    if not isinstance(training_run_spec, Mapping):
-        return False
-    embedded_schema_id = training_run_spec.get("schema_id")
-    embedded_schema_version = training_run_spec.get("schema_version")
-    if (
-        embedded_schema_id != TRAINING_RUN_SPEC_SCHEMA_ID
-        or recorded.training_run_spec_schema_id != embedded_schema_id
-        or recorded.training_run_spec_schema_version != embedded_schema_version
-    ):
-        return False
-    if recorded.algorithm_version == _RUN_CONTRACT_BINDING_ALGORITHM_V3:
-        return embedded_schema_version == TRAINING_RUN_SPEC_SCHEMA_VERSION_V3
-    return embedded_schema_version in {
-        TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
-        TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
-        TRAINING_RUN_SPEC_SCHEMA_VERSION_V3,
-    }
 
 
 def _format_binding_hash_field_summary(

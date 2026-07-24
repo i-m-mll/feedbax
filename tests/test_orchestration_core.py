@@ -2127,7 +2127,7 @@ def test_preflight_consumes_only_deployment_policy(tmp_path: Path) -> None:
     assert check.observed == bundle.deployment_policy.model_dump(mode="json")
 
 
-def test_preflight_rejects_registered_native_row_without_checkpoint_collection(
+def test_preflight_rejects_registered_native_row_without_canonical_collection(
     tmp_path: Path,
 ) -> None:
     bundle = _bundle(
@@ -2158,11 +2158,12 @@ def test_preflight_rejects_registered_native_row_without_checkpoint_collection(
     check = {entry.name: entry for entry in run_preflight_checks(bundle)}["native-output-custody"]
 
     assert check.status == "fail"
-    assert check.detail == "row-a: missing ['checkpoints']"
+    assert check.detail == "row-a: missing ['checkpoints', 'manifests']"
     assert check.observed["row-a"]["required_for_registered_native_training"] == [
         "manifest.json",
         "training-diagnostics.json",
         "checkpoints",
+        "manifests",
     ]
 
 

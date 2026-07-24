@@ -682,6 +682,170 @@ def test_engine_persists_one_intent_before_each_single_create(tmp_path: Path) ->
     assert len(set(transport.create_names)) == 2
 
 
+_RUNPOD_RESOURCE_UNAVAILABLE = (
+    '{"error":"This machine does not have the resources to deploy your pod. '
+    'Please try a different machine"}\n'
+    "Usage:\n  runpodctl pod create [flags]\n\n"
+    '{"error":"failed to create pod: This machine does not have the resources to deploy '
+    'your pod. Please try a different machine"}\n'
+)
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_resource_unavailable_create_response_is_definitive(stream: str) -> None:
+    result = CommandResult(1, **{stream: _RUNPOD_RESOURCE_UNAVAILABLE})
+
+    classification, _detail = runpod_module._classify_create_failure(result, None)
+
+    assert classification == "non-retryable"
+
+
+_RUNPOD_NO_INSTANCES_AVAILABLE = (
+    '{"error":"There are no longer any instances available with the requested '
+    'specifications. Please refresh and try again."}\n'
+)
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_no_instances_available_create_response_is_definitive(stream: str) -> None:
+    """EU-RO-1 variant surfaced from rlrmp2/5ea2a98: a distinct RunPod no-capacity message."""
+    result = CommandResult(1, **{stream: _RUNPOD_NO_INSTANCES_AVAILABLE})
+
+    classification, _detail = runpod_module._classify_create_failure(result, None)
+
+    assert classification == "non-retryable"
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        CommandResult(1, "This machine does not have the resources to deploy your pod"),
+        CommandResult(
+            1,
+            "There are no longer any instances available with the requested specifications.",
+        ),
+        CommandResult(1, '{"error":"pod limit exceeded for this account"}'),
+        CommandResult(1, "", "transport connection lost"),
+    ],
+)
+def test_unstructured_or_lost_create_response_remains_ambiguous(result: CommandResult) -> None:
+    classification, _detail = runpod_module._classify_create_failure(result, None)
+
+    assert classification == "retryable"
+
+
+CREATE_FAILURE_CORPUS_PATH = (
+    Path(__file__).parent / "fixtures" / "runpod_provider_errors" / "create_failure_corpus.json"
+)
+
+
+def _create_failure_corpus() -> list[dict[str, Any]]:
+    """Regression corpus for feedbax/32d1d73; see the fixture README for curation policy."""
+    return json.loads(CREATE_FAILURE_CORPUS_PATH.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize(
+    "entry", _create_failure_corpus(), ids=lambda entry: entry["name"]
+)
+def test_create_failure_corpus_classification(entry: dict[str, Any]) -> None:
+    """Every curated payload must keep its human-adjudicated classification."""
+    result = CommandResult(entry["returncode"], entry["stdout"], entry["stderr"])
+
+    classification, _detail = runpod_module._classify_create_failure(result, None)
+
+    assert classification == entry["expected_classification"], entry["name"]
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        entry
+        for entry in _create_failure_corpus()
+        if entry["expected_behavior"] == "region-rejected-continues"
+    ],
+    ids=lambda entry: entry["name"],
+)
+def test_create_failure_corpus_definitive_rejects_region_and_continues(
+    tmp_path: Path, entry: dict[str, Any]
+) -> None:
+    """A definitive corpus entry rejects its candidate region and moves to the next one."""
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / f"corpus-definitive-{entry['name']}.json")
+    transport = AcquisitionLeaseTransport(store)
+    transport.create_results = [
+        CommandResult(entry["returncode"], entry["stdout"], entry["stderr"]),
+        CommandResult(0, '{"id":"pod-second"}'),
+    ]
+    transport.register_on_create = [(), ("pod-second",)]
+    engine, _driver, state = _acquisition_engine(bundle, store, transport)
+
+    _state_after, outputs = engine._engine_owned_provision(state, attempt_ordinal=1)
+
+    assert outputs["pod_id"] == "pod-second"
+    persisted = store.load()
+    assert [intent.state for intent in persisted.acquisition_intents] == [
+        "failed-unacquired",
+        "acquired",
+    ]
+    assert len(transport.create_names) == 2
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        entry
+        for entry in _create_failure_corpus()
+        if entry["expected_behavior"] == "halt-ambiguous"
+    ],
+    ids=lambda entry: entry["name"],
+)
+def test_create_failure_corpus_ambiguous_halts_acquisition(
+    tmp_path: Path, entry: dict[str, Any]
+) -> None:
+    """An ambiguous corpus entry stops provisioning rather than guessing at a classification."""
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / f"corpus-ambiguous-{entry['name']}.json")
+    transport = AcquisitionLeaseTransport(store)
+    transport.create_results = [
+        CommandResult(entry["returncode"], entry["stdout"], entry["stderr"])
+    ]
+    engine, _driver, state = _acquisition_engine(bundle, store, transport)
+
+    with pytest.raises(OrchestrationStageError, match="ambiguous-acquisition-unresolved"):
+        engine._engine_owned_provision(state, attempt_ordinal=1)
+
+    persisted = store.load()
+    assert len(transport.create_names) == 1
+    assert persisted.acquisition_intents[0].state == "ambiguous-unresolved"
+    assert persisted.provisioning_stop_reason == "ambiguous-acquisition-unresolved"
+
+
+def test_resource_unavailable_create_advances_to_next_candidate(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "resource-unavailable-state.json")
+    transport = AcquisitionLeaseTransport(store)
+    transport.create_results = [
+        CommandResult(1, "", _RUNPOD_RESOURCE_UNAVAILABLE),
+        CommandResult(0, '{"id":"pod-second"}'),
+    ]
+    transport.register_on_create = [(), ("pod-second",)]
+    engine, _driver, state = _acquisition_engine(bundle, store, transport)
+
+    _state_after, outputs = engine._engine_owned_provision(state, attempt_ordinal=1)
+
+    assert outputs["pod_id"] == "pod-second"
+    persisted = store.load()
+    assert [intent.state for intent in persisted.acquisition_intents] == [
+        "failed-unacquired",
+        "acquired",
+    ]
+    assert [intent.datacenter_candidate for intent in persisted.acquisition_intents] == [
+        "CA-MTL-1",
+        "EU-CZ-1",
+    ]
+    assert len(transport.create_names) == 2
+
+
 def test_ambiguous_create_zero_match_stops_without_next_candidate(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     store = RunSetStateStore(bundle.run_set_dir / "ambiguous-state.json")
@@ -878,6 +1042,57 @@ def test_acquired_intent_without_verified_teardown_blocks_retry(tmp_path: Path) 
         engine._reconcile_acquisition_intents(state)
 
     assert store.load().acquisition_intents[0].state == "ambiguous-unresolved"
+
+
+def test_post_provision_early_failure_retains_identity_and_verifies_teardown(
+    tmp_path: Path,
+) -> None:
+    """Regression for feedbax/9e44e27.
+
+    A failure in the provision-to-SMOKE window (here, REALIZE_ENV) must not
+    orphan the pod that PROVISION already acquired: ``run`` must retain the
+    acquired pod's identity, execute teardown through the driver, and prove
+    provider-side absence before the acquisition intent is considered
+    resolved.
+    """
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "post-provision-failure-state.json")
+    transport = AcquisitionLeaseTransport(store)
+    transport.create_results = [CommandResult(0, '{"id":"pod-early-failure"}')]
+    transport.register_on_create = [("pod-early-failure",)]
+    transport.queue_runpodctl(
+        ("user", "--output", "json"), CommandResult(0, '{"clientBalance": 10}')
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            image=bundle.environment.image_id or "",
+            datacenters=("CA-MTL-1",),
+            poll_seconds=1,
+        ),
+        transport=transport,
+    )
+    engine = StageEngine(bundle=bundle, driver=driver, store=store)
+
+    def _fail_realize_env(_state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
+        raise RuntimeError("simulated post-provision failure before SMOKE")
+
+    engine._stage_realize_env = _fail_realize_env
+
+    with pytest.raises(RuntimeError, match="simulated post-provision failure before SMOKE"):
+        engine.run()
+
+    final = store.load()
+    teardown = final.stage("TEARDOWN")
+    assert teardown.status == "completed"
+    assert teardown.outputs["abort_path"] is True
+    assert teardown.outputs["pod_id"] == "pod-early-failure"
+    assert teardown.outputs["pod_absence"]["verified"] is True
+    assert transport.inventory == {}
+    intent = final.acquisition_intents[0]
+    assert intent.state == "resolved-torn-down"
+    assert intent.pod_ids == ["pod-early-failure"]
+    assert any(("remove", "pod", "pod-early-failure") == call for call in transport.runpodctl_calls)
 
 
 def test_deadman_is_installed_after_endpoint_and_before_gpu_readiness(tmp_path: Path) -> None:
@@ -4175,7 +4390,7 @@ def test_separate_process_existing_run_rejects_legacy_preflight(tmp_path: Path) 
         ),
         store=store,
     ).run(stop_after_stage=STAGE_PREFLIGHT)
-    assert len(state.stage(STAGE_PREFLIGHT).checks) == 24
+    assert len(state.stage(STAGE_PREFLIGHT).checks) == 25
     preflight = state.stage(STAGE_PREFLIGHT)
     preflight = preflight.model_copy(
         update={
@@ -4421,13 +4636,19 @@ def test_collect_native_outputs_uses_row_dir_and_canonical_events(tmp_path: Path
         update={
             "launch": RowLaunchSpec(
                 command=["python", "-m", "feedbax", "execute-training-run-spec", "spec.json"],
-                collect=["manifest.json", "training-diagnostics.json", "checkpoints"],
+                collect=[
+                    "manifest.json",
+                    "training-diagnostics.json",
+                    "checkpoints",
+                    "manifests",
+                ],
             )
         }
     )
     transport = FakeRunPodTransport()
     transport.queue_ssh(CommandResult(0, "file"))
     transport.queue_ssh(CommandResult(0, "file"))
+    transport.queue_ssh(CommandResult(0, "directory"))
     transport.queue_ssh(CommandResult(0, "directory"))
     driver = RunPodOrchestrationDriver(config=RunPodDriverConfig(), transport=transport)
 
@@ -4438,10 +4659,13 @@ def test_collect_native_outputs_uses_row_dir_and_canonical_events(tmp_path: Path
         f"{remote}/rows/warm/manifest.json",
         f"{remote}/rows/warm/training-diagnostics.json",
         f"{remote}/rows/warm/checkpoints/",
+        f"{remote}/rows/warm/manifests/",
         f"{remote}/events/warm.events.jsonl",
     ]
     assert transport.rsync_calls[2][1].endswith("/collected/warm/checkpoints/")
     assert transport.rsync_calls[2][2] is True
+    assert transport.rsync_calls[3][1].endswith("/collected/warm/manifests/")
+    assert transport.rsync_calls[3][2] is True
     assert collected["warm.events.jsonl"] == str(bundle.run_set_dir / "events/warm.events.jsonl")
 
 
@@ -4472,7 +4696,16 @@ def test_collect_rejects_unsafe_or_absent_remote_outputs(
     assert transport.rsync_calls == []
 
 
+@pytest.mark.parametrize(
+    ("directory_name", "payload_paths"),
+    [
+        ("checkpoints", ("latest.json", "transactions/tx-terminal/manifest.json")),
+        ("manifests", ("artifacts/sha256/ab/abcdef/training-history.json",)),
+    ],
+)
 def test_local_and_runpod_collect_directory_contents_at_declared_target(
+    directory_name: str,
+    payload_paths: tuple[str, ...],
     tmp_path: Path,
 ) -> None:
     rsync_executable = next(
@@ -4481,12 +4714,12 @@ def test_local_and_runpod_collect_directory_contents_at_declared_target(
     )
     if rsync_executable is None:
         pytest.skip("rsync is not installed")
-    source = tmp_path / "remote" / "checkpoints"
+    source = tmp_path / "remote" / directory_name
     source.mkdir(parents=True)
-    (source / "latest.json").write_text('{"transaction_id":"tx-terminal"}\n')
-    transaction = source / "transactions" / "tx-terminal"
-    transaction.mkdir(parents=True)
-    (transaction / "manifest.json").write_text("{}\n")
+    for relative_path in payload_paths:
+        payload = source / relative_path
+        payload.parent.mkdir(parents=True, exist_ok=True)
+        payload.write_text('{"source":"terminal"}\n')
 
     local_root = tmp_path / "local"
     local_root.mkdir()
@@ -4534,23 +4767,31 @@ def test_local_and_runpod_collect_directory_contents_at_declared_target(
             )
         }
     )
-    stale_nested = runpod_bundle.run_set_dir / "collected" / "warm" / "checkpoints" / "checkpoints"
+    stale_nested = (
+        runpod_bundle.run_set_dir
+        / "collected"
+        / "warm"
+        / directory_name
+        / directory_name
+    )
     stale_nested.mkdir(parents=True)
-    (stale_nested / "latest.json").write_text('{"transaction_id":"tx-stale"}\n')
+    (stale_nested / "stale.json").write_text('{"source":"stale"}\n')
     transport = RealRsyncTransport()
     runpod_collected = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(), transport=transport
     ).collect(runpod_bundle, runpod_row, _state(runpod_bundle))
 
     for collected in (local_collected, runpod_collected):
-        checkpoint_root = Path(collected["checkpoints"])
-        assert (checkpoint_root / "latest.json").is_file()
-        assert (checkpoint_root / "transactions" / "tx-terminal" / "manifest.json").is_file()
-        assert not (checkpoint_root / "checkpoints").exists()
+        collected_root = Path(collected[directory_name])
+        for relative_path in payload_paths:
+            assert (collected_root / relative_path).read_text(encoding="utf-8") == (
+                '{"source":"terminal"}\n'
+            )
+        assert not (collected_root / directory_name).exists()
     assert transport.rsync_calls == [
         (
             str(source) + "/",
-            str(Path(runpod_collected["checkpoints"])) + "/",
+            str(Path(runpod_collected[directory_name])) + "/",
             True,
             (),
         )

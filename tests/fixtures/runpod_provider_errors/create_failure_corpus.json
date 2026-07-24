@@ -1,0 +1,82 @@
+[
+  {
+    "name": "no_capacity_resource_unavailable",
+    "class": "definitive-no-capacity",
+    "description": "RunPod's most common create-time capacity rejection. Structured JSON error field embedded among plain-text usage/log lines, as runpodctl emits on create failure.",
+    "returncode": 1,
+    "stdout": "",
+    "stderr": "{\"error\":\"This machine does not have the resources to deploy your pod. Please try a different machine\"}\nUsage:\n  runpodctl pod create [flags]\n\n{\"error\":\"failed to create pod: This machine does not have the resources to deploy your pod. Please try a different machine\"}\n",
+    "expected_classification": "non-retryable",
+    "expected_behavior": "region-rejected-continues"
+  },
+  {
+    "name": "no_capacity_no_longer_available",
+    "class": "definitive-no-capacity",
+    "description": "A distinct wording variant of the same class surfaced from a live launch (rlrmp2/5ea2a98): a datacenter-specific 'no longer any instances available' rejection that the substring-only classifier missed until structured parsing was added.",
+    "returncode": 1,
+    "stdout": "{\"error\":\"There are no longer any instances available with the requested specifications. Please refresh and try again.\"}\n",
+    "stderr": "",
+    "expected_classification": "non-retryable",
+    "expected_behavior": "region-rejected-continues"
+  },
+  {
+    "name": "permanent_invalid_request",
+    "class": "permanent-request-error",
+    "description": "A permanent request/configuration error: the provider rejects the create request itself (bad image reference, invalid flag combination, etc.), which cannot succeed on retry or on another datacenter.",
+    "returncode": 400,
+    "stdout": "{\"statusCode\":400,\"code\":\"invalid_request\",\"error\":\"image reference is not a valid immutable digest\"}\n",
+    "stderr": "",
+    "expected_classification": "non-retryable",
+    "expected_behavior": "region-rejected-continues"
+  },
+  {
+    "name": "authentication_unauthorized",
+    "class": "authentication-or-quota",
+    "description": "An authentication/authorization failure: the provider rejects the create call before ever attempting to schedule a pod, so no pod was created and retrying with the same credentials cannot help.",
+    "returncode": 401,
+    "stdout": "{\"statusCode\":401,\"error\":\"Unauthorized: invalid or expired API key\"}\n",
+    "stderr": "",
+    "expected_classification": "non-retryable",
+    "expected_behavior": "region-rejected-continues"
+  },
+  {
+    "name": "ambiguous_malformed_json",
+    "class": "ambiguous-unknown",
+    "description": "A truncated/corrupted response body (e.g. from a partially-read stream): not valid JSON, so no structured error field can be recovered and the failure must be treated as ambiguous rather than guessed at.",
+    "returncode": 1,
+    "stdout": "{\"error\":\"This machine does not have the reso",
+    "stderr": "",
+    "expected_classification": "retryable",
+    "expected_behavior": "halt-ambiguous"
+  },
+  {
+    "name": "ambiguous_unrelated_error_text",
+    "class": "ambiguous-unknown",
+    "description": "A well-formed but unrelated provider error whose message names no known no-capacity, request, or auth condition. Halting rather than guessing keeps unmodelled provider wording from being silently misclassified.",
+    "returncode": 1,
+    "stdout": "",
+    "stderr": "internal server error, please contact support",
+    "expected_classification": "retryable",
+    "expected_behavior": "halt-ambiguous"
+  },
+  {
+    "name": "ambiguous_empty_response",
+    "class": "ambiguous-unknown",
+    "description": "A create call that returns no output at all, for example after a transport failure that lost the response before it could be parsed. The pod's actual creation state is unknown, so this must fail closed.",
+    "returncode": 124,
+    "stdout": "",
+    "stderr": "",
+    "expected_classification": "retryable",
+    "expected_behavior": "halt-ambiguous"
+  },
+  {
+    "name": "ambiguous_structured_but_unrecognized",
+    "class": "ambiguous-unknown",
+    "description": "A structured JSON error field is present, but its message names a condition (an account-level pod limit) outside this classifier's deliberately narrow, incident-derived vocabulary. Recognizing only adjudicated messages, not guessing at new ones, is what keeps the corpus honest.",
+    "returncode": 1,
+    "stdout": "{\"error\":\"pod limit exceeded for this account\"}\n",
+    "stderr": "",
+    "expected_classification": "retryable",
+    "expected_behavior": "halt-ambiguous"
+  }
+]
