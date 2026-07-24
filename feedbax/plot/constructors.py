@@ -12,6 +12,7 @@ import numpy as np
 import plotly.graph_objs as go
 from plotly.subplots import make_subplots
 
+from feedbax.contracts.figures import ColorscaleSpec
 from feedbax.contracts.manifest import StrictModel
 from feedbax.plot.colors import color_add_alpha, sample_colorscale_unique
 
@@ -47,7 +48,7 @@ class Trajectory2DParams(StrictModel):
 
     label: str | None = None
     color: str | None = None
-    colorscale: str | list[str] | list[tuple[float, str]] | None = None
+    colorscale: ColorscaleSpec | None = None
     colorscale_key: str | None = None
     colorscale_axis: int = 0
     stride: int = 1

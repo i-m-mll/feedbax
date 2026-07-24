@@ -29,7 +29,13 @@ from feedbax.contracts.expressions import (
     evaluate_query,
     expression_hash,
 )
-from feedbax.contracts.figures import FigureInputAuthority, FigureSpec, TraceBinding
+from feedbax.contracts.figures import (
+    FigureInputAuthority,
+    FigureSpec,
+    TraceBinding,
+    TraceFamily,
+    substitute_index,
+)
 from feedbax.contracts.manifest import (
     AnyManifest,
     EntrypointRef,
@@ -50,6 +56,7 @@ from feedbax.contracts.manifest import (
     store_json_artifact,
     write_manifest,
 )
+from feedbax.plot.colors import sample_colorscale_unique
 from feedbax.plot.constructors import (
     FigureConstructorRegistration,
     PanelContent,
@@ -96,6 +103,29 @@ class TraceBindingPlan:
 
     binding: TraceBinding
     multiplicity: str
+
+
+@dataclass(frozen=True)
+class TraceFamilyMember:
+    """One expanded trace-family member and the color its index was given."""
+
+    index: int | str
+    color: str | None
+    binding: TraceBinding
+
+
+@dataclass(frozen=True)
+class TraceFamilyExpansion:
+    """The deterministic expansion of one declared trace family.
+
+    ``members`` is the family's color key in index order. A colorbar
+    declaration composes with a family by reading these index/color pairs
+    instead of re-sampling the colorscale, so the key and the traces cannot
+    disagree.
+    """
+
+    family: TraceFamily
+    members: tuple[TraceFamilyMember, ...]
 
 
 @dataclass(frozen=True)
@@ -639,6 +669,38 @@ def _facet_context(
     )
 
 
+def expand_trace_families(spec: FigureSpec) -> tuple[TraceFamilyExpansion, ...]:
+    """Expand every declared trace family into its enumerated trace bindings.
+
+    This is the single source of family expansion: figure execution compiles
+    the returned bindings, and colorbar-style keys read the same expansions.
+    """
+    return tuple(_expand_trace_family(family) for family in (spec.trace_families or []))
+
+
+def _expand_trace_family(family: TraceFamily) -> TraceFamilyExpansion:
+    indices = family.index.resolve()
+    if family.colorscale is None:
+        colors: tuple[str | None, ...] = (None,) * len(indices)
+    else:
+        sampled = tuple(
+            sample_colorscale_unique(family.colorscale, len(indices), colortype="rgb")
+        )
+        if len(sampled) != len(indices):
+            raise ValueError(
+                f"trace family {family.name!r} colorscale sampled {len(sampled)} colors "
+                f"for {len(indices)} indices"
+            )
+        colors = sampled
+    members: list[TraceFamilyMember] = []
+    for index, color in zip(indices, colors, strict=True):
+        binding = substitute_index(family.trace, index)
+        if color is not None:
+            binding = binding.model_copy(update={"params": {**binding.params, "color": color}})
+        members.append(TraceFamilyMember(index=index, color=color, binding=binding))
+    return TraceFamilyExpansion(family=family, members=tuple(members))
+
+
 def _trace_bindings_for_spec(spec: FigureSpec, template: Any | None) -> list[TraceBindingPlan]:
     bindings: list[TraceBindingPlan] = []
     if template is not None:
@@ -670,6 +732,13 @@ def _trace_bindings_for_spec(spec: FigureSpec, template: Any | None) -> list[Tra
     bindings.extend(
         TraceBindingPlan(binding=binding, multiplicity="many") for binding in spec.traces
     )
+    # Families expand in declaration order, after the individually declared
+    # traces, so a family spec and its hand-enumerated equivalent agree on order.
+    for expansion in expand_trace_families(spec):
+        bindings.extend(
+            TraceBindingPlan(binding=member.binding, multiplicity="many")
+            for member in expansion.members
+        )
     piece_names = [
         *(getattr(template, "default_pieces", []) if template is not None else []),
         *spec.pieces,
