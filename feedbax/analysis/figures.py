@@ -44,6 +44,7 @@ from feedbax.contracts.manifest import (
     collect_git_provenance,
     default_manifest_root,
     figure_manifest_id,
+    media_type_for_extension,
     sha256_bytes,
     spec_payload,
     store_artifact,
@@ -63,7 +64,10 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 FIGURE_RENDER_ROLE = "figure_render"
 FIGURE_SPEC_ROLE = "figure_spec"
 FIGURE_MANIFEST_ROLE = "figure_manifest"
-FIGURE_RENDER_MEDIA_TYPES = frozenset({"application/json", "text/html"})
+FIGURE_RENDER_MEDIA_TYPES = frozenset(
+    media_type_for_extension(extension)
+    for extension in ("json", "html", "png", "svg", "pdf")
+)
 
 
 @dataclass(frozen=True)
@@ -1022,7 +1026,7 @@ def _write_figure_custody(
             )
         )
         if render_path is not None:
-            media_type = "text/html" if render_path.suffix == ".html" else "application/json"
+            media_type = media_type_for_extension(render_path.suffix)
             artifacts.append(
                 store_artifact(
                     render_path,

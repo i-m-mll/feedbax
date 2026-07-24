@@ -29,6 +29,7 @@ from feedbax.contracts.manifest import (
     analysis_run_manifest_id,
     collect_git_provenance,
     default_manifest_root,
+    media_type_for_extension,
     safe_manifest_key,
     spec_payload,
     store_artifact,
@@ -40,18 +41,6 @@ from jax_cookbook import arrays_to_lists
 if TYPE_CHECKING:
     from feedbax.persistence.database import EvaluationRecord, ModelRecord
 
-
-_MEDIA_TYPES = {
-    "html": "text/html",
-    "json": "application/json",
-    "svg": "image/svg+xml",
-    "png": "image/png",
-    "jpg": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "webp": "image/webp",
-    "pdf": "application/pdf",
-    "npz": "application/x-npz",
-}
 
 _FIGURE_ROUTING_KEY = "figure_routing"
 _FIGURE_ROUTING_REQUIRED_KEYS = {"package", "experiment", "topic"}
@@ -172,10 +161,7 @@ class AnalysisRunContext:
             root=self.root_path,
             role=role,
             logical_name=logical_name or artifact_path.name,
-            media_type=media_type or _MEDIA_TYPES.get(
-                artifact_path.suffix.lstrip(".").lower(),
-                "application/octet-stream",
-            ),
+            media_type=media_type or media_type_for_extension(artifact_path.suffix),
             metadata=self._artifact_metadata(
                 metadata,
                 group_id=group_id,
@@ -359,7 +345,7 @@ class AnalysisRunContext:
                     root=self.root_path,
                     role="figure",
                     logical_name=f"{safe_label}/{path.name}",
-                    media_type=_MEDIA_TYPES.get(ext, "application/octet-stream"),
+                    media_type=media_type_for_extension(ext),
                     metadata=metadata,
                 )
                 artifacts.append(artifact)

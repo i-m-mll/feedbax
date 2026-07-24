@@ -1953,6 +1953,38 @@ def _secure_store_bytes_artifact(
         _close_secure_directory_chain(records)
 
 
+DEFAULT_ARTIFACT_MEDIA_TYPE = "application/octet-stream"
+
+ARTIFACT_MEDIA_TYPES_BY_EXTENSION: dict[str, str] = {
+    "html": "text/html",
+    "json": "application/json",
+    "svg": "image/svg+xml",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "webp": "image/webp",
+    "pdf": "application/pdf",
+    "npz": "application/x-npz",
+}
+
+
+def media_type_for_extension(
+    extension: str,
+    *,
+    default: str = DEFAULT_ARTIFACT_MEDIA_TYPE,
+) -> str:
+    """Return the artifact media type registered for a file extension.
+
+    This is the single source for extension-to-media-type mapping used when storing
+    artifacts. The extension may be given with or without a leading dot and in any case.
+
+    Args:
+        extension: File extension such as `"png"`, `".PNG"`, or a `Path.suffix` value.
+        default: Media type returned for an unregistered extension.
+    """
+    return ARTIFACT_MEDIA_TYPES_BY_EXTENSION.get(extension.lstrip(".").lower(), default)
+
+
 def store_artifact(
     source_path: Path | str,
     *,
