@@ -36,6 +36,7 @@ from feedbax.orchestration.bundle import (
 from feedbax.orchestration.drivers.runpod import (
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V4,
+    CommandResult,
     RunPodDriverConfig,
     RunPodDriverError,
     RunPodOrchestrationDriver,
@@ -230,6 +231,55 @@ def _driver(bundle: RunBundle, repo: Path, transport: RecordingTransport):
 def _completed_preflight(bundle: RunBundle, repo: Path, root: Path) -> Any:
     store = RunSetStateStore(root / "state.json")
     return StageEngine(bundle=bundle, driver=_driver(bundle, repo, RecordingTransport()), store=store).run(stop_after_stage=STAGE_PREFLIGHT)
+
+
+class _AcquiredPreflightTransport(RecordingTransport):
+    """Answer the provider probes a pre-acquisition preflight makes.
+
+    An acquiring driver (no provided endpoint and no configured pod) still runs
+    credential and balance checks, so the transport must return a valid user
+    payload with sufficient balance in addition to image existence.
+    """
+
+    def __init__(self, balance: float = 100.0) -> None:
+        super().__init__()
+        self._balance = balance
+
+    def runpodctl(self, *args: str) -> CommandResult:
+        self.operations.append("runpodctl:" + " ".join(args))
+        if args[:1] == ("user",):
+            return CommandResult(0, json.dumps({"clientBalance": self._balance}))
+        raise AssertionError(f"unexpected runpodctl call: {args}")
+
+
+def _acquired_config(
+    bundle: RunBundle,
+    repo: Path,
+    *,
+    ssh_host: str | None = None,
+    ssh_port: int | None = None,
+) -> RunPodDriverConfig:
+    return RunPodDriverConfig(
+        ssh_host=ssh_host,
+        ssh_port=ssh_port,
+        image=bundle.environment.image_id or "",
+        gpu_id="RTX",
+        datacenters=("CA",),
+        local_repos={"science": repo},
+        remote_repos={"science": "/workspace/science"},
+        primary_repo="science",
+        protected_refs={"science": "refs/heads/main"},
+    )
+
+
+def _completed_acquired_preflight(bundle: RunBundle, repo: Path, root: Path) -> Any:
+    store = RunSetStateStore(root / "state.json")
+    driver = RunPodOrchestrationDriver(
+        config=_acquired_config(bundle, repo), transport=_AcquiredPreflightTransport()
+    )
+    return StageEngine(bundle=bundle, driver=driver, store=store).run(
+        stop_after_stage=STAGE_PREFLIGHT
+    )
 
 
 def test_matrix_preflight_emits_canonical_v4_without_private_paths(tmp_path: Path) -> None:
@@ -619,3 +669,74 @@ def test_matrix_restore_rejects_missing_legacy_or_tampered_evidence(
     ):
         _driver(bundle, repo, transport).restore_completed_preflight(bundle, state)
     assert transport.operations == []
+
+
+def test_acquired_pod_recert_restores_pre_acquisition_gpu_policy_declaration(
+    tmp_path: Path,
+) -> None:
+    """Recert restoration of an acquired-pod run must accept genuine evidence.
+
+    Regression for the RunPod recert restoration defect: ``StageEngine.run``
+    restores ``_pod_id`` from the provision record before restoring completed
+    preflight evidence. For a run that acquired its pod (then torn down), the
+    gpu-policy ``provided_target`` is a pre-acquisition user declaration and must
+    be reconstructed from the provided-target declarations, not from the
+    later-acquired pod id.
+    """
+    repo, revision = _authority_repo(tmp_path)
+    bundle = _matrix_bundle(tmp_path, revision=revision)
+    state = _completed_acquired_preflight(bundle, repo, tmp_path)
+
+    gpu_policy = next(
+        check
+        for check in state.stage(STAGE_PREFLIGHT).checks
+        if check.name == "runpod-gpu-policy-declared"
+    )
+    assert gpu_policy.observed["provided_target"] is False
+
+    # A fresh recert process restores the acquired (now destroyed) pod identity
+    # from the provision record before completed-preflight restoration.
+    provision_record = {
+        "driver": "runpod",
+        "pod_id": "pod-destroyed",
+        "provided_pod": False,
+        "provided_endpoint": False,
+        "ssh_host": "203.0.113.10",
+        "ssh_port": 22,
+        "teardown_allowed": True,
+    }
+    driver = RunPodOrchestrationDriver(
+        config=_acquired_config(bundle, repo), transport=_AcquiredPreflightTransport()
+    )
+    driver.restore_from_provision_record(provision_record)
+    assert driver._pod_id == "pod-destroyed"
+    assert driver._provided_pod is False
+    assert driver._provided_endpoint is False
+
+    # Fails before the fix ("runpod-gpu-policy-declared observation does not
+    # match current declarations"); restores cleanly with it.
+    assert driver.restore_completed_preflight(bundle, state) is True
+
+
+def test_acquired_pod_recert_fails_closed_when_declaration_disagrees(
+    tmp_path: Path,
+) -> None:
+    """A genuine declaration mismatch on ``provided_target`` still fails closed.
+
+    Pre-acquisition evidence observed ``provided_target=False``. A restore whose
+    genuine declaration now claims a provided endpoint (``provided_target=True``)
+    must be rejected: the exact-match guard is corrected, not weakened.
+    """
+    repo, revision = _authority_repo(tmp_path)
+    bundle = _matrix_bundle(tmp_path, revision=revision)
+    state = _completed_acquired_preflight(bundle, repo, tmp_path)
+
+    driver = RunPodOrchestrationDriver(
+        config=_acquired_config(bundle, repo, ssh_host="203.0.113.10", ssh_port=22),
+        transport=RecordingTransport(),
+    )
+    with pytest.raises(
+        RunPodDriverError,
+        match="runpod-gpu-policy-declared observation does not match current declarations",
+    ):
+        driver.restore_completed_preflight(bundle, state)

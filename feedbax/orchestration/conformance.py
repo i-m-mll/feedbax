@@ -1265,6 +1265,7 @@ def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
             trace,
             row.training_diagnostics,
             event_log=row.event_log,
+            schedule_position_dependent=not context_independent,
         )
         eval_context = require_schedule_context(
             (
@@ -1341,8 +1342,14 @@ def _normalize_lr_trace_steps(
     training_diagnostics: Mapping[str, Any] | None,
     *,
     event_log: Path | str | Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
+    schedule_position_dependent: bool = True,
 ) -> dict[tuple[tuple[str, int], ...], dict[int, float]]:
-    """Normalize completed-batch segment samples to their cumulative update steps."""
+    """Normalize completed-batch segment samples to their cumulative update steps.
+
+    ``schedule_position_dependent`` gates the fresh-init (``resume_origin == 0``)
+    normalization: a constant or absent schedule certifies the same value at every
+    coordinate, so its recorded samples are left untranslated.
+    """
     segment_raw = _path(training_diagnostics, "segment_completed_batches")
     cumulative_raw = _path(training_diagnostics, "cumulative_completed_batches")
     if segment_raw is _MISSING and cumulative_raw is _MISSING:
@@ -1362,7 +1369,24 @@ def _normalize_lr_trace_steps(
         )
     resume_origin = cumulative_completed - segment_completed
     if resume_origin == 0:
-        return {coordinates: dict(samples) for coordinates, samples in trace.items()}
+        if not schedule_position_dependent:
+            # A constant or absent schedule has no position to align, so the recorded
+            # completed-batch coordinate needs no optimizer-update normalization.
+            return {coordinates: dict(samples) for coordinates, samples in trace.items()}
+        # A fresh-init run records, under the post-update completed-batch coordinate N,
+        # the learning rate used by the update that produced batch N (optimizer update
+        # N-1). Align each sample to that update, exactly as the cumulative continuation
+        # branch does with resume_origin == 0.
+        fresh_steps = [step for samples in trace.values() for step in samples]
+        if not all(1 <= step <= cumulative_completed for step in fresh_steps):
+            raise ValueError(
+                "fresh-init lr_trace samples must be post-update completed-batch coordinates "
+                "in 1..cumulative_completed_batches"
+            )
+        return {
+            coordinates: {step - 1: value for step, value in samples.items()}
+            for coordinates, samples in trace.items()
+        }
 
     steps = [step for samples in trace.values() for step in samples]
     segment_local = all(1 <= step <= segment_completed for step in steps)
