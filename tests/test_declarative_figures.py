@@ -176,7 +176,7 @@ def test_constructor_versions_are_reported_in_catalog_and_manifest(tmp_path: Pat
         "feedbax.profile_band": "v2",
         "feedbax.profile_curves": "v1",
         "feedbax.comparison_grid": "v2",
-        "feedbax.grid_figure": "v2",
+        "feedbax.grid_figure": "v3",
     }
     catalog_versions = {item["key"]: item["version"] for item in constructor_catalog()}
     assert {key: catalog_versions[key] for key in expected} == expected

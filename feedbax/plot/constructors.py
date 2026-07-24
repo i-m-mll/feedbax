@@ -12,6 +12,7 @@ import numpy as np
 import plotly.graph_objs as go
 from plotly.subplots import make_subplots
 
+from feedbax.contracts.figures import ColorscaleSpec, FigureColorbar
 from feedbax.contracts.manifest import StrictModel
 from feedbax.plot.colors import color_add_alpha, sample_colorscale_unique
 
@@ -47,7 +48,7 @@ class Trajectory2DParams(StrictModel):
 
     label: str | None = None
     color: str | None = None
-    colorscale: str | list[str] | list[tuple[float, str]] | None = None
+    colorscale: ColorscaleSpec | None = None
     colorscale_key: str | None = None
     colorscale_axis: int = 0
     stride: int = 1
@@ -122,6 +123,8 @@ class GridFigureParams(StrictModel):
     margin: FigureMarginParams | None = None
     hovermode: Literal["x", "y", "closest", "x unified", "y unified", False] | None = None
     template: str | None = None
+    # Resolved by figure execution from FigureSpec.colorbar; not authored here.
+    colorbar: FigureColorbar | None = None
 
 
 class Trajectories2DRowParams(StrictModel):
@@ -737,6 +740,40 @@ def _comparison_grid(panels: Sequence[PanelContent], params: StrictModel) -> go.
     return fig
 
 
+def _colorbar_carrier(colorbar: FigureColorbar) -> go.Scatter:
+    """Return the point-free trace that draws a resolved colorbar.
+
+    Plotly draws a colorbar from a trace that carries a colorscale, so the key
+    is one scatter with no plotted points: it adds no legend entry, no hover
+    target, and no data to the panels it sits beside.
+    """
+    if colorbar.family is not None:
+        raise ValueError(
+            f"colorbar bound to trace family {colorbar.family!r} reached the assembler "
+            "with its family colors unresolved"
+        )
+    if colorbar.colorscale is None or colorbar.range is None:
+        raise ValueError("a rendered colorbar requires both a colorscale and a range")
+    low, high = colorbar.range
+    marker: dict[str, Any] = {
+        "color": [low],
+        "colorscale": colorbar.colorscale,
+        "cmin": low,
+        "cmax": high,
+        "showscale": True,
+    }
+    if colorbar.title is not None:
+        marker["colorbar"] = {"title": colorbar.title}
+    return go.Scatter(
+        x=[None],
+        y=[None],
+        mode="markers",
+        showlegend=False,
+        hoverinfo="skip",
+        marker=marker,
+    )
+
+
 def _grid_figure(fig: go.Figure, panels: Sequence[PanelContent], params: StrictModel) -> go.Figure:
     p = GridFigureParams.model_validate(params.model_dump())
     updates: dict[str, Any] = {}
@@ -764,6 +801,8 @@ def _grid_figure(fig: go.Figure, panels: Sequence[PanelContent], params: StrictM
         updates["template"] = p.template
     if updates:
         fig.update_layout(**updates)
+    if p.colorbar is not None:
+        fig.add_trace(_colorbar_carrier(p.colorbar))
     return fig
 
 
@@ -842,7 +881,7 @@ def register_default_figure_constructors() -> None:
         "feedbax.hline": "v2",
         "feedbax.vrect": "v2",
         "feedbax.comparison_grid": "v2",
-        "feedbax.grid_figure": "v2",
+        "feedbax.grid_figure": "v3",
     }
     for key, tier, constructor, params_model, description in defaults:
         register_figure_constructor(

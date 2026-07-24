@@ -2636,7 +2636,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             description="Executable declarative figure specification.",
             rejected_old_versions=("feedbax.spec.figure.v1",),
-            required_tests=("tests/test_declarative_figures.py",),
+            required_tests=(
+                "tests/test_declarative_figures.py",
+                "tests/test_figure_trace_families.py",
+                "tests/test_figure_colorbar.py",
+            ),
         ),
         _family(
             "FigureTemplate",
