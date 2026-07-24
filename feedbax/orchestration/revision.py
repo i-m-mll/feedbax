@@ -16,10 +16,12 @@ supplied at all.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
 import subprocess
 import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,6 +87,114 @@ def assert_feedbax_revision_pin(locked_revision: str) -> str:
             f"locked={locked_revision} loaded={actual_revision}"
         )
     return actual_revision
+
+
+def resolve_repo_revision_at(source_root: Path) -> str:
+    """Return the full commit currently on ``HEAD`` of the checkout at ``source_root``."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(source_root), "rev-parse", "--verify", "HEAD^{commit}"],
+            capture_output=True,
+            check=True,
+            env=_GIT_ENVIRONMENT,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise FeedbaxRevisionError(
+            f"cannot resolve the Git revision of the checkout at {source_root}"
+        ) from exc
+    revision = result.stdout.strip().lower()
+    if not _GIT_REVISION_RE.fullmatch(revision):
+        raise FeedbaxRevisionError(
+            f"the checkout at {source_root} did not resolve to a full lowercase Git commit"
+        )
+    return revision
+
+
+def _git_toplevel(path: Path) -> Path:
+    """Return the resolved top-level directory of the Git checkout containing ``path``."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            check=True,
+            env=_GIT_ENVIRONMENT,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise FeedbaxRevisionError(
+            f"cannot resolve the Git top-level directory of {path}"
+        ) from exc
+    return Path(result.stdout.strip()).resolve()
+
+
+def resolve_science_repo_import_revisions() -> dict[str, str]:
+    """Resolve the revision of every checkout supplying ``feedbax.plugins`` modules.
+
+    CERTIFY re-derives row payloads by importing the science-repo code published
+    through the shared ``feedbax.plugins`` entry-point group. This resolves the
+    Git checkout of each such provider — excluding the Feedbax package's own
+    checkout — to the full commit currently on its ``HEAD``, so a recertification
+    boundary can assert the imported science revision against the run's realized
+    repository snapshot before deriving any payload.
+
+    Returns:
+        A mapping of resolved checkout path to its ``HEAD`` commit. Providers
+        whose module source or containing checkout cannot be resolved are skipped
+        rather than guessed; the caller decides how to treat an empty result.
+    """
+    from feedbax.plugins.discovery import feedbax_plugin_entry_points
+
+    feedbax_root = _git_toplevel(_feedbax_package_root())
+    revisions: dict[str, str] = {}
+    for entry_point in feedbax_plugin_entry_points():
+        module_name = getattr(entry_point, "module", None)
+        if not isinstance(module_name, str) or not module_name:
+            continue
+        top_level = module_name.split(".", 1)[0]
+        try:
+            spec = importlib.util.find_spec(top_level)
+        except (ImportError, ValueError, AttributeError):
+            continue
+        origin = getattr(spec, "origin", None) if spec is not None else None
+        if not origin:
+            continue
+        try:
+            root = _git_toplevel(Path(origin).resolve().parent)
+        except FeedbaxRevisionError:
+            continue
+        if root == feedbax_root:
+            continue
+        revisions[str(root)] = resolve_repo_revision_at(root)
+    return revisions
+
+
+def assert_science_repo_revision_pin(
+    *,
+    primary_repo: str,
+    realized_revision: str,
+    imported_revisions: Mapping[str, str],
+) -> None:
+    """Fail closed unless every imported science checkout matches the run's snapshot.
+
+    Args:
+        primary_repo: Name of the run's primary (science) repository.
+        realized_revision: Commit the run's realized repository snapshot pinned
+            for the primary science repository.
+        imported_revisions: Mapping of each currently imported science checkout
+            path to its resolved ``HEAD`` commit.
+
+    Any divergence means CERTIFY would re-derive payloads with code the run never
+    realized, so the check raises ``FeedbaxRevisionError`` naming both revisions
+    and the offending checkout.
+    """
+    for source_path, revision in sorted(imported_revisions.items()):
+        if revision != realized_revision:
+            raise FeedbaxRevisionError(
+                "science repo revision pin mismatch for "
+                f"{primary_repo!r}: run realized {realized_revision}, but the "
+                f"imported science checkout at {source_path} is {revision}"
+            )
 
 
 @dataclass(frozen=True)

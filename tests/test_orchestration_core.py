@@ -116,6 +116,11 @@ from feedbax.orchestration.drivers.runpod import (
     _run_command,
     project_runpod_provision_facts,
 )
+from feedbax.orchestration.repo_realization import (
+    RepoRealizationEntry,
+    RepoRealizationPlan,
+)
+from feedbax.orchestration.repo_snapshot import RepoSnapshotManifest, RepoSnapshotRecord
 from feedbax.orchestration.stages import (
     STAGE_CERTIFY,
     STAGE_LAUNCH,
@@ -3317,6 +3322,106 @@ def test_explicit_recertification_after_failed_retry_requires_preserved_history(
             store=store,
             conformance_registry=_fixture_pass_registry(),
         ).run(retry_failed_certification=True)
+
+
+def test_assert_science_repo_revision_pin_refuses_mismatch() -> None:
+    revision.assert_science_repo_revision_pin(
+        primary_repo="rlrmp2",
+        realized_revision="a" * 40,
+        imported_revisions={"/checkout/rlrmp2": "a" * 40},
+    )
+    with pytest.raises(
+        revision.FeedbaxRevisionError,
+        match=r"science repo revision pin mismatch for 'rlrmp2'.*a{40}.*b{40}",
+    ):
+        revision.assert_science_repo_revision_pin(
+            primary_repo="rlrmp2",
+            realized_revision="a" * 40,
+            imported_revisions={"/checkout/rlrmp2": "b" * 40},
+        )
+
+
+def test_resolve_science_repo_import_revisions_excludes_feedbax_checkout() -> None:
+    # Feedbax itself publishes no ``feedbax.plugins`` entry points and its own
+    # checkout is always excluded, so resolution is a well-typed no-op here and
+    # never reports the host revision as an imported science revision.
+    resolved = revision.resolve_science_repo_import_revisions()
+    assert isinstance(resolved, dict)
+    feedbax_root = str(
+        revision._git_toplevel(revision._feedbax_package_root())
+    )
+    assert feedbax_root not in resolved
+
+
+def test_stage_certify_refuses_mismatched_science_repo_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    # A completed failing run gives a state with the SMOKE/STAGE_INPUTS evidence
+    # CERTIFY needs, plus an on-disk conformance.json to prove non-overwrite.
+    with pytest.raises(ValueError, match="phase=completed"):
+        StageEngine(
+            bundle=bundle,
+            driver=FakeDriver(),
+            store=store,
+            conformance_registry=_failing_registry("fixture_fail_probe"),
+        ).run()
+    certificate_path = bundle.run_set_dir / "conformance.json"
+    certificate_bytes_before = certificate_path.read_bytes()
+
+    record = RepoSnapshotRecord(
+        commit="c" * 40, dirty=False, content_sha256="1" * 64, file_count=2
+    )
+    plan = RepoRealizationPlan.create(
+        primary_repo="rlrmp2",
+        repos={
+            "rlrmp2": RepoRealizationEntry(
+                local_root="/live/rlrmp2",
+                staging_root="/staging/rlrmp2",
+                remote_root="/work/rlrmp2",
+                snapshot=record,
+                sealed_lock_digests={
+                    "uv.lock": hashlib.sha256(b"version = 1\n").hexdigest()
+                },
+            )
+        },
+        editable_source_resolutions=[],
+        snapshot_manifest=RepoSnapshotManifest(repos={"rlrmp2": record}),
+    )
+    state = store.load().model_copy(update={"repo_realization_plan": plan})
+    store.save(state)
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        store=store,
+        conformance_registry=_fixture_pass_registry(),
+    )
+
+    # The realized snapshot pins rlrmp2 at c*40 but the imported science checkout
+    # resolves to d*40: CERTIFY must fail closed before deriving any payload.
+    monkeypatch.setattr(
+        stages,
+        "resolve_science_repo_import_revisions",
+        lambda: {"/imported/rlrmp2": "d" * 40},
+    )
+    with pytest.raises(
+        revision.FeedbaxRevisionError,
+        match=r"science repo revision pin mismatch for 'rlrmp2'.*c{40}.*d{40}",
+    ):
+        engine._stage_certify(store.load())
+    # The certificate on disk was not overwritten: the mis-pin was harmless.
+    assert certificate_path.read_bytes() == certificate_bytes_before
+
+    # A matching imported revision lets CERTIFY proceed past the pin gate and
+    # re-derive payloads normally.
+    monkeypatch.setattr(
+        stages,
+        "resolve_science_repo_import_revisions",
+        lambda: {"/imported/rlrmp2": "c" * 40},
+    )
+    _proceeded, outputs = engine._stage_certify(store.load())
+    assert outputs["overall"] == "pass"
 
 
 def _recertified_state_without_registration_history(

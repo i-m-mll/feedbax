@@ -63,7 +63,12 @@ from feedbax.orchestration.drivers.native_execution import (
 )
 from feedbax.orchestration.events import RunEventReader
 from feedbax.orchestration.input_materialization import preflight_resolved_inputs
-from feedbax.orchestration.revision import FeedbaxRevisionError, assert_feedbax_revision_pin
+from feedbax.orchestration.revision import (
+    FeedbaxRevisionError,
+    assert_feedbax_revision_pin,
+    assert_science_repo_revision_pin,
+    resolve_science_repo_import_revisions,
+)
 from feedbax.orchestration import schedule_eval
 from feedbax.orchestration.state import (
     AcquisitionIntent,
@@ -1667,7 +1672,31 @@ class StageEngine:
             )
         return state, stage_outputs
 
+    def _assert_science_repo_pin(self, state: RunSetState) -> None:
+        """Refuse CERTIFY payload derivation under a mis-pinned science repo.
+
+        Runs for both the initial certification and every retry, before any
+        payload is derived or ``conformance.json`` is overwritten, so a
+        mis-pinned invocation is refused before it can consume or overwrite
+        governed evidence. The check is a no-op when the run carries no realized
+        repository snapshot or no science provider can be resolved; it never
+        weakens the existing Feedbax provenance or environment-fingerprint
+        checks.
+        """
+        plan = state.repo_realization_plan
+        if plan is None:
+            return
+        primary_entry = plan.repos.get(plan.primary_repo)
+        if primary_entry is None:
+            return
+        assert_science_repo_revision_pin(
+            primary_repo=plan.primary_repo,
+            realized_revision=primary_entry.snapshot.commit,
+            imported_revisions=resolve_science_repo_import_revisions(),
+        )
+
     def _stage_certify(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
+        self._assert_science_repo_pin(state)
         smoke = state.stage(STAGE_SMOKE)
         if smoke.status != "completed":
             raise OrchestrationStageError("CERTIFY requires completed SMOKE evidence")
