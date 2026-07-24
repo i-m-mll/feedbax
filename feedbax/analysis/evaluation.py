@@ -297,7 +297,9 @@ def _validate_evaluation_authoring(
     schema = _EVALUATION_AUTHORING_SCHEMAS.get(evaluation_type)
     if schema is None:
         return
-    actual_axes = {axis.id: tuple(value.id for value in axis.values) for axis in matrix.axes}
+    actual_axes = {
+        axis.id: tuple(value.id for value in axis.resolved_values()) for axis in matrix.axes
+    }
     profile = next(
         (profile for profile in schema.axis_profiles if actual_axes == dict(profile)), None
     )
@@ -405,7 +407,17 @@ def execute_evaluation_run_matrix(
                 "authored_matrix_sha256": sha256_bytes(canonical_json_bytes(executable_spec)),
                 "pinned_base": matrix.base.model_dump(mode="json"),
                 "ordered_axes": [
-                    {"axis_id": axis.id, "value_ids": [value.id for value in axis.values]}
+                    {
+                        "axis_id": axis.id,
+                        "value_ids": [value.id for value in axis.resolved_values()],
+                        # Generator-form axes record the declaration that is the
+                        # expansion authority; enumerated axes stay byte-identical.
+                        **(
+                            {"generator": axis.generator.model_dump(mode="json")}
+                            if axis.generator is not None
+                            else {}
+                        ),
+                    }
                     for axis in matrix.axes
                 ],
                 "coordinates": [

@@ -29,6 +29,17 @@ under `matrix_harness.axis_expansion`, including the authored matrix hash, pinne
 authority, ordered coordinates, canonical row order, and canonical payload hashes.
 Explicit-row manifests do not gain this metadata.
 
+An axis declares either enumerated `values` or one versioned
+`feedbax.spec.matrix_axis_value_generator.v1` `generator`, never both. The
+`integer_range` kind binds one delta path to `range(start, stop, step)` and names each
+generated value by formatting `id_format` over `{value}` and `{index}`, so a regular
+index axis is authored once instead of enumerated. Expansion is deterministic and
+produces exactly the canonical values, ids, row identities, and payload hashes of the
+equivalent hand-enumerated axis; a zero step, an empty range, an unknown or nested
+`id_format` field, or a generated id that is not path-safe fails closed. Generator-form
+axes record the declaration under `ordered_axes[].generator` as the expansion authority;
+enumerated axes emit unchanged provenance.
+
 ## Harness responsibilities
 
 `MatrixMaterializerHarness` owns the condition loop, row expansion boundary, row-id
