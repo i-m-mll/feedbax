@@ -1321,6 +1321,62 @@ def test_lr_trace_normalizes_cumulative_continuation_steps() -> None:
     )
 
 
+def test_lr_trace_normalizes_fresh_init_completed_batch_steps_at_cosine_boundary() -> None:
+    """A fresh-init (origin-0) native run records the LR used by each update under the
+    post-update completed-batch coordinate, so coordinate N certifies against schedule
+    position N-1. Without the normalization the constant-to-cosine boundary sample
+    (step 500) certifies against the peak (schedule position 500) and is off by ~0.18%.
+
+    Mirrors the preserved SISU wave-1 run; the observed values are its authentic
+    recorded learning rates at completed batches 500, 6500, and 12000.
+    """
+    optimizer = OptimizerSpec(
+        type="adamw",
+        params={"weight_decay": 0.0},
+        lr_schedule=LrScheduleSpec(
+            kind="warmup_cosine",
+            learning_rate_0=3e-3,
+            constant_lr_iterations=500,
+            total_steps=12_000,
+            cosine_annealing_alpha=0.01,
+            warmup_init_fraction=0.1,
+        ),
+    ).model_dump(mode="json")
+    result = check_lr_trace(
+        _row(
+            bundle_row_spec={
+                "optimizer": optimizer,
+                "resume_context": {
+                    "schedule_origin_step": 0,
+                    "current_step": 0,
+                    "optimizer_count_at_current_step": 0,
+                },
+            },
+            training_diagnostics={
+                "segment_completed_batches": 12_000,
+                "cumulative_completed_batches": 12_000,
+                "lr_trace": {
+                    500: 0.002994599984958768,
+                    6_500: 0.0014140646671876311,
+                    12_000: 3.000008837261703e-05,
+                },
+            },
+        )
+    )
+
+    assert result.status == "pass"
+    assert result.observed == pytest.approx(
+        {
+            499: 0.002994599984958768,
+            6_499: 0.0014140646671876311,
+            11_999: 3.000008837261703e-05,
+        }
+    )
+    # The boundary sample certifies against schedule position 499 (0.0029946), not the
+    # peak at position 500 (0.003); the pre-fix identity short-circuit used the peak.
+    assert result.expected[499] == pytest.approx(0.002994599984958768)
+
+
 @pytest.mark.parametrize(
     ("segment_completed", "cumulative_completed", "steps", "detail"),
     [
