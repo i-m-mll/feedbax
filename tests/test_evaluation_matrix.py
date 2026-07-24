@@ -60,8 +60,10 @@ from feedbax.contracts.manifest import (
     write_manifest,
 )
 from feedbax.contracts.matrix_core import (
+    MATRIX_AXIS_VALUE_GENERATOR_SCHEMA_VERSION,
     MatrixAxis,
     MatrixAxisValue,
+    MatrixAxisValueGenerator,
     MatrixRow,
     RowDerivation,
     derive_row_path,
@@ -296,6 +298,162 @@ def test_evaluation_matrix_executes_through_harness(tmp_path: Path) -> None:
     }
 
 
+def _generator_axis_base(tmp_path: Path) -> dict:
+    base = {
+        "evaluation_type": "example.evaluate",
+        "training_run_ids": ["train-a"],
+        "inputs": [],
+        "params": {"target_index": -1},
+    }
+    (tmp_path / "generator-base.json").write_text(json.dumps(base), encoding="utf-8")
+    return base
+
+
+def _generator_axis_matrix(tmp_path: Path, *, generated: bool) -> EvaluationRunMatrixSpec:
+    base = _generator_axis_base(tmp_path)
+    if generated:
+        axis = MatrixAxis(
+            id="target",
+            generator=MatrixAxisValueGenerator(
+                path="params.target_index",
+                start=0,
+                stop=4,
+                step=1,
+                id_format="{value:03d}",
+            ),
+        )
+    else:
+        axis = MatrixAxis(
+            id="target",
+            values=[
+                MatrixAxisValue(
+                    id=f"{index:03d}",
+                    deltas=[OverridePatch(path="params.target_index", value=index)],
+                )
+                for index in range(4)
+            ],
+        )
+    return EvaluationRunMatrixSpec(
+        base={
+            "ref": "generator-base.json",
+            "sha256": sha256_bytes(canonical_json_bytes(base)),
+        },
+        axes=[axis],
+    )
+
+
+def test_generator_axis_matches_hand_enumerated_axis_rows_and_hashes(tmp_path: Path) -> None:
+    generated = _generator_axis_matrix(tmp_path, generated=True)
+    enumerated = _generator_axis_matrix(tmp_path, generated=False)
+
+    generated_compiled = compile_evaluation_run_matrix(generated, repo_root=tmp_path)
+    enumerated_compiled = compile_evaluation_run_matrix(enumerated, repo_root=tmp_path)
+    assert generated_compiled.model_dump(mode="json") == enumerated_compiled.model_dump(mode="json")
+
+    generated_rows = materialize_evaluation_run_matrix(generated, repo_root=tmp_path)
+    enumerated_rows = materialize_evaluation_run_matrix(enumerated, repo_root=tmp_path)
+    assert [row.row_id for row in generated_rows] == [
+        "target-000",
+        "target-001",
+        "target-002",
+        "target-003",
+    ]
+    assert [row.row_id for row in generated_rows] == [row.row_id for row in enumerated_rows]
+    assert [
+        sha256_bytes(canonical_json_bytes(row.payload.model_dump(mode="json")))
+        for row in generated_rows
+    ] == [
+        sha256_bytes(canonical_json_bytes(row.payload.model_dump(mode="json")))
+        for row in enumerated_rows
+    ]
+
+    enumerated_axis = enumerated.model_dump(mode="json", exclude_none=True)["axes"][0]
+    assert "generator" not in enumerated_axis
+    assert expand_matrix_axes(generated.axes) == expand_matrix_axes(enumerated.axes)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"step": 0}, "step must be non-zero"),
+        ({"start": 4, "stop": 0}, "produces no values"),
+        ({"id_format": "{bogus}"}, "is not one of"),
+        ({"id_format": "fixed"}, "must reference at least one"),
+        ({"id_format": "{value:{index}d}"}, "must not nest replacement fields"),
+        ({"id_format": "{value:+d}"}, "not path-safe"),
+        ({"id_format": "target-{"}, "not a valid format string"),
+        ({"path": "params..index"}, "not dotted-path-like"),
+        (
+            {"schema_version": "feedbax.spec.matrix_axis_value_generator.v0"},
+            "unsupported axis value generator schema_version",
+        ),
+        (
+            {"schema_id": "feedbax.spec.other_generator"},
+            "unsupported axis value generator schema_id",
+        ),
+        ({"unknown_field": 1}, "Extra inputs are not permitted"),
+    ],
+)
+def test_axis_value_generator_fails_closed_on_malformed_declarations(
+    overrides: dict, message: str
+) -> None:
+    declaration = {
+        "path": "params.target_index",
+        "start": 0,
+        "stop": 4,
+        "step": 1,
+        "id_format": "{value:03d}",
+        **overrides,
+    }
+    with pytest.raises(ValidationError, match=message):
+        MatrixAxisValueGenerator(**declaration)
+
+
+def test_axis_rejects_both_or_neither_value_declaration() -> None:
+    generator = MatrixAxisValueGenerator(
+        path="params.target_index", start=0, stop=2, id_format="{index}"
+    )
+    with pytest.raises(ValidationError, match="cannot declare both values and a generator"):
+        MatrixAxis(id="target", values=[MatrixAxisValue(id="000")], generator=generator)
+    with pytest.raises(ValidationError, match="requires enumerated values or a generator"):
+        MatrixAxis(id="target")
+
+
+def test_generator_axis_manifest_records_generator_as_expansion_authority(
+    tmp_path: Path,
+) -> None:
+    def recipe(_spec, _root, _states_path, _execution_context):
+        return EvaluationRecipeResult()
+
+    matrix = _generator_axis_matrix(tmp_path, generated=True)
+    register_evaluation_recipe("example.evaluate", recipe)
+    try:
+        result = execute_evaluation_run_matrix(
+            matrix, root=tmp_path / "runs", repo_root=tmp_path
+        )
+    finally:
+        unregister_evaluation_recipe("example.evaluate")
+
+    for row in result.rows:
+        provenance = load_manifest(row.manifest_path).metadata["matrix_harness"]["axis_expansion"]
+        assert provenance["ordered_axes"] == [
+            {
+                "axis_id": "target",
+                "value_ids": ["000", "001", "002", "003"],
+                "generator": matrix.axes[0].generator.model_dump(mode="json"),
+            }
+        ]
+        assert provenance["ordered_axes"][0]["generator"]["schema_version"] == (
+            MATRIX_AXIS_VALUE_GENERATOR_SCHEMA_VERSION
+        )
+        assert provenance["canonical_row_order"] == [
+            "target-000",
+            "target-001",
+            "target-002",
+            "target-003",
+        ]
+
+
 def test_axis_product_matches_equivalent_explicit_rows_and_hashes(tmp_path: Path) -> None:
     axis_rows = materialize_evaluation_run_matrix(
         _axis_matrix_payload(tmp_path), repo_root=tmp_path
@@ -374,7 +532,7 @@ def test_axis_contract_rejects_duplicate_ids_and_incomplete_products(monkeypatch
                 MatrixAxis(id="same", values=[MatrixAxisValue(id="b")]),
             ],
         )
-    with pytest.raises(ValidationError, match="at least 1 item"):
+    with pytest.raises(ValidationError, match="requires enumerated values or a generator"):
         MatrixAxis(id="empty", values=[])
     with pytest.raises(ValidationError, match="requires axes"):
         EvaluationRunMatrixSpec(base={"ref": "base.json", "sha256": "0" * 64})
