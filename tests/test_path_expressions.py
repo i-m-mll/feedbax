@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import NamedTuple
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -690,3 +691,50 @@ def test_path_expression_schema_registry_family_and_old_version_rejection() -> N
             "PathExpression",
             {"schema_version": "feedbax.spec.path_expression.v0"},
         )
+
+
+class _Knot(NamedTuple):
+    mean: float
+    upper: float
+
+
+def test_value_query_indexes_into_lists_and_tuples_by_numeric_segment() -> None:
+    ctx = _ctx({"items": [10, 20, 30], "pair": (9, 8)})
+    assert evaluate_query(ValueQuery(item="manifest", path="items.1"), ctx) == 20
+    assert evaluate_query(ValueQuery(item="manifest", path="pair.0"), ctx) == 9
+
+
+def test_value_query_walks_nested_list_of_dicts_knot_series_shape() -> None:
+    # The rlrmp2 per-knot diagnostics artifact shape: a JSON list of per-knot
+    # dicts whose numeric fields are per-batch series.
+    payload = {
+        "knot_series": {
+            "post_update_lambda": [
+                {"mean": [1.0, 2.0], "upper": [1.5, 2.5]},
+                {"mean": [3.0, 4.0], "upper": [3.5, 4.5]},
+            ]
+        }
+    }
+    ctx = _ctx(payload)
+    assert evaluate_query(
+        ValueQuery(item="manifest", path="knot_series.post_update_lambda.0.mean"), ctx
+    ) == [1.0, 2.0]
+    assert evaluate_query(
+        ValueQuery(item="manifest", path="knot_series.post_update_lambda.1.mean.1"), ctx
+    ) == 4.0
+
+
+def test_value_query_sequence_index_fails_closed_out_of_range_and_non_numeric() -> None:
+    ctx = _ctx({"items": [10, 20, 30]})
+    with pytest.raises(ExpressionPathMissing, match="missing segment '5'"):
+        evaluate_query(ValueQuery(item="manifest", path="items.5"), ctx)
+    with pytest.raises(ExpressionPathMissing, match="missing segment 'name'"):
+        evaluate_query(ValueQuery(item="manifest", path="items.name"), ctx)
+
+
+def test_value_query_namedtuple_keeps_attribute_access_not_positional() -> None:
+    ctx = _ctx({"knot": _Knot(mean=7.0, upper=9.0)})
+    # NamedTuples resolve by field name, not by positional index.
+    assert evaluate_query(ValueQuery(item="manifest", path="knot.mean"), ctx) == 7.0
+    with pytest.raises(ExpressionPathMissing, match="missing segment '0'"):
+        evaluate_query(ValueQuery(item="manifest", path="knot.0"), ctx)

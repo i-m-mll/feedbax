@@ -512,9 +512,17 @@ def _get_path(value: Any, path: PathRef, *, item: str) -> Any:
         try:
             if isinstance(current, dict):
                 current = current[part]
+            elif isinstance(current, (list, tuple)) and not hasattr(current, "_fields"):
+                # Positional access into a plain sequence: only a base-10 integer
+                # literal indexes it. A non-numeric segment or an out-of-range
+                # index fails closed. NamedTuples (which carry ``_fields``) keep
+                # attribute-by-name access below.
+                if not (part.isascii() and part.isdigit()):
+                    raise KeyError(part)
+                current = current[int(part)]
             else:
                 current = getattr(current, part)
-        except (AttributeError, KeyError, TypeError) as exc:
+        except (AttributeError, IndexError, KeyError, TypeError) as exc:
             raise ExpressionPathMissing(
                 f"context item {item!r} has no path {path!r}; missing segment {part!r}"
             ) from exc
