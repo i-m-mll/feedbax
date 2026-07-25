@@ -73,9 +73,18 @@ from .manifest_inputs import (
 )
 from .specs import (
     AnalysisRecipeResult,
+    coerce_analysis_run_spec,
     execute_analysis_run_spec,
     register_analysis_recipe,
+    resolve_analysis_run_authoring,
     unregister_analysis_recipe,
+)
+from feedbax.contracts.analysis_composition import (
+    AnalysisRunDeltaSpec,
+    FlattenedAnalysisRun,
+    analysis_composition_provenance,
+    flatten_analysis_run_delta,
+    is_analysis_run_delta_payload,
 )
 from .reports import (
     BUNDLE_SUMMARY_REPORT_TYPE,
@@ -215,6 +224,13 @@ __all__ = [
     "directory_artifact_group",
     "execute_analysis_bundle",
     "execute_analysis_run_spec",
+    "coerce_analysis_run_spec",
+    "resolve_analysis_run_authoring",
+    "AnalysisRunDeltaSpec",
+    "FlattenedAnalysisRun",
+    "analysis_composition_provenance",
+    "flatten_analysis_run_delta",
+    "is_analysis_run_delta_payload",
     "execute_evaluation_run_matrix",
     "resolve_staged_evaluation_prerequisite",
     "execute_report_spec",

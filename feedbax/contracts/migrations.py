@@ -180,8 +180,12 @@ from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_VERSION_V0,
 )
 from feedbax.contracts.manifest import (
+    ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_ID,
+    ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
+    ANALYSIS_RUN_DELTA_SPEC_SCHEMA_ID,
+    ANALYSIS_RUN_DELTA_SPEC_SCHEMA_VERSION,
     EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID,
     EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION,
     EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_ID,
@@ -3348,6 +3352,34 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "tests/test_analysis_evaluation_states_policy.py",
                 "tests/test_structured_spec_migrations.py",
             ),
+        ),
+        _family(
+            "AnalysisRunDeltaSpec",
+            ANALYSIS_RUN_DELTA_SPEC_SCHEMA_ID,
+            ANALYSIS_RUN_DELTA_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.analysis_composition",
+            emitted_by=("authored analysis run composition",),
+            consumed_by=("analysis run flattening",),
+            description=(
+                "Ordered whole-document deltas over one content-pinned parent analysis "
+                "run spec or parent delta spec."
+            ),
+            rejected_old_versions=(f"{ANALYSIS_RUN_DELTA_SPEC_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_analysis_run_composition.py",),
+        ),
+        _family(
+            "AnalysisCompositionProvenance",
+            ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_ID,
+            ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.analysis_composition",
+            emitted_by=("feedbax.contracts.analysis_composition.analysis_composition_provenance",),
+            consumed_by=("durable analysis manifest inspection",),
+            description=(
+                "Embedded authored, layer, and flattened identities for delta-composed "
+                "analysis runs."
+            ),
+            rejected_old_versions=(f"{ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_analysis_run_composition.py",),
         ),
         _family(
             "AnalysisEvaluationStateSource",
