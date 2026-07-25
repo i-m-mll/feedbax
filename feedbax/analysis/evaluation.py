@@ -587,6 +587,31 @@ def _execute_evaluation_batch_rows(
             )
             for row_id, spec in specs
         ]
+        # Shared-store rows are keyed by content-hash manifest id, so two
+        # byte-identical row specs would silently collapse last-write-wins.
+        # Fail closed before any recipe execution or publication.
+        rows_by_manifest_id: dict[str, list[str]] = {}
+        for item in items:
+            rows_by_manifest_id.setdefault(
+                evaluation_run_manifest_id(item.spec), []
+            ).append(item.row_id)
+        collisions = {
+            manifest_id: row_ids
+            for manifest_id, row_ids in rows_by_manifest_id.items()
+            if len(row_ids) > 1
+        }
+        if collisions:
+            colliding_row_ids = sorted(
+                row_id for row_ids in collisions.values() for row_id in row_ids
+            )
+            raise EvaluationBatchRowError(
+                colliding_row_ids[0],
+                ValueError(
+                    "batch rows share a content-identical evaluation_run_manifest_id "
+                    "and would collapse under shared-store publication: "
+                    f"{ {manifest_id: sorted(row_ids) for manifest_id, row_ids in collisions.items()} }"
+                ),
+            )
         for item in items:
             try:
                 prerequisites = item.spec.params.get("staged_prerequisites")
