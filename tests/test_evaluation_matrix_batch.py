@@ -435,6 +435,40 @@ def test_batched_matrix_fails_closed_with_typed_row_diagnostic(tmp_path: Path) -
     assert not output.exists()
 
 
+def test_batched_matrix_rejects_content_identical_row_manifest_ids(tmp_path: Path) -> None:
+    """Two byte-identical row specs would collapse last-write-wins; fail closed instead."""
+    matrix = EvaluationRunMatrixSpec(
+        base=EvaluationRunSpec(
+            evaluation_type=EVALUATION_TYPE,
+            params={"gain": 1.0, "states_custody": "durable"},
+        ),
+        rows=[
+            MatrixRow(row_id="row-a", deltas=[OverridePatch(path="params.gain", value=2.0)]),
+            MatrixRow(row_id="row-b", deltas=[OverridePatch(path="params.gain", value=2.0)]),
+        ],
+    )
+    output = tmp_path / "batched"
+
+    _register_scalar_batch_recipe()
+    try:
+        with pytest.raises(EvaluationBatchRowError) as exc_info:
+            execute_evaluation_run_matrix(
+                matrix,
+                root=output,
+                batch=EvaluationBatchExecution(),
+            )
+    finally:
+        unregister_evaluation_recipe(EVALUATION_TYPE)
+
+    message = str(exc_info.value)
+    assert "row-a" in message
+    assert "row-b" in message
+    assert "evaluation_run_manifest_id" in message
+    assert exc_info.value.row_id in {"row-a", "row-b"}
+    # Fail-closed staging cleanup: nothing is published for either row.
+    assert not output.exists()
+
+
 def _register_scalar_batch_recipe() -> None:
     register_evaluation_recipe(
         EVALUATION_TYPE,
