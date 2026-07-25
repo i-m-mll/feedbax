@@ -12,6 +12,19 @@ The facility is controller-law agnostic. It knows nothing about plants,
 controllers, tasks, or feedbax's `Component`/`Graph` model: the caller supplies
 a pure callable `(context, trial) -> result` where `context` holds every
 trial-invariant operand and `trial` is one slice of the stacked trials.
+
+This is not a second way to run feedbax models, and it does not overlap the
+`Component` execution stack. Models built as `Component`/`Graph` with
+`equinox.nn.State` are batched over trials by `AbstractTask.eval_trials` and
+`eval_ensemble_on_trials` (`feedbax/tasks/task.py`) using `filter_vmap`, and
+their time-step iteration belongs to `run_component`
+(`feedbax/runtime/iteration.py`) — use those for `Component` models. This module
+performs no time iteration whatsoever: the time loop, when there is one, lives
+inside the caller's `per_trial` callable. It exists only for pure non-`Component`
+callables that need sequential `lax.map` batching over trials, with bounded
+memory relative to `vmap` and a compile-once cache contract that prevents
+per-closure retracing, as used by evaluation recipes that own their own
+execution.
 """
 
 from __future__ import annotations
