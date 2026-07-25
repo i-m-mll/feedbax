@@ -119,7 +119,7 @@ def _resolve_typed_rows(batch, root: Path) -> list[TypedRowStates]:
                     inputs=[authenticated_manifest_ref(row.result, row.manifest_path, "evaluation_run")],
                     evaluation_states_policy="require_durable",
                 ),
-                root=root / row.row_id,
+                root=root,
             )[0].states
             for row in batch.rows
         ]
@@ -341,6 +341,11 @@ def test_batched_matrix_matches_default_and_round_trips_require_durable(
             key: value for key, value in batch_cache.items() if key != "states_path"
         }
         assert Path(batch_cache["states_path"]).is_relative_to(tmp_path / "batched")
+        # Shared store: every row's durable state cache lives in the one store
+        # root, not a per-row subtree.
+        assert Path(batch_cache["states_path"]).is_relative_to(
+            tmp_path / "batched" / "cache"
+        )
         default_harness = dict(default_row.result.metadata["matrix_harness"])
         batch_harness = dict(batched_row.result.metadata["matrix_harness"])
         assert batch_harness.pop("batch_execution") == {
@@ -357,7 +362,7 @@ def test_batched_matrix_matches_default_and_round_trips_require_durable(
             default_row.result, root=tmp_path / "default" / default_row.row_id
         )
         batched_states = load_evaluation_states(
-            batched_row.result, root=tmp_path / "batched" / batched_row.row_id
+            batched_row.result, root=tmp_path / "batched"
         )
         np.testing.assert_array_equal(default_states["value"], batched_states["value"])
 
@@ -382,12 +387,12 @@ def test_batched_matrix_matches_default_and_round_trips_require_durable(
                     inputs=[authority],
                     evaluation_states_policy="require_durable",
                 ),
-                root=tmp_path / "batched" / row.row_id,
+                root=tmp_path / "batched",
             )[0]
             np.testing.assert_array_equal(
                 resolved.states["value"],
                 load_evaluation_states(
-                    row.result, root=tmp_path / "batched" / row.row_id
+                    row.result, root=tmp_path / "batched"
                 )["value"],
             )
     finally:
@@ -430,18 +435,7 @@ def test_batched_matrix_fails_closed_with_typed_row_diagnostic(tmp_path: Path) -
     assert not output.exists()
 
 
-def test_batched_matrix_fails_closed_when_staging_index_discard_is_no_op(
-    tmp_path: Path,
-) -> None:
-    real_rmtree = evaluation_module.shutil.rmtree
-
-    def no_op_index_discard(path, *args, **kwargs):
-        if Path(path).name == "index":
-            if kwargs.get("ignore_errors") is True:
-                raise AssertionError("index discard must not ignore errors")
-            return None
-        return real_rmtree(path, *args, **kwargs)
-
+def _register_scalar_batch_recipe() -> None:
     register_evaluation_recipe(
         EVALUATION_TYPE,
         lambda spec, *_args: _result(spec.params["gain"]),
@@ -450,11 +444,41 @@ def test_batched_matrix_fails_closed_when_staging_index_discard_is_no_op(
         ],
         replace=True,
     )
+
+
+def _sized_matrix(row_count: int) -> EvaluationRunMatrixSpec:
+    return EvaluationRunMatrixSpec(
+        base=EvaluationRunSpec(
+            evaluation_type=EVALUATION_TYPE,
+            params={"gain": 1.0, "states_custody": "durable"},
+        ),
+        rows=[
+            MatrixRow(
+                row_id=f"row-{index}",
+                deltas=[OverridePatch(path="params.gain", value=float(index + 1))],
+            )
+            for index in range(row_count)
+        ],
+    )
+
+
+def test_batched_matrix_fails_closed_when_shared_index_build_fails(
+    tmp_path: Path,
+) -> None:
+    # The batch path imports index_manifest lazily from its source module, so
+    # patching the source binding intercepts the shared-index build.
+    def failing_index_manifest(*_args, **_kwargs):
+        raise RuntimeError("injected shared index failure")
+
+    _register_scalar_batch_recipe()
     output = tmp_path / "batched"
     try:
         with (
-            patch.object(evaluation_module.shutil, "rmtree", side_effect=no_op_index_discard),
-            pytest.raises(RuntimeError, match="staging index discard did not remove"),
+            patch(
+                "feedbax.persistence.manifest_index.index_manifest",
+                side_effect=failing_index_manifest,
+            ),
+            pytest.raises(RuntimeError, match="injected shared index failure"),
         ):
             execute_evaluation_run_matrix(
                 _matrix(),
@@ -465,6 +489,73 @@ def test_batched_matrix_fails_closed_when_staging_index_discard_is_no_op(
         unregister_evaluation_recipe(EVALUATION_TYPE)
 
     assert not output.exists()
+    # The staging store was cleaned up rather than left as a partial sibling.
+    assert not any(tmp_path.glob(".batched.batch-*"))
+
+
+def test_batched_matrix_publishes_single_shared_store(tmp_path: Path) -> None:
+    _register_scalar_batch_recipe()
+    output = tmp_path / "batched"
+    try:
+        batch = execute_evaluation_run_matrix(
+            _sized_matrix(4),
+            root=output,
+            batch=EvaluationBatchExecution(),
+        )
+    finally:
+        unregister_evaluation_recipe(EVALUATION_TYPE)
+
+    # Exactly one SQLite index for the whole matrix, at the store root.
+    indexes = list(output.rglob("feedbax.sqlite"))
+    assert indexes == [output / "index" / "feedbax.sqlite"]
+    # No per-row store subtrees were minted.
+    assert not any((output / row.row_id).exists() for row in batch.rows)
+    # One shared manifest tree carries every row, keyed by manifest id.
+    manifests = sorted((output / "manifests" / "evaluation_runs").glob("*.json"))
+    assert len(manifests) == 4
+    # One shared state cache tree carries every row's cached trajectory.
+    caches = sorted((output / "cache" / "states").glob("*.pkl"))
+    assert len(caches) == 4
+    # Row identity and order are preserved through the shared store.
+    assert [row.row_id for row in batch.rows] == ["row-0", "row-1", "row-2", "row-3"]
+    for row in batch.rows:
+        assert row.manifest_path.is_relative_to(output / "manifests")
+
+
+def test_batched_matrix_fixed_store_overhead_independent_of_row_count(
+    tmp_path: Path,
+) -> None:
+    small_root = tmp_path / "small"
+    large_root = tmp_path / "large"
+    _register_scalar_batch_recipe()
+    try:
+        small = execute_evaluation_run_matrix(
+            _sized_matrix(2), root=small_root, batch=EvaluationBatchExecution()
+        )
+        large = execute_evaluation_run_matrix(
+            _sized_matrix(16), root=large_root, batch=EvaluationBatchExecution()
+        )
+    finally:
+        unregister_evaluation_recipe(EVALUATION_TYPE)
+
+    assert len(small.rows) == 2 and len(large.rows) == 16
+    # The heavy fixed machinery (the SQLite index) is created once per store,
+    # not once per row: an 8x larger matrix still has exactly one index.
+    small_indexes = list(small_root.rglob("feedbax.sqlite"))
+    large_indexes = list(large_root.rglob("feedbax.sqlite"))
+    assert len(small_indexes) == len(large_indexes) == 1
+    # Per-row mode would have paid one index per row (2 vs 16). The shared store
+    # holds total index overhead essentially flat: the single index grows only
+    # by per-row payload rows, nowhere near a whole extra index per row. Assert
+    # the total index bytes for the 16-row store stay well under what even two
+    # per-row indexes of the 2-row store would cost.
+    small_index_bytes = small_indexes[0].stat().st_size
+    large_index_bytes = large_indexes[0].stat().st_size
+    per_row_16_lower_bound = 16 * small_index_bytes
+    assert large_index_bytes < per_row_16_lower_bound / 2, (
+        f"shared index for 16 rows ({large_index_bytes} B) is not clearly below "
+        f"the per-row-store overhead 16 x {small_index_bytes} B"
+    )
 
 
 def test_batched_matrix_authenticates_staged_prerequisites_before_publish(
