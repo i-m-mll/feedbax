@@ -406,6 +406,133 @@ def test_harness_cli_executes_and_locks_a_delta_authored_matrix(tmp_path: Path) 
     assert len(manifests) == 6
 
 
+def _grid_matrix(tmp_path: Path) -> dict[str, Any]:
+    """Return the same governed target-by-replica matrix ``_shared_grid`` writes."""
+    base_sha = _write(tmp_path, "base.json", _evaluation_base("example.compose", "train-shared"))
+    return {
+        "schema_id": EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
+        "schema_version": EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        "base": {"ref": "base.json", "sha256": base_sha},
+        "axes": [
+            {
+                "id": "target",
+                "values": [
+                    {"id": f"t{index}", "deltas": [{"path": "params.target_index", "value": index}]}
+                    for index in range(3)
+                ],
+            },
+            {
+                "id": "replica",
+                "values": [
+                    {"id": f"r{index}", "deltas": [{"path": "params.replica", "value": index}]}
+                    for index in range(2)
+                ],
+            },
+        ],
+    }
+
+
+def test_delta_parent_pinned_via_payload_path_selects_a_sub_document(tmp_path: Path) -> None:
+    """A wrapper file's matrix sub-document is inherited without local plumbing."""
+    grid = _grid_matrix(tmp_path)
+    wrapper = {"analysis": {"aggregation": "mean"}, "matrix": grid}
+    wrapper_sha = _write(tmp_path, "wrapper.json", wrapper)
+    base_sha = _write(
+        tmp_path, "base-analytical.json", _evaluation_base("example.analytical", "train-shared")
+    )
+    child = {
+        "schema_id": EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
+        "schema_version": EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
+        "parent": {
+            "ref": "wrapper.json",
+            "sha256": wrapper_sha,
+            "payload_path": ["matrix"],
+        },
+        "deltas": [
+            {
+                "layer_id": "analytical",
+                "patches": [
+                    {"path": "base.ref", "value": "base-analytical.json"},
+                    {"path": "base.sha256", "value": base_sha},
+                ],
+            }
+        ],
+    }
+
+    flattened = flatten_evaluation_run_matrix_delta(
+        EvaluationRunMatrixDeltaSpec.model_validate(child), repo_root=tmp_path
+    )
+    # The selected sub-document is the governed matrix, rebased onto the new base.
+    matrix = EvaluationRunMatrixSpec.model_validate(flattened.payload)
+    assert matrix.base.ref == "base-analytical.json"
+    assert flattened.layers[0].parent_payload_path == ("matrix",)
+
+    result = _execute(child, tmp_path=tmp_path, root=tmp_path / "payload-path-runs")
+    assert result.metadata["matrix_composition"]["layers"] == [
+        {
+            "envelope_sha256": flattened.authored_envelope_sha256,
+            "parent_ref": "wrapper.json",
+            "parent_sha256": wrapper_sha,
+            "layer_ids": ["analytical"],
+            "parent_payload_path": ["matrix"],
+        }
+    ]
+    assert [row.row_id for row in result.rows] == [
+        f"target-t{target}--replica-r{replica}" for target in range(3) for replica in range(2)
+    ]
+
+
+def test_delta_parent_payload_path_to_non_matrix_fails_closed(tmp_path: Path) -> None:
+    grid = _grid_matrix(tmp_path)
+    wrapper = {"analysis": {"aggregation": "mean"}, "matrix": grid}
+    wrapper_sha = _write(tmp_path, "wrapper.json", wrapper)
+    child = {
+        "schema_id": EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
+        "schema_version": EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
+        "parent": {
+            "ref": "wrapper.json",
+            "sha256": wrapper_sha,
+            "payload_path": ["analysis"],
+        },
+        "deltas": [{"layer_id": "x", "patches": []}],
+    }
+    with pytest.raises(ValueError, match="evaluation matrix delta parent must declare schema_id"):
+        flatten_evaluation_run_matrix_delta(
+            EvaluationRunMatrixDeltaSpec.model_validate(child), repo_root=tmp_path
+        )
+
+
+def test_content_pinned_axis_base_selects_a_sub_document(tmp_path: Path) -> None:
+    """The axis-matrix compile path inherits a pinned base from a sub-document."""
+    wrapper = {
+        "meta": {"note": "shared wrapper"},
+        "eval_base": _evaluation_base("example.compose", "train-shared"),
+    }
+    wrapper_sha = _write(tmp_path, "eval-wrapper.json", wrapper)
+    matrix = {
+        "schema_id": EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
+        "schema_version": EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        "base": {
+            "ref": "eval-wrapper.json",
+            "sha256": wrapper_sha,
+            "payload_path": ["eval_base"],
+        },
+        "axes": [
+            {
+                "id": "target",
+                "values": [
+                    {"id": f"t{index}", "deltas": [{"path": "params.target_index", "value": index}]}
+                    for index in range(2)
+                ],
+            }
+        ],
+    }
+    compiled = compile_evaluation_run_matrix(matrix, repo_root=tmp_path)
+    assert compiled.base.evaluation_type == "example.compose"
+    resolved = materialize_evaluation_run_matrix(matrix, repo_root=tmp_path)
+    assert [row.row_id for row in resolved] == ["target-t0", "target-t1"]
+
+
 def test_provider_manifest_publishes_the_delta_authoring_kind() -> None:
     from feedbax.integrations.provider import provider_manifest
 

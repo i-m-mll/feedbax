@@ -121,12 +121,22 @@ def build_run_arg_parser() -> argparse.ArgumentParser:
         prog="feedbax-analysis run",
         description="Execute an AnalysisRunSpec JSON/YAML file and write its manifest.",
     )
-    parser.add_argument("spec", type=Path, help="Path to an AnalysisRunSpec JSON or YAML file.")
+    parser.add_argument(
+        "spec",
+        type=Path,
+        help="Path to an AnalysisRunSpec or AnalysisRunDeltaSpec JSON/YAML file.",
+    )
     parser.add_argument(
         "--root",
         type=Path,
         default=None,
         help="Manifest root to write the AnalysisRunManifest under.",
+    )
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=None,
+        help="Repo root for resolving a delta spec's content-pinned parent references.",
     )
     return parser
 
@@ -137,7 +147,9 @@ def run_analysis_run_spec_file(argv: list[str]) -> None:
     _apply_plotly_template_default()
     spec = _load_spec_document(args.spec, label="AnalysisRunSpec")
     with _bundle_human_output_to_stderr():
-        manifest, path = execute_analysis_run_spec(spec, root=args.root)
+        manifest, path = execute_analysis_run_spec(
+            spec, root=args.root, repo_root=args.repo_root
+        )
     payload = {
         "manifest_id": manifest.id,
         "manifest_path": str(path),

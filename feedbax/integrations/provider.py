@@ -323,6 +323,7 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "AnalysisBundleSpec": analysis_pkg.AnalysisBundleSpec,
         "StagedAnalysisBundleExecution": analysis_pkg.StagedAnalysisBundleExecution,
         "AnalysisRunManifest": AnalysisRunManifest,
+        "AnalysisRunDeltaSpec": analysis_pkg.AnalysisRunDeltaSpec,
         "ReportManifest": ReportManifest,
         "CapabilitySpec": CapabilitySpec,
         "MandibleArtifactMapping": MandibleArtifactMapping,

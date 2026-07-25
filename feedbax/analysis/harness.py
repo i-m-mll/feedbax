@@ -155,7 +155,13 @@ def diff_regenerated_archived(
 class MatrixMaterializerHarness:
     """Own row expansion, execution, custody, manifests, replay data, and notes."""
 
-    def __init__(self, *, root: Path | str, custody: CustodyMode = "content-addressed"):
+    def __init__(
+        self,
+        *,
+        root: Path | str,
+        custody: CustodyMode = "content-addressed",
+        shared_store: bool = False,
+    ):
         if custody not in ("manifest", "content-addressed"):
             raise ValueError(
                 "unknown output custody route; registered routes are: "
@@ -163,6 +169,13 @@ class MatrixMaterializerHarness:
             )
         self.root = Path(root)
         self.custody = custody
+        # Shared-store mode writes every row into one physical store at ``root``
+        # (one manifest tree, one cache, one content-addressed artifact store)
+        # instead of a self-contained per-row ``root/row_id`` store, and defers
+        # index construction to the caller so the batch owner can build a single
+        # store-wide index. Rows stay logically distinct through their globally
+        # unique manifest identifiers.
+        self.shared_store = shared_store
 
     def materialize(
         self,
@@ -187,7 +200,7 @@ class MatrixMaterializerHarness:
         for row_id, resolved in rows:
             if not row_id:
                 raise ValueError("materializer row_id must be non-empty")
-            row_root = self.root / row_id
+            row_root = self.root if self.shared_store else self.root / row_id
             row_root.mkdir(parents=True, exist_ok=True)
             result, manifest_path = execute(row_id, resolved, row_root)
             regeneration = RegenerationSpec(
@@ -245,7 +258,9 @@ class MatrixMaterializerHarness:
                     for artifact in artifacts
                     if artifact.artifact_id not in known_artifact_ids
                 )
-                manifest_path = write_manifest(result, root=row_root)
+                manifest_path = write_manifest(
+                    result, root=row_root, index=not self.shared_store
+                )
             materialized.append(
                 MaterializedRow(
                     row_id=row_id,

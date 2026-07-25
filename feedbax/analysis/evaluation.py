@@ -443,7 +443,7 @@ def execute_evaluation_run_matrix(
                 "schema_id": EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID,
                 "schema_version": EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION,
                 "authored_matrix_sha256": sha256_bytes(canonical_json_bytes(flattened_spec)),
-                "pinned_base": matrix.base.model_dump(mode="json"),
+                "pinned_base": matrix.base.model_dump(mode="json", exclude_none=True),
                 "ordered_axes": [
                     {
                         "axis_id": axis.id,
@@ -587,6 +587,31 @@ def _execute_evaluation_batch_rows(
             )
             for row_id, spec in specs
         ]
+        # Shared-store rows are keyed by content-hash manifest id, so two
+        # byte-identical row specs would silently collapse last-write-wins.
+        # Fail closed before any recipe execution or publication.
+        rows_by_manifest_id: dict[str, list[str]] = {}
+        for item in items:
+            rows_by_manifest_id.setdefault(
+                evaluation_run_manifest_id(item.spec), []
+            ).append(item.row_id)
+        collisions = {
+            manifest_id: row_ids
+            for manifest_id, row_ids in rows_by_manifest_id.items()
+            if len(row_ids) > 1
+        }
+        if collisions:
+            colliding_row_ids = sorted(
+                row_id for row_ids in collisions.values() for row_id in row_ids
+            )
+            raise EvaluationBatchRowError(
+                colliding_row_ids[0],
+                ValueError(
+                    "batch rows share a content-identical evaluation_run_manifest_id "
+                    "and would collapse under shared-store publication: "
+                    f"{ {manifest_id: sorted(row_ids) for manifest_id, row_ids in collisions.items()} }"
+                ),
+            )
         for item in items:
             try:
                 prerequisites = item.spec.params.get("staged_prerequisites")
@@ -620,8 +645,8 @@ def _execute_evaluation_batch_rows(
                 completed[item.row_id] = _store_batched_evaluation_result(
                     item,
                     result,
-                    staging_root=staging / item.row_id,
-                    published_root=root / item.row_id,
+                    store_root=staging,
+                    published_root=root,
                     provenance=provenance,
                     metadata={
                         "matrix_harness": {
@@ -636,7 +661,7 @@ def _execute_evaluation_batch_rows(
         def execute(row_id: str, _resolved: Mapping[str, Any], _row_root: Path):
             return completed[row_id]
 
-        result = MatrixMaterializerHarness(root=staging).materialize(
+        result = MatrixMaterializerHarness(root=staging, shared_store=True).materialize(
             rows,
             execute=execute,
             command=["python", "-m", "feedbax", "matrix-harness"],
@@ -645,37 +670,41 @@ def _execute_evaluation_batch_rows(
             matrix_metadata=matrix_metadata,
             regeneration_parameters=regeneration_parameters,
         )
-        published_rows = []
-        for row in result.rows:
-            def publish(artifact: ArtifactRef) -> ArtifactRef:
-                if artifact.uri is None:
-                    return artifact
-                uri = Path(artifact.uri)
-                if not uri.is_relative_to(staging):
-                    return artifact
-                return artifact.model_copy(
-                    update={"uri": str(root / uri.relative_to(staging))}
-                )
+        # Publish into one shared physical store: every row's manifest lands in
+        # the single manifest tree keyed by its unique manifest id, and one
+        # store-wide SQLite index records all rows against their published
+        # paths. The index is built once (not once per row), so the fixed store
+        # overhead does not scale with row count.
+        index = connect_index(staging / "index" / "feedbax.sqlite")
+        try:
+            published_rows = []
+            for row in result.rows:
+                def publish(artifact: ArtifactRef) -> ArtifactRef:
+                    if artifact.uri is None:
+                        return artifact
+                    uri = Path(artifact.uri)
+                    if not uri.is_relative_to(staging):
+                        return artifact
+                    return artifact.model_copy(
+                        update={"uri": str(root / uri.relative_to(staging))}
+                    )
 
-            manifest = row.result.model_copy(
-                update={"artifacts": [publish(artifact) for artifact in row.result.artifacts]}
-            )
-            staged_path = write_manifest(manifest, root=staging / row.row_id, index=False)
-            index_root = staging / row.row_id / "index"
-            shutil.rmtree(index_root)
-            if index_root.exists():
-                raise RuntimeError(f"staging index discard did not remove {index_root}")
-            index = connect_index(index_root / "feedbax.sqlite")
-            index_manifest(index, manifest, path=root / staged_path.relative_to(staging))
-            index.close()
-            published_rows.append(
-                replace(
-                    row,
-                    result=manifest,
-                    manifest_path=root / staged_path.relative_to(staging),
-                    artifacts=tuple(publish(artifact) for artifact in row.artifacts),
+                manifest = row.result.model_copy(
+                    update={"artifacts": [publish(artifact) for artifact in row.result.artifacts]}
                 )
-            )
+                staged_path = write_manifest(manifest, root=staging, index=False)
+                published_path = root / staged_path.relative_to(staging)
+                index_manifest(index, manifest, path=published_path)
+                published_rows.append(
+                    replace(
+                        row,
+                        result=manifest,
+                        manifest_path=published_path,
+                        artifacts=tuple(publish(artifact) for artifact in row.artifacts),
+                    )
+                )
+        finally:
+            index.close()
         staging.rename(root)
         return replace(result, rows=tuple(published_rows))
     except Exception:
@@ -687,14 +716,22 @@ def _store_batched_evaluation_result(
     item: EvaluationBatchItem,
     result: EvaluationRecipeResult,
     *,
-    staging_root: Path,
+    store_root: Path,
     published_root: Path,
     provenance: Provenance,
     metadata: Mapping[str, Any],
 ) -> tuple[EvaluationRunManifest, Path]:
-    """Apply the existing per-row cache, custody, and manifest contracts."""
+    """Stage one row into the shared batch store using the per-row custody contracts.
+
+    ``store_root`` is the shared staging store that every row is written into;
+    ``published_root`` is the shared store's final published location, recorded
+    in the row's cache metadata. Rows never receive a private ``row_id`` store
+    subtree: state caches, durable state artifacts, and manifests are keyed by
+    the row's globally unique manifest identifier, so they coexist in one tree
+    without collision.
+    """
     manifest_id = evaluation_run_manifest_id(item.spec)
-    states_path = evaluation_states_cache_path(manifest_id, root=staging_root)
+    states_path = evaluation_states_cache_path(manifest_id, root=store_root)
     states_path.parent.mkdir(parents=True, exist_ok=True)
     cache_metadata: dict[str, Any] = {
         "states_path": str(evaluation_states_cache_path(manifest_id, root=published_root)),
@@ -707,7 +744,7 @@ def _store_batched_evaluation_result(
     if _states_custody_for_spec(item.spec) == "durable":
         result = _with_durable_states_artifact(
             result,
-            root=staging_root,
+            root=store_root,
             manifest_id=manifest_id,
         )
     prov = provenance.model_copy(deep=True)
@@ -729,7 +766,7 @@ def _store_batched_evaluation_result(
         artifacts=result.artifacts,
         metadata={**result.metadata, **metadata, "cache": cache_metadata},
     )
-    return manifest, write_manifest(manifest, root=staging_root)
+    return manifest, write_manifest(manifest, root=store_root, index=False)
 
 
 def resolve_staged_evaluation_prerequisite(
