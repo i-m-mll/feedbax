@@ -93,6 +93,16 @@ def _binding_parts(value: str, *, option: str) -> tuple[str, str]:
     return name, root
 
 
+def _apply_plotly_template_default(requested: str | None = None) -> None:
+    """Apply the project Plotly template default shared by every CLI execution path.
+
+    Args:
+        requested: Explicit template name from a CLI flag, or `None` to use the
+            project default from `PLOTLY_CONFIG`.
+    """
+    pio.templates.default = requested or PLOTLY_CONFIG.templates.default
+
+
 @contextmanager
 def _bundle_human_output_to_stderr():
     """Keep stdout reserved for bundle JSON while progress/noisy output renders on stderr."""
@@ -124,6 +134,7 @@ def build_run_arg_parser() -> argparse.ArgumentParser:
 def run_analysis_run_spec_file(argv: list[str]) -> None:
     """Execute one serialized ``AnalysisRunSpec`` file and print its manifest summary."""
     args = build_run_arg_parser().parse_args(argv)
+    _apply_plotly_template_default()
     spec = _load_spec_document(args.spec, label="AnalysisRunSpec")
     with _bundle_human_output_to_stderr():
         manifest, path = execute_analysis_run_spec(spec, root=args.root)
@@ -288,7 +299,7 @@ def main(argv: list[str] | None = None) -> None:
     if (args.artifact_provider or args.checkpoint_custody) and (args.execution_descriptor is None):
         parser.error("--artifact-provider and --checkpoint-custody require --execution-descriptor")
 
-    pio.templates.default = args.plotly_template or PLOTLY_CONFIG.templates.default
+    _apply_plotly_template_default(args.plotly_template)
 
     if args.seed is None:
         key = jr.PRNGKey(PRNG_CONFIG.seed)
