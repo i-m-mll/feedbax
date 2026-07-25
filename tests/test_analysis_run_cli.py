@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import plotly.io as pio
 import pytest
 
 from feedbax.analysis.specs import (
@@ -13,6 +14,7 @@ from feedbax.analysis.specs import (
     unregister_analysis_recipe,
 )
 from feedbax.bin import analysis as analysis_cli
+from feedbax.config import PLOTLY_CONFIG
 from feedbax.config.yaml import get_yaml_loader
 from feedbax.contracts.manifest import AnalysisRunSpec, ParentRef, load_manifest
 from tests.analysis_fixtures import (
@@ -39,6 +41,16 @@ def toy_analysis_recipe():
         yield
     finally:
         unregister_analysis_recipe(CLI_ANALYSIS_TYPE)
+
+
+@pytest.fixture
+def restore_plotly_template():
+    """Restore the process-global Plotly template default after the test."""
+    previous = pio.templates.default
+    try:
+        yield
+    finally:
+        pio.templates.default = previous
 
 
 def _toy_spec_payload(root: Path) -> dict:
@@ -90,6 +102,32 @@ def test_run_subcommand_executes_yaml_spec_file(tmp_path: Path, capsys, toy_anal
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "completed"
     assert Path(result["manifest_path"]).exists()
+
+
+def test_run_subcommand_applies_project_plotly_template(
+    tmp_path: Path, capsys, toy_analysis_recipe, restore_plotly_template
+):
+    """The run path applies the same template default as the `--bundle` path."""
+    payload = _toy_spec_payload(tmp_path)
+    spec_path = tmp_path / "analysis_spec.json"
+    spec_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    expected = PLOTLY_CONFIG.templates.default
+    sentinel = "plotly" if expected != "plotly" else "none"
+    pio.templates.default = sentinel
+
+    analysis_cli.main(["run", str(spec_path), "--root", str(tmp_path)])
+
+    capsys.readouterr()
+    assert pio.templates.default == expected
+
+
+def test_plotly_template_default_honours_explicit_request(restore_plotly_template):
+    """The shared helper used by both CLI paths prefers an explicit template name."""
+    analysis_cli._apply_plotly_template_default("plotly")
+    assert pio.templates.default == "plotly"
+
+    analysis_cli._apply_plotly_template_default()
+    assert pio.templates.default == PLOTLY_CONFIG.templates.default
 
 
 def test_run_subcommand_rejects_missing_spec_argument():
