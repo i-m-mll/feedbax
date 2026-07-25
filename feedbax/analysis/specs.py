@@ -63,6 +63,12 @@ from feedbax.contracts.manifest import (
     evaluation_states_cache_path,
     load_manifest,
 )
+from feedbax.contracts.analysis_composition import (
+    AnalysisRunDeltaSpec,
+    FlattenedAnalysisRun,
+    flatten_analysis_run_delta,
+    is_analysis_run_delta_payload,
+)
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.persistence.manifest_index import find_manifest_paths_by_id, iter_manifest_files
 from feedbax.analysis.types import AnalysisInputData
@@ -193,17 +199,38 @@ def _get_evaluation_states_structure_provider(
     return _EVALUATION_STATES_STRUCTURE_PROVIDERS.get(analysis_type)
 
 
-def coerce_analysis_run_spec(
-    value: AnalysisRunSpec | Mapping[str, Any] | Path | str,
-) -> AnalysisRunSpec:
-    """Load an ``AnalysisRunSpec`` from an object, mapping, or JSON file path."""
+def resolve_analysis_run_authoring(
+    value: AnalysisRunSpec | AnalysisRunDeltaSpec | Mapping[str, Any] | Path | str,
+    *,
+    repo_root: Path | str | None = None,
+) -> tuple[AnalysisRunSpec, FlattenedAnalysisRun | None]:
+    """Resolve either analysis authoring kind to one strict ``AnalysisRunSpec``.
+
+    Delta-authored documents are flattened against their content-pinned parents
+    and then validated as the unchanged ``AnalysisRunSpec`` contract, so every
+    downstream loader, executor, and manifest path stays identical. Direct
+    ``AnalysisRunSpec`` documents are handled byte-identically and return a
+    ``None`` flattening record.
+    """
     if isinstance(value, AnalysisRunSpec):
-        return value
+        return value, None
+    if isinstance(value, AnalysisRunDeltaSpec) or is_analysis_run_delta_payload(value):
+        delta = (
+            value
+            if isinstance(value, AnalysisRunDeltaSpec)
+            else AnalysisRunDeltaSpec.model_validate(value)
+        )
+        flattened = flatten_analysis_run_delta(delta, repo_root=repo_root)
+        return AnalysisRunSpec.model_validate(flattened.payload), flattened
     raw: Mapping[str, Any]
     if isinstance(value, Mapping):
         raw = value
     else:
         raw = json.loads(Path(value).read_text(encoding="utf-8"))
+    if is_analysis_run_delta_payload(raw):
+        delta = AnalysisRunDeltaSpec.model_validate(raw)
+        flattened = flatten_analysis_run_delta(delta, repo_root=repo_root)
+        return AnalysisRunSpec.model_validate(flattened.payload), flattened
     source_version = raw.get("schema_version")
     result = default_spec_registry.migrate(
         "AnalysisRunSpec",
@@ -211,7 +238,16 @@ def coerce_analysis_run_spec(
         source_version=source_version if isinstance(source_version, str) else None,
         assume_current=source_version is None,
     )
-    return AnalysisRunSpec.model_validate(result.payload)
+    return AnalysisRunSpec.model_validate(result.payload), None
+
+
+def coerce_analysis_run_spec(
+    value: AnalysisRunSpec | AnalysisRunDeltaSpec | Mapping[str, Any] | Path | str,
+    *,
+    repo_root: Path | str | None = None,
+) -> AnalysisRunSpec:
+    """Load an ``AnalysisRunSpec`` from an object, mapping, JSON file path, or delta spec."""
+    return resolve_analysis_run_authoring(value, repo_root=repo_root)[0]
 
 
 def find_manifest_by_id(
@@ -690,9 +726,10 @@ def _resolve_authenticated_input_authorities(
 
 
 def execute_analysis_run_spec(
-    spec: AnalysisRunSpec | Mapping[str, Any] | Path | str,
+    spec: AnalysisRunSpec | AnalysisRunDeltaSpec | Mapping[str, Any] | Path | str,
     *,
     root: Path | str | None = None,
+    repo_root: Path | str | None = None,
     provenance: Provenance | None = None,
     issues: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -703,8 +740,12 @@ def execute_analysis_run_spec(
     use_cache: bool = True,
     force: bool = False,
 ) -> tuple[AnalysisRunManifest, Path]:
-    """Execute a serialized analysis spec and write an ``AnalysisRunManifest``."""
-    run_spec = coerce_analysis_run_spec(spec)
+    """Execute a serialized analysis spec and write an ``AnalysisRunManifest``.
+
+    Delta-authored specs are flattened against their content-pinned parents
+    (which requires ``repo_root``) before execution.
+    """
+    run_spec = coerce_analysis_run_spec(spec, repo_root=repo_root)
     root_path = Path(root) if root is not None else default_manifest_root()
     context = AnalysisRunContext(
         spec=run_spec,
