@@ -39,6 +39,7 @@ from feedbax.analysis.execution_context import (
     StagedArtifactProviderRootBinding,
     StagedCheckpointCustodyRootBinding,
 )
+from feedbax.analysis.specs import execute_analysis_run_spec
 from feedbax.config import (
     PATHS,
     PLOTLY_CONFIG,
@@ -47,10 +48,13 @@ from feedbax.config import (
     load_config,
 )
 from feedbax.config.utils import deep_merge
+from feedbax.config.yaml import get_yaml_loader
 from feedbax.contracts.staged_execution import StagedExecutionDescriptor
 from feedbax.plugins import EXPERIMENT_REGISTRY
 
 logger = logging.getLogger(os.path.basename(__file__))
+
+RUN_SUBCOMMAND = "run"
 
 
 def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -72,11 +76,31 @@ def _load_json_object(path: Path, *, label: str) -> dict[str, object]:
     return payload
 
 
+def _load_spec_document(path: Path, *, label: str) -> dict[str, object]:
+    """Load a serialized spec document from a JSON or YAML file."""
+    if path.suffix.lower() in {".yml", ".yaml"}:
+        payload = get_yaml_loader().load(path)
+        if not isinstance(payload, dict):
+            raise ValueError(f"{label} document must be a YAML mapping")
+        return dict(payload)
+    return _load_json_object(path, label=label)
+
+
 def _binding_parts(value: str, *, option: str) -> tuple[str, str]:
     name, separator, root = value.partition("=")
     if not separator or not name or not root:
         raise ValueError(f"{option} must use NAME=ROOT syntax")
     return name, root
+
+
+def _apply_plotly_template_default(requested: str | None = None) -> None:
+    """Apply the project Plotly template default shared by every CLI execution path.
+
+    Args:
+        requested: Explicit template name from a CLI flag, or `None` to use the
+            project default from `PLOTLY_CONFIG`.
+    """
+    pio.templates.default = requested or PLOTLY_CONFIG.templates.default
 
 
 @contextmanager
@@ -92,8 +116,47 @@ def _bundle_human_output_to_stderr():
         console.__dict__ = previous_console_state
 
 
+def build_run_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="feedbax-analysis run",
+        description="Execute an AnalysisRunSpec JSON/YAML file and write its manifest.",
+    )
+    parser.add_argument("spec", type=Path, help="Path to an AnalysisRunSpec JSON or YAML file.")
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Manifest root to write the AnalysisRunManifest under.",
+    )
+    return parser
+
+
+def run_analysis_run_spec_file(argv: list[str]) -> None:
+    """Execute one serialized ``AnalysisRunSpec`` file and print its manifest summary."""
+    args = build_run_arg_parser().parse_args(argv)
+    _apply_plotly_template_default()
+    spec = _load_spec_document(args.spec, label="AnalysisRunSpec")
+    with _bundle_human_output_to_stderr():
+        manifest, path = execute_analysis_run_spec(spec, root=args.root)
+    payload = {
+        "manifest_id": manifest.id,
+        "manifest_path": str(path),
+        "status": manifest.status,
+        "artifacts": [
+            artifact.model_dump(mode="json", exclude_none=True) for artifact in manifest.artifacts
+        ],
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
 def build_arg_parser():
-    parser = argparse.ArgumentParser(description="Run analysis modules on trained models.")
+    parser = argparse.ArgumentParser(
+        description="Run analysis modules on trained models.",
+        epilog=(
+            f"Subcommand: '{RUN_SUBCOMMAND} <spec.json> [--root ROOT]' executes a serialized "
+            "AnalysisRunSpec file directly."
+        ),
+    )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument(
         "--single",
@@ -217,8 +280,13 @@ def build_arg_parser():
 
 
 def main(argv: list[str] | None = None) -> None:
+    args_in = list(argv or sys.argv[1:])
+    if args_in and args_in[0] == RUN_SUBCOMMAND:
+        run_analysis_run_spec_file(args_in[1:])
+        return
+
     parser = build_arg_parser()
-    args = parser.parse_args(argv or sys.argv[1:])
+    args = parser.parse_args(args_in)
 
     if args.exact_parents is not None and args.bundle is None:
         parser.error("--exact-parents is only valid with --bundle")
@@ -231,7 +299,7 @@ def main(argv: list[str] | None = None) -> None:
     if (args.artifact_provider or args.checkpoint_custody) and (args.execution_descriptor is None):
         parser.error("--artifact-provider and --checkpoint-custody require --execution-descriptor")
 
-    pio.templates.default = args.plotly_template or PLOTLY_CONFIG.templates.default
+    _apply_plotly_template_default(args.plotly_template)
 
     if args.seed is None:
         key = jr.PRNGKey(PRNG_CONFIG.seed)

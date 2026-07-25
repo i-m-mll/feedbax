@@ -184,6 +184,10 @@ from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
     EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID,
     EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION,
+    EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_ID,
+    EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
+    EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
+    EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID,
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION,
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1,
@@ -2632,7 +2636,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             description="Executable declarative figure specification.",
             rejected_old_versions=("feedbax.spec.figure.v1",),
-            required_tests=("tests/test_declarative_figures.py",),
+            required_tests=(
+                "tests/test_declarative_figures.py",
+                "tests/test_figure_trace_families.py",
+                "tests/test_figure_colorbar.py",
+            ),
         ),
         _family(
             "FigureTemplate",
@@ -2939,6 +2947,36 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             rejected_old_versions=("feedbax.spec.evaluation_run_matrix.v0",),
             required_tests=("tests/test_evaluation_matrix.py",),
+        ),
+        _family(
+            "EvaluationRunMatrixDeltaSpec",
+            EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
+            EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_composition",
+            emitted_by=("authored evaluation matrix composition",),
+            consumed_by=("evaluation matrix flattening",),
+            description=(
+                "Ordered whole-document deltas over one content-pinned parent evaluation "
+                "matrix or parent delta spec."
+            ),
+            rejected_old_versions=(f"{EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_evaluation_matrix_composition.py",),
+        ),
+        _family(
+            "EvaluationMatrixCompositionProvenance",
+            EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_ID,
+            EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_composition",
+            emitted_by=("feedbax.analysis.evaluation.execute_evaluation_run_matrix",),
+            consumed_by=("durable evaluation manifest inspection",),
+            description=(
+                "Embedded authored, layer, and flattened identities for delta-composed "
+                "evaluation matrices."
+            ),
+            rejected_old_versions=(
+                f"{EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_ID}.v0",
+            ),
+            required_tests=("tests/test_evaluation_matrix_composition.py",),
         ),
         _family(
             "EvaluationAxisExpansionProvenance",

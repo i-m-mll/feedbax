@@ -8,7 +8,8 @@ import json
 import math
 from pathlib import Path
 import re
-from typing import Any, Generic, TypeVar
+from string import Formatter
+from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import Field, model_validator
 
@@ -25,6 +26,11 @@ from feedbax.contracts.manifest import (
 PayloadT = TypeVar("PayloadT", bound=StrictModel)
 _PATH_SAFE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+MATRIX_AXIS_VALUE_GENERATOR_SCHEMA_ID = "feedbax.spec.matrix_axis_value_generator"
+MATRIX_AXIS_VALUE_GENERATOR_SCHEMA_VERSION = "feedbax.spec.matrix_axis_value_generator.v1"
+_GENERATOR_ID_FORMAT_FIELDS = ("index", "value")
+_FORMATTER = Formatter()
 
 
 class ContentPinnedJsonBase(StrictModel):
@@ -61,17 +67,75 @@ class MatrixAxisValue(StrictModel):
         return self
 
 
+class MatrixAxisValueGenerator(StrictModel):
+    """Versioned declarative generator that expands to ordered axis values.
+
+    The ``integer_range`` kind binds one delta path to ``range(start, stop, step)``
+    and names each generated value by formatting ``id_format`` over the fields
+    ``{value}`` and ``{index}``. Expansion is deterministic: one declaration always
+    yields the same ordered values, ids, and deltas as the equivalent
+    hand-enumerated axis. ``kind`` leaves room for further declarative forms, such
+    as an authored value list mapped over one path.
+    """
+
+    schema_id: str = MATRIX_AXIS_VALUE_GENERATOR_SCHEMA_ID
+    schema_version: str = MATRIX_AXIS_VALUE_GENERATOR_SCHEMA_VERSION
+    kind: Literal["integer_range"] = "integer_range"
+    path: str
+    start: int
+    stop: int
+    step: int = 1
+    id_format: str
+    op: Literal["add", "replace"] = "replace"
+
+    @model_validator(mode="after")
+    def _validate_generator(self) -> "MatrixAxisValueGenerator":
+        if self.schema_id != MATRIX_AXIS_VALUE_GENERATOR_SCHEMA_ID:
+            raise ValueError(f"unsupported axis value generator schema_id: {self.schema_id!r}")
+        if self.schema_version != MATRIX_AXIS_VALUE_GENERATOR_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported axis value generator schema_version: {self.schema_version!r}"
+            )
+        _validate_dotted_path(self.path, "axis value generator path")
+        _validate_generator_id_format(self.id_format)
+        if self.step == 0:
+            raise ValueError("axis value generator step must be non-zero")
+        if not range(self.start, self.stop, self.step):
+            raise ValueError(
+                "axis value generator produces no values: "
+                f"start={self.start}, stop={self.stop}, step={self.step}"
+            )
+        expand_axis_value_generator(self)
+        return self
+
+
 class MatrixAxis(StrictModel):
-    """One ordered authored axis with ordered named values."""
+    """One ordered authored axis with ordered named values.
+
+    An axis declares either enumerated ``values`` or one ``generator``; read the
+    ordered values through :meth:`resolved_values` rather than the ``values``
+    field, which is empty for a generator-form axis.
+    """
 
     id: str
     label: str | None = None
-    values: list[MatrixAxisValue] = Field(min_length=1)
+    values: list[MatrixAxisValue] = Field(default_factory=list)
+    generator: MatrixAxisValueGenerator | None = None
+
+    def resolved_values(self) -> list[MatrixAxisValue]:
+        """Return this axis's ordered canonical values, expanding any generator."""
+        if self.generator is None:
+            return list(self.values)
+        return expand_axis_value_generator(self.generator)
 
     @model_validator(mode="after")
     def _validate_axis(self) -> "MatrixAxis":
         _validate_path_safe_id(self.id, "axis id")
-        value_ids = [value.id for value in self.values]
+        if self.generator is not None and self.values:
+            raise ValueError(f"axis {self.id!r} cannot declare both values and a generator")
+        if self.generator is None and not self.values:
+            raise ValueError(f"axis {self.id!r} requires enumerated values or a generator")
+        value_ids = [value.id for value in self.resolved_values()]
         if len(value_ids) != len(set(value_ids)):
             raise ValueError(f"axis {self.id!r} value ids must be unique")
         return self
@@ -208,19 +272,46 @@ def ordered_index_product(
     return coordinates
 
 
+def expand_axis_value_generator(
+    generator: MatrixAxisValueGenerator,
+) -> list[MatrixAxisValue]:
+    """Expand one declarative generator into its ordered canonical axis values."""
+    values: list[MatrixAxisValue] = []
+    for index, number in enumerate(range(generator.start, generator.stop, generator.step)):
+        try:
+            value_id = generator.id_format.format(value=number, index=index)
+        except (IndexError, KeyError, ValueError) as exc:
+            raise ValueError(
+                f"axis value generator id_format {generator.id_format!r} failed for "
+                f"value {number}: {exc}"
+            ) from exc
+        values.append(
+            MatrixAxisValue(
+                id=value_id,
+                deltas=[OverridePatch(path=generator.path, value=number, op=generator.op)],
+            )
+        )
+    return values
+
+
 def expand_matrix_axes(axes: Sequence[MatrixAxis]) -> list[MatrixAxisCoordinate]:
     """Expand ordered authored axes into canonical row coordinates and deltas."""
     axis_ids = [axis.id for axis in axes]
     if len(axis_ids) != len(set(axis_ids)):
         raise ValueError("matrix axis ids must be unique")
-    indexed = ordered_index_product([(axis.id, len(axis.values)) for axis in axes])
+    axis_values = [axis.resolved_values() for axis in axes]
+    indexed = ordered_index_product(
+        [(axis.id, len(values)) for axis, values in zip(axes, axis_values)]
+    )
     coordinates: list[MatrixAxisCoordinate] = []
     row_ids: set[str] = set()
     expected = set(axis_ids)
     for indices in indexed:
         if set(indices) != expected:
             raise ValueError("ordered axis product produced an incomplete coordinate")
-        selected = [axis.values[indices[axis.id]] for axis in axes]
+        selected = [
+            values[indices[axis.id]] for axis, values in zip(axes, axis_values)
+        ]
         value_ids = {axis.id: value.id for axis, value in zip(axes, selected)}
         row_id = "--".join(
             f"{axis.id}-{value.id}" for axis, value in zip(axes, selected)
@@ -359,6 +450,35 @@ def _validate_dotted_path(path: str, field: str) -> None:
         raise ValueError(f"{field} is not dotted-path-like: {path!r}")
 
 
+def _validate_generator_id_format(id_format: str) -> None:
+    try:
+        parsed = list(_FORMATTER.parse(id_format))
+    except ValueError as exc:
+        raise ValueError(
+            f"axis value generator id_format is not a valid format string: {id_format!r}: {exc}"
+        ) from exc
+    referenced: list[str] = []
+    for _literal, field_name, format_spec, _conversion in parsed:
+        if field_name is None:
+            continue
+        if format_spec is not None and "{" in format_spec:
+            raise ValueError(
+                "axis value generator id_format must not nest replacement fields: "
+                f"{id_format!r}"
+            )
+        if field_name not in _GENERATOR_ID_FORMAT_FIELDS:
+            raise ValueError(
+                f"axis value generator id_format field {field_name!r} is not one of "
+                f"{list(_GENERATOR_ID_FORMAT_FIELDS)}"
+            )
+        referenced.append(field_name)
+    if not referenced:
+        raise ValueError(
+            "axis value generator id_format must reference at least one of "
+            f"{list(_GENERATOR_ID_FORMAT_FIELDS)}: {id_format!r}"
+        )
+
+
 def _validate_path_safe_id(value: str, field: str) -> None:
     if not _PATH_SAFE_RE.fullmatch(value) or value in {".", ".."}:
         raise ValueError(f"{field} is not path-safe: {value!r}")
@@ -386,15 +506,19 @@ def _require_json_value(value: Any, field: str) -> None:
 
 __all__ = [
     "ContentPinnedJsonBase",
+    "MATRIX_AXIS_VALUE_GENERATOR_SCHEMA_ID",
+    "MATRIX_AXIS_VALUE_GENERATOR_SCHEMA_VERSION",
     "apply_row_derivations",
     "MaterializedMatrixRow",
     "MatrixAxis",
     "MatrixAxisCoordinate",
     "MatrixAxisValue",
+    "MatrixAxisValueGenerator",
     "MatrixRow",
     "RowDerivation",
     "RowMatrixSpec",
     "derive_row_path",
+    "expand_axis_value_generator",
     "expand_matrix_axes",
     "load_content_pinned_json_base",
     "materialize_matrix_rows",

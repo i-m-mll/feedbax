@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 
 import numpy as np
+import plotly.graph_objects as go
 import plotly.io as pio
 import pytest
 from pydantic import ValidationError
@@ -15,6 +16,7 @@ from pydantic import ValidationError
 import feedbax.plugins
 from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.figures import (
+    FIGURE_RENDER_MEDIA_TYPES,
     FIGURE_RENDER_ROLE,
     FigureSpecExecutionError,
     execute_figure_spec,
@@ -174,7 +176,7 @@ def test_constructor_versions_are_reported_in_catalog_and_manifest(tmp_path: Pat
         "feedbax.profile_band": "v2",
         "feedbax.profile_curves": "v1",
         "feedbax.comparison_grid": "v2",
-        "feedbax.grid_figure": "v2",
+        "feedbax.grid_figure": "v3",
     }
     catalog_versions = {item["key"]: item["version"] for item in constructor_catalog()}
     assert {key: catalog_versions[key] for key in expected} == expected
@@ -361,6 +363,63 @@ def test_execute_figure_spec_records_optional_omission_and_custody(tmp_path: Pat
         "missing-optional": "omitted",
     }
     assert figure_manifest.expression_results_digest
+
+
+@pytest.mark.parametrize(
+    ("render_format", "expected_media_type"),
+    [
+        ("json", "application/json"),
+        ("html", "text/html"),
+        ("png", "image/png"),
+        ("pdf", "application/pdf"),
+        ("svg", "image/svg+xml"),
+    ],
+)
+def test_execute_figure_spec_labels_render_artifact_with_written_media_type(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    render_format: str,
+    expected_media_type: str,
+) -> None:
+    """The stored render artifact carries the media type of the format actually written."""
+
+    def _write_image_without_kaleido(self: go.Figure, path: str, *args, **kwargs) -> None:
+        Path(path).write_bytes(b"render-bytes")
+
+    monkeypatch.setattr(go.Figure, "write_image", _write_image_without_kaleido)
+
+    manifest = _analysis_manifest(tmp_path)
+    spec = FigureSpec(
+        name=f"render-media-type-{render_format}",
+        assembler="feedbax.grid_figure",
+        inputs=[_contained_analysis_ref(manifest)],
+        panels=[{"name": "main"}],
+        traces=[
+            TraceBinding(
+                name="profile",
+                constructor="feedbax.profile_band",
+                panel="main",
+                data={
+                    "x": {"item": "analysis", "path": "metadata.x"},
+                    "y": {"item": "analysis", "path": "metadata.y"},
+                },
+            )
+        ],
+        figure_routing={"render_format": render_format},
+    )
+
+    figure_manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    renders = [
+        artifact
+        for artifact in figure_manifest.artifacts
+        if artifact.role == FIGURE_RENDER_ROLE
+        and artifact.metadata.get("format") == render_format
+    ]
+
+    assert len(renders) == 1
+    assert renders[0].media_type == expected_media_type
+    assert renders[0].media_type in FIGURE_RENDER_MEDIA_TYPES
+    assert figure_manifest_plotly_json(figure_manifest) is not None
 
 
 def test_execute_figure_spec_routes_panel_and_figure_assembler_params(tmp_path: Path) -> None:

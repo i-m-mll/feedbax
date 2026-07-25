@@ -318,6 +318,7 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "TrainingRunManifest": TrainingRunManifest,
         "EvaluationRunManifest": EvaluationRunManifest,
         "EvaluationRunMatrixSpec": analysis_pkg.EvaluationRunMatrixSpec,
+        "EvaluationRunMatrixDeltaSpec": analysis_pkg.EvaluationRunMatrixDeltaSpec,
         "CheckpointSelectionManifest": CheckpointSelectionManifest,
         "AnalysisBundleSpec": analysis_pkg.AnalysisBundleSpec,
         "StagedAnalysisBundleExecution": analysis_pkg.StagedAnalysisBundleExecution,
