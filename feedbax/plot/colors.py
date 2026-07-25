@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 import numpy as np
 import plotly.colors as plc
 import plotly.io as pio
@@ -19,16 +21,21 @@ def adjust_color_brightness(colors, factor=0.8):
     return list(map(arr_to_rgb, factor * colors_arr))
 
 
+def is_cyclical_colorscale(colorscale) -> bool:
+    """Whether a colorscale ends on the color it starts with, so its ends coincide."""
+    colors = plc.get_colorscale(colorscale)
+    return colors[0][1] == colors[-1][1]
+
+
 def sample_colorscale_unique(colorscale, samplepoints: int, **kwargs):
     """Helper to ensure we don't get repeat colors when using cyclical colorscales.
 
     Also avoids the division-by-zero error that `sample_colorscale` raises when `samplepoints == 1`.
     """
-    colors = plc.get_colorscale(colorscale)
     if samplepoints == 1:
         n_sample = 2
         idxs = slice(1, None)
-    elif colors[0][1] == colors[-1][1]:
+    elif is_cyclical_colorscale(colorscale):
         n_sample = samplepoints + 1
         idxs = slice(None, -1)
     else:
@@ -36,6 +43,23 @@ def sample_colorscale_unique(colorscale, samplepoints: int, **kwargs):
         idxs = slice(None)
 
     return sample_colorscale(colorscale, n_sample, **kwargs)[idxs]
+
+
+def sample_colorscale_at(colorscale, positions: Sequence[float], **kwargs):
+    """Sample a colorscale at explicit normalized positions rather than uniformly.
+
+    ``positions`` are fractions of the scale in ``[0, 1]``, one per sample, in
+    the caller's order. Cyclical colorscales are compressed onto
+    ``[0, (n - 1) / n]`` so the last of ``n`` positions cannot land on the
+    wrap-around duplicate of the first color — the same rule
+    `sample_colorscale_unique` applies to uniform positions, which this
+    function therefore reproduces exactly when the positions are uniform.
+    """
+    n = len(positions)
+    if n > 1 and is_cyclical_colorscale(colorscale):
+        cyclical_scale = (n - 1) / n
+        positions = [position * cyclical_scale for position in positions]
+    return sample_colorscale(colorscale, list(positions), **kwargs)
 
 
 def _compute_colors(

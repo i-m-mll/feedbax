@@ -31,7 +31,7 @@ from feedbax.contracts.manifest import (
     spec_payload,
     write_manifest,
 )
-from feedbax.plot.colors import sample_colorscale_unique
+from feedbax.plot.colors import sample_colorscale_at, sample_colorscale_unique
 
 pytestmark = [pytest.mark.feedbax_contract]
 
@@ -311,6 +311,95 @@ def test_colorbar_authored_as_an_assembler_param_fails_closed(tmp_path: Path) ->
         execute_figure_spec(spec, root=tmp_path)
 
     assert "not by assembler_params" in exc_info.value.manifest.failure["message"]
+
+
+#: A geometrically spaced sweep whose interior knots no linear relabeling of an
+#: index domain can place correctly.
+SWEEP_VALUES = [0.2, 0.4, 1.0]
+
+
+def _sweep_family(**overrides: Any) -> TraceFamily:
+    return _knot_family(values=SWEEP_VALUES, **overrides)
+
+
+def _sweep_colors() -> list[str]:
+    low, high = SWEEP_VALUES[0], SWEEP_VALUES[-1]
+    positions = [(value - low) / (high - low) for value in SWEEP_VALUES]
+    return list(sample_colorscale_at(COLORSCALE, positions, colortype="rgb"))
+
+
+def test_value_keyed_colorbar_stops_at_the_member_values(tmp_path: Path) -> None:
+    spec = FigureSpec(
+        name="value-colorbar",
+        assembler="feedbax.grid_figure",
+        inputs=[_analysis_input(tmp_path)],
+        panels=[{"name": "main"}],
+        trace_families=[_sweep_family()],
+        colorbar=FigureColorbar(title="s", family="knots"),
+    )
+
+    resolved = resolve_figure_colorbar(spec)
+    rendered = _render(spec, tmp_path)
+
+    assert resolved is not None and resolved.family is None
+    # Stops sit where the values sit, not at even index spacing.
+    assert [stop[0] for stop in resolved.colorscale] == [0.0, 0.25, 1.0]
+    assert [stop[1] for stop in resolved.colorscale] == _sweep_colors()
+    assert resolved.range == (0.2, 1.0)
+    (carrier,) = _colorbar_traces(rendered)
+    assert (carrier["marker"]["cmin"], carrier["marker"]["cmax"]) == (0.2, 1.0)
+    assert carrier["marker"]["colorbar"]["title"] == {"text": "s"}
+
+
+def test_value_keyed_colorbar_agrees_with_the_colors_its_traces_were_given(
+    tmp_path: Path,
+) -> None:
+    spec = FigureSpec(
+        name="agreeing-value-colorbar",
+        assembler="feedbax.grid_figure",
+        inputs=[_analysis_input(tmp_path)],
+        panels=[{"name": "main"}],
+        trace_families=[_sweep_family()],
+        colorbar=FigureColorbar(family="knots"),
+    )
+
+    rendered = _render(spec, tmp_path)
+
+    (carrier,) = _colorbar_traces(rendered)
+    trace_colors = [
+        trace["line"]["color"]
+        for trace in rendered["data"]
+        if trace.get("name", "").startswith("knot ")
+    ]
+    assert [stop[1] for stop in carrier["marker"]["colorscale"]] == trace_colors
+    assert trace_colors == _sweep_colors()
+
+
+def test_value_keyed_colorbar_accepts_named_indices() -> None:
+    spec = FigureSpec(
+        name="named-index-value-colorbar",
+        assembler="feedbax.grid_figure",
+        trace_families=[
+            _sweep_family(index=TraceFamilyIndex(values=["slow", "mid", "fast"]))
+        ],
+        colorbar=FigureColorbar(family="knots"),
+    )
+
+    resolved = resolve_figure_colorbar(spec)
+
+    assert resolved is not None
+    assert resolved.range == (0.2, 1.0)
+    assert [stop[0] for stop in resolved.colorscale] == [0.0, 0.25, 1.0]
+
+
+def test_value_keyed_colorbar_rejects_an_explicit_range() -> None:
+    with pytest.raises(ValidationError, match="an explicit range would relabel them"):
+        FigureSpec(
+            name="relabelled-value-colorbar",
+            assembler="feedbax.grid_figure",
+            trace_families=[_sweep_family()],
+            colorbar=FigureColorbar(family="knots", range=(0.0, 1.0)),
+        )
 
 
 def test_colorbar_on_an_assembler_without_one_fails_closed(tmp_path: Path) -> None:
