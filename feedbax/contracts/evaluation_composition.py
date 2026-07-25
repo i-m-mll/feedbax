@@ -58,12 +58,18 @@ class EvaluationRunMatrixDeltaSpec(StrictModel):
 
 
 class EvaluationMatrixCompositionLayer(StrictModel):
-    """Identity of one authored layer and the parent document it inherits."""
+    """Identity of one authored layer and the parent document it inherits.
+
+    ``parent_payload_path`` records the JSON-pointer-lite sub-document selector
+    when the pinned parent inherits only a sub-document; it is absent (``None``)
+    for whole-file parents so existing provenance stays byte-identical.
+    """
 
     envelope_sha256: str
     parent_ref: str
     parent_sha256: str
     layer_ids: list[str]
+    parent_payload_path: tuple[str, ...] | None = None
 
 
 class FlattenedEvaluationMatrix(StrictModel):
@@ -99,7 +105,7 @@ def evaluation_matrix_delta_envelope(spec: EvaluationRunMatrixDeltaSpec) -> dict
     The parent ``ref`` is a readability locator; the pinned ``sha256`` carries the
     parent's identity, so the ref is excluded exactly as in training composition.
     """
-    parent = spec.parent.model_dump(mode="json")
+    parent = spec.parent.model_dump(mode="json", exclude_none=True)
     parent.pop("ref", None)
     return {
         "schema_id": spec.schema_id,
@@ -159,6 +165,7 @@ def flatten_evaluation_run_matrix_delta(
                 parent_ref=node.parent.ref,
                 parent_sha256=node.parent.sha256,
                 layer_ids=[delta.layer_id for delta in node.deltas],
+                parent_payload_path=node.parent.payload_path,
             )
         )
     return FlattenedEvaluationMatrix(
@@ -185,7 +192,9 @@ def evaluation_matrix_composition_provenance(
             "ref": flattened.root_matrix.parent_ref,
             "sha256": flattened.root_matrix.parent_sha256,
         },
-        "layers": [layer.model_dump(mode="json") for layer in flattened.layers],
+        "layers": [
+            layer.model_dump(mode="json", exclude_none=True) for layer in flattened.layers
+        ],
         "attribution": dict(flattened.attribution),
         "flattened_matrix_sha256": sha256_bytes(canonical_json_bytes(dict(flattened_matrix))),
         "canonical_row_order": list(canonical_row_order),

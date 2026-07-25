@@ -26,6 +26,7 @@ from feedbax.contracts.manifest import (
 PayloadT = TypeVar("PayloadT", bound=StrictModel)
 _PATH_SAFE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_ARRAY_INDEX_RE = re.compile(r"^(0|[1-9][0-9]*)$")
 
 MATRIX_AXIS_VALUE_GENERATOR_SCHEMA_ID = "feedbax.spec.matrix_axis_value_generator"
 MATRIX_AXIS_VALUE_GENERATOR_SCHEMA_VERSION = "feedbax.spec.matrix_axis_value_generator.v1"
@@ -34,10 +35,19 @@ _FORMATTER = Formatter()
 
 
 class ContentPinnedJsonBase(StrictModel):
-    """Relative JSON document whose canonical content hash is authoritative."""
+    """Relative JSON document whose canonical content hash is authoritative.
+
+    The ``sha256`` pin always covers the whole referenced file. An optional
+    ``payload_path`` is a JSON-pointer-lite selector — an ordered sequence of
+    segments where each segment is an object key or a decimal array index —
+    applied to the verified whole-file document to yield the effective inherited
+    sub-document. Selection happens strictly after hash verification, so the pin
+    remains a whole-file content pin regardless of ``payload_path``.
+    """
 
     ref: str
     sha256: str
+    payload_path: tuple[str, ...] | None = None
 
     @model_validator(mode="after")
     def _validate_base(self) -> "ContentPinnedJsonBase":
@@ -45,6 +55,16 @@ class ContentPinnedJsonBase(StrictModel):
             raise ValueError("content-pinned JSON base ref must be a non-empty relative path")
         if not _SHA256_RE.fullmatch(self.sha256):
             raise ValueError("content-pinned JSON base sha256 must be lowercase hexadecimal")
+        if self.payload_path is not None:
+            if not self.payload_path:
+                raise ValueError(
+                    "content-pinned JSON base payload_path must be omitted or a non-empty sequence"
+                )
+            for segment in self.payload_path:
+                if not segment:
+                    raise ValueError(
+                        "content-pinned JSON base payload_path segments must be non-empty strings"
+                    )
         return self
 
 
@@ -245,7 +265,51 @@ def load_content_pinned_json_base(
             f"content-pinned JSON base hash mismatch for {base.ref!r}: "
             f"expected {base.sha256}, got {actual_sha256}"
         )
-    return payload
+    if base.payload_path is None:
+        return payload
+    selected = _select_payload_sub_document(payload, base.payload_path, base.ref)
+    if not isinstance(selected, dict):
+        raise ValueError(
+            f"content-pinned JSON base {base.ref!r} payload_path "
+            f"{list(base.payload_path)!r} must select a JSON object, got "
+            f"{type(selected).__name__}"
+        )
+    return selected
+
+
+def _select_payload_sub_document(
+    payload: dict[str, Any],
+    payload_path: Sequence[str],
+    ref: str,
+) -> Any:
+    """Resolve a JSON-pointer-lite selector against a verified whole-file document.
+
+    Fails closed on a missing object key, an out-of-range array index, a malformed
+    array-index segment, or traversal into a scalar where a container is required.
+    """
+    node: Any = payload
+    for depth, segment in enumerate(payload_path):
+        location = f"{ref!r} payload_path {list(payload_path)!r} segment {depth} ({segment!r})"
+        if isinstance(node, dict):
+            if segment not in node:
+                raise ValueError(f"{location}: missing object key")
+            node = node[segment]
+        elif isinstance(node, list):
+            if not _ARRAY_INDEX_RE.fullmatch(segment):
+                raise ValueError(
+                    f"{location}: array index must be a canonical non-negative decimal integer"
+                )
+            index = int(segment)
+            if index >= len(node):
+                raise ValueError(
+                    f"{location}: array index out of range for length {len(node)}"
+                )
+            node = node[index]
+        else:
+            raise ValueError(
+                f"{location}: cannot traverse into {type(node).__name__} value"
+            )
+    return node
 
 
 def ordered_index_product(

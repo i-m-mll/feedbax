@@ -443,7 +443,7 @@ def execute_evaluation_run_matrix(
                 "schema_id": EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID,
                 "schema_version": EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION,
                 "authored_matrix_sha256": sha256_bytes(canonical_json_bytes(flattened_spec)),
-                "pinned_base": matrix.base.model_dump(mode="json"),
+                "pinned_base": matrix.base.model_dump(mode="json", exclude_none=True),
                 "ordered_axes": [
                     {
                         "axis_id": axis.id,
