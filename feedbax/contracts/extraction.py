@@ -277,7 +277,14 @@ def _read_source_payload(repo_root: Path, uri: str) -> Any:
     path = repo_root / uri
     if not path.is_file():
         raise FileNotFoundError(f"Extraction source is missing: {uri}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    # Resolve declared content-pinned sub-document inheritance into the effective
+    # document before any dotted-path query evaluation. Imported locally because
+    # matrix_core imports this module at top level; a top-level import here would
+    # create a cycle. Documents without the reserved key pass through unchanged.
+    from feedbax.contracts.matrix_core import materialize_inherited_document
+
+    return materialize_inherited_document(payload, repo_root=repo_root)
 
 
 def _add_adoption_records(

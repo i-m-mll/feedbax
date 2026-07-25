@@ -33,6 +33,13 @@ MATRIX_AXIS_VALUE_GENERATOR_SCHEMA_VERSION = "feedbax.spec.matrix_axis_value_gen
 _GENERATOR_ID_FORMAT_FIELDS = ("index", "value")
 _FORMATTER = Formatter()
 
+SOURCE_DOCUMENT_INHERITANCE_SCHEMA_ID = "feedbax.spec.source_document_inheritance"
+SOURCE_DOCUMENT_INHERITANCE_SCHEMA_VERSION = "feedbax.spec.source_document_inheritance.v1"
+# Reserved top-level key under which a source document declares content-pinned
+# sub-document inheritance. A document that does not carry this key is passed
+# through byte-for-byte, so existing source documents are unaffected.
+SOURCE_DOCUMENT_INHERITANCE_KEY = "__inherit__"
+
 
 class ContentPinnedJsonBase(StrictModel):
     """Relative JSON document whose canonical content hash is authoritative.
@@ -312,6 +319,106 @@ def _select_payload_sub_document(
     return node
 
 
+class InheritedSubDocument(StrictModel):
+    """One content-pinned sub-document grafted into an absent local target path.
+
+    ``parent`` reuses :class:`ContentPinnedJsonBase`, so inheritance retains
+    whole-file digest verification followed by ``payload_path`` sub-document
+    selection. ``target`` is the dotted path in the consuming document where the
+    resolved sub-document is grafted; its leaf must be absent locally so neither
+    the local document nor its inherited content silently shadows the other.
+    """
+
+    target: str
+    parent: ContentPinnedJsonBase
+
+    @model_validator(mode="after")
+    def _validate_entry(self) -> "InheritedSubDocument":
+        _validate_dotted_path(self.target, "inherited sub-document target")
+        return self
+
+
+class SourceDocumentInheritance(StrictModel):
+    """Reserved inheritance envelope declared inside a source document.
+
+    This is the value stored under :data:`SOURCE_DOCUMENT_INHERITANCE_KEY`. It is
+    a durable authored structure, so it carries an explicit schema identity and
+    rejects unknown versions rather than silently accepting them.
+    """
+
+    schema_id: str = SOURCE_DOCUMENT_INHERITANCE_SCHEMA_ID
+    schema_version: str = SOURCE_DOCUMENT_INHERITANCE_SCHEMA_VERSION
+    inherit: list[InheritedSubDocument] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_inheritance(self) -> "SourceDocumentInheritance":
+        if self.schema_id != SOURCE_DOCUMENT_INHERITANCE_SCHEMA_ID:
+            raise ValueError(
+                f"unsupported source document inheritance schema_id {self.schema_id!r}"
+            )
+        if self.schema_version != SOURCE_DOCUMENT_INHERITANCE_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported source document inheritance schema_version "
+                f"{self.schema_version!r}"
+            )
+        targets = [entry.target for entry in self.inherit]
+        if len(set(targets)) != len(targets):
+            raise ValueError("source document inheritance targets must be unique")
+        return self
+
+
+def materialize_inherited_document(
+    document: Any,
+    *,
+    repo_root: Path | str | None,
+) -> Any:
+    """Resolve declared content-pinned inheritance into the effective document.
+
+    A document that is not a mapping, or a mapping without the reserved
+    :data:`SOURCE_DOCUMENT_INHERITANCE_KEY`, is returned unchanged so behavior is
+    byte-for-byte identical to loading it directly. Otherwise each declared parent
+    is verified and sub-document-selected through
+    :func:`load_content_pinned_json_base` (whole-file digest, then ``payload_path``)
+    and grafted into its absent target path. The validated declaration is retained
+    under the reserved key as in-band inheritance provenance (pinned parent ``ref``,
+    ``sha256``, and ``payload_path`` per grafted target).
+
+    Fails closed on digest mismatch, missing or invalid ``payload_path``, and any
+    collision where an inherited subtree would land on a locally-present key.
+    """
+    if not isinstance(document, dict) or SOURCE_DOCUMENT_INHERITANCE_KEY not in document:
+        return document
+    declaration = SourceDocumentInheritance.model_validate(
+        document[SOURCE_DOCUMENT_INHERITANCE_KEY]
+    )
+    effective = deepcopy(document)
+    for entry in declaration.inherit:
+        sub_document = load_content_pinned_json_base(entry.parent, repo_root=repo_root)
+        _graft_absent_target(effective, entry.target, sub_document)
+    return effective
+
+
+def _graft_absent_target(root: dict[str, Any], target: str, value: Any) -> None:
+    """Graft ``value`` at a dotted ``target`` whose leaf must be absent locally."""
+    parts = target.split(".")
+    node: Any = root
+    for depth, part in enumerate(parts[:-1]):
+        if part not in node:
+            node[part] = {}
+        node = node[part]
+        if not isinstance(node, dict):
+            traversed = ".".join(parts[: depth + 1])
+            raise ValueError(
+                f"inherited target {target!r} traverses non-object segment {traversed!r}"
+            )
+    leaf = parts[-1]
+    if leaf in node:
+        raise ValueError(
+            f"inherited target {target!r} collides with a locally-present key"
+        )
+    node[leaf] = deepcopy(value)
+
+
 def ordered_index_product(
     axis_lengths: Sequence[tuple[str, int]],
 ) -> list[dict[str, int]]:
@@ -570,8 +677,13 @@ def _require_json_value(value: Any, field: str) -> None:
 
 __all__ = [
     "ContentPinnedJsonBase",
+    "InheritedSubDocument",
     "MATRIX_AXIS_VALUE_GENERATOR_SCHEMA_ID",
     "MATRIX_AXIS_VALUE_GENERATOR_SCHEMA_VERSION",
+    "SOURCE_DOCUMENT_INHERITANCE_KEY",
+    "SOURCE_DOCUMENT_INHERITANCE_SCHEMA_ID",
+    "SOURCE_DOCUMENT_INHERITANCE_SCHEMA_VERSION",
+    "SourceDocumentInheritance",
     "apply_row_derivations",
     "MaterializedMatrixRow",
     "MatrixAxis",
@@ -585,6 +697,7 @@ __all__ = [
     "expand_axis_value_generator",
     "expand_matrix_axes",
     "load_content_pinned_json_base",
+    "materialize_inherited_document",
     "materialize_matrix_rows",
     "ordered_index_product",
 ]
