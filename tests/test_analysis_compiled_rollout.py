@@ -1,6 +1,6 @@
 """Contract tests for the compile-once batched trial-rollout facility."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, NamedTuple
 
 import jax
@@ -64,12 +64,12 @@ def _counting_rollout_trial() -> tuple[Callable[[_Context, _Trial], Any], dict[s
     return per_trial, counter
 
 
-def _context(state_dim: int = 3, command_dim: int = 2) -> _Context:
+def _context(state_dim: int = 3, command_dim: int = 2, dtype: Any = None) -> _Context:
     generator = np.random.default_rng(0)
     return _Context(
-        transition=jnp.asarray(generator.normal(size=(state_dim, state_dim)) * 0.1),
-        command=jnp.asarray(generator.normal(size=(state_dim, command_dim)) * 0.1),
-        gain=jnp.asarray(generator.normal(size=(command_dim, state_dim)) * 0.1),
+        transition=jnp.asarray(generator.normal(size=(state_dim, state_dim)) * 0.1, dtype=dtype),
+        command=jnp.asarray(generator.normal(size=(state_dim, command_dim)) * 0.1, dtype=dtype),
+        gain=jnp.asarray(generator.normal(size=(command_dim, state_dim)) * 0.1, dtype=dtype),
     )
 
 
@@ -81,6 +81,66 @@ def _trials(n_trials: int = 4, horizon: int = 5, state_dim: int = 3, seed: int =
             disturbance=jnp.asarray(generator.normal(size=(horizon, state_dim)) * 0.01),
         )
         for _ in range(n_trials)
+    ]
+
+
+class _GatedTrial(NamedTuple):
+    """Per-trial operands plus a gate selecting a `lax.cond` branch."""
+
+    initial_state: jax.Array
+    disturbance: jax.Array
+    gate: jax.Array
+
+
+def _gated_rollout_trial(context: _Context, trial: _GatedTrial) -> dict[str, jax.Array]:
+    """Roll one trial forward, branching on a per-trial gate with `lax.cond`.
+
+    Mirrors the numeric regime of the downstream analytical kernels: a float64
+    scan carry with a `lax.cond` on a trial-level scalar, so a batch containing
+    both zero and non-zero gates exercises both branch outcomes in one compiled
+    executable.
+    """
+
+    def step(
+        state: jax.Array, disturbance: jax.Array
+    ) -> tuple[jax.Array, tuple[jax.Array, jax.Array]]:
+        raw = -context.gain @ state
+
+        def without_gate() -> jax.Array:
+            return raw
+
+        def with_gate() -> jax.Array:
+            return raw + trial.gate * jnp.tanh(raw)
+
+        command = jax.lax.cond(trial.gate == 0, without_gate, with_gate)
+        next_state = context.transition @ state + context.command @ command + disturbance
+        return next_state, (next_state, command)
+
+    final_state, (states, commands) = jax.lax.scan(step, trial.initial_state, trial.disturbance)
+    return {
+        "states": jnp.concatenate([trial.initial_state[None, :], states], axis=0),
+        "commands": commands,
+        "final_state": final_state,
+    }
+
+
+def _gated_trials(
+    gates: Sequence[float],
+    horizon: int = 5,
+    state_dim: int = 3,
+    seed: int = 2,
+    dtype: Any = jnp.float64,
+) -> list[_GatedTrial]:
+    generator = np.random.default_rng(seed)
+    return [
+        _GatedTrial(
+            initial_state=jnp.asarray(generator.normal(size=(state_dim,)), dtype=dtype),
+            disturbance=jnp.asarray(
+                generator.normal(size=(horizon, state_dim)) * 0.01, dtype=dtype
+            ),
+            gate=jnp.asarray(gate, dtype=dtype),
+        )
+        for gate in gates
     ]
 
 
@@ -105,6 +165,29 @@ def test_compiled_rollout_is_bit_identical_to_python_loop() -> None:
     scalar = stack_trials([_rollout_trial(context, trial) for trial in trials])
 
     _assert_bit_identical(compiled, scalar)
+
+
+def test_float64_cond_rollout_is_bit_identical_to_python_loop(enable_jax_x64: None) -> None:
+    gates = [0.0, 0.75, 0.0, -1.25]
+    context = _context(dtype=jnp.float64)
+    trials = _gated_trials(gates)
+    rollout = compiled_trial_rollout(_gated_rollout_trial)
+
+    compiled = rollout(context, stack_trials(trials))
+    scalar = stack_trials([_gated_rollout_trial(context, trial) for trial in trials])
+
+    _assert_bit_identical(compiled, scalar)
+    for leaf in jt.leaves(compiled):
+        assert np.asarray(leaf).dtype == np.float64
+
+    # Both branch outcomes are live: zeroing the gates leaves the already
+    # ungated trials untouched and changes exactly the gated ones.
+    ungated = rollout(context, stack_trials(_gated_trials([0.0] * len(gates))))
+    for index, gate in enumerate(gates):
+        same = np.array_equal(
+            np.asarray(compiled["commands"][index]), np.asarray(ungated["commands"][index])
+        )
+        assert same == (gate == 0.0)
 
 
 def test_repeated_calls_with_one_shape_compile_once() -> None:

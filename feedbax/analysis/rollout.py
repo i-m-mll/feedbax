@@ -147,6 +147,13 @@ def _validate_stacked_trials(
 def stack_trials(trials: Sequence[PyTree[Any]]) -> PyTree[Any]:
     """Stack per-trial pytrees into one pytree with a leading trial axis.
 
+    This is the simple case: per-trial pytrees that are already in their final
+    layout and dtype, as in parity references and recipes whose trials need no
+    preparation. Operand builders that assemble stacked trials field by field —
+    casting dtypes, deriving fields, or drawing some leaves from outside the
+    per-trial objects — should keep doing that and pass the result straight to
+    the rollout callable.
+
     Args:
         trials: Non-empty sequence of per-trial pytrees that share one pytree
             structure and, leafwise, one shape and dtype.
@@ -197,8 +204,11 @@ def compiled_trial_rollout(
     [`stack_trials`][feedbax.analysis.rollout.stack_trials] — validates the
     stacked trials outside the compiled region, then runs `per_trial` over the
     leading trial axis with `jax.lax.map` inside one `jax.jit`. Results are
-    returned stacked along the same leading axis, and are bit-identical to
-    calling `per_trial` on each trial in a Python loop and stacking.
+    returned stacked along the same leading axis. Feedbax's parity tests show
+    that they match an eager per-trial Python loop byte for byte on the tested
+    backend, dtypes, and shapes; XLA guarantees no such thing in general, since
+    a `scan` of a function may fuse differently from eager execution of it, so
+    those parity tests are the canary rather than a standing promise.
 
     Compile-once contract:
 
@@ -212,6 +222,12 @@ def compiled_trial_rollout(
       of it. Building a fresh closure or lambda per call misses the cache and
       retraces every time — the defect this facility exists to prevent — and
       also pins every such function in the process-lifetime jit cache.
+    - Array operands belong in `context`, never in `per_trial`'s closure or
+      `functools.partial` arguments: a captured array is baked into the
+      executable as a compile-time constant and, because each fresh capture is a
+      fresh static function, silently retraces on every call without raising.
+      Adapting a callable that takes more than `(context, trial)` means widening
+      `context`, not partially applying the extra operands.
     - The wrapper returned here holds no cache of its own, so it is cheap to
       rebuild; keeping it at module level is a readability choice, not a
       correctness requirement.
@@ -221,12 +237,21 @@ def compiled_trial_rollout(
     as a mode flag that changes the traced program, belong in `per_trial`
     itself — for example as a module-level variant function per mode.
 
+    Only `trials` is validated here, so keeping `context` stable across calls is
+    the caller's responsibility: build its leaves with explicit dtypes rather
+    than letting Python scalars in as weakly typed values, since a leaf that
+    arrives as `float32` on one call and weak-typed or `float64` on the next is
+    a different aval and costs another compilation — and, where the rollout
+    carries mixed precision, a different numeric result.
+
     Args:
         per_trial: Pure function `(context, trial) -> result`, where `trial` is
             one slice of `trials` along the leading axis.
         trial_structure: Optional pytree of `jax.ShapeDtypeStruct` describing a
             single trial, without the leading trial axis. When given, stacked
-            trials are checked against it before compilation.
+            trials are checked against it before compilation. The declaration
+            pins pytree structure, per-trial shape, and dtype; it does not pin
+            weak typing.
 
     Returns:
         A callable `(context, trials) -> results` mapping over the leading trial
