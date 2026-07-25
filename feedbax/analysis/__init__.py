@@ -143,6 +143,11 @@ from .harness import (
     diff_regenerated_archived,
     diff_resolved_rows,
 )
+from .rollout import (
+    TrialStructureError,
+    compiled_trial_rollout,
+    stack_trials,
+)
 
 __all__ = [
     "AUTHENTICATED_MANIFEST_REF_SCHEMA_ID",
@@ -219,6 +224,9 @@ __all__ = [
     "STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID",
     "STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION",
     "SemanticChange",
+    "TrialStructureError",
+    "compiled_trial_rollout",
+    "stack_trials",
     "diff_regenerated_archived",
     "diff_resolved_rows",
     "directory_artifact_group",
