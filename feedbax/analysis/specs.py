@@ -66,6 +66,7 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.analysis_composition import (
     AnalysisRunDeltaSpec,
     FlattenedAnalysisRun,
+    analysis_composition_provenance,
     flatten_analysis_run_delta,
     is_analysis_run_delta_payload,
 )
@@ -745,8 +746,16 @@ def execute_analysis_run_spec(
     Delta-authored specs are flattened against their content-pinned parents
     (which requires ``repo_root``) before execution.
     """
-    run_spec = coerce_analysis_run_spec(spec, repo_root=repo_root)
+    run_spec, flattened = resolve_analysis_run_authoring(spec, repo_root=repo_root)
     root_path = Path(root) if root is not None else default_manifest_root()
+    if flattened is not None:
+        # Mirror the evaluation-matrix convention: delta-authored runs embed the
+        # single canonical composition-provenance record into durable manifest
+        # metadata. Direct specs (``flattened is None``) stay byte-identical.
+        metadata = {
+            **(metadata or {}),
+            "analysis_composition": analysis_composition_provenance(flattened),
+        }
     context = AnalysisRunContext(
         spec=run_spec,
         root=root_path,

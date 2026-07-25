@@ -16,9 +16,13 @@ import pytest
 from pydantic import ValidationError
 
 from feedbax.analysis import (
+    AnalysisRecipeResult,
     AnalysisRunDeltaSpec,
     coerce_analysis_run_spec,
+    execute_analysis_run_spec,
+    register_analysis_recipe,
     resolve_analysis_run_authoring,
+    unregister_analysis_recipe,
 )
 from feedbax.contracts import analysis_composition
 from feedbax.contracts.analysis_composition import (
@@ -37,6 +41,22 @@ from feedbax.contracts.manifest import (
     canonical_json_bytes,
     sha256_bytes,
 )
+from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
+
+
+_EXECUTION_ANALYSIS_TYPE = "example.velocity_profiles"
+
+
+def _register_toy_velocity_recipe() -> None:
+    """Register a minimal recipe for the shared velocity-profile analysis type."""
+
+    def recipe(_spec, _root, _inputs, _execution_context) -> AnalysisRecipeResult:
+        return AnalysisRecipeResult(
+            analyses={"velocity": ToyAnalysis(variant="velocity", cache_result=True)},
+            data=build_toy_analysis_data(value=0),
+        )
+
+    register_analysis_recipe(_EXECUTION_ANALYSIS_TYPE, recipe, replace=True)
 
 
 def _write(tmp_path: Path, name: str, payload: dict[str, Any]) -> str:
@@ -437,6 +457,65 @@ def test_coerce_delta_requires_repo_root(tmp_path: Path) -> None:
     child = _delta("base.json", base_sha, [{"layer_id": "x", "patches": []}])
     with pytest.raises(ValueError, match="requires repo_root"):
         coerce_analysis_run_spec(child)
+
+
+def test_delta_authored_execution_records_composition_provenance(tmp_path: Path) -> None:
+    """A delta-authored run embeds the canonical composition record in manifest metadata."""
+    base_sha = _shared_velocity_base(tmp_path)
+    child = _delta(
+        "base.json",
+        base_sha,
+        [
+            {
+                "layer_id": "sisu",
+                "patches": [
+                    {"path": "params.expected_grid.conditioning", "op": "add", "value": "w"}
+                ],
+            }
+        ],
+    )
+    flattened = flatten_analysis_run_delta(
+        AnalysisRunDeltaSpec.model_validate(child), repo_root=tmp_path
+    )
+    expected = analysis_composition_provenance(flattened)
+
+    _register_toy_velocity_recipe()
+    try:
+        manifest, _path = execute_analysis_run_spec(
+            child,
+            root=tmp_path / "runs",
+            repo_root=tmp_path,
+            fig_dump_path=tmp_path / "figs",
+        )
+    finally:
+        unregister_analysis_recipe(_EXECUTION_ANALYSIS_TYPE)
+
+    provenance = manifest.metadata["analysis_composition"]
+    assert provenance == expected
+    assert provenance["schema_id"] == ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_ID
+    assert provenance["schema_version"] == ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_VERSION
+    assert provenance["authored_envelope_sha256"] == flattened.authored_envelope_sha256
+    assert provenance["root_spec"] == {"ref": "base.json", "sha256": base_sha}
+    assert provenance["layers"][0]["parent_sha256"] == base_sha
+    assert provenance["layers"][0]["layer_ids"] == ["sisu"]
+    assert provenance["attribution"] == {"params.expected_grid.conditioning": "sisu"}
+
+
+def test_direct_spec_execution_metadata_carries_no_composition_key(tmp_path: Path) -> None:
+    """A direct (non-delta) run's manifest metadata stays free of any composition key."""
+    direct = _analysis_base("example.velocity_profiles", {"aggregation": "mean"})
+
+    _register_toy_velocity_recipe()
+    try:
+        manifest, _path = execute_analysis_run_spec(
+            direct,
+            root=tmp_path / "runs",
+            fig_dump_path=tmp_path / "figs",
+        )
+    finally:
+        unregister_analysis_recipe(_EXECUTION_ANALYSIS_TYPE)
+
+    assert "analysis_composition" not in manifest.metadata
 
 
 def test_provider_manifest_publishes_the_delta_authoring_kind() -> None:
