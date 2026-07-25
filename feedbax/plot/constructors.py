@@ -67,6 +67,23 @@ class EndpointMarkerParams(StrictModel):
     straight_guides: bool = True
 
 
+class ScalarScatterParams(StrictModel):
+    """Style controls for a markers-only scalar scatter with error bars.
+
+    The constructor draws one marker per x value and never a connecting line;
+    ``mode`` is fixed to ``"markers"`` and is deliberately not exposed here.
+    """
+
+    label: str | None = None
+    color: str | None = None
+    marker_symbol: str = "circle"
+    marker_size: float = 8.0
+    error_bar_thickness: float = 1.5
+    error_bar_width: float | None = None
+    error_bar_color: str | None = None
+    showlegend: bool | None = None
+
+
 class HLineParams(StrictModel):
     """Defaults for a horizontal panel annotation."""
 
@@ -665,6 +682,59 @@ def _endpoint_markers(data: Mapping[str, Any], params: StrictModel) -> Sequence[
     return traces
 
 
+def _scalar_scatter(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any]:
+    p = ScalarScatterParams.model_validate(params.model_dump())
+    if "x" not in data or "y" not in data:
+        raise ValueError("scalar_scatter requires both 'x' and 'y' data bindings")
+    x = _array(data["x"])
+    y = _array(data["y"])
+    if x.ndim != 1 or y.ndim != 1:
+        raise ValueError(
+            f"scalar_scatter requires 1-D 'x' and 'y'; got shapes {x.shape} and {y.shape}"
+        )
+    if x.shape[0] != y.shape[0]:
+        raise ValueError(
+            f"scalar_scatter 'x' and 'y' lengths differ: {x.shape[0]} vs {y.shape[0]}"
+        )
+    label = p.label or str(data.get("label", "Value"))
+    color = p.color or str(data.get("color", "rgb(31,119,180)"))
+    marker: dict[str, Any] = {
+        "symbol": p.marker_symbol,
+        "size": p.marker_size,
+        "color": color,
+    }
+    scatter_kwargs: dict[str, Any] = {
+        "name": label,
+        "legendgroup": label,
+        "x": x,
+        "y": y,
+        "mode": "markers",
+        "marker": marker,
+    }
+    if p.showlegend is not None:
+        scatter_kwargs["showlegend"] = p.showlegend
+    if "y_err" in data:
+        y_err = _array(data["y_err"])
+        if y_err.ndim != 1:
+            raise ValueError(f"scalar_scatter 'y_err' must be 1-D; got shape {y_err.shape}")
+        if y_err.shape[0] != y.shape[0]:
+            raise ValueError(
+                f"scalar_scatter 'y_err' length {y_err.shape[0]} does not match "
+                f"'y' length {y.shape[0]}"
+            )
+        error_y: dict[str, Any] = {
+            "type": "data",
+            "array": y_err,
+            "symmetric": True,
+            "thickness": p.error_bar_thickness,
+            "color": p.error_bar_color or color,
+        }
+        if p.error_bar_width is not None:
+            error_y["width"] = p.error_bar_width
+        scatter_kwargs["error_y"] = error_y
+    return [go.Scatter(**scatter_kwargs)]
+
+
 def _hline(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any]:
     p = HLineParams.model_validate(params.model_dump())
     y = p.y if p.y is not None else data.get("y")
@@ -849,6 +919,13 @@ def register_default_figure_constructors() -> None:
             _endpoint_markers,
             EndpointMarkerParams,
             "Endpoint markers with trajectory-derived straight guides.",
+        ),
+        (
+            "feedbax.scalar_scatter",
+            "trace",
+            _scalar_scatter,
+            ScalarScatterParams,
+            "Markers-only scalar scatter with optional symmetric per-point y error bars.",
         ),
         ("feedbax.hline", "trace", _hline, HLineParams, "Horizontal panel annotation."),
         ("feedbax.vrect", "trace", _vrect, VRectParams, "Vertical-region panel annotation."),
