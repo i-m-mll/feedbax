@@ -13,10 +13,21 @@ Additive changelog, 2026-07-24: ``FigureSpec`` accepts an optional
 ``colorbar``, the key that makes a figure's color mapping readable. It is
 declared either standalone or bound to a declared trace family, and is also an
 optional None-default, so pre-existing identity bytes are again unchanged.
+
+Additive changelog, 2026-07-24: ``TraceFamily`` accepts optional
+``legend_index`` (the one member that carries the family's legend entry),
+``values`` (the physical quantity each member stands for, which positions its
+color and enables the ``{value}`` substitution token), and
+``interleave_group`` (families that expand one member per index position
+instead of as per-family blocks). All three are optional None-defaults, so a
+family declared without them expands exactly as before and every pre-existing
+spec keeps its canonical JSON and figure-manifest identity bytes.
 """
 
 from __future__ import annotations
 
+import math
+import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal, TypeAlias
@@ -41,10 +52,20 @@ FIGURE_TRACE_FAMILY_SCHEMA_VERSION = "feedbax.spec.figure_trace_family.v1"
 FIGURE_COLORBAR_SCHEMA_ID = "feedbax.spec.figure_colorbar"
 FIGURE_COLORBAR_SCHEMA_VERSION = "feedbax.spec.figure_colorbar.v1"
 
-#: The only substitution token the figure contract understands. Trace families
+#: The two substitution tokens the figure contract understands. Trace families
 #: are indexed substitution, deliberately not a templating or expression
-#: language: no formatting, no arithmetic, no conditionals.
+#: language: no arithmetic, no conditionals, no tokens beyond these. ``{index}``
+#: substitutes the member's index verbatim. ``{value}`` substitutes the physical
+#: value the member stands for and is available only when the family declares
+#: ``values``; it accepts a trailing format spec (``{value:.3f}``) because a
+#: float is unreadable without one, which is why an index — already exact —
+#: takes none.
 INDEX_TOKEN = "{index}"
+VALUE_TOKEN = "{value}"
+
+#: Single source of what substitution recognizes: the exact index token, or the
+#: value token with an optional brace-free format spec.
+SUBSTITUTION_PATTERN = re.compile(r"\{index\}|\{value(?::([^{}]*))?\}")
 
 SlotMultiplicity = Literal["one", "per_facet", "many"]
 FacetTarget = Literal["figures", "panels"]
@@ -110,22 +131,45 @@ def map_family_strings(value: Any, transform: Callable[[str], str]) -> Any:
     return value
 
 
-def validate_index_text(text: str) -> str:
-    """Reject any brace syntax other than the exact index token."""
-    residue = text.replace(INDEX_TOKEN, "")
+def validate_index_text(text: str, *, values_declared: bool = False) -> str:
+    """Reject any brace syntax other than the supported substitution tokens.
+
+    ``values_declared`` says whether the family owning ``text`` declares
+    per-member values. It defaults to false, so a ``{value}`` token is rejected
+    unless the family that would give it meaning declares one value per member.
+    """
+    residue = SUBSTITUTION_PATTERN.sub("", text)
     if "{" in residue or "}" in residue:
         raise ValueError(
-            f"trace family strings support only the {INDEX_TOKEN} token and are not a "
-            f"templating language; got {text!r}"
+            f"trace family strings support only the {INDEX_TOKEN} and {VALUE_TOKEN} tokens "
+            f"and are not a templating language; got {text!r}"
+        )
+    if not values_declared and any(
+        match.group(0) != INDEX_TOKEN for match in SUBSTITUTION_PATTERN.finditer(text)
+    ):
+        raise ValueError(
+            f"trace family strings carry the {VALUE_TOKEN} token only when the family "
+            f"declares per-member values; got {text!r}"
         )
     return text
 
 
-def substitute_index(value: Any, index: int | str) -> Any:
-    """Substitute one index value for every index token in a declaration."""
+def substitute_index(value: Any, index: int | str, member_value: float | None = None) -> Any:
+    """Substitute one member's index, and its value when it has one, into a declaration.
+
+    Both tokens are replaced in a single pass, so a substituted index can never
+    be re-read as a token.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        if match.group(0) == INDEX_TOKEN:
+            return str(index)
+        # validate_index_text has already rejected a value token without a value.
+        return format(member_value, match.group(1) or "")
 
     def _substitute(text: str) -> str:
-        return validate_index_text(text).replace(INDEX_TOKEN, str(index))
+        validate_index_text(text, values_declared=member_value is not None)
+        return SUBSTITUTION_PATTERN.sub(_replace, text)
 
     return map_family_strings(value, _substitute)
 
@@ -191,6 +235,27 @@ class TraceFamily(StrictModel):
     sampled once for the whole family. It is the declaration a colorbar key
     composes with: the colorbar reads the family's expanded index/color pairs
     rather than re-deriving colors of its own.
+
+    ``values`` names the physical quantity each member stands for, one value
+    per index. It changes two things. Colors are then sampled at each value's
+    normalized position over ``[min(values), max(values)]`` rather than at
+    uniform index spacing, so a geometrically spaced sweep is colored by what
+    it swept. And the ``{value}`` token becomes available, so a member's
+    data path can stay keyed by index while its label reads in physical units.
+    Values must be finite and distinct — a repeated value would give two
+    members one color and one colorbar stop — and there must be at least two of
+    them, since a single value spans no domain to position anything within.
+    Their declaration order is free; position follows the value, not the order.
+
+    ``legend_index`` names the one member that carries the family's legend
+    entry. A family draws one logical series, so one entry describes it: the
+    named member is expanded with ``showlegend`` true and every other member
+    with it false. The family's own trace params must then not set
+    ``showlegend``, for the same reason a colorscale forbids an explicit color.
+
+    ``interleave_group`` joins this family to the other families declaring the
+    same group, which expand together one member per index position rather than
+    as separate blocks. Draw order is the only thing it changes.
     """
 
     schema_id: str = FIGURE_TRACE_FAMILY_SCHEMA_ID
@@ -199,6 +264,9 @@ class TraceFamily(StrictModel):
     index: TraceFamilyIndex
     trace: TraceBinding
     colorscale: ColorscaleSpec | None = None
+    values: list[float] | None = None
+    legend_index: int | str | None = None
+    interleave_group: str | None = None
 
     @model_validator(mode="after")
     def _validate_family(self) -> "TraceFamily":
@@ -207,19 +275,29 @@ class TraceFamily(StrictModel):
         if self.schema_version != FIGURE_TRACE_FAMILY_SCHEMA_VERSION:
             raise ValueError(f"unsupported TraceFamily schema_version: {self.schema_version!r}")
 
+        indices = self.index.resolve()
+        self._validate_values(indices)
+        self._validate_legend_index(indices)
+
         indexed = False
+        format_specs: list[str] = []
 
         def _scan(text: str) -> str:
             nonlocal indexed
-            indexed = indexed or INDEX_TOKEN in text
-            return validate_index_text(text)
+            validate_index_text(text, values_declared=self.values is not None)
+            for match in SUBSTITUTION_PATTERN.finditer(text):
+                indexed = True
+                if match.group(0) != INDEX_TOKEN:
+                    format_specs.append(match.group(1) or "")
+            return text
 
         map_family_strings(self.trace, _scan)
         if not indexed:
             raise ValueError(
-                f"TraceFamily {self.name!r} declares no {INDEX_TOKEN} token, so its members "
-                "would not vary with the index"
+                f"TraceFamily {self.name!r} declares no {INDEX_TOKEN} or {VALUE_TOKEN} token, "
+                "so its members would not vary with the index"
             )
+        self._validate_format_specs(format_specs)
         if self.colorscale is not None and "color" in self.trace.params:
             raise ValueError(
                 f"TraceFamily {self.name!r} declares both a colorscale and an explicit "
@@ -232,10 +310,67 @@ class TraceFamily(StrictModel):
             )
         return self
 
+    def _validate_values(self, indices: Sequence[int | str]) -> None:
+        if self.values is None:
+            return
+        if len(self.values) != len(indices):
+            raise ValueError(
+                f"TraceFamily {self.name!r} declares {len(self.values)} values for "
+                f"{len(indices)} indices; values are one per member"
+            )
+        if len(self.values) < 2:
+            raise ValueError(
+                f"TraceFamily {self.name!r} declares one value, which spans no value domain "
+                "for its member colors to be positioned within"
+            )
+        nonfinite = [value for value in self.values if not math.isfinite(value)]
+        if nonfinite:
+            raise ValueError(f"TraceFamily {self.name!r} values must be finite; got {nonfinite}")
+        duplicates = sorted({value for value, count in Counter(self.values).items() if count > 1})
+        if duplicates:
+            raise ValueError(
+                f"TraceFamily {self.name!r} values must be distinct; repeated {duplicates}"
+            )
+
+    def _validate_legend_index(self, indices: Sequence[int | str]) -> None:
+        if self.legend_index is None:
+            return
+        if str(self.legend_index) not in {str(index) for index in indices}:
+            raise ValueError(
+                f"TraceFamily {self.name!r} legend_index {self.legend_index!r} is not one of "
+                "its indices"
+            )
+        if "showlegend" in self.trace.params:
+            raise ValueError(
+                f"TraceFamily {self.name!r} declares both a legend_index and an explicit "
+                "trace params showlegend"
+            )
+
+    def _validate_format_specs(self, format_specs: Sequence[str]) -> None:
+        if not format_specs or self.values is None:
+            return
+        probe = self.values[0]
+        for spec in format_specs:
+            try:
+                format(probe, spec)
+            except ValueError as error:
+                raise ValueError(
+                    f"TraceFamily {self.name!r} value format spec {spec!r} does not format "
+                    f"a value: {error}"
+                ) from error
+
+    def member_values(self) -> tuple[float | None, ...]:
+        """Return one value per index, or one ``None`` per index when undeclared."""
+        indices = self.index.resolve()
+        if self.values is None:
+            return (None,) * len(indices)
+        return tuple(self.values)
+
     def expanded_trace_names(self) -> tuple[str, ...]:
         """Return the member trace names this family expands to, in index order."""
         return tuple(
-            substitute_index(self.trace.name, index) for index in self.index.resolve()
+            substitute_index(self.trace.name, index, value)
+            for index, value in zip(self.index.resolve(), self.member_values(), strict=True)
         )
 
 
@@ -249,11 +384,17 @@ class FigureColorbar(StrictModel):
     resolved by reading them rather than by re-sampling the colorscale, and the
     key cannot disagree with the traces it describes.
 
-    With a family, ``range`` is optional and relabels the family's index domain
-    onto the values those indices stand for, mapping the smallest index to
-    ``range[0]`` and the largest to ``range[1]`` — a fan of knot traces indexed
-    ``0..59`` can therefore be keyed by the conditioning level it sweeps.
-    Omitted, the index domain is its own value domain.
+    With a family that declares no values, ``range`` is optional and relabels
+    the family's index domain onto the values those indices stand for, mapping
+    the smallest index to ``range[0]`` and the largest to ``range[1]`` — a fan
+    of knot traces indexed ``0..59`` can therefore be keyed by the conditioning
+    level it sweeps. Omitted, the index domain is its own value domain.
+
+    With a family that declares ``values``, those values are the value domain:
+    stops sit at their normalized positions and the range is exactly
+    ``[min(values), max(values)]``. An explicit ``range`` is then rejected
+    rather than honored, because relabeling a domain the family has already
+    stated would print tick values no trace was colored by.
     """
 
     schema_id: str = FIGURE_COLORBAR_SCHEMA_ID
@@ -493,6 +634,26 @@ class FigureSpec(StrictModel):
             raise ValueError(
                 f"FigureSpec trace family expansion collides with other trace names: {collisions}"
             )
+        self._validate_interleave_groups(families)
+
+    @staticmethod
+    def _validate_interleave_groups(families: Sequence[TraceFamily]) -> None:
+        groups: dict[str, list[TraceFamily]] = {}
+        for family in families:
+            if family.interleave_group is not None:
+                groups.setdefault(family.interleave_group, []).append(family)
+        for group, members in groups.items():
+            if len(members) < 2:
+                raise ValueError(
+                    f"FigureSpec interleave group {group!r} names one trace family, which "
+                    "interleaves with nothing"
+                )
+            counts = {len(family.index.resolve()) for family in members}
+            if len(counts) > 1:
+                raise ValueError(
+                    f"FigureSpec interleave group {group!r} families enumerate different "
+                    f"index counts {sorted(counts)}; interleaving pairs them position by position"
+                )
 
     def _validate_colorbar_binding(self) -> None:
         colorbar = self.colorbar
@@ -510,7 +671,15 @@ class FigureSpec(StrictModel):
                 "so it assigns no colors for the key to read"
             )
         indices = family.index.resolve()
-        if any(not isinstance(index, int) for index in indices):
+        if family.values is not None:
+            # The declared values are the value domain, so the index labels play
+            # no part in the key and need not be numeric.
+            if colorbar.range is not None:
+                raise ValueError(
+                    f"FigureSpec colorbar trace family {family.name!r} declares values, which "
+                    "are its value domain; an explicit range would relabel them"
+                )
+        elif any(not isinstance(index, int) for index in indices):
             raise ValueError(
                 f"FigureSpec colorbar trace family {family.name!r} has non-numeric indices; "
                 "a colorbar keys a numeric index domain"

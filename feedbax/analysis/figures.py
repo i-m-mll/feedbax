@@ -58,7 +58,7 @@ from feedbax.contracts.manifest import (
     store_json_artifact,
     write_manifest,
 )
-from feedbax.plot.colors import sample_colorscale_unique
+from feedbax.plot.colors import sample_colorscale_at, sample_colorscale_unique
 from feedbax.plot.constructors import (
     FigureConstructorRegistration,
     PanelContent,
@@ -112,11 +112,17 @@ class TraceBindingPlan:
 
 @dataclass(frozen=True)
 class TraceFamilyMember:
-    """One expanded trace-family member and the color its index was given."""
+    """One expanded trace-family member and the color its index was given.
+
+    ``value`` is the physical quantity the member stands for when its family
+    declares values, and ``None`` otherwise. It is what positioned the member's
+    color, and what a value-keyed colorbar reads instead of the index.
+    """
 
     index: int | str
     color: str | None
     binding: TraceBinding
+    value: float | None = None
 
 
 @dataclass(frozen=True)
@@ -703,25 +709,78 @@ def expand_trace_families(spec: FigureSpec) -> tuple[TraceFamilyExpansion, ...]:
 
 def _expand_trace_family(family: TraceFamily) -> TraceFamilyExpansion:
     indices = family.index.resolve()
-    if family.colorscale is None:
-        colors: tuple[str | None, ...] = (None,) * len(indices)
-    else:
-        sampled = tuple(
-            sample_colorscale_unique(family.colorscale, len(indices), colortype="rgb")
-        )
-        if len(sampled) != len(indices):
-            raise ValueError(
-                f"trace family {family.name!r} colorscale sampled {len(sampled)} colors "
-                f"for {len(indices)} indices"
-            )
-        colors = sampled
+    values = family.member_values()
+    colors = _family_colors(family, len(indices))
+    legend_index = None if family.legend_index is None else str(family.legend_index)
     members: list[TraceFamilyMember] = []
-    for index, color in zip(indices, colors, strict=True):
-        binding = substitute_index(family.trace, index)
+    for index, value, color in zip(indices, values, colors, strict=True):
+        binding = substitute_index(family.trace, index, value)
+        params: dict[str, Any] = {}
         if color is not None:
-            binding = binding.model_copy(update={"params": {**binding.params, "color": color}})
-        members.append(TraceFamilyMember(index=index, color=color, binding=binding))
+            params["color"] = color
+        if legend_index is not None:
+            params["showlegend"] = str(index) == legend_index
+        if params:
+            binding = binding.model_copy(update={"params": {**binding.params, **params}})
+        members.append(
+            TraceFamilyMember(index=index, color=color, binding=binding, value=value)
+        )
     return TraceFamilyExpansion(family=family, members=tuple(members))
+
+
+def _family_colors(family: TraceFamily, count: int) -> tuple[str | None, ...]:
+    """Return one color per member, positioned by value when the family has values.
+
+    Without values, members are sampled at uniform positions along the
+    colorscale, which is index spacing. With values, each member is sampled at
+    its value's normalized position over the declared value domain, so members
+    that are close in the quantity they sweep are close in color.
+    """
+    if family.colorscale is None:
+        return (None,) * count
+    if family.values is None:
+        sampled = tuple(sample_colorscale_unique(family.colorscale, count, colortype="rgb"))
+    else:
+        low = min(family.values)
+        span = max(family.values) - low
+        positions = [(value - low) / span for value in family.values]
+        sampled = tuple(sample_colorscale_at(family.colorscale, positions, colortype="rgb"))
+    if len(sampled) != count:
+        raise ValueError(
+            f"trace family {family.name!r} colorscale sampled {len(sampled)} colors "
+            f"for {count} indices"
+        )
+    return sampled
+
+
+def ordered_family_members(
+    expansions: Sequence[TraceFamilyExpansion],
+) -> tuple[TraceFamilyMember, ...]:
+    """Return every expanded family member in draw order.
+
+    Families expand as blocks, in declaration order. Families that declare a
+    shared ``interleave_group`` expand together instead, one member per family
+    at each index position, at the place the group's first-declared family
+    occupies — the per-position draw order a hand-enumerated spec would write
+    out. The contract has already established that the group's families
+    enumerate equally many indices.
+    """
+    groups: dict[str, list[TraceFamilyExpansion]] = {}
+    for expansion in expansions:
+        group = expansion.family.interleave_group
+        if group is not None:
+            groups.setdefault(group, []).append(expansion)
+    ordered: list[TraceFamilyMember] = []
+    emitted: set[str] = set()
+    for expansion in expansions:
+        group = expansion.family.interleave_group
+        if group is None:
+            ordered.extend(expansion.members)
+        elif group not in emitted:
+            emitted.add(group)
+            for position in zip(*(member.members for member in groups[group]), strict=True):
+                ordered.extend(position)
+    return tuple(ordered)
 
 
 def resolve_figure_colorbar(spec: FigureSpec) -> FigureColorbar | None:
@@ -729,23 +788,33 @@ def resolve_figure_colorbar(spec: FigureSpec) -> FigureColorbar | None:
 
     A standalone declaration already names its colorscale and range and is
     returned unchanged. A family-bound declaration is resolved by reading the
-    family's expanded ``(index, color)`` pairs and placing each assigned color
-    at its index's position in the index domain, so the rendered key and the
-    traces cannot disagree about which color belongs to which index. Unevenly
-    spaced indices therefore yield an unevenly stopped scale, which is the
-    honest picture of the assignment rather than a re-sampling of the scale.
+    family's expanded members and placing each assigned color at its position
+    in the family's own domain, so the rendered key and the traces cannot
+    disagree about which color belongs to which member. An unevenly spaced
+    domain therefore yields an unevenly stopped scale, which is the honest
+    picture of the assignment rather than a re-sampling of the scale.
+
+    That domain is the family's declared values when it has them, and its index
+    set otherwise. A value domain is authoritative: the resolved range is
+    exactly ``[min(values), max(values)]``, which the contract already requires
+    the declaration to leave unset. An index domain may be relabeled onto the
+    declared range instead, since the indices are only names for positions.
     """
     colorbar = spec.colorbar
     if colorbar is None or colorbar.family is None:
         return colorbar
     expansions = {expansion.family.name: expansion for expansion in expand_trace_families(spec)}
     # FigureSpec validation guarantees the named family exists, declares a
-    # colorscale, and enumerates at least two numeric indices.
-    members = expansions[colorbar.family].members
-    pairs = sorted((int(member.index), str(member.color)) for member in members)
-    low = float(pairs[0][0])
-    span = float(pairs[-1][0]) - low
-    stops = [((float(index) - low) / span, color) for index, color in pairs]
+    # colorscale, and enumerates at least two members over a numeric domain.
+    expansion = expansions[colorbar.family]
+    if expansion.family.values is None:
+        positions = [float(int(member.index)) for member in expansion.members]
+    else:
+        positions = [float(member.value) for member in expansion.members]  # type: ignore[arg-type]
+    pairs = sorted(zip(positions, (str(member.color) for member in expansion.members)))
+    low = pairs[0][0]
+    span = pairs[-1][0] - low
+    stops = [((position - low) / span, color) for position, color in pairs]
     return colorbar.model_copy(
         update={
             "family": None,
@@ -788,11 +857,10 @@ def _trace_bindings_for_spec(spec: FigureSpec, template: Any | None) -> list[Tra
     )
     # Families expand in declaration order, after the individually declared
     # traces, so a family spec and its hand-enumerated equivalent agree on order.
-    for expansion in expand_trace_families(spec):
-        bindings.extend(
-            TraceBindingPlan(binding=member.binding, multiplicity="many")
-            for member in expansion.members
-        )
+    bindings.extend(
+        TraceBindingPlan(binding=member.binding, multiplicity="many")
+        for member in ordered_family_members(expand_trace_families(spec))
+    )
     piece_names = [
         *(getattr(template, "default_pieces", []) if template is not None else []),
         *spec.pieces,
