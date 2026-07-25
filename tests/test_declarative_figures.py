@@ -937,6 +937,68 @@ def test_endpoint_markers_derive_curved_reach_guides_from_trajectory() -> None:
     assert list(endpoint_traces[1].y) == [3, 8]
 
 
+def test_scalar_scatter_draws_markers_only_with_symmetric_error_bars() -> None:
+    constructor = get_figure_constructor("feedbax.scalar_scatter", tier="trace")
+    traces = constructor.callable(
+        {"x": [0.0, 0.25, 0.5], "y": [1.0, 2.0, 1.5], "y_err": [0.1, 0.2, 0.15]},
+        constructor.params({"marker_symbol": "square", "marker_size": 10.0, "color": "red"}),
+    )
+    assert len(traces) == 1
+    trace = traces[0]
+    assert trace.mode == "markers"
+    assert trace.line.dash is None and trace.line.width is None
+    np.testing.assert_allclose(trace.x, [0.0, 0.25, 0.5])
+    np.testing.assert_allclose(trace.y, [1.0, 2.0, 1.5])
+    assert trace.marker.symbol == "square"
+    assert trace.marker.size == 10.0
+    assert trace.marker.color == "red"
+    assert trace.error_y.type == "data"
+    assert trace.error_y.symmetric is True
+    np.testing.assert_allclose(trace.error_y.array, [0.1, 0.2, 0.15])
+    assert trace.error_y.color == "red"
+
+
+def test_scalar_scatter_omits_error_bars_when_no_y_err() -> None:
+    constructor = get_figure_constructor("feedbax.scalar_scatter", tier="trace")
+    traces = constructor.callable({"x": [0, 1], "y": [3.0, 4.0]}, constructor.params())
+    assert traces[0].error_y.array is None
+    assert traces[0].mode == "markers"
+
+
+@pytest.mark.parametrize(
+    ("data", "match"),
+    [
+        ({"x": [0, 1, 2], "y": [1.0, 2.0]}, "lengths differ"),
+        ({"x": [0, 1], "y": [1.0, 2.0], "y_err": [0.1]}, "does not match"),
+        ({"y": [1.0, 2.0]}, "requires both 'x' and 'y'"),
+    ],
+)
+def test_scalar_scatter_fails_closed_on_mismatched_lengths(data, match: str) -> None:
+    constructor = get_figure_constructor("feedbax.scalar_scatter", tier="trace")
+    with pytest.raises(ValueError, match=match):
+        constructor.callable(data, constructor.params())
+
+
+def test_scalar_scatter_renders_through_figure_spec(tmp_path: Path) -> None:
+    spec = FigureSpec(
+        name="scalar-scatter-demo",
+        assembler="feedbax.grid_figure",
+        traces=[
+            TraceBinding(
+                name="peak",
+                constructor="feedbax.scalar_scatter",
+                data={"x": [0.0, 0.25, 0.5], "y": [1.0, 2.0, 1.5], "y_err": [0.1, 0.2, 0.15]},
+            )
+        ],
+    )
+    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    rendered = figure_manifest_plotly_json(manifest)
+    assert rendered is not None
+    assert rendered["data"][0]["mode"] == "markers"
+    assert "line" not in rendered["data"][0] or rendered["data"][0]["line"] == {}
+    assert _plotly_array_values(rendered["data"][0]["error_y"]["array"]) == [0.1, 0.2, 0.15]
+
+
 def test_hline_and_vrect_emit_plotly_shapes() -> None:
     hline = get_figure_constructor("feedbax.hline", tier="trace")
     hline_shapes = hline.callable({"y": 2.5}, hline.params())
