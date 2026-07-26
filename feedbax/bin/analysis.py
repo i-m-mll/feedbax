@@ -38,6 +38,7 @@ from feedbax.analysis.exact_parents import StagedExactParents
 from feedbax.analysis.execution_context import (
     StagedArtifactProviderRootBinding,
     StagedCheckpointCustodyRootBinding,
+    StagedManifestRootBinding,
 )
 from feedbax.analysis.specs import execute_analysis_run_spec
 from feedbax.config import (
@@ -158,6 +159,13 @@ def build_run_arg_parser() -> argparse.ArgumentParser:
         metavar="NAME=ROOT",
         help="Bind one named checkpoint custody root.",
     )
+    parser.add_argument(
+        "--manifest-root",
+        action="append",
+        default=[],
+        metavar="NAME=ROOT",
+        help="Bind one retained Feedbax manifest-store root.",
+    )
     return parser
 
 
@@ -166,11 +174,12 @@ def run_analysis_run_spec_file(argv: list[str]) -> None:
     args = build_run_arg_parser().parse_args(argv)
     _apply_plotly_template_default()
     spec = _load_spec_document(args.spec, label="AnalysisRunSpec")
-    if (args.artifact_provider or args.checkpoint_custody) and (
+    if (args.artifact_provider or args.manifest_root or args.checkpoint_custody) and (
         args.execution_descriptor is None
     ):
         raise ValueError(
-            "--artifact-provider and --checkpoint-custody require --execution-descriptor"
+            "--artifact-provider, --manifest-root, and --checkpoint-custody "
+            "require --execution-descriptor"
         )
     execution_descriptor = None
     if args.execution_descriptor is not None:
@@ -181,15 +190,15 @@ def run_analysis_run_spec_file(argv: list[str]) -> None:
             )
         )
     artifact_provider_bindings = [
-        StagedArtifactProviderRootBinding(
-            *_binding_parts(value, option="--artifact-provider")
-        )
+        StagedArtifactProviderRootBinding(*_binding_parts(value, option="--artifact-provider"))
         for value in args.artifact_provider
     ]
+    manifest_root_bindings = [
+        StagedManifestRootBinding(*_binding_parts(value, option="--manifest-root"))
+        for value in args.manifest_root
+    ]
     checkpoint_custody_bindings = [
-        StagedCheckpointCustodyRootBinding(
-            *_binding_parts(value, option="--checkpoint-custody")
-        )
+        StagedCheckpointCustodyRootBinding(*_binding_parts(value, option="--checkpoint-custody"))
         for value in args.checkpoint_custody
     ]
     with _bundle_human_output_to_stderr():
@@ -199,6 +208,7 @@ def run_analysis_run_spec_file(argv: list[str]) -> None:
             repo_root=args.repo_root,
             execution_descriptor=execution_descriptor,
             artifact_provider_bindings=artifact_provider_bindings,
+            manifest_root_bindings=manifest_root_bindings,
             checkpoint_custody_bindings=checkpoint_custody_bindings,
         )
     payload = {

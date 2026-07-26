@@ -18,7 +18,6 @@ from feedbax.analysis.execution_context import (
     StagedCheckpointCustodyRootBinding,
     StagedExecutionContextError,
 )
-from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.analysis_composition import AnalysisRunDeltaSpec
 from feedbax.bin import analysis as analysis_cli
 from feedbax.config import PLOTLY_CONFIG
@@ -39,7 +38,6 @@ from feedbax.contracts.staged_execution import (
     StagedCheckpointCustodySpec,
     StagedExecutionDescriptor,
 )
-from feedbax.persistence.artifact_custody import open_immutable_artifact_blob_provider
 from tests.analysis_fixtures import (
     ToyAnalysis,
     build_toy_analysis_data,
@@ -161,23 +159,16 @@ def test_run_subcommand_delta_binds_nested_manifest_and_checkpoint_without_copy(
     provider_root = tmp_path / "retained" / "parent" / "store"
     checkpoint_root = tmp_path / "retained" / "parent" / "checkpoints"
     output_root = tmp_path / "analysis-output"
-    provider_root.mkdir(parents=True)
+    manifest_dir = provider_root / "manifests" / "training_runs"
+    manifest_dir.mkdir(parents=True)
     checkpoint_root.mkdir(parents=True)
-    provider = open_immutable_artifact_blob_provider(
-        ImmutableArtifactBlobProviderSpec(),
-        explicit_root=provider_root,
-    )
     training = TrainingRunManifest(
         id="feedbax-training-run:nested-retained",
         status="completed",
     )
     raw = training.model_dump_json(indent=2).encode()
-    stored = provider.store_bytes(
-        raw,
-        role="training_manifest",
-        logical_name="training.json",
-    )
-    source_path = provider_root / provider.canonical_relative_path(stored)
+    source_path = manifest_dir / "feedbax-training-run_nested-retained.json"
+    source_path.write_bytes(raw)
     source_stat = source_path.stat()
     parent = ParentRef(
         kind="TrainingRunManifest",
@@ -186,8 +177,8 @@ def test_run_subcommand_delta_binds_nested_manifest_and_checkpoint_without_copy(
         metadata={
             "ref_schema_id": "feedbax.ref.authenticated_manifest",
             "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
-            "manifest_sha256": stored.sha256,
-            "size_bytes": stored.size_bytes,
+            "manifest_sha256": sha256_bytes(raw),
+            "size_bytes": len(raw),
         },
     )
     base = AnalysisRunSpec(
@@ -218,7 +209,7 @@ def test_run_subcommand_delta_binds_nested_manifest_and_checkpoint_without_copy(
     descriptor = StagedExecutionDescriptor(
         schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
         schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
-        artifact_providers={"retained": ImmutableArtifactBlobProviderSpec()},
+        artifact_providers={},
         checkpoint_custody={
             "capture-checkpoints": StagedCheckpointCustodySpec(
                 backend="feedbax-checkpoint-transaction-tree"
@@ -233,10 +224,7 @@ def test_run_subcommand_delta_binds_nested_manifest_and_checkpoint_without_copy(
         recipe_calls.append(spec)
         assert inputs[0].manifest == training
         assert inputs[0].path == source_path
-        assert (
-            execution_context.checkpoint_custody_root("capture-checkpoints")
-            == checkpoint_root
-        )
+        assert execution_context.checkpoint_custody_root("capture-checkpoints") == checkpoint_root
         return AnalysisRecipeResult(
             analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
             data=build_toy_analysis_data(value=int(spec.params["value"])),
@@ -254,7 +242,7 @@ def test_run_subcommand_delta_binds_nested_manifest_and_checkpoint_without_copy(
                 str(tmp_path),
                 "--execution-descriptor",
                 str(descriptor_path),
-                "--artifact-provider",
+                "--manifest-root",
                 f"retained={provider_root}",
                 "--checkpoint-custody",
                 f"capture-checkpoints={checkpoint_root}",
