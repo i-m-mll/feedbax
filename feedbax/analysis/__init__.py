@@ -26,6 +26,7 @@ from .execution_context import (
     StagedLocatorTraversalError,
     StagedParentExecutionLocation,
     resolve_staged_execution_context,
+    with_staged_manifest_provider_inputs,
     with_staged_parent_execution_locations,
 )
 from feedbax.contracts.staged_execution import (
@@ -144,7 +145,12 @@ from .harness import (
     diff_resolved_rows,
 )
 from .rollout import (
+    EvaluationStateCapture,
+    EvaluationStateIdentity,
+    EvaluationStateIdentityMismatch,
+    EvaluationStateProvenance,
     TrialStructureError,
+    capture_evaluation_state,
     compiled_trial_rollout,
     stack_trials,
 )
@@ -185,6 +191,10 @@ __all__ = [
     "EvaluationAuthoringSchema",
     "EvaluationRunMatrixDeltaSpec",
     "EvaluationRunMatrixSpec",
+    "EvaluationStateCapture",
+    "EvaluationStateIdentity",
+    "EvaluationStateIdentityMismatch",
+    "EvaluationStateProvenance",
     "compile_evaluation_run_matrix",
     "flatten_evaluation_run_matrix_delta",
     "resolve_evaluation_matrix_authoring",
@@ -225,6 +235,7 @@ __all__ = [
     "STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION",
     "SemanticChange",
     "TrialStructureError",
+    "capture_evaluation_state",
     "compiled_trial_rollout",
     "stack_trials",
     "diff_regenerated_archived",
@@ -259,6 +270,7 @@ __all__ = [
     "resolve_evaluation_inputs",
     "resolve_authenticated_evaluation_channels",
     "resolve_staged_execution_context",
+    "with_staged_manifest_provider_inputs",
     "registered_report_types",
     "get_evaluation_recipe",
     "unregister_analysis_recipe",

@@ -27,8 +27,10 @@ from feedbax.analysis.execution_context import (
     StagedCheckpointCustodyRootBinding,
     StagedExecutionContext,
     StagedExecutionContextError,
+    StagedManifestRootBinding,
     StagedParentExecutionLocation,
     resolve_staged_execution_context,
+    with_staged_manifest_provider_inputs,
     with_staged_parent_execution_locations,
 )
 from feedbax.analysis.evaluation_inputs import (
@@ -101,6 +103,32 @@ def _bindings(tmp_path: Path):
             ),
         ),
     )
+
+
+def _store_provider_manifest(root: Path, *, manifest_id: str = "feedbax-training-run:bound"):
+    provider = open_immutable_artifact_blob_provider(
+        ImmutableArtifactBlobProviderSpec(),
+        explicit_root=root,
+    )
+    manifest = TrainingRunManifest(id=manifest_id, status="completed")
+    raw = manifest.model_dump_json(indent=2).encode()
+    artifact = provider.store_bytes(
+        raw,
+        role="training_manifest",
+        logical_name="training.json",
+    )
+    parent = ParentRef(
+        kind="TrainingRunManifest",
+        id=manifest.id,
+        role="training_run",
+        metadata={
+            "ref_schema_id": "feedbax.ref.authenticated_manifest",
+            "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+            "manifest_sha256": artifact.sha256,
+            "size_bytes": artifact.size_bytes,
+        },
+    )
+    return provider, manifest, parent
 
 
 def _bundle() -> AnalysisBundleSpec:
@@ -315,6 +343,188 @@ def test_runtime_roots_reject_unsafe_locations(tmp_path: Path, case: str) -> Non
         )
 
 
+def test_manifest_provider_lookup_rejects_unknown_id_before_recipe_effects(
+    tmp_path: Path,
+) -> None:
+    roots, artifact_bindings, checkpoint_bindings = _bindings(tmp_path)
+    _provider, _manifest, parent = _store_provider_manifest(roots["primary"])
+    context = resolve_staged_execution_context(
+        _descriptor(),
+        artifact_provider_bindings=artifact_bindings,
+        checkpoint_custody_bindings=checkpoint_bindings,
+    )
+    unknown = parent.model_copy(update={"id": "feedbax-training-run:unknown"})
+
+    with pytest.raises(StagedExecutionContextError, match="kind or id"):
+        with_staged_manifest_provider_inputs(context, [unknown])
+
+
+def test_manifest_provider_lookup_rejects_duplicate_exact_authority(
+    tmp_path: Path,
+) -> None:
+    roots, artifact_bindings, checkpoint_bindings = _bindings(tmp_path)
+    _provider, manifest, parent = _store_provider_manifest(roots["primary"])
+    second = open_immutable_artifact_blob_provider(
+        ImmutableArtifactBlobProviderSpec(),
+        explicit_root=roots["evidence.backup"],
+    )
+    second.store_bytes(
+        manifest.model_dump_json(indent=2).encode(),
+        role="training_manifest",
+        logical_name="training.json",
+    )
+    context = resolve_staged_execution_context(
+        _descriptor(),
+        artifact_provider_bindings=artifact_bindings,
+        checkpoint_custody_bindings=checkpoint_bindings,
+    )
+
+    with pytest.raises(StagedExecutionContextError, match="duplicated across"):
+        with_staged_manifest_provider_inputs(context, [parent])
+
+
+@pytest.mark.parametrize("mismatch", ["size", "sha256"])
+def test_manifest_provider_lookup_rejects_authenticated_byte_mismatch(
+    tmp_path: Path,
+    mismatch: str,
+) -> None:
+    roots, artifact_bindings, checkpoint_bindings = _bindings(tmp_path)
+    provider, _manifest, parent = _store_provider_manifest(roots["primary"])
+    if mismatch == "size":
+        parent = parent.model_copy(
+            update={
+                "metadata": {
+                    **parent.metadata,
+                    "size_bytes": int(parent.metadata["size_bytes"]) + 1,
+                }
+            }
+        )
+    else:
+        artifact_id = f"artifact://sha256/{parent.metadata['manifest_sha256']}"
+        path = roots["primary"] / provider.canonical_relative_path(
+            artifact_id,
+            size_bytes=int(parent.metadata["size_bytes"]),
+        )
+        raw = path.read_bytes()
+        path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+    context = resolve_staged_execution_context(
+        _descriptor(),
+        artifact_provider_bindings=artifact_bindings,
+        checkpoint_custody_bindings=checkpoint_bindings,
+    )
+
+    with pytest.raises(ValueError, match=mismatch):
+        with_staged_manifest_provider_inputs(context, [parent])
+
+
+def _retained_manifest_root(
+    root: Path,
+    *,
+    manifest_id: str = "feedbax-training-run:retained",
+) -> tuple[TrainingRunManifest, ParentRef, Path]:
+    manifest = TrainingRunManifest(id=manifest_id, status="completed")
+    raw = manifest.model_dump_json(indent=2).encode()
+    path = root / "manifests" / "training_runs" / f"{manifest_id.replace(':', '_')}.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(raw)
+    parent = ParentRef(
+        kind="TrainingRunManifest",
+        id=manifest.id,
+        role="training_run",
+        metadata={
+            "ref_schema_id": "feedbax.ref.authenticated_manifest",
+            "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+            "manifest_sha256": sha256_bytes(raw),
+            "size_bytes": len(raw),
+        },
+    )
+    return manifest, parent, path
+
+
+def _retained_manifest_context(
+    roots: list[Path],
+) -> StagedExecutionContext:
+    descriptor = StagedExecutionDescriptor(
+        schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+        schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+        artifact_providers={},
+        checkpoint_custody={},
+    )
+    return resolve_staged_execution_context(
+        descriptor,
+        manifest_root_bindings=[
+            StagedManifestRootBinding(f"retained-{index}", root) for index, root in enumerate(roots)
+        ],
+    )
+
+
+def test_manifest_root_binding_rejects_missing_root(tmp_path: Path) -> None:
+    with pytest.raises(StagedExecutionContextError, match="root is unavailable"):
+        _retained_manifest_context([tmp_path / "missing"])
+
+
+def test_manifest_root_lookup_rejects_unknown_id(tmp_path: Path) -> None:
+    root = tmp_path / "retained"
+    root.mkdir()
+    with pytest.raises(StagedExecutionContextError, match="unavailable"):
+        with_staged_manifest_provider_inputs(
+            _retained_manifest_context([root]),
+            [
+                ParentRef(
+                    kind="TrainingRunManifest",
+                    id="feedbax-training-run:unknown",
+                    role="training_run",
+                    metadata={
+                        "ref_schema_id": "feedbax.ref.authenticated_manifest",
+                        "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+                        "manifest_sha256": "a" * 64,
+                        "size_bytes": 1,
+                    },
+                )
+            ],
+        )
+
+
+def test_manifest_root_lookup_rejects_duplicate_id(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    _manifest, parent, _path = _retained_manifest_root(first)
+    _retained_manifest_root(second)
+
+    with pytest.raises(StagedExecutionContextError, match="duplicated across authorities"):
+        with_staged_manifest_provider_inputs(
+            _retained_manifest_context([first, second]),
+            [parent],
+        )
+
+
+@pytest.mark.parametrize("mismatch", ["size", "sha256"])
+def test_manifest_root_lookup_rejects_authenticated_byte_mismatch(
+    tmp_path: Path,
+    mismatch: str,
+) -> None:
+    root = tmp_path / "retained"
+    _manifest, parent, path = _retained_manifest_root(root)
+    if mismatch == "size":
+        parent = parent.model_copy(
+            update={
+                "metadata": {
+                    **parent.metadata,
+                    "size_bytes": int(parent.metadata["size_bytes"]) + 1,
+                }
+            }
+        )
+    else:
+        raw = path.read_bytes()
+        path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+
+    with pytest.raises(StagedExecutionContextError, match=mismatch):
+        with_staged_manifest_provider_inputs(
+            _retained_manifest_context([root]),
+            [parent],
+        )
+
+
 def test_checkpoint_binding_mismatch_and_malicious_uri_fail_before_resolution(
     tmp_path: Path,
 ) -> None:
@@ -502,9 +712,7 @@ def test_cached_checkpoint_snapshot_recursively_rejects_mutation(tmp_path: Path)
     context = resolve_staged_execution_context(
         descriptor,
         checkpoint_custody_bindings=[
-            StagedCheckpointCustodyRootBinding(
-                "training-checkpoints", checkpoint_root
-            )
+            StagedCheckpointCustodyRootBinding("training-checkpoints", checkpoint_root)
         ],
     )
 

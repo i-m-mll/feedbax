@@ -31,7 +31,13 @@ from feedbax.contracts.evaluation_states import (
 )
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
+    StagedArtifactProviderRootBinding,
+    StagedCheckpointCustodyRootBinding,
     StagedExecutionContext,
+    StagedExecutionContextError,
+    StagedManifestRootBinding,
+    resolve_staged_execution_context,
+    with_staged_manifest_provider_inputs,
 )
 from feedbax.analysis.manifest_inputs import (
     ResolvedManifestInput,
@@ -71,6 +77,7 @@ from feedbax.contracts.analysis_composition import (
     is_analysis_run_delta_payload,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
+from feedbax.contracts.staged_execution import StagedExecutionDescriptor
 from feedbax.persistence.manifest_index import find_manifest_paths_by_id, iter_manifest_files
 from feedbax.analysis.types import AnalysisInputData
 
@@ -110,9 +117,7 @@ AnalysisRecipe = AnalysisRecipeProtocol
 AnalysisRecipeResultValidator = Callable[[str, AnalysisRecipeResult], None]
 
 _ANALYSIS_RECIPES: dict[str, AnalysisRecipe] = {}
-_EVALUATION_STATES_STRUCTURE_PROVIDERS: dict[
-    str, EvaluationStatesStructureProviderProtocol
-] = {}
+_EVALUATION_STATES_STRUCTURE_PROVIDERS: dict[str, EvaluationStatesStructureProviderProtocol] = {}
 
 
 class AnalysisRecipeExecutionError(RuntimeError):
@@ -292,8 +297,7 @@ def _analysis_input_authentication(
     """Return whether one input requires and declares manifest authentication."""
 
     requires_authenticated_evaluation = (
-        ref.kind == "EvaluationRunManifest"
-        and spec.evaluation_states_policy == "require_durable"
+        ref.kind == "EvaluationRunManifest" and spec.evaluation_states_policy == "require_durable"
     )
     try:
         has_authenticated_claim = is_authenticated_manifest_ref(ref)
@@ -330,8 +334,8 @@ def resolve_analysis_inputs(
         manifest_input: ResolvedManifestInput | None = None
         states: Any = None
         state_source: AnalysisEvaluationStateSource | None = None
-        requires_authenticated_evaluation, has_authenticated_claim = (
-            _analysis_input_authentication(spec, ref)
+        requires_authenticated_evaluation, has_authenticated_claim = _analysis_input_authentication(
+            spec, ref
         )
         if has_authenticated_claim:
             authenticated = (
@@ -534,7 +538,9 @@ def _evaluation_states_artifact_for_durable_policy(
             details={"evaluation_manifest_status": manifest.status},
         )
     matches = [
-        artifact for artifact in manifest.artifacts if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
+        artifact
+        for artifact in manifest.artifacts
+        if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
     ]
     if not matches:
         raise _resolution_error(
@@ -566,7 +572,9 @@ def _durable_state_source(
     manifest_path: Path | None = None,
 ) -> AnalysisEvaluationStateSource:
     artifacts = [
-        artifact for artifact in manifest.artifacts if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
+        artifact
+        for artifact in manifest.artifacts
+        if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
     ]
     artifact = artifacts[0]
     authority = _portable_manifest_authority(ref)
@@ -707,23 +715,47 @@ def _resolve_authenticated_input_authorities(
     spec: AnalysisRunSpec,
     *,
     root: Path,
+    execution_context: StagedExecutionContext,
 ) -> dict[int, ResolvedManifestInput]:
     """Authenticate authored manifest authorities before cache or recipe effects."""
 
     authenticated_inputs: dict[int, ResolvedManifestInput] = {}
     for index, ref in enumerate(spec.inputs):
-        requires_authenticated_evaluation, has_authenticated_claim = (
-            _analysis_input_authentication(spec, ref)
+        requires_authenticated_evaluation, has_authenticated_claim = _analysis_input_authentication(
+            spec, ref
         )
         if not has_authenticated_claim:
             continue
         try:
-            authenticated_inputs[index] = resolve_manifest_input(ref, root)
+            if execution_context.parent_execution_locations:
+                authenticated_inputs[index] = execution_context.resolve_manifest_input(ref)
+            else:
+                authenticated_inputs[index] = resolve_manifest_input(ref, root)
         except Exception as exc:
             if requires_authenticated_evaluation:
                 raise _authenticated_manifest_resolution_error(ref, exc) from exc
             raise
     return authenticated_inputs
+
+
+def _preflight_checkpoint_binding_names(
+    value: Any,
+    execution_context: StagedExecutionContext,
+) -> None:
+    """Validate authored checkpoint binding names before recipe execution."""
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if key == "checkpoint_custody_binding":
+                if not isinstance(item, str) or not item:
+                    raise StagedExecutionContextError(
+                        "checkpoint_custody_binding must be a nonempty string"
+                    )
+                execution_context.checkpoint_custody_root(item)
+            else:
+                _preflight_checkpoint_binding_names(item, execution_context)
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        for item in value:
+            _preflight_checkpoint_binding_names(item, execution_context)
 
 
 def execute_analysis_run_spec(
@@ -735,6 +767,10 @@ def execute_analysis_run_spec(
     issues: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
     execution_context: StagedExecutionContext = EMPTY_STAGED_EXECUTION_CONTEXT,
+    execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
+    artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
+    manifest_root_bindings: Sequence[StagedManifestRootBinding] = (),
+    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
     validate_result: AnalysisRecipeResultValidator | None = None,
     fig_dump_path: Path | str | None = None,
     fig_dump_formats: Sequence[str] = ("html",),
@@ -748,6 +784,34 @@ def execute_analysis_run_spec(
     """
     run_spec, flattened = resolve_analysis_run_authoring(spec, repo_root=repo_root)
     root_path = Path(root) if root is not None else default_manifest_root()
+    explicit_runtime = (
+        execution_descriptor is not None
+        or bool(artifact_provider_bindings)
+        or bool(manifest_root_bindings)
+        or bool(checkpoint_custody_bindings)
+    )
+    if explicit_runtime:
+        if execution_context is not EMPTY_STAGED_EXECUTION_CONTEXT:
+            raise StagedExecutionContextError(
+                "execution_context cannot be combined with direct runtime bindings"
+            )
+        execution_context = resolve_staged_execution_context(
+            execution_descriptor,
+            artifact_provider_bindings=artifact_provider_bindings,
+            manifest_root_bindings=manifest_root_bindings,
+            checkpoint_custody_bindings=checkpoint_custody_bindings,
+        )
+        authenticated_parents = [
+            ref for ref in run_spec.inputs if is_authenticated_manifest_ref(ref)
+        ]
+        if authenticated_parents and (
+            execution_context.manifest_roots or execution_context.opened_artifact_providers
+        ):
+            execution_context = with_staged_manifest_provider_inputs(
+                execution_context,
+                authenticated_parents,
+            )
+        _preflight_checkpoint_binding_names(run_spec.params, execution_context)
     if flattened is not None:
         # Mirror the evaluation-matrix convention: delta-authored runs embed the
         # single canonical composition-provenance record into durable manifest
@@ -770,6 +834,7 @@ def execute_analysis_run_spec(
         authenticated_inputs = _resolve_authenticated_input_authorities(
             run_spec,
             root=root_path,
+            execution_context=execution_context,
         )
         recipe = get_analysis_recipe(run_spec.analysis_type)
         manifest_id = analysis_run_manifest_id(run_spec)

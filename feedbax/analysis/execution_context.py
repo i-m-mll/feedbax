@@ -33,6 +33,7 @@ from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     ParentRef,
     load_manifest_bytes as parse_manifest_bytes,
+    safe_manifest_key,
 )
 from feedbax.contracts.staged_execution import (
     STAGED_CHECKPOINT_CUSTODY_BACKEND,
@@ -84,6 +85,14 @@ class StagedArtifactProviderRootBinding:
 @dataclass(frozen=True, slots=True)
 class StagedCheckpointCustodyRootBinding:
     """One explicit runtime root for a logical checkpoint-custody authority."""
+
+    name: str
+    root: Path | str
+
+
+@dataclass(frozen=True, slots=True)
+class StagedManifestRootBinding:
+    """One explicit runtime root for a retained Feedbax manifest store."""
 
     name: str
     root: Path | str
@@ -183,18 +192,10 @@ class _ReconstructableEvaluationStates:
 @dataclass(slots=True)
 class _StagedExecutionMemo:
     manifests: dict[_ManifestAuthorityKey, _MemoEntry] = field(default_factory=dict)
-    evaluation_states: dict[_EvaluationStatesAuthorityKey, _MemoEntry] = field(
-        default_factory=dict
-    )
-    state_keys_by_object_id: dict[int, _EvaluationStatesAuthorityKey] = field(
-        default_factory=dict
-    )
-    state_object_refs_by_id: dict[int, weakref.ReferenceType[Any]] = field(
-        default_factory=dict
-    )
-    authenticated_channels: dict[_EvaluationStatesAuthorityKey, Any] = field(
-        default_factory=dict
-    )
+    evaluation_states: dict[_EvaluationStatesAuthorityKey, _MemoEntry] = field(default_factory=dict)
+    state_keys_by_object_id: dict[int, _EvaluationStatesAuthorityKey] = field(default_factory=dict)
+    state_object_refs_by_id: dict[int, weakref.ReferenceType[Any]] = field(default_factory=dict)
+    authenticated_channels: dict[_EvaluationStatesAuthorityKey, Any] = field(default_factory=dict)
     checkpoint_lookup: dict[_CheckpointLookupKey, _CheckpointAuthorityKey] = field(
         default_factory=dict
     )
@@ -255,12 +256,18 @@ class StagedExecutionContext:
     opened_artifact_providers: Mapping[str, ImmutableArtifactBlobProvider]
     checkpoint_custody_roots: Mapping[str, Path]
     parent_execution_locations: tuple[StagedParentExecutionLocation, ...]
+    manifest_roots: Mapping[str, Path] = field(default_factory=dict)
     _checkpoint_custody_root_identities: Mapping[str, tuple[int, int]] = field(
         default_factory=dict,
         repr=False,
         compare=False,
     )
     _artifact_provider_root_identities: Mapping[str, tuple[int, int]] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
+    _manifest_root_identities: Mapping[str, tuple[int, int]] = field(
         default_factory=dict,
         repr=False,
         compare=False,
@@ -294,6 +301,26 @@ class StagedExecutionContext:
             self,
             "_artifact_provider_root_identities",
             MappingProxyType(artifact_identities),
+        )
+        object.__setattr__(
+            self,
+            "manifest_roots",
+            MappingProxyType(dict(self.manifest_roots)),
+        )
+        manifest_identities = dict(self._manifest_root_identities)
+        if not manifest_identities:
+            manifest_identities = {
+                name: _directory_identity(root, kind="manifest store")
+                for name, root in self.manifest_roots.items()
+            }
+        if set(manifest_identities) != set(self.manifest_roots):
+            raise StagedExecutionContextError(
+                "manifest store root identities must exactly match bound roots"
+            )
+        object.__setattr__(
+            self,
+            "_manifest_root_identities",
+            MappingProxyType(manifest_identities),
         )
         object.__setattr__(
             self,
@@ -362,9 +389,7 @@ class StagedExecutionContext:
             resolved, snapshot = _resolve_retained_local_manifest_input(
                 parent,
                 location,
-                expected_root_identity=self._parent_execution_root_identities[
-                    location_index
-                ],
+                expected_root_identity=self._parent_execution_root_identities[location_index],
             )
             self._memo.manifests[key] = _MemoEntry(resolved, (snapshot,))
             return resolved
@@ -373,9 +398,7 @@ class StagedExecutionContext:
                 "provider-backed manifest input requires an authenticated ParentRef"
             )
         provider = self.artifact_provider(location.artifact_provider)
-        expected_root_identity = self._artifact_provider_root_identities[
-            location.artifact_provider
-        ]
+        expected_root_identity = self._artifact_provider_root_identities[location.artifact_provider]
         digest = str(parent.metadata["manifest_sha256"])
         size_bytes = int(parent.metadata["size_bytes"])
         artifact_id = f"artifact://sha256/{digest}"
@@ -468,9 +491,7 @@ class StagedExecutionContext:
             states_sha256=str(artifact.sha256),
             states_size_bytes=int(artifact.size_bytes),
             requested_structure_fingerprint=(
-                _treedef_structure_fingerprint(structure)
-                if structure is not None
-                else None
+                _treedef_structure_fingerprint(structure) if structure is not None else None
             ),
         )
         cached = self._memo.evaluation_states.get(key)
@@ -480,9 +501,7 @@ class StagedExecutionContext:
                 self._memo.remember_evaluation_states(
                     states,
                     key,
-                    reconstructed=isinstance(
-                        cached.value, _ReconstructableEvaluationStates
-                    ),
+                    reconstructed=isinstance(cached.value, _ReconstructableEvaluationStates),
                 )
                 return states
             self._memo.invalidate_evaluation_states(key)
@@ -515,9 +534,7 @@ class StagedExecutionContext:
                 self._memo.remember_evaluation_states(
                     states,
                     key,
-                    reconstructed=isinstance(
-                        memo_value, _ReconstructableEvaluationStates
-                    ),
+                    reconstructed=isinstance(memo_value, _ReconstructableEvaluationStates),
                 )
                 return states
             finally:
@@ -526,9 +543,7 @@ class StagedExecutionContext:
                 )
 
         provider = self.artifact_provider(location.artifact_provider)
-        expected_root_identity = self._artifact_provider_root_identities[
-            location.artifact_provider
-        ]
+        expected_root_identity = self._artifact_provider_root_identities[location.artifact_provider]
         try:
             relative = _provider_artifact_relative_path(str(artifact.sha256))
             try:
@@ -764,6 +779,7 @@ class StagedExecutionContext:
 EMPTY_STAGED_EXECUTION_CONTEXT = StagedExecutionContext(
     descriptor=None,
     opened_artifact_providers={},
+    manifest_roots={},
     checkpoint_custody_roots={},
     parent_execution_locations=(),
 )
@@ -773,11 +789,12 @@ def resolve_staged_execution_context(
     descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None,
     *,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
+    manifest_root_bindings: Sequence[StagedManifestRootBinding] = (),
     checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
 ) -> StagedExecutionContext:
     """Validate and bind every runtime resource before staged recipe effects."""
     if descriptor is None:
-        if artifact_provider_bindings or checkpoint_custody_bindings:
+        if artifact_provider_bindings or manifest_root_bindings or checkpoint_custody_bindings:
             raise StagedExecutionContextError(
                 "runtime staged bindings require an explicit StagedExecutionDescriptor"
             )
@@ -788,6 +805,11 @@ def resolve_staged_execution_context(
         artifact_provider_bindings,
         expected_names=set(portable.artifact_providers),
         kind="artifact provider",
+    )
+    manifest_roots = _validated_binding_roots(
+        manifest_root_bindings,
+        expected_names=None,
+        kind="manifest store",
     )
     checkpoint_roots = _validated_binding_roots(
         checkpoint_custody_bindings,
@@ -808,6 +830,7 @@ def resolve_staged_execution_context(
     return StagedExecutionContext(
         descriptor=portable,
         opened_artifact_providers=opened,
+        manifest_roots=manifest_roots,
         checkpoint_custody_roots=checkpoint_roots,
         parent_execution_locations=(),
     )
@@ -852,6 +875,77 @@ def with_staged_parent_execution_locations(
     )
 
 
+def with_staged_manifest_provider_inputs(
+    context: StagedExecutionContext,
+    parents: Sequence[ParentRef],
+) -> StagedExecutionContext:
+    """Bind authenticated parents found in exactly one explicit retained authority.
+
+    Retained manifest-store and artifact-provider roots remain runtime-only
+    logical bindings. This lookup never materializes manifest bytes under the
+    analysis output root.
+    """
+    locations = list(context.parent_execution_locations)
+    located_parents = {
+        location.parent.model_dump_json(exclude_none=False) for location in locations
+    }
+    for parent in parents:
+        serialized = parent.model_dump_json(exclude_none=False)
+        if serialized in located_parents:
+            continue
+        if not is_authenticated_manifest_ref(parent):
+            raise StagedExecutionContextError(
+                "manifest-provider lookup requires an authenticated ParentRef"
+            )
+        digest = str(parent.metadata["manifest_sha256"])
+        size_bytes = int(parent.metadata["size_bytes"])
+        artifact_id = f"artifact://sha256/{digest}"
+        matches: list[tuple[str, Path, str, str | None]] = []
+        if parent.kind == "TrainingRunManifest":
+            relative = f"manifests/training_runs/{safe_manifest_key(parent.id)}.json"
+            for name, root in context.manifest_roots.items():
+                _require_directory_identity(
+                    root,
+                    context._manifest_root_identities[name],
+                    kind="manifest store",
+                )
+                if (root / relative).is_file():
+                    matches.append((name, root, relative, None))
+        for name, provider in context.opened_artifact_providers.items():
+            try:
+                relative = provider.canonical_relative_path(
+                    artifact_id,
+                    size_bytes=size_bytes,
+                )
+            except FileNotFoundError:
+                continue
+            matches.append((name, Path(provider.root), relative.as_posix(), name))
+        if not matches:
+            raise StagedExecutionContextError(
+                f"authenticated manifest {parent.id!r} is unavailable in the bound "
+                "manifest stores and artifact providers"
+            )
+        if len(matches) > 1:
+            names = ", ".join(repr(name) for name, _root, _relative, _provider in matches)
+            raise StagedExecutionContextError(
+                f"authenticated manifest {parent.id!r} is duplicated across authorities: {names}"
+            )
+        _name, root, execution_uri, artifact_provider = matches[0]
+        locations.append(
+            StagedParentExecutionLocation(
+                parent=parent,
+                root=root,
+                execution_uri=execution_uri,
+                artifact_provider=artifact_provider,
+            )
+        )
+        located_parents.add(serialized)
+    bound = with_staged_parent_execution_locations(context, locations)
+    for parent in parents:
+        bound.resolve_manifest_input(parent)
+    return bound
+
+
 def _coerce_descriptor(
     descriptor: StagedExecutionDescriptor | Mapping[str, Any],
 ) -> StagedExecutionDescriptor:
@@ -885,9 +979,10 @@ def _coerce_descriptor(
 
 def _validated_binding_roots(
     bindings: Sequence[StagedArtifactProviderRootBinding]
+    | Sequence[StagedManifestRootBinding]
     | Sequence[StagedCheckpointCustodyRootBinding],
     *,
-    expected_names: set[str],
+    expected_names: set[str] | None,
     kind: str,
 ) -> dict[str, Path]:
     raw_names = [binding.name for binding in bindings]
@@ -898,18 +993,20 @@ def _validated_binding_roots(
             raise StagedExecutionContextError(str(exc)) from exc
     if len(set(raw_names)) != len(raw_names):
         raise StagedExecutionContextError(f"duplicate staged {kind} runtime binding name")
-    observed_names = set(raw_names)
-    missing = sorted(expected_names - observed_names)
-    extra = sorted(observed_names - expected_names)
-    if missing or extra:
-        details = []
-        if missing:
-            details.append(f"missing={missing}")
-        if extra:
-            details.append(f"extra={extra}")
-        raise StagedExecutionContextError(
-            f"staged {kind} binding names must exactly match the descriptor: " + ", ".join(details)
-        )
+    if expected_names is not None:
+        observed_names = set(raw_names)
+        missing = sorted(expected_names - observed_names)
+        extra = sorted(observed_names - expected_names)
+        if missing or extra:
+            details = []
+            if missing:
+                details.append(f"missing={missing}")
+            if extra:
+                details.append(f"extra={extra}")
+            raise StagedExecutionContextError(
+                f"staged {kind} binding names must exactly match the descriptor: "
+                + ", ".join(details)
+            )
     return {binding.name: _validate_runtime_root(binding.root, kind=kind) for binding in bindings}
 
 
@@ -1009,9 +1106,7 @@ def _retained_file_state(
     relative = _validate_relative_execution_uri(relative)
     parts = PurePosixPath(relative).parts
     descriptors = _open_directory_chain_no_follow(root, kind=kind)
-    directory_flags = (
-        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-    )
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
     try:
         current = descriptors[-1]
         root_stat = os.fstat(current)
@@ -1318,9 +1413,7 @@ def _read_retained_local_file(
 ) -> tuple[bytes, _RetainedFileSnapshot]:
     """Read one authenticated file relative to an exact retained root authority."""
     parts = PurePosixPath(relative).parts
-    directory_flags = (
-        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-    )
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
     file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
     descriptors: list[int] = []
     directory_records: list[tuple[int, str, tuple[int, int]]] = []
@@ -1351,9 +1444,7 @@ def _read_retained_local_file(
         if not stat.S_ISREG(before.st_mode):
             raise StagedExecutionContextError(f"{kind} is not regular")
         if require_single_link and before.st_nlink != 1:
-            raise StagedExecutionContextError(
-                f"{kind} has mutable hard-link aliases"
-            )
+            raise StagedExecutionContextError(f"{kind} has mutable hard-link aliases")
         if (before.st_dev, before.st_ino) != (path_before.st_dev, path_before.st_ino):
             raise StagedExecutionContextError(f"{kind} identity changed before read")
         if before.st_size != expected_size:
@@ -1363,9 +1454,7 @@ def _read_retained_local_file(
             chunks.append(chunk)
         after = os.fstat(file_descriptor)
         if require_single_link and after.st_nlink != 1:
-            raise StagedExecutionContextError(
-                f"{kind} hard-link count changed during read"
-            )
+            raise StagedExecutionContextError(f"{kind} hard-link count changed during read")
         if (
             before.st_dev,
             before.st_ino,
@@ -1409,9 +1498,7 @@ def _read_retained_local_file(
                 not stat.S_ISDIR(component_after.st_mode)
                 or (component_after.st_dev, component_after.st_ino) != expected_identity
             ):
-                raise StagedExecutionContextError(
-                    f"{kind} directory identity changed during read"
-                )
+                raise StagedExecutionContextError(f"{kind} directory identity changed during read")
         _require_directory_identity(root, expected_root_identity, kind=kind)
         data = b"".join(chunks)
         if hashlib.sha256(data).hexdigest() != expected_sha256:
@@ -1499,7 +1586,9 @@ __all__ = [
     "StagedCheckpointCustodyRootBinding",
     "StagedExecutionContext",
     "StagedExecutionContextError",
+    "StagedManifestRootBinding",
     "StagedParentExecutionLocation",
     "resolve_staged_execution_context",
+    "with_staged_manifest_provider_inputs",
     "with_staged_parent_execution_locations",
 ]

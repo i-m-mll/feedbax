@@ -30,8 +30,9 @@ execution.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from functools import partial
-from typing import Any, TypeVar
+from typing import Any, Generic, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -39,15 +40,157 @@ import jax.tree as jt
 from jax.tree_util import keystr
 from jaxtyping import PyTree
 
+from feedbax.contracts.manifest import (
+    EvaluationRunSpec,
+    canonical_json_bytes,
+    sha256_bytes,
+)
+
 __all__ = [
+    "EvaluationStateCapture",
+    "EvaluationStateIdentity",
+    "EvaluationStateIdentityMismatch",
+    "EvaluationStateProvenance",
     "TrialStructureError",
+    "capture_evaluation_state",
     "compiled_trial_rollout",
     "stack_trials",
 ]
 
 _Context = TypeVar("_Context")
+_Prefix = TypeVar("_Prefix")
+_PrefixResult = TypeVar("_PrefixResult")
+_State = TypeVar("_State")
 _Trial = TypeVar("_Trial")
 _Result = TypeVar("_Result")
+
+
+class EvaluationStateIdentityMismatch(ValueError):
+    """Raised when a captured state does not belong to the requested model/state contract."""
+
+
+def _require_identity_token(value: str, *, name: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a non-empty string")
+
+
+@dataclass(frozen=True)
+class EvaluationStateIdentity:
+    """Stable caller-owned model and state-contract identities."""
+
+    model: str
+    state: str
+
+    def __post_init__(self) -> None:
+        _require_identity_token(self.model, name="model identity")
+        _require_identity_token(self.state, name="state identity")
+
+
+@dataclass(frozen=True)
+class EvaluationStateProvenance:
+    """Reference to the run spec that owns prefix/task provenance."""
+
+    run_spec: EvaluationRunSpec
+    prefix_steps_param: str
+    task_pin_param: str
+    _run_spec_sha256: str = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.run_spec, EvaluationRunSpec):
+            raise TypeError(
+                f"run_spec must be EvaluationRunSpec, got {type(self.run_spec).__name__}"
+            )
+        _require_identity_token(self.prefix_steps_param, name="prefix steps parameter")
+        _require_identity_token(self.task_pin_param, name="task pin parameter")
+        self._validate_params()
+        object.__setattr__(
+            self,
+            "_run_spec_sha256",
+            sha256_bytes(
+                canonical_json_bytes(self.run_spec.model_dump(mode="json", exclude_none=True))
+            ),
+        )
+
+    @property
+    def prefix_steps(self) -> int:
+        return self.run_spec.params[self.prefix_steps_param]
+
+    @property
+    def task_pin(self) -> str:
+        return self.run_spec.params[self.task_pin_param]
+
+    def validate(self) -> None:
+        self._validate_params()
+        actual_sha256 = sha256_bytes(
+            canonical_json_bytes(self.run_spec.model_dump(mode="json", exclude_none=True))
+        )
+        if actual_sha256 != self._run_spec_sha256:
+            raise EvaluationStateIdentityMismatch("evaluation run spec changed after state capture")
+
+    def _validate_params(self) -> None:
+        if self.prefix_steps_param not in self.run_spec.params:
+            raise ValueError(
+                f"evaluation run spec has no {self.prefix_steps_param!r} prefix parameter"
+            )
+        if self.task_pin_param not in self.run_spec.params:
+            raise ValueError(
+                f"evaluation run spec has no {self.task_pin_param!r} task-pin parameter"
+            )
+        prefix_steps = self.run_spec.params[self.prefix_steps_param]
+        if not isinstance(prefix_steps, int) or isinstance(prefix_steps, bool) or prefix_steps < 0:
+            raise ValueError(f"{self.prefix_steps_param!r} must be a nonnegative integer")
+        _require_identity_token(
+            self.run_spec.params[self.task_pin_param],
+            name=f"{self.task_pin_param!r} task pin",
+        )
+
+
+_StateLeaves = tuple[tuple[str, tuple[int, ...], str], ...]
+_StateStructure = tuple[Any, _StateLeaves]
+
+
+def _state_structure(state: Any) -> _StateStructure:
+    entries, treedef = jt.flatten_with_path(state)
+    return (
+        treedef,
+        tuple(
+            (keystr(path), tuple(jnp.shape(leaf)), str(jnp.result_type(leaf)))
+            for path, leaf in entries
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class EvaluationStateCapture(Generic[_State]):
+    """Terminal state captured from one rollout prefix for reuse within an execution."""
+
+    state: _State
+    identity: EvaluationStateIdentity
+    provenance: EvaluationStateProvenance
+    _structure: _StateStructure = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.identity, EvaluationStateIdentity):
+            raise TypeError("identity must be EvaluationStateIdentity")
+        if not isinstance(self.provenance, EvaluationStateProvenance):
+            raise TypeError("provenance must be EvaluationStateProvenance")
+        object.__setattr__(self, "_structure", _state_structure(self.state))
+
+    def resume(self, expected_identity: EvaluationStateIdentity) -> _State:
+        """Return the state after fail-closed identity and provenance validation."""
+        self.provenance.validate()
+        if self.identity != expected_identity:
+            raise EvaluationStateIdentityMismatch(
+                "captured evaluation state identity mismatch: "
+                f"captured model={self.identity.model!r}, state={self.identity.state!r}; "
+                f"expected model={expected_identity.model!r}, state={expected_identity.state!r}"
+            )
+        actual_structure = _state_structure(self.state)
+        if actual_structure != self._structure:
+            raise EvaluationStateIdentityMismatch(
+                "captured evaluation state structure changed after capture"
+            )
+        return self.state
 
 
 class TrialStructureError(ValueError):
@@ -190,6 +333,43 @@ def stack_trials(trials: Sequence[PyTree[Any]]) -> PyTree[Any]:
                     f"{reference_dtype}"
                 )
     return jt.map(lambda *values: jnp.stack(values), *trials)
+
+
+def capture_evaluation_state(
+    prefix_rollout: Callable[[_Context, _Prefix], _PrefixResult],
+    context: _Context,
+    prefix: _Prefix,
+    *,
+    terminal_state: Callable[[_PrefixResult], _State],
+    identity: EvaluationStateIdentity,
+    provenance: EvaluationStateProvenance,
+) -> tuple[_PrefixResult, EvaluationStateCapture[_State]]:
+    """Run one prefix and capture its terminal state for in-memory row reuse.
+
+    Args:
+        prefix_rollout: Pure or eager callable `(context, prefix) -> result`.
+        context: Trial-invariant rollout operands.
+        prefix: The single wash-in/prefix trial operands.
+        terminal_state: Selector mapping the prefix result to the complete state
+            needed to resume a row.
+        identity: Stable model and state-contract identities.
+        provenance: Reference to the run spec that records prefix/task facts.
+
+    Returns:
+        The prefix result and an in-memory typed state capture.
+    """
+    if not callable(prefix_rollout):
+        raise TypeError(f"prefix_rollout must be callable, got {type(prefix_rollout).__name__}")
+    if not callable(terminal_state):
+        raise TypeError(f"terminal_state must be callable, got {type(terminal_state).__name__}")
+    result = prefix_rollout(context, prefix)
+    state = terminal_state(result)
+    capture = EvaluationStateCapture(
+        state=state,
+        identity=identity,
+        provenance=provenance,
+    )
+    return result, capture
 
 
 def compiled_trial_rollout(
