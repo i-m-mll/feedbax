@@ -852,6 +852,67 @@ def with_staged_parent_execution_locations(
     )
 
 
+def with_staged_manifest_provider_inputs(
+    context: StagedExecutionContext,
+    parents: Sequence[ParentRef],
+) -> StagedExecutionContext:
+    """Bind authenticated parents found in exactly one explicit artifact provider.
+
+    Provider roots remain runtime-only logical bindings. This lookup never
+    materializes manifest bytes under the analysis output root.
+    """
+    locations = list(context.parent_execution_locations)
+    located_parents = {
+        location.parent.model_dump_json(exclude_none=False) for location in locations
+    }
+    for parent in parents:
+        serialized = parent.model_dump_json(exclude_none=False)
+        if serialized in located_parents:
+            continue
+        if not is_authenticated_manifest_ref(parent):
+            raise StagedExecutionContextError(
+                "manifest-provider lookup requires an authenticated ParentRef"
+            )
+        digest = str(parent.metadata["manifest_sha256"])
+        size_bytes = int(parent.metadata["size_bytes"])
+        artifact_id = f"artifact://sha256/{digest}"
+        matches: list[tuple[str, Path, str]] = []
+        for name, provider in context.opened_artifact_providers.items():
+            try:
+                relative = provider.canonical_relative_path(
+                    artifact_id,
+                    size_bytes=size_bytes,
+                )
+            except FileNotFoundError:
+                continue
+            matches.append((name, Path(provider.root), relative.as_posix()))
+        if not matches:
+            raise StagedExecutionContextError(
+                f"authenticated manifest {parent.id!r} is unavailable in the bound "
+                "artifact providers"
+            )
+        if len(matches) > 1:
+            names = ", ".join(repr(name) for name, _root, _relative in matches)
+            raise StagedExecutionContextError(
+                f"authenticated manifest {parent.id!r} is duplicated across artifact "
+                f"providers: {names}"
+            )
+        name, root, execution_uri = matches[0]
+        locations.append(
+            StagedParentExecutionLocation(
+                parent=parent,
+                root=root,
+                execution_uri=execution_uri,
+                artifact_provider=name,
+            )
+        )
+        located_parents.add(serialized)
+    bound = with_staged_parent_execution_locations(context, locations)
+    for parent in parents:
+        bound.resolve_manifest_input(parent)
+    return bound
+
+
 def _coerce_descriptor(
     descriptor: StagedExecutionDescriptor | Mapping[str, Any],
 ) -> StagedExecutionDescriptor:
@@ -1501,5 +1562,6 @@ __all__ = [
     "StagedExecutionContextError",
     "StagedParentExecutionLocation",
     "resolve_staged_execution_context",
+    "with_staged_manifest_provider_inputs",
     "with_staged_parent_execution_locations",
 ]
