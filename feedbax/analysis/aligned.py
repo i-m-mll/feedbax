@@ -1,14 +1,12 @@
 from collections.abc import Callable, Mapping, Sequence
 from functools import cached_property, partial
 from types import MappingProxyType
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import equinox as eqx
-import feedbax.plot as fbp
 import jax.numpy as jnp
 import jax.tree as jt
 import jax_cookbook.tree as jtree
-import plotly.graph_objects as go
 from equinox import Module, field
 from feedbax.tasks import AbstractTask
 from jax_cookbook import (
@@ -25,7 +23,6 @@ from feedbax.analysis.analysis import (
     NoPorts,
     get_validation_trial_specs,
 )
-from feedbax.analysis.plot import ScatterPlots
 from feedbax.analysis.state_utils import (
     get_align_epoch_start,
     get_pos_endpoints,
@@ -35,7 +32,6 @@ from feedbax.analysis.state_utils import (
 from feedbax.analysis.support import _OptionalCallableFieldConverter
 from feedbax.config.defaults import EVAL_REACH_LENGTH
 from feedbax.config.namespace import TreeNamespace
-from feedbax.plot.experiments import add_endpoint_traces
 from feedbax.analysis.types import (
     AnalysisInputData,
     Direction,
@@ -43,6 +39,11 @@ from feedbax.analysis.types import (
     ResponseVar,
     VarSpec,
 )
+
+if TYPE_CHECKING:
+    import plotly.graph_objects as go
+
+    from feedbax.analysis.plot import ScatterPlots
 
 VAR_LEVEL_LABEL = "var"
 DIRECTION_LEVEL_LABEL = "direction"
@@ -223,9 +224,13 @@ class AlignedVars(AbstractAnalysis[NoPorts]):
 
 
 def add_aligned_position_endpoints(
-    figs: PyTree[go.Figure], xaxis="x1", yaxis="y1"
-) -> PyTree[go.Figure]:
+    figs: "PyTree[go.Figure]", xaxis="x1", yaxis="y1"
+) -> "PyTree[go.Figure]":
     """Add aligned position endpoints to the figures."""
+    import plotly.graph_objects as go
+
+    from feedbax.plot.experiments import add_endpoint_traces
+
     #! TODO: Don't hardcode reach length  but use `data.tasks` or `data.hps` per leaf!
     #! (First need to solve: things:///show?id=GGRNzFkx5fUCNnwy9kzfvt)
     return jt.map(
@@ -247,10 +252,16 @@ def get_aligned_trajectories_node(
     subplot_level: str = VAR_LEVEL_LABEL,
     align_epoch: Optional[int] = None,
     pre_transform_fns: Sequence[Callable] = (),
-) -> ScatterPlots:
+) -> "ScatterPlots":
+    import feedbax.plot as fbp
+
+    from feedbax.analysis.plot import ScatterPlots
+
     aligned_var_subplot_titles = get_varset_labels(varset).medium
     aligned_var_axes_labels = jt.map(
-        lambda l: fbp.AxesLabels(rf"${l}_\parallel$", rf"${l}_\perp$"),
+        lambda label: fbp.AxesLabels(
+            rf"${label}_\parallel$", rf"${label}_\perp$"
+        ),
         get_varset_labels(varset).short,
     )
     node = ScatterPlots(
