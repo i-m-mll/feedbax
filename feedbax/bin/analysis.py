@@ -172,6 +172,9 @@ def build_run_arg_parser() -> argparse.ArgumentParser:
 def run_analysis_run_spec_file(argv: list[str]) -> None:
     """Execute one serialized ``AnalysisRunSpec`` file and print its manifest summary."""
     args = build_run_arg_parser().parse_args(argv)
+    from feedbax.plugins import load_training_method_plugins
+
+    load_training_method_plugins()
     _apply_plotly_template_default()
     spec = _load_spec_document(args.spec, label="AnalysisRunSpec")
     if (args.artifact_provider or args.manifest_root or args.checkpoint_custody) and (
