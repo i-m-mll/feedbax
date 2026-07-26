@@ -26,6 +26,7 @@ from .execution_context import (
     StagedLocatorTraversalError,
     StagedParentExecutionLocation,
     resolve_staged_execution_context,
+    with_staged_manifest_provider_inputs,
     with_staged_parent_execution_locations,
 )
 from feedbax.contracts.staged_execution import (
@@ -259,6 +260,7 @@ __all__ = [
     "resolve_evaluation_inputs",
     "resolve_authenticated_evaluation_channels",
     "resolve_staged_execution_context",
+    "with_staged_manifest_provider_inputs",
     "registered_report_types",
     "get_evaluation_recipe",
     "unregister_analysis_recipe",

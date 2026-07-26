@@ -138,6 +138,26 @@ def build_run_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Repo root for resolving a delta spec's content-pinned parent references.",
     )
+    parser.add_argument(
+        "--execution-descriptor",
+        type=Path,
+        default=None,
+        help="Versioned staged execution descriptor for explicit runtime bindings.",
+    )
+    parser.add_argument(
+        "--artifact-provider",
+        action="append",
+        default=[],
+        metavar="NAME=ROOT",
+        help="Bind one authenticated-manifest artifact provider root.",
+    )
+    parser.add_argument(
+        "--checkpoint-custody",
+        action="append",
+        default=[],
+        metavar="NAME=ROOT",
+        help="Bind one named checkpoint custody root.",
+    )
     return parser
 
 
@@ -146,9 +166,40 @@ def run_analysis_run_spec_file(argv: list[str]) -> None:
     args = build_run_arg_parser().parse_args(argv)
     _apply_plotly_template_default()
     spec = _load_spec_document(args.spec, label="AnalysisRunSpec")
+    if (args.artifact_provider or args.checkpoint_custody) and (
+        args.execution_descriptor is None
+    ):
+        raise ValueError(
+            "--artifact-provider and --checkpoint-custody require --execution-descriptor"
+        )
+    execution_descriptor = None
+    if args.execution_descriptor is not None:
+        execution_descriptor = StagedExecutionDescriptor.model_validate(
+            _load_json_object(
+                args.execution_descriptor,
+                label="--execution-descriptor",
+            )
+        )
+    artifact_provider_bindings = [
+        StagedArtifactProviderRootBinding(
+            *_binding_parts(value, option="--artifact-provider")
+        )
+        for value in args.artifact_provider
+    ]
+    checkpoint_custody_bindings = [
+        StagedCheckpointCustodyRootBinding(
+            *_binding_parts(value, option="--checkpoint-custody")
+        )
+        for value in args.checkpoint_custody
+    ]
     with _bundle_human_output_to_stderr():
         manifest, path = execute_analysis_run_spec(
-            spec, root=args.root, repo_root=args.repo_root
+            spec,
+            root=args.root,
+            repo_root=args.repo_root,
+            execution_descriptor=execution_descriptor,
+            artifact_provider_bindings=artifact_provider_bindings,
+            checkpoint_custody_bindings=checkpoint_custody_bindings,
         )
     payload = {
         "manifest_id": manifest.id,
