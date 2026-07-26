@@ -144,7 +144,12 @@ from .harness import (
     diff_resolved_rows,
 )
 from .rollout import (
+    EvaluationStateCapture,
+    EvaluationStateIdentity,
+    EvaluationStateIdentityMismatch,
+    EvaluationStateProvenance,
     TrialStructureError,
+    capture_evaluation_state,
     compiled_trial_rollout,
     stack_trials,
 )
@@ -185,6 +190,10 @@ __all__ = [
     "EvaluationAuthoringSchema",
     "EvaluationRunMatrixDeltaSpec",
     "EvaluationRunMatrixSpec",
+    "EvaluationStateCapture",
+    "EvaluationStateIdentity",
+    "EvaluationStateIdentityMismatch",
+    "EvaluationStateProvenance",
     "compile_evaluation_run_matrix",
     "flatten_evaluation_run_matrix_delta",
     "resolve_evaluation_matrix_authoring",
@@ -225,6 +234,7 @@ __all__ = [
     "STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION",
     "SemanticChange",
     "TrialStructureError",
+    "capture_evaluation_state",
     "compiled_trial_rollout",
     "stack_trials",
     "diff_regenerated_archived",

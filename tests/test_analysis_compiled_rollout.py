@@ -10,10 +10,15 @@ import numpy as np
 import pytest
 
 from feedbax.analysis import (
+    EvaluationStateIdentity,
+    EvaluationStateIdentityMismatch,
+    EvaluationStateProvenance,
     TrialStructureError,
+    capture_evaluation_state,
     compiled_trial_rollout,
     stack_trials,
 )
+from feedbax.contracts.manifest import EvaluationRunSpec
 
 
 class _Context(NamedTuple):
@@ -47,6 +52,17 @@ def _rollout_trial(context: _Context, trial: _Trial) -> dict[str, jax.Array]:
         "commands": commands,
         "final_state": final_state,
     }
+
+
+def _resume_rollout_trial(
+    resumed_context: tuple[_Context, jax.Array],
+    trial: _Trial,
+) -> dict[str, jax.Array]:
+    context, initial_state = resumed_context
+    return _rollout_trial(
+        context,
+        _Trial(initial_state=initial_state, disturbance=trial.disturbance),
+    )
 
 
 def _counting_rollout_trial() -> tuple[Callable[[_Context, _Trial], Any], dict[str, int]]:
@@ -165,6 +181,140 @@ def test_compiled_rollout_is_bit_identical_to_python_loop() -> None:
     scalar = stack_trials([_rollout_trial(context, trial) for trial in trials])
 
     _assert_bit_identical(compiled, scalar)
+
+
+def test_capture_prefix_once_and_resume_multiple_rows() -> None:
+    context = _context()
+    prefix = _trials(n_trials=1, horizon=3)[0]
+    rows = _trials(n_trials=4, horizon=5, seed=9)
+    identity = EvaluationStateIdentity(
+        model="checkpoint:sha256:abc",
+        state="rlrmp2.trained-controller-plant-state.v1",
+    )
+    run_spec = EvaluationRunSpec(
+        evaluation_type="rlrmp2.stabilization_bank",
+        params={"wash_in_steps": 3, "task_pin": "task-spec:sha256:def"},
+    )
+    provenance = EvaluationStateProvenance(
+        run_spec=run_spec,
+        prefix_steps_param="wash_in_steps",
+        task_pin_param="task_pin",
+    )
+    calls = {"prefix": 0}
+
+    def prefix_rollout(context: _Context, trial: _Trial) -> dict[str, jax.Array]:
+        calls["prefix"] += 1
+        return _rollout_trial(context, trial)
+
+    prefix_result, capture = capture_evaluation_state(
+        prefix_rollout,
+        context,
+        prefix,
+        terminal_state=lambda result: result["final_state"],
+        identity=identity,
+        provenance=provenance,
+    )
+    resumed_context = (context, capture.resume(identity))
+    resumed = compiled_trial_rollout(_resume_rollout_trial)(
+        resumed_context,
+        stack_trials(rows),
+    )
+    expected = stack_trials([_resume_rollout_trial(resumed_context, row) for row in rows])
+
+    assert calls["prefix"] == 1
+    assert capture.provenance == provenance
+    assert capture.provenance.prefix_steps == 3
+    assert capture.provenance.task_pin == "task-spec:sha256:def"
+    _assert_bit_identical(resumed, expected)
+
+
+@pytest.mark.parametrize(
+    "expected",
+    [
+        EvaluationStateIdentity(
+            model="checkpoint:sha256:other",
+            state="rlrmp2.trained-controller-plant-state.v1",
+        ),
+        EvaluationStateIdentity(
+            model="checkpoint:sha256:abc",
+            state="rlrmp2.other-state.v1",
+        ),
+    ],
+)
+def test_resumed_rollout_rejects_model_or_state_identity_mismatch(
+    expected: EvaluationStateIdentity,
+) -> None:
+    context = _context()
+    identity = EvaluationStateIdentity(
+        model="checkpoint:sha256:abc",
+        state="rlrmp2.trained-controller-plant-state.v1",
+    )
+    _, capture = capture_evaluation_state(
+        _rollout_trial,
+        context,
+        _trials(n_trials=1)[0],
+        terminal_state=lambda result: result["final_state"],
+        identity=identity,
+        provenance=EvaluationStateProvenance(
+            run_spec=EvaluationRunSpec(
+                evaluation_type="rlrmp2.stabilization_bank",
+                params={"wash_in_steps": 5, "task_pin": "task-spec:sha256:def"},
+            ),
+            prefix_steps_param="wash_in_steps",
+            task_pin_param="task_pin",
+        ),
+    )
+
+    with pytest.raises(EvaluationStateIdentityMismatch, match="identity mismatch"):
+        capture.resume(expected)
+
+
+def test_resume_rejects_changed_state_pytree_structure() -> None:
+    identity = EvaluationStateIdentity(model="checkpoint:abc", state="state.v1")
+    run_spec = EvaluationRunSpec(
+        evaluation_type="rlrmp2.stabilization_bank",
+        params={"wash_in_steps": 1, "task_pin": "task-spec:def"},
+    )
+    _, capture = capture_evaluation_state(
+        lambda _context, _prefix: {"state": [jnp.ones(2)]},
+        None,
+        None,
+        terminal_state=lambda result: result,
+        identity=identity,
+        provenance=EvaluationStateProvenance(
+            run_spec=run_spec,
+            prefix_steps_param="wash_in_steps",
+            task_pin_param="task_pin",
+        ),
+    )
+    capture.state["state"] = tuple(capture.state["state"])
+
+    with pytest.raises(EvaluationStateIdentityMismatch, match="structure changed"):
+        capture.resume(identity)
+
+
+def test_resume_rejects_changed_authoritative_provenance() -> None:
+    identity = EvaluationStateIdentity(model="checkpoint:abc", state="state.v1")
+    run_spec = EvaluationRunSpec(
+        evaluation_type="rlrmp2.stabilization_bank",
+        params={"wash_in_steps": 1, "task_pin": "task-spec:def"},
+    )
+    _, capture = capture_evaluation_state(
+        lambda _context, _prefix: jnp.ones(2),
+        None,
+        None,
+        terminal_state=lambda result: result,
+        identity=identity,
+        provenance=EvaluationStateProvenance(
+            run_spec=run_spec,
+            prefix_steps_param="wash_in_steps",
+            task_pin_param="task_pin",
+        ),
+    )
+    run_spec.params["wash_in_steps"] = 2
+
+    with pytest.raises(EvaluationStateIdentityMismatch, match="spec changed"):
+        capture.resume(identity)
 
 
 def test_float64_cond_rollout_is_bit_identical_to_python_loop(enable_jax_x64: None) -> None:
