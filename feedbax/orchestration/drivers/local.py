@@ -33,8 +33,10 @@ from feedbax.orchestration.input_materialization import (
     InputMaterializationError,
     InputProviderRootBinding,
     materialize_bundle_inputs,
+    preflight_bundle_input_bindings,
 )
-from feedbax.orchestration.state import RunSetState
+from feedbax.orchestration.staged_root_custody import StagedRootSnapshotBinding
+from feedbax.orchestration.state import PreflightCheckEntry, RunSetState
 from feedbax.training import publish_directory_no_replace
 
 
@@ -83,14 +85,34 @@ class LocalOrchestrationDriver:
         python_executable: str | None = None,
         freeze_lines: Sequence[str] | None = None,
         input_provider_bindings: Sequence[InputProviderRootBinding] = (),
+        staged_root_bindings: Sequence[StagedRootSnapshotBinding] = (),
         update_budget: int | None = None,
     ) -> None:
         self.cwd = Path(cwd or Path.cwd())
         self.python_executable = python_executable or sys.executable
         self.freeze_lines = tuple(freeze_lines) if freeze_lines is not None else None
         self.input_provider_bindings = tuple(input_provider_bindings)
+        self.staged_root_bindings = tuple(staged_root_bindings)
         self.update_budget = update_budget
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
+
+    def preflight_checks(self, bundle: RunBundle) -> list[PreflightCheckEntry]:
+        """Authenticate every local input binding before PROVISION."""
+        if not bundle.staged_roots:
+            return []
+        failures, observed = preflight_bundle_input_bindings(
+            bundle,
+            provider_bindings=self.input_provider_bindings,
+            staged_root_bindings=self.staged_root_bindings,
+        )
+        return [
+            PreflightCheckEntry(
+                name="local-input-bindings",
+                status="fail" if failures else "pass",
+                detail="; ".join(failures) if failures else None,
+                observed=observed or "no-resolved-inputs",
+            )
+        ]
 
     def provision(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         run_set_dir = bundle.run_set_dir
@@ -120,6 +142,7 @@ class LocalOrchestrationDriver:
                 bundle,
                 destination_root=attempt_root,
                 provider_bindings=self.input_provider_bindings,
+                staged_root_bindings=self.staged_root_bindings,
             )
         except InputMaterializationError as exc:
             raise LocalDriverError(str(exc)) from exc
