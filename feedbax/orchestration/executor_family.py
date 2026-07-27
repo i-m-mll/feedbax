@@ -227,8 +227,12 @@ class EvaluationMatrixExecutorAdapter:
             Path(collected["evaluation-worker-topology.json"]).read_text(encoding="utf-8")
         )
         compaction_path = Path(collected["evaluation-batch-compaction.json"])
-        compaction = EvaluationBatchCompactionEvidence.model_validate_json(
-            compaction_path.read_text(encoding="utf-8")
+        compaction = EvaluationBatchCompactionEvidence.model_validate(
+            migrate_structured_spec_payload(
+                "EvaluationBatchCompactionEvidence",
+                json.loads(compaction_path.read_text(encoding="utf-8")),
+                path=str(compaction_path),
+            ).payload
         )
         plan = EvaluationMatrixBatchPlan.model_validate(
             migrate_structured_spec_payload(

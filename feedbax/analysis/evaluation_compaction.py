@@ -8,6 +8,9 @@ import json
 from pathlib import Path
 from typing import Any
 
+from pydantic import JsonValue
+
+from feedbax.analysis.execution_context import StagedExecutionContext
 from feedbax.contracts.evaluation_lifecycle import (
     EvaluationBatchConsumerDeclaration,
     EvaluationBatchLeafAcknowledgement,
@@ -39,6 +42,8 @@ class EvaluationBatchConsumerInput:
     manifests: tuple[Mapping[str, Any], ...]
     states: tuple[Any, ...]
     parent_authorities: tuple[ParentRef, ...]
+    parameters: Mapping[str, JsonValue]
+    execution_context: StagedExecutionContext
 
 
 @dataclass(frozen=True)
@@ -59,6 +64,8 @@ class EvaluationBatchMergeInput:
     batch: EvaluationMatrixBatchUnit
     fragment: Any
     prior_merge_state: Any | None
+    parameters: Mapping[str, JsonValue]
+    execution_context: StagedExecutionContext
 
 
 @dataclass(frozen=True)
@@ -76,6 +83,8 @@ class EvaluationBatchFinalizeInput:
 
     matrix_intent_hash: str
     terminal_merge_state: Any
+    parameters: Mapping[str, JsonValue]
+    execution_context: StagedExecutionContext
 
 
 @dataclass(frozen=True)
@@ -119,6 +128,7 @@ def compact_evaluation_batch(
     custody_root: Path,
 ) -> ArtifactRef:
     """Run one compact callback and verify its content-addressed fragment."""
+    _validate_callback_input(declaration, consumer_input)
     observed_schemas = {
         schema for outcome in consumer_input.outcomes for schema in outcome.diagnostic_schema_ids
     }
@@ -144,6 +154,8 @@ def compact_evaluation_batch(
             "schema_version": fragment.schema_version,
             "batch_id": consumer_input.batch.batch_id,
             "leaf_id": declaration.leaf_id,
+            "consumer_parameters": declaration.parameters,
+            "consumer_parameters_sha256": _parameters_sha256(declaration),
         },
     )
     provider.get_bytes(ref)
@@ -159,8 +171,10 @@ def merge_evaluation_batch_fragment(
     fragment: ArtifactRef,
     prior_merge_state: ArtifactRef | None,
     custody_root: Path,
+    execution_context: StagedExecutionContext,
 ) -> EvaluationBatchLeafAcknowledgement:
     """Verify and apply one fragment exactly once in authored batch order."""
+    _require_execution_context(execution_context)
     provider = ImmutableArtifactBlobProvider(custody_root)
     if (
         fragment.role != declaration.compact_product_role
@@ -168,24 +182,38 @@ def merge_evaluation_batch_fragment(
         or fragment.metadata.get("schema_version") != declaration.compact_product_schema_version
         or fragment.metadata.get("leaf_id") != declaration.leaf_id
         or fragment.metadata.get("batch_id") != batch.batch_id
+        or fragment.metadata.get("consumer_parameters") != declaration.parameters
+        or fragment.metadata.get("consumer_parameters_sha256") != _parameters_sha256(declaration)
     ):
         raise ValueError(f"consumer leaf {declaration.leaf_id!r} fragment identity drifted")
     fragment_payload = json.loads(provider.get_bytes(fragment))
     checkpoint = custody_root / "merge-checkpoints" / declaration.leaf_id / f"{batch.batch_id}.json"
     expected_prior = prior_merge_state.sha256 if prior_merge_state is not None else None
     if checkpoint.is_file():
-        persisted = EvaluationBatchMergeCheckpoint.model_validate_json(
-            checkpoint.read_text(encoding="utf-8")
+        from feedbax.contracts.migrations import migrate_structured_spec_payload
+
+        persisted = EvaluationBatchMergeCheckpoint.model_validate(
+            migrate_structured_spec_payload(
+                "EvaluationBatchMergeCheckpoint",
+                json.loads(checkpoint.read_text(encoding="utf-8")),
+                path=str(checkpoint),
+            ).payload
         )
         expected_identity = {
             "matrix_intent_hash": matrix_intent_hash,
-            "batch": batch,
-            "declaration": declaration,
-            "parent_authorities": tuple(parent_authorities),
+            "batch": batch.model_dump(mode="json"),
+            "declaration": declaration.model_dump(mode="json"),
+            "parent_authorities": [item.model_dump(mode="json") for item in parent_authorities],
         }
-        if any(
-            getattr(persisted, field) != expected for field, expected in expected_identity.items()
-        ):
+        persisted_identity = {
+            "matrix_intent_hash": persisted.matrix_intent_hash,
+            "batch": persisted.batch.model_dump(mode="json"),
+            "declaration": persisted.declaration.model_dump(mode="json"),
+            "parent_authorities": [
+                item.model_dump(mode="json") for item in persisted.parent_authorities
+            ],
+        }
+        if canonical_json_bytes(persisted_identity) != canonical_json_bytes(expected_identity):
             raise ValueError(
                 f"consumer leaf {declaration.leaf_id!r} merge checkpoint identity drifted"
             )
@@ -196,23 +224,26 @@ def merge_evaluation_batch_fragment(
             or acknowledgement.leaf_id != declaration.leaf_id
             or acknowledgement.consumer_id != declaration.consumer_id
             or acknowledgement.consumer_version != declaration.consumer_version
+            or canonical_json_bytes(acknowledgement.parameters)
+            != canonical_json_bytes(declaration.parameters)
             or acknowledgement.compact_product_role != declaration.compact_product_role
         ):
             raise ValueError(
                 f"consumer leaf {declaration.leaf_id!r} merge checkpoint identity drifted"
             )
-        if (
-            acknowledgement.merge_state.metadata.get("schema_id")
-            != declaration.merge_state_schema_id
-            or acknowledgement.merge_state.metadata.get("schema_version")
-            != declaration.merge_state_schema_version
-            or acknowledgement.merge_state.metadata.get("matrix_intent_hash") != matrix_intent_hash
-        ):
-            raise ValueError(
-                f"consumer leaf {declaration.leaf_id!r} merge checkpoint contract drifted"
-            )
+        _validate_merge_state_ref(
+            declaration,
+            acknowledgement.merge_state,
+            matrix_intent_hash=matrix_intent_hash,
+        )
         provider.get_bytes(acknowledgement.merge_state)
         return acknowledgement.model_copy(update={"reused_verified_fragment": True})
+    if prior_merge_state is not None:
+        _validate_merge_state_ref(
+            declaration,
+            prior_merge_state,
+            matrix_intent_hash=matrix_intent_hash,
+        )
     prior_payload = (
         json.loads(provider.get_bytes(prior_merge_state)) if prior_merge_state is not None else None
     )
@@ -223,6 +254,8 @@ def merge_evaluation_batch_fragment(
             batch=batch,
             fragment=fragment_payload,
             prior_merge_state=prior_payload,
+            parameters=_callback_parameters(declaration),
+            execution_context=_require_execution_context(execution_context),
         )
     )
     if (
@@ -243,6 +276,8 @@ def merge_evaluation_batch_fragment(
             "batch_id": batch.batch_id,
             "leaf_id": declaration.leaf_id,
             "matrix_intent_hash": matrix_intent_hash,
+            "consumer_parameters": declaration.parameters,
+            "consumer_parameters_sha256": _parameters_sha256(declaration),
             "prior_merge_state_sha256": (
                 prior_merge_state.sha256 if prior_merge_state is not None else None
             ),
@@ -253,6 +288,7 @@ def merge_evaluation_batch_fragment(
         leaf_id=declaration.leaf_id,
         consumer_id=declaration.consumer_id,
         consumer_version=declaration.consumer_version,
+        parameters=declaration.parameters,
         compact_product_role=declaration.compact_product_role,
         fragment=fragment,
         prior_merge_state_sha256=(
@@ -278,28 +314,48 @@ def reclaim_evaluation_batch_caches(
     batch_index: int,
     outcomes: Sequence[EvaluationLifecycleRowOutcome],
     acknowledgements: Sequence[EvaluationBatchLeafAcknowledgement],
-    required_leaf_ids: Sequence[str],
+    required_declarations: Sequence[EvaluationBatchConsumerDeclaration],
     custody_root: Path,
+    execution_context: StagedExecutionContext,
 ) -> EvaluationBatchReclamationEvidence:
     """Remove only authenticated row state caches after every leaf acknowledged."""
+    _require_execution_context(execution_context)
     manifest_ids = tuple(outcome.manifest_id for outcome in outcomes)
     if tuple(outcome.row_id for outcome in outcomes) != batch.ordered_row_ids:
         raise ValueError("reclamation outcomes drifted from the authored batch")
+    declarations_by_leaf = {item.leaf_id: item for item in required_declarations}
+    if len(declarations_by_leaf) != len(required_declarations):
+        raise ValueError("raw cache reclamation requires unique consumer declarations")
     observed_leaf_ids = [item.leaf_id for item in acknowledgements]
-    if len(observed_leaf_ids) != len(set(observed_leaf_ids)) or set(observed_leaf_ids) != set(
-        required_leaf_ids
+    if (
+        len(observed_leaf_ids) != len(set(observed_leaf_ids))
+        or set(observed_leaf_ids) != set(declarations_by_leaf)
+        or any(
+            acknowledgement.consumer_id != declarations_by_leaf[acknowledgement.leaf_id].consumer_id
+            or acknowledgement.consumer_version
+            != declarations_by_leaf[acknowledgement.leaf_id].consumer_version
+            or canonical_json_bytes(acknowledgement.parameters)
+            != canonical_json_bytes(declarations_by_leaf[acknowledgement.leaf_id].parameters)
+            or acknowledgement.compact_product_role
+            != declarations_by_leaf[acknowledgement.leaf_id].compact_product_role
+            for acknowledgement in acknowledgements
+        )
     ):
         raise ValueError("raw cache reclamation requires every declared leaf acknowledgement")
     checkpoint = custody_root / "reclamation-checkpoints" / f"{batch.batch_id}.json"
     if checkpoint.is_file():
-        evidence = EvaluationBatchReclamationEvidence.model_validate_json(
-            checkpoint.read_text(encoding="utf-8")
+        evidence = EvaluationBatchReclamationEvidence.model_validate(
+            _normalize_legacy_reclamation_checkpoint(
+                json.loads(checkpoint.read_text(encoding="utf-8"))
+            )
         )
         if (
             evidence.batch_index != batch_index
             or evidence.ordered_row_ids != batch.ordered_row_ids
-            or [item.merge_state.sha256 for item in evidence.leaf_acknowledgements]
-            != [item.merge_state.sha256 for item in acknowledgements]
+            or canonical_json_bytes(
+                [item.model_dump(mode="json") for item in evidence.leaf_acknowledgements]
+            )
+            != canonical_json_bytes([item.model_dump(mode="json") for item in acknowledgements])
         ):
             raise ValueError("evaluation batch reclamation checkpoint identity drifted")
         return evidence
@@ -310,6 +366,10 @@ def reclaim_evaluation_batch_caches(
         if (
             intent.get("batch") != batch.model_dump(mode="json", exclude_none=True)
             or intent.get("batch_index") != batch_index
+            or canonical_json_bytes(intent.get("consumer_declarations"))
+            != canonical_json_bytes(
+                [item.model_dump(mode="json") for item in required_declarations]
+            )
             or intent.get("acknowledgement_hashes") != acknowledgement_hashes
             or [entry.get("manifest_id") for entry in intent.get("entries", [])]
             != list(manifest_ids)
@@ -355,6 +415,9 @@ def reclaim_evaluation_batch_caches(
         intent = {
             "batch": batch.model_dump(mode="json", exclude_none=True),
             "batch_index": batch_index,
+            "consumer_declarations": [
+                item.model_dump(mode="json") for item in required_declarations
+            ],
             "acknowledgement_hashes": acknowledgement_hashes,
             "entries": entries,
         }
@@ -400,8 +463,10 @@ def publish_evaluation_compaction_products(
     outcomes: Sequence[EvaluationLifecycleRowOutcome],
     *,
     custody_root: Path,
+    execution_context: StagedExecutionContext,
 ) -> tuple[ArtifactRef, ...]:
     """Publish terminal compact leaves through ``AnalysisRunManifest`` custody."""
+    _require_execution_context(execution_context)
     from feedbax.analysis.context import AnalysisRunContext
 
     parents = []
@@ -420,23 +485,42 @@ def publish_evaluation_compaction_products(
                 },
             )
         )
-    context = AnalysisRunContext(
-        spec=AnalysisRunSpec(
-            analysis_type="feedbax.evaluation.batch_compaction",
-            inputs=parents,
-        ),
-        root=custody_root / "analysis",
-        index_manifest=False,
-    )
     provider = ImmutableArtifactBlobProvider(custody_root)
+    finalized = []
     for declaration in declarations:
-        state_ref = terminal_states[declaration.leaf_id]
-        terminal = _resolve_consumer(declaration).finalize(
-            EvaluationBatchFinalizeInput(
-                matrix_intent_hash=state_ref.metadata.get("matrix_intent_hash", ""),
-                terminal_merge_state=json.loads(provider.get_bytes(state_ref)),
+        try:
+            state_ref = terminal_states[declaration.leaf_id]
+        except KeyError as exc:
+            raise ValueError(
+                f"consumer leaf {declaration.leaf_id!r} terminal merge state is missing"
+            ) from exc
+        matrix_intent_hash = state_ref.metadata.get("matrix_intent_hash")
+        if not isinstance(matrix_intent_hash, str):
+            raise ValueError(
+                f"consumer leaf {declaration.leaf_id!r} terminal merge identity is missing"
+            )
+        _validate_merge_state_ref(
+            declaration,
+            state_ref,
+            matrix_intent_hash=matrix_intent_hash,
+        )
+        terminal_merge_state = json.loads(provider.get_bytes(state_ref))
+        consumer = _resolve_consumer(declaration)
+        finalized.append(
+            (
+                declaration,
+                state_ref,
+                consumer.finalize(
+                    EvaluationBatchFinalizeInput(
+                        matrix_intent_hash=matrix_intent_hash,
+                        terminal_merge_state=terminal_merge_state,
+                        parameters=_callback_parameters(declaration),
+                        execution_context=execution_context,
+                    )
+                ),
             )
         )
+    for declaration, _state_ref, terminal in finalized:
         if (
             terminal.schema_id != declaration.compact_product_schema_id
             or terminal.schema_version != declaration.compact_product_schema_version
@@ -445,6 +529,15 @@ def publish_evaluation_compaction_products(
             raise ValueError(
                 f"consumer leaf {declaration.leaf_id!r} returned wrong terminal product contract"
             )
+    context = AnalysisRunContext(
+        spec=AnalysisRunSpec(
+            analysis_type="feedbax.evaluation.batch_compaction",
+            inputs=parents,
+        ),
+        root=custody_root / "analysis",
+        index_manifest=False,
+    )
+    for declaration, state_ref, terminal in finalized:
         context.record_data_product(
             terminal.payload,
             product_schema_id=terminal.schema_id,
@@ -455,6 +548,8 @@ def publish_evaluation_compaction_products(
                 "merge_state_schema_id": declaration.merge_state_schema_id,
                 "merge_state_schema_version": declaration.merge_state_schema_version,
                 "merge_state_sha256": state_ref.sha256,
+                "consumer_parameters": declaration.parameters,
+                "consumer_parameters_sha256": _parameters_sha256(declaration),
             },
         )
     manifest, manifest_path = context.finalize()
@@ -480,6 +575,62 @@ def _resolve_consumer(
             "no registered evaluation batch consumer for "
             f"{declaration.consumer_id!r}@{declaration.consumer_version!r}"
         ) from exc
+
+
+def _callback_parameters(
+    declaration: EvaluationBatchConsumerDeclaration,
+) -> Mapping[str, JsonValue]:
+    return json.loads(canonical_json_bytes(declaration.parameters))
+
+
+def _parameters_sha256(declaration: EvaluationBatchConsumerDeclaration) -> str:
+    return sha256_bytes(canonical_json_bytes(declaration.parameters))
+
+
+def _require_execution_context(value: Any) -> StagedExecutionContext:
+    if not isinstance(value, StagedExecutionContext):
+        raise ValueError("evaluation batch callback requires a resolved StagedExecutionContext")
+    return value
+
+
+def _validate_callback_input(
+    declaration: EvaluationBatchConsumerDeclaration,
+    value: EvaluationBatchConsumerInput,
+) -> None:
+    if canonical_json_bytes(dict(value.parameters)) != canonical_json_bytes(declaration.parameters):
+        raise ValueError(f"consumer leaf {declaration.leaf_id!r} callback parameters drifted")
+    _require_execution_context(value.execution_context)
+
+
+def _validate_merge_state_ref(
+    declaration: EvaluationBatchConsumerDeclaration,
+    value: ArtifactRef,
+    *,
+    matrix_intent_hash: str,
+) -> None:
+    if (
+        value.role != f"{declaration.compact_product_role}_merge_state"
+        or value.metadata.get("schema_id") != declaration.merge_state_schema_id
+        or value.metadata.get("schema_version") != declaration.merge_state_schema_version
+        or value.metadata.get("leaf_id") != declaration.leaf_id
+        or value.metadata.get("matrix_intent_hash") != matrix_intent_hash
+        or value.metadata.get("consumer_parameters") != declaration.parameters
+        or value.metadata.get("consumer_parameters_sha256") != _parameters_sha256(declaration)
+    ):
+        raise ValueError(f"consumer leaf {declaration.leaf_id!r} merge-state identity drifted")
+
+
+def _normalize_legacy_reclamation_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind unversioned historical acknowledgements to parameter-free identity."""
+    normalized = json.loads(canonical_json_bytes(payload))
+    for acknowledgement in normalized.get("leaf_acknowledgements", []):
+        parameters = acknowledgement.setdefault("parameters", {})
+        parameters_sha256 = sha256_bytes(canonical_json_bytes(parameters))
+        for artifact_name in ("fragment", "merge_state"):
+            metadata = acknowledgement.get(artifact_name, {}).setdefault("metadata", {})
+            metadata.setdefault("consumer_parameters", parameters)
+            metadata.setdefault("consumer_parameters_sha256", parameters_sha256)
+    return normalized
 
 
 def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
