@@ -86,6 +86,7 @@ from feedbax.training.checkpoint_custody import (
     _load_latest_checkpoint_transaction,
 )
 from feedbax.training.optimizers import learning_rate_at_step
+from feedbax.training.row_lowering import TrainingRowLoweringContext
 from feedbax.training.schedule_clocks import resolve_schedule_window
 
 
@@ -1397,8 +1398,6 @@ def _lower_authored_row(
             overrides=copy.deepcopy(overrides),
         )
         if row_lowering_context is None:
-            from feedbax.training.row_lowering import TrainingRowLoweringContext
-
             row_lowering_context = TrainingRowLoweringContext()
         raw_result = row_lowerer(
             authored_row.model_copy(deep=True),
