@@ -147,6 +147,15 @@ from .evaluation import (
     unregister_evaluation_recipe,
     unregister_evaluation_authoring_schema,
 )
+from .evaluation_orchestration import (
+    EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_ID,
+    EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_VERSION,
+    EVALUATION_RUN_MATRIX_COMPILER_ID,
+    EVALUATION_RUN_MATRIX_COMPILER_VERSION,
+    EvaluationMatrixExecutionCapsule,
+    compile_evaluation_run_matrix_for_orchestration,
+    evaluation_matrix_intent_hash,
+)
 from feedbax.contracts.manifest import EvaluationParamsBase, StagedEvaluationPrerequisite
 from .evaluation_inputs import (
     EvaluationInputAmbiguityError,
@@ -217,11 +226,18 @@ __all__ = [
     "EvaluationAuthoringSchema",
     "EvaluationRunMatrixDeltaSpec",
     "EvaluationRunMatrixSpec",
+    "EvaluationMatrixExecutionCapsule",
+    "EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_ID",
+    "EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_VERSION",
+    "EVALUATION_RUN_MATRIX_COMPILER_ID",
+    "EVALUATION_RUN_MATRIX_COMPILER_VERSION",
     "EvaluationStateCapture",
     "EvaluationStateIdentity",
     "EvaluationStateIdentityMismatch",
     "EvaluationStateProvenance",
     "compile_evaluation_run_matrix",
+    "compile_evaluation_run_matrix_for_orchestration",
+    "evaluation_matrix_intent_hash",
     "flatten_evaluation_run_matrix_delta",
     "resolve_evaluation_matrix_authoring",
     "HarnessResult",

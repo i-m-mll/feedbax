@@ -41,6 +41,7 @@ from feedbax.orchestration.executor_family import (
     ExecutorFamilyError,
     executor_family_adapter,
 )
+from feedbax.contracts.manifest import canonical_json_bytes, sha256_bytes
 from feedbax.orchestration.revision import resolve_feedbax_revision
 from feedbax.orchestration.stages import StageEngine
 
@@ -86,6 +87,23 @@ def _bundle(tmp_path: Path, *, family: str = "evaluation-matrix") -> RunBundle:
             command=["python", "-m", "feedbax", "matrix-harness"],
             collect=list(EVALUATION_COLLECTION_OUTPUTS),
             payload_routing={"kind": "registered-execution-payload"},
+            metadata={
+                "matrix_intent_hash": "c" * 64,
+                "matrix_ordered_row_ids_sha256": sha256_bytes(
+                    canonical_json_bytes(["gain-a", "gain-b"])
+                ),
+                "batch_plan": {
+                    "schema_id": "feedbax.spec.evaluation_matrix_batch_plan",
+                    "schema_version": "feedbax.spec.evaluation_matrix_batch_plan.v1",
+                    "matrix_intent_hash": "c" * 64,
+                    "batches": [
+                        {
+                            "batch_id": "whole-matrix",
+                            "ordered_row_ids": ["gain-a", "gain-b"],
+                        }
+                    ],
+                },
+            },
         ),
     )
     return RunBundle(
@@ -287,19 +305,18 @@ register_evaluation_recipe("feedbax.test.lifecycle", recipe, batch_recipe=batch,
     assert state.stage("REGISTER").status == "pending"
     assert state.rows["matrix"].status == "completed"
     evidence = EvaluationLifecycleEvidence.model_validate_json(
-        Path(
-            state.rows["matrix"].collected_outputs["evaluation-matrix-result.json"]
-        ).read_text(encoding="utf-8")
+        Path(state.rows["matrix"].collected_outputs["evaluation-matrix-result.json"]).read_text(
+            encoding="utf-8"
+        )
     )
     assert evidence.ordered_row_ids == ("gain-a", "gain-b")
     certificate = json.loads((bundle.run_set_dir / "conformance.json").read_text())
-    checks = {
-        item["check_id"]: item
-        for item in certificate["rows"]["matrix"]["checks"]
-    }
+    checks = {item["check_id"]: item for item in certificate["rows"]["matrix"]["checks"]}
     assert checks["evaluation_lifecycle"]["status"] == "pass"
     assert checks["events_terminal"]["status"] == "pass"
     assert certificate["overall"] == "pass"
     shadow_evidence = orchestrate._shadow_launch_evidence(bundle, state)
     assert shadow_evidence.exercised_through_stage == "TEARDOWN"
-    assert shadow_evidence.lifecycle == evidence
+    assert shadow_evidence.lifecycles == (evidence,)
+    assert shadow_evidence.ordered_union.ordered_row_ids == ("gain-a", "gain-b")
+    assert shadow_evidence.worker_topology.batch_count == 1
