@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import signal
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -517,7 +518,7 @@ def test_full_suite_lock_recovers_after_abnormal_holder_exit(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize("returncode", [0, 7])
-def test_main_removes_owned_temporary_root_after_pytest_exit(
+def test_main_removes_sealed_temporary_tree_after_pytest_exit(
     monkeypatch, tmp_path: Path, returncode: int
 ) -> None:
     full_suite = load_full_suite_module()
@@ -550,7 +551,12 @@ def test_main_removes_owned_temporary_root_after_pytest_exit(
         assert observed_root.parent == caller_root
         assert observed_root != caller_root
         assert (observed_root / full_suite.TEMP_ROOT_MARKER).is_file()
-        (observed_root / "large-fixture.bin").write_bytes(b"fixture")
+        sealed_snapshot = observed_root / "sealed repo snapshot"
+        sealed_snapshot.mkdir()
+        sealed_file = sealed_snapshot / "large-fixture.bin"
+        sealed_file.write_bytes(b"fixture")
+        sealed_file.chmod(0o444)
+        sealed_snapshot.chmod(0o555)
         return subprocess.CompletedProcess(command, returncode)
 
     monkeypatch.setattr(full_suite.subprocess, "run", run_pytest)
@@ -561,7 +567,7 @@ def test_main_removes_owned_temporary_root_after_pytest_exit(
     assert caller_sentinel.read_text(encoding="utf-8") == "caller-owned"
 
 
-def test_main_removes_owned_temporary_root_after_interruption(
+def test_main_removes_sealed_temporary_tree_after_interruption(
     monkeypatch, tmp_path: Path
 ) -> None:
     full_suite = load_full_suite_module()
@@ -587,7 +593,12 @@ def test_main_removes_owned_temporary_root_after_interruption(
     def interrupt_pytest(command, *, cwd, env, check):
         nonlocal observed_root
         observed_root = Path(env["TMPDIR"])
-        (observed_root / "partial-fixture.bin").write_bytes(b"partial")
+        sealed_snapshot = observed_root / "sealed-repo-snapshot"
+        sealed_snapshot.mkdir()
+        sealed_file = sealed_snapshot / "partial-fixture.bin"
+        sealed_file.write_bytes(b"partial")
+        sealed_file.chmod(0o444)
+        sealed_snapshot.chmod(0o555)
         raise KeyboardInterrupt
 
     monkeypatch.setattr(full_suite.subprocess, "run", interrupt_pytest)
@@ -609,8 +620,17 @@ def test_temporary_root_cleanup_refuses_missing_ownership_marker(tmp_path: Path)
         match="refusing to remove unverified suite temporary root",
     ):
         with full_suite.owned_suite_temporary_root({"TMPDIR": str(caller_root)}) as owned_root:
+            sealed_directory = owned_root / "sealed"
+            sealed_directory.mkdir()
+            sealed_file = sealed_directory / "read-only"
+            sealed_file.write_text("caller-like", encoding="utf-8")
+            sealed_file.chmod(0o444)
+            sealed_directory.chmod(0o555)
             (owned_root / full_suite.TEMP_ROOT_MARKER).unlink()
 
     assert owned_root.is_dir()
     assert owned_root.parent == caller_root
+    assert stat.S_IMODE(sealed_directory.stat().st_mode) == 0o555
+    assert stat.S_IMODE(sealed_file.stat().st_mode) == 0o444
+    sealed_directory.chmod(0o755)
     shutil.rmtree(owned_root)

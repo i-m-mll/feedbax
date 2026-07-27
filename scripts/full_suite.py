@@ -65,6 +65,25 @@ class TemporaryRootOwnershipError(RuntimeError):
     """Raised when suite ownership cannot be proved before cleanup."""
 
 
+def _make_owned_tree_removable(root: Path) -> None:
+    """Add only the owner permissions needed to remove entries at and below ``root``."""
+
+    def add_owner_permissions(path: Path, permissions: int) -> None:
+        status = path.lstat()
+        if stat.S_ISLNK(status.st_mode):
+            return
+        path.chmod(stat.S_IMODE(status.st_mode) | permissions, follow_symlinks=False)
+
+    directory_permissions = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
+    add_owner_permissions(root, directory_permissions)
+    for current, directories, files in os.walk(root, topdown=True, followlinks=False):
+        current_path = Path(current)
+        for directory in directories:
+            add_owner_permissions(current_path / directory, directory_permissions)
+        for filename in files:
+            add_owner_permissions(current_path / filename, stat.S_IWUSR)
+
+
 @contextmanager
 def owned_suite_temporary_root(
     environ: dict[str, str] | None = None,
@@ -104,6 +123,7 @@ def owned_suite_temporary_root(
             raise TemporaryRootOwnershipError(
                 f"refusing to remove unverified suite temporary root: {path}"
             )
+        _make_owned_tree_removable(path)
         shutil.rmtree(path)
 
 
