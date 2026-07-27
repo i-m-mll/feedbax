@@ -398,12 +398,21 @@ def execute_evaluation_run_matrix(
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
     checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
+    execution_context: StagedExecutionContext | None = None,
     batch: EvaluationBatchExecution | None = None,
     matrix_metadata: Mapping[str, Any] | None = None,
 ):
     """Resolve and execute every evaluation condition through the shared harness."""
     from feedbax.analysis.harness import MatrixMaterializerHarness
 
+    if execution_context is not None and (
+        execution_descriptor is not None
+        or artifact_provider_bindings
+        or checkpoint_custody_bindings
+    ):
+        raise StagedExecutionContextError(
+            "pre-resolved execution_context cannot be combined with raw staged bindings"
+        )
     matrix_metadata = dict(matrix_metadata or {})
     staged_parents: dict[str, Any] = {}
     if isinstance(spec, EvaluationRunSpec) or (
@@ -418,11 +427,12 @@ def execute_evaluation_run_matrix(
         )
         rows = [("flat", run_spec.model_dump(mode="python"))]
         executable_spec = run_spec.model_dump(mode="json", exclude_none=True)
-        execution_context = resolve_staged_execution_context(
-            execution_descriptor,
-            artifact_provider_bindings=artifact_provider_bindings,
-            checkpoint_custody_bindings=checkpoint_custody_bindings,
-        )
+        if execution_context is None:
+            execution_context = resolve_staged_execution_context(
+                execution_descriptor,
+                artifact_provider_bindings=artifact_provider_bindings,
+                checkpoint_custody_bindings=checkpoint_custody_bindings,
+            )
     else:
         matrix, composition = resolve_evaluation_matrix_authoring(spec, repo_root=repo_root)
         flattened_spec = matrix.model_dump(mode="json", exclude_none=True)
@@ -438,6 +448,7 @@ def execute_evaluation_run_matrix(
             execution_descriptor=execution_descriptor,
             artifact_provider_bindings=artifact_provider_bindings,
             checkpoint_custody_bindings=checkpoint_custody_bindings,
+            execution_context=execution_context,
         )
         if isinstance(matrix.base, ContentPinnedJsonBase):
             matrix_metadata["axis_expansion"] = {
@@ -816,38 +827,50 @@ def _resolve_matrix_staged_parents(
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding],
     checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding],
+    execution_context: StagedExecutionContext | None = None,
 ) -> StagedExecutionContext:
     """Bind and authenticate matrix parents before any row root or recipe effect."""
-    context = resolve_staged_execution_context(
+    if execution_context is not None and (
+        execution_descriptor is not None
+        or artifact_provider_bindings
+        or checkpoint_custody_bindings
+    ):
+        raise StagedExecutionContextError(
+            "pre-resolved execution_context cannot be combined with raw staged bindings"
+        )
+    context = execution_context or resolve_staged_execution_context(
         execution_descriptor,
         artifact_provider_bindings=artifact_provider_bindings,
         checkpoint_custody_bindings=checkpoint_custody_bindings,
     )
     locations: list[StagedParentExecutionLocation] = []
-    local_root: Path | None = None
     for name, prerequisite in matrix.staged_parents.items():
         parent = prerequisite.parent
         if prerequisite.artifact_provider is None:
-            if parent_manifest_root is None:
+            bound_manifest_root = context.manifest_roots.get(name)
+            if bound_manifest_root is not None:
+                candidate_root = bound_manifest_root
+            elif parent_manifest_root is not None:
+                candidate_root = Path(parent_manifest_root)
+            else:
                 raise StagedExecutionContextError(
-                    f"local matrix staged parent {name!r} requires parent_manifest_root"
+                    f"local matrix staged parent {name!r} requires a bound manifest root"
                 )
-            if local_root is None:
-                local_root = Path(parent_manifest_root)
-                if not local_root.is_absolute() or ".." in local_root.parts:
-                    raise StagedExecutionContextError(
-                        "matrix parent manifest root must be absolute and contain no '..'"
-                    )
-                try:
-                    resolved_root = local_root.resolve(strict=True)
-                except OSError as exc:
-                    raise StagedExecutionContextError(
-                        f"matrix parent manifest root is unavailable: {local_root}"
-                    ) from exc
-                if resolved_root != local_root:
-                    raise StagedExecutionContextError(
-                        "matrix parent manifest root must not traverse symbolic links"
-                    )
+            local_root = Path(candidate_root)
+            if not local_root.is_absolute() or ".." in local_root.parts:
+                raise StagedExecutionContextError(
+                    "matrix parent manifest root must be absolute and contain no '..'"
+                )
+            try:
+                resolved_root = local_root.resolve(strict=True)
+            except OSError as exc:
+                raise StagedExecutionContextError(
+                    f"matrix parent manifest root is unavailable: {local_root}"
+                ) from exc
+            if resolved_root != local_root:
+                raise StagedExecutionContextError(
+                    "matrix parent manifest root must not traverse symbolic links"
+                )
             if parent.kind == "TrainingRunManifest":
                 resolved_training = resolve_evaluation_inputs(
                     EvaluationRunSpec(

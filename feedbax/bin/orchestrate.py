@@ -21,6 +21,10 @@ from typing import Any, Callable
 
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.shadow_launch import ShadowLaunchEvidence, ShadowLaunchRowEvidence
+from feedbax.contracts.evaluation_lifecycle import (
+    EvaluationLifecycleEvidence,
+    EvaluationShadowLaunchEvidence,
+)
 from feedbax.contracts.staged_execution import validate_staged_binding_name
 from feedbax.orchestration import (
     STAGE_ORDER,
@@ -46,6 +50,7 @@ from feedbax.orchestration.bundle import (
     mint_run_set_id,
 )
 from feedbax.orchestration.collection_recovery import CollectionRecoveryBinding
+from feedbax.orchestration.staged_root_custody import StagedRootSnapshotBinding
 from feedbax.orchestration.conformance import build_default_check_registry
 from feedbax.orchestration.drivers.runpod import (
     RunPodDriverConfig,
@@ -155,6 +160,12 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument(
             "--input-provider", action="append", default=[], metavar="NAME=ABSOLUTE_PATH"
         )
+        sub.add_argument(
+            "--staged-root",
+            action="append",
+            default=[],
+            metavar="KIND:NAME=ABSOLUTE_PATH",
+        )
     launch.set_defaults(func=cmd_launch)
 
     shadow_launch = subparsers.add_parser(
@@ -166,6 +177,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     shadow_launch.add_argument(
         "--input-provider", action="append", default=[], metavar="NAME=ABSOLUTE_PATH"
+    )
+    shadow_launch.add_argument(
+        "--staged-root",
+        action="append",
+        default=[],
+        metavar="KIND:NAME=ABSOLUTE_PATH",
     )
     shadow_launch.set_defaults(func=cmd_shadow_launch)
 
@@ -267,6 +284,7 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         request_path=request_path,
         run_set_id=args.run_set_id,
         input_provider_bindings=_input_provider_bindings(args.input_provider),
+        staged_root_bindings=_staged_root_bindings(args.staged_root),
     )
     try:
         state = engine.run(stop_after_stage="PREFLIGHT")
@@ -299,6 +317,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
             {**request.model_dump(mode="json"), **overrides}
         )
     input_provider_bindings = _input_provider_bindings(args.input_provider)
+    staged_root_bindings = _staged_root_bindings(args.staged_root)
     if args.dry_run:
         if args.resume_run_set:
             raise ValueError("--dry-run does not support --resume-run-set")
@@ -319,6 +338,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
             bundle,
             _runpod_config_for_bundle(bundle, load_credentials=False),
             input_provider_bindings,
+            staged_root_bindings,
         )
         for row, _command in zip(bundle.rows, commands, strict=True):
             print(f"row={row.row_id} dry-run=accepted")
@@ -330,6 +350,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
             run_set_id=args.resume_run_set,
             interruption_probe=interruption.poll,
             input_provider_bindings=input_provider_bindings,
+            staged_root_bindings=staged_root_bindings,
         )
         state = engine.run()
     return _state_exit_code(state)
@@ -345,11 +366,14 @@ def cmd_shadow_launch(args: argparse.Namespace) -> int:
         request,
         request_path=request_path,
         input_provider_bindings=_input_provider_bindings(args.input_provider),
+        staged_root_bindings=_staged_root_bindings(args.staged_root),
         native_update_budget=1,
     )
     state = engine.run(stop_after_stage="COLLECT")
     if engine.bundle is None:
         raise RuntimeError("shadow launch did not persist an assembled bundle")
+    if engine.bundle.execution_family == "evaluation-matrix":
+        state = engine.run(stop_after_stage="TEARDOWN")
     bundle_path = engine.bundle.run_set_dir / "bundle.json"
     persisted_bundle = _load_bundle(bundle_path)
     evidence = _shadow_launch_evidence(persisted_bundle, state)
@@ -371,7 +395,9 @@ def _require_provider_free_shadow_request(request: RunAssemblyRequest) -> None:
         )
 
 
-def _shadow_launch_evidence(bundle: RunBundle, state: RunSetState) -> ShadowLaunchEvidence:
+def _shadow_launch_evidence(
+    bundle: RunBundle, state: RunSetState
+) -> ShadowLaunchEvidence | EvaluationShadowLaunchEvidence:
     """Validate the bounded local result and emit non-readiness evidence only."""
     policy = bundle.deployment_policy
     if policy.driver != "local" or policy.venue != "local" or policy.cloud_authorized:
@@ -380,13 +406,38 @@ def _shadow_launch_evidence(bundle: RunBundle, state: RunSetState) -> ShadowLaun
         raise ValueError("shadow-launch requires exactly one assembled row")
     if state.stage("COLLECT").status != "completed":
         raise ValueError("shadow-launch requires a completed COLLECT stage")
-    for stage in ("CERTIFY", "TEARDOWN", "REGISTER"):
-        if state.stage(stage).status != "pending":
-            raise ValueError(f"shadow-launch must stop before {stage}")
+    execution_family = getattr(bundle, "execution_family", "native-training")
+    if execution_family == "native-training":
+        for stage in ("CERTIFY", "TEARDOWN", "REGISTER"):
+            if state.stage(stage).status != "pending":
+                raise ValueError(f"shadow-launch must stop before {stage}")
+    elif (
+        state.stage("CERTIFY").status != "completed"
+        or state.stage("TEARDOWN").status != "completed"
+        or state.stage("REGISTER").status != "pending"
+    ):
+        raise ValueError(
+            "evaluation shadow-launch requires completed CERTIFY and TEARDOWN "
+            "and must stop before REGISTER"
+        )
 
     row = bundle.rows[0]
     if state.rows.get(row.row_id) is None or state.rows[row.row_id].status != "completed":
         raise ValueError(f"shadow-launch row {row.row_id!r} did not complete")
+    if execution_family == "evaluation-matrix":
+        lifecycle_path = state.rows[row.row_id].collected_outputs.get(
+            "evaluation-matrix-result.json"
+        )
+        if not isinstance(lifecycle_path, str):
+            raise ValueError("evaluation shadow launch lacks collected lifecycle evidence")
+        lifecycle = EvaluationLifecycleEvidence.model_validate_json(
+            Path(lifecycle_path).read_text(encoding="utf-8")
+        )
+        return EvaluationShadowLaunchEvidence(
+            run_set_id=bundle.run_set_id,
+            bundle_sha256=canonical_run_bundle_sha256(bundle),
+            lifecycle=lifecycle,
+        )
     if "--resume" not in row.launch.command:
         raise ValueError("shadow-launch requires a native continuation row")
     if row.execution.row_provenance is None:
@@ -546,15 +597,25 @@ def _run_engine(
     interruption_probe: Callable[[], CancellationDecision | None] | None = None,
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
     collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
+    staged_root_bindings: tuple[StagedRootSnapshotBinding, ...] = (),
 ) -> RunSetState:
     if collection_recovery_bindings:
         driver = _driver_for_bundle(
             bundle,
             input_provider_bindings,
             collection_recovery_bindings=collection_recovery_bindings,
+            staged_root_bindings=staged_root_bindings,
         )
     else:
-        driver = _driver_for_bundle(bundle, input_provider_bindings)
+        driver = (
+            _driver_for_bundle(
+                bundle,
+                input_provider_bindings,
+                staged_root_bindings=staged_root_bindings,
+            )
+            if staged_root_bindings
+            else _driver_for_bundle(bundle, input_provider_bindings)
+        )
     state = StageEngine(
         bundle=bundle,
         driver=driver,
@@ -597,6 +658,7 @@ def _driver_for_bundle(
     bindings: tuple[InputProviderRootBinding, ...] = (),
     collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
     native_update_budget: int | None = None,
+    staged_root_bindings: tuple[StagedRootSnapshotBinding, ...] = (),
 ) -> LocalOrchestrationDriver | RunPodOrchestrationDriver:
     driver_name = bundle.deployment_policy.driver
     if driver_name == "local":
@@ -605,6 +667,7 @@ def _driver_for_bundle(
         return LocalOrchestrationDriver(
             input_provider_bindings=bindings,
             update_budget=native_update_budget,
+            staged_root_bindings=staged_root_bindings,
         )
     if driver_name == "runpod":
         if native_update_budget is not None:
@@ -613,6 +676,7 @@ def _driver_for_bundle(
             config=_runpod_config_for_bundle(bundle),
             input_provider_bindings=bindings,
             collection_recovery_bindings=collection_recovery_bindings,
+            staged_root_bindings=staged_root_bindings,
         )
     raise RuntimeError(f"Unsupported orchestration driver: {driver_name!r}")
 
@@ -637,6 +701,7 @@ def _request_engine(
     interruption_probe: Callable[[], CancellationDecision | None] | None = None,
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
     native_update_budget: int | None = None,
+    staged_root_bindings: tuple[StagedRootSnapshotBinding, ...] = (),
 ) -> StageEngine:
     root = (
         Path(request.orchestration_root).expanduser()
@@ -651,10 +716,19 @@ def _request_engine(
         request,
         context=context,
         registry=build_default_assembly_registry(),
-        driver_factory=lambda bundle: _driver_for_bundle(
-            bundle,
-            input_provider_bindings,
-            native_update_budget=native_update_budget,
+        driver_factory=lambda bundle: (
+            _driver_for_bundle(
+                bundle,
+                input_provider_bindings,
+                native_update_budget=native_update_budget,
+                staged_root_bindings=staged_root_bindings,
+            )
+            if staged_root_bindings
+            else _driver_for_bundle(
+                bundle,
+                input_provider_bindings,
+                native_update_budget=native_update_budget,
+            )
         ),
         run_set_id=run_set_id,
         conformance_registry=build_default_check_registry(),
@@ -671,6 +745,35 @@ def _input_provider_bindings(values: list[str]) -> tuple[InputProviderRootBindin
             raise ValueError("--input-provider requires NAME=ABSOLUTE_PATH")
         validate_staged_binding_name(name)
         bindings.append(InputProviderRootBinding(name, root))
+    return tuple(bindings)
+
+
+def _staged_root_bindings(values: list[str]) -> tuple[StagedRootSnapshotBinding, ...]:
+    bindings = []
+    for value in values:
+        identity, separator, raw_root = value.partition("=")
+        kind, kind_separator, name = identity.partition(":")
+        root = Path(raw_root)
+        if (
+            not separator
+            or not kind_separator
+            or kind not in {"manifest-store", "artifact-provider", "checkpoint-custody"}
+            or not name
+            or not root.is_absolute()
+        ):
+            raise ValueError(
+                "--staged-root requires KIND:NAME=ABSOLUTE_PATH with a supported KIND"
+            )
+        validate_staged_binding_name(name)
+        info = root.stat()
+        bindings.append(
+            StagedRootSnapshotBinding(
+                name=name,
+                kind=kind,
+                root=root,
+                expected_root_identity=(info.st_dev, info.st_ino),
+            )
+        )
     return tuple(bindings)
 
 

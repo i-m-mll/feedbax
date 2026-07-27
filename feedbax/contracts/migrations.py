@@ -119,6 +119,12 @@ from feedbax.contracts.shadow_launch import (
     SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
     SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION,
 )
+from feedbax.contracts.evaluation_lifecycle import (
+    EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_ID,
+    EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_VERSION,
+    EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
+    EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION,
+)
 from feedbax.contracts.remote_smoke import (
     REMOTE_SMOKE_EVIDENCE_SCHEMA_ID,
     REMOTE_SMOKE_EVIDENCE_SCHEMA_VERSION,
@@ -327,6 +333,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V6,
     RUN_BUNDLE_SCHEMA_VERSION_V7,
     RUN_BUNDLE_SCHEMA_VERSION_V8,
+    RUN_BUNDLE_SCHEMA_VERSION_V9,
 )
 from feedbax.orchestration.staged_root_custody import (
     STAGED_ROOT_CUSTODY_SCHEMA_ID,
@@ -2947,6 +2954,30 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             rejected_old_versions=(f"{SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID}.v0",),
         ),
         _family(
+            "EvaluationLifecycleEvidence",
+            EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_ID,
+            EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_lifecycle",
+            emitted_by=("feedbax.analysis.harness",),
+            consumed_by=("feedbax.orchestration.executor_family",),
+            description="Ordered nested outcomes for one governed evaluation matrix.",
+            required_tests=("tests/test_evaluation_lifecycle.py",),
+            rejected_old_versions=(f"{EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_ID}.v0",),
+        ),
+        _family(
+            "EvaluationShadowLaunchEvidence",
+            EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
+            EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_lifecycle",
+            emitted_by=("feedbax.bin.orchestrate",),
+            consumed_by=("provider-free shadow-launch result readers only",),
+            description="Provider-free evaluation-family lifecycle traversal evidence.",
+            required_tests=("tests/test_evaluation_lifecycle.py",),
+            rejected_old_versions=(
+                f"{EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID}.v0",
+            ),
+        ),
+        _family(
             "RemoteSmokeEvidence",
             REMOTE_SMOKE_EVIDENCE_SCHEMA_ID,
             REMOTE_SMOKE_EVIDENCE_SCHEMA_VERSION,
@@ -3178,6 +3209,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 RUN_BUNDLE_SCHEMA_VERSION_V6,
                 RUN_BUNDLE_SCHEMA_VERSION_V7,
                 RUN_BUNDLE_SCHEMA_VERSION_V8,
+                RUN_BUNDLE_SCHEMA_VERSION_V9,
             ),
             required_tests=(
                 "tests/test_orchestration_core.py",

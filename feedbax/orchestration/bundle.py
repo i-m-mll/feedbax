@@ -9,7 +9,7 @@ import re
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
 
@@ -34,7 +34,8 @@ RUN_BUNDLE_SCHEMA_VERSION_V5 = "feedbax.orchestration.run_bundle.v5"
 RUN_BUNDLE_SCHEMA_VERSION_V6 = "feedbax.orchestration.run_bundle.v6"
 RUN_BUNDLE_SCHEMA_VERSION_V7 = "feedbax.orchestration.run_bundle.v7"
 RUN_BUNDLE_SCHEMA_VERSION_V8 = "feedbax.orchestration.run_bundle.v8"
-RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v9"
+RUN_BUNDLE_SCHEMA_VERSION_V9 = "feedbax.orchestration.run_bundle.v9"
+RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v10"
 DEPLOYMENT_POLICY_SCHEMA_ID = "feedbax.spec.deployment_policy"
 DEPLOYMENT_POLICY_SCHEMA_VERSION = "feedbax.spec.deployment_policy.v1"
 EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID = "feedbax.spec.execution_identity_envelope"
@@ -52,6 +53,7 @@ CHECKPOINT_CUSTODY_ARCHIVE_MATERIALIZER_ID = (
 CHECKPOINT_CUSTODY_ARCHIVE_MATERIALIZER_VERSION = (
     "feedbax.materializer.training_checkpoint_custody_archive.v1"
 )
+ExecutionFamily: TypeAlias = Literal["native-training", "evaluation-matrix"]
 
 
 def mint_run_set_id(now: datetime | None = None) -> str:
@@ -246,6 +248,7 @@ class RunRowSpec(StrictModel):
     """One compiled row in a run bundle."""
 
     row_id: str = Field(min_length=1)
+    execution_family: ExecutionFamily = "native-training"
     execution: ExecutionIdentityEnvelope
     launch: RowLaunchSpec
 
@@ -484,9 +487,10 @@ class RunBundle(StrictModel):
     """Schema-versioned orchestration request for a run set."""
 
     schema_id: Literal["feedbax.orchestration.run_bundle"] = RUN_BUNDLE_SCHEMA_ID
-    schema_version: Literal["feedbax.orchestration.run_bundle.v9"] = RUN_BUNDLE_SCHEMA_VERSION
+    schema_version: Literal["feedbax.orchestration.run_bundle.v10"] = RUN_BUNDLE_SCHEMA_VERSION
     run_set_id: str = Field(default_factory=mint_run_set_id)
     feedbax_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    execution_family: ExecutionFamily = "native-training"
     deployment_policy: DeploymentPolicy
     migration_evidence: list[ArtifactMigrationRecord] = Field(default_factory=list)
     rows: list[RunRowSpec] = Field(min_length=1)
@@ -517,6 +521,10 @@ class RunBundle(StrictModel):
         for row in self.rows:
             if row.row_id in seen:
                 raise ValueError(f"duplicate row_id: {row.row_id!r}")
+            if row.execution_family != self.execution_family:
+                raise ValueError(
+                    f"row {row.row_id!r} execution_family does not match the bundle"
+                )
             seen.add(row.row_id)
         canonical_identities = canonicalize_immutable_input_identities(
             [item.identity for item in self.resolved_inputs]

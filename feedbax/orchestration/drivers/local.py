@@ -24,11 +24,10 @@ from feedbax.orchestration.bundle import (
 )
 from feedbax.orchestration.drivers.base import DriverRowProbe
 from feedbax.orchestration.drivers.native_execution import (
-    bind_native_execution_command,
-    inject_native_execution_context,
     native_resume_checkpoint_source,
     seed_authenticated_checkpoint,
 )
+from feedbax.orchestration.executor_family import executor_family_adapter
 from feedbax.orchestration.input_materialization import (
     InputMaterializationError,
     InputProviderRootBinding,
@@ -147,6 +146,12 @@ class LocalOrchestrationDriver:
         except InputMaterializationError as exc:
             raise LocalDriverError(str(exc)) from exc
         payloads: list[dict[str, str]] = []
+        if bundle.execution_family == "evaluation-matrix":
+            bundle_target = attempt_root / "inputs" / "run-bundle.json"
+            bundle_target.write_text(
+                bundle.model_dump_json(exclude_none=True),
+                encoding="utf-8",
+            )
         for row in bundle.rows:
             if row.launch.payload_routing.get("kind") != "registered-execution-payload":
                 continue
@@ -262,18 +267,17 @@ class LocalOrchestrationDriver:
             }
         )
         env["PYTHONPATH"] = _prepend_feedbax_source_root(env.get("PYTHONPATH"))
-        command, bound_row = bind_native_execution_command(
+        command, bound_row = executor_family_adapter(row.execution_family).bind_command(
             _row_command(row, self.python_executable),
+            bundle=bundle,
             row=row,
             payload_path=bundle.run_set_dir / "inputs" / f"{row.row_id}.json",
             collection_root=paths["row_dir"],
-            update_budget=self.update_budget,
-        )
-        command = inject_native_execution_context(
-            command,
-            row=bound_row,
+            inputs_root=bundle.run_set_dir / "inputs",
             environment_fingerprint=state.environment_fingerprint or "",
-            collection_root=paths["row_dir"],
+            update_budget=(
+                self.update_budget if row.execution_family == "native-training" else None
+            ),
         )
         stdout = (paths["row_dir"] / "stdout.log").open("ab")
         stderr = (paths["row_dir"] / "stderr.log").open("ab")

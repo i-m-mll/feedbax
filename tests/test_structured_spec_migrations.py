@@ -170,6 +170,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V6,
     RUN_BUNDLE_SCHEMA_VERSION_V7,
     RUN_BUNDLE_SCHEMA_VERSION_V8,
+    RUN_BUNDLE_SCHEMA_VERSION_V9,
 )
 from feedbax.orchestration.staged_root_custody import (
     STAGED_ROOT_CUSTODY_SCHEMA_ID,
@@ -624,6 +625,7 @@ def test_nan_attribution_families_are_versioned_and_reject_unknown_versions(
         RUN_BUNDLE_SCHEMA_VERSION_V6,
         RUN_BUNDLE_SCHEMA_VERSION_V7,
         RUN_BUNDLE_SCHEMA_VERSION_V8,
+        RUN_BUNDLE_SCHEMA_VERSION_V9,
     ],
 )
 def test_run_bundle_old_versions_require_reassembly(old_version: str) -> None:

@@ -78,6 +78,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V6,
     RUN_BUNDLE_SCHEMA_VERSION_V7,
     RUN_BUNDLE_SCHEMA_VERSION_V8,
+    RUN_BUNDLE_SCHEMA_VERSION_V9,
     BudgetPolicy,
     CheckpointCustodyArchiveMaterializer,
     DeploymentPolicy,
@@ -1244,6 +1245,7 @@ def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> N
         RUN_BUNDLE_SCHEMA_VERSION_V6,
         RUN_BUNDLE_SCHEMA_VERSION_V7,
         RUN_BUNDLE_SCHEMA_VERSION_V8,
+        RUN_BUNDLE_SCHEMA_VERSION_V9,
     ):
         old_payload["schema_version"] = old_version
         with pytest.raises(UnsupportedSpecVersion, match="reassemble from a current"):

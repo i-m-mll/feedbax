@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -316,6 +317,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--execution-descriptor")
     parser.add_argument("--artifact-provider", action="append", default=[])
     parser.add_argument("--checkpoint-custody", action="append", default=[])
+    parser.add_argument("--orchestration-bundle")
+    parser.add_argument("--orchestration-inputs-root")
+    parser.add_argument("--orchestration-row-id")
+    parser.add_argument("--lifecycle-result")
     parser.add_argument(
         "--batch",
         action="store_true",
@@ -358,6 +363,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     from feedbax.analysis.execution_context import (
         StagedArtifactProviderRootBinding,
         StagedCheckpointCustodyRootBinding,
+        resolve_staged_execution_context,
+    )
+    from feedbax.contracts.evaluation_lifecycle import (
+        EvaluationLifecycleEvidence,
+        EvaluationLifecycleRowOutcome,
+    )
+    from feedbax.orchestration.bundle import RunBundle
+    from feedbax.orchestration.input_materialization import (
+        staged_execution_bindings_for_bundle,
     )
 
     def binding_parts(value: str, *, option: str) -> tuple[str, str]:
@@ -433,28 +447,121 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.execution_descriptor is not None
         else None
     )
-    execute_evaluation_run_matrix(
-        payload,
-        root=args.manifest_root,
-        repo_root=args.repo_root,
-        escape_hatch_reason=args.escape_hatch_reason,
-        parent_manifest_root=args.parent_manifest_root,
-        execution_descriptor=execution_descriptor,
-        artifact_provider_bindings=[
-            StagedArtifactProviderRootBinding(
-                *binding_parts(value, option="--artifact-provider")
-            )
-            for value in args.artifact_provider
-        ],
-        checkpoint_custody_bindings=[
-            StagedCheckpointCustodyRootBinding(
-                *binding_parts(value, option="--checkpoint-custody")
-            )
-            for value in args.checkpoint_custody
-        ],
-        batch=EvaluationBatchExecution() if args.batch else None,
-        matrix_metadata=policy_metadata,
+    orchestration_values = (
+        args.orchestration_bundle,
+        args.orchestration_inputs_root,
+        args.orchestration_row_id,
+        args.lifecycle_result,
     )
+    if any(value is not None for value in orchestration_values) and any(
+        value is None for value in orchestration_values
+    ):
+        parser.error(
+            "orchestration lifecycle execution requires bundle, inputs root, row id, "
+            "and lifecycle result together"
+        )
+    resolved_context = None
+    if args.orchestration_bundle is not None:
+        if (
+            args.execution_descriptor is not None
+            or args.artifact_provider
+            or args.checkpoint_custody
+        ):
+            parser.error(
+                "orchestration lifecycle bindings cannot be combined with caller-supplied "
+                "staged execution options"
+            )
+        bundle = RunBundle.model_validate_json(
+            Path(args.orchestration_bundle).read_text(encoding="utf-8")
+        )
+        if bundle.execution_family != "evaluation-matrix":
+            parser.error("orchestration bundle is not an evaluation-matrix family bundle")
+        projected = staged_execution_bindings_for_bundle(
+            bundle,
+            inputs_root=args.orchestration_inputs_root,
+        )
+        resolved_context = resolve_staged_execution_context(
+            projected.descriptor,
+            artifact_provider_bindings=projected.artifact_provider_bindings,
+            manifest_root_bindings=projected.manifest_root_bindings,
+            checkpoint_custody_bindings=projected.checkpoint_custody_bindings,
+        )
+    from feedbax.orchestration.events import RunEventEmitter
+
+    emitter = RunEventEmitter.from_env(heartbeat_seconds=60.0)
+    with emitter if emitter is not None else nullcontext():
+        if emitter is not None:
+            emitter.emit("ready", {"executor_family": "evaluation-matrix"})
+        try:
+            result = execute_evaluation_run_matrix(
+                payload,
+                root=args.manifest_root,
+                repo_root=args.repo_root,
+                escape_hatch_reason=args.escape_hatch_reason,
+                parent_manifest_root=args.parent_manifest_root,
+                execution_descriptor=execution_descriptor,
+                artifact_provider_bindings=[
+                    StagedArtifactProviderRootBinding(
+                        *binding_parts(value, option="--artifact-provider")
+                    )
+                    for value in args.artifact_provider
+                ],
+                checkpoint_custody_bindings=[
+                    StagedCheckpointCustodyRootBinding(
+                        *binding_parts(value, option="--checkpoint-custody")
+                    )
+                    for value in args.checkpoint_custody
+                ],
+                execution_context=resolved_context,
+                batch=EvaluationBatchExecution() if args.batch else None,
+                matrix_metadata=policy_metadata,
+            )
+            if args.lifecycle_result is not None:
+                outcomes = []
+                for row in result.rows:
+                    states_schema = getattr(row.result, "metadata", {}).get("states_schema")
+                    diagnostic_schema_ids = ()
+                    if isinstance(states_schema, str):
+                        diagnostic_schema_ids = (states_schema,)
+                    elif isinstance(states_schema, Mapping) and isinstance(
+                        states_schema.get("schema_id"), str
+                    ):
+                        diagnostic_schema_ids = (states_schema["schema_id"],)
+                    outcomes.append(
+                        EvaluationLifecycleRowOutcome(
+                            row_id=row.row_id,
+                            manifest_id=row.result.id,
+                            manifest_path=str(row.manifest_path),
+                            diagnostic_schema_ids=diagnostic_schema_ids,
+                        )
+                    )
+                evidence = EvaluationLifecycleEvidence(
+                    orchestration_row_id=args.orchestration_row_id,
+                    ordered_row_ids=tuple(row.row_id for row in result.rows),
+                    outcomes=tuple(outcomes),
+                )
+                destination = Path(args.lifecycle_result)
+                destination.write_text(
+                    json.dumps(evidence.model_dump(mode="json"), indent=2, sort_keys=True)
+                    + "\n",
+                    encoding="utf-8",
+                )
+        except BaseException:
+            if emitter is not None:
+                emitter.emit_terminal(
+                    "failed",
+                    {"status": "failed", "executor_family": "evaluation-matrix"},
+                )
+            raise
+        if emitter is not None:
+            emitter.emit_terminal(
+                "complete",
+                {
+                    "status": "completed",
+                    "executor_family": "evaluation-matrix",
+                    "ordered_row_ids": [row.row_id for row in result.rows],
+                },
+            )
     return 0
 
 
