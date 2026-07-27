@@ -56,6 +56,19 @@ from feedbax.contracts.staged_execution import (
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
 
+def _figure_spec_payload(name: str):
+    return spec_payload(
+        "FigureSpec",
+        {"name": name, "assembler": "tests.test_ordered_figure_report:assemble"},
+    )
+
+
+def _figure_spec_sha256(name: str) -> str:
+    digest = _figure_spec_payload(name).sha256
+    assert digest is not None
+    return digest
+
+
 def _write_figure_manifest(
     root: Path,
     *,
@@ -99,7 +112,7 @@ def _write_figure_manifest(
     manifest = FigureManifest(
         id=f"feedbax-figure:{name}",
         status="completed",
-        figure_spec=spec_payload("FigureSpec", {"name": name}),
+        figure_spec=_figure_spec_payload(name),
         artifacts=artifacts,
     )
     path = write_manifest(manifest, root=root)
@@ -122,13 +135,21 @@ def _params() -> dict[str, object]:
                 "title": "Primary",
                 "framing": "Authored framing.",
                 "figures": [
-                    {"input_role": "first", "caption": "First caption"},
+                    {
+                        "input_role": "first",
+                        "figure_spec_sha256": _figure_spec_sha256("first"),
+                        "caption": "First caption",
+                    },
                     {
                         "caption": "Structural panel",
                         "applicability": "not_applicable",
                         "not_applicable_reason": "This binding has no such panel.",
                     },
-                    {"input_role": "second", "caption": "Second caption"},
+                    {
+                        "input_role": "second",
+                        "figure_spec_sha256": _figure_spec_sha256("second"),
+                        "caption": "Second caption",
+                    },
                 ],
                 "tables": [
                     {
@@ -223,6 +244,14 @@ def test_ordered_figure_report_is_public_registered_and_serialisable() -> None:
     ]
 
 
+def test_ordered_figure_report_requires_authored_figure_spec_pin() -> None:
+    payload = _params()
+    del payload["sections"][0]["figures"][0]["figure_spec_sha256"]  # type: ignore[index]
+
+    with pytest.raises(ValidationError, match="requires figure_spec_sha256"):
+        OrderedFigureReportParams.model_validate(payload)
+
+
 def test_authored_report_cli_executes_exact_parents_without_reauthoring(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -247,7 +276,7 @@ def test_authored_report_cli_executes_exact_parents_without_reauthoring(
     figure = FigureManifest(
         id="feedbax-figure:exact-authored",
         status="completed",
-        figure_spec=spec_payload("FigureSpec", {"name": "exact-authored"}),
+        figure_spec=_figure_spec_payload("exact-authored"),
         artifacts=[plotly_json],
     )
     figure_entry = _write_exact_manifest_parent(
@@ -301,7 +330,7 @@ def test_authored_report_cli_executes_exact_parents_without_reauthoring(
         FigureManifest(
             id="feedbax-figure:terminal-extension",
             status="completed",
-            figure_spec=spec_payload("FigureSpec", {"name": "terminal-extension"}),
+            figure_spec=_figure_spec_payload("terminal-extension"),
             artifacts=[terminal_plotly_json],
         ),
         role="terminal_figure",
@@ -330,9 +359,16 @@ def test_authored_report_cli_executes_exact_parents_without_reauthoring(
                 {
                     "title": "Evidence",
                     "figures": [
-                        {"input_role": "figure", "caption": "Authored exact figure"},
+                        {
+                            "input_role": "figure",
+                            "figure_spec_sha256": _figure_spec_sha256("exact-authored"),
+                            "caption": "Authored exact figure",
+                        },
                         {
                             "input_role": "terminal_figure",
+                            "figure_spec_sha256": _figure_spec_sha256(
+                                "terminal-extension"
+                            ),
                             "caption": "Terminal exact figure",
                         },
                     ],
@@ -519,7 +555,7 @@ def test_report_inputs_resolve_once_across_distinct_retained_roots(
         manifest = FigureManifest(
             id=f"feedbax-figure:{name}",
             status="completed",
-            figure_spec=spec_payload("FigureSpec", {"name": name}),
+            figure_spec=_figure_spec_payload(name),
             artifacts=[render],
         )
         refs.append(_authenticated_provider_manifest_ref(provider, manifest, role=name))
@@ -655,7 +691,7 @@ def test_report_input_duplicated_across_retained_roots_fails_before_outputs(
     figure = FigureManifest(
         id="feedbax-figure:duplicated",
         status="completed",
-        figure_spec=spec_payload("FigureSpec", {"name": "duplicated"}),
+        figure_spec=_figure_spec_payload("duplicated"),
         artifacts=[render],
     )
     refs = [
@@ -677,7 +713,13 @@ def test_report_input_duplicated_across_retained_roots_fails_before_outputs(
                         {
                             "title": "One",
                             "figures": [
-                                {"input_role": "first", "caption": "First"}
+                                {
+                                    "input_role": "first",
+                                    "figure_spec_sha256": _figure_spec_sha256(
+                                        "duplicated"
+                                    ),
+                                    "caption": "First",
+                                }
                             ],
                         }
                     ],
@@ -833,6 +875,142 @@ def test_ordered_figure_report_renders_authored_order_roles_and_scalar_tables(
         "not_applicable_items": 2,
         "scalar_tables": 1,
     }
+
+
+def test_ordered_figure_report_accepts_exact_embedded_figure_spec_pin(
+    tmp_path: Path,
+) -> None:
+    provider_root = tmp_path / "provider"
+    provider = ImmutableArtifactBlobProvider(provider_root)
+    render = store_bytes_artifact(
+        b"exact-render",
+        root=tmp_path / "render",
+        role="figure_render",
+        logical_name="exact.png",
+        media_type="image/png",
+        suffix=".png",
+    )
+    figure_spec = _figure_spec_payload("exact")
+    parent = _authenticated_provider_manifest_ref(
+        provider,
+        FigureManifest(
+            id="feedbax-figure:exact",
+            status="completed",
+            figure_spec=figure_spec,
+            artifacts=[render],
+        ),
+        role="figure",
+    )
+    output = tmp_path / "output"
+
+    manifest, _ = execute_report_spec(
+        ReportSpec(
+            report_type=ORDERED_FIGURE_REPORT_TYPE,
+            inputs=[parent],
+            params={
+                "schema_id": ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_ID,
+                "schema_version": ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_VERSION,
+                "title": "Pinned figure",
+                "sections": [
+                    {
+                        "title": "Evidence",
+                        "figures": [
+                            {
+                                "input_role": "figure",
+                                "figure_spec_sha256": figure_spec.sha256,
+                                "caption": "Exact figure",
+                            }
+                        ],
+                    }
+                ],
+            },
+        ),
+        root=output,
+        execution_descriptor=_provider_descriptor("evidence"),
+        artifact_provider_bindings=[
+            StagedArtifactProviderRootBinding("evidence", provider_root)
+        ],
+    )
+
+    assert manifest.status == "completed"
+    assert len(manifest.artifacts) == 1
+
+
+@pytest.mark.parametrize("failure", ["mismatch", "wrong_kind", "malformed"])
+def test_ordered_figure_report_rejects_unpinned_embedded_figure_spec_without_output(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    provider_root = tmp_path / "provider"
+    provider = ImmutableArtifactBlobProvider(provider_root)
+    render = store_json_artifact(
+        {"data": [], "layout": {}},
+        root=tmp_path / "render",
+        role="figure_render",
+        logical_name="untrusted.plotly.json",
+        metadata={"format": "plotly-json"},
+    )
+    Path(str(render.uri)).unlink()
+    if failure == "malformed":
+        figure_spec = spec_payload("FigureSpec", {"name": "malformed"})
+    elif failure == "wrong_kind":
+        figure_spec = spec_payload("AnalysisRunSpec", {"analysis_type": "wrong-kind"})
+    else:
+        figure_spec = _figure_spec_payload("mismatch")
+    parent = _authenticated_provider_manifest_ref(
+        provider,
+        FigureManifest(
+            id=f"feedbax-figure:{failure}",
+            status="completed",
+            figure_spec=figure_spec,
+            artifacts=[render],
+        ),
+        role="figure",
+    )
+    expected_sha256 = figure_spec.sha256 if failure != "mismatch" else "0" * 64
+    output = tmp_path / "output"
+
+    with pytest.raises(ReportRecipeExecutionError) as excinfo:
+        execute_report_spec(
+            ReportSpec(
+                report_type=ORDERED_FIGURE_REPORT_TYPE,
+                inputs=[parent],
+                params={
+                    "schema_id": ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_ID,
+                    "schema_version": ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_VERSION,
+                    "title": "Rejected figure",
+                    "output_name": "rejected.html",
+                    "sections": [
+                        {
+                            "title": "Evidence",
+                            "figures": [
+                                {
+                                    "input_role": "figure",
+                                    "figure_spec_sha256": expected_sha256,
+                                    "caption": "Untrusted figure",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ),
+            root=output,
+            execution_descriptor=_provider_descriptor("evidence"),
+            artifact_provider_bindings=[
+                StagedArtifactProviderRootBinding("evidence", provider_root)
+            ],
+        )
+
+    cause = str(excinfo.value.__cause__)
+    expected = {
+        "malformed": "malformed embedded FigureSpec",
+        "wrong_kind": "embedded spec kind 'AnalysisRunSpec'",
+        "mismatch": "SHA-256 mismatch",
+    }[failure]
+    assert expected in cause
+    assert excinfo.value.manifest.status == "failed"
+    assert excinfo.value.manifest.artifacts == []
+    assert not (output / "artifacts").exists()
 
 
 def test_ordered_figure_report_html_is_self_contained_interactive_and_deterministic(
@@ -1015,6 +1193,7 @@ def test_ordered_figure_report_explicit_not_applicable_requires_no_input(
         ({"schema_version"}, {}),
         (set(), {"schema_version": "feedbax.spec.report.ordered_figure.v0"}),
         (set(), {"schema_version": "feedbax.spec.report.ordered_figure.v1"}),
+        (set(), {"schema_version": "feedbax.spec.report.ordered_figure.v2"}),
         (
             set(),
             {
