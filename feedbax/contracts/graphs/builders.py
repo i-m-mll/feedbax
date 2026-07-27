@@ -63,7 +63,10 @@ from feedbax.intervene.intervene import (
     NetworkIntervenorParams,
 )
 from feedbax.objectives.loss import CompositeLoss
-from feedbax.mechanics.linear_state_space import LinearStateSpace
+from feedbax.mechanics.linear_state_space import (
+    LinearStateSpace,
+    StructuralLinearStateSpace,
+)
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 from feedbax.mechanics.backend import DiffraxBackend
 from feedbax.mechanics.body import BodyPreset, default_2link_bounds
@@ -839,6 +842,28 @@ def _build_dynamics_matrix_perturb(params: Mapping[str, Any]) -> DynamicsMatrixP
     )
 
 
+def _build_structural_linear_state_space(
+    params: Mapping[str, Any],
+) -> StructuralLinearStateSpace:
+    return StructuralLinearStateSpace(
+        A=jnp.asarray(params["A"]),
+        B=jnp.asarray(params["B"]),
+        delta_A=jnp.asarray(params["delta_A"]),
+        B_w=None if params.get("B_w") is None else jnp.asarray(params["B_w"]),
+        dt=float(params.get("dt", 1.0)),
+        initial_state=(
+            None
+            if params.get("initial_state") is None
+            else jnp.asarray(params["initial_state"])
+        ),
+        pos_slice=tuple(params.get("pos_slice", (0, 2))),
+        vel_slice=tuple(params.get("vel_slice", (2, 4))),
+        scale=float(params.get("scale", 1.0)),
+        active=bool(params.get("active", False)),
+        label=str(params.get("label", "structural_linear_dynamics")),
+    )
+
+
 def _build_affine_value_composer(params: Mapping[str, Any]) -> AffineValueComposer:
     schema_version = str(params.get("schema_version", AFFINE_VALUE_COMPOSER_SCHEMA_VERSION))
     if schema_version != AFFINE_VALUE_COMPOSER_SCHEMA_VERSION:
@@ -902,6 +927,7 @@ _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     ),
     "AnalyticalMusculoskeletalPlant": _build_analytical_musculoskeletal_plant,
     "LinearStateSpace": _build_linear_state_space,
+    "StructuralLinearStateSpace": _build_structural_linear_state_space,
     "StateFeedbackSelector": build_state_feedback_selector,
     "AffineFeedbackController": build_affine_feedback_controller,
     "Channel": _build_channel,

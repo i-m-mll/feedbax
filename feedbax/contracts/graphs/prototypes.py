@@ -510,7 +510,7 @@ def output_prototypes_for_node(
     if node_type in {"PointMass", "TwoLinkArm", "Arm6MuscleRigidTendon"}:
         effector = CartesianState()
         return {"effector": effector, "state": effector}
-    if node_type == "LinearStateSpace":
+    if node_type in {"LinearStateSpace", "StructuralLinearStateSpace"}:
         A = jnp.asarray(params["A"])
         B = jnp.asarray(params["B"])
         state_dim = int(A.shape[0])

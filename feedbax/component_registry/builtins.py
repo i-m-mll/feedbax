@@ -18,6 +18,9 @@ from feedbax.mechanics.muscle_config import (
     default_6muscle_2link_attachment_paths,
     default_6muscle_2link_segment_lengths,
 )
+from feedbax.mechanics.linear_state_space import (
+    STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
+)
 from feedbax.runtime.affine_composer import (
     AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
     affine_value_composer_output_prototype,
@@ -1754,6 +1757,81 @@ def register_builtin_components(registry: _Registry) -> None:
                 },
             ),
             output_prototype_fn=linear_state_space_output_prototype,
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='StructuralLinearStateSpace',
+            category='Mechanics',
+            description='Discrete linear mechanics with a trial-selectable structural delta_A.',
+            param_schema=[
+                ParamSchema(
+                    name='A',
+                    type='array',
+                    default=[
+                        [1.0, 0.0, 0.01, 0.0],
+                        [0.0, 1.0, 0.0, 0.01],
+                        [0.0, 0.0, 1.0, 0.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ],
+                    required=True,
+                ),
+                ParamSchema(
+                    name='B',
+                    type='array',
+                    default=[
+                        [0.0, 0.0],
+                        [0.0, 0.0],
+                        [0.01, 0.0],
+                        [0.0, 0.01],
+                    ],
+                    required=True,
+                ),
+                ParamSchema(name='B_w', type='array', default=None, required=False),
+                ParamSchema(
+                    name='delta_A',
+                    type='array',
+                    default=[
+                        [0.0, 0.0, 0.0, 0.0],
+                        [0.0, 0.0, 0.0, 0.0],
+                        [0.0, 0.0, 0.0, 0.0],
+                        [0.0, 0.0, 0.0, 0.0],
+                    ],
+                    required=True,
+                ),
+                ParamSchema(name='scale', type='float', default=1.0, required=False),
+                ParamSchema(name='active', type='bool', default=False, required=False),
+                ParamSchema(
+                    name='label',
+                    type='str',
+                    default='structural_linear_dynamics',
+                    required=False,
+                ),
+                ParamSchema(name='dt', type='float', default=0.01, min=0.0, required=False),
+                ParamSchema(
+                    name='initial_state',
+                    type='array',
+                    default=[0.0, 0.0, 0.0, 0.0],
+                    required=False,
+                ),
+                ParamSchema(name='pos_slice', type='array', default=[0, 2], required=False),
+                ParamSchema(name='vel_slice', type='array', default=[2, 4], required=False),
+            ],
+            input_ports=['force', 'epsilon'],
+            output_ports=['effector', 'state'],
+            icon='Grid3x3',
+            port_types=PortTypeSpec(
+                inputs={
+                    'force': PortType(dtype='vector'),
+                    'epsilon': PortType(dtype='vector'),
+                },
+                outputs={
+                    'effector': PortType(dtype='state'),
+                    'state': PortType(dtype='vector'),
+                },
+            ),
+            output_prototype_fn=linear_state_space_output_prototype,
+            param_schema_version=STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
         )
     )
     registry.register(
