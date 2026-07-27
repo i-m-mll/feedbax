@@ -23,6 +23,7 @@ from feedbax.contracts.manifest import (
     load_manifest,
     spec_payload,
     store_bytes_artifact,
+    store_json_artifact,
     write_manifest,
 )
 
@@ -32,6 +33,7 @@ def _write_figure_manifest(
     *,
     name: str,
     media_type: str = "image/png",
+    retain_plotly_json: bool = False,
 ) -> ParentRef:
     suffix = {
         "image/png": ".png",
@@ -45,17 +47,39 @@ def _write_figure_manifest(
         media_type=media_type,
         suffix=suffix,
     )
+    artifacts = [artifact]
+    if retain_plotly_json:
+        artifacts.append(
+            store_json_artifact(
+                {
+                    "data": [
+                        {
+                            "type": "scatter",
+                            "x": [0, 1],
+                            "y": [1, 2],
+                            "name": name,
+                        }
+                    ],
+                    "layout": {"title": {"text": f"{name} plot"}},
+                },
+                root=root,
+                role="figure_render",
+                logical_name=f"{name}.plotly.json",
+                metadata={"figure": name, "format": "plotly-json"},
+            )
+        )
     manifest = FigureManifest(
         id=f"feedbax-figure:{name}",
         status="completed",
         figure_spec=spec_payload("FigureSpec", {"name": name}),
-        artifacts=[artifact],
+        artifacts=artifacts,
     )
-    write_manifest(manifest, root=root)
+    path = write_manifest(manifest, root=root)
     return ParentRef(
         kind="FigureManifest",
         id=manifest.id,
         role=name,
+        uri=str(path.relative_to(root)),
     )
 
 
@@ -148,6 +172,128 @@ def test_ordered_figure_report_renders_authored_order_roles_and_scalar_tables(
         "not_applicable_items": 2,
         "scalar_tables": 1,
     }
+
+
+def test_ordered_figure_report_html_is_self_contained_interactive_and_deterministic(
+    tmp_path: Path,
+) -> None:
+    second = _write_figure_manifest(
+        tmp_path,
+        name="second",
+        retain_plotly_json=True,
+    )
+    first = _write_figure_manifest(
+        tmp_path,
+        name="first",
+        retain_plotly_json=True,
+    )
+    params = _params()
+    params["output_name"] = "ordered-evidence.html"
+    spec = ReportSpec(
+        report_type=ORDERED_FIGURE_REPORT_TYPE,
+        inputs=[second, first],
+        params=params,
+    )
+
+    first_manifest, _ = execute_report_spec(spec, root=tmp_path)
+    second_manifest, _ = execute_report_spec(spec, root=tmp_path)
+
+    render = first_manifest.artifacts[0]
+    report_html = Path(render.uri or "").read_text(encoding="utf-8")
+    authored_markers = [
+        "<h1>Ordered evidence</h1>",
+        "Authored introduction.",
+        "<h2>Primary</h2>",
+        "Authored framing.",
+        "first plot",
+        "<strong>Structural panel</strong>",
+        "This binding has no such panel.",
+        "second plot",
+        "<h3>Scalars</h3>",
+        "alpha|beta",
+        "<h2>Unavailable structure</h2>",
+        "The structure is absent by design.",
+    ]
+    positions = [report_html.index(marker) for marker in authored_markers]
+    assert positions == sorted(positions)
+    assert render.logical_name == "ordered-evidence.html"
+    assert render.media_type == "text/html"
+    assert report_html.startswith("<!DOCTYPE html>")
+    assert report_html.count("plotly.js v") == 1
+    assert "<script src=" not in report_html
+    assert report_html.count('class="plotly-graph-div"') == 2
+    assert 'id="ordered-figure-1"' in report_html
+    assert 'id="ordered-figure-2"' in report_html
+    assert "<table>" in report_html
+    assert "<td>true</td>" in report_html
+    assert "<td>null</td>" in report_html
+    assert all(
+        str(artifact.uri) not in report_html
+        for ref in (first, second)
+        for artifact in load_manifest(tmp_path / str(ref.uri)).artifacts
+        if artifact.uri is not None
+    )
+    assert second_manifest.artifacts[0].sha256 == render.sha256
+
+
+def test_ordered_figure_report_html_requires_retained_plotly_json(
+    tmp_path: Path,
+) -> None:
+    first = _write_figure_manifest(tmp_path, name="first")
+    second = _write_figure_manifest(tmp_path, name="second")
+    params = _params()
+    params["output_name"] = "ordered-evidence.html"
+    spec = ReportSpec(
+        report_type=ORDERED_FIGURE_REPORT_TYPE,
+        inputs=[first, second],
+        params=params,
+    )
+
+    with pytest.raises(ReportRecipeExecutionError) as excinfo:
+        execute_report_spec(spec, root=tmp_path)
+
+    assert isinstance(excinfo.value.__cause__, ValueError)
+    assert "input role 'first' has no materialized plotly-json" in str(
+        excinfo.value.__cause__
+    )
+    assert excinfo.value.manifest.status == "failed"
+
+
+def test_ordered_figure_report_html_verifies_plotly_json_digest(
+    tmp_path: Path,
+) -> None:
+    first = _write_figure_manifest(
+        tmp_path,
+        name="first",
+        retain_plotly_json=True,
+    )
+    second = _write_figure_manifest(
+        tmp_path,
+        name="second",
+        retain_plotly_json=True,
+    )
+    first_manifest = load_manifest(tmp_path / str(first.uri))
+    plotly_artifact = next(
+        artifact
+        for artifact in first_manifest.artifacts
+        if artifact.metadata.get("format") == "plotly-json"
+    )
+    Path(str(plotly_artifact.uri)).write_text("{}", encoding="utf-8")
+    params = _params()
+    params["output_name"] = "ordered-evidence.html"
+
+    with pytest.raises(ReportRecipeExecutionError) as excinfo:
+        execute_report_spec(
+            ReportSpec(
+                report_type=ORDERED_FIGURE_REPORT_TYPE,
+                inputs=[first, second],
+                params=params,
+            ),
+            root=tmp_path,
+        )
+
+    assert isinstance(excinfo.value.__cause__, ValueError)
+    assert "Plotly JSON SHA-256 mismatch" in str(excinfo.value.__cause__)
 
 
 def test_ordered_figure_report_missing_required_role_fails_closed(
@@ -249,3 +395,24 @@ def test_ordered_figure_report_rejects_invalid_authored_params(
 
     with pytest.raises(ValidationError):
         OrderedFigureReportParams.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "output_name",
+    ["ordered-report.txt", "reports/ordered-report.html", "ordered-report.HTML"],
+)
+def test_ordered_figure_report_rejects_unsupported_output_name(output_name: str) -> None:
+    payload = _params()
+    payload["output_name"] = output_name
+
+    with pytest.raises(ValidationError, match="Markdown or HTML filename"):
+        OrderedFigureReportParams.model_validate(payload)
+
+
+def test_ordered_figure_report_html_params_round_trip() -> None:
+    payload = _params()
+    payload["output_name"] = "ordered-report.html"
+
+    params = OrderedFigureReportParams.model_validate(payload)
+
+    assert OrderedFigureReportParams.model_validate_json(params.model_dump_json()) == params

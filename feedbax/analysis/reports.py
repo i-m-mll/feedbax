@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+import html
 import json
 import math
 from pathlib import Path
+import re
 from typing import Any, Literal
 
 from pydantic import Field, model_validator
@@ -40,6 +42,7 @@ from feedbax.contracts.manifest import (
     collect_git_provenance,
     default_manifest_root,
     report_manifest_id,
+    sha256_bytes,
     spec_payload,
     store_bytes_artifact,
     store_json_artifact,
@@ -165,12 +168,15 @@ class OrderedFigureReportParams(StrictModel):
         _require_authored_text(self.title, field_name="report title")
         if not self.sections:
             raise ValueError("ordered figure report requires at least one section")
+        output_suffix = Path(self.output_name).suffix
         if (
             not self.output_name.strip()
             or Path(self.output_name).name != self.output_name
-            or not self.output_name.endswith(".md")
+            or output_suffix not in {".html", ".md"}
         ):
-            raise ValueError("output_name must be a Markdown filename without path components")
+            raise ValueError(
+                "output_name must be a Markdown or HTML filename without path components"
+            )
         included_roles = [
             figure.input_role
             for section in self.sections
@@ -513,14 +519,20 @@ def _ordered_figure_report_recipe(
         raise ValueError("ordered figure report narrative must be authored as params.introduction")
     params = OrderedFigureReportParams.model_validate(report_spec.params)
     inputs_by_role = _ordered_figure_inputs_by_role(params, inputs)
-    markdown = _render_ordered_figure_report(params, inputs_by_role)
+    output_suffix = Path(params.output_name).suffix
+    if output_suffix == ".html":
+        rendered = render_ordered_figure_report_html(params, inputs_by_role)
+        media_type = "text/html"
+    else:
+        rendered = render_ordered_figure_report_markdown(params, inputs_by_role)
+        media_type = "text/markdown"
     render_artifact = store_bytes_artifact(
-        markdown.encode("utf-8"),
+        rendered.encode("utf-8"),
         root=root,
         role=REPORT_RENDER_ROLE,
         logical_name=params.output_name,
-        media_type="text/markdown",
-        suffix=".md",
+        media_type=media_type,
+        suffix=output_suffix,
         metadata={
             "report_type": ORDERED_FIGURE_REPORT_TYPE,
             "params_schema_id": params.schema_id,
@@ -617,10 +629,11 @@ def _ordered_figure_inputs_by_role(
     return resolved_by_role
 
 
-def _render_ordered_figure_report(
+def render_ordered_figure_report_markdown(
     params: OrderedFigureReportParams,
     inputs_by_role: Mapping[str, FigureManifest],
 ) -> str:
+    """Render an ordered-figure report as Markdown."""
     lines = [f"# {params.title}", ""]
     if params.introduction:
         lines.extend([params.introduction, ""])
@@ -670,6 +683,169 @@ def _render_ordered_figure_report(
                 )
             lines.append("")
     return "\n".join(lines)
+
+
+def render_ordered_figure_report_html(
+    params: OrderedFigureReportParams,
+    inputs_by_role: Mapping[str, FigureManifest],
+) -> str:
+    """Render a self-contained ordered-figure report with interactive Plotly figures."""
+    lines = [
+        "<!DOCTYPE html>",
+        '<html lang="en">',
+        "<head>",
+        '  <meta charset="utf-8">',
+        '  <meta name="viewport" content="width=device-width, initial-scale=1">',
+        f"  <title>{html.escape(params.title)}</title>",
+        "  <style>",
+        "    body { color: #202124; font-family: system-ui, sans-serif; "
+        "line-height: 1.5; margin: 0 auto; max-width: 1100px; padding: 2rem; }",
+        "    figure { margin: 1.5rem 0 2rem; }",
+        "    figcaption { color: #4b5563; font-style: italic; margin-top: 0.5rem; }",
+        "    table { border-collapse: collapse; margin: 1rem 0 2rem; width: 100%; }",
+        "    th, td { border: 1px solid #d1d5db; padding: 0.4rem 0.6rem; text-align: left; }",
+        "    th { background: #f3f4f6; }",
+        "    .not-applicable { color: #4b5563; }",
+        "  </style>",
+        "</head>",
+        "<body>",
+        f"  <h1>{html.escape(params.title)}</h1>",
+    ]
+    if params.introduction:
+        lines.extend(_html_text_block(params.introduction, indent="  "))
+
+    rendered_figure_count = 0
+    for section in params.sections:
+        lines.append(f"  <section><h2>{html.escape(section.title)}</h2>")
+        if section.framing:
+            lines.extend(_html_text_block(section.framing, indent="    "))
+        if section.applicability == "not_applicable":
+            lines.append(
+                '    <p class="not-applicable">Not applicable: '
+                f"{html.escape(str(section.not_applicable_reason))}</p>"
+            )
+            lines.append("  </section>")
+            continue
+        for figure in section.figures:
+            if figure.applicability == "not_applicable":
+                lines.extend(
+                    [
+                        f"    <p><strong>{html.escape(figure.caption)}</strong></p>",
+                        '    <p class="not-applicable">Not applicable: '
+                        f"{html.escape(str(figure.not_applicable_reason))}</p>",
+                    ]
+                )
+                continue
+            manifest = inputs_by_role[str(figure.input_role)]
+            plotly_artifacts = _plotly_json_artifacts(
+                manifest,
+                input_role=str(figure.input_role),
+            )
+            lines.append("    <figure>")
+            for artifact in plotly_artifacts:
+                rendered_figure_count += 1
+                lines.append(
+                    _plotly_html_fragment(
+                        artifact,
+                        div_id=f"ordered-figure-{rendered_figure_count}",
+                        include_plotlyjs=rendered_figure_count == 1,
+                    )
+                )
+            lines.append(f"      <figcaption>{html.escape(figure.caption)}</figcaption>")
+            lines.append("    </figure>")
+        for table in section.tables:
+            if table.title:
+                lines.append(f"    <h3>{html.escape(table.title)}</h3>")
+            lines.extend(
+                [
+                    "    <table>",
+                    "      <thead><tr>",
+                    *[
+                        f"        <th>{html.escape(column)}</th>"
+                        for column in table.columns
+                    ],
+                    "      </tr></thead>",
+                    "      <tbody>",
+                ]
+            )
+            for row in table.rows:
+                lines.extend(
+                    [
+                        "        <tr>",
+                        *[
+                            f"          <td>{html.escape(_scalar_text(cell))}</td>"
+                            for cell in row
+                        ],
+                        "        </tr>",
+                    ]
+                )
+            lines.extend(["      </tbody>", "    </table>"])
+        lines.append("  </section>")
+    lines.extend(["</body>", "</html>", ""])
+    return "\n".join(lines)
+
+
+def _html_text_block(value: str, *, indent: str) -> list[str]:
+    escaped = html.escape(value).replace("\n", "<br>\n")
+    return [f"{indent}<p>{escaped}</p>"]
+
+
+def _plotly_json_artifacts(
+    manifest: FigureManifest,
+    *,
+    input_role: str,
+) -> list[ArtifactRef]:
+    artifacts = [
+        artifact
+        for artifact in manifest.artifacts
+        if artifact.role == "figure_render"
+        and artifact.media_type == "application/json"
+        and artifact.metadata.get("format") == "plotly-json"
+        and artifact.sha256
+        and artifact.uri
+    ]
+    if not artifacts:
+        raise ValueError(
+            f"ordered figure report HTML input role {input_role!r} has no materialized "
+            "plotly-json figure_render artifact"
+        )
+    return artifacts
+
+
+def _plotly_html_fragment(
+    artifact: ArtifactRef,
+    *,
+    div_id: str,
+    include_plotlyjs: bool,
+) -> str:
+    path = Path(str(artifact.uri))
+    data = path.read_bytes()
+    digest = sha256_bytes(data)
+    if digest != artifact.sha256:
+        raise ValueError(
+            "ordered figure report Plotly JSON SHA-256 mismatch: "
+            f"logical_name={artifact.logical_name!r}, expected={artifact.sha256!r}, "
+            f"computed={digest!r}"
+        )
+    try:
+        import plotly.io as pio
+    except ImportError as exc:
+        raise RuntimeError(
+            "HTML ordered figure reports require Plotly; install the Feedbax analysis extra"
+        ) from exc
+
+    figure = pio.from_json(data.decode("utf-8"))
+    fragment = figure.to_html(
+        full_html=False,
+        include_plotlyjs=include_plotlyjs,
+        div_id=_safe_html_id(div_id),
+    )
+    return "\n".join(f"      {line}" for line in fragment.splitlines())
+
+
+def _safe_html_id(value: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9_-]+", "-", value).strip("-")
+    return normalized or "ordered-figure"
 
 
 def _scalar_text(value: OrderedFigureReportScalar) -> str:
