@@ -830,6 +830,7 @@ def _build_threshold_latched_force(params: Mapping[str, Any]) -> ThresholdLatche
             active=bool(params.get("active", False)),
             threshold=float(params["threshold"]),
             force=jnp.asarray(params["force"]),
+            lateral_force=float(params.get("lateral_force", 0.0)),
             ramp_duration=float(params.get("ramp_duration", 0.0)),
         ),
         label=str(params.get("label", "threshold_latched_force")),

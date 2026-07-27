@@ -20,7 +20,8 @@ from feedbax.mechanics.units import require_positive_finite
 from feedbax.runtime.noise import Normal
 
 
-THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION = "feedbax.component.threshold_latched_force.v1"
+THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1 = "feedbax.component.threshold_latched_force.v1"
+THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION = "feedbax.component.threshold_latched_force.v2"
 
 
 def _float_param(value):
@@ -86,6 +87,10 @@ class ThresholdLatchedForceParams(InterventionParams):
 
     threshold: Array = field(default_factory=lambda: _float_param(0.0), converter=_float_param)
     force: Array = field(default_factory=lambda: jnp.array([0.0, 0.0], dtype=jnp.float32))
+    lateral_force: Array = field(
+        default_factory=lambda: _float_param(0.0),
+        converter=_float_param,
+    )
     ramp_duration: Array = field(
         default_factory=lambda: _float_param(0.0),
         converter=_float_param,
@@ -94,7 +99,7 @@ class ThresholdLatchedForceParams(InterventionParams):
 
 @dataclass(frozen=True)
 class StateSelector:
-    """A typed path selecting one scalar from a runtime state PyTree."""
+    """A typed fixed-coordinate path selecting one scalar from runtime state."""
 
     path: tuple[str | int, ...]
 
@@ -112,7 +117,11 @@ class StateSelector:
 
         if isinstance(value, cls):
             return value
-        if not isinstance(value, Mapping) or "path" not in value:
+        if (
+            not isinstance(value, Mapping)
+            or value.get("kind", "fixed") != "fixed"
+            or "path" not in value
+        ):
             raise TypeError("state_selector must be a StateSelector or {'path': [...]} mapping")
         path = value["path"]
         if not isinstance(path, Sequence) or isinstance(path, str | bytes):
@@ -122,25 +131,121 @@ class StateSelector:
     def select(self, state: PyTree) -> Array:
         """Select and validate one scalar array from ``state``."""
 
-        value = state
-        for segment in self.path:
-            if isinstance(segment, int):
-                value = value[segment]
-            elif isinstance(value, Mapping):
-                value = value[segment]
-            else:
-                value = getattr(value, segment)
-        value = jnp.asarray(value)
+        value = jnp.asarray(_select_path(state, self.path))
         if value.ndim != 0:
             raise ValueError(
                 f"StateSelector path {self.path!r} must select a scalar; got shape {value.shape}"
             )
         return value
 
-    def to_param(self) -> dict[str, list[str | int]]:
+    def to_param(self) -> dict[str, Any]:
         """Return the stable GraphSpec representation."""
 
-        return {"path": list(self.path)}
+        return {"kind": "fixed", "path": list(self.path)}
+
+
+@dataclass(frozen=True)
+class PlanarTargetRelativeSelector:
+    """Planar frame selected from runtime state and target.
+
+    Positive lateral force points 90 degrees counter-clockwise from forward.
+    """
+
+    position_path: tuple[str | int, ...]
+    target_path: tuple[str | int, ...]
+
+    def __init__(
+        self,
+        position_path: Sequence[str | int],
+        target_path: Sequence[str | int],
+    ):
+        object.__setattr__(self, "position_path", StateSelector(position_path).path)
+        object.__setattr__(self, "target_path", StateSelector(target_path).path)
+
+    @classmethod
+    def from_param(
+        cls,
+        value: "PlanarTargetRelativeSelector | Mapping[str, Any]",
+    ) -> "PlanarTargetRelativeSelector":
+        """Parse the stable GraphSpec representation."""
+
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, Mapping) or value.get("kind") != "planar_target_relative":
+            raise TypeError(
+                "state_selector must be a PlanarTargetRelativeSelector or "
+                "a planar_target_relative mapping"
+            )
+        return cls(
+            position_path=_selector_path_param(value, "position_path"),
+            target_path=_selector_path_param(value, "target_path"),
+        )
+
+    def position(self, state: PyTree) -> Array:
+        """Select a planar position from runtime state."""
+
+        return _select_planar_path(state, self.position_path, name="position")
+
+    def target(self, target: PyTree) -> Array:
+        """Select a planar per-trial target from runtime reference data."""
+
+        return _select_planar_path(target, self.target_path, name="target")
+
+    def to_param(self) -> dict[str, Any]:
+        """Return the stable GraphSpec representation."""
+
+        return {
+            "kind": "planar_target_relative",
+            "position_path": list(self.position_path),
+            "target_path": list(self.target_path),
+        }
+
+
+ThresholdStateSelector = StateSelector | PlanarTargetRelativeSelector
+
+
+def _selector_path_param(value: Mapping[str, Any], name: str) -> Sequence[str | int]:
+    path = value.get(name)
+    if not isinstance(path, Sequence) or isinstance(path, str | bytes):
+        raise TypeError(f"state_selector.{name} must be a sequence")
+    return path
+
+
+def _select_path(tree: PyTree, path: Sequence[str | int]) -> PyTree:
+    value = tree
+    for segment in path:
+        if isinstance(segment, int):
+            value = value[segment]
+        elif isinstance(value, Mapping):
+            value = value[segment]
+        else:
+            value = getattr(value, segment)
+    return value
+
+
+def _select_planar_path(
+    tree: PyTree,
+    path: Sequence[str | int],
+    *,
+    name: str,
+) -> Array:
+    value = jnp.asarray(_select_path(tree, path))
+    if value.shape != (2,):
+        raise ValueError(
+            f"PlanarTargetRelativeSelector {name}_path {tuple(path)!r} must select "
+            f"shape (2,); got {value.shape}"
+        )
+    return value
+
+
+def _parse_threshold_state_selector(
+    value: ThresholdStateSelector | Mapping[str, Any],
+) -> ThresholdStateSelector:
+    if isinstance(value, StateSelector | PlanarTargetRelativeSelector):
+        return value
+    if isinstance(value, Mapping) and value.get("kind", "fixed") == "fixed":
+        return StateSelector.from_param(value)
+    return PlanarTargetRelativeSelector.from_param(value)
 
 
 class ThresholdLatchState(eqx.Module):
@@ -150,6 +255,8 @@ class ThresholdLatchState(eqx.Module):
     initialized: Array
     latched: Array
     elapsed: Array
+    origin: Array
+    forward: Array
 
 
 class DynamicsMatrixPerturbParams(InterventionParams):
@@ -261,13 +368,13 @@ class ThresholdLatchedForce(Component):
     the crossing sample to full scale.
     """
 
-    input_ports = ("state", "force", "params_override")
+    input_ports = ("state", "target", "force", "params_override")
     output_ports = ("force",)
 
     params_index: StateIndex
     latch_index: StateIndex
     _initial_state: ThresholdLatchedForceParams = field(static=True)
-    state_selector: StateSelector = field(static=True)
+    state_selector: ThresholdStateSelector = field(static=True)
     direction: Literal["increasing", "decreasing"] = field(static=True)
     dt: float = field(static=True)
     label: str = field(default="threshold_latched_force", static=True)
@@ -275,7 +382,7 @@ class ThresholdLatchedForce(Component):
     def __init__(
         self,
         *,
-        state_selector: StateSelector | Mapping[str, Any],
+        state_selector: ThresholdStateSelector | Mapping[str, Any],
         direction: Literal["increasing", "decreasing"],
         dt: float,
         params: Optional[ThresholdLatchedForceParams] = None,
@@ -295,9 +402,11 @@ class ThresholdLatchedForce(Component):
                 initialized=_bool_param(False),
                 latched=_bool_param(False),
                 elapsed=_float_param(0.0),
+                origin=jnp.zeros((2,), dtype=jnp.float32),
+                forward=jnp.zeros((2,), dtype=jnp.float32),
             )
         )
-        self.state_selector = StateSelector.from_param(state_selector)
+        self.state_selector = _parse_threshold_state_selector(state_selector)
         self.direction = direction
         self.dt = require_positive_finite("ThresholdLatchedForce.dt", dt)
         self.label = label
@@ -308,10 +417,34 @@ class ThresholdLatchedForce(Component):
         if "params_override" in inputs:
             params = _merge_params_override(params, inputs["params_override"])
         latch: ThresholdLatchState = state.get(self.latch_index)
-        observed = jnp.asarray(
-            self.state_selector.select(inputs["state"]),
-            dtype=latch.previous.dtype,
-        )
+        if isinstance(self.state_selector, PlanarTargetRelativeSelector):
+            position = jnp.asarray(
+                self.state_selector.position(inputs["state"]),
+                dtype=latch.origin.dtype,
+            )
+            target = jnp.asarray(
+                self.state_selector.target(inputs["target"]),
+                dtype=latch.origin.dtype,
+            )
+            origin = jnp.where(latch.initialized, latch.origin, position)
+            displacement = target - origin
+            distance = jnp.linalg.norm(displacement)
+            displacement = eqx.error_if(
+                displacement,
+                ~latch.initialized & (distance <= 0),
+                "PlanarTargetRelativeSelector requires distinct trial start and target",
+            )
+            candidate_forward = displacement / jnp.where(distance > 0, distance, 1.0)
+            forward = jnp.where(latch.initialized, latch.forward, candidate_forward)
+            observed = jnp.dot(position - origin, forward)
+            lateral = jnp.stack([-forward[1], forward[0]])
+            applied_force = params.lateral_force * lateral
+        else:
+            observed = self.state_selector.select(inputs["state"])
+            origin = latch.origin
+            forward = latch.forward
+            applied_force = params.force
+        observed = jnp.asarray(observed, dtype=latch.previous.dtype)
 
         if self.direction == "increasing":
             crossed = latch.initialized & (latch.previous < params.threshold) & (
@@ -336,7 +469,7 @@ class ThresholdLatchedForce(Component):
         applied = params.active & latched
         new_force = jnp.where(
             applied,
-            inputs["force"] + params.scale * ramp * params.force,
+            inputs["force"] + params.scale * ramp * applied_force,
             inputs["force"],
         )
         state = state.set(
@@ -346,6 +479,8 @@ class ThresholdLatchedForce(Component):
                 initialized=_bool_param(True),
                 latched=latched,
                 elapsed=elapsed,
+                origin=origin,
+                forward=forward,
             ),
         )
         return {"force": new_force}, state
@@ -361,6 +496,7 @@ class ThresholdLatchedForce(Component):
             "direction": self.direction,
             "threshold": float(self._initial_state.threshold),
             "force": jnp.asarray(self._initial_state.force).tolist(),
+            "lateral_force": float(self._initial_state.lateral_force),
             "ramp_duration": float(self._initial_state.ramp_duration),
             "scale": float(self._initial_state.scale),
             "active": bool(self._initial_state.active),
