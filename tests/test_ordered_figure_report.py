@@ -18,6 +18,12 @@ from feedbax.analysis import (
     OrderedFigureReportScalarProjection,
 )
 from feedbax.analysis.execution_context import StagedArtifactProviderRootBinding
+from feedbax.analysis.exact_parents import (
+    STAGED_EXACT_PARENTS_SCHEMA_ID,
+    STAGED_EXACT_PARENTS_SCHEMA_VERSION,
+    StagedExactParentEntry,
+    StagedExactParents,
+)
 from feedbax.analysis.specs import find_manifest_by_id
 from feedbax.bin import analysis as analysis_cli
 from feedbax.contracts.selection import ManifestPredicate
@@ -44,6 +50,7 @@ from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.staged_execution import (
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+    StagedCheckpointCustodySpec,
     StagedExecutionDescriptor,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -177,6 +184,34 @@ def _provider_descriptor(*names: str) -> StagedExecutionDescriptor:
     )
 
 
+def _write_exact_manifest_parent(
+    root: Path,
+    manifest: AnalysisRunManifest | FigureManifest,
+    *,
+    role: str,
+    name: str,
+) -> StagedExactParentEntry:
+    raw = canonical_json_bytes(manifest)
+    relative = Path("exact-inputs") / f"{name}.json"
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    return StagedExactParentEntry(
+        parent=ParentRef(
+            kind=manifest.kind,
+            id=manifest.id,
+            role=role,
+            metadata={
+                "ref_schema_id": "feedbax.ref.authenticated_manifest",
+                "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+                "manifest_sha256": sha256_bytes(raw),
+                "size_bytes": len(raw),
+            },
+        ),
+        execution_uri=relative.as_posix(),
+    )
+
+
 def test_ordered_figure_report_is_public_registered_and_serialisable() -> None:
     params = OrderedFigureReportParams.model_validate(_params())
 
@@ -186,6 +221,180 @@ def test_ordered_figure_report_is_public_registered_and_serialisable() -> None:
         ["alpha|beta", True, None],
         ["gamma", False, 2.5],
     ]
+
+
+def test_authored_report_cli_executes_exact_parents_without_reauthoring(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "report-root"
+    provider_root = tmp_path / "provider"
+    checkpoint_root = tmp_path / "checkpoints"
+    root.mkdir()
+    checkpoint_root.mkdir()
+    provider = ImmutableArtifactBlobProvider(provider_root)
+
+    plotly_json = store_json_artifact(
+        {
+            "data": [{"type": "scatter", "x": [0, 1], "y": [1, 3]}],
+            "layout": {"title": {"text": "Exact authored figure"}},
+        },
+        root=root,
+        role="figure_render",
+        logical_name="exact.plotly.json",
+        metadata={"figure": "exact", "format": "plotly-json"},
+    )
+    figure = FigureManifest(
+        id="feedbax-figure:exact-authored",
+        status="completed",
+        figure_spec=spec_payload("FigureSpec", {"name": "exact-authored"}),
+        artifacts=[plotly_json],
+    )
+    figure_entry = _write_exact_manifest_parent(
+        root,
+        figure,
+        role="figure",
+        name="figure",
+    )
+
+    scalar_artifact = provider.store_bytes(
+        canonical_json_bytes({"metrics": {"accepted": 11}}),
+        role="compact_result",
+        logical_name="compact-result.json",
+        media_type="application/json",
+    )
+    product = AnalysisDataProduct(
+        product_schema_id="science.compact_result",
+        product_schema_version="science.compact_result.v1",
+        role="summary",
+        logical_name="summary",
+        producer_manifest_id="feedbax-analysis-run:exact-authored",
+        artifacts=[scalar_artifact],
+    )
+    analysis = AnalysisRunManifest(
+        id=product.producer_manifest_id,
+        status="completed",
+        analysis_spec=spec_payload(
+            "AnalysisRunSpec",
+            {"analysis_type": "science.compact_summary"},
+        ),
+        produced_data=[product],
+    )
+    analysis_entry = _write_exact_manifest_parent(
+        root,
+        analysis,
+        role="summary",
+        name="analysis",
+    )
+    terminal_plotly_json = store_json_artifact(
+        {
+            "data": [{"type": "scatter", "x": [0, 1], "y": [2, 4]}],
+            "layout": {"title": {"text": "Terminal exact figure"}},
+        },
+        root=root,
+        role="figure_render",
+        logical_name="terminal.plotly.json",
+        metadata={"figure": "terminal", "format": "plotly-json"},
+    )
+    terminal_entry = _write_exact_manifest_parent(
+        root,
+        FigureManifest(
+            id="feedbax-figure:terminal-extension",
+            status="completed",
+            figure_spec=spec_payload("FigureSpec", {"name": "terminal-extension"}),
+            artifacts=[terminal_plotly_json],
+        ),
+        role="terminal_figure",
+        name="terminal",
+    )
+    projection = OrderedFigureReportScalarProjection(
+        schema_id=ORDERED_FIGURE_REPORT_SCALAR_PROJECTION_SCHEMA_ID,
+        schema_version=ORDERED_FIGURE_REPORT_SCALAR_PROJECTION_SCHEMA_VERSION,
+        input_role="summary",
+        product_role="summary",
+        product_schema_id="science.compact_result",
+        product_schema_version="science.compact_result.v1",
+        artifact_role="compact_result",
+        artifact_provider="evidence",
+        path=["metrics", "accepted"],
+    )
+    spec = ReportSpec(
+        report_type=ORDERED_FIGURE_REPORT_TYPE,
+        inputs=[figure_entry.parent, analysis_entry.parent],
+        params={
+            "schema_id": ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_ID,
+            "schema_version": ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_VERSION,
+            "title": "Exact authored report",
+            "output_name": "exact-authored.html",
+            "sections": [
+                {
+                    "title": "Evidence",
+                    "figures": [
+                        {"input_role": "figure", "caption": "Authored exact figure"},
+                        {
+                            "input_role": "terminal_figure",
+                            "caption": "Terminal exact figure",
+                        },
+                    ],
+                    "tables": [
+                        {
+                            "columns": ["metric", "value"],
+                            "rows": [["accepted", projection.model_dump(mode="json")]],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    spec_path = tmp_path / "report.json"
+    spec_path.write_text(spec.model_dump_json(indent=2), encoding="utf-8")
+    exact = StagedExactParents(
+        schema_id=STAGED_EXACT_PARENTS_SCHEMA_ID,
+        schema_version=STAGED_EXACT_PARENTS_SCHEMA_VERSION,
+        parents=[figure_entry, analysis_entry, terminal_entry],
+    )
+    exact_path = tmp_path / "exact-parents.json"
+    exact_path.write_text(exact.model_dump_json(indent=2), encoding="utf-8")
+    descriptor = StagedExecutionDescriptor(
+        schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+        schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+        artifact_providers={"evidence": ImmutableArtifactBlobProviderSpec()},
+        checkpoint_custody={
+            "capture": StagedCheckpointCustodySpec(
+                backend="feedbax-checkpoint-transaction-tree"
+            )
+        },
+    )
+    descriptor_path = tmp_path / "execution.json"
+    descriptor_path.write_text(descriptor.model_dump_json(indent=2), encoding="utf-8")
+
+    analysis_cli.main(
+        [
+            "report",
+            str(spec_path),
+            "--exact-parents",
+            str(exact_path),
+            "--root",
+            str(root),
+            "--execution-descriptor",
+            str(descriptor_path),
+            "--artifact-provider",
+            f"evidence={provider_root}",
+            "--checkpoint-custody",
+            f"capture={checkpoint_root}",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "completed"
+    manifest = load_manifest(payload["manifest_path"])
+    assert manifest.report_spec.inline["params"] == spec.params
+    assert manifest.inputs == [entry.parent for entry in exact.parents]
+    rendered = Path(manifest.artifacts[0].uri or "").read_text(encoding="utf-8")
+    assert "Authored exact figure" in rendered
+    assert "Terminal exact figure" in rendered
+    assert "<td>11</td>" in rendered
+    assert rendered.count("plotly.js v") == 1
 
 
 @pytest.mark.parametrize(

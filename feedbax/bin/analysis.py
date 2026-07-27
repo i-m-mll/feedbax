@@ -43,6 +43,10 @@ from feedbax.analysis.execution_context import (
     StagedManifestRootBinding,
 )
 from feedbax.analysis.specs import execute_analysis_run_spec
+from feedbax.analysis.reports import (
+    ReportRecipeExecutionError,
+    execute_authored_report_spec,
+)
 from feedbax.config import (
     PATHS,
     PLOTLY_CONFIG,
@@ -59,6 +63,7 @@ from feedbax.plugins import EXPERIMENT_REGISTRY
 logger = logging.getLogger(os.path.basename(__file__))
 
 RUN_SUBCOMMAND = "run"
+REPORT_SUBCOMMAND = "report"
 
 
 def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -246,6 +251,122 @@ def run_analysis_run_spec_file(argv: list[str]) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
+def build_report_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="feedbax-analysis report",
+        description=(
+            "Execute an authored ReportSpec JSON/YAML file against exact staged parents."
+        ),
+    )
+    parser.add_argument(
+        "spec",
+        type=Path,
+        help="Path to an authored ReportSpec JSON/YAML file.",
+    )
+    parser.add_argument(
+        "--exact-parents",
+        type=Path,
+        required=True,
+        help="Versioned authoritative StagedExactParents JSON document.",
+    )
+    parser.add_argument(
+        "--root",
+        type=Path,
+        required=True,
+        help="Explicit retained parent and report manifest/output root.",
+    )
+    parser.add_argument(
+        "--execution-descriptor",
+        type=Path,
+        default=None,
+        help="Versioned staged execution descriptor for explicit runtime bindings.",
+    )
+    parser.add_argument(
+        "--artifact-provider",
+        action="append",
+        default=[],
+        metavar="NAME=ROOT",
+        help="Bind one authenticated-manifest artifact provider root.",
+    )
+    parser.add_argument(
+        "--checkpoint-custody",
+        action="append",
+        default=[],
+        metavar="NAME=ROOT",
+        help="Bind one named checkpoint custody root.",
+    )
+    return parser
+
+
+def _report_manifest_payload(manifest, path: Path) -> dict[str, object]:
+    return {
+        "manifest_id": manifest.id,
+        "manifest_path": str(path),
+        "status": manifest.status,
+        "artifacts": [
+            artifact.model_dump(mode="json", exclude_none=True) for artifact in manifest.artifacts
+        ],
+    }
+
+
+def run_authored_report_spec_file(argv: list[str]) -> None:
+    """Execute one serialized authored ``ReportSpec`` with exact staged parents."""
+    args = build_report_arg_parser().parse_args(argv)
+    from feedbax.plugins import load_training_method_plugins
+
+    load_training_method_plugins()
+    _apply_plotly_template_default()
+    spec = _load_spec_document(args.spec, label="ReportSpec")
+    exact_payload = _load_json_object(args.exact_parents, label="--exact-parents")
+    missing_schema = [
+        field_name
+        for field_name in ("schema_id", "schema_version")
+        if field_name not in exact_payload
+    ]
+    if missing_schema:
+        raise ValueError(
+            "--exact-parents document requires explicit schema_id and "
+            f"schema_version; missing {', '.join(missing_schema)}"
+        )
+    exact_parents = StagedExactParents.model_validate(exact_payload)
+    if (args.artifact_provider or args.checkpoint_custody) and (
+        args.execution_descriptor is None
+    ):
+        raise ValueError(
+            "--artifact-provider and --checkpoint-custody require --execution-descriptor"
+        )
+    execution_descriptor = None
+    if args.execution_descriptor is not None:
+        execution_descriptor = StagedExecutionDescriptor.model_validate(
+            _load_json_object(
+                args.execution_descriptor,
+                label="--execution-descriptor",
+            )
+        )
+    artifact_provider_bindings = [
+        StagedArtifactProviderRootBinding(*_binding_parts(value, option="--artifact-provider"))
+        for value in args.artifact_provider
+    ]
+    checkpoint_custody_bindings = [
+        StagedCheckpointCustodyRootBinding(*_binding_parts(value, option="--checkpoint-custody"))
+        for value in args.checkpoint_custody
+    ]
+    try:
+        with _bundle_human_output_to_stderr():
+            manifest, path = execute_authored_report_spec(
+                spec,
+                exact_parents=exact_parents,
+                root=args.root,
+                execution_descriptor=execution_descriptor,
+                artifact_provider_bindings=artifact_provider_bindings,
+                checkpoint_custody_bindings=checkpoint_custody_bindings,
+            )
+    except ReportRecipeExecutionError as exc:
+        print(json.dumps(_report_manifest_payload(exc.manifest, exc.path), indent=2, sort_keys=True))
+        raise
+    print(json.dumps(_report_manifest_payload(manifest, path), indent=2, sort_keys=True))
+
+
 def build_arg_parser():
     parser = argparse.ArgumentParser(
         description="Run analysis modules on trained models.",
@@ -384,6 +505,9 @@ def main(argv: list[str] | None = None) -> None:
     args_in = list(argv or sys.argv[1:])
     if args_in and args_in[0] == RUN_SUBCOMMAND:
         run_analysis_run_spec_file(args_in[1:])
+        return
+    if args_in and args_in[0] == REPORT_SUBCOMMAND:
+        run_authored_report_spec_file(args_in[1:])
         return
 
     parser = build_arg_parser()

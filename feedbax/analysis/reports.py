@@ -19,9 +19,12 @@ from feedbax.analysis.execution_context import (
     StagedCheckpointCustodyRootBinding,
     StagedExecutionContext,
     StagedManifestRootBinding,
+    StagedParentExecutionLocation,
     resolve_staged_execution_context,
     with_staged_manifest_provider_inputs,
+    with_staged_parent_execution_locations,
 )
+from feedbax.analysis.exact_parents import StagedExactParents
 from feedbax.analysis.manifest_inputs import (
     is_authenticated_manifest_ref,
     resolve_manifest_input,
@@ -612,6 +615,125 @@ def execute_report_spec(
         )
         path = write_manifest(manifest, root=root_path)
         raise ReportRecipeExecutionError(manifest, path, exc) from exc
+
+
+def execute_authored_report_spec(
+    spec: ReportSpec | Mapping[str, Any] | Path | str,
+    *,
+    exact_parents: StagedExactParents | Mapping[str, Any],
+    root: Path | str,
+    execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
+    artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
+    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
+) -> tuple[ReportManifest, Path]:
+    """Execute one authored report against authoritative exact staged parents.
+
+    ``exact_parents`` is the complete runtime input membership. Every input
+    authored in ``spec`` must occur byte-for-byte in that membership. Additional
+    terminal parents are allowed only when they do not replace an authored input
+    by role or ID.
+    """
+    report_spec = coerce_report_spec(spec)
+    if isinstance(exact_parents, StagedExactParents):
+        exact_payload = exact_parents.model_dump(mode="json")
+    elif isinstance(exact_parents, Mapping):
+        exact_payload = dict(exact_parents)
+    else:
+        raise TypeError("exact_parents must be StagedExactParents or a mapping")
+    exact = StagedExactParents.model_validate(exact_payload)
+    root_path = Path(root)
+
+    exact_refs = tuple(entry.parent for entry in exact.parents)
+    _validate_authored_report_exact_parent_membership(report_spec.inputs, exact_refs)
+
+    execution_context = resolve_staged_execution_context(
+        execution_descriptor,
+        artifact_provider_bindings=artifact_provider_bindings,
+        checkpoint_custody_bindings=checkpoint_custody_bindings,
+    )
+    execution_context = with_staged_parent_execution_locations(
+        execution_context,
+        [
+            StagedParentExecutionLocation(
+                parent=entry.parent,
+                root=root_path,
+                execution_uri=entry.execution_uri,
+            )
+            for entry in exact.parents
+        ],
+    )
+    for parent in exact_refs:
+        if not is_authenticated_manifest_ref(parent):
+            raise ValueError(
+                f"exact report parent {parent.id!r} must be an authenticated manifest ref"
+            )
+        execution_context.resolve_manifest_input(parent)
+
+    execution_spec = report_spec.model_copy(
+        update={"inputs": list(exact_refs)},
+        deep=True,
+    )
+    return execute_report_spec(
+        execution_spec,
+        root=root_path,
+        execution_context=execution_context,
+    )
+
+
+def _validate_authored_report_exact_parent_membership(
+    authored_inputs: Sequence[ParentRef],
+    exact_parents: Sequence[ParentRef],
+) -> None:
+    """Require exact authored refs while allowing non-substituting terminal extensions."""
+    exact_by_value = {
+        parent.model_dump_json(exclude_none=False): parent for parent in exact_parents
+    }
+    if len(exact_by_value) != len(exact_parents):
+        raise ValueError("StagedExactParents contains a duplicate complete ParentRef")
+    exact_parent_ids = [parent.id for parent in exact_parents]
+    if len(set(exact_parent_ids)) != len(exact_parent_ids):
+        raise ValueError("StagedExactParents contains a duplicate ParentRef id")
+
+    authored_values = {
+        parent.model_dump_json(exclude_none=False) for parent in authored_inputs
+    }
+    for authored in authored_inputs:
+        serialized = authored.model_dump_json(exclude_none=False)
+        if serialized in exact_by_value:
+            continue
+        substitutions = [
+            candidate
+            for candidate in exact_parents
+            if candidate.id == authored.id
+            or (authored.role is not None and candidate.role == authored.role)
+        ]
+        if substitutions:
+            raise ValueError(
+                f"authored report input {authored.id!r} role {authored.role!r} must occur "
+                "byte-identically in StagedExactParents; role/ID substitution is forbidden"
+            )
+        raise ValueError(
+            f"authored report input {authored.id!r} role {authored.role!r} is absent "
+            "from authoritative StagedExactParents"
+        )
+
+    authored = tuple(authored_inputs)
+    for extension in exact_parents:
+        if extension.model_dump_json(exclude_none=False) in authored_values:
+            continue
+        if any(
+            extension.id == expected.id
+            or (
+                extension.role is not None
+                and expected.role is not None
+                and extension.role == expected.role
+            )
+            for expected in authored
+        ):
+            raise ValueError(
+                f"terminal exact parent {extension.id!r} role {extension.role!r} "
+                "conflicts with an authored report input by role or ID"
+            )
 
 
 def _validate_report_result(report_type: str, result: ReportRecipeResult) -> None:
