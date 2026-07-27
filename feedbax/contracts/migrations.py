@@ -149,6 +149,8 @@ from feedbax.contracts.figures import (
     FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION,
     FIGURE_PIECE_SCHEMA_ID,
     FIGURE_PIECE_SCHEMA_VERSION,
+    FIGURE_SLOT_FAMILY_SCHEMA_ID,
+    FIGURE_SLOT_FAMILY_SCHEMA_VERSION,
     FIGURE_SPEC_SCHEMA_ID,
     FIGURE_SPEC_SCHEMA_VERSION,
     FIGURE_TEMPLATE_SCHEMA_ID,
@@ -2657,6 +2659,16 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Role-addressed authority binding to one declared FigureSpec input."
             ),
             required_tests=("tests/test_figure_input_authority.py",),
+        ),
+        _family(
+            "FigureSlotFamily",
+            FIGURE_SLOT_FAMILY_SCHEMA_ID,
+            FIGURE_SLOT_FAMILY_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("FigureSpec.slot_families",),
+            consumed_by=("feedbax.analysis.figures.resolve_figure_trace_bindings",),
+            description="Constrained row family bound to one figure-template slot.",
+            required_tests=("tests/test_figure_slot_families.py",),
         ),
         _family(
             "FigureSpec",

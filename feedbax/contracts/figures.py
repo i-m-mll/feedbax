@@ -27,6 +27,13 @@ Additive changelog, 2026-07-27: ``FigureSpec.input_authorities`` accepts the
 versioned ``FigureInputRoleAuthority`` form. It selects exactly one already
 declared input by role and resolves to that input's complete ``ParentRef``;
 the existing exact-parent authority form and its canonical bytes are unchanged.
+
+Additive changelog, 2026-07-27: ``FigureSpec.slot_families`` accepts optional
+versioned ``FigureSlotFamily`` declarations. Each declaration binds one
+template slot from an explicit row table and expands to ordinary
+``TraceBinding`` values before template validation. The field is an optional
+None-default, so pre-existing FigureSpec and FigureTemplate identity bytes and
+schema versions are unchanged.
 """
 
 from __future__ import annotations
@@ -56,6 +63,8 @@ FIGURE_PIECE_SCHEMA_ID = "feedbax.spec.figure_piece"
 FIGURE_PIECE_SCHEMA_VERSION = "feedbax.spec.figure_piece.v1"
 FIGURE_TRACE_FAMILY_SCHEMA_ID = "feedbax.spec.figure_trace_family"
 FIGURE_TRACE_FAMILY_SCHEMA_VERSION = "feedbax.spec.figure_trace_family.v1"
+FIGURE_SLOT_FAMILY_SCHEMA_ID = "feedbax.spec.figure_slot_family"
+FIGURE_SLOT_FAMILY_SCHEMA_VERSION = "feedbax.spec.figure_slot_family.v1"
 FIGURE_COLORBAR_SCHEMA_ID = "feedbax.spec.figure_colorbar"
 FIGURE_COLORBAR_SCHEMA_VERSION = "feedbax.spec.figure_colorbar.v1"
 
@@ -104,6 +113,105 @@ class TraceBinding(StrictModel):
     include_when: Expr | None = None
     required: bool = False
     panel: str | None = None
+
+
+class FigureSlotFamilyRow(StrictModel):
+    """One explicit row in a compact template-slot family.
+
+    Every supported varying field is named directly. Nullable fields are still
+    required in serialized rows, so an omitted label, color, marker, or panel
+    cannot be mistaken for an authoring oversight; use ``null`` deliberately.
+    ``data_paths`` maps constructor data argument names to existing figure
+    value expressions and provides no interpolation or expression syntax of
+    its own.
+    """
+
+    name: str
+    panel: str | None
+    data_paths: dict[str, ValueExpr]
+    label: str | None
+    color: str | None
+    marker: str | None
+
+
+class FigureSlotFamily(StrictModel):
+    """A constrained row family that supplies one figure-template slot."""
+
+    schema_id: str = FIGURE_SLOT_FAMILY_SCHEMA_ID
+    schema_version: str = FIGURE_SLOT_FAMILY_SCHEMA_VERSION
+    name: str
+    slot: str
+    rows: list[FigureSlotFamilyRow] = Field(min_length=1)
+    constructor: str = ""
+    data: dict[str, ValueExpr | Any] = Field(default_factory=dict)
+    params: dict[str, Any] = Field(default_factory=dict)
+    required: bool = False
+
+    @model_validator(mode="after")
+    def _validate_family(self) -> "FigureSlotFamily":
+        if self.schema_id != FIGURE_SLOT_FAMILY_SCHEMA_ID:
+            raise ValueError(f"unsupported FigureSlotFamily schema_id: {self.schema_id!r}")
+        if self.schema_version != FIGURE_SLOT_FAMILY_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported FigureSlotFamily schema_version: {self.schema_version!r}"
+            )
+        if not self.name:
+            raise ValueError("FigureSlotFamily name must be nonempty")
+        if not self.slot:
+            raise ValueError("FigureSlotFamily slot must be nonempty")
+        collisions = _name_collisions([row.name for row in self.rows])
+        if collisions:
+            raise ValueError(
+                f"FigureSlotFamily {self.name!r} rows have duplicate trace names: {collisions}"
+            )
+        for row in self.rows:
+            overlap = sorted(set(self.data) & set(row.data_paths))
+            if overlap:
+                raise ValueError(
+                    f"FigureSlotFamily {self.name!r} row {row.name!r} data paths collide "
+                    f"with common data keys: {overlap}"
+                )
+            row_params = {
+                key
+                for key, value in (
+                    ("label", row.label),
+                    ("color", row.color),
+                    ("marker_symbol", row.marker),
+                )
+                if value is not None
+            }
+            param_overlap = sorted(set(self.params) & row_params)
+            if param_overlap:
+                raise ValueError(
+                    f"FigureSlotFamily {self.name!r} row {row.name!r} fields collide "
+                    f"with common params: {param_overlap}"
+                )
+        return self
+
+    def expand(self) -> tuple[TraceBinding, ...]:
+        """Expand rows deterministically into ordinary concrete bindings."""
+        bindings: list[TraceBinding] = []
+        for row in self.rows:
+            row_params = {
+                key: value
+                for key, value in (
+                    ("label", row.label),
+                    ("color", row.color),
+                    ("marker_symbol", row.marker),
+                )
+                if value is not None
+            }
+            bindings.append(
+                TraceBinding(
+                    name=row.name,
+                    constructor=self.constructor,
+                    data={**self.data, **row.data_paths},
+                    params={**self.params, **row_params},
+                    required=self.required,
+                    panel=row.panel,
+                )
+            )
+        return tuple(bindings)
 
 
 def _name_collisions(names: Sequence[str]) -> list[str]:
@@ -579,6 +687,9 @@ class FigureTemplate(StrictModel):
             )
         if len(set(self.facet_by)) != len(self.facet_by):
             raise ValueError("FigureTemplate facet_by entries must be unique")
+        slot_collisions = _name_collisions([slot.name for slot in self.slots])
+        if slot_collisions:
+            raise ValueError(f"FigureTemplate slot names collide: {slot_collisions}")
         if any(slot.multiplicity == "per_facet" for slot in self.slots) and not self.facet_by:
             raise ValueError(
                 "FigureTemplate per_facet slots require at least one facet_by dimension"
@@ -638,6 +749,9 @@ class FigureSpec(StrictModel):
     inputs: list[ParentRef] = Field(default_factory=list)
     input_authorities: list[FigureInputAuthoritySpec] = Field(default_factory=list)
     slot_bindings: dict[str, TraceBinding | list[TraceBinding]] = Field(default_factory=dict)
+    # None-default preserves canonical bytes for FigureSpec documents authored
+    # before compact template-slot families existed.
+    slot_families: list[FigureSlotFamily] | None = None
     traces: list[TraceBinding] = Field(default_factory=list)
     # None-default so per-trace specs authored before trace families keep their
     # exact canonical JSON, spec payload, and figure-manifest identity bytes.
@@ -680,9 +794,28 @@ class FigureSpec(StrictModel):
         unknown = [parent for parent in authority_parents if parent not in self.inputs]
         if unknown:
             raise ValueError("FigureSpec input authority parent must exactly match a declared input")
+        self._validate_slot_families()
         self._validate_trace_families()
+        self._validate_trace_names()
         self._validate_colorbar_binding()
         return self
+
+    def _validate_slot_families(self) -> None:
+        families = self.slot_families or []
+        family_collisions = _name_collisions([family.name for family in families])
+        if family_collisions:
+            raise ValueError(f"FigureSpec slot_families names collide: {family_collisions}")
+        slot_collisions = _name_collisions([family.slot for family in families])
+        if slot_collisions:
+            raise ValueError(
+                f"FigureSpec slot_families bind the same slot more than once: {slot_collisions}"
+            )
+        concrete_collisions = sorted(set(self.slot_bindings) & {family.slot for family in families})
+        if concrete_collisions:
+            raise ValueError(
+                "FigureSpec slots are bound by both slot_bindings and slot_families: "
+                f"{concrete_collisions}"
+            )
 
     def _validate_trace_families(self) -> None:
         families = self.trace_families or []
@@ -691,16 +824,24 @@ class FigureSpec(StrictModel):
         family_collisions = _name_collisions([family.name for family in families])
         if family_collisions:
             raise ValueError(f"FigureSpec trace_families names collide: {family_collisions}")
-        expanded = [name for family in families for name in family.expanded_trace_names()]
-        declared = {trace.name for trace in self.traces}
-        collisions = sorted(
-            set(_name_collisions(expanded)) | (set(expanded) & declared)
+        self._validate_interleave_groups(families)
+
+    def _validate_trace_names(self) -> None:
+        names = [trace.name for trace in self.traces]
+        for raw in self.slot_bindings.values():
+            names.extend(binding.name for binding in (raw if isinstance(raw, list) else [raw]))
+        names.extend(
+            binding.name for family in (self.slot_families or []) for binding in family.expand()
         )
+        names.extend(
+            name for family in (self.trace_families or []) for name in family.expanded_trace_names()
+        )
+        collisions = _name_collisions(names)
         if collisions:
             raise ValueError(
-                f"FigureSpec trace family expansion collides with other trace names: {collisions}"
+                "FigureSpec trace family or slot-family expansion collides with other "
+                f"trace names: {collisions}"
             )
-        self._validate_interleave_groups(families)
 
     @staticmethod
     def _validate_interleave_groups(families: Sequence[TraceFamily]) -> None:
