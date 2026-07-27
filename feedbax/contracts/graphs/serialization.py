@@ -46,6 +46,8 @@ from feedbax.intervene.intervene import (
     FixedField,
     NetworkClamp,
     NetworkConstantInput,
+    THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
+    ThresholdLatchedForce,
 )
 from feedbax.mechanics.linear_state_space import (
     STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
@@ -752,6 +754,16 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             nodes[name] = ComponentSpec(
                 type="FixedField",
                 params=params,
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+
+        if isinstance(component, ThresholdLatchedForce):
+            nodes[name] = ComponentSpec(
+                type="ThresholdLatchedForce",
+                params=component.to_params(),
+                param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
             )

@@ -12,6 +12,7 @@ from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, PENZAI_DOMAIN_ID
 from feedbax.contracts.graphs.mechanics_templates import point_mass_template_graph
 from feedbax.contracts.graph import ParamSchema
 from feedbax.contracts.graphs.penzai_compiler import penzai_builder_options
+from feedbax.contracts.migrations import ComponentMigration
 from feedbax.contracts.representation import RepresentationSpec
 from feedbax.control.affine import affine_feedback_output_prototype
 from feedbax.mechanics.muscle_config import (
@@ -27,6 +28,10 @@ from feedbax.runtime.affine_composer import (
 )
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.state_feedback import state_feedback_output_prototype
+from feedbax.intervene.intervene import (
+    THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
+    THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1,
+)
 
 from .acausal_adapters import register_acausal_components
 from .meta import ComponentMeta, MissingPrototypeInput
@@ -35,6 +40,17 @@ from .templates import register_builtin_graph_templates
 
 class _Registry(Protocol):
     def register(self, meta: ComponentMeta) -> None: ...
+
+    def register_migration(self, migration: ComponentMigration) -> None: ...
+
+
+def _migrate_threshold_latched_force_v1(params: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(params)
+    selector = dict(migrated["state_selector"])
+    selector["kind"] = "fixed"
+    migrated["state_selector"] = selector
+    migrated["lateral_force"] = 0.0
+    return migrated
 
 
 def _missing_input(port: str, *, component: str) -> MissingPrototypeInput:
@@ -2110,6 +2126,83 @@ def register_builtin_components(registry: _Registry) -> None:
                 outputs={'force': PortType(dtype='vector')},
             ),
             output_prototype_fn=force_passthrough_output_prototype,
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='ThresholdLatchedForce',
+            category='Interventions',
+            description='Additive force latched by a runtime state-threshold crossing.',
+            param_schema=[
+                ParamSchema(
+                    name='state_selector',
+                    type='object',
+                    default={'kind': 'fixed', 'path': ['pos', 0]},
+                    required=True,
+                ),
+                ParamSchema(
+                    name='direction',
+                    type='enum',
+                    options=['increasing', 'decreasing'],
+                    default='increasing',
+                    required=True,
+                ),
+                ParamSchema(name='threshold', type='float', default=0.0, required=True),
+                ParamSchema(
+                    name='force',
+                    type='array',
+                    default=[0.0, 0.0],
+                    required=True,
+                ),
+                ParamSchema(
+                    name='lateral_force',
+                    type='float',
+                    default=0.0,
+                    required=False,
+                ),
+                ParamSchema(
+                    name='ramp_duration',
+                    type='float',
+                    default=0.0,
+                    min=0.0,
+                    required=False,
+                ),
+                ParamSchema(name='scale', type='float', default=1.0, required=True),
+                ParamSchema(name='active', type='bool', default=False, required=False),
+                ParamSchema(name='dt', type='float', default=0.01, min=0.0, required=True),
+                ParamSchema(
+                    name='label',
+                    type='str',
+                    default='threshold_latched_force',
+                    required=False,
+                ),
+            ],
+            param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
+            input_ports=['state', 'target', 'force', 'params_override'],
+            output_ports=['force'],
+            icon='Flag',
+            port_types=PortTypeSpec(
+                inputs={
+                    'state': PortType(dtype='state'),
+                    'target': PortType(dtype='state'),
+                    'force': PortType(dtype='vector'),
+                    'params_override': PortType(dtype='object'),
+                },
+                outputs={'force': PortType(dtype='vector')},
+            ),
+            output_prototype_fn=force_passthrough_output_prototype,
+        )
+    )
+    registry.register_migration(
+        ComponentMigration(
+            source_type='ThresholdLatchedForce',
+            target_type='ThresholdLatchedForce',
+            owner='feedbax',
+            source_param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1,
+            target_param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
+            migration_id='feedbax.component.ThresholdLatchedForce.params.v1-to-v2',
+            migrate_params=_migrate_threshold_latched_force_v1,
+            description='Classify legacy state selectors as fixed-coordinate selectors.',
         )
     )
     registry.register(
