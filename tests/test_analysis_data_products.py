@@ -4,12 +4,14 @@ import inspect
 
 import pytest
 
+from feedbax.analysis.context import AnalysisRunContext
 from feedbax.contracts.graph import AnalysisDataProductRequirement
 from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
     AnalysisDataProduct,
     AnalysisRunManifest,
+    AnalysisRunSpec,
     ArtifactRef,
     ParentRef,
     load_manifest,
@@ -172,6 +174,50 @@ def test_analysis_data_product_requirement_validates_resolved_manifest_success()
                 "produced_data": [product.model_dump(mode="json", exclude_none=True)],
             }
         ],
+    )
+
+    assert result.valid is True
+
+
+def test_context_recorded_product_satisfies_public_consumer_requirement(tmp_path) -> None:
+    context = AnalysisRunContext(
+        spec=AnalysisRunSpec(analysis_type="downstream.scalar_projection"),
+        root=tmp_path,
+        index_manifest=False,
+    )
+    product = context.record_data_product(
+        {"value": 1.25},
+        product_schema_id="downstream.scalar_projection",
+        product_schema_version="downstream.scalar_projection.v1",
+        role="peak_velocity_scalar",
+        logical_name="peak_velocity_scalar",
+        materialization={"scalar_path": "value"},
+    )
+    manifest, _path = context.finalize()
+
+    result = validate_analysis_spec(
+        {
+            "analysis_type": "downstream.scalar_consumer",
+            "inputs": [
+                {
+                    "kind": "AnalysisRunManifest",
+                    "id": manifest.id,
+                }
+            ],
+            "input_requirements": [
+                {
+                    "data_product": {
+                        "role": product.role,
+                        "product_schema_id": product.product_schema_id,
+                        "exact_product_schema_version": product.product_schema_version,
+                        "logical_name": product.logical_name,
+                        "producer_manifest_id": manifest.id,
+                        "artifact_sha256": product.artifacts[0].sha256,
+                    }
+                }
+            ],
+        },
+        resolved_manifests=[manifest.model_dump(mode="json", exclude_none=True)],
     )
 
     assert result.valid is True
