@@ -29,10 +29,12 @@ from feedbax.analysis.execution import (
     run_analysis_module,
 )
 from feedbax.analysis.bundles import (
+    AnalysisBundleDeltaSpec,
     dry_run_staged_analysis_bundle,
     execute_analysis_bundle,
     execute_staged_analysis_bundle,
     load_analysis_bundle,
+    resolve_analysis_bundle_authoring,
 )
 from feedbax.analysis.exact_parents import StagedExactParents
 from feedbax.analysis.execution_context import (
@@ -250,6 +252,10 @@ def build_arg_parser():
         help="Run a manifest-canonical analysis bundle (e.g., rlrmp/standard_matrix)",
     )
     parser.add_argument(
+        "--repo-root",
+        help="Repository root for resolving a bundle delta's content-pinned parents.",
+    )
+    parser.add_argument(
         "--fig-dump-dir",
         type=str,
         default=Path(PATHS.figures_dump) / "analysis",
@@ -386,7 +392,13 @@ def main(argv: list[str] | None = None) -> None:
     fig_dump_formats = args.fig_dump_formats.split(",")
 
     if args.bundle:
-        bundle = load_analysis_bundle(args.bundle, registry=EXPERIMENT_REGISTRY)
+        authored_bundle = load_analysis_bundle(args.bundle, registry=EXPERIMENT_REGISTRY)
+        bundle = authored_bundle
+        if isinstance(authored_bundle, AnalysisBundleDeltaSpec):
+            bundle, _flattening = resolve_analysis_bundle_authoring(
+                authored_bundle,
+                repo_root=args.repo_root,
+            )
         run_ids = (
             [item.strip() for item in args.runs.split(",") if item.strip()]
             if args.runs is not None
@@ -399,6 +411,8 @@ def main(argv: list[str] | None = None) -> None:
             "fig_dump_path": Path(args.fig_dump_dir),
             "fig_dump_formats": fig_dump_formats,
         }
+        if isinstance(authored_bundle, AnalysisBundleDeltaSpec):
+            execution_kwargs["repo_root"] = Path(args.repo_root) if args.repo_root else None
         if bundle.templates and not bundle.stages:
             if args.exact_parents is not None:
                 raise ValueError("--exact-parents is only valid for staged analysis bundles")
@@ -407,7 +421,7 @@ def main(argv: list[str] | None = None) -> None:
             if args.dry_run:
                 raise ValueError("--dry-run is only valid for staged analysis bundles")
             with _bundle_human_output_to_stderr():
-                outputs = execute_analysis_bundle(bundle, **execution_kwargs)
+                outputs = execute_analysis_bundle(authored_bundle, **execution_kwargs)
             payload = [
                 {
                     "bundle": expansion.bundle_name,
@@ -457,8 +471,9 @@ def main(argv: list[str] | None = None) -> None:
             if args.dry_run:
                 with _bundle_human_output_to_stderr():
                     dry_run = dry_run_staged_analysis_bundle(
-                        bundle,
+                        authored_bundle,
                         root=execution_kwargs["root"],
+                        repo_root=execution_kwargs.get("repo_root"),
                         run_ids=run_ids,
                         exact_parents=exact_parents,
                         execution_descriptor=execution_descriptor,
@@ -469,7 +484,7 @@ def main(argv: list[str] | None = None) -> None:
             else:
                 with _bundle_human_output_to_stderr():
                     execution = execute_staged_analysis_bundle(
-                        bundle,
+                        authored_bundle,
                         exact_parents=exact_parents,
                         execution_descriptor=execution_descriptor,
                         artifact_provider_bindings=artifact_provider_bindings,
