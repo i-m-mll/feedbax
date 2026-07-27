@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -40,6 +41,7 @@ from feedbax.contracts.training import (
     TrainingConfig,
     TrainingRunSpec,
     WorkerExecutionSpec,
+    default_training_method_registry,
     standard_supervised_effective_phase_spec,
     standard_supervised_method_contract,
     standard_supervised_method_payload,
@@ -59,6 +61,8 @@ from feedbax.orchestration import (
     assemble_run_bundle,
     run_authority_preflight_checks,
 )
+from feedbax.plugins import load_training_method_plugins
+from feedbax.training.preparation import ExecutionPreparationProviderRegistry
 from feedbax.training.row_lowering import (
     TrainingRowLowererRegistration,
     TrainingRowLowererRegistry,
@@ -337,7 +341,88 @@ def test_orchestration_cli_discovers_and_lowers_downstream_rows(
     ]["payload"]["sha256"]
 
 
-def test_registry_fails_closed_on_missing_broken_ambiguous_and_drifted_lowerers() -> None:
+def test_registry_exact_registration_replay_is_idempotent() -> None:
+    registry = TrainingRowLowererRegistry()
+    registration = _registration()
+
+    registry.register(registration)
+    keys = registry.available_keys()
+    registry.register(_registration())
+
+    assert registry.available_keys() == keys
+
+
+def test_plugin_style_second_load_replays_exact_registration() -> None:
+    registry = TrainingRowLowererRegistry()
+    plugin = SimpleNamespace(
+        register_feedbax_training_row_lowerers=lambda target: target.register(
+            _registration()
+        )
+    )
+    entry_point = SimpleNamespace(name="downstream", load=lambda: plugin)
+
+    for _ in range(2):
+        load_training_method_plugins(
+            registry=default_training_method_registry(),
+            preparation_registry=ExecutionPreparationProviderRegistry(),
+            row_lowerer_registry=registry,
+            entry_points=[entry_point],
+            fail_on_load_error=True,
+        )
+
+    assert registry.available_keys() == (
+        (
+            _AUTHORED_SCHEMA_ID,
+            _AUTHORED_SCHEMA_VERSION,
+            _LOWERER_ID,
+            _LOWERER_VERSION,
+        ),
+    )
+
+
+def test_registry_rejects_conflicting_registration_owner() -> None:
+    registry = TrainingRowLowererRegistry()
+    registration = _registration()
+    registry.register(registration)
+
+    with pytest.raises(
+        TrainingRowLowererRegistryError,
+        match="ambiguous.*owners 'tests' and 'other'",
+    ):
+        registry.register(replace(registration, owner="other"))
+
+    assert registry.available_keys() == (
+        (
+            _AUTHORED_SCHEMA_ID,
+            _AUTHORED_SCHEMA_VERSION,
+            _LOWERER_ID,
+            _LOWERER_VERSION,
+        ),
+    )
+
+
+def test_registry_rejects_conflicting_registration_implementation() -> None:
+    registry = TrainingRowLowererRegistry()
+    registration = _registration()
+    registry.register(registration)
+
+    with pytest.raises(
+        TrainingRowLowererRegistryError,
+        match="ambiguous.*implementation sha256 values",
+    ):
+        registry.register(replace(registration, implementation_sha256="0" * 64))
+
+    assert registry.available_keys() == (
+        (
+            _AUTHORED_SCHEMA_ID,
+            _AUTHORED_SCHEMA_VERSION,
+            _LOWERER_ID,
+            _LOWERER_VERSION,
+        ),
+    )
+
+
+def test_registry_fails_closed_on_missing_broken_and_drifted_lowerers() -> None:
     row = AuthoredTrainingRow(
         row_id="row",
         row_index=0,
@@ -352,11 +437,6 @@ def test_registry_fails_closed_on_missing_broken_ambiguous_and_drifted_lowerers(
     broken.register(_registration(broken=True))
     with pytest.raises(TrainingRowLowererRegistryError, match="broken by design"):
         broken.lower(row, TrainingRowLoweringContext())
-
-    ambiguous = TrainingRowLowererRegistry()
-    ambiguous.register(_registration())
-    with pytest.raises(TrainingRowLowererRegistryError, match="ambiguous"):
-        ambiguous.register(_registration())
 
     drifted = TrainingRowLowererRegistry()
     registration = _registration()

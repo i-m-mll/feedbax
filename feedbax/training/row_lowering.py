@@ -135,7 +135,12 @@ class TrainingRowLoweringContext:
 
 @dataclass(frozen=True)
 class TrainingRowLowererRegistration:
-    """One exact authored-schema to execution-payload lowering registration."""
+    """One exact authored-schema to execution-payload lowering registration.
+
+    ``implementation_sha256`` is the public implementation identity. Registries
+    treat a repeated registration as identical only when both this identity and
+    ``owner`` match the existing registration for the same authority key.
+    """
 
     authored_schema_id: str
     authored_schema_version: str
@@ -174,16 +179,33 @@ class TrainingRowLowererRegistry:
         ] = {}
 
     def register(self, registration: TrainingRowLowererRegistration) -> None:
-        """Register one exact lowering authority, rejecting ambiguity."""
+        """Register one exact lowering authority.
+
+        Replaying the same owner and implementation identity is idempotent.
+        Conflicting ownership or implementation identity remains ambiguous and
+        fails before the existing registration is changed.
+        """
         if not isinstance(registration, TrainingRowLowererRegistration):
             raise TypeError("registration must be a TrainingRowLowererRegistration")
         registration.validate_structure()
         key = self._key(registration)
         existing = self._registrations.get(key)
         if existing is not None:
+            if (
+                existing.owner == registration.owner
+                and existing.implementation_sha256 == registration.implementation_sha256
+            ):
+                return
+            if existing.owner != registration.owner:
+                conflict = f"owners {existing.owner!r} and {registration.owner!r}"
+            else:
+                conflict = (
+                    "implementation sha256 values "
+                    f"{existing.implementation_sha256!r} and "
+                    f"{registration.implementation_sha256!r}"
+                )
             raise TrainingRowLowererRegistryError(
-                "ambiguous training row lowerer registration for "
-                f"{key!r}: owners {existing.owner!r} and {registration.owner!r}"
+                f"ambiguous training row lowerer registration for {key!r}: {conflict}"
             )
         self._registrations[key] = registration
 
