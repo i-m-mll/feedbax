@@ -594,11 +594,26 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             continue
 
         if isinstance(component, StructuralLinearStateSpace):
+            if component.initial_delta_A_entries is None:
+                delta_A_param = [
+                    list(row) for row in component.initial_delta_A
+                ]
+            else:
+                delta_A_param = {
+                    "shape": [
+                        len(component.initial_delta_A),
+                        len(component.initial_delta_A),
+                    ],
+                    "entries": [
+                        {"row": row, "column": column, "value": value}
+                        for row, column, value in component.initial_delta_A_entries
+                    ],
+                }
             params = {
                 "A": component.A.tolist(),
                 "B": component.B.tolist(),
                 "B_w": component.B_w.tolist(),
-                "delta_A": [list(row) for row in component.initial_delta_A],
+                "delta_A": delta_A_param,
                 "scale": component.initial_scale,
                 "active": component.initial_active,
                 "label": component.label,
