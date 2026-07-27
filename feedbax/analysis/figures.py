@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import product
@@ -34,6 +35,7 @@ from feedbax.contracts.figures import (
     FigureInputAuthority,
     FigureInputAuthoritySpec,
     FigureSpec,
+    FigureTemplate,
     TraceBinding,
     TraceFamily,
     substitute_index,
@@ -570,7 +572,7 @@ def _build_figures(
             for combination in combinations
         ]
 
-    trace_bindings = _trace_bindings_for_spec(spec, template)
+    trace_bindings = resolve_figure_trace_bindings(spec, template)
     panel_constructor_key = assembler_params.get("panel_constructor", "feedbax.comparison_grid")
     panel_registration = get_figure_constructor(panel_constructor_key, tier="panel")
     exec_trace.constructor_versions[panel_constructor_key] = panel_registration.version
@@ -835,16 +837,36 @@ def resolve_figure_colorbar(spec: FigureSpec) -> FigureColorbar | None:
     )
 
 
-def _trace_bindings_for_spec(spec: FigureSpec, template: Any | None) -> list[TraceBindingPlan]:
+def resolve_figure_trace_bindings(
+    spec: FigureSpec,
+    template: FigureTemplate | None,
+) -> tuple[TraceBindingPlan, ...]:
+    """Resolve every declared trace through the one public binding path.
+
+    Slot families first expand to ordinary bindings; those bindings then pass
+    through exactly the same slot defaults, constructor inheritance, and
+    multiplicity checks as hand-enumerated ``slot_bindings``.
+    """
     bindings: list[TraceBindingPlan] = []
+    slot_families = {family.slot: family for family in (spec.slot_families or [])}
     if template is not None:
-        for slot in getattr(template, "slots", []):
+        known_slots = {slot.name for slot in template.slots}
+        unknown_slots = sorted((set(spec.slot_bindings) | set(slot_families)) - known_slots)
+        if unknown_slots:
+            raise ValueError(f"FigureSpec binds unknown template slots: {unknown_slots}")
+        for slot in template.slots:
             raw = spec.slot_bindings.get(slot.name)
-            if raw is None:
+            family = slot_families.get(slot.name)
+            if raw is None and family is None:
                 if slot.required:
                     raise ValueError(f"FigureSpec missing required template slot {slot.name!r}")
                 continue
-            slot_bindings = raw if isinstance(raw, list) else [raw]
+            if family is not None:
+                slot_bindings = list(family.expand())
+            else:
+                slot_bindings = raw if isinstance(raw, list) else [raw]
+            if not slot_bindings and slot.required:
+                raise ValueError(f"FigureSpec missing required template slot {slot.name!r}")
             if slot.multiplicity in {"one", "per_facet"} and len(slot_bindings) != 1:
                 raise ValueError(
                     f"Template slot {slot.name!r} with multiplicity {slot.multiplicity!r} "
@@ -863,6 +885,11 @@ def _trace_bindings_for_spec(spec: FigureSpec, template: Any | None) -> list[Tra
                         multiplicity=slot.multiplicity,
                     )
                 )
+    elif spec.slot_bindings or slot_families:
+        unknown_slots = sorted(set(spec.slot_bindings) | set(slot_families))
+        raise ValueError(
+            f"FigureSpec without a template cannot bind template slots: {unknown_slots}"
+        )
     bindings.extend(
         TraceBindingPlan(binding=binding, multiplicity="many") for binding in spec.traces
     )
@@ -894,7 +921,12 @@ def _trace_bindings_for_spec(spec: FigureSpec, template: Any | None) -> list[Tra
                 multiplicity="many",
             )
         )
-    return bindings
+    collisions = sorted(
+        name for name, count in Counter(plan.binding.name for plan in bindings).items() if count > 1
+    )
+    if collisions:
+        raise ValueError(f"FigureSpec resolved trace names collide: {collisions}")
+    return tuple(bindings)
 
 
 def _panel_contents(
