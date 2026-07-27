@@ -127,6 +127,47 @@ def _resolve_typed_rows(batch, root: Path) -> list[TypedRowStates]:
         unregister_analysis_recipe(ANALYSIS_TYPE)
 
 
+def test_matrix_recipes_receive_one_resolved_repo_root_for_scalar_and_batch(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    scalar_roots: list[Path | None] = []
+    batch_roots: list[Path | None] = []
+
+    def scalar_recipe(spec, _root, _states_path, execution_context):
+        scalar_roots.append(execution_context.repo_root)
+        return _result(spec.params["gain"])
+
+    def batch_recipe(items, execution_context):
+        batch_roots.append(execution_context.repo_root)
+        return [_result(item.spec.params["gain"]) for item in items]
+
+    register_evaluation_recipe(
+        EVALUATION_TYPE,
+        scalar_recipe,
+        batch_recipe=batch_recipe,
+        replace=True,
+    )
+    try:
+        execute_evaluation_run_matrix(
+            _matrix(),
+            root=tmp_path / "scalar",
+            repo_root=repo_root,
+        )
+        execute_evaluation_run_matrix(
+            _matrix(),
+            root=tmp_path / "batch",
+            repo_root=repo_root,
+            batch=EvaluationBatchExecution(),
+        )
+    finally:
+        unregister_evaluation_recipe(EVALUATION_TYPE)
+
+    assert scalar_roots == [repo_root.resolve()] * 3
+    assert batch_roots == [repo_root.resolve()]
+
+
 def _staged_matrix(tmp_path: Path, states):
     parent_root = tmp_path / "parents"
     parent_id = "feedbax-evaluation-run:batch-prerequisite"

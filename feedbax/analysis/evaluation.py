@@ -94,6 +94,7 @@ from feedbax.analysis.execution_context import (
     StagedParentExecutionLocation,
     resolve_staged_execution_context,
     with_staged_parent_execution_locations,
+    with_staged_repo_root,
 )
 from feedbax.analysis.manifest_inputs import (
     is_authenticated_manifest_ref,
@@ -488,6 +489,7 @@ def execute_evaluation_run_matrix(
             }
         staged_parents = matrix_metadata.get("staged_parents", {})
 
+    execution_context = with_staged_repo_root(execution_context, repo_root)
     regeneration_parameters = {
         "executable_spec": executable_spec,
         "manifest_root": str(Path(root).resolve()),
@@ -1087,6 +1089,7 @@ def execute_evaluation_run_spec(
     spec: EvaluationRunSpec | Mapping[str, Any] | Path | str,
     *,
     root: Path | str | None = None,
+    repo_root: Path | str | None = None,
     provenance: Provenance | None = None,
     issues: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -1103,6 +1106,7 @@ def execute_evaluation_run_spec(
     run_spec = coerce_evaluation_run_spec(spec)
     recipe = get_evaluation_recipe(run_spec.evaluation_type)
     root_path = Path(root) if root is not None else default_manifest_root()
+    execution_context = with_staged_repo_root(execution_context, repo_root)
     manifest_id = evaluation_run_manifest_id(run_spec)
     states_path = evaluation_states_cache_path(manifest_id, root=root_path)
     manifest_path = (

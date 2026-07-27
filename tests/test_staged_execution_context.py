@@ -32,6 +32,7 @@ from feedbax.analysis.execution_context import (
     resolve_staged_execution_context,
     with_staged_manifest_provider_inputs,
     with_staged_parent_execution_locations,
+    with_staged_repo_root,
 )
 from feedbax.analysis.evaluation_inputs import (
     EvaluationInputReferenceError,
@@ -211,6 +212,23 @@ def test_resolver_binds_two_providers_and_checkpoint_without_portable_roots(
     )
     transient.unlink()
     assert context.artifact_provider("primary").get_bytes(artifact) == b"durable-provider-bytes"
+
+
+def test_repo_root_binding_is_runtime_only_and_rejects_conflicting_authority(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    other_root = tmp_path / "other"
+    repo_root.mkdir()
+    other_root.mkdir()
+
+    context = with_staged_repo_root(EMPTY_STAGED_EXECUTION_CONTEXT, repo_root)
+
+    assert context.repo_root == repo_root.resolve()
+    assert context.descriptor is None
+    assert with_staged_repo_root(context, repo_root) is context
+    with pytest.raises(StagedExecutionContextError, match="repo_root disagrees"):
+        with_staged_repo_root(context, other_root)
 
 
 def test_descriptor_is_discoverable_with_explicit_reject_migration_policy() -> None:

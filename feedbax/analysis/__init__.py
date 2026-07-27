@@ -39,6 +39,7 @@ from .execution_context import (
     resolve_staged_execution_context,
     with_staged_manifest_provider_inputs,
     with_staged_parent_execution_locations,
+    with_staged_repo_root,
 )
 from feedbax.contracts.staged_execution import (
     STAGED_CHECKPOINT_CUSTODY_BACKEND,
@@ -305,6 +306,7 @@ __all__ = [
     "resolve_authenticated_evaluation_channels",
     "resolve_staged_execution_context",
     "with_staged_manifest_provider_inputs",
+    "with_staged_repo_root",
     "registered_report_types",
     "get_evaluation_recipe",
     "unregister_analysis_recipe",

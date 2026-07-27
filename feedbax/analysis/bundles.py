@@ -24,6 +24,7 @@ from feedbax.analysis.execution_context import (
     StagedParentExecutionLocation,
     resolve_staged_execution_context,
     with_staged_parent_execution_locations,
+    with_staged_repo_root,
 )
 from feedbax.analysis.exact_parents import StagedExactParents
 from feedbax.analysis.figures import FIGURE_RENDER_ROLE, execute_figure_spec
@@ -1882,6 +1883,7 @@ def execute_analysis_bundle(
         manifest, path = execute_analysis_run_spec(
             expansion.spec,
             root=root_path,
+            repo_root=repo_root,
             issues=issues,
             metadata={"bundle": bundle_metadata},
             fig_dump_path=fig_dump_path,
@@ -2251,6 +2253,7 @@ def execute_staged_analysis_bundle(
         artifact_provider_bindings=artifact_provider_bindings,
         checkpoint_custody_bindings=checkpoint_custody_bindings,
     )
+    execution_context = with_staged_repo_root(execution_context, repo_root)
 
     if not bundle.stages:
         raise ValueError(f"Analysis bundle {bundle.name!r} has no staged plan")

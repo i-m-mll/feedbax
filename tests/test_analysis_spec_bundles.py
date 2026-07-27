@@ -102,8 +102,12 @@ def test_spec_emitting_bundle_stages_share_one_execution_loop() -> None:
         assert not any(isinstance(node, (ast.For, ast.AsyncFor)) for node in ast.walk(tree))
 
 
-def _register_toy_analysis_recipe() -> None:
-    def recipe(spec, _root, inputs, _execution_context):
+def _register_toy_analysis_recipe(
+    seen_repo_roots: list[Path | None] | None = None,
+) -> None:
+    def recipe(spec, _root, inputs, execution_context):
+        if seen_repo_roots is not None:
+            seen_repo_roots.append(execution_context.repo_root)
         value = sum(int(resolved.states["value"]) for resolved in inputs)
         return AnalysisRecipeResult(
             analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
@@ -2025,8 +2029,9 @@ def test_analysis_bundle_fails_on_unknown_requested_output(
 
 
 def test_analysis_cli_runs_bundle_against_manifest_root(tmp_path: Path, monkeypatch, capsys):
+    seen_repo_roots: list[Path | None] = []
     _register_toy_evaluation_recipe()
-    _register_toy_analysis_recipe()
+    _register_toy_analysis_recipe(seen_repo_roots)
     try:
         first, _first_path = _execute_toy_eval(tmp_path, n_trials=2, method="minimax")
         second, _second_path = _execute_toy_eval(tmp_path, n_trials=4, method="minimax")
@@ -2040,6 +2045,8 @@ def test_analysis_cli_runs_bundle_against_manifest_root(tmp_path: Path, monkeypa
                 "--bundle",
                 "toy/matrix",
                 "--manifest-root",
+                str(tmp_path),
+                "--repo-root",
                 str(tmp_path),
                 "--fig-dump-dir",
                 str(tmp_path / "figures"),
@@ -2066,6 +2073,7 @@ def test_analysis_cli_runs_bundle_against_manifest_root(tmp_path: Path, monkeypa
             assert manifest.status == "completed"
             assert manifest.metadata["bundle"]["name"] == "toy_matrix"
             assert manifest.provenance.issues == ["81c7149"]
+        assert seen_repo_roots == [tmp_path.resolve()] * 3
     finally:
         unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
@@ -2076,7 +2084,16 @@ def test_analysis_cli_runs_staged_bundle_with_addressable_outputs(
     monkeypatch,
     capsys,
 ) -> None:
-    _register_toy_evaluation_recipe()
+    seen_repo_roots: list[Path | None] = []
+
+    def evaluation_recipe(run_spec, _root, _states_path, execution_context):
+        seen_repo_roots.append(execution_context.repo_root)
+        return EvaluationRecipeResult(
+            states={"value": np.asarray(run_spec.params["n_trials"], dtype=np.int32)},
+            summary_metrics={"n_trials": run_spec.params["n_trials"]},
+        )
+
+    register_evaluation_recipe(TOY_EVALUATION_TYPE, evaluation_recipe, replace=True)
     _register_toy_analysis_recipe()
     try:
         training = _write_toy_training(tmp_path, method="minimax")
@@ -2090,6 +2107,8 @@ def test_analysis_cli_runs_staged_bundle_with_addressable_outputs(
                 "--bundle",
                 "toy/staged",
                 "--manifest-root",
+                str(tmp_path),
+                "--repo-root",
                 str(tmp_path),
                 "--fig-dump-dir",
                 str(tmp_path / "figures"),
@@ -2121,6 +2140,7 @@ def test_analysis_cli_runs_staged_bundle_with_addressable_outputs(
         assert report_stage["manifest_refs"][0]["kind"] == "ReportManifest"
         assert payload["report_outputs"][0]["status"] == "materialized"
         assert Path(payload["report_outputs"][0]["artifacts"][0]["uri"]).exists()
+        assert seen_repo_roots == [tmp_path.resolve()]
     finally:
         unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
