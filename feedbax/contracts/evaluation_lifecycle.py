@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, JsonValue, model_validator
 
 from feedbax.contracts.manifest import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
@@ -12,6 +13,7 @@ from feedbax.contracts.manifest import (
     ArtifactRef,
     ParentRef,
     StrictModel,
+    canonical_json_bytes,
 )
 
 
@@ -30,18 +32,25 @@ EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION_V1 = (
 )
 EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID = "feedbax.spec.evaluation_matrix_batch_plan"
 EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V1 = "feedbax.spec.evaluation_matrix_batch_plan.v1"
-EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION = "feedbax.spec.evaluation_matrix_batch_plan.v2"
+EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V2 = "feedbax.spec.evaluation_matrix_batch_plan.v2"
+EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION = "feedbax.spec.evaluation_matrix_batch_plan.v3"
 EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID = (
     "feedbax.orchestration.evaluation_batch_compaction_evidence"
 )
-EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION = (
+EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V1 = (
     "feedbax.orchestration.evaluation_batch_compaction_evidence.v1"
+)
+EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION = (
+    "feedbax.orchestration.evaluation_batch_compaction_evidence.v2"
 )
 EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID = (
     "feedbax.orchestration.evaluation_batch_merge_checkpoint"
 )
-EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION = (
+EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V1 = (
     "feedbax.orchestration.evaluation_batch_merge_checkpoint.v1"
+)
+EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION = (
+    "feedbax.orchestration.evaluation_batch_merge_checkpoint.v2"
 )
 EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_ID = (
     "feedbax.orchestration.evaluation_worker_topology_evidence"
@@ -62,6 +71,18 @@ EVALUATION_COLLECTION_OUTPUTS = (
     "evaluation-batch-compaction",
     "evaluation",
 )
+
+
+def _require_canonical_json_parameters(parameters: dict[str, JsonValue]) -> None:
+    try:
+        json.dumps(
+            parameters,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("consumer parameters must be canonical JSON") from exc
 
 
 class EvaluationLifecycleRowOutcome(StrictModel):
@@ -122,6 +143,7 @@ class EvaluationBatchConsumerDeclaration(StrictModel):
     leaf_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
     consumer_id: str = Field(min_length=1)
     consumer_version: str = Field(min_length=1)
+    parameters: dict[str, JsonValue] = Field(default_factory=dict)
     accepted_evaluation_state_schema_ids: tuple[str, ...] = Field(min_length=1)
     compact_product_schema_id: str = Field(min_length=1)
     compact_product_schema_version: str = Field(min_length=1)
@@ -131,6 +153,7 @@ class EvaluationBatchConsumerDeclaration(StrictModel):
 
     @model_validator(mode="after")
     def _validate_versions_and_schemas(self) -> "EvaluationBatchConsumerDeclaration":
+        _require_canonical_json_parameters(self.parameters)
         if self.compact_product_schema_version == self.compact_product_schema_id:
             raise ValueError("compact product schema_version must be a versioned identity")
         if self.merge_state_schema_version == self.merge_state_schema_id:
@@ -148,7 +171,7 @@ class EvaluationMatrixBatchPlan(StrictModel):
     schema_id: Literal["feedbax.spec.evaluation_matrix_batch_plan"] = (
         EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID
     )
-    schema_version: Literal["feedbax.spec.evaluation_matrix_batch_plan.v2"] = (
+    schema_version: Literal["feedbax.spec.evaluation_matrix_batch_plan.v3"] = (
         EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION
     )
     matrix_intent_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -166,9 +189,6 @@ class EvaluationMatrixBatchPlan(StrictModel):
         leaf_ids = [item.leaf_id for item in self.consumers]
         if len(leaf_ids) != len(set(leaf_ids)):
             raise ValueError("evaluation batch consumer leaf ids must be unique")
-        bindings = [(item.consumer_id, item.consumer_version) for item in self.consumers]
-        if len(bindings) != len(set(bindings)):
-            raise ValueError("evaluation batch consumer bindings must be unique")
         declared = set(leaf_ids)
         for batch in self.batches:
             unknown = set(batch.required_leaf_ids or ()) - declared
@@ -194,11 +214,17 @@ class EvaluationBatchLeafAcknowledgement(StrictModel):
     leaf_id: str = Field(min_length=1)
     consumer_id: str = Field(min_length=1)
     consumer_version: str = Field(min_length=1)
+    parameters: dict[str, JsonValue] = Field(default_factory=dict)
     compact_product_role: str = Field(min_length=1)
     fragment: ArtifactRef
     prior_merge_state_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     merge_state: ArtifactRef
     reused_verified_fragment: bool = False
+
+    @model_validator(mode="after")
+    def _validate_parameters(self) -> "EvaluationBatchLeafAcknowledgement":
+        _require_canonical_json_parameters(self.parameters)
+        return self
 
 
 class EvaluationBatchMergeCheckpoint(StrictModel):
@@ -207,7 +233,7 @@ class EvaluationBatchMergeCheckpoint(StrictModel):
     schema_id: Literal["feedbax.orchestration.evaluation_batch_merge_checkpoint"] = (
         EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID
     )
-    schema_version: Literal["feedbax.orchestration.evaluation_batch_merge_checkpoint.v1"] = (
+    schema_version: Literal["feedbax.orchestration.evaluation_batch_merge_checkpoint.v2"] = (
         EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION
     )
     matrix_intent_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -245,6 +271,8 @@ class EvaluationBatchMergeCheckpoint(StrictModel):
             acknowledgement.leaf_id != self.declaration.leaf_id
             or acknowledgement.consumer_id != self.declaration.consumer_id
             or acknowledgement.consumer_version != self.declaration.consumer_version
+            or canonical_json_bytes(acknowledgement.parameters)
+            != canonical_json_bytes(self.declaration.parameters)
             or acknowledgement.compact_product_role != self.declaration.compact_product_role
         ):
             raise ValueError("merge checkpoint acknowledgement drifted from its declaration")
@@ -268,7 +296,7 @@ class EvaluationBatchCompactionEvidence(StrictModel):
     schema_id: Literal["feedbax.orchestration.evaluation_batch_compaction_evidence"] = (
         EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID
     )
-    schema_version: Literal["feedbax.orchestration.evaluation_batch_compaction_evidence.v1"] = (
+    schema_version: Literal["feedbax.orchestration.evaluation_batch_compaction_evidence.v2"] = (
         EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION
     )
     matrix_intent_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -373,10 +401,13 @@ __all__ = [
     "EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID",
     "EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION",
     "EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V1",
+    "EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V2",
     "EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID",
     "EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION",
+    "EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V1",
     "EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID",
     "EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION",
+    "EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V1",
     "EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_ID",
     "EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_VERSION",
     "EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID",

@@ -19,6 +19,7 @@ from feedbax.contracts.manifest import (
     ParentRef,
     RegenerationCommand,
     RegenerationSpec,
+    canonical_json_bytes,
     sha256_bytes,
     store_bytes_artifact,
     store_json_artifact,
@@ -87,7 +88,9 @@ def _execute_evaluation_batch_partition(task: Mapping[str, Any]) -> dict[str, An
     checkpoint = Path(task["compaction_root"]) / "fragment-checkpoints" / f"{batch.batch_id}.json"
     if checkpoint.is_file():
         cached = json.loads(checkpoint.read_text(encoding="utf-8"))
-        if cached.get("checkpoint_identity") != checkpoint_identity:
+        if canonical_json_bytes(cached.get("checkpoint_identity")) != canonical_json_bytes(
+            checkpoint_identity
+        ):
             raise ValueError("evaluation batch fragment checkpoint identity drifted")
         provider = ImmutableArtifactBlobProvider(Path(task["compaction_root"]))
         declarations = [
@@ -106,6 +109,10 @@ def _execute_evaluation_batch_partition(task: Mapping[str, Any]) -> dict[str, An
                 != declaration.compact_product_schema_version
                 or fragment.metadata.get("leaf_id") != declaration.leaf_id
                 or fragment.metadata.get("batch_id") != batch.batch_id
+                or canonical_json_bytes(fragment.metadata.get("consumer_parameters"))
+                != canonical_json_bytes(declaration.parameters)
+                or fragment.metadata.get("consumer_parameters_sha256")
+                != sha256_bytes(canonical_json_bytes(declaration.parameters))
             ):
                 raise ValueError("evaluation batch fragment checkpoint contract drifted")
             provider.get_bytes(fragment)
@@ -171,21 +178,22 @@ def _execute_evaluation_batch_partition(task: Mapping[str, Any]) -> dict[str, An
         if task["consumers"]:
             cache_path = Path(row.result.metadata["cache"]["states_path"])
             states.append(load_evaluation_states_cache(cache_path, manifest_id=row.result.id))
-    consumer_input = EvaluationBatchConsumerInput(
-        matrix_intent_hash=task["matrix_intent_hash"],
-        batch=batch,
-        outcomes=tuple(outcomes),
-        manifests=tuple(manifests),
-        states=tuple(states),
-        parent_authorities=tuple(parent_authorities),
-    )
     fragments = []
     for value in task["consumers"]:
         declaration = EvaluationBatchConsumerDeclaration.model_validate(value)
         fragments.append(
             compact_evaluation_batch(
                 declaration,
-                consumer_input,
+                EvaluationBatchConsumerInput(
+                    matrix_intent_hash=task["matrix_intent_hash"],
+                    batch=batch,
+                    outcomes=tuple(outcomes),
+                    manifests=tuple(manifests),
+                    states=tuple(states),
+                    parent_authorities=tuple(parent_authorities),
+                    parameters=json.loads(json.dumps(declaration.parameters)),
+                    execution_context=execution_context,
+                ),
                 custody_root=Path(task["compaction_root"]),
             )
         )
@@ -801,6 +809,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 fragment=ArtifactRef.model_validate(fragment_value),
                                 prior_merge_state=prior_states.get(declaration.leaf_id),
                                 custody_root=compaction_root,
+                                execution_context=resolved_context,
                             )
                             prior_states[declaration.leaf_id] = acknowledgement.merge_state
                             acknowledgements.append(acknowledgement)
@@ -811,8 +820,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                                     batch_index=completed_batch["batch_index"],
                                     outcomes=outcomes_for_batch,
                                     acknowledgements=acknowledgements,
-                                    required_leaf_ids=batch.required_leaf_ids or (),
+                                    required_declarations=applicable_declarations,
                                     custody_root=compaction_root,
+                                    execution_context=resolved_context,
                                 )
                             )
                         if next_task_index < len(tasks):
@@ -865,6 +875,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             prior_states,
                             outcomes,
                             custody_root=compaction_root,
+                            execution_context=resolved_context,
                         )
                         if orchestration_batch_plan.consumers
                         else ()

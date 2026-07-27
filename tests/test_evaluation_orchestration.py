@@ -450,6 +450,7 @@ def test_batch_reclamation_preflight_bounds_peak_before_any_output(
         leaf_id="velocity",
         consumer_id="tests.velocity",
         consumer_version="v1",
+        parameters={"projection": "velocity"},
         accepted_evaluation_state_schema_ids=("tests.states.v1",),
         compact_product_schema_id="tests.velocity.product",
         compact_product_schema_version="tests.velocity.product.v1",
@@ -655,7 +656,9 @@ def _batch(items, _context):
         for item in items
     ]
 
-def _compact(value, leaf):
+def _compact(value):
+    leaf = value.parameters["leaf"]
+    assert value.execution_context.artifact_provider("artifacts").root.is_dir()
     assert len(value.parent_authorities) == len(value.outcomes)
     assert all(
         parent.metadata["ref_schema_version"] == "feedbax.ref.authenticated_manifest.v1"
@@ -675,34 +678,33 @@ def register_feedbax_analysis_recipes():
         batch_recipe=_batch,
         replace=True,
     )
-    for leaf in ("trajectory", "velocity"):
-        register_evaluation_batch_consumer(
-            f"tests.{leaf}",
-            "v1",
-            compact=lambda value, leaf=leaf: _compact(value, leaf),
-            merge=lambda value, leaf=leaf: EvaluationBatchMergeState(
-                payload={
-                    "leaf": leaf,
-                    "rows": [
-                        *(
-                            []
-                            if value.prior_merge_state is None
-                            else value.prior_merge_state["rows"]
-                        ),
-                        *value.fragment["rows"],
-                    ],
-                },
-                schema_id=f"tests.{leaf}.merge",
-                schema_version=f"tests.{leaf}.merge.v1",
-            ),
-            finalize=lambda value, leaf=leaf: EvaluationBatchFragment(
-                payload=value.terminal_merge_state,
-                schema_id=f"tests.{leaf}.product",
-                schema_version=f"tests.{leaf}.product.v1",
-                role=f"{leaf}_result",
-            ),
-            replace=True,
-        )
+    register_evaluation_batch_consumer(
+        "tests.projector",
+        "v1",
+        compact=_compact,
+        merge=lambda value: EvaluationBatchMergeState(
+            payload={
+                "leaf": value.parameters["leaf"],
+                "rows": [
+                    *(
+                        []
+                        if value.prior_merge_state is None
+                        else value.prior_merge_state["rows"]
+                    ),
+                    *value.fragment["rows"],
+                ],
+            },
+            schema_id=f"tests.{value.parameters['leaf']}.merge",
+            schema_version=f"tests.{value.parameters['leaf']}.merge.v1",
+        ),
+        finalize=lambda value: EvaluationBatchFragment(
+            payload=value.terminal_merge_state,
+            schema_id=f"tests.{value.parameters['leaf']}.product",
+            schema_version=f"tests.{value.parameters['leaf']}.product.v1",
+            role=f"{value.parameters['leaf']}_result",
+        ),
+        replace=True,
+    )
 """.strip(),
         encoding="utf-8",
     )
@@ -760,8 +762,9 @@ def register_feedbax_analysis_recipes():
     consumers = tuple(
         EvaluationBatchConsumerDeclaration(
             leaf_id=leaf,
-            consumer_id=f"tests.{leaf}",
+            consumer_id="tests.projector",
             consumer_version="v1",
+            parameters={"leaf": leaf},
             accepted_evaluation_state_schema_ids=("tests.diagnostic.evaluation.v1",),
             compact_product_schema_id=f"tests.{leaf}.product",
             compact_product_schema_version=f"tests.{leaf}.product.v1",
@@ -864,6 +867,7 @@ def test_runpod_dry_run_keeps_the_same_public_matrix_executor(
         leaf_id="velocity",
         consumer_id="tests.velocity",
         consumer_version="v1",
+        parameters={"projection": "velocity"},
         accepted_evaluation_state_schema_ids=("tests.states.v1",),
         compact_product_schema_id="tests.velocity.product",
         compact_product_schema_version="tests.velocity.product.v1",
@@ -904,4 +908,7 @@ def test_runpod_dry_run_keeps_the_same_public_matrix_executor(
         bundle.rows[0].launch.metadata["batch_plan"]
         == local_bundle.rows[0].launch.metadata["batch_plan"]
     )
+    assert bundle.rows[0].launch.metadata["batch_plan"]["consumers"][0]["parameters"] == {
+        "projection": "velocity"
+    }
     assert bundle.rows[0].launch.collect == local_bundle.rows[0].launch.collect
