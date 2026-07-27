@@ -56,13 +56,12 @@ from feedbax.orchestration.drivers.base import (
     ProviderPodInventoryRecord,
 )
 from feedbax.orchestration.drivers.native_execution import (
-    bind_native_execution_command,
-    inject_native_execution_context,
     is_native_training_command,
     native_resume_checkpoint_authority_json,
     native_resume_checkpoint_source,
     SECURE_CHECKPOINT_SEED_SCRIPT,
 )
+from feedbax.orchestration.executor_family import executor_family_adapter
 from feedbax.orchestration.input_materialization import (
     InputMaterializationError,
     InputProviderRootBinding,
@@ -907,7 +906,17 @@ class RunPodOrchestrationDriver:
         non_native_smoke_rows = [
             row.row_id
             for row in bundle.rows
-            if bundle.smoke_enabled and not _row_uses_registered_native_execution(row)
+            if bundle.smoke_enabled
+            and (
+                (
+                    row.execution_family == "native-training"
+                    and not _row_uses_registered_native_execution(row)
+                )
+                or (
+                    row.execution_family == "evaluation-matrix"
+                    and "matrix-harness" not in _row_launch_command_parts(row)
+                )
+            )
         ]
         checks_by_name["runpod-remote-smoke-applicability"] = _preflight_check(
             "runpod-remote-smoke-applicability",
@@ -1576,6 +1585,13 @@ class RunPodOrchestrationDriver:
         attempt_inputs = attempt_root / "inputs"
         payloads: list[dict[str, str]] = []
         payload_hashes: list[tuple[str, str]] = []
+        if bundle.execution_family == "evaluation-matrix":
+            bundle_data = bundle.model_dump_json(exclude_none=True).encode("utf-8")
+            bundle_target = attempt_inputs / "run-bundle.json"
+            bundle_target.write_bytes(bundle_data)
+            payload_hashes.append(
+                (bundle_target.name, hashlib.sha256(bundle_data).hexdigest())
+            )
         for row in bundle.rows:
             if row.launch.payload_routing.get("kind") != "registered-execution-payload":
                 continue
@@ -1684,6 +1700,19 @@ class RunPodOrchestrationDriver:
         state: RunSetState,
     ) -> Mapping[str, Any]:
         """Run one bounded native execution in an authenticated scratch namespace."""
+        if row.execution_family == "evaluation-matrix":
+            return {
+                "row_id": row.row_id,
+                "status": "opted-out",
+                "update_budget": bundle.smoke_update_budget,
+                "payload_binding_status": "not-run",
+                "cleanup_status": "not-created",
+                "deadline_seconds": bundle.smoke_deadline_seconds,
+                "opt_out_reason": (
+                    "evaluation-matrix smoke is the provider-free production shadow; "
+                    "RunPod launch reuses the same bound public harness command"
+                ),
+            }
         if not _row_uses_registered_native_execution(row):
             raise RunPodDriverError(
                 f"remote smoke row {row.row_id!r} is not registered native execution"
@@ -1986,7 +2015,7 @@ class RunPodOrchestrationDriver:
         for source in sources:
             if source.startswith("/"):
                 remote_source = source
-            elif "/" not in source and is_native_training_command(row.launch.command):
+            elif "/" not in source:
                 remote_source = f"{remote_run_dir}/rows/{row.row_id}/{source}"
             else:
                 remote_source = f"{remote_run_dir}/{source}"
@@ -2008,7 +2037,10 @@ class RunPodOrchestrationDriver:
                 f"collect {row.row_id}:{source}"
             )
             collected[Path(source).name] = str(target)
-        if is_native_training_command(row.launch.command):
+        if (
+            is_native_training_command(row.launch.command)
+            or row.execution_family == "evaluation-matrix"
+        ):
             event_name = f"{row.row_id}.events.jsonl"
             event_target = bundle.run_set_dir / "events" / event_name
             event_target.parent.mkdir(parents=True, exist_ok=True)
@@ -3522,18 +3554,15 @@ def build_launch_row_command(
     checkpoint_source = native_resume_checkpoint_source(bundle, row)
     command_parts = _row_launch_command_parts(row)
     execution_row = _execution_row(row, namespace)
-    command_parts, execution_row = bind_native_execution_command(
+    command_parts, execution_row = executor_family_adapter(row.execution_family).bind_command(
         command_parts,
+        bundle=bundle,
         row=execution_row,
         payload_path=namespace.payload_path,
         collection_root=row_dir,
-        update_budget=update_budget,
-    )
-    command_parts = inject_native_execution_context(
-        command_parts,
-        row=execution_row,
+        inputs_root=str(PurePosixPath(namespace.payload_path).parent),
         environment_fingerprint=env_fingerprint,
-        collection_root=row_dir,
+        update_budget=update_budget,
     )
     if row.launch.command:
         command_parts = _normalize_explicit_native_launch_command(command_parts)

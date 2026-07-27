@@ -155,6 +155,7 @@ def compile_training_run_matrix(
         rows.append(
             CompiledExecutionRow(
                 row_id=row.row_id,
+                execution_family="native-training",
                 payload=row.payload,
                 resolved_semantics=resolved,
                 provenance=row.provenance,

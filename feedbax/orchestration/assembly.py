@@ -36,6 +36,7 @@ from feedbax.orchestration.bundle import (
     EnvironmentDeclaration,
     ExecutionCapsuleRef,
     ExecutionIdentityEnvelope,
+    ExecutionFamily,
     ImmutableInputIdentity,
     LaunchPolicy,
     ResolvedSnapshotRef,
@@ -132,6 +133,7 @@ class CompiledExecutionRow(StrictModel):
     """Pure compiler output before ASSEMBLE writes custody artifacts."""
 
     row_id: str = Field(min_length=1)
+    execution_family: ExecutionFamily = "native-training"
     payload: dict[str, JsonValue]
     resolved_semantics: dict[str, JsonValue]
     provenance: TrainingRowProvenance | None = None
@@ -442,18 +444,24 @@ def assemble_run_bundle(
         )
         for row in compiled.rows
     ]
+    execution_families = {row.execution_family for row in compiled.rows}
+    if len(execution_families) != 1:
+        raise ValueError("compiled run set must contain exactly one execution family")
+    execution_family = next(iter(execution_families))
     return RunBundle(
         run_set_id=run_set_id,
         feedbax_revision=resolve_feedbax_revision(),
         deployment_policy=request.deployment_policy,
+        execution_family=execution_family,
         migration_evidence=authored_result.migration_records,
         rows=[
             RunRowSpec(
                 row_id=item.row_id,
+                execution_family=compiled.rows[index].execution_family,
                 execution=item.execution,
                 launch=item.launch,
             )
-            for item in stored
+            for index, item in enumerate(stored)
         ],
         environment=request.environment,
         launch_policy=request.launch_policy,

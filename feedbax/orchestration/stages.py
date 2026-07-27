@@ -50,6 +50,7 @@ from feedbax.orchestration.conformance import (
     RunConformanceCertificate,
     assert_certificate_allows_completed_registration,
     write_conformance_certificate,
+    check_evaluation_lifecycle,
 )
 from feedbax.orchestration.drivers.base import (
     AcquisitionCreateError,
@@ -60,6 +61,10 @@ from feedbax.orchestration.drivers.native_execution import (
     NATIVE_TRAINING_COLLECTION_OUTPUTS,
     missing_native_training_collection_outputs,
     uses_registered_native_execution,
+)
+from feedbax.orchestration.executor_family import (
+    evaluation_lifecycle_payload,
+    executor_family_adapter,
 )
 from feedbax.orchestration.events import RunEventReader
 from feedbax.orchestration.input_materialization import preflight_resolved_inputs
@@ -1619,7 +1624,9 @@ class StageEngine:
                         "detail": str(exc),
                     }
                 )
-            missing_outputs = _missing_declared_collection_outputs(row, outputs)
+            missing_outputs = executor_family_adapter(
+                row.execution_family
+            ).missing_collection_outputs(row, outputs)
             if missing_outputs:
                 evidence = {
                     "kind": "absent_collection_outputs",
@@ -1742,12 +1749,41 @@ class StageEngine:
             self._conformance_artifacts(row, state, observed_at=observed_at)
             for row in self.bundle.rows
         ]
+        certificate_registry = CheckRegistry(dict(self.conformance_registry.items()))
+        if self.bundle.execution_family == "evaluation-matrix":
+            certificate_registry.register(
+                "evaluation_lifecycle",
+                check_evaluation_lifecycle,
+            )
+        adapter_inapplicable = dict(
+            executor_family_adapter(
+                self.bundle.execution_family
+            ).declared_conformance_inapplicable()
+        )
+        registered_check_ids = {check_id for check_id, _ in certificate_registry.items()}
+        adapter_inapplicable = {
+            check_id: reason
+            for check_id, reason in adapter_inapplicable.items()
+            if check_id in registered_check_ids
+        }
+        authored_inapplicable = self.bundle.metadata.get("conformance_inapplicable", {})
+        if not isinstance(authored_inapplicable, Mapping):
+            raise OrchestrationStageError("conformance_inapplicable must be a mapping")
+        conflicts = adapter_inapplicable.keys() & authored_inapplicable.keys()
+        if conflicts:
+            raise OrchestrationStageError(
+                "executor-family conformance applicability is orchestration-owned; "
+                f"remove declarations for {sorted(conflicts)!r}"
+            )
         certificate = write_conformance_certificate(
             run_set_dir=self.bundle.run_set_dir,
             run_set_id=self.bundle.run_set_id,
             rows=rows,
-            registry=self.conformance_registry,
-            declared_inapplicable=self.bundle.metadata.get("conformance_inapplicable"),
+            registry=certificate_registry,
+            declared_inapplicable={
+                **dict(authored_inapplicable),
+                **adapter_inapplicable,
+            },
             generated_at=observed_at,
         )
         certificate_path = self.bundle.run_set_dir / "conformance.json"
@@ -1790,6 +1826,10 @@ class StageEngine:
                 # PREFLIGHT owns normalization diagnostics. CERTIFY records the
                 # absent normalized input as a failed manifest-valid verdict.
                 pass
+        evaluation_lifecycle = None
+        lifecycle_path = outputs.get("evaluation-matrix-result.json")
+        if isinstance(lifecycle_path, str):
+            evaluation_lifecycle = evaluation_lifecycle_payload(lifecycle_path)
         return ConformanceRowArtifacts(
             row_id=row.row_id,
             execution=row.execution,
@@ -1815,6 +1855,7 @@ class StageEngine:
             realized_deployment_evidence=self._realized_deployment_evidence(
                 row, state, observed_at=observed_at
             ),
+            evaluation_lifecycle=evaluation_lifecycle,
         )
 
     def _realized_deployment_evidence(

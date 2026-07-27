@@ -538,6 +538,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     harness_parser.add_argument("--execution-descriptor")
     harness_parser.add_argument("--artifact-provider", action="append")
     harness_parser.add_argument("--checkpoint-custody", action="append")
+    harness_parser.add_argument("--orchestration-bundle")
+    harness_parser.add_argument("--orchestration-inputs-root")
+    harness_parser.add_argument("--orchestration-row-id")
+    harness_parser.add_argument("--lifecycle-result")
     harness_parser.add_argument(
         "--batch",
         action="store_true",
@@ -588,6 +592,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             harness_argv.extend(("--artifact-provider", binding))
         for binding in args.checkpoint_custody or ():
             harness_argv.extend(("--checkpoint-custody", binding))
+        for option, value in (
+            ("--orchestration-bundle", args.orchestration_bundle),
+            ("--orchestration-inputs-root", args.orchestration_inputs_root),
+            ("--orchestration-row-id", args.orchestration_row_id),
+            ("--lifecycle-result", args.lifecycle_result),
+        ):
+            if value is not None:
+                harness_argv.extend((option, value))
         if args.batch:
             harness_argv.append("--batch")
         if args.locked_spec is not None:

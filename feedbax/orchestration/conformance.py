@@ -23,6 +23,7 @@ from typing import Any, Literal
 from pydantic import Field, model_validator
 
 from feedbax.contracts.manifest import StrictModel, TrainingRunManifest, load_manifest
+from feedbax.contracts.evaluation_lifecycle import EvaluationLifecycleEvidence
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.spec_storage import canonicalize_immutable_input_identities
 from feedbax.contracts.training import OptimizerSpec
@@ -310,6 +311,7 @@ class ConformanceRowArtifacts:
     runtime_inputs: RowConformanceRuntimeInputs | None = None
     deployment_policy: Mapping[str, Any] | None = None
     realized_deployment_evidence: Mapping[str, Any] | None = None
+    evaluation_lifecycle: Mapping[str, Any] | None = None
 
 
 class CheckRegistry:
@@ -544,6 +546,39 @@ def build_core_check_registry() -> CheckRegistry:
             "realized_deployment": check_realized_deployment,
             "seeds": check_seeds,
         }
+    )
+
+
+def check_evaluation_lifecycle(row: ConformanceRowArtifacts) -> CheckEntry:
+    """Verify ordered nested evaluation outcomes for an evaluation-family row."""
+    check_id = "evaluation_lifecycle"
+    if row.evaluation_lifecycle is None:
+        return missing_input_check(check_id, "evaluation_lifecycle")
+    try:
+        evidence = EvaluationLifecycleEvidence.model_validate(row.evaluation_lifecycle)
+    except Exception as exc:
+        return fail_check(
+            check_id,
+            expected="valid ordered evaluation lifecycle evidence",
+            observed=type(exc).__name__,
+            detail=str(exc),
+        )
+    if evidence.orchestration_row_id != row.row_id:
+        return fail_check(
+            check_id,
+            expected={"orchestration_row_id": row.row_id},
+            observed={"orchestration_row_id": evidence.orchestration_row_id},
+        )
+    return pass_check(
+        check_id,
+        expected={"ordered_outcomes": "unique and complete"},
+        observed={
+            "ordered_row_ids": list(evidence.ordered_row_ids),
+            "diagnostic_schema_ids": {
+                item.row_id: list(item.diagnostic_schema_ids)
+                for item in evidence.outcomes
+            },
+        },
     )
 
 
