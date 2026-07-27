@@ -53,6 +53,7 @@ from feedbax.config import (
 from feedbax.config.utils import deep_merge
 from feedbax.config.yaml import get_yaml_loader
 from feedbax.contracts.staged_execution import StagedExecutionDescriptor
+from feedbax.contracts.run_aliases import RunAliasCatalog
 from feedbax.plugins import EXPERIMENT_REGISTRY
 
 logger = logging.getLogger(os.path.basename(__file__))
@@ -142,6 +143,17 @@ def build_run_arg_parser() -> argparse.ArgumentParser:
         help="Repo root for resolving a delta spec's content-pinned parent references.",
     )
     parser.add_argument(
+        "--run-aliases",
+        action="append",
+        default=[],
+        type=Path,
+        metavar="PATH",
+        help=(
+            "Explicit versioned run-alias catalog; may be repeated. "
+            "Aliases expand to authenticated manifest pins before execution."
+        ),
+    )
+    parser.add_argument(
         "--execution-descriptor",
         type=Path,
         default=None,
@@ -179,6 +191,12 @@ def run_analysis_run_spec_file(argv: list[str]) -> None:
     load_training_method_plugins()
     _apply_plotly_template_default()
     spec = _load_spec_document(args.spec, label="AnalysisRunSpec")
+    run_alias_catalogs = [
+        RunAliasCatalog.model_validate(
+            _load_spec_document(path, label="run alias catalog")
+        )
+        for path in args.run_aliases
+    ]
     if (args.artifact_provider or args.manifest_root or args.checkpoint_custody) and (
         args.execution_descriptor is None
     ):
@@ -211,6 +229,7 @@ def run_analysis_run_spec_file(argv: list[str]) -> None:
             spec,
             root=args.root,
             repo_root=args.repo_root,
+            run_alias_catalogs=run_alias_catalogs,
             execution_descriptor=execution_descriptor,
             artifact_provider_bindings=artifact_provider_bindings,
             manifest_root_bindings=manifest_root_bindings,

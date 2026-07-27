@@ -77,6 +77,7 @@ from feedbax.contracts.analysis_composition import (
     is_analysis_run_delta_payload,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
+from feedbax.contracts.run_aliases import RunAliasCatalog, resolve_run_aliases
 from feedbax.contracts.staged_execution import StagedExecutionDescriptor
 from feedbax.persistence.manifest_index import find_manifest_paths_by_id, iter_manifest_files
 from feedbax.analysis.types import AnalysisInputData
@@ -209,6 +210,7 @@ def resolve_analysis_run_authoring(
     value: AnalysisRunSpec | AnalysisRunDeltaSpec | Mapping[str, Any] | Path | str,
     *,
     repo_root: Path | str | None = None,
+    run_alias_catalogs: Sequence[RunAliasCatalog | Mapping[str, Any]] = (),
 ) -> tuple[AnalysisRunSpec, FlattenedAnalysisRun | None]:
     """Resolve either analysis authoring kind to one strict ``AnalysisRunSpec``.
 
@@ -227,7 +229,9 @@ def resolve_analysis_run_authoring(
             else AnalysisRunDeltaSpec.model_validate(value)
         )
         flattened = flatten_analysis_run_delta(delta, repo_root=repo_root)
-        return AnalysisRunSpec.model_validate(flattened.payload), flattened
+        resolved_payload = resolve_run_aliases(flattened.payload, run_alias_catalogs)
+        flattened = flattened.model_copy(update={"payload": resolved_payload})
+        return AnalysisRunSpec.model_validate(resolved_payload), flattened
     raw: Mapping[str, Any]
     if isinstance(value, Mapping):
         raw = value
@@ -236,7 +240,9 @@ def resolve_analysis_run_authoring(
     if is_analysis_run_delta_payload(raw):
         delta = AnalysisRunDeltaSpec.model_validate(raw)
         flattened = flatten_analysis_run_delta(delta, repo_root=repo_root)
-        return AnalysisRunSpec.model_validate(flattened.payload), flattened
+        resolved_payload = resolve_run_aliases(flattened.payload, run_alias_catalogs)
+        flattened = flattened.model_copy(update={"payload": resolved_payload})
+        return AnalysisRunSpec.model_validate(resolved_payload), flattened
     source_version = raw.get("schema_version")
     result = default_spec_registry.migrate(
         "AnalysisRunSpec",
@@ -244,16 +250,23 @@ def resolve_analysis_run_authoring(
         source_version=source_version if isinstance(source_version, str) else None,
         assume_current=source_version is None,
     )
-    return AnalysisRunSpec.model_validate(result.payload), None
+    return AnalysisRunSpec.model_validate(
+        resolve_run_aliases(result.payload, run_alias_catalogs)
+    ), None
 
 
 def coerce_analysis_run_spec(
     value: AnalysisRunSpec | AnalysisRunDeltaSpec | Mapping[str, Any] | Path | str,
     *,
     repo_root: Path | str | None = None,
+    run_alias_catalogs: Sequence[RunAliasCatalog | Mapping[str, Any]] = (),
 ) -> AnalysisRunSpec:
     """Load an ``AnalysisRunSpec`` from an object, mapping, JSON file path, or delta spec."""
-    return resolve_analysis_run_authoring(value, repo_root=repo_root)[0]
+    return resolve_analysis_run_authoring(
+        value,
+        repo_root=repo_root,
+        run_alias_catalogs=run_alias_catalogs,
+    )[0]
 
 
 def find_manifest_by_id(
@@ -763,6 +776,7 @@ def execute_analysis_run_spec(
     *,
     root: Path | str | None = None,
     repo_root: Path | str | None = None,
+    run_alias_catalogs: Sequence[RunAliasCatalog | Mapping[str, Any]] = (),
     provenance: Provenance | None = None,
     issues: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -782,7 +796,11 @@ def execute_analysis_run_spec(
     Delta-authored specs are flattened against their content-pinned parents
     (which requires ``repo_root``) before execution.
     """
-    run_spec, flattened = resolve_analysis_run_authoring(spec, repo_root=repo_root)
+    run_spec, flattened = resolve_analysis_run_authoring(
+        spec,
+        repo_root=repo_root,
+        run_alias_catalogs=run_alias_catalogs,
+    )
     root_path = Path(root) if root is not None else default_manifest_root()
     explicit_runtime = (
         execution_descriptor is not None
