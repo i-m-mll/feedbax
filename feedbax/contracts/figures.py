@@ -34,6 +34,11 @@ template slot from an explicit row table and expands to ordinary
 ``TraceBinding`` values before template validation. The field is an optional
 None-default, so pre-existing FigureSpec and FigureTemplate identity bytes and
 schema versions are unchanged.
+
+Additive changelog, 2026-07-27: figure-constructor data may carry the versioned
+``PerturbationTiming`` contract. It declares bounded, nominal, or full-trial
+applicability plus the authored sample schedule. Constructor data remains
+unchanged when timing is absent.
 """
 
 from __future__ import annotations
@@ -67,6 +72,8 @@ FIGURE_SLOT_FAMILY_SCHEMA_ID = "feedbax.spec.figure_slot_family"
 FIGURE_SLOT_FAMILY_SCHEMA_VERSION = "feedbax.spec.figure_slot_family.v1"
 FIGURE_COLORBAR_SCHEMA_ID = "feedbax.spec.figure_colorbar"
 FIGURE_COLORBAR_SCHEMA_VERSION = "feedbax.spec.figure_colorbar.v1"
+PERTURBATION_TIMING_SCHEMA_ID = "feedbax.spec.perturbation_timing"
+PERTURBATION_TIMING_SCHEMA_VERSION = "feedbax.spec.perturbation_timing.v1"
 
 #: The two substitution tokens the figure contract understands. Trace families
 #: are indexed substitution, deliberately not a templating or expression
@@ -86,6 +93,58 @@ SUBSTITUTION_PATTERN = re.compile(r"\{index\}|\{value(?::([^{}]*))?\}")
 SlotMultiplicity = Literal["one", "per_facet", "many"]
 FacetTarget = Literal["figures", "panels"]
 ColorscaleSpec: TypeAlias = str | list[str] | list[tuple[float, str]]
+
+
+class PerturbationTiming(StrictModel):
+    """Authored perturbation applicability and discrete sample schedule.
+
+    ``bounded`` timing names the first affected sample and the number of
+    affected samples. ``nominal`` and ``full_trial`` are explicit no-marker
+    cases and therefore forbid bounded interval fields. ``sample_count`` is
+    always required so every consuming constructor can authenticate the
+    schedule against the coordinates it actually plots.
+    """
+
+    schema_id: str = PERTURBATION_TIMING_SCHEMA_ID
+    schema_version: str = PERTURBATION_TIMING_SCHEMA_VERSION
+    applicability: Literal["bounded", "nominal", "full_trial"]
+    sample_count: int = Field(gt=0)
+    start_index: int | None = Field(default=None, ge=0)
+    duration: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _validate_schedule(self) -> "PerturbationTiming":
+        if self.schema_id != PERTURBATION_TIMING_SCHEMA_ID:
+            raise ValueError(f"unsupported PerturbationTiming schema_id: {self.schema_id!r}")
+        if self.schema_version != PERTURBATION_TIMING_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported PerturbationTiming schema_version: "
+                f"{self.schema_version!r}"
+            )
+        if self.applicability == "bounded":
+            if self.start_index is None or self.duration is None:
+                raise ValueError(
+                    "bounded PerturbationTiming requires start_index and duration"
+                )
+            if self.start_index + self.duration > self.sample_count:
+                raise ValueError(
+                    "bounded PerturbationTiming exceeds sample_count: "
+                    f"start_index {self.start_index} + duration {self.duration} "
+                    f"> sample_count {self.sample_count}"
+                )
+        elif self.start_index is not None or self.duration is not None:
+            raise ValueError(
+                f"{self.applicability} PerturbationTiming forbids start_index and duration"
+            )
+        return self
+
+    def affected_range(self) -> tuple[int, int] | None:
+        """Return the half-open affected sample range, or no bounded range."""
+        if self.applicability != "bounded":
+            return None
+        assert self.start_index is not None
+        assert self.duration is not None
+        return self.start_index, self.start_index + self.duration
 
 
 class AxisLabels(StrictModel):
@@ -113,6 +172,25 @@ class TraceBinding(StrictModel):
     include_when: Expr | None = None
     required: bool = False
     panel: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_perturbation_timing_identity(self) -> "TraceBinding":
+        raw = self.data.get("perturbation_timing")
+        if raw is None or isinstance(raw, PerturbationTiming):
+            return self
+        if not isinstance(raw, Mapping):
+            raise ValueError("TraceBinding perturbation_timing data must be a mapping")
+        if raw.get("schema_id") != PERTURBATION_TIMING_SCHEMA_ID:
+            raise ValueError(
+                "TraceBinding perturbation_timing requires explicit schema_id "
+                f"{PERTURBATION_TIMING_SCHEMA_ID!r}"
+            )
+        if raw.get("schema_version") != PERTURBATION_TIMING_SCHEMA_VERSION:
+            raise ValueError(
+                "TraceBinding perturbation_timing requires explicit schema_version "
+                f"{PERTURBATION_TIMING_SCHEMA_VERSION!r}"
+            )
+        return self
 
 
 class FigureSlotFamilyRow(StrictModel):

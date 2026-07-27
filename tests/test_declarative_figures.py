@@ -18,6 +18,7 @@ from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.figures import (
     FIGURE_RENDER_MEDIA_TYPES,
     FIGURE_RENDER_ROLE,
+    FIGURE_SPEC_ROLE,
     FigureSpecExecutionError,
     execute_figure_spec,
     figure_manifest_plotly_json,
@@ -26,9 +27,12 @@ from feedbax.analysis.bundles import AnalysisBundleSpec, BundleStageSpec, StageA
 from feedbax.contracts.figures import (
     FIGURE_SPEC_SCHEMA_ID,
     FIGURE_SPEC_SCHEMA_VERSION,
+    PERTURBATION_TIMING_SCHEMA_ID,
+    PERTURBATION_TIMING_SCHEMA_VERSION,
     FigurePiece,
     FigureSpec,
     FigureTemplate,
+    PerturbationTiming,
     SlotSpec,
     TraceBinding,
 )
@@ -72,6 +76,26 @@ def _plotly_array_values(value: object) -> list[float]:
             dtype=np.dtype(value["dtype"]),
         ).tolist()
     return list(value)  # type: ignore[arg-type]
+
+
+def _perturbation_timing(
+    applicability: str,
+    sample_count: int,
+    *,
+    start_index: int | None = None,
+    duration: int | None = None,
+) -> dict[str, object]:
+    timing: dict[str, object] = {
+        "schema_id": PERTURBATION_TIMING_SCHEMA_ID,
+        "schema_version": PERTURBATION_TIMING_SCHEMA_VERSION,
+        "applicability": applicability,
+        "sample_count": sample_count,
+    }
+    if start_index is not None:
+        timing["start_index"] = start_index
+    if duration is not None:
+        timing["duration"] = duration
+    return timing
 
 
 def _analysis_manifest(root: Path) -> AnalysisRunManifest:
@@ -142,6 +166,57 @@ def test_figure_spec_schema_identity_rejects_old_versions() -> None:
             },
         )
     assert default_spec_registry.current_version("FigureSpec") == FIGURE_SPEC_SCHEMA_VERSION
+
+
+def test_perturbation_timing_schema_identity_rejects_old_versions() -> None:
+    current = PerturbationTiming(applicability="nominal", sample_count=3)
+    assert current.schema_id == PERTURBATION_TIMING_SCHEMA_ID
+    assert current.schema_version == PERTURBATION_TIMING_SCHEMA_VERSION
+
+    with pytest.raises(ValidationError, match="unsupported PerturbationTiming schema_version"):
+        PerturbationTiming(
+            schema_version="feedbax.spec.perturbation_timing.v0",
+            applicability="nominal",
+            sample_count=3,
+        )
+    with pytest.raises(UnsupportedSpecVersion):
+        spec_payload(
+            "PerturbationTiming",
+            {
+                "schema_id": PERTURBATION_TIMING_SCHEMA_ID,
+                "schema_version": "feedbax.spec.perturbation_timing.v0",
+                "applicability": "nominal",
+                "sample_count": 3,
+            },
+        )
+    assert (
+        default_spec_registry.current_version("PerturbationTiming")
+        == PERTURBATION_TIMING_SCHEMA_VERSION
+    )
+    with pytest.raises(ValidationError, match="requires explicit schema_id"):
+        TraceBinding(
+            name="unversioned",
+            constructor="feedbax.vrect",
+            data={
+                "perturbation_timing": {
+                    "applicability": "nominal",
+                    "sample_count": 3,
+                }
+            },
+        )
+    with pytest.raises(ValidationError, match="requires explicit schema_version"):
+        TraceBinding(
+            name="old",
+            constructor="feedbax.vrect",
+            data={
+                "perturbation_timing": {
+                    "schema_id": PERTURBATION_TIMING_SCHEMA_ID,
+                    "schema_version": "feedbax.spec.perturbation_timing.v0",
+                    "applicability": "nominal",
+                    "sample_count": 3,
+                }
+            },
+        )
 
 
 def test_constructor_registry_validates_tiers_and_duplicates() -> None:
@@ -1017,6 +1092,128 @@ def test_hline_and_vrect_emit_plotly_shapes() -> None:
     assert [shape.type for shape in annotated.layout.shapes] == ["line", "rect"]
 
 
+@pytest.mark.parametrize(
+    ("timing", "expected_type", "expected_x0", "expected_x1"),
+    [
+        (
+            {
+                "applicability": "bounded",
+                "sample_count": 4,
+                "start_index": 1,
+                "duration": 1,
+            },
+            "line",
+            0.1,
+            0.1,
+        ),
+        (
+            {
+                "applicability": "bounded",
+                "sample_count": 4,
+                "start_index": 1,
+                "duration": 2,
+            },
+            "rect",
+            0.1,
+            0.2,
+        ),
+    ],
+)
+def test_vrect_derives_perturbation_marker_from_authored_timing(
+    timing: dict[str, object],
+    expected_type: str,
+    expected_x0: float,
+    expected_x1: float,
+) -> None:
+    constructor = get_figure_constructor("feedbax.vrect", tier="trace")
+    shapes = constructor.callable(
+        {"x": [0.0, 0.1, 0.2, 0.3], "perturbation_timing": timing},
+        constructor.params(
+            {
+                "fillcolor": "rgba(200, 40, 40, 0.4)",
+                "event_line_width": 2.0,
+            }
+        ),
+    )
+
+    assert len(shapes) == 1
+    assert shapes[0].type == expected_type
+    assert (shapes[0].x0, shapes[0].x1) == pytest.approx((expected_x0, expected_x1))
+    if expected_type == "line":
+        assert shapes[0].line.width == 2.0
+
+
+@pytest.mark.parametrize("applicability", ["nominal", "full_trial"])
+def test_vrect_explicit_no_marker_perturbation_timing(applicability: str) -> None:
+    constructor = get_figure_constructor("feedbax.vrect", tier="trace")
+    shapes = constructor.callable(
+        {
+            "x": [0.0, 0.1, 0.2],
+            "perturbation_timing": _perturbation_timing(applicability, 3),
+        },
+        constructor.params(),
+    )
+
+    assert shapes == []
+
+
+@pytest.mark.parametrize(
+    ("data", "match"),
+    [
+        (
+            {
+                "x": [0.0, 0.1],
+                "perturbation_timing": _perturbation_timing(
+                    "bounded", 3, start_index=1, duration=1
+                ),
+            },
+            "does not match plotted x coordinate length",
+        ),
+        (
+            {
+                "x": [0.0, 0.1, 0.1],
+                "perturbation_timing": _perturbation_timing(
+                    "bounded", 3, start_index=1, duration=1
+                ),
+            },
+            "strictly increasing",
+        ),
+        (
+            {
+                "x": [0.0, 0.1, 0.2],
+                "x0": 0.1,
+                "perturbation_timing": _perturbation_timing(
+                    "bounded", 3, start_index=1, duration=1
+                ),
+            },
+            "cannot be combined",
+        ),
+    ],
+)
+def test_vrect_perturbation_timing_fails_closed(data, match: str) -> None:
+    constructor = get_figure_constructor("feedbax.vrect", tier="trace")
+
+    with pytest.raises(ValueError, match=match):
+        constructor.callable(data, constructor.params())
+
+
+def test_perturbation_timing_rejects_inapplicable_or_out_of_range_fields() -> None:
+    with pytest.raises(ValidationError, match="forbids start_index and duration"):
+        PerturbationTiming(
+            applicability="nominal",
+            sample_count=3,
+            start_index=0,
+            duration=1,
+        )
+    with pytest.raises(ValidationError, match="exceeds sample_count"):
+        PerturbationTiming(
+            applicability="bounded",
+            sample_count=3,
+            start_index=2,
+            duration=2,
+        )
+
+
 def test_trajectory_2d_resolves_colorscale_key() -> None:
     trajectory = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
     trajectory_traces = trajectory.callable(
@@ -1030,6 +1227,214 @@ def test_trajectory_2d_resolves_colorscale_key() -> None:
         trajectory.params({"colorscale_key": "condition", "show_mean": False}),
     )
     assert trajectory_traces[0].line.color != trajectory_traces[1].line.color
+
+
+def test_trajectory_2d_inserts_affected_underlay_before_every_scientific_trace() -> None:
+    constructor = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+    traces = constructor.callable(
+        {
+            "trajectories": [
+                [[0, 0], [1, 1], [2, 1], [3, 0]],
+                [[0, 0], [1, 2], [2, 2], [3, 0]],
+            ],
+            "perturbation_timing": _perturbation_timing(
+                "bounded", 4, start_index=1, duration=2
+            ),
+        },
+        constructor.params(
+            {
+                "label": "Reach",
+                "show_mean": False,
+                "affected_color": "rgba(250, 120, 120, 0.5)",
+                "affected_line_width": 7.0,
+            }
+        ),
+    )
+
+    assert [trace.name for trace in traces] == [
+        "Reach affected segment",
+        "Reach",
+        "Reach affected segment",
+        "Reach",
+    ]
+    for underlay, scientific in zip(traces[::2], traces[1::2], strict=True):
+        assert underlay.showlegend is False
+        assert underlay.line.color == "rgba(250, 120, 120, 0.5)"
+        assert underlay.line.width == 7.0
+        assert list(underlay.x) == list(scientific.x)[1:3]
+        assert list(underlay.y) == list(scientific.y)[1:3]
+
+
+def test_trajectory_2d_renders_single_sample_as_authored_marker() -> None:
+    constructor = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+    traces = constructor.callable(
+        {
+            "trajectories": [[[0, 0], [1, 1], [2, 0]]],
+            "perturbation_timing": _perturbation_timing(
+                "bounded", 3, start_index=1, duration=1
+            ),
+        },
+        constructor.params(
+            {
+                "show_mean": False,
+                "affected_color": "rgba(250, 120, 120, 0.5)",
+                "affected_marker_size": 12.0,
+            }
+        ),
+    )
+
+    assert [trace.mode for trace in traces] == ["markers", "lines"]
+    assert list(traces[0].x) == [1]
+    assert list(traces[0].y) == [1]
+    assert traces[0].marker.color == "rgba(250, 120, 120, 0.5)"
+    assert traces[0].marker.size == 12.0
+
+
+@pytest.mark.parametrize("applicability", ["nominal", "full_trial"])
+def test_trajectory_2d_explicit_no_underlay_timing(applicability: str) -> None:
+    constructor = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+    traces = constructor.callable(
+        {
+            "trajectories": [[[0, 0], [1, 1], [2, 0]]],
+            "perturbation_timing": _perturbation_timing(applicability, 3),
+        },
+        constructor.params({"show_mean": False}),
+    )
+
+    assert len(traces) == 1
+    assert traces[0].name == "Trajectory"
+
+
+def test_trajectory_2d_rejects_perturbation_sample_count_mismatch() -> None:
+    constructor = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+
+    with pytest.raises(ValueError, match="does not match every plotted trajectory length"):
+        constructor.callable(
+            {
+                "trajectories": [[[0, 0], [1, 1], [2, 0]]],
+                "perturbation_timing": _perturbation_timing("full_trial", 4),
+            },
+            constructor.params({"show_mean": False}),
+        )
+
+
+def test_figure_spec_renders_mixed_explicit_perturbation_applicability(
+    tmp_path: Path,
+) -> None:
+    spec = FigureSpec(
+        name="mixed-perturbation-timing",
+        assembler="feedbax.grid_figure",
+        panels=[
+            {"name": "single", "row": 1, "col": 1},
+            {"name": "bounded", "row": 1, "col": 2},
+            {"name": "trajectories", "row": 2, "col": 1},
+        ],
+        traces=[
+            TraceBinding(
+                name="single-step",
+                constructor="feedbax.vrect",
+                panel="single",
+                data={
+                    "x": [0.0, 0.1, 0.2],
+                    "perturbation_timing": _perturbation_timing(
+                        "bounded", 3, start_index=1, duration=1
+                    ),
+                },
+            ),
+            TraceBinding(
+                name="bounded-region",
+                constructor="feedbax.vrect",
+                panel="bounded",
+                data={
+                    "x": [0.0, 0.1, 0.2, 0.3],
+                    "perturbation_timing": _perturbation_timing(
+                        "bounded", 4, start_index=1, duration=2
+                    ),
+                },
+            ),
+            TraceBinding(
+                name="nominal-panel",
+                constructor="feedbax.vrect",
+                panel="bounded",
+                data={
+                    "x": [0.0, 0.1, 0.2, 0.3],
+                    "perturbation_timing": _perturbation_timing("nominal", 4),
+                },
+            ),
+            TraceBinding(
+                name="bounded-trajectory",
+                constructor="feedbax.trajectory_2d",
+                panel="trajectories",
+                data={
+                    "trajectories": [[[0, 0], [1, 1], [2, 1], [3, 0]]],
+                    "perturbation_timing": _perturbation_timing(
+                        "bounded", 4, start_index=1, duration=1
+                    ),
+                },
+                params={"label": "Perturbed", "show_mean": False},
+            ),
+            TraceBinding(
+                name="full-trial-trajectory",
+                constructor="feedbax.trajectory_2d",
+                panel="trajectories",
+                data={
+                    "trajectories": [[[0, 0], [1, -1], [2, -1], [3, 0]]],
+                    "perturbation_timing": _perturbation_timing("full_trial", 4),
+                },
+                params={"label": "Full trial", "show_mean": False},
+            ),
+        ],
+    )
+
+    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    rendered = figure_manifest_plotly_json(manifest)
+
+    assert rendered is not None
+    assert [shape["type"] for shape in rendered["layout"]["shapes"]] == ["line", "rect"]
+    assert [trace["name"] for trace in rendered["data"]] == [
+        "Perturbed affected segment",
+        "Perturbed",
+        "Full trial",
+    ]
+    assert rendered["data"][0]["mode"] == "markers"
+    spec_artifact = next(
+        artifact for artifact in manifest.artifacts if artifact.role == FIGURE_SPEC_ROLE
+    )
+    assert spec_artifact.uri is not None
+    custodied = json.loads(Path(spec_artifact.uri).read_bytes())
+    custodied_timing = custodied["figure_spec"]["traces"][0]["data"][
+        "perturbation_timing"
+    ]
+    assert custodied_timing["schema_id"] == PERTURBATION_TIMING_SCHEMA_ID
+    assert custodied_timing["schema_version"] == PERTURBATION_TIMING_SCHEMA_VERSION
+
+
+def test_figure_spec_fails_before_output_on_perturbation_length_mismatch(
+    tmp_path: Path,
+) -> None:
+    spec = FigureSpec(
+        name="mismatched-perturbation-timing",
+        assembler="feedbax.grid_figure",
+        traces=[
+            TraceBinding(
+                name="trajectory",
+                constructor="feedbax.trajectory_2d",
+                data={
+                    "trajectories": [[[0, 0], [1, 1], [2, 0]]],
+                    "perturbation_timing": _perturbation_timing(
+                        "bounded", 4, start_index=1, duration=2
+                    ),
+                },
+            )
+        ],
+    )
+
+    with pytest.raises(FigureSpecExecutionError) as exc_info:
+        execute_figure_spec(spec, root=tmp_path)
+
+    assert "does not match every plotted trajectory length" in str(exc_info.value.__cause__)
+    assert exc_info.value.manifest.status == "failed"
+    assert exc_info.value.manifest.artifacts == []
 
 
 def test_load_figure_template_and_piece_from_package_yaml(
