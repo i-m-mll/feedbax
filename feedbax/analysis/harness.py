@@ -37,6 +37,27 @@ def _initialize_evaluation_batch_worker(plugins: tuple[str, ...]) -> None:
     load_training_method_plugins(modules=plugins)
 
 
+def _validate_evaluation_fragment_checkpoint(
+    declaration: Any,
+    batch: Any,
+    fragment: ArtifactRef,
+    *,
+    matrix_intent_hash: str,
+) -> None:
+    """Validate one cached fragment against its current terminal declaration."""
+    from feedbax.analysis.evaluation_compaction import _validate_fragment_ref
+
+    try:
+        _validate_fragment_ref(
+            declaration,
+            fragment,
+            matrix_intent_hash=matrix_intent_hash,
+            batch_id=batch.batch_id,
+        )
+    except ValueError as exc:
+        raise ValueError("evaluation batch fragment checkpoint contract drifted") from exc
+
+
 def _execute_evaluation_batch_partition(task: Mapping[str, Any]) -> dict[str, Any]:
     """Execute and compact one authenticated batch in a persistent worker."""
     from feedbax.analysis.evaluation_compaction import (
@@ -102,19 +123,12 @@ def _execute_evaluation_batch_partition(task: Mapping[str, Any]) -> dict[str, An
             strict=True,
         ):
             fragment = ArtifactRef.model_validate(value)
-            if (
-                fragment.role != declaration.compact_product_role
-                or fragment.metadata.get("schema_id") != declaration.compact_product_schema_id
-                or fragment.metadata.get("schema_version")
-                != declaration.compact_product_schema_version
-                or fragment.metadata.get("leaf_id") != declaration.leaf_id
-                or fragment.metadata.get("batch_id") != batch.batch_id
-                or canonical_json_bytes(fragment.metadata.get("consumer_parameters"))
-                != canonical_json_bytes(declaration.parameters)
-                or fragment.metadata.get("consumer_parameters_sha256")
-                != sha256_bytes(canonical_json_bytes(declaration.parameters))
-            ):
-                raise ValueError("evaluation batch fragment checkpoint contract drifted")
+            _validate_evaluation_fragment_checkpoint(
+                declaration,
+                batch,
+                fragment,
+                matrix_intent_hash=task["matrix_intent_hash"],
+            )
             provider.get_bytes(fragment)
         for value, authority_value in zip(
             cached.get("outcomes", []),
@@ -817,6 +831,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             reclamations.append(
                                 reclaim_evaluation_batch_caches(
                                     batch,
+                                    matrix_intent_hash=orchestration_batch_plan.matrix_intent_hash,
                                     batch_index=completed_batch["batch_index"],
                                     outcomes=outcomes_for_batch,
                                     acknowledgements=acknowledgements,

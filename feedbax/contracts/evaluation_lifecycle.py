@@ -33,15 +33,19 @@ EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION_V1 = (
 EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID = "feedbax.spec.evaluation_matrix_batch_plan"
 EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V1 = "feedbax.spec.evaluation_matrix_batch_plan.v1"
 EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V2 = "feedbax.spec.evaluation_matrix_batch_plan.v2"
-EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION = "feedbax.spec.evaluation_matrix_batch_plan.v3"
+EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V3 = "feedbax.spec.evaluation_matrix_batch_plan.v3"
+EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION = "feedbax.spec.evaluation_matrix_batch_plan.v4"
 EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID = (
     "feedbax.orchestration.evaluation_batch_compaction_evidence"
 )
 EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V1 = (
     "feedbax.orchestration.evaluation_batch_compaction_evidence.v1"
 )
-EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION = (
+EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V2 = (
     "feedbax.orchestration.evaluation_batch_compaction_evidence.v2"
+)
+EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION = (
+    "feedbax.orchestration.evaluation_batch_compaction_evidence.v3"
 )
 EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID = (
     "feedbax.orchestration.evaluation_batch_merge_checkpoint"
@@ -49,8 +53,11 @@ EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID = (
 EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V1 = (
     "feedbax.orchestration.evaluation_batch_merge_checkpoint.v1"
 )
-EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION = (
+EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V2 = (
     "feedbax.orchestration.evaluation_batch_merge_checkpoint.v2"
+)
+EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION = (
+    "feedbax.orchestration.evaluation_batch_merge_checkpoint.v3"
 )
 EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_ID = (
     "feedbax.orchestration.evaluation_worker_topology_evidence"
@@ -143,6 +150,7 @@ class EvaluationBatchConsumerDeclaration(StrictModel):
     leaf_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
     consumer_id: str = Field(min_length=1)
     consumer_version: str = Field(min_length=1)
+    terminal_analysis_type: str = Field(min_length=1)
     parameters: dict[str, JsonValue] = Field(default_factory=dict)
     accepted_evaluation_state_schema_ids: tuple[str, ...] = Field(min_length=1)
     compact_product_schema_id: str = Field(min_length=1)
@@ -171,7 +179,7 @@ class EvaluationMatrixBatchPlan(StrictModel):
     schema_id: Literal["feedbax.spec.evaluation_matrix_batch_plan"] = (
         EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID
     )
-    schema_version: Literal["feedbax.spec.evaluation_matrix_batch_plan.v3"] = (
+    schema_version: Literal["feedbax.spec.evaluation_matrix_batch_plan.v4"] = (
         EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION
     )
     matrix_intent_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -214,7 +222,10 @@ class EvaluationBatchLeafAcknowledgement(StrictModel):
     leaf_id: str = Field(min_length=1)
     consumer_id: str = Field(min_length=1)
     consumer_version: str = Field(min_length=1)
+    terminal_analysis_type: str = Field(min_length=1)
     parameters: dict[str, JsonValue] = Field(default_factory=dict)
+    compact_product_schema_id: str = Field(min_length=1)
+    compact_product_schema_version: str = Field(min_length=1)
     compact_product_role: str = Field(min_length=1)
     fragment: ArtifactRef
     prior_merge_state_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -233,7 +244,7 @@ class EvaluationBatchMergeCheckpoint(StrictModel):
     schema_id: Literal["feedbax.orchestration.evaluation_batch_merge_checkpoint"] = (
         EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID
     )
-    schema_version: Literal["feedbax.orchestration.evaluation_batch_merge_checkpoint.v2"] = (
+    schema_version: Literal["feedbax.orchestration.evaluation_batch_merge_checkpoint.v3"] = (
         EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION
     )
     matrix_intent_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -271,8 +282,14 @@ class EvaluationBatchMergeCheckpoint(StrictModel):
             acknowledgement.leaf_id != self.declaration.leaf_id
             or acknowledgement.consumer_id != self.declaration.consumer_id
             or acknowledgement.consumer_version != self.declaration.consumer_version
+            or acknowledgement.terminal_analysis_type
+            != self.declaration.terminal_analysis_type
             or canonical_json_bytes(acknowledgement.parameters)
             != canonical_json_bytes(self.declaration.parameters)
+            or acknowledgement.compact_product_schema_id
+            != self.declaration.compact_product_schema_id
+            or acknowledgement.compact_product_schema_version
+            != self.declaration.compact_product_schema_version
             or acknowledgement.compact_product_role != self.declaration.compact_product_role
         ):
             raise ValueError("merge checkpoint acknowledgement drifted from its declaration")
@@ -296,7 +313,7 @@ class EvaluationBatchCompactionEvidence(StrictModel):
     schema_id: Literal["feedbax.orchestration.evaluation_batch_compaction_evidence"] = (
         EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID
     )
-    schema_version: Literal["feedbax.orchestration.evaluation_batch_compaction_evidence.v2"] = (
+    schema_version: Literal["feedbax.orchestration.evaluation_batch_compaction_evidence.v3"] = (
         EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION
     )
     matrix_intent_hash: str = Field(pattern=r"^[0-9a-f]{64}$")

@@ -123,15 +123,18 @@ from feedbax.contracts.evaluation_lifecycle import (
     EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID,
     EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION,
     EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V1,
+    EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V2,
     EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID,
     EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION,
     EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V1,
+    EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V2,
     EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_ID,
     EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_VERSION,
     EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID,
     EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION,
     EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V1,
     EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V2,
+    EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V3,
     EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_ID,
     EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_VERSION,
     EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
@@ -3025,9 +3028,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Authenticated batch, consumer declaration, parent authority, and "
                 "exactly-once merge transition checkpoint."
             ),
-            stance="migrate",
-            supported_old_versions=(EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V1,),
-            rejected_old_versions=(f"{EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID}.v0",),
+            rejected_old_versions=(
+                f"{EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID}.v0",
+                EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V1,
+                EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V2,
+            ),
             required_tests=("tests/test_evaluation_compaction.py",),
         ),
         _family(
@@ -3040,9 +3045,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description=(
                 "Authored-order compact-fragment, merge-state, and raw-cache reclamation proof."
             ),
-            stance="migrate",
-            supported_old_versions=(EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V1,),
-            rejected_old_versions=(f"{EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID}.v0",),
+            rejected_old_versions=(
+                f"{EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID}.v0",
+                EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V1,
+                EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V2,
+            ),
             required_tests=("tests/test_evaluation_compaction.py",),
         ),
         _family(
@@ -3095,12 +3102,12 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "compile_evaluation_run_matrix_for_orchestration",
             ),
             description=("Ordered matrix subsets assigned inside the governed public harness."),
-            stance="migrate",
-            supported_old_versions=(
+            rejected_old_versions=(
+                f"{EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID}.v0",
                 EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V1,
                 EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V2,
+                EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V3,
             ),
-            rejected_old_versions=(f"{EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID}.v0",),
             required_tests=("tests/test_evaluation_orchestration.py",),
         ),
         _family(
@@ -4911,7 +4918,7 @@ def _migrate_evaluation_matrix_batch_plan_v2(payload: dict[str, Any]) -> dict[st
     """Preserve parameter-free v2 consumer declarations."""
     migrated = dict(payload)
     migrated["schema_id"] = EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID
-    migrated["schema_version"] = EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION
+    migrated["schema_version"] = EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V3
     migrated["consumers"] = [
         {**consumer, "parameters": consumer.get("parameters", {})}
         for consumer in migrated.get("consumers", [])
@@ -5000,7 +5007,7 @@ default_spec_registry.register_migration(
     "EvaluationBatchMergeCheckpoint",
     SchemaMigration(
         source_version=EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V1,
-        target_version=EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION,
+        target_version=EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V2,
         migration_id="evaluation-batch-merge-checkpoint-v1-to-v2-consumer-parameters",
         migrate=_migrate_evaluation_batch_merge_checkpoint_v1,
         description="Bind v1 merge checkpoints to explicit parameter-free consumers.",
@@ -5010,7 +5017,7 @@ default_spec_registry.register_migration(
     "EvaluationBatchCompactionEvidence",
     SchemaMigration(
         source_version=EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V1,
-        target_version=EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION,
+        target_version=EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V2,
         migration_id="evaluation-batch-compaction-v1-to-v2-consumer-parameters",
         migrate=_migrate_evaluation_batch_compaction_evidence_v1,
         description="Bind v1 reclamation evidence to explicit parameter-free consumers.",
@@ -5030,7 +5037,7 @@ default_spec_registry.register_migration(
     "EvaluationMatrixBatchPlan",
     SchemaMigration(
         source_version=EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V2,
-        target_version=EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION,
+        target_version=EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V3,
         migration_id="evaluation-matrix-batch-plan-v2-to-v3-consumer-parameters",
         migrate=_migrate_evaluation_matrix_batch_plan_v2,
         description="Preserve v2 declarations as explicitly parameter-free consumers.",

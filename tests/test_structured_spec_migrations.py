@@ -389,17 +389,17 @@ def test_shadow_launch_evidence_registry_explicitly_rejects_v0() -> None:
         (
             "EvaluationBatchCompactionEvidence",
             "feedbax.orchestration.evaluation_batch_compaction_evidence",
-            "feedbax.orchestration.evaluation_batch_compaction_evidence.v2",
+            "feedbax.orchestration.evaluation_batch_compaction_evidence.v3",
         ),
         (
             "EvaluationBatchMergeCheckpoint",
             "feedbax.orchestration.evaluation_batch_merge_checkpoint",
-            "feedbax.orchestration.evaluation_batch_merge_checkpoint.v2",
+            "feedbax.orchestration.evaluation_batch_merge_checkpoint.v3",
         ),
         (
             "EvaluationMatrixBatchPlan",
             "feedbax.spec.evaluation_matrix_batch_plan",
-            "feedbax.spec.evaluation_matrix_batch_plan.v3",
+            "feedbax.spec.evaluation_matrix_batch_plan.v4",
         ),
         (
             "EvaluationOutputPreflightPolicy",
@@ -438,9 +438,6 @@ def test_default_registry_registers_assemble_contract_families(
         if kind
         in {
             "RunAssemblyRequest",
-            "EvaluationBatchCompactionEvidence",
-            "EvaluationBatchMergeCheckpoint",
-            "EvaluationMatrixBatchPlan",
             "EvaluationOutputPreflightPolicy",
             "EvaluationOutputPreflightEvidence",
         }
@@ -474,56 +471,23 @@ def test_default_registry_registers_assemble_contract_families(
                 kind,
                 {"schema_id": schema_id, "schema_version": f"{schema_id}.v2"},
             )
-    if kind == "EvaluationMatrixBatchPlan":
-        migrated = default_spec_registry.migrate(
-            kind,
-            {
-                "schema_id": schema_id,
-                "schema_version": f"{schema_id}.v2",
-                "consumers": [{"leaf_id": "legacy"}],
-            },
-        )
-        assert migrated.payload["schema_version"] == current_version
-        assert migrated.payload["consumers"] == [{"leaf_id": "legacy", "parameters": {}}]
-    if kind == "EvaluationBatchMergeCheckpoint":
-        migrated = default_spec_registry.migrate(
-            kind,
-            {
-                "schema_id": schema_id,
-                "schema_version": f"{schema_id}.v1",
-                "declaration": {"leaf_id": "legacy"},
-                "acknowledgement": {
-                    "fragment": {"metadata": {}},
-                    "merge_state": {"metadata": {}},
+    previous_terminal_identity_versions = {
+        "EvaluationMatrixBatchPlan": f"{schema_id}.v3",
+        "EvaluationBatchMergeCheckpoint": f"{schema_id}.v2",
+        "EvaluationBatchCompactionEvidence": f"{schema_id}.v2",
+    }
+    if kind in previous_terminal_identity_versions:
+        with pytest.raises(
+            UnsupportedSpecVersion,
+            match="migration_intentionally_absent=yes",
+        ):
+            default_spec_registry.migrate(
+                kind,
+                {
+                    "schema_id": schema_id,
+                    "schema_version": previous_terminal_identity_versions[kind],
                 },
-            },
-        )
-        assert migrated.payload["declaration"]["parameters"] == {}
-        assert migrated.payload["acknowledgement"]["parameters"] == {}
-        assert (
-            migrated.payload["acknowledgement"]["fragment"]["metadata"]["consumer_parameters"] == {}
-        )
-    if kind == "EvaluationBatchCompactionEvidence":
-        migrated = default_spec_registry.migrate(
-            kind,
-            {
-                "schema_id": schema_id,
-                "schema_version": f"{schema_id}.v1",
-                "reclamations": [
-                    {
-                        "leaf_acknowledgements": [
-                            {
-                                "fragment": {"metadata": {}},
-                                "merge_state": {"metadata": {}},
-                            }
-                        ]
-                    }
-                ],
-            },
-        )
-        acknowledgement = migrated.payload["reclamations"][0]["leaf_acknowledgements"][0]
-        assert acknowledgement["parameters"] == {}
-        assert acknowledgement["merge_state"]["metadata"]["consumer_parameters"] == {}
+            )
 
 
 def test_execution_identity_envelope_v1_migrates_with_unavailable_provenance() -> None:
