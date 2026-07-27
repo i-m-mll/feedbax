@@ -67,7 +67,7 @@ from feedbax.orchestration.input_materialization import (
     InputMaterializationError,
     InputProviderRootBinding,
     materialize_bundle_inputs,
-    preflight_input_provider_bindings,
+    preflight_bundle_input_bindings,
 )
 from feedbax.orchestration.matrix_authority import (
     MatrixAuthorityError,
@@ -80,6 +80,7 @@ from feedbax.orchestration.repo_snapshot import (
     restore_repo_snapshots,
     verify_repo_snapshot,
 )
+from feedbax.orchestration.staged_root_custody import StagedRootSnapshotBinding
 from feedbax.orchestration.repo_realization import (
     EditableSourceResolution,
     RepoRealizationEntry,
@@ -763,6 +764,7 @@ class RunPodOrchestrationDriver:
         sleep: Any = time.sleep,
         monotonic: Any = time.monotonic,
         input_provider_bindings: Sequence[InputProviderRootBinding] = (),
+        staged_root_bindings: Sequence[StagedRootSnapshotBinding] = (),
         collection_recovery_bindings: Sequence[CollectionRecoveryBinding] = (),
     ) -> None:
         self.config = config or RunPodDriverConfig()
@@ -773,6 +775,7 @@ class RunPodOrchestrationDriver:
         self._sleep = sleep
         self._monotonic = monotonic
         self.input_provider_bindings = tuple(input_provider_bindings)
+        self.staged_root_bindings = tuple(staged_root_bindings)
         self.collection_recovery_bindings = tuple(collection_recovery_bindings)
         self._collection_recovery_evidence: dict[str, Mapping[str, object]] = {}
         self._repo_snapshots: SealedRepoSnapshots | None = None
@@ -890,7 +893,11 @@ class RunPodOrchestrationDriver:
                     observed=plan.model_dump(mode="json"),
                 )
 
-        failures, observed = preflight_input_provider_bindings(bundle, self.input_provider_bindings)
+        failures, observed = preflight_bundle_input_bindings(
+            bundle,
+            provider_bindings=self.input_provider_bindings,
+            staged_root_bindings=self.staged_root_bindings,
+        )
         checks_by_name["input-provider-bindings"] = _preflight_check(
             "input-provider-bindings",
             not failures,
@@ -1308,7 +1315,7 @@ class RunPodOrchestrationDriver:
 
     def _preflight_driver_contract(self) -> dict[str, Any]:
         """Project the complete effective RunPod config without exposing secrets."""
-        return {
+        contract = {
             "pod_id": self.config.pod_id,
             "ssh_host": self.config.ssh_host,
             "ssh_port": self.config.ssh_port,
@@ -1346,6 +1353,11 @@ class RunPodOrchestrationDriver:
                 binding.name for binding in self.input_provider_bindings
             ),
         }
+        if self.staged_root_bindings:
+            contract["staged_root_bindings"] = sorted(
+                (binding.kind, binding.name) for binding in self.staged_root_bindings
+            )
+        return contract
 
     def _validate_preflight_checks(
         self, bundle: RunBundle, checks: Sequence[PreflightCheckEntry]
@@ -1366,8 +1378,10 @@ class RunPodOrchestrationDriver:
         ):
             raise RunPodDriverError("completed PREFLIGHT includes a failing check")
 
-        failures, resolved_observed = preflight_input_provider_bindings(
-            bundle, self.input_provider_bindings
+        failures, resolved_observed = preflight_bundle_input_bindings(
+            bundle,
+            provider_bindings=self.input_provider_bindings,
+            staged_root_bindings=self.staged_root_bindings,
         )
         if failures:
             raise RunPodDriverError(
@@ -1555,6 +1569,7 @@ class RunPodOrchestrationDriver:
                 bundle,
                 destination_root=attempt_root,
                 provider_bindings=self.input_provider_bindings,
+                staged_root_bindings=self.staged_root_bindings,
             )
         except InputMaterializationError as exc:
             raise RunPodDriverError(str(exc)) from exc
@@ -3656,9 +3671,14 @@ def dry_run_launch_bundle(
     bundle: RunBundle,
     config: RunPodDriverConfig,
     input_provider_bindings: Sequence[InputProviderRootBinding] = (),
+    staged_root_bindings: Sequence[StagedRootSnapshotBinding] = (),
 ) -> tuple[str, ...]:
     """Bind all RunPod launch rows without constructing a transport."""
-    failures, _ = preflight_input_provider_bindings(bundle, input_provider_bindings)
+    failures, _ = preflight_bundle_input_bindings(
+        bundle,
+        provider_bindings=input_provider_bindings,
+        staged_root_bindings=staged_root_bindings,
+    )
     if failures:
         raise RunPodDriverError("; ".join(failures))
     remote_run_dir = f"{config.remote_run_root.rstrip('/')}/{bundle.run_set_id}"

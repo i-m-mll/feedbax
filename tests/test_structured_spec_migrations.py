@@ -169,6 +169,11 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V5,
     RUN_BUNDLE_SCHEMA_VERSION_V6,
     RUN_BUNDLE_SCHEMA_VERSION_V7,
+    RUN_BUNDLE_SCHEMA_VERSION_V8,
+)
+from feedbax.orchestration.staged_root_custody import (
+    STAGED_ROOT_CUSTODY_SCHEMA_ID,
+    STAGED_ROOT_CUSTODY_SCHEMA_VERSION,
 )
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.migration_contract]
@@ -618,6 +623,7 @@ def test_nan_attribution_families_are_versioned_and_reject_unknown_versions(
         RUN_BUNDLE_SCHEMA_VERSION_V5,
         RUN_BUNDLE_SCHEMA_VERSION_V6,
         RUN_BUNDLE_SCHEMA_VERSION_V7,
+        RUN_BUNDLE_SCHEMA_VERSION_V8,
     ],
 )
 def test_run_bundle_old_versions_require_reassembly(old_version: str) -> None:
@@ -648,6 +654,20 @@ def test_run_bundle_v7_rejection_requires_remote_smoke_policy() -> None:
         default_spec_registry.migrate("RunBundle", {"schema_version": RUN_BUNDLE_SCHEMA_VERSION_V7})
 
     assert "v7 lacks default pre-launch remote smoke policy" in str(excinfo.value)
+
+
+def test_staged_root_custody_registry_rejects_unknown_versions() -> None:
+    family = default_spec_registry.resolve("StagedRootCustody")
+    assert family.identity == STAGED_ROOT_CUSTODY_SCHEMA_ID
+    assert family.current_version == STAGED_ROOT_CUSTODY_SCHEMA_VERSION
+    assert family.policy is not None
+    assert family.policy.stance == "reject"
+
+    with pytest.raises(UnsupportedSpecVersion):
+        default_spec_registry.migrate(
+            "StagedRootCustody",
+            {"schema_version": f"{STAGED_ROOT_CUSTODY_SCHEMA_ID}.v0"},
+        )
 
 
 def test_remote_smoke_evidence_registry_explicitly_rejects_v0() -> None:

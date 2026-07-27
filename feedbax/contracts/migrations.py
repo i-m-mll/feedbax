@@ -326,6 +326,11 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V5,
     RUN_BUNDLE_SCHEMA_VERSION_V6,
     RUN_BUNDLE_SCHEMA_VERSION_V7,
+    RUN_BUNDLE_SCHEMA_VERSION_V8,
+)
+from feedbax.orchestration.staged_root_custody import (
+    STAGED_ROOT_CUSTODY_SCHEMA_ID,
+    STAGED_ROOT_CUSTODY_SCHEMA_VERSION,
 )
 from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_ID,
@@ -3172,9 +3177,27 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 RUN_BUNDLE_SCHEMA_VERSION_V5,
                 RUN_BUNDLE_SCHEMA_VERSION_V6,
                 RUN_BUNDLE_SCHEMA_VERSION_V7,
+                RUN_BUNDLE_SCHEMA_VERSION_V8,
             ),
             required_tests=(
                 "tests/test_orchestration_core.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "StagedRootCustody",
+            STAGED_ROOT_CUSTODY_SCHEMA_ID,
+            STAGED_ROOT_CUSTODY_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.staged_root_custody.StagedRootCustody",
+            emitted_by=("feedbax.orchestration.staged_root_custody.seal_staged_root",),
+            consumed_by=(
+                "feedbax.orchestration.input_materialization",
+                "Feedbax staged evaluation execution",
+            ),
+            description="Exact content-addressed custody for one typed staged execution root.",
+            rejected_old_versions=(f"{STAGED_ROOT_CUSTODY_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_orchestration_staged_root_custody.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),
