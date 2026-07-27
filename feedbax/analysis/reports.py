@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+import json
+import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import Field, model_validator
 
 from feedbax.analysis.specs import find_manifest_by_id
 from feedbax.analysis.manifest_inputs import (
@@ -25,12 +29,14 @@ from feedbax.contracts.manifest import (
     ArtifactRef,
     EntrypointRef,
     EvaluationRunManifest,
+    FigureManifest,
     ManifestStatus,
     ParentRef,
     Provenance,
     ReportManifest,
     ReportSpec,
     SpecPayload,
+    StrictModel,
     collect_git_provenance,
     default_manifest_root,
     report_manifest_id,
@@ -44,6 +50,137 @@ REPORT_RENDER_ROLE = "report_render"
 REPORT_RENDER_MEDIA_TYPES = frozenset({"text/markdown", "text/html", "application/json"})
 BUNDLE_SUMMARY_REPORT_TYPE = "feedbax.bundle_summary"
 STUDIO_REPORT_TYPE = "feedbax.studio_report"
+ORDERED_FIGURE_REPORT_TYPE = "feedbax.ordered_figure_report"
+ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_ID = "feedbax.spec.report.ordered_figure"
+ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_VERSION = "feedbax.spec.report.ordered_figure.v1"
+
+OrderedFigureReportApplicability = Literal["included", "not_applicable"]
+OrderedFigureReportScalar = str | int | float | bool | None
+
+
+def _require_authored_text(value: str, *, field_name: str) -> str:
+    if not value.strip():
+        raise ValueError(f"{field_name} must not be blank")
+    return value
+
+
+class OrderedFigureReportFigure(StrictModel):
+    """One authored figure placement in an ordered report section."""
+
+    input_role: str | None = None
+    caption: str
+    applicability: OrderedFigureReportApplicability = "included"
+    not_applicable_reason: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_applicability(self) -> "OrderedFigureReportFigure":
+        _require_authored_text(self.caption, field_name="figure caption")
+        if self.applicability == "included":
+            if self.input_role is None:
+                raise ValueError("included figure requires input_role")
+            _require_authored_text(self.input_role, field_name="figure input_role")
+            if self.not_applicable_reason is not None:
+                raise ValueError("included figure cannot declare not_applicable_reason")
+        else:
+            if self.input_role is not None:
+                raise ValueError("not-applicable figure cannot declare input_role")
+            if self.not_applicable_reason is None:
+                raise ValueError("not-applicable figure requires not_applicable_reason")
+            _require_authored_text(
+                self.not_applicable_reason,
+                field_name="figure not_applicable_reason",
+            )
+        return self
+
+
+class OrderedFigureReportScalarTable(StrictModel):
+    """A small authored table whose cells are JSON-native scalar values."""
+
+    title: str | None = None
+    columns: list[str]
+    rows: list[list[OrderedFigureReportScalar]]
+
+    @model_validator(mode="after")
+    def _validate_table(self) -> "OrderedFigureReportScalarTable":
+        if self.title is not None:
+            _require_authored_text(self.title, field_name="scalar table title")
+        if not self.columns:
+            raise ValueError("scalar table requires at least one column")
+        for column in self.columns:
+            _require_authored_text(column, field_name="scalar table column")
+        if len(set(self.columns)) != len(self.columns):
+            raise ValueError("scalar table columns must be unique")
+        for row_index, row in enumerate(self.rows):
+            if len(row) != len(self.columns):
+                raise ValueError(
+                    f"scalar table row {row_index} has {len(row)} cells; "
+                    f"expected {len(self.columns)}"
+                )
+            for cell in row:
+                if isinstance(cell, float) and not math.isfinite(cell):
+                    raise ValueError("scalar table cells must be finite JSON values")
+        return self
+
+
+class OrderedFigureReportSection(StrictModel):
+    """One authored section in an ordered figure report."""
+
+    title: str
+    framing: str | None = None
+    applicability: OrderedFigureReportApplicability = "included"
+    not_applicable_reason: str | None = None
+    figures: list[OrderedFigureReportFigure] = Field(default_factory=list)
+    tables: list[OrderedFigureReportScalarTable] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_applicability(self) -> "OrderedFigureReportSection":
+        _require_authored_text(self.title, field_name="section title")
+        if self.applicability == "included":
+            if self.not_applicable_reason is not None:
+                raise ValueError("included section cannot declare not_applicable_reason")
+        else:
+            if self.not_applicable_reason is None:
+                raise ValueError("not-applicable section requires not_applicable_reason")
+            _require_authored_text(
+                self.not_applicable_reason,
+                field_name="section not_applicable_reason",
+            )
+            if self.figures or self.tables:
+                raise ValueError("not-applicable section cannot declare figure or table content")
+        return self
+
+
+class OrderedFigureReportParams(StrictModel):
+    """Versioned authored content for the generic ordered-figure recipe."""
+
+    schema_id: Literal["feedbax.spec.report.ordered_figure"]
+    schema_version: Literal["feedbax.spec.report.ordered_figure.v1"]
+    title: str
+    introduction: str | None = None
+    sections: list[OrderedFigureReportSection]
+    output_name: str = "ordered-figure-report.md"
+
+    @model_validator(mode="after")
+    def _validate_report(self) -> "OrderedFigureReportParams":
+        _require_authored_text(self.title, field_name="report title")
+        if not self.sections:
+            raise ValueError("ordered figure report requires at least one section")
+        if (
+            not self.output_name.strip()
+            or Path(self.output_name).name != self.output_name
+            or not self.output_name.endswith(".md")
+        ):
+            raise ValueError("output_name must be a Markdown filename without path components")
+        included_roles = [
+            figure.input_role
+            for section in self.sections
+            if section.applicability == "included"
+            for figure in section.figures
+            if figure.applicability == "included"
+        ]
+        if len(set(included_roles)) != len(included_roles):
+            raise ValueError("included figure input_role values must be unique")
+        return self
 
 
 @dataclass(frozen=True)
@@ -367,6 +504,188 @@ def _studio_report_recipe(
     )
 
 
+def _ordered_figure_report_recipe(
+    report_spec: ReportSpec,
+    root: Path,
+    inputs: Sequence[ResolvedReportInput],
+) -> ReportRecipeResult:
+    if report_spec.narrative is not None:
+        raise ValueError("ordered figure report narrative must be authored as params.introduction")
+    params = OrderedFigureReportParams.model_validate(report_spec.params)
+    inputs_by_role = _ordered_figure_inputs_by_role(params, inputs)
+    markdown = _render_ordered_figure_report(params, inputs_by_role)
+    render_artifact = store_bytes_artifact(
+        markdown.encode("utf-8"),
+        root=root,
+        role=REPORT_RENDER_ROLE,
+        logical_name=params.output_name,
+        media_type="text/markdown",
+        suffix=".md",
+        metadata={
+            "report_type": ORDERED_FIGURE_REPORT_TYPE,
+            "params_schema_id": params.schema_id,
+            "params_schema_version": params.schema_version,
+        },
+    )
+    included_figures = sum(
+        figure.applicability == "included"
+        for section in params.sections
+        if section.applicability == "included"
+        for figure in section.figures
+    )
+    not_applicable_items = sum(
+        section.applicability == "not_applicable" for section in params.sections
+    ) + sum(
+        figure.applicability == "not_applicable"
+        for section in params.sections
+        if section.applicability == "included"
+        for figure in section.figures
+    )
+    return ReportRecipeResult(
+        artifacts=[render_artifact],
+        summary={
+            "sections": len(params.sections),
+            "included_figures": included_figures,
+            "not_applicable_items": not_applicable_items,
+            "scalar_tables": sum(
+                len(section.tables)
+                for section in params.sections
+                if section.applicability == "included"
+            ),
+        },
+        metadata={
+            "ordered_figure_report": {
+                "schema_id": params.schema_id,
+                "schema_version": params.schema_version,
+            }
+        },
+    )
+
+
+def _ordered_figure_inputs_by_role(
+    params: OrderedFigureReportParams,
+    inputs: Sequence[ResolvedReportInput],
+) -> dict[str, FigureManifest]:
+    expected_roles = {
+        str(figure.input_role)
+        for section in params.sections
+        if section.applicability == "included"
+        for figure in section.figures
+        if figure.applicability == "included"
+    }
+    resolved_by_role: dict[str, FigureManifest] = {}
+    for resolved in inputs:
+        role = resolved.ref.role
+        if role is None or not role.strip():
+            raise ValueError(
+                f"ordered figure report input {resolved.ref.id!r} requires a non-blank role"
+            )
+        if role in resolved_by_role:
+            raise ValueError(f"ordered figure report input role {role!r} is duplicated")
+        if role not in expected_roles:
+            raise ValueError(f"ordered figure report input role {role!r} is not referenced")
+        if resolved.ref.kind != "FigureManifest":
+            raise ValueError(
+                f"ordered figure report input role {role!r} must reference FigureManifest"
+            )
+        if not isinstance(resolved.manifest, FigureManifest):
+            raise ValueError(
+                f"ordered figure report input role {role!r} did not resolve to FigureManifest"
+            )
+        if resolved.manifest.status != "completed":
+            raise ValueError(
+                f"ordered figure report input role {role!r} has non-completed status "
+                f"{resolved.manifest.status!r}"
+            )
+        renders = [
+            artifact
+            for artifact in resolved.manifest.artifacts
+            if artifact.role == "figure_render" and artifact.sha256 and artifact.uri
+        ]
+        if not renders:
+            raise ValueError(
+                f"ordered figure report input role {role!r} has no materialized "
+                "figure_render artifact"
+            )
+        resolved_by_role[role] = resolved.manifest
+    missing_roles = sorted(expected_roles - resolved_by_role.keys())
+    if missing_roles:
+        raise ValueError(
+            "ordered figure report is missing required input roles: "
+            + ", ".join(repr(role) for role in missing_roles)
+        )
+    return resolved_by_role
+
+
+def _render_ordered_figure_report(
+    params: OrderedFigureReportParams,
+    inputs_by_role: Mapping[str, FigureManifest],
+) -> str:
+    lines = [f"# {params.title}", ""]
+    if params.introduction:
+        lines.extend([params.introduction, ""])
+    for section in params.sections:
+        lines.extend([f"## {section.title}", ""])
+        if section.framing:
+            lines.extend([section.framing, ""])
+        if section.applicability == "not_applicable":
+            lines.extend([f"Not applicable: {section.not_applicable_reason}", ""])
+            continue
+        for figure in section.figures:
+            if figure.applicability == "not_applicable":
+                lines.extend(
+                    [
+                        f"**{figure.caption}**",
+                        "",
+                        f"Not applicable: {figure.not_applicable_reason}",
+                        "",
+                    ]
+                )
+                continue
+            manifest = inputs_by_role[str(figure.input_role)]
+            renders = [
+                artifact
+                for artifact in manifest.artifacts
+                if artifact.role == "figure_render" and artifact.sha256 and artifact.uri
+            ]
+            for artifact in renders:
+                label = _escape_markdown_text(artifact.logical_name)
+                uri = str(artifact.uri).replace(">", "%3E")
+                if artifact.media_type.startswith("image/"):
+                    lines.extend([f"![{_escape_markdown_text(figure.caption)}](<{uri}>)", ""])
+                else:
+                    lines.extend([f"[{label}](<{uri}>)", ""])
+            lines.extend([f"*{figure.caption}*", ""])
+        for table in section.tables:
+            if table.title:
+                lines.extend([f"### {table.title}", ""])
+            header = " | ".join(_escape_markdown_cell(column) for column in table.columns)
+            lines.append(f"| {header} |")
+            lines.append("| " + " | ".join("---" for _ in table.columns) + " |")
+            for row in table.rows:
+                lines.append(
+                    "| "
+                    + " | ".join(_escape_markdown_cell(_scalar_text(cell)) for cell in row)
+                    + " |"
+                )
+            lines.append("")
+    return "\n".join(lines)
+
+
+def _scalar_text(value: OrderedFigureReportScalar) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, allow_nan=False)
+
+
+def _escape_markdown_text(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+
+
+def _escape_markdown_cell(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("|", "\\|").replace("\n", "<br>")
+
+
 def _markdown_report(
     *,
     title: str,
@@ -378,3 +697,8 @@ def _markdown_report(
 
 register_report_recipe(BUNDLE_SUMMARY_REPORT_TYPE, _bundle_summary_recipe, replace=True)
 register_report_recipe(STUDIO_REPORT_TYPE, _studio_report_recipe, replace=True)
+register_report_recipe(
+    ORDERED_FIGURE_REPORT_TYPE,
+    _ordered_figure_report_recipe,
+    replace=True,
+)
