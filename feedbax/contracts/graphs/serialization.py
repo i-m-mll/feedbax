@@ -47,7 +47,11 @@ from feedbax.intervene.intervene import (
     NetworkClamp,
     NetworkConstantInput,
 )
-from feedbax.mechanics.linear_state_space import LinearStateSpace
+from feedbax.mechanics.linear_state_space import (
+    STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
+    LinearStateSpace,
+    StructuralLinearStateSpace,
+)
 from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.muscles.relu_muscle import ReluMuscle
 from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
@@ -585,6 +589,29 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                         }
                     }
                 )
+            continue
+
+        if isinstance(component, StructuralLinearStateSpace):
+            params = {
+                "A": component.A.tolist(),
+                "B": component.B.tolist(),
+                "B_w": component.B_w.tolist(),
+                "delta_A": [list(row) for row in component.initial_delta_A],
+                "scale": component.initial_scale,
+                "active": component.initial_active,
+                "label": component.label,
+                "dt": component.dt,
+                "initial_state": list(component.initial_state),
+                "pos_slice": list(component.pos_slice),
+                "vel_slice": list(component.vel_slice),
+            }
+            nodes[name] = ComponentSpec(
+                type="StructuralLinearStateSpace",
+                params=params,
+                param_schema_version=STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
             continue
 
         if isinstance(component, LinearStateSpace):
