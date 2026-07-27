@@ -155,6 +155,8 @@ from feedbax.contracts.figures import (
     FIGURE_SPEC_SCHEMA_VERSION,
     FIGURE_TEMPLATE_SCHEMA_ID,
     FIGURE_TEMPLATE_SCHEMA_VERSION,
+    PERTURBATION_TIMING_SCHEMA_ID,
+    PERTURBATION_TIMING_SCHEMA_VERSION,
 )
 from feedbax.contracts.graph import (
     ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
@@ -2669,6 +2671,17 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             consumed_by=("feedbax.analysis.figures.resolve_figure_trace_bindings",),
             description="Constrained row family bound to one figure-template slot.",
             required_tests=("tests/test_figure_slot_families.py",),
+        ),
+        _family(
+            "PerturbationTiming",
+            PERTURBATION_TIMING_SCHEMA_ID,
+            PERTURBATION_TIMING_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("FigureSpec.traces.data.perturbation_timing",),
+            consumed_by=("feedbax.plot.constructors",),
+            description="Explicit applicability and sample schedule for figure annotations.",
+            rejected_old_versions=("feedbax.spec.perturbation_timing.v0",),
+            required_tests=("tests/test_declarative_figures.py",),
         ),
         _family(
             "FigureSpec",
