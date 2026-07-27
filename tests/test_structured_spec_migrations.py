@@ -387,9 +387,14 @@ def test_shadow_launch_evidence_registry_explicitly_rejects_v0() -> None:
             "feedbax.spec.studio.training_assembly.v1",
         ),
         (
+            "EvaluationBatchCompactionEvidence",
+            "feedbax.orchestration.evaluation_batch_compaction_evidence",
+            "feedbax.orchestration.evaluation_batch_compaction_evidence.v1",
+        ),
+        (
             "EvaluationMatrixBatchPlan",
             "feedbax.spec.evaluation_matrix_batch_plan",
-            "feedbax.spec.evaluation_matrix_batch_plan.v1",
+            "feedbax.spec.evaluation_matrix_batch_plan.v2",
         ),
         (
             "EvaluationOutputPreflightPolicy",
@@ -423,7 +428,17 @@ def test_default_registry_registers_assemble_contract_families(
     assert family.identity == schema_id
     assert family.current_version == current_version
     assert family.policy is not None
-    assert family.policy.stance == ("migrate" if kind == "RunAssemblyRequest" else "reject")
+    assert family.policy.stance == (
+        "migrate"
+        if kind
+        in {
+            "RunAssemblyRequest",
+            "EvaluationMatrixBatchPlan",
+            "EvaluationOutputPreflightPolicy",
+            "EvaluationOutputPreflightEvidence",
+        }
+        else "reject"
+    )
     accepted = default_spec_registry.migrate(
         kind,
         {"schema_id": schema_id, "schema_version": current_version},

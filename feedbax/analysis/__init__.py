@@ -156,6 +156,15 @@ from .evaluation_orchestration import (
     compile_evaluation_run_matrix_for_orchestration,
     evaluation_matrix_intent_hash,
 )
+from .evaluation_compaction import (
+    EvaluationBatchConsumer,
+    EvaluationBatchConsumerInput,
+    EvaluationBatchFragment,
+    EvaluationBatchFinalizeInput,
+    EvaluationBatchMergeInput,
+    EvaluationBatchMergeState,
+    register_evaluation_batch_consumer,
+)
 from feedbax.contracts.manifest import EvaluationParamsBase, StagedEvaluationPrerequisite
 from .evaluation_inputs import (
     EvaluationInputAmbiguityError,
@@ -227,6 +236,12 @@ __all__ = [
     "EvaluationRunMatrixDeltaSpec",
     "EvaluationRunMatrixSpec",
     "EvaluationMatrixExecutionCapsule",
+    "EvaluationBatchConsumer",
+    "EvaluationBatchConsumerInput",
+    "EvaluationBatchFragment",
+    "EvaluationBatchFinalizeInput",
+    "EvaluationBatchMergeInput",
+    "EvaluationBatchMergeState",
     "EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_ID",
     "EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_VERSION",
     "EVALUATION_RUN_MATRIX_COMPILER_ID",
@@ -322,6 +337,7 @@ __all__ = [
     "materialize_evaluation_run_matrix",
     "register_analysis_recipe",
     "register_evaluation_authoring_schema",
+    "register_evaluation_batch_consumer",
     "register_evaluation_recipe",
     "register_report_recipe",
     "read_json_payload",

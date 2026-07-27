@@ -6,7 +6,13 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.manifest import (
+    AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+    AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+    ArtifactRef,
+    ParentRef,
+    StrictModel,
+)
 
 
 EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_ID = "feedbax.orchestration.evaluation_lifecycle_evidence"
@@ -23,7 +29,20 @@ EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION_V1 = (
     "feedbax.orchestration.evaluation_shadow_launch_evidence.v1"
 )
 EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID = "feedbax.spec.evaluation_matrix_batch_plan"
-EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION = "feedbax.spec.evaluation_matrix_batch_plan.v1"
+EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V1 = "feedbax.spec.evaluation_matrix_batch_plan.v1"
+EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION = "feedbax.spec.evaluation_matrix_batch_plan.v2"
+EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID = (
+    "feedbax.orchestration.evaluation_batch_compaction_evidence"
+)
+EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION = (
+    "feedbax.orchestration.evaluation_batch_compaction_evidence.v1"
+)
+EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID = (
+    "feedbax.orchestration.evaluation_batch_merge_checkpoint"
+)
+EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION = (
+    "feedbax.orchestration.evaluation_batch_merge_checkpoint.v1"
+)
 EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_ID = (
     "feedbax.orchestration.evaluation_worker_topology_evidence"
 )
@@ -39,6 +58,8 @@ EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_VERSION = (
 EVALUATION_COLLECTION_OUTPUTS = (
     "evaluation-matrix-result.json",
     "evaluation-worker-topology.json",
+    "evaluation-batch-compaction.json",
+    "evaluation-batch-compaction",
     "evaluation",
 )
 
@@ -82,11 +103,42 @@ class EvaluationMatrixBatchUnit(StrictModel):
 
     batch_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
     ordered_row_ids: tuple[str, ...] = Field(min_length=1)
+    required_leaf_ids: tuple[str, ...] | None = None
 
     @model_validator(mode="after")
     def _unique_rows(self) -> "EvaluationMatrixBatchUnit":
         if len(self.ordered_row_ids) != len(set(self.ordered_row_ids)):
             raise ValueError("evaluation batch unit row ids must be unique")
+        if self.required_leaf_ids is not None and len(self.required_leaf_ids) != len(
+            set(self.required_leaf_ids)
+        ):
+            raise ValueError("evaluation batch unit required leaf ids must be unique")
+        return self
+
+
+class EvaluationBatchConsumerDeclaration(StrictModel):
+    """Authored terminal compact leaf required before raw-cache reclamation."""
+
+    leaf_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    consumer_id: str = Field(min_length=1)
+    consumer_version: str = Field(min_length=1)
+    accepted_evaluation_state_schema_ids: tuple[str, ...] = Field(min_length=1)
+    compact_product_schema_id: str = Field(min_length=1)
+    compact_product_schema_version: str = Field(min_length=1)
+    compact_product_role: str = Field(min_length=1)
+    merge_state_schema_id: str = Field(min_length=1)
+    merge_state_schema_version: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_versions_and_schemas(self) -> "EvaluationBatchConsumerDeclaration":
+        if self.compact_product_schema_version == self.compact_product_schema_id:
+            raise ValueError("compact product schema_version must be a versioned identity")
+        if self.merge_state_schema_version == self.merge_state_schema_id:
+            raise ValueError("merge state schema_version must be a versioned identity")
+        if len(self.accepted_evaluation_state_schema_ids) != len(
+            set(self.accepted_evaluation_state_schema_ids)
+        ):
+            raise ValueError("accepted evaluation-state schema ids must be unique")
         return self
 
 
@@ -96,11 +148,12 @@ class EvaluationMatrixBatchPlan(StrictModel):
     schema_id: Literal["feedbax.spec.evaluation_matrix_batch_plan"] = (
         EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID
     )
-    schema_version: Literal["feedbax.spec.evaluation_matrix_batch_plan.v1"] = (
+    schema_version: Literal["feedbax.spec.evaluation_matrix_batch_plan.v2"] = (
         EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION
     )
     matrix_intent_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     batches: tuple[EvaluationMatrixBatchUnit, ...] = Field(min_length=1)
+    consumers: tuple[EvaluationBatchConsumerDeclaration, ...] = ()
 
     @model_validator(mode="after")
     def _unique_batches_and_rows(self) -> "EvaluationMatrixBatchPlan":
@@ -110,6 +163,137 @@ class EvaluationMatrixBatchPlan(StrictModel):
         row_ids = [row_id for item in self.batches for row_id in item.ordered_row_ids]
         if len(row_ids) != len(set(row_ids)):
             raise ValueError("evaluation batch plan row ids must be globally unique")
+        leaf_ids = [item.leaf_id for item in self.consumers]
+        if len(leaf_ids) != len(set(leaf_ids)):
+            raise ValueError("evaluation batch consumer leaf ids must be unique")
+        bindings = [(item.consumer_id, item.consumer_version) for item in self.consumers]
+        if len(bindings) != len(set(bindings)):
+            raise ValueError("evaluation batch consumer bindings must be unique")
+        declared = set(leaf_ids)
+        for batch in self.batches:
+            unknown = set(batch.required_leaf_ids or ()) - declared
+            if unknown:
+                raise ValueError(
+                    f"evaluation batch {batch.batch_id!r} names unknown required leaves: "
+                    f"{sorted(unknown)!r}"
+                )
+            if self.consumers and not batch.required_leaf_ids:
+                raise ValueError(
+                    f"evaluation batch {batch.batch_id!r} requires no compact terminal leaves"
+                )
+        used = {leaf_id for batch in self.batches for leaf_id in (batch.required_leaf_ids or ())}
+        unused = declared - used
+        if unused:
+            raise ValueError(f"evaluation batch consumer leaves are unused: {sorted(unused)!r}")
+        return self
+
+
+class EvaluationBatchLeafAcknowledgement(StrictModel):
+    """Verified compact fragment and authored-order merge transition for one leaf."""
+
+    leaf_id: str = Field(min_length=1)
+    consumer_id: str = Field(min_length=1)
+    consumer_version: str = Field(min_length=1)
+    compact_product_role: str = Field(min_length=1)
+    fragment: ArtifactRef
+    prior_merge_state_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    merge_state: ArtifactRef
+    reused_verified_fragment: bool = False
+
+
+class EvaluationBatchMergeCheckpoint(StrictModel):
+    """Durable identity envelope for one exactly-once authored merge transition."""
+
+    schema_id: Literal["feedbax.orchestration.evaluation_batch_merge_checkpoint"] = (
+        EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.orchestration.evaluation_batch_merge_checkpoint.v1"] = (
+        EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION
+    )
+    matrix_intent_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    batch: EvaluationMatrixBatchUnit
+    declaration: EvaluationBatchConsumerDeclaration
+    parent_authorities: tuple[ParentRef, ...] = Field(min_length=1)
+    acknowledgement: EvaluationBatchLeafAcknowledgement
+
+    @model_validator(mode="after")
+    def _bind_authenticated_batch(self) -> "EvaluationBatchMergeCheckpoint":
+        if len(self.parent_authorities) != len(self.batch.ordered_row_ids):
+            raise ValueError("merge checkpoint requires one parent authority per authored row")
+        parent_ids = [parent.id for parent in self.parent_authorities]
+        if len(parent_ids) != len(set(parent_ids)):
+            raise ValueError("merge checkpoint parent authorities must be unique")
+        for parent in self.parent_authorities:
+            if (
+                parent.kind != "EvaluationRunManifest"
+                or parent.role != "evaluation_run"
+                or parent.metadata.get("ref_schema_id") != AUTHENTICATED_MANIFEST_REF_SCHEMA_ID
+                or parent.metadata.get("ref_schema_version")
+                != AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION
+                or not isinstance(parent.metadata.get("manifest_sha256"), str)
+                or len(parent.metadata["manifest_sha256"]) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in parent.metadata["manifest_sha256"]
+                )
+                or not isinstance(parent.metadata.get("size_bytes"), int)
+                or parent.metadata["size_bytes"] < 0
+            ):
+                raise ValueError("merge checkpoint parent authority is not authenticated")
+        acknowledgement = self.acknowledgement
+        if (
+            acknowledgement.leaf_id != self.declaration.leaf_id
+            or acknowledgement.consumer_id != self.declaration.consumer_id
+            or acknowledgement.consumer_version != self.declaration.consumer_version
+            or acknowledgement.compact_product_role != self.declaration.compact_product_role
+        ):
+            raise ValueError("merge checkpoint acknowledgement drifted from its declaration")
+        return self
+
+
+class EvaluationBatchReclamationEvidence(StrictModel):
+    """Fail-closed proof that one batch became safe to reclaim."""
+
+    batch_id: str = Field(min_length=1)
+    batch_index: int = Field(ge=0)
+    ordered_row_ids: tuple[str, ...] = Field(min_length=1)
+    leaf_acknowledgements: tuple[EvaluationBatchLeafAcknowledgement, ...] = Field(min_length=1)
+    removed_cache_manifest_ids: tuple[str, ...] = Field(min_length=1)
+    removed_cache_bytes: int = Field(ge=0)
+
+
+class EvaluationBatchCompactionEvidence(StrictModel):
+    """Ordered terminal proof for compact fragments, merge state, and reclamation."""
+
+    schema_id: Literal["feedbax.orchestration.evaluation_batch_compaction_evidence"] = (
+        EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.orchestration.evaluation_batch_compaction_evidence.v1"] = (
+        EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION
+    )
+    matrix_intent_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    ordered_batch_ids: tuple[str, ...]
+    declared_leaf_ids: tuple[str, ...]
+    required_leaf_ids_by_batch: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    reclamations: tuple[EvaluationBatchReclamationEvidence, ...] = ()
+    terminal_products: tuple[ArtifactRef, ...] = ()
+
+    @model_validator(mode="after")
+    def _validate_complete_order(self) -> "EvaluationBatchCompactionEvidence":
+        if len(self.ordered_batch_ids) != len(set(self.ordered_batch_ids)):
+            raise ValueError("compaction ordered batch ids must be unique")
+        if len(self.declared_leaf_ids) != len(set(self.declared_leaf_ids)):
+            raise ValueError("compaction declared leaf ids must be unique")
+        if self.declared_leaf_ids:
+            if tuple(item.batch_id for item in self.reclamations) != self.ordered_batch_ids:
+                raise ValueError("compaction reclamations must preserve authored batch order")
+            for item in self.reclamations:
+                expected = set(self.required_leaf_ids_by_batch.get(item.batch_id, ()))
+                observed = [ack.leaf_id for ack in item.leaf_acknowledgements]
+                if len(observed) != len(set(observed)) or set(observed) != expected:
+                    raise ValueError("each reclaimed batch must acknowledge every declared leaf")
+        elif self.reclamations or self.terminal_products:
+            raise ValueError("compaction output requires declared terminal leaves")
         return self
 
 
@@ -188,6 +372,11 @@ __all__ = [
     "EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_VERSION",
     "EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID",
     "EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION",
+    "EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V1",
+    "EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID",
+    "EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION",
+    "EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID",
+    "EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION",
     "EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_ID",
     "EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_VERSION",
     "EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID",
@@ -195,6 +384,11 @@ __all__ = [
     "EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION_V1",
     "EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_ID",
     "EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_VERSION",
+    "EvaluationBatchCompactionEvidence",
+    "EvaluationBatchConsumerDeclaration",
+    "EvaluationBatchLeafAcknowledgement",
+    "EvaluationBatchMergeCheckpoint",
+    "EvaluationBatchReclamationEvidence",
     "EvaluationLifecycleEvidence",
     "EvaluationLifecycleRowOutcome",
     "EvaluationMatrixBatchPlan",

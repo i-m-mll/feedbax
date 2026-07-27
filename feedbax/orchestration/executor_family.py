@@ -9,13 +9,16 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from feedbax.contracts.evaluation_lifecycle import (
+    EvaluationBatchCompactionEvidence,
     EVALUATION_COLLECTION_OUTPUTS,
     EvaluationLifecycleEvidence,
     EvaluationMatrixBatchPlan,
     EvaluationMatrixOrderedUnionEvidence,
     EvaluationWorkerTopologyEvidence,
 )
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.contracts.manifest import canonical_json_bytes, sha256_bytes
+from feedbax.contracts.migrations import migrate_structured_spec_payload
 from feedbax.orchestration.bundle import ExecutionFamily, RunBundle, RunRowSpec
 from feedbax.orchestration.drivers.native_execution import (
     bind_native_execution_command,
@@ -223,23 +226,49 @@ class EvaluationMatrixExecutorAdapter:
         topology = EvaluationWorkerTopologyEvidence.model_validate_json(
             Path(collected["evaluation-worker-topology.json"]).read_text(encoding="utf-8")
         )
-        plan = EvaluationMatrixBatchPlan.model_validate(row.launch.metadata.get("batch_plan"))
+        compaction_path = Path(collected["evaluation-batch-compaction.json"])
+        compaction = EvaluationBatchCompactionEvidence.model_validate_json(
+            compaction_path.read_text(encoding="utf-8")
+        )
+        plan = EvaluationMatrixBatchPlan.model_validate(
+            migrate_structured_spec_payload(
+                "EvaluationMatrixBatchPlan",
+                row.launch.metadata.get("batch_plan"),
+                path="launch.metadata.batch_plan",
+            ).payload
+        )
         expected_worker_count = min(
             bundle.launch_policy.max_parallel_rows,
             len(plan.batches),
         )
-        expected_partitions = tuple(
-            tuple(batch.batch_id for batch in plan.batches[worker_index::expected_worker_count])
-            for worker_index in range(expected_worker_count)
-        )
-        if (
-            topology.requested_worker_count != expected_worker_count
-            or tuple(process.ordered_batch_ids for process in topology.processes)
-            != expected_partitions
-        ):
+        observed_batch_ids = {
+            batch_id for process in topology.processes for batch_id in process.ordered_batch_ids
+        }
+        if topology.requested_worker_count != expected_worker_count or observed_batch_ids != {
+            batch.batch_id for batch in plan.batches
+        }:
             raise ExecutorFamilyError(
                 "evaluation worker topology drifted from the authenticated batch plan"
             )
+        if (
+            compaction.matrix_intent_hash != plan.matrix_intent_hash
+            or compaction.ordered_batch_ids != tuple(batch.batch_id for batch in plan.batches)
+            or compaction.declared_leaf_ids != tuple(item.leaf_id for item in plan.consumers)
+            or compaction.required_leaf_ids_by_batch
+            != {batch.batch_id: tuple(batch.required_leaf_ids or ()) for batch in plan.batches}
+        ):
+            raise ExecutorFamilyError(
+                "evaluation compaction evidence drifted from the authenticated batch plan"
+            )
+        provider = ImmutableArtifactBlobProvider(
+            compaction_path.parent / "evaluation-batch-compaction"
+        )
+        for reclamation in compaction.reclamations:
+            for acknowledgement in reclamation.leaf_acknowledgements:
+                provider.get_bytes(acknowledgement.fragment)
+                provider.get_bytes(acknowledgement.merge_state)
+        for terminal in compaction.terminal_products:
+            provider.get_bytes(terminal)
         if evidence.executor_family != self.family:
             raise ExecutorFamilyError("collected evaluation lifecycle family drifted")
         return []
@@ -283,7 +312,13 @@ def evaluation_matrix_ordered_union(
     lifecycle = lifecycles[0]
     metadata = row.launch.metadata
     try:
-        plan = EvaluationMatrixBatchPlan.model_validate(metadata.get("batch_plan"))
+        plan = EvaluationMatrixBatchPlan.model_validate(
+            migrate_structured_spec_payload(
+                "EvaluationMatrixBatchPlan",
+                metadata.get("batch_plan"),
+                path="launch.metadata.batch_plan",
+            ).payload
+        )
     except ValueError as exc:
         raise ExecutorFamilyError("evaluation row lacks an authenticated batch plan") from exc
     if lifecycle.orchestration_row_id != row.row_id:

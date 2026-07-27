@@ -19,6 +19,7 @@ from feedbax.contracts.evaluation_composition import (
 )
 from feedbax.contracts.evaluation_lifecycle import (
     EVALUATION_COLLECTION_OUTPUTS,
+    EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION,
     EvaluationMatrixBatchPlan,
     EvaluationMatrixBatchUnit,
 )
@@ -178,7 +179,7 @@ def compile_evaluation_run_matrix_for_orchestration(
                 payload=dict(authored),
                 resolved_semantics={
                     **shared_semantics,
-                    "batch_plan": plan.model_dump(mode="json"),
+                    "batch_plan": plan.model_dump(mode="json", exclude_none=True),
                 },
                 immutable_inputs=list(context.resolved_inputs),
                 launch=RowLaunchSpec(
@@ -191,7 +192,7 @@ def compile_evaluation_run_matrix_for_orchestration(
                     metadata={
                         "matrix_intent_hash": intent_hash,
                         "matrix_ordered_row_ids_sha256": ordered_row_ids_sha256,
-                        "batch_plan": plan.model_dump(mode="json"),
+                        "batch_plan": plan.model_dump(mode="json", exclude_none=True),
                     },
                 ),
             )
@@ -231,6 +232,7 @@ class EvaluationMatrixIdentityAdapter:
     ) -> Mapping[str, Any]:
         versions = {
             "evaluation_run_matrix": EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+            "evaluation_matrix_batch_plan": EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION,
             "resolved_semantics": EVALUATION_MATRIX_RESOLVED_SEMANTICS_SCHEMA_VERSION,
             "execution_capsule": EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_VERSION,
         }
