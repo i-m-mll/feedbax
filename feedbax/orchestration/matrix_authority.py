@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
+from feedbax.contracts.manifest import TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID
 from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TrainingRunMatrixArtifactBinding,
@@ -28,6 +29,11 @@ from feedbax.contracts.spec_storage import (
     training_run_execution_hash,
     training_run_intent_hash,
     training_spec_sha256,
+)
+from feedbax.contracts.training_matrix_composition import (
+    TrainingRunMatrixDeltaSpec,
+    flatten_training_run_matrix_delta,
+    training_matrix_delta_envelope_hash,
 )
 from feedbax.orchestration.bundle import (
     ResolvedAssemblyInput,
@@ -47,7 +53,11 @@ class MatrixAuthorityError(ValueError):
 def is_training_matrix_bundle(bundle: RunBundle) -> bool:
     """Return whether the bundle carries governed matrix intent."""
     return any(
-        row.execution.authored_intent.schema_id == TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
+        row.execution.authored_intent.schema_id
+        in {
+            TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+            TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
+        }
         for row in bundle.rows
     )
 
@@ -70,10 +80,19 @@ def build_training_run_matrix_authority(
         raise MatrixAuthorityError("run bundle is not a governed training matrix")
     first = bundle.rows[0].execution.authored_intent
     payload = _read_artifact(first, "training matrix")
-    matrix = TrainingRunMatrixSpec.model_validate(payload)
+    if first.schema_id == TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID:
+        delta = TrainingRunMatrixDeltaSpec.model_validate(payload)
+        repo_root = _repo_root_for_artifact(first, local_repos)
+        matrix = TrainingRunMatrixSpec.model_validate(
+            flatten_training_run_matrix_delta(delta, repo_root=repo_root).payload
+        )
+        expected_intent_hash = training_matrix_delta_envelope_hash(delta)
+    else:
+        matrix = TrainingRunMatrixSpec.model_validate(payload)
+        expected_intent_hash = training_run_intent_hash(payload)
     if tuple(row.row_id for row in bundle.rows) != expected_ordered_matrix_row_ids(matrix):
         raise MatrixAuthorityError("matrix bundle rows are incomplete or out of order")
-    if training_run_intent_hash(payload) != first.intent_hash:
+    if expected_intent_hash != first.intent_hash:
         raise MatrixAuthorityError("training matrix intent identity does not match custody")
     if any(row.execution.authored_intent != first for row in bundle.rows):
         raise MatrixAuthorityError("matrix rows do not share one authored matrix identity")
@@ -96,6 +115,25 @@ def build_training_run_matrix_authority(
         ),
         bundle_sha256=bundle_sha256,
     )
+
+
+def _repo_root_for_artifact(
+    ref: SchemaArtifactRef,
+    local_repos: Mapping[str, str | Path],
+) -> Path:
+    """Resolve the governed repository containing a delta's authored artifact."""
+    assert ref.uri is not None
+    artifact_path = Path(ref.uri).resolve()
+    candidates = [
+        Path(root).resolve()
+        for root in local_repos.values()
+        if artifact_path.is_relative_to(Path(root).resolve())
+    ]
+    if not candidates:
+        raise MatrixAuthorityError(
+            "training matrix delta artifact is outside the governed local repositories"
+        )
+    return max(candidates, key=lambda path: len(path.parts))
 
 
 def _read_artifact(ref: SchemaArtifactRef, label: str) -> dict[str, Any]:
