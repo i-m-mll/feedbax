@@ -16,6 +16,7 @@ from typing import Any, Literal
 from feedbax.analysis.rendering import render_markdown_note
 from feedbax.contracts.manifest import (
     ArtifactRef,
+    ParentRef,
     RegenerationCommand,
     RegenerationSpec,
     sha256_bytes,
@@ -36,11 +37,29 @@ def _initialize_evaluation_batch_worker(plugins: tuple[str, ...]) -> None:
 
 
 def _execute_evaluation_batch_partition(task: Mapping[str, Any]) -> dict[str, Any]:
-    """Execute many authenticated batch units in one persistent worker process."""
+    """Execute and compact one authenticated batch in a persistent worker."""
+    from feedbax.analysis.evaluation_compaction import (
+        EvaluationBatchConsumerInput,
+        compact_evaluation_batch,
+    )
     from feedbax.analysis.evaluation import (
         EvaluationBatchExecution,
         execute_evaluation_run_matrix,
+        load_evaluation_states_cache,
     )
+    from feedbax.contracts.evaluation_lifecycle import (
+        EvaluationBatchConsumerDeclaration,
+        EvaluationLifecycleRowOutcome,
+        EvaluationMatrixBatchUnit,
+    )
+    from feedbax.contracts.manifest import ArtifactRef
+    from feedbax.contracts.manifest import (
+        AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+        AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+        ParentRef,
+        sha256_bytes,
+    )
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.analysis.execution_context import resolve_staged_execution_context
     from feedbax.orchestration.bundle import RunBundle
     from feedbax.orchestration.input_materialization import (
@@ -59,47 +78,129 @@ def _execute_evaluation_batch_partition(task: Mapping[str, Any]) -> dict[str, An
         checkpoint_custody_bindings=projected.checkpoint_custody_bindings,
     )
     payload = _read_json_object(task["payload_path"], description="evaluation matrix spec")
+    batch = EvaluationMatrixBatchUnit.model_validate(task["batch"])
+    checkpoint_identity = {
+        "matrix_intent_hash": task["matrix_intent_hash"],
+        "batch": batch.model_dump(mode="json", exclude_none=True),
+        "consumers": task["consumers"],
+    }
+    checkpoint = Path(task["compaction_root"]) / "fragment-checkpoints" / f"{batch.batch_id}.json"
+    if checkpoint.is_file():
+        cached = json.loads(checkpoint.read_text(encoding="utf-8"))
+        if cached.get("checkpoint_identity") != checkpoint_identity:
+            raise ValueError("evaluation batch fragment checkpoint identity drifted")
+        provider = ImmutableArtifactBlobProvider(Path(task["compaction_root"]))
+        declarations = [
+            EvaluationBatchConsumerDeclaration.model_validate(value) for value in task["consumers"]
+        ]
+        for declaration, value in zip(
+            declarations,
+            cached.get("fragments", []),
+            strict=True,
+        ):
+            fragment = ArtifactRef.model_validate(value)
+            if (
+                fragment.role != declaration.compact_product_role
+                or fragment.metadata.get("schema_id") != declaration.compact_product_schema_id
+                or fragment.metadata.get("schema_version")
+                != declaration.compact_product_schema_version
+                or fragment.metadata.get("leaf_id") != declaration.leaf_id
+                or fragment.metadata.get("batch_id") != batch.batch_id
+            ):
+                raise ValueError("evaluation batch fragment checkpoint contract drifted")
+            provider.get_bytes(fragment)
+        for value, authority_value in zip(
+            cached.get("outcomes", []),
+            cached.get("parent_authorities", []),
+            strict=True,
+        ):
+            outcome = EvaluationLifecycleRowOutcome.model_validate(value)
+            if not Path(outcome.manifest_path).is_file():
+                raise ValueError("evaluation batch fragment checkpoint manifest is unavailable")
+            authority = ParentRef.model_validate(authority_value)
+            manifest_bytes = Path(outcome.manifest_path).read_bytes()
+            if (
+                authority.id != outcome.manifest_id
+                or authority.metadata.get("manifest_sha256") != sha256_bytes(manifest_bytes)
+                or authority.metadata.get("size_bytes") != len(manifest_bytes)
+            ):
+                raise ValueError("evaluation batch fragment checkpoint parent authority drifted")
+        return {**cached, "pid": os.getpid(), "reused_verified_fragments": True}
     result = execute_evaluation_run_matrix(
         payload,
         root=Path(task["manifest_root"]),
         repo_root=task["repo_root"],
         execution_context=execution_context,
-        batch=EvaluationBatchExecution(
-            batch_units=tuple(
-                (batch["batch_id"], tuple(batch["ordered_row_ids"])) for batch in task["batches"]
-            )
-        ),
+        batch=EvaluationBatchExecution(batch_units=((batch.batch_id, batch.ordered_row_ids),)),
     )
     outcomes_by_id = {row.row_id: row for row in result.rows}
-    completed_batches = []
-    for batch in task["batches"]:
-        outcomes = []
-        for row_id in batch["ordered_row_ids"]:
-            row = outcomes_by_id[row_id]
-            states_schema = getattr(row.result, "metadata", {}).get("states_schema")
-            diagnostic_schema_ids = ()
-            if isinstance(states_schema, str):
-                diagnostic_schema_ids = (states_schema,)
-            elif isinstance(states_schema, Mapping) and isinstance(
-                states_schema.get("schema_id"), str
-            ):
-                diagnostic_schema_ids = (states_schema["schema_id"],)
-            outcomes.append(
-                {
-                    "row_id": row.row_id,
-                    "manifest_id": row.result.id,
-                    "manifest_path": str(row.manifest_path),
-                    "diagnostic_schema_ids": diagnostic_schema_ids,
-                }
-            )
-        completed_batches.append(
-            {
-                "batch_id": batch["batch_id"],
-                "batch_index": batch["batch_index"],
-                "outcomes": outcomes,
-            }
+    outcomes = []
+    manifests = []
+    states = []
+    parent_authorities = []
+    for row_id in batch.ordered_row_ids:
+        row = outcomes_by_id[row_id]
+        states_schema = getattr(row.result, "metadata", {}).get("states_schema")
+        diagnostic_schema_ids = ()
+        if isinstance(states_schema, str):
+            diagnostic_schema_ids = (states_schema,)
+        elif isinstance(states_schema, Mapping) and isinstance(states_schema.get("schema_id"), str):
+            diagnostic_schema_ids = (states_schema["schema_id"],)
+        outcome = EvaluationLifecycleRowOutcome(
+            row_id=row.row_id,
+            manifest_id=row.result.id,
+            manifest_path=str(row.manifest_path),
+            diagnostic_schema_ids=diagnostic_schema_ids,
         )
-    return {"pid": os.getpid(), "batches": completed_batches}
+        outcomes.append(outcome)
+        manifests.append(row.result.model_dump(mode="json"))
+        manifest_bytes = Path(row.manifest_path).read_bytes()
+        parent_authorities.append(
+            ParentRef(
+                kind="EvaluationRunManifest",
+                id=row.result.id,
+                role="evaluation_run",
+                metadata={
+                    "ref_schema_id": AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+                    "ref_schema_version": AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+                    "manifest_sha256": sha256_bytes(manifest_bytes),
+                    "size_bytes": len(manifest_bytes),
+                },
+            )
+        )
+        if task["consumers"]:
+            cache_path = Path(row.result.metadata["cache"]["states_path"])
+            states.append(load_evaluation_states_cache(cache_path, manifest_id=row.result.id))
+    consumer_input = EvaluationBatchConsumerInput(
+        matrix_intent_hash=task["matrix_intent_hash"],
+        batch=batch,
+        outcomes=tuple(outcomes),
+        manifests=tuple(manifests),
+        states=tuple(states),
+        parent_authorities=tuple(parent_authorities),
+    )
+    fragments = []
+    for value in task["consumers"]:
+        declaration = EvaluationBatchConsumerDeclaration.model_validate(value)
+        fragments.append(
+            compact_evaluation_batch(
+                declaration,
+                consumer_input,
+                custody_root=Path(task["compaction_root"]),
+            )
+        )
+    completed = {
+        "pid": os.getpid(),
+        "batch_id": batch.batch_id,
+        "batch_index": task["batch_index"],
+        "outcomes": [item.model_dump(mode="json") for item in outcomes],
+        "fragments": [item.model_dump(mode="json") for item in fragments],
+        "parent_authorities": [item.model_dump(mode="json") for item in parent_authorities],
+        "checkpoint_identity": checkpoint_identity,
+    }
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint.write_text(json.dumps(completed, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return completed
 
 
 @dataclass(frozen=True)
@@ -445,12 +546,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         resolve_staged_execution_context,
     )
     from feedbax.contracts.evaluation_lifecycle import (
+        EvaluationBatchCompactionEvidence,
         EvaluationLifecycleEvidence,
         EvaluationLifecycleRowOutcome,
         EvaluationMatrixBatchPlan,
         EvaluationWorkerProcessEvidence,
         EvaluationWorkerTopologyEvidence,
     )
+    from feedbax.contracts.migrations import migrate_structured_spec_payload
     from feedbax.orchestration.bundle import RunBundle
     from feedbax.orchestration.input_materialization import (
         staged_execution_bindings_for_bundle,
@@ -564,9 +667,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if len(matching_rows) != 1:
             parser.error("orchestration row id is absent or ambiguous in the bundle")
         try:
-            orchestration_batch_plan = EvaluationMatrixBatchPlan.model_validate(
-                matching_rows[0].launch.metadata.get("batch_plan")
-            )
+            batch_plan_payload = migrate_structured_spec_payload(
+                "EvaluationMatrixBatchPlan",
+                matching_rows[0].launch.metadata.get("batch_plan"),
+                path="launch.metadata.batch_plan",
+            ).payload
+            orchestration_batch_plan = EvaluationMatrixBatchPlan.model_validate(batch_plan_payload)
         except ValueError as exc:
             parser.error(f"orchestration evaluation row lacks an authenticated batch plan: {exc}")
         orchestration_worker_count = min(
@@ -604,33 +710,119 @@ def main(argv: Sequence[str] | None = None) -> int:
                     }
                     for index, batch in enumerate(orchestration_batch_plan.batches)
                 ]
-                partitions = [
-                    indexed_batches[index::orchestration_worker_count]
-                    for index in range(orchestration_worker_count)
-                ]
+                compaction_root = Path(args.lifecycle_result).with_name(
+                    "evaluation-batch-compaction"
+                )
                 common_task = {
                     "bundle_path": args.orchestration_bundle,
                     "inputs_root": args.orchestration_inputs_root,
                     "payload_path": args.spec,
                     "manifest_root": args.manifest_root,
                     "repo_root": args.repo_root,
+                    "matrix_intent_hash": orchestration_batch_plan.matrix_intent_hash,
+                    "compaction_root": str(compaction_root),
                 }
+                from feedbax.analysis.evaluation_compaction import (
+                    merge_evaluation_batch_fragment,
+                    publish_evaluation_compaction_products,
+                    reclaim_evaluation_batch_caches,
+                )
+                from feedbax.contracts.manifest import ArtifactRef
+
+                prior_states: dict[str, ArtifactRef] = {}
+                reclamations = []
+                completed_batches = []
+                tasks = [
+                    {
+                        **common_task,
+                        "batch": {
+                            "batch_id": item["batch_id"],
+                            "ordered_row_ids": item["ordered_row_ids"],
+                            "required_leaf_ids": (
+                                orchestration_batch_plan.batches[
+                                    item["batch_index"]
+                                ].required_leaf_ids
+                                or ()
+                            ),
+                        },
+                        "batch_index": item["batch_index"],
+                        "consumers": [
+                            declaration.model_dump(mode="json")
+                            for declaration in orchestration_batch_plan.consumers
+                            if declaration.leaf_id
+                            in (
+                                orchestration_batch_plan.batches[
+                                    item["batch_index"]
+                                ].required_leaf_ids
+                                or ()
+                            )
+                        ],
+                    }
+                    for item in indexed_batches
+                ]
                 with ProcessPoolExecutor(
                     max_workers=orchestration_worker_count,
                     initializer=_initialize_evaluation_batch_worker,
                     initargs=(tuple(args.plugin or ()),),
                     mp_context=multiprocessing.get_context("spawn"),
                 ) as pool:
-                    worker_results = list(
-                        pool.map(
-                            _execute_evaluation_batch_partition,
-                            [{**common_task, "batches": partition} for partition in partitions],
+                    futures = [
+                        pool.submit(_execute_evaluation_batch_partition, task)
+                        for task in tasks[:orchestration_worker_count]
+                    ]
+                    next_task_index = orchestration_worker_count
+                    for batch in orchestration_batch_plan.batches:
+                        future = futures.pop(0)
+                        completed_batch = future.result()
+                        completed_batches.append(completed_batch)
+                        outcomes_for_batch = tuple(
+                            EvaluationLifecycleRowOutcome.model_validate(item)
+                            for item in completed_batch["outcomes"]
                         )
-                    )
-                completed_batches = sorted(
-                    (batch for worker in worker_results for batch in worker["batches"]),
-                    key=lambda item: item["batch_index"],
-                )
+                        acknowledgements = []
+                        applicable_declarations = tuple(
+                            declaration
+                            for declaration in orchestration_batch_plan.consumers
+                            if declaration.leaf_id in (batch.required_leaf_ids or ())
+                        )
+                        for declaration, fragment_value in zip(
+                            applicable_declarations,
+                            completed_batch["fragments"],
+                            strict=True,
+                        ):
+                            acknowledgement = merge_evaluation_batch_fragment(
+                                declaration,
+                                matrix_intent_hash=orchestration_batch_plan.matrix_intent_hash,
+                                batch=batch,
+                                parent_authorities=tuple(
+                                    ParentRef.model_validate(value)
+                                    for value in completed_batch["parent_authorities"]
+                                ),
+                                fragment=ArtifactRef.model_validate(fragment_value),
+                                prior_merge_state=prior_states.get(declaration.leaf_id),
+                                custody_root=compaction_root,
+                            )
+                            prior_states[declaration.leaf_id] = acknowledgement.merge_state
+                            acknowledgements.append(acknowledgement)
+                        if orchestration_batch_plan.consumers:
+                            reclamations.append(
+                                reclaim_evaluation_batch_caches(
+                                    batch,
+                                    batch_index=completed_batch["batch_index"],
+                                    outcomes=outcomes_for_batch,
+                                    acknowledgements=acknowledgements,
+                                    required_leaf_ids=batch.required_leaf_ids or (),
+                                    custody_root=compaction_root,
+                                )
+                            )
+                        if next_task_index < len(tasks):
+                            futures.append(
+                                pool.submit(
+                                    _execute_evaluation_batch_partition,
+                                    tasks[next_task_index],
+                                )
+                            )
+                            next_task_index += 1
                 outcomes = tuple(
                     EvaluationLifecycleRowOutcome.model_validate(outcome)
                     for batch in completed_batches
@@ -646,12 +838,36 @@ def main(argv: Sequence[str] | None = None) -> int:
                     batch_count=len(indexed_batches),
                     processes=tuple(
                         EvaluationWorkerProcessEvidence(
-                            pid=worker["pid"],
+                            pid=pid,
                             ordered_batch_ids=tuple(
-                                batch["batch_id"] for batch in worker["batches"]
+                                item["batch_id"] for item in completed_batches if item["pid"] == pid
                             ),
                         )
-                        for worker in worker_results
+                        for pid in dict.fromkeys(item["pid"] for item in completed_batches)
+                    ),
+                )
+                compaction = EvaluationBatchCompactionEvidence(
+                    matrix_intent_hash=orchestration_batch_plan.matrix_intent_hash,
+                    ordered_batch_ids=tuple(
+                        batch.batch_id for batch in orchestration_batch_plan.batches
+                    ),
+                    declared_leaf_ids=tuple(
+                        item.leaf_id for item in orchestration_batch_plan.consumers
+                    ),
+                    required_leaf_ids_by_batch={
+                        batch.batch_id: batch.required_leaf_ids or ()
+                        for batch in orchestration_batch_plan.batches
+                    },
+                    reclamations=tuple(reclamations),
+                    terminal_products=(
+                        publish_evaluation_compaction_products(
+                            orchestration_batch_plan.consumers,
+                            prior_states,
+                            outcomes,
+                            custody_root=compaction_root,
+                        )
+                        if orchestration_batch_plan.consumers
+                        else ()
                     ),
                 )
                 Path(args.lifecycle_result).write_text(
@@ -660,6 +876,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 Path(args.lifecycle_result).with_name("evaluation-worker-topology.json").write_text(
                     json.dumps(topology.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                Path(args.lifecycle_result).with_name(
+                    "evaluation-batch-compaction.json"
+                ).write_text(
+                    json.dumps(compaction.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
                     encoding="utf-8",
                 )
                 result = None

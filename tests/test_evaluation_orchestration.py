@@ -22,6 +22,7 @@ from feedbax.analysis.evaluation_orchestration import (
 )
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.evaluation_lifecycle import (
+    EvaluationBatchConsumerDeclaration,
     EvaluationMatrixBatchPlan,
     EvaluationMatrixBatchUnit,
 )
@@ -436,6 +437,84 @@ def test_sufficient_disk_budget_retains_exact_preflight_evidence(
     ]
 
 
+@pytest.mark.parametrize("driver", ["local", "runpod"])
+def test_batch_reclamation_preflight_bounds_peak_before_any_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    driver: str,
+) -> None:
+    from feedbax.orchestration import assembly as assembly_module
+
+    matrix = _sized_matrix(100)
+    consumer = EvaluationBatchConsumerDeclaration(
+        leaf_id="velocity",
+        consumer_id="tests.velocity",
+        consumer_version="v1",
+        accepted_evaluation_state_schema_ids=("tests.states.v1",),
+        compact_product_schema_id="tests.velocity.product",
+        compact_product_schema_version="tests.velocity.product.v1",
+        compact_product_role="velocity_result",
+        merge_state_schema_id="tests.velocity.merge",
+        merge_state_schema_version="tests.velocity.merge.v1",
+    )
+    plan = EvaluationMatrixBatchPlan(
+        matrix_intent_hash=evaluation_matrix_intent_hash(matrix),
+        batches=tuple(
+            EvaluationMatrixBatchUnit(
+                batch_id=f"{index:04d}",
+                ordered_row_ids=tuple(
+                    f"gain-{row:02d}" for row in range(index * 10, (index + 1) * 10)
+                ),
+                required_leaf_ids=("velocity",),
+            )
+            for index in range(10)
+        ),
+        consumers=(consumer,),
+    )
+    policy = EvaluationOutputPreflightPolicy(
+        expected_resolved_row_count=100,
+        retained_bytes_per_resolved_row=10,
+        retained_bytes_per_resolved_row_source="fixture",
+        planned_repetitions=2,
+        storage_mode="batch_reclamation",
+        estimated_compact_retained_bytes=100,
+        required_free_space_reserve_bytes=50,
+    )
+    request = _request(
+        tmp_path,
+        matrix,
+        driver=driver,
+        batch_plan=plan,
+        output_preflight=policy,
+    ).model_copy(update={"launch_policy": LaunchPolicy(max_parallel_rows=4)})
+    monkeypatch.setattr(
+        assembly_module.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(free=949),
+    )
+    output_root = Path(request.orchestration_root) / "bounded"
+    with pytest.raises(ValueError, match="required_free_bytes=950"):
+        _assemble(request, tmp_path, run_set_id="bounded")
+    assert not output_root.exists()
+    assert not (tmp_path / "custody").exists()
+
+    monkeypatch.setattr(
+        assembly_module.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(free=950),
+    )
+    bundle = _assemble(request, tmp_path, run_set_id="bounded-pass")
+    evidence = bundle.evaluation_output_preflight
+    assert evidence is not None
+    assert evidence.storage_mode == "batch_reclamation"
+    assert evidence.active_batch_count == 4
+    assert evidence.max_rows_per_active_batch == 10
+    assert evidence.estimated_retained_bytes == 900
+    assert evidence.required_free_bytes == 950
+    assert evidence.estimated_retained_bytes < 100 * 10 * 2
+    assert bundle.rows[0].launch.metadata["batch_plan"]["consumers"][0]["leaf_id"] == "velocity"
+
+
 def test_content_pinned_delta_keeps_authored_payload_and_ordered_resolved_identity(
     tmp_path: Path,
 ) -> None:
@@ -556,6 +635,12 @@ def test_provider_free_cli_shadow_reaches_terminal_collection_in_fresh_process(
     plugin.write_text(
         """
 from feedbax.analysis.evaluation import EvaluationRecipeResult, register_evaluation_recipe
+from feedbax.analysis import (
+    EvaluationBatchFragment,
+    EvaluationBatchFinalizeInput,
+    EvaluationBatchMergeState,
+    register_evaluation_batch_consumer,
+)
 
 def _recipe(_spec, _root, _states_path, _context):
     return EvaluationRecipeResult(summary_metrics={"ok": 1.0})
@@ -563,11 +648,25 @@ def _recipe(_spec, _root, _states_path, _context):
 def _batch(items, _context):
     return [
         EvaluationRecipeResult(
+            states={"gain": item.spec.params["gain"]},
             summary_metrics={"gain": item.spec.params["gain"]},
             metadata={"states_schema": "tests.diagnostic.evaluation.v1"},
         )
         for item in items
     ]
+
+def _compact(value, leaf):
+    assert len(value.parent_authorities) == len(value.outcomes)
+    assert all(
+        parent.metadata["ref_schema_version"] == "feedbax.ref.authenticated_manifest.v1"
+        for parent in value.parent_authorities
+    )
+    return EvaluationBatchFragment(
+        payload={"leaf": leaf, "rows": list(value.batch.ordered_row_ids)},
+        schema_id=f"tests.{leaf}.product",
+        schema_version=f"tests.{leaf}.product.v1",
+        role=f"{leaf}_result",
+    )
 
 def register_feedbax_analysis_recipes():
     register_evaluation_recipe(
@@ -576,6 +675,34 @@ def register_feedbax_analysis_recipes():
         batch_recipe=_batch,
         replace=True,
     )
+    for leaf in ("trajectory", "velocity"):
+        register_evaluation_batch_consumer(
+            f"tests.{leaf}",
+            "v1",
+            compact=lambda value, leaf=leaf: _compact(value, leaf),
+            merge=lambda value, leaf=leaf: EvaluationBatchMergeState(
+                payload={
+                    "leaf": leaf,
+                    "rows": [
+                        *(
+                            []
+                            if value.prior_merge_state is None
+                            else value.prior_merge_state["rows"]
+                        ),
+                        *value.fragment["rows"],
+                    ],
+                },
+                schema_id=f"tests.{leaf}.merge",
+                schema_version=f"tests.{leaf}.merge.v1",
+            ),
+            finalize=lambda value, leaf=leaf: EvaluationBatchFragment(
+                payload=value.terminal_merge_state,
+                schema_id=f"tests.{leaf}.product",
+                schema_version=f"tests.{leaf}.product.v1",
+                role=f"{leaf}_result",
+            ),
+            replace=True,
+        )
 """.strip(),
         encoding="utf-8",
     )
@@ -630,6 +757,20 @@ def register_feedbax_analysis_recipes():
         ),
     ]
     shadow_matrix = _sized_matrix(8)
+    consumers = tuple(
+        EvaluationBatchConsumerDeclaration(
+            leaf_id=leaf,
+            consumer_id=f"tests.{leaf}",
+            consumer_version="v1",
+            accepted_evaluation_state_schema_ids=("tests.diagnostic.evaluation.v1",),
+            compact_product_schema_id=f"tests.{leaf}.product",
+            compact_product_schema_version=f"tests.{leaf}.product.v1",
+            compact_product_role=f"{leaf}_result",
+            merge_state_schema_id=f"tests.{leaf}.merge",
+            merge_state_schema_version=f"tests.{leaf}.merge.v1",
+        )
+        for leaf in ("trajectory", "velocity")
+    )
     request = _request(tmp_path, shadow_matrix).model_copy(
         update={
             "staged_roots": [item.custody for item in sealed],
@@ -639,9 +780,11 @@ def register_feedbax_analysis_recipes():
                     EvaluationMatrixBatchUnit(
                         batch_id=f"{index:04d}",
                         ordered_row_ids=(f"gain-{index:02d}",),
+                        required_leaf_ids=("trajectory", "velocity"),
                     )
                     for index in range(8)
                 ),
+                consumers=consumers,
             ),
             "launch_policy": LaunchPolicy(max_parallel_rows=4),
         }
@@ -694,19 +837,58 @@ def register_feedbax_analysis_recipes():
     assert topology["batch_count"] == 8
     assert len(topology["processes"]) == 4
     assert len({item["pid"] for item in topology["processes"]}) == 4
-    assert all(len(item["ordered_batch_ids"]) == 2 for item in topology["processes"])
+    assert all(item["ordered_batch_ids"] for item in topology["processes"])
+    assert sum(len(item["ordered_batch_ids"]) for item in topology["processes"]) == 8
     assert [
         outcome["diagnostic_schema_ids"]
         for lifecycle in evidence["lifecycles"]
         for outcome in lifecycle["outcomes"]
     ] == [["tests.diagnostic.evaluation.v1"] for _ in range(8)]
+    run_root = Path(request.orchestration_root) / evidence["run_set_id"]
+    compaction_paths = list(run_root.rglob("evaluation-batch-compaction.json"))
+    assert compaction_paths
+    assert len({path.read_bytes() for path in compaction_paths}) == 1
+    compaction = json.loads(compaction_paths[0].read_text())
+    assert compaction["declared_leaf_ids"] == ["trajectory", "velocity"]
+    assert [item["batch_id"] for item in compaction["reclamations"]] == [
+        f"{index:04d}" for index in range(8)
+    ]
+    assert len(compaction["terminal_products"]) == 1
 
 
 def test_runpod_dry_run_keeps_the_same_public_matrix_executor(
     tmp_path: Path,
 ) -> None:
-    request = _request(tmp_path, _matrix(), driver="runpod")
+    matrix = _matrix()
+    consumer = EvaluationBatchConsumerDeclaration(
+        leaf_id="velocity",
+        consumer_id="tests.velocity",
+        consumer_version="v1",
+        accepted_evaluation_state_schema_ids=("tests.states.v1",),
+        compact_product_schema_id="tests.velocity.product",
+        compact_product_schema_version="tests.velocity.product.v1",
+        compact_product_role="velocity_result",
+        merge_state_schema_id="tests.velocity.merge",
+        merge_state_schema_version="tests.velocity.merge.v1",
+    )
+    plan = EvaluationMatrixBatchPlan(
+        matrix_intent_hash=evaluation_matrix_intent_hash(matrix),
+        batches=(
+            EvaluationMatrixBatchUnit(
+                batch_id="whole-matrix",
+                ordered_row_ids=("gain-a", "gain-b"),
+                required_leaf_ids=("velocity",),
+            ),
+        ),
+        consumers=(consumer,),
+    )
+    request = _request(tmp_path, matrix, driver="runpod", batch_plan=plan)
     bundle = _assemble(request, tmp_path)
+    (tmp_path / "local").mkdir()
+    local_bundle = _assemble(
+        _request(tmp_path / "local", matrix, batch_plan=plan),
+        tmp_path / "local",
+    )
 
     from feedbax.orchestration.drivers.runpod import (
         RunPodDriverConfig,
@@ -718,3 +900,8 @@ def test_runpod_dry_run_keeps_the_same_public_matrix_executor(
     assert "--batch" in command
     assert "--orchestration-inputs-root" in command
     assert "--lifecycle-result" in command
+    assert (
+        bundle.rows[0].launch.metadata["batch_plan"]
+        == local_bundle.rows[0].launch.metadata["batch_plan"]
+    )
+    assert bundle.rows[0].launch.collect == local_bundle.rows[0].launch.collect

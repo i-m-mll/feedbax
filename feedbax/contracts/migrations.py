@@ -120,10 +120,15 @@ from feedbax.contracts.shadow_launch import (
     SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION,
 )
 from feedbax.contracts.evaluation_lifecycle import (
+    EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID,
+    EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION,
+    EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID,
+    EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION,
     EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_ID,
     EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_VERSION,
     EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID,
     EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION,
+    EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V1,
     EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_ID,
     EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_VERSION,
     EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
@@ -135,8 +140,10 @@ from feedbax.contracts.evaluation_lifecycle import (
 from feedbax.contracts.evaluation_preflight import (
     EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID,
     EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
+    EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,
     EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID,
     EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION,
+    EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,
 )
 from feedbax.contracts.remote_smoke import (
     REMOTE_SMOKE_EVIDENCE_SCHEMA_ID,
@@ -2999,6 +3006,33 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             rejected_old_versions=(f"{SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID}.v0",),
         ),
         _family(
+            "EvaluationBatchMergeCheckpoint",
+            EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID,
+            EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_lifecycle",
+            emitted_by=("feedbax.analysis.evaluation_compaction",),
+            consumed_by=("feedbax.analysis.evaluation_compaction",),
+            description=(
+                "Authenticated batch, consumer declaration, parent authority, and "
+                "exactly-once merge transition checkpoint."
+            ),
+            rejected_old_versions=(f"{EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_evaluation_compaction.py",),
+        ),
+        _family(
+            "EvaluationBatchCompactionEvidence",
+            EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID,
+            EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_lifecycle",
+            emitted_by=("feedbax.analysis.harness",),
+            consumed_by=("feedbax.orchestration.executor_family.EvaluationMatrixExecutorAdapter",),
+            description=(
+                "Authored-order compact-fragment, merge-state, and raw-cache reclamation proof."
+            ),
+            rejected_old_versions=(f"{EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_evaluation_compaction.py",),
+        ),
+        _family(
             "EvaluationLifecycleEvidence",
             EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_ID,
             EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_VERSION,
@@ -3020,6 +3054,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "compile_evaluation_run_matrix_for_orchestration",
             ),
             description=("Ordered matrix subsets assigned inside the governed public harness."),
+            stance="migrate",
+            supported_old_versions=(EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V1,),
             rejected_old_versions=(f"{EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID}.v0",),
             required_tests=("tests/test_evaluation_orchestration.py",),
         ),
@@ -3033,6 +3069,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description=(
                 "Authored resolved-cardinality expectation and retained-write budget inputs."
             ),
+            stance="migrate",
+            supported_old_versions=(EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,),
             rejected_old_versions=(f"{EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID}.v0",),
             required_tests=("tests/test_evaluation_orchestration.py",),
         ),
@@ -3047,6 +3085,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Resolved cardinality, retained-byte estimate, and exact filesystem-space "
                 "observation made before evaluation outputs."
             ),
+            stance="migrate",
+            supported_old_versions=(EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,),
             rejected_old_versions=(f"{EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID}.v0",),
             required_tests=("tests/test_evaluation_orchestration.py",),
         ),
@@ -4814,8 +4854,73 @@ def _migrate_run_assembly_request_v4_to_v5_payload(
     return migrated
 
 
+def _migrate_evaluation_matrix_batch_plan_v1(payload: dict[str, Any]) -> dict[str, Any]:
+    """Preserve v1 retain-all plans with no batch consumers."""
+    migrated = dict(payload)
+    migrated["schema_id"] = EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID
+    migrated["schema_version"] = EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION
+    migrated.setdefault("consumers", [])
+    return migrated
+
+
+def _migrate_evaluation_output_preflight_policy_v1(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve the v1 complete-matrix retained-storage estimate."""
+    migrated = dict(payload)
+    migrated["schema_id"] = EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID
+    migrated["schema_version"] = EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION
+    migrated.setdefault("storage_mode", "retain_all")
+    migrated.setdefault("estimated_compact_retained_bytes", 0)
+    return migrated
+
+
+def _migrate_evaluation_output_preflight_evidence_v1(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve v1 evidence as an explicit retain-all capacity decision."""
+    migrated = dict(payload)
+    migrated["schema_id"] = EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID
+    migrated["schema_version"] = EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION
+    migrated.setdefault("storage_mode", "retain_all")
+    migrated.setdefault("active_batch_count", 0)
+    migrated.setdefault("max_rows_per_active_batch", 0)
+    migrated.setdefault("estimated_compact_retained_bytes", 0)
+    return migrated
+
+
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "EvaluationMatrixBatchPlan",
+    SchemaMigration(
+        source_version=EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V1,
+        target_version=EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION,
+        migration_id="evaluation-matrix-batch-plan-v1-to-v2-consumers",
+        migrate=_migrate_evaluation_matrix_batch_plan_v1,
+        description="Preserve v1 plans with no declared compact terminal consumers.",
+    ),
+)
+default_spec_registry.register_migration(
+    "EvaluationOutputPreflightPolicy",
+    SchemaMigration(
+        source_version=EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,
+        target_version=EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION,
+        migration_id="evaluation-output-preflight-policy-v1-to-v2-storage-mode",
+        migrate=_migrate_evaluation_output_preflight_policy_v1,
+        description="Preserve v1 complete-matrix retained-storage sizing.",
+    ),
+)
+default_spec_registry.register_migration(
+    "EvaluationOutputPreflightEvidence",
+    SchemaMigration(
+        source_version=EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,
+        target_version=EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
+        migration_id="evaluation-output-preflight-evidence-v1-to-v2-storage-mode",
+        migrate=_migrate_evaluation_output_preflight_evidence_v1,
+        description="Preserve v1 evidence as an explicit retain-all decision.",
+    ),
+)
 default_spec_registry.register_migration(
     "RunAssemblyRequest",
     SchemaMigration(

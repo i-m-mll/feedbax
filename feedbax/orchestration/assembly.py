@@ -605,8 +605,24 @@ def _preflight_evaluation_output(
     output_root = _evaluation_output_root(request, run_set_id=run_set_id)
     filesystem_path = _nearest_existing_path(output_root)
     observed_free_bytes = shutil.disk_usage(filesystem_path).free
+    active_batch_count = 0
+    max_rows_per_active_batch = 0
+    if policy.storage_mode == "batch_reclamation":
+        plan = EvaluationMatrixBatchPlan.model_validate(
+            compiled.rows[0].launch.metadata.get("batch_plan")
+        )
+        if not plan.consumers:
+            raise ValueError(
+                "batch-reclamation output preflight requires declared terminal consumers"
+            )
+        active_batch_count = min(request.launch_policy.max_parallel_rows, len(plan.batches))
+        max_rows_per_active_batch = max(len(batch.ordered_row_ids) for batch in plan.batches)
+        raw_row_capacity = active_batch_count * max_rows_per_active_batch
+    else:
+        raw_row_capacity = resolved_row_count
     estimated_retained_bytes = (
-        resolved_row_count * policy.retained_bytes_per_resolved_row * policy.planned_repetitions
+        raw_row_capacity * policy.retained_bytes_per_resolved_row * policy.planned_repetitions
+        + policy.estimated_compact_retained_bytes
     )
     required_free_bytes = estimated_retained_bytes + policy.required_free_space_reserve_bytes
     if observed_free_bytes < required_free_bytes:
@@ -622,6 +638,10 @@ def _preflight_evaluation_output(
         retained_bytes_per_resolved_row=policy.retained_bytes_per_resolved_row,
         retained_bytes_per_resolved_row_source=(policy.retained_bytes_per_resolved_row_source),
         planned_repetitions=policy.planned_repetitions,
+        storage_mode=policy.storage_mode,
+        active_batch_count=active_batch_count,
+        max_rows_per_active_batch=max_rows_per_active_batch,
+        estimated_compact_retained_bytes=policy.estimated_compact_retained_bytes,
         estimated_retained_bytes=estimated_retained_bytes,
         required_free_space_reserve_bytes=policy.required_free_space_reserve_bytes,
         required_free_bytes=required_free_bytes,
