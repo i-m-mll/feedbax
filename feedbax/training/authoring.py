@@ -6,15 +6,15 @@ import copy
 import json
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
+from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
 import feedbax.contracts.training as training_contracts
-from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.run_matrix import (
     AuthoredTrainingRow,
     RowLowererIdentity,
+    TRAINING_ROW_LOWERER_REF_FIELD,
     TrainingRowLoweringResult,
 )
 from feedbax.contracts.spec_storage import (
@@ -23,13 +23,13 @@ from feedbax.contracts.spec_storage import (
 )
 from feedbax.contracts.training import (
     ArtifactPolicySpec,
+    CheckpointContinuationRequest,
     CheckpointProgressPolicySpec,
     GraphTopologySourceSpec,
     MethodPayloadEnvelope,
     MethodRefSpec,
     ObjectiveSlotSpec,
     RiskAggregationSpec,
-    RunControlSpec,
     TaskSpec,
     TrainingConfig,
     TrainingMethodAuthoringContribution,
@@ -69,25 +69,6 @@ class TrainingMethodAuthoringError(ValueError):
 
 
 @dataclass(frozen=True)
-class TrainingMethodAuthoringProjectors(Generic[PayloadT]):
-    """The four explicit semantic projections required by authoring compilation."""
-
-    graph: Callable[[PayloadT], object]
-    task: Callable[[PayloadT], object]
-    objective: Callable[[PayloadT], object]
-    domain: Callable[[PayloadT], Mapping[str, Any]]
-
-    def __post_init__(self) -> None:
-        invalid = [
-            name
-            for name in ("graph", "task", "objective", "domain")
-            if not callable(getattr(self, name))
-        ]
-        if invalid:
-            raise TypeError(f"training authoring projectors must be callable; invalid={invalid!r}")
-
-
-@dataclass(frozen=True)
 class TrainingMethodAuthoringCompilation(Mapping[str, Any]):
     """Validated canonical products of one compact authored training row."""
 
@@ -124,22 +105,6 @@ def _normalize_method_ref(method_ref: MethodRefSpec | str | Mapping[str, Any]) -
         return MethodRefSpec.model_validate(method_ref)
     except Exception as exc:
         raise TrainingMethodAuthoringError(f"/method_ref is invalid: {exc}") from exc
-
-
-def _validate_run_control(
-    run_control: RunControlSpec | Mapping[str, Any],
-) -> RunControlSpec:
-    if isinstance(run_control, RunControlSpec):
-        return RunControlSpec.model_validate(run_control.model_dump(mode="python"))
-    if "schema_id" not in run_control or "schema_version" not in run_control:
-        raise TrainingMethodAuthoringError(
-            "/run_control requires explicit schema_id and schema_version"
-        )
-    try:
-        migrated = default_spec_registry.migrate("RunControlSpec", run_control)
-        return RunControlSpec.model_validate(migrated.payload)
-    except Exception as exc:
-        raise TrainingMethodAuthoringError(f"/run_control is invalid: {exc}") from exc
 
 
 def _project_model(
@@ -214,8 +179,8 @@ def _copy_typed_option(
 
 def _descriptor_for_authoring(
     method_ref: MethodRefSpec,
+    registry: training_contracts.TrainingMethodRegistry,
 ) -> TrainingMethodDescriptor[Any]:
-    registry = training_contracts.DEFAULT_TRAINING_METHOD_REGISTRY
     registry.resolve(method_ref, path="/method_ref")
     descriptor = registry.descriptor(method_ref)
     if descriptor is None:
@@ -235,15 +200,13 @@ def compile_training_method_authoring(
     _context: Any | None = None,
     *,
     method_ref: MethodRefSpec | str | Mapping[str, Any],
-    run_control: RunControlSpec | Mapping[str, Any],
-    projectors: TrainingMethodAuthoringProjectors[Any],
+    continuation: CheckpointContinuationRequest | Mapping[str, Any] | None = None,
     artifacts: ArtifactPolicySpec | None = None,
     risk_aggregation: RiskAggregationSpec | None = None,
+    _registry: training_contracts.TrainingMethodRegistry | None = None,
 ) -> TrainingMethodAuthoringCompilation:
     """Compile one compact typed method payload into canonical run contracts.
 
-    The function is a ``TrainingRowLowerer``-compatible callable when its
-    keyword-only authoring arguments are bound with ``functools.partial``.
     It performs no storage, custody, environment, or launch operations.
     """
     try:
@@ -261,8 +224,8 @@ def compile_training_method_authoring(
             "/row/payload_hash does not match the canonical authored payload"
         )
     normalized_ref = _normalize_method_ref(method_ref)
-    control = _validate_run_control(run_control)
-    descriptor = _descriptor_for_authoring(normalized_ref)
+    registry = _registry or training_contracts.DEFAULT_TRAINING_METHOD_REGISTRY
+    descriptor = _descriptor_for_authoring(normalized_ref, registry)
     artifact_policy = _copy_typed_option(
         artifacts,
         ArtifactPolicySpec,
@@ -289,8 +252,10 @@ def compile_training_method_authoring(
             "/authoring_hook identity duplicates the reserved authoring compiler identity"
         )
 
+    method_payload = copy.deepcopy(authored_row.payload)
+    method_payload.pop(TRAINING_ROW_LOWERER_REF_FIELD, None)
     try:
-        typed_payload = descriptor.payload_model.model_validate(copy.deepcopy(authored_row.payload))
+        typed_payload = descriptor.payload_model.model_validate(method_payload)
     except Exception as exc:
         raise TrainingMethodAuthoringError(
             f"/row/payload does not match method payload schema: {exc}"
@@ -300,13 +265,14 @@ def compile_training_method_authoring(
         schema_version=descriptor.payload_schema_version,
         payload=typed_payload.model_dump(mode="json"),
     )
-    registry = training_contracts.DEFAULT_TRAINING_METHOD_REGISTRY
     registry.validate_payload(normalized_ref, envelope, path="/method_payload")
 
-    graph = _project_model("graph", projectors.graph, typed_payload, GraphTopologySourceSpec)
-    task = _project_model("task", projectors.task, typed_payload, TaskSpec)
-    objective = _project_model("objective", projectors.objective, typed_payload, ObjectiveSlotSpec)
-    domain = _project_domain(projectors.domain, typed_payload)
+    graph = _project_model("graph", authoring_hook.graph, typed_payload, GraphTopologySourceSpec)
+    task = _project_model("task", authoring_hook.task, typed_payload, TaskSpec)
+    objective = _project_model(
+        "objective", authoring_hook.objective, typed_payload, ObjectiveSlotSpec
+    )
+    domain = _project_domain(authoring_hook.domain, typed_payload)
 
     try:
         resolved = registry.resolve_execution(normalized_ref, envelope)
@@ -337,12 +303,23 @@ def compile_training_method_authoring(
             f"/authoring_hook returned an invalid contribution: {exc}"
         ) from exc
     training_config = TrainingConfig.model_validate(
-        {
-            **contribution.training_config.model_dump(mode="python"),
-            "n_batches": control.n_batches,
-            "batch_size": control.batch_size,
-        }
+        contribution.training_config.model_dump(mode="python")
     )
+    try:
+        continuation_request = (
+            None
+            if continuation is None
+            else CheckpointContinuationRequest.model_validate(continuation)
+        )
+    except Exception as exc:
+        raise TrainingMethodAuthoringError(f"/continuation is invalid: {exc}") from exc
+    if (
+        continuation_request is not None
+        and continuation_request.additional_batches != training_config.n_batches
+    ):
+        raise TrainingMethodAuthoringError(
+            "/continuation/additional_batches must equal authored training n_batches"
+        )
     expected_worker = WorkerExecutionSpec(
         method_contract=resolved.contract,
         effective_phase=resolved.effective_phase,
@@ -360,9 +337,9 @@ def compile_training_method_authoring(
         worker_execution=expected_worker,
         artifacts=artifact_policy,
         checkpoint_progress=CheckpointProgressPolicySpec(
-            checkpoint_interval=control.checkpoint_interval,
-            progress_interval=control.progress_interval,
-            continuation=control.continuation,
+            checkpoint_interval=contribution.checkpoint_interval,
+            progress_interval=contribution.progress_interval,
+            continuation=continuation_request,
         ),
         metadata=domain,
     )
@@ -379,4 +356,79 @@ def compile_training_method_authoring(
         run_spec=run_spec,
         worker_execution=expected_worker,
         lowering_result=lowering_result,
+    )
+
+
+def _training_method_row_lowerer_registration(
+    descriptor: TrainingMethodDescriptor[Any],
+    registry: training_contracts.TrainingMethodRegistry,
+) -> Any:
+    """Derive one row-lowering registration from a complete authoring hook."""
+    from feedbax.training.row_lowering import TrainingRowLowererRegistration
+
+    authoring_hook = descriptor.authoring_hook
+    if authoring_hook is None:
+        raise ValueError("descriptor has no authoring hook")
+    hook_identity = RowLowererIdentity(
+        lowerer_id=authoring_hook.lowerer_id,
+        lowerer_version=authoring_hook.lowerer_version,
+    )
+
+    def lower(
+        row: AuthoredTrainingRow,
+        _context: Any,
+    ) -> TrainingRowLoweringResult:
+        compiled = compile_training_method_authoring(
+            row,
+            method_ref=descriptor.method_ref,
+            _registry=registry,
+        )
+        return TrainingRowLoweringResult(
+            execution_payload=compiled.lowering_result.execution_payload,
+            lowerer_identities=[hook_identity],
+        )
+
+    lower.__feedbax_implementation_dependencies__ = (  # type: ignore[attr-defined]
+        compile_training_method_authoring,
+        authoring_hook.compile,
+        authoring_hook.graph,
+        authoring_hook.task,
+        authoring_hook.objective,
+        authoring_hook.domain,
+    )
+    lower.__feedbax_implementation_identity__ = (  # type: ignore[attr-defined]
+        descriptor.method_ref
+    )
+    return TrainingRowLowererRegistration(
+        authored_schema_id=descriptor.payload_schema_id,
+        authored_schema_version=descriptor.payload_schema_version,
+        lowerer_id=authoring_hook.lowerer_id,
+        lowerer_version=authoring_hook.lowerer_version,
+        implementation_sha256=training_method_authoring_implementation_sha256(descriptor),
+        lower=lower,
+        owner=descriptor.owner,
+    )
+
+
+def training_method_authoring_implementation_sha256(
+    descriptor: TrainingMethodDescriptor[Any],
+) -> str:
+    """Return the exact implementation digest for descriptor-derived lowering."""
+    from feedbax.training.row_lowering import (
+        _bound_training_row_lowerer_implementation_sha256,
+    )
+
+    authoring_hook = descriptor.authoring_hook
+    if authoring_hook is None:
+        raise ValueError("descriptor has no authoring hook")
+    return _bound_training_row_lowerer_implementation_sha256(
+        identity=descriptor.method_ref,
+        dependencies=(
+            compile_training_method_authoring,
+            authoring_hook.compile,
+            authoring_hook.graph,
+            authoring_hook.task,
+            authoring_hook.objective,
+            authoring_hook.domain,
+        )
     )

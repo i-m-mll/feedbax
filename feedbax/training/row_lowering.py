@@ -8,7 +8,7 @@ import inspect
 import json
 from pathlib import Path
 import re
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from pydantic import ValidationError
 
@@ -295,9 +295,88 @@ class TrainingRowLowererRegistry:
 DEFAULT_TRAINING_ROW_LOWERER_REGISTRY = TrainingRowLowererRegistry()
 
 
-def training_row_lowerer_implementation_sha256(lower: Callable[..., Any]) -> str:
-    """Hash the source-module bytes that define an executable lowerer."""
+def training_row_lowerer_implementation_sha256(
+    lower: Callable[..., Any] | Iterable[Callable[..., Any]],
+) -> str:
+    """Hash source-module bytes defining one lowerer and its bound dependencies."""
+    if not callable(lower):
+        dependencies = tuple(lower)
+        if any(not callable(dependency) for dependency in dependencies):
+            raise TrainingRowLowererRegistryError(
+                "training row lowerer implementation dependencies must be callable"
+            )
+        identities = [
+            _training_row_lowerer_callable_identity(dependency)
+            for dependency in dependencies
+        ]
+        if not identities:
+            raise TrainingRowLowererRegistryError(
+                "training row lowerer implementation dependencies must not be empty"
+            )
+        return hashlib.sha256(
+            json.dumps(identities, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        ).hexdigest()
+    dependencies = getattr(
+        lower,
+        "__feedbax_implementation_dependencies__",
+        None,
+    )
+    if dependencies is not None:
+        identity = getattr(
+            lower,
+            "__feedbax_implementation_identity__",
+            None,
+        )
+        return _bound_training_row_lowerer_implementation_sha256(
+            identity=identity,
+            dependencies=dependencies,
+        )
     source_path = inspect.getsourcefile(lower)
     if source_path is None:
         raise TrainingRowLowererRegistryError("training row lowerer has no source module")
     return hashlib.sha256(Path(source_path).read_bytes()).hexdigest()
+
+
+def _training_row_lowerer_callable_identity(
+    dependency: Callable[..., Any],
+) -> dict[str, str]:
+    module = getattr(dependency, "__module__", None)
+    qualname = getattr(dependency, "__qualname__", None)
+    if not isinstance(module, str) or not module or not isinstance(qualname, str) or not qualname:
+        raise TrainingRowLowererRegistryError(
+            "training row lowerer implementation dependency lacks module/qualname identity"
+        )
+    source_path = inspect.getsourcefile(dependency)
+    if source_path is None:
+        raise TrainingRowLowererRegistryError(
+            "training row lowerer implementation dependency has no source module"
+        )
+    return {
+        "module": module,
+        "qualname": qualname,
+        "source_sha256": hashlib.sha256(Path(source_path).read_bytes()).hexdigest(),
+    }
+
+
+def _bound_training_row_lowerer_implementation_sha256(
+    *,
+    identity: str | None,
+    dependencies: Iterable[Callable[..., Any]],
+) -> str:
+    dependency_sha256 = training_row_lowerer_implementation_sha256(dependencies)
+    if identity is None:
+        return dependency_sha256
+    if not isinstance(identity, str) or not identity:
+        raise TrainingRowLowererRegistryError(
+            "training row lowerer bound implementation identity must be non-empty"
+        )
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "identity": identity,
+                "dependencies_sha256": dependency_sha256,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()

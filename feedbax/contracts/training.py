@@ -467,6 +467,8 @@ class TrainingMethodAuthoringContribution(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     training_config: TrainingConfig
+    checkpoint_interval: int | None = Field(default=None, gt=0)
+    progress_interval: int | None = Field(default=None, gt=0)
     method_extensions: MethodExtensionsSpec = Field(default_factory=MethodExtensionsSpec)
     mapping_levels: list[MappingLevelSpec] | None = None
 
@@ -562,19 +564,28 @@ TrainingMethodOptimizerStepExtractor = Callable[[PayloadT, Mapping[str, Any]], i
 
 @dataclass(frozen=True)
 class TrainingMethodAuthoringHook(Generic[PayloadT]):
-    """Stable runtime hook for method-owned authoring contributions."""
+    """Complete runtime hook for method-owned authoring compilation."""
 
     lowerer_id: str
     lowerer_version: str
     compile: Callable[[PayloadT], TrainingMethodAuthoringContribution]
+    graph: Callable[[PayloadT], object]
+    task: Callable[[PayloadT], object]
+    objective: Callable[[PayloadT], object]
+    domain: Callable[[PayloadT], Mapping[str, Any]]
 
     def validate_structure(self) -> None:
-        """Validate the stable lowerer identity and callable boundary."""
+        """Validate the stable lowerer identity and callable boundaries."""
         identities = (self.lowerer_id, self.lowerer_version)
         if any(not isinstance(value, str) or not value.strip() for value in identities):
             raise ValueError("training method authoring hook identity must not be empty")
-        if not callable(self.compile):
-            raise TypeError("training method authoring hook compile must be callable")
+        invalid = [
+            name
+            for name in ("compile", "graph", "task", "objective", "domain")
+            if not callable(getattr(self, name))
+        ]
+        if invalid:
+            raise TypeError(f"training method authoring hook callables are invalid={invalid!r}")
 
 
 @dataclass(frozen=True)
