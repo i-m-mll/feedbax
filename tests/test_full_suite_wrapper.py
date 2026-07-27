@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 
@@ -513,3 +514,103 @@ def test_full_suite_lock_recovers_after_abnormal_holder_exit(tmp_path: Path) -> 
     assert metadata["protocol_version"] == 1
     assert metadata["repository"] == "feedbax"
     assert metadata["worktree"] == "/worktrees/after-interrupt"
+
+
+@pytest.mark.parametrize("returncode", [0, 7])
+def test_main_removes_owned_temporary_root_after_pytest_exit(
+    monkeypatch, tmp_path: Path, returncode: int
+) -> None:
+    full_suite = load_full_suite_module()
+    repo_root = Path(__file__).resolve().parents[1]
+    caller_root = tmp_path / "caller temporary root with spaces"
+    caller_root.mkdir()
+    caller_sentinel = caller_root / "keep-me"
+    caller_sentinel.write_text("caller-owned", encoding="utf-8")
+    observed_root = None
+
+    monkeypatch.setenv("TMPDIR", str(caller_root))
+    monkeypatch.setenv("FULL_SUITE_LOCK_DIR", str(tmp_path / "lock"))
+    monkeypatch.setenv("FEEDBAX_FULL_SUITE_DISABLE_XDIST", "1")
+    monkeypatch.setattr(full_suite, "repo_root_from", lambda start: repo_root)
+    monkeypatch.setattr(full_suite, "shared_cache_root", lambda root: tmp_path / "cache")
+    monkeypatch.setattr(
+        full_suite,
+        "build_fingerprint",
+        lambda *args, **kwargs: full_suite.SuiteFingerprint(
+            payload={},
+            memo_allowed=False,
+        ),
+    )
+
+    def run_pytest(command, *, cwd, env, check):
+        nonlocal observed_root
+        observed_root = Path(env["TMPDIR"])
+        assert cwd == repo_root
+        assert check is False
+        assert observed_root.parent == caller_root
+        assert observed_root != caller_root
+        assert (observed_root / full_suite.TEMP_ROOT_MARKER).is_file()
+        (observed_root / "large-fixture.bin").write_bytes(b"fixture")
+        return subprocess.CompletedProcess(command, returncode)
+
+    monkeypatch.setattr(full_suite.subprocess, "run", run_pytest)
+
+    assert full_suite.main(["--force", "--no-memo"]) == returncode
+    assert observed_root is not None
+    assert not observed_root.exists()
+    assert caller_sentinel.read_text(encoding="utf-8") == "caller-owned"
+
+
+def test_main_removes_owned_temporary_root_after_interruption(
+    monkeypatch, tmp_path: Path
+) -> None:
+    full_suite = load_full_suite_module()
+    repo_root = Path(__file__).resolve().parents[1]
+    caller_root = tmp_path / "caller root"
+    caller_root.mkdir()
+    observed_root = None
+
+    monkeypatch.setenv("TMPDIR", str(caller_root))
+    monkeypatch.setenv("FULL_SUITE_LOCK_DIR", str(tmp_path / "lock"))
+    monkeypatch.setenv("FEEDBAX_FULL_SUITE_DISABLE_XDIST", "1")
+    monkeypatch.setattr(full_suite, "repo_root_from", lambda start: repo_root)
+    monkeypatch.setattr(full_suite, "shared_cache_root", lambda root: tmp_path / "cache")
+    monkeypatch.setattr(
+        full_suite,
+        "build_fingerprint",
+        lambda *args, **kwargs: full_suite.SuiteFingerprint(
+            payload={},
+            memo_allowed=False,
+        ),
+    )
+
+    def interrupt_pytest(command, *, cwd, env, check):
+        nonlocal observed_root
+        observed_root = Path(env["TMPDIR"])
+        (observed_root / "partial-fixture.bin").write_bytes(b"partial")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(full_suite.subprocess, "run", interrupt_pytest)
+
+    with pytest.raises(KeyboardInterrupt):
+        full_suite.main(["--force", "--no-memo"])
+
+    assert observed_root is not None
+    assert not observed_root.exists()
+    assert caller_root.exists()
+
+
+def test_temporary_root_cleanup_refuses_missing_ownership_marker(tmp_path: Path) -> None:
+    full_suite = load_full_suite_module()
+    caller_root = tmp_path / "caller-root"
+    caller_root.mkdir()
+    with pytest.raises(
+        full_suite.TemporaryRootOwnershipError,
+        match="refusing to remove unverified suite temporary root",
+    ):
+        with full_suite.owned_suite_temporary_root({"TMPDIR": str(caller_root)}) as owned_root:
+            (owned_root / full_suite.TEMP_ROOT_MARKER).unlink()
+
+    assert owned_root.is_dir()
+    assert owned_root.parent == caller_root
+    shutil.rmtree(owned_root)
