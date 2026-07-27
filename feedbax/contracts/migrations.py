@@ -145,6 +145,8 @@ from feedbax.contracts.spec_storage import (
     TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
 )
 from feedbax.contracts.figures import (
+    FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID,
+    FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION,
     FIGURE_PIECE_SCHEMA_ID,
     FIGURE_PIECE_SCHEMA_VERSION,
     FIGURE_SPEC_SCHEMA_ID,
@@ -2641,6 +2643,18 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Durable acausal graph interior specification.",
             rejected_old_versions=("feedbax.spec.acausal_graph.v0",),
             required_tests=("tests/test_graphspec_schema_migrations.py",),
+        ),
+        _family(
+            "FigureInputRoleAuthority",
+            FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID,
+            FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("FigureSpec.input_authorities",),
+            consumed_by=("feedbax.analysis.figures.resolve_figure_inputs",),
+            description=(
+                "Role-addressed authority binding to one declared FigureSpec input."
+            ),
+            required_tests=("tests/test_figure_input_authority.py",),
         ),
         _family(
             "FigureSpec",

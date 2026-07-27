@@ -22,6 +22,11 @@ color and enables the ``{value}`` substitution token), and
 instead of as per-family blocks). All three are optional None-defaults, so a
 family declared without them expands exactly as before and every pre-existing
 spec keeps its canonical JSON and figure-manifest identity bytes.
+
+Additive changelog, 2026-07-27: ``FigureSpec.input_authorities`` accepts the
+versioned ``FigureInputRoleAuthority`` form. It selects exactly one already
+declared input by role and resolves to that input's complete ``ParentRef``;
+the existing exact-parent authority form and its canonical bytes are unchanged.
 """
 
 from __future__ import annotations
@@ -43,6 +48,8 @@ FIGURE_SPEC_SCHEMA_ID = "feedbax.spec.figure"
 FIGURE_SPEC_SCHEMA_VERSION = "feedbax.spec.figure.v2"
 FIGURE_INPUT_AUTHORITY_SCHEMA_ID = "feedbax.spec.figure_input_authority"
 FIGURE_INPUT_AUTHORITY_SCHEMA_VERSION = "feedbax.spec.figure_input_authority.v1"
+FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID = "feedbax.spec.figure_input_role_authority"
+FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION = "feedbax.spec.figure_input_role_authority.v1"
 FIGURE_TEMPLATE_SCHEMA_ID = "feedbax.spec.figure_template"
 FIGURE_TEMPLATE_SCHEMA_VERSION = "feedbax.spec.figure_template.v1"
 FIGURE_PIECE_SCHEMA_ID = "feedbax.spec.figure_piece"
@@ -483,6 +490,56 @@ class FigureInputAuthority(StrictModel):
         return self
 
 
+class FigureInputRoleAuthority(StrictModel):
+    """Portable authority requirements for one uniquely role-addressed figure input."""
+
+    schema_id: str = FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID
+    schema_version: str = FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION
+    input_role: str
+    artifact_payloads: list[FigureArtifactPayload] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_identity(self) -> "FigureInputRoleAuthority":
+        if self.schema_id != FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID:
+            raise ValueError(
+                f"unsupported FigureInputRoleAuthority schema_id: {self.schema_id!r}"
+            )
+        if self.schema_version != FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported FigureInputRoleAuthority schema_version: "
+                f"{self.schema_version!r}"
+            )
+        if not self.input_role:
+            raise ValueError("FigureInputRoleAuthority input_role must be nonempty")
+        names = [payload.name for payload in self.artifact_payloads]
+        if len(names) != len(set(names)):
+            raise ValueError("FigureInputRoleAuthority artifact payload names must be unique")
+        return self
+
+    def resolve_parent(self, inputs: Sequence[ParentRef]) -> ParentRef:
+        """Resolve this selector to one exact declared parent or fail closed."""
+        matches_by_ref = {
+            parent.model_dump_json(): parent
+            for parent in inputs
+            if parent.role == self.input_role
+        }
+        matches = list(matches_by_ref.values())
+        if not matches:
+            raise ValueError(
+                f"FigureInputRoleAuthority input_role {self.input_role!r} matches no "
+                "declared FigureSpec input"
+            )
+        if len(matches) != 1:
+            raise ValueError(
+                f"FigureInputRoleAuthority input_role {self.input_role!r} is ambiguous "
+                f"across {len(matches)} declared FigureSpec inputs"
+            )
+        return matches[0]
+
+
+FigureInputAuthoritySpec: TypeAlias = FigureInputAuthority | FigureInputRoleAuthority
+
+
 class SlotSpec(StrictModel):
     """Declared binding hole for a reusable figure template."""
 
@@ -579,7 +636,7 @@ class FigureSpec(StrictModel):
     assembler: str | None = None
     assembler_params: dict[str, Any] = Field(default_factory=dict)
     inputs: list[ParentRef] = Field(default_factory=list)
-    input_authorities: list[FigureInputAuthority] = Field(default_factory=list)
+    input_authorities: list[FigureInputAuthoritySpec] = Field(default_factory=list)
     slot_bindings: dict[str, TraceBinding | list[TraceBinding]] = Field(default_factory=dict)
     traces: list[TraceBinding] = Field(default_factory=list)
     # None-default so per-trace specs authored before trace families keep their
@@ -608,9 +665,18 @@ class FigureSpec(StrictModel):
             )
         if self.template is None and self.assembler is None:
             raise ValueError("FigureSpec without template requires assembler")
-        authority_parents = [authority.parent for authority in self.input_authorities]
+        authority_parents = [
+            (
+                authority.parent
+                if isinstance(authority, FigureInputAuthority)
+                else authority.resolve_parent(self.inputs)
+            )
+            for authority in self.input_authorities
+        ]
         if len(authority_parents) != len({parent.model_dump_json() for parent in authority_parents}):
-            raise ValueError("FigureSpec input_authorities contain a duplicate exact ParentRef")
+            raise ValueError(
+                "FigureSpec input_authorities resolve to a duplicate exact ParentRef"
+            )
         unknown = [parent for parent in authority_parents if parent not in self.inputs]
         if unknown:
             raise ValueError("FigureSpec input authority parent must exactly match a declared input")

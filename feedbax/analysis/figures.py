@@ -32,6 +32,7 @@ from feedbax.contracts.expressions import (
 from feedbax.contracts.figures import (
     FigureColorbar,
     FigureInputAuthority,
+    FigureInputAuthoritySpec,
     FigureSpec,
     TraceBinding,
     TraceFamily,
@@ -220,7 +221,7 @@ def resolve_figure_inputs(
             manifest, manifest_path = contained.manifest, contained.path
         authority = _authority_for_parent(spec, ref)
         payloads, artifact_refs = _resolve_authority_payloads(
-            authority, manifest, execution_context
+            authority, ref, manifest, execution_context
         )
         resolved.append(
             ResolvedFigureInput(
@@ -234,8 +235,17 @@ def resolve_figure_inputs(
     return resolved
 
 
-def _authority_for_parent(spec: FigureSpec, ref: ParentRef) -> FigureInputAuthority | None:
-    matches = [authority for authority in spec.input_authorities if authority.parent == ref]
+def _authority_for_parent(spec: FigureSpec, ref: ParentRef) -> FigureInputAuthoritySpec | None:
+    matches = [
+        authority
+        for authority in spec.input_authorities
+        if (
+            authority.parent
+            if isinstance(authority, FigureInputAuthority)
+            else authority.resolve_parent(spec.inputs)
+        )
+        == ref
+    ]
     if len(matches) > 1:
         raise FigureInputAuthorityError(
             f"figure input authority is ambiguous for exact parent {ref.id!r}"
@@ -244,7 +254,8 @@ def _authority_for_parent(spec: FigureSpec, ref: ParentRef) -> FigureInputAuthor
 
 
 def _resolve_authority_payloads(
-    authority: FigureInputAuthority | None,
+    authority: FigureInputAuthoritySpec | None,
+    parent: ParentRef,
     manifest: AnyManifest | None,
     execution_context: StagedExecutionContext | None,
 ) -> tuple[dict[str, Any], tuple[ArtifactRef, ...]]:
@@ -257,7 +268,7 @@ def _resolve_authority_payloads(
     resolved: dict[str, Any] = {}
     resolved_refs: list[ArtifactRef] = []
     for selector in authority.artifact_payloads:
-        if authority.parent.role != selector.manifest_role:
+        if parent.role != selector.manifest_role:
             raise FigureInputAuthorityError(
                 f"figure artifact payload manifest role mismatch for {selector.name!r}"
             )
