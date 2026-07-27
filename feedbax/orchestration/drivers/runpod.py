@@ -56,6 +56,7 @@ from feedbax.orchestration.drivers.base import (
     ProviderPodInventoryRecord,
 )
 from feedbax.orchestration.drivers.native_execution import (
+    inject_native_execution_context,
     is_native_training_command,
     native_resume_checkpoint_authority_json,
     native_resume_checkpoint_source,
@@ -3563,6 +3564,11 @@ def build_launch_row_command(
         inputs_root=str(PurePosixPath(namespace.payload_path).parent),
         environment_fingerprint=env_fingerprint,
         update_budget=update_budget,
+        native_context_injector=(
+            inject_native_execution_context
+            if row.execution_family == "native-training"
+            else None
+        ),
     )
     if row.launch.command:
         command_parts = _normalize_explicit_native_launch_command(command_parts)

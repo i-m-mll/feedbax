@@ -6,7 +6,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 from feedbax.contracts.evaluation_lifecycle import (
     EVALUATION_COLLECTION_OUTPUTS,
@@ -55,6 +55,7 @@ class ExecutorFamilyAdapter(Protocol):
         inputs_root: Path | str,
         environment_fingerprint: str,
         update_budget: int | None = None,
+        native_context_injector: Callable[..., list[str]] | None = None,
     ) -> tuple[list[str], RunRowSpec]: ...
 
     def missing_collection_outputs(
@@ -84,6 +85,7 @@ class NativeTrainingExecutorAdapter:
         inputs_root: Path | str,
         environment_fingerprint: str,
         update_budget: int | None = None,
+        native_context_injector: Callable[..., list[str]] | None = None,
     ) -> tuple[list[str], RunRowSpec]:
         del bundle, inputs_root
         bound, bound_row = bind_native_execution_command(
@@ -93,8 +95,9 @@ class NativeTrainingExecutorAdapter:
             collection_root=collection_root,
             update_budget=update_budget,
         )
+        context_injector = native_context_injector or inject_native_execution_context
         return (
-            inject_native_execution_context(
+            context_injector(
                 bound,
                 row=bound_row,
                 environment_fingerprint=environment_fingerprint,
@@ -134,8 +137,13 @@ class EvaluationMatrixExecutorAdapter:
         inputs_root: Path | str,
         environment_fingerprint: str,
         update_budget: int | None = None,
+        native_context_injector: Callable[..., list[str]] | None = None,
     ) -> tuple[list[str], RunRowSpec]:
         del environment_fingerprint
+        if native_context_injector is not None:
+            raise ExecutorFamilyError(
+                "evaluation-matrix executor does not accept a native context injector"
+            )
         if update_budget is not None:
             raise ExecutorFamilyError(
                 "evaluation-matrix executor does not accept a native update budget"

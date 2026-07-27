@@ -910,7 +910,8 @@ def _resolve_matrix_staged_parents(
                 candidate_root = Path(parent_manifest_root)
             else:
                 raise StagedExecutionContextError(
-                    f"local matrix staged parent {name!r} requires a bound manifest root"
+                    f"local matrix staged parent {name!r} requires parent_manifest_root "
+                    "or a bound manifest root"
                 )
             local_root = Path(candidate_root)
             if not local_root.is_absolute() or ".." in local_root.parts:
