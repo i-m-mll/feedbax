@@ -61,6 +61,8 @@ from feedbax.intervene.intervene import (
     NetworkClamp,
     NetworkConstantInput,
     NetworkIntervenorParams,
+    ThresholdLatchedForce,
+    ThresholdLatchedForceParams,
 )
 from feedbax.objectives.loss import CompositeLoss
 from feedbax.mechanics.linear_state_space import LinearStateSpace
@@ -818,6 +820,22 @@ def _build_fixed_field(params: Mapping[str, Any]) -> FixedField:
     )
 
 
+def _build_threshold_latched_force(params: Mapping[str, Any]) -> ThresholdLatchedForce:
+    return ThresholdLatchedForce(
+        state_selector=params["state_selector"],
+        direction=str(params["direction"]),
+        dt=float(params["dt"]),
+        params=ThresholdLatchedForceParams(
+            scale=float(params.get("scale", 1.0)),
+            active=bool(params.get("active", False)),
+            threshold=float(params["threshold"]),
+            force=jnp.asarray(params["force"]),
+            ramp_duration=float(params.get("ramp_duration", 0.0)),
+        ),
+        label=str(params.get("label", "threshold_latched_force")),
+    )
+
+
 def _build_dynamics_matrix_perturb(params: Mapping[str, Any]) -> DynamicsMatrixPerturb:
     if "mass" not in params or params["mass"] is None:
         raise ValueError(
@@ -909,6 +927,7 @@ _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "FirstOrderFilter": _build_filter,
     "CurlField": _build_curl_field,
     "FixedField": _build_fixed_field,
+    "ThresholdLatchedForce": _build_threshold_latched_force,
     "DynamicsMatrixPerturb": _build_dynamics_matrix_perturb,
     "AffineValueComposer": _build_affine_value_composer,
     "AddNoise": lambda params: AddNoise(

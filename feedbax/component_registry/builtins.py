@@ -24,6 +24,7 @@ from feedbax.runtime.affine_composer import (
 )
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.state_feedback import state_feedback_output_prototype
+from feedbax.intervene.intervene import THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION
 
 from .acausal_adapters import register_acausal_components
 from .meta import ComponentMeta, MissingPrototypeInput
@@ -2026,6 +2027,64 @@ def register_builtin_components(registry: _Registry) -> None:
             icon='Flag',
             port_types=PortTypeSpec(
                 inputs={
+                    'force': PortType(dtype='vector'),
+                    'params_override': PortType(dtype='object'),
+                },
+                outputs={'force': PortType(dtype='vector')},
+            ),
+            output_prototype_fn=force_passthrough_output_prototype,
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='ThresholdLatchedForce',
+            category='Interventions',
+            description='Additive force latched by a runtime state-threshold crossing.',
+            param_schema=[
+                ParamSchema(
+                    name='state_selector',
+                    type='object',
+                    default={'path': ['pos', 0]},
+                    required=True,
+                ),
+                ParamSchema(
+                    name='direction',
+                    type='enum',
+                    options=['increasing', 'decreasing'],
+                    default='increasing',
+                    required=True,
+                ),
+                ParamSchema(name='threshold', type='float', default=0.0, required=True),
+                ParamSchema(
+                    name='force',
+                    type='array',
+                    default=[0.0, 0.0],
+                    required=True,
+                ),
+                ParamSchema(
+                    name='ramp_duration',
+                    type='float',
+                    default=0.0,
+                    min=0.0,
+                    required=False,
+                ),
+                ParamSchema(name='scale', type='float', default=1.0, required=True),
+                ParamSchema(name='active', type='bool', default=False, required=False),
+                ParamSchema(name='dt', type='float', default=0.01, min=0.0, required=True),
+                ParamSchema(
+                    name='label',
+                    type='str',
+                    default='threshold_latched_force',
+                    required=False,
+                ),
+            ],
+            param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
+            input_ports=['state', 'force', 'params_override'],
+            output_ports=['force'],
+            icon='Flag',
+            port_types=PortTypeSpec(
+                inputs={
+                    'state': PortType(dtype='state'),
                     'force': PortType(dtype='vector'),
                     'params_override': PortType(dtype='object'),
                 },

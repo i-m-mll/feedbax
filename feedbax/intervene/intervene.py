@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Optional
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any, Literal, Optional
 
 import equinox as eqx
 from equinox import field
@@ -17,6 +18,9 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 from feedbax.runtime.graph import Component
 from feedbax.mechanics.units import require_positive_finite
 from feedbax.runtime.noise import Normal
+
+
+THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION = "feedbax.component.threshold_latched_force.v1"
 
 
 def _float_param(value):
@@ -75,6 +79,77 @@ class CurlFieldParams(InterventionParams):
 class FixedFieldParams(InterventionParams):
     amplitude: Array = field(default_factory=lambda: _float_param(1.0), converter=_float_param)
     field: Array = field(default_factory=lambda: jnp.array([0.0, 0.0], dtype=jnp.float32))
+
+
+class ThresholdLatchedForceParams(InterventionParams):
+    """Trial-specific parameters for ``ThresholdLatchedForce``."""
+
+    threshold: Array = field(default_factory=lambda: _float_param(0.0), converter=_float_param)
+    force: Array = field(default_factory=lambda: jnp.array([0.0, 0.0], dtype=jnp.float32))
+    ramp_duration: Array = field(
+        default_factory=lambda: _float_param(0.0),
+        converter=_float_param,
+    )
+
+
+@dataclass(frozen=True)
+class StateSelector:
+    """A typed path selecting one scalar from a runtime state PyTree."""
+
+    path: tuple[str | int, ...]
+
+    def __init__(self, path: Sequence[str | int]):
+        normalized = tuple(path)
+        if not normalized:
+            raise ValueError("StateSelector.path must contain at least one segment")
+        if any(not isinstance(segment, str | int) for segment in normalized):
+            raise TypeError("StateSelector.path segments must be strings or integers")
+        object.__setattr__(self, "path", normalized)
+
+    @classmethod
+    def from_param(cls, value: "StateSelector | Mapping[str, Any]") -> "StateSelector":
+        """Parse a selector from its typed object or GraphSpec representation."""
+
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, Mapping) or "path" not in value:
+            raise TypeError("state_selector must be a StateSelector or {'path': [...]} mapping")
+        path = value["path"]
+        if not isinstance(path, Sequence) or isinstance(path, str | bytes):
+            raise TypeError("state_selector.path must be a sequence")
+        return cls(path)
+
+    def select(self, state: PyTree) -> Array:
+        """Select and validate one scalar array from ``state``."""
+
+        value = state
+        for segment in self.path:
+            if isinstance(segment, int):
+                value = value[segment]
+            elif isinstance(value, Mapping):
+                value = value[segment]
+            else:
+                value = getattr(value, segment)
+        value = jnp.asarray(value)
+        if value.ndim != 0:
+            raise ValueError(
+                f"StateSelector path {self.path!r} must select a scalar; got shape {value.shape}"
+            )
+        return value
+
+    def to_param(self) -> dict[str, list[str | int]]:
+        """Return the stable GraphSpec representation."""
+
+        return {"path": list(self.path)}
+
+
+class ThresholdLatchState(eqx.Module):
+    """Runtime state for one threshold latch."""
+
+    previous: Array
+    initialized: Array
+    latched: Array
+    elapsed: Array
 
 
 class DynamicsMatrixPerturbParams(InterventionParams):
@@ -175,6 +250,123 @@ class FixedField(Component):
 
     def task_parameter_state_indices(self):
         return {self.label: self.params_index}
+
+
+class ThresholdLatchedForce(Component):
+    """Add force after a selected runtime state crosses a threshold.
+
+    The crossing is evaluated from consecutive runtime samples. Once crossed,
+    the intervention remains latched for the rest of that component state
+    lifetime. A positive ramp duration linearly raises the force from zero at
+    the crossing sample to full scale.
+    """
+
+    input_ports = ("state", "force", "params_override")
+    output_ports = ("force",)
+
+    params_index: StateIndex
+    latch_index: StateIndex
+    _initial_state: ThresholdLatchedForceParams = field(static=True)
+    state_selector: StateSelector = field(static=True)
+    direction: Literal["increasing", "decreasing"] = field(static=True)
+    dt: float = field(static=True)
+    label: str = field(default="threshold_latched_force", static=True)
+
+    def __init__(
+        self,
+        *,
+        state_selector: StateSelector | Mapping[str, Any],
+        direction: Literal["increasing", "decreasing"],
+        dt: float,
+        params: Optional[ThresholdLatchedForceParams] = None,
+        label: str = "threshold_latched_force",
+    ):
+        if direction not in ("increasing", "decreasing"):
+            raise ValueError("direction must be 'increasing' or 'decreasing'")
+        if params is None:
+            params = ThresholdLatchedForceParams(active=False)
+        if float(jnp.asarray(params.ramp_duration)) < 0:
+            raise ValueError("ramp_duration must be non-negative")
+        self._initial_state = params
+        self.params_index = StateIndex(_strong_typed(params))
+        self.latch_index = StateIndex(
+            ThresholdLatchState(
+                previous=_float_param(0.0),
+                initialized=_bool_param(False),
+                latched=_bool_param(False),
+                elapsed=_float_param(0.0),
+            )
+        )
+        self.state_selector = StateSelector.from_param(state_selector)
+        self.direction = direction
+        self.dt = require_positive_finite("ThresholdLatchedForce.dt", dt)
+        self.label = label
+
+    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
+        del key
+        params: ThresholdLatchedForceParams = state.get(self.params_index)
+        if "params_override" in inputs:
+            params = _merge_params_override(params, inputs["params_override"])
+        latch: ThresholdLatchState = state.get(self.latch_index)
+        observed = jnp.asarray(
+            self.state_selector.select(inputs["state"]),
+            dtype=latch.previous.dtype,
+        )
+
+        if self.direction == "increasing":
+            crossed = latch.initialized & (latch.previous < params.threshold) & (
+                observed >= params.threshold
+            )
+        else:
+            crossed = latch.initialized & (latch.previous > params.threshold) & (
+                observed <= params.threshold
+            )
+        newly_latched = params.active & ~latch.latched & crossed
+        latched = latch.latched | newly_latched
+        elapsed = jnp.where(
+            newly_latched,
+            _float_param(0.0),
+            jnp.where(latched, latch.elapsed + self.dt, latch.elapsed),
+        )
+        ramp = jnp.where(
+            params.ramp_duration > 0,
+            jnp.minimum(elapsed / jnp.maximum(params.ramp_duration, self.dt), 1.0),
+            _float_param(1.0),
+        )
+        applied = params.active & latched
+        new_force = jnp.where(
+            applied,
+            inputs["force"] + params.scale * ramp * params.force,
+            inputs["force"],
+        )
+        state = state.set(
+            self.latch_index,
+            ThresholdLatchState(
+                previous=observed,
+                initialized=_bool_param(True),
+                latched=latched,
+                elapsed=elapsed,
+            ),
+        )
+        return {"force": new_force}, state
+
+    def task_parameter_state_indices(self):
+        return {self.label: self.params_index}
+
+    def to_params(self) -> dict[str, Any]:
+        """Return the versioned GraphSpec parameters for this component."""
+
+        return {
+            "state_selector": self.state_selector.to_param(),
+            "direction": self.direction,
+            "threshold": float(self._initial_state.threshold),
+            "force": jnp.asarray(self._initial_state.force).tolist(),
+            "ramp_duration": float(self._initial_state.ramp_duration),
+            "scale": float(self._initial_state.scale),
+            "active": bool(self._initial_state.active),
+            "dt": self.dt,
+            "label": self.label,
+        }
 
 
 class DynamicsMatrixPerturb(Component):
