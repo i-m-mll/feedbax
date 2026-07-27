@@ -1797,6 +1797,9 @@ class StageEngine:
             schema_registry=(
                 self.assembly_context.schema_registry if self.assembly_context is not None else None
             ),
+            authored_repo_root=(
+                self.assembly_context.repo_root if self.assembly_context is not None else None
+            ),
             event_log=self.bundle.run_set_dir / "events" / f"{row.row_id}.events.jsonl",
             row_status=state.rows[row.row_id].status,
             bundle_row_spec=run_spec,

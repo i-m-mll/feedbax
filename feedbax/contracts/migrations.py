@@ -200,6 +200,8 @@ from feedbax.contracts.manifest import (
     EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
     EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
+    TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
+    TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID,
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION,
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1,
@@ -2871,6 +2873,23 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "tests/test_run_matrix_materialization.py",
                 "tests/test_structured_spec_migrations.py",
             ),
+        ),
+        _family(
+            "TrainingRunMatrixDeltaSpec",
+            TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
+            TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.training_matrix_composition",
+            emitted_by=("authored training matrix composition",),
+            consumed_by=(
+                "feedbax.training.spec_storage.compile_training_run_matrix",
+                "feedbax.orchestration.matrix_authority",
+            ),
+            description=(
+                "Ordered whole-document deltas over one content-pinned parent training "
+                "matrix or parent delta spec."
+            ),
+            rejected_old_versions=(f"{TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_training_matrix_delta_composition.py",),
         ),
         _family(
             "TrainingRunMatrixAuthority",

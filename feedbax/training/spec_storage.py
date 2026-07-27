@@ -8,6 +8,7 @@ from typing import Any, Callable, Mapping
 from feedbax.contracts.manifest import (
     ArtifactRef,
     StrictModel,
+    TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
     TrainingRunManifest,
     sha256_file,
 )
@@ -21,6 +22,12 @@ from feedbax.contracts.run_matrix import (
     TrainingRunMatrixSpec,
 )
 from feedbax.contracts.migrations import default_spec_registry
+from feedbax.contracts.training_matrix_composition import (
+    TrainingRunMatrixDeltaSpec,
+    flatten_training_run_matrix_delta,
+    is_training_run_matrix_delta_payload,
+    training_matrix_delta_envelope_hash,
+)
 from feedbax.contracts.spec_storage import (
     TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
     TrainingRunExecutionCapsule,
@@ -78,21 +85,25 @@ def compile_training_run_matrix(
         NATIVE_TRAINING_COLLECTION_OUTPUTS,
     )
 
-    matrix = (
-        authored
-        if isinstance(authored, TrainingRunMatrixSpec)
-        else TrainingRunMatrixSpec.model_validate(
+    repo_root = context.repo_root
+    if repo_root is None:
+        raise ValueError("training matrix assembly requires AssemblyContext.repo_root")
+    if isinstance(authored, TrainingRunMatrixSpec):
+        matrix = authored
+    elif is_training_run_matrix_delta_payload(authored):
+        delta = TrainingRunMatrixDeltaSpec.model_validate(authored)
+        matrix = TrainingRunMatrixSpec.model_validate(
+            flatten_training_run_matrix_delta(delta, repo_root=repo_root).payload
+        )
+    else:
+        matrix = TrainingRunMatrixSpec.model_validate(
             default_spec_registry.migrate("TrainingRunMatrixSpec", authored).payload
         )
-    )
     if isinstance(matrix.base, InlineMatrixBaseSpec) and not allow_inline_base:
         raise ValueError(
             "inline matrix bases are tests/fixtures only; production assembly requires "
             "a content-pinned authored_intent or resolved_output reference"
         )
-    repo_root = context.repo_root
-    if repo_root is None:
-        raise ValueError("training matrix assembly requires AssemblyContext.repo_root")
     if row_validator is None and row_lowerer is None:
         materialized = materialize_run_matrix(matrix, repo_root=repo_root)
     else:
@@ -212,6 +223,10 @@ class TrainingRunIdentityAdapter:
     """Training-family semantic adapter for generic execution envelopes."""
 
     def intent_hash(self, authored: Mapping[str, Any]) -> str:
+        if is_training_run_matrix_delta_payload(authored):
+            return training_matrix_delta_envelope_hash(
+                TrainingRunMatrixDeltaSpec.model_validate(authored)
+            )
         return training_run_intent_hash(authored)
 
     def build_capsule(
@@ -230,6 +245,11 @@ class TrainingRunIdentityAdapter:
                 TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION
             ),
         }
+        if (
+            context.authored_ref is not None
+            and context.authored_ref.schema_id == TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID
+        ):
+            versions["training_run_matrix_delta"] = context.authored_ref.schema_version
         if row.provenance is not None and row.provenance.lowerer_identities:
             versions["training_row_lowering_result"] = (
                 TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION
@@ -267,17 +287,23 @@ def register_training_run_matrix_compiler(
     row_lowerer: TrainingRowLowerer | None = None,
 ) -> None:
     """Register the default matrix compiler and identity adapter."""
-    registry.register(
-        schema_id=TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
-        compiler_id=TRAINING_RUN_MATRIX_COMPILER_ID,
-        compiler_version=TRAINING_RUN_MATRIX_COMPILER_VERSION,
-        compiler=TrainingRunMatrixCompiler(
-            allow_inline_base=allow_inline_base,
-            row_validator=row_validator,
-            row_lowerer=row_lowerer,
-        ),
-        identity_adapter=TrainingRunIdentityAdapter(),
+    compiler = TrainingRunMatrixCompiler(
+        allow_inline_base=allow_inline_base,
+        row_validator=row_validator,
+        row_lowerer=row_lowerer,
     )
+    adapter = TrainingRunIdentityAdapter()
+    for schema_id in (
+        TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+        TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
+    ):
+        registry.register(
+            schema_id=schema_id,
+            compiler_id=TRAINING_RUN_MATRIX_COMPILER_ID,
+            compiler_version=TRAINING_RUN_MATRIX_COMPILER_VERSION,
+            compiler=compiler,
+            identity_adapter=adapter,
+        )
 
 
 def stamp_training_run_manifest_identities(
@@ -311,7 +337,7 @@ def stamp_training_run_manifest_identities(
 
 
 def emit_training_run_spec_storage(
-    authored: TrainingRunMatrixSpec | Mapping[str, Any],
+    authored: TrainingRunMatrixSpec | TrainingRunMatrixDeltaSpec | Mapping[str, Any],
     *,
     repo_root: Path,
     authored_path: Path,
@@ -331,19 +357,36 @@ def emit_training_run_spec_storage(
     Inline bases are fixture-only and rejected unless ``allow_inline_base`` is
     deliberately enabled by a test or fixture producer.
     """
-    if isinstance(authored, TrainingRunMatrixSpec):
+    if isinstance(authored, TrainingRunMatrixDeltaSpec) or is_training_run_matrix_delta_payload(
+        authored
+    ):
+        delta = (
+            authored
+            if isinstance(authored, TrainingRunMatrixDeltaSpec)
+            else TrainingRunMatrixDeltaSpec.model_validate(authored)
+        )
+        authored_document = delta.model_dump(mode="json", exclude_none=True)
+        matrix = TrainingRunMatrixSpec.model_validate(
+            flatten_training_run_matrix_delta(delta, repo_root=repo_root).payload
+        )
+        intent_hash = training_matrix_delta_envelope_hash(delta)
+        authored_envelope_hash = intent_hash
+    elif isinstance(authored, TrainingRunMatrixSpec):
         matrix = authored
+        authored_document = matrix.model_dump(mode="json", exclude_none=True)
+        intent_hash = training_run_intent_hash(authored_document)
+        authored_envelope_hash = training_run_authored_envelope_hash(authored_document)
     else:
         migrated = default_spec_registry.migrate("TrainingRunMatrixSpec", authored)
         matrix = TrainingRunMatrixSpec.model_validate(migrated.payload)
+        authored_document = matrix.model_dump(mode="json", exclude_none=True)
+        intent_hash = training_run_intent_hash(authored_document)
+        authored_envelope_hash = training_run_authored_envelope_hash(authored_document)
     if isinstance(matrix.base, InlineMatrixBaseSpec) and not allow_inline_base:
         raise ValueError(
             "inline matrix bases are tests/fixtures only; production emission requires "
             "a content-pinned authored_intent or resolved_output reference"
         )
-    authored_document = matrix.model_dump(mode="json", exclude_none=True)
-    intent_hash = training_run_intent_hash(authored_document)
-    authored_envelope_hash = training_run_authored_envelope_hash(authored_document)
     if row_validator is None and row_lowerer is None:
         materialized = materialize_run_matrix(matrix, repo_root=repo_root)
     else:
@@ -404,6 +447,8 @@ def emit_training_run_spec_storage(
             TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION
         ),
     }
+    if authored_document["schema_id"] == TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID:
+        relevant_versions["training_run_matrix_delta"] = authored_document["schema_version"]
     if any(row.provenance.lowerer_identities for row in materialized.rows):
         relevant_versions["training_row_lowering_result"] = (
             TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION
