@@ -208,13 +208,27 @@ def _register_training_plugin(
     )
     _register_training_methods_from_plugin(plugin, registry, provenance=provenance)
     _register_analysis_recipes_from_plugin(plugin, provenance=provenance)
+    descriptor_keys_after = set(
+        registry.descriptor_keys() if hasattr(registry, "descriptor_keys") else ()
+    )
+    from feedbax.training.authoring import _training_method_row_lowerer_registration
+
+    for method_ref in sorted(descriptor_keys_after - descriptor_keys_before):
+        descriptor = registry.descriptor(method_ref)
+        if descriptor is None or descriptor.authoring_hook is None:
+            continue
+        try:
+            row_lowerer_registry.register(
+                _training_method_row_lowerer_registration(descriptor, registry)
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to derive Feedbax training row lowerer from {provenance}: {exc}"
+            ) from exc
     _register_training_row_lowerers_from_plugin(
         plugin,
         row_lowerer_registry,
         provenance=provenance,
-    )
-    descriptor_keys_after = set(
-        registry.descriptor_keys() if hasattr(registry, "descriptor_keys") else ()
     )
     for method_ref in sorted(descriptor_keys_after - descriptor_keys_before):
         descriptor = registry.descriptor(method_ref)

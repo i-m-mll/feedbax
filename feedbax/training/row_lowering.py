@@ -8,7 +8,7 @@ import inspect
 import json
 from pathlib import Path
 import re
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from pydantic import ValidationError
 
@@ -295,8 +295,34 @@ class TrainingRowLowererRegistry:
 DEFAULT_TRAINING_ROW_LOWERER_REGISTRY = TrainingRowLowererRegistry()
 
 
-def training_row_lowerer_implementation_sha256(lower: Callable[..., Any]) -> str:
-    """Hash the source-module bytes that define an executable lowerer."""
+def training_row_lowerer_implementation_sha256(
+    lower: Callable[..., Any] | Iterable[Callable[..., Any]],
+) -> str:
+    """Hash source-module bytes defining one lowerer and its bound dependencies."""
+    if not callable(lower):
+        dependencies = tuple(lower)
+        if any(not callable(dependency) for dependency in dependencies):
+            raise TrainingRowLowererRegistryError(
+                "training row lowerer implementation dependencies must be callable"
+            )
+        digests = [
+            training_row_lowerer_implementation_sha256(dependency)
+            for dependency in dependencies
+        ]
+        if not digests:
+            raise TrainingRowLowererRegistryError(
+                "training row lowerer implementation dependencies must not be empty"
+            )
+        return hashlib.sha256(
+            json.dumps(digests, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    dependencies = getattr(
+        lower,
+        "__feedbax_implementation_dependencies__",
+        None,
+    )
+    if dependencies is not None:
+        return training_row_lowerer_implementation_sha256(dependencies)
     source_path = inspect.getsourcefile(lower)
     if source_path is None:
         raise TrainingRowLowererRegistryError("training row lowerer has no source module")
