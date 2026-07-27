@@ -102,6 +102,7 @@ from feedbax.contracts.run_matrix import (
     AuthoredTrainingRow,
     RowLowererIdentity,
     TrainingRowLoweringResult,
+    TrainingRowParentProvenance,
     TrainingRowPlanningProvenance,
     TrainingRowProvenance,
 )
@@ -147,6 +148,7 @@ try:
         TrainingRowLowererRegistration,
         TrainingRowLowererRegistry,
         TrainingRowLowererRegistryError,
+        TrainingRowLoweringContext,
     )
     from .authoring import (
         AUTHORING_RESERVED_METADATA_KEYS,
@@ -216,8 +218,10 @@ __all__ = [
     "TrainingRowLowererRegistration",
     "TrainingRowLowererRegistry",
     "TrainingRowLowererRegistryError",
+    "TrainingRowLoweringContext",
     "DEFAULT_TRAINING_ROW_LOWERER_REGISTRY",
     "TrainingRowLoweringResult",
+    "TrainingRowParentProvenance",
     "TrainingRowPlanningProvenance",
     "TrainingRowProvenance",
     "TrainingRunExecutorError",

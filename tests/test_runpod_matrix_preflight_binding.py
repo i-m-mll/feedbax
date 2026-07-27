@@ -155,7 +155,7 @@ def _matrix_case(
     )
     registry = AssemblyCompilerRegistry()
 
-    def lower(authored_row: Any) -> TrainingRowLoweringResult:
+    def lower(authored_row: Any, _context: Any) -> TrainingRowLoweringResult:
         return TrainingRowLoweringResult(
             execution_payload=execution_payload
             or {

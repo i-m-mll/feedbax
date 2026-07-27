@@ -216,6 +216,7 @@ from feedbax.contracts.run_matrix import (
     TRAINING_ROW_PROVENANCE_SCHEMA_ID,
     TRAINING_ROW_PROVENANCE_SCHEMA_VERSION,
     TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1,
+    TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V2,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID,
@@ -229,6 +230,7 @@ from feedbax.contracts.run_matrix import (
     MatrixRow,
     RowLowererIdentity,
     TrainingRowLoweringResult,
+    TrainingRowParentProvenance,
     TrainingRowPlanningProvenance,
     TrainingRowProvenance,
     TrainingRunMatrixArtifactBinding,
@@ -287,6 +289,7 @@ from feedbax.contracts.run_composition import (
     authored_envelope_hash,
     composed_intent_hash,
     flatten_composition,
+    flatten_repo_composition,
 )
 from feedbax.contracts.lineage import LineageDag, LineageEvent, store_lineage_event
 from feedbax.contracts.intent_diff import detect_near_duplicate_lanes, layered_semantic_diff
@@ -709,6 +712,7 @@ __all__ = [
     "AuthoredTrainingRow",
     "RowLowererIdentity",
     "TrainingRowLoweringResult",
+    "TrainingRowParentProvenance",
     "TrainingRowPlanningProvenance",
     "TrainingRowProvenance",
     "AUTHORED_TRAINING_ROW_SCHEMA_ID",
@@ -725,6 +729,7 @@ __all__ = [
     "TRAINING_ROW_PROVENANCE_SCHEMA_ID",
     "TRAINING_ROW_PROVENANCE_SCHEMA_VERSION",
     "TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1",
+    "TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V2",
     "TrainingRunExecutionCapsule",
     "MatrixBaseSpec",
     "MatrixDerivation",
@@ -859,6 +864,7 @@ __all__ = [
     "authored_envelope_hash",
     "composed_intent_hash",
     "flatten_composition",
+    "flatten_repo_composition",
     "store_lineage_event",
     "detect_near_duplicate_lanes",
     "layered_semantic_diff",

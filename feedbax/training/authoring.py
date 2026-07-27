@@ -232,6 +232,7 @@ def _descriptor_for_authoring(
 
 def compile_training_method_authoring(
     row: AuthoredTrainingRow | Mapping[str, Any],
+    _context: Any | None = None,
     *,
     method_ref: MethodRefSpec | str | Mapping[str, Any],
     run_control: RunControlSpec | Mapping[str, Any],

@@ -285,7 +285,7 @@ def test_typed_row_lowerer_is_authoritative_and_validation_cannot_mutate(
     matrix = TrainingRunMatrixSpec.model_validate(matrix_payload)
     seen = []
 
-    def lower(authored_row):
+    def lower(authored_row, _context):
         seen.append(authored_row)
         return TrainingRowLoweringResult(
             execution_payload={
@@ -345,7 +345,7 @@ def test_planned_id_binds_complete_lowered_payload_and_ordered_authorship(
         graph_value: float | None = None,
         reverse_lowerers: bool = False,
     ):
-        def lower(_authored_row):
+        def lower(_authored_row, _context):
             lowerer_identities = [
                 {
                     "lowerer_id": "example.adapter",
@@ -510,7 +510,7 @@ def test_lowered_payload_and_provenance_drive_storage_and_assembly(tmp_path: Pat
 
     matrix = _matrix({"compact": {"gain": 3}})
 
-    def lower(authored_row):
+    def lower(authored_row, _context):
         return TrainingRowLoweringResult(
             execution_payload={
                 "schema_id": "example.execution",
@@ -595,7 +595,7 @@ def test_assembled_bundle_carries_the_same_typed_row_provenance(tmp_path: Path) 
     authored_path = tmp_path / "matrix.json"
     authored_path.write_bytes(authored_bytes)
 
-    def lower(authored_row):
+    def lower(authored_row, _context):
         return TrainingRowLoweringResult(
             execution_payload={
                 "schema_id": "example.execution",

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import inspect
+import json
 from pathlib import Path
 import re
 from typing import Any, Callable, Mapping
@@ -15,13 +16,121 @@ from feedbax.contracts.run_matrix import (
     AuthoredTrainingRow,
     RowLowererIdentity,
     TRAINING_ROW_LOWERER_REF_FIELD,
+    TrainingRowParentProvenance,
     TrainingRowLowererRef,
     TrainingRowLoweringResult,
 )
+from feedbax.contracts.run_composition import (
+    AuthoredIntentParent,
+    CompositionNode,
+    ResolvedOutputParent,
+    authored_envelope_hash,
+)
+from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
 
 
 class TrainingRowLowererRegistryError(ValueError):
     """Raised when authored-row lowerer authority cannot be resolved exactly."""
+
+
+@dataclass(frozen=True)
+class GovernedTrainingRowParent:
+    """Immutable declared parent bytes supplied to row lowering by ASSEMBLE."""
+
+    provenance: TrainingRowParentProvenance
+    _payload_json: bytes
+
+    def __init__(
+        self,
+        *,
+        provenance: TrainingRowParentProvenance,
+        payload: Mapping[str, Any],
+    ) -> None:
+        object.__setattr__(self, "provenance", provenance.model_copy(deep=True))
+        object.__setattr__(self, "_payload_json", training_spec_canonical_bytes(payload))
+
+    def payload(self) -> dict[str, Any]:
+        """Return a fresh JSON copy of the governed parent payload."""
+        payload = json.loads(self._payload_json)
+        if not isinstance(payload, dict):
+            raise TrainingRowLowererRegistryError(
+                "governed training-row parent payload is not an object"
+            )
+        return payload
+
+
+@dataclass(frozen=True)
+class TrainingRowLoweringContext:
+    """Exact, copy-isolated resolver for parents declared by ASSEMBLE."""
+
+    parents: tuple[GovernedTrainingRowParent, ...] = ()
+
+    def __post_init__(self) -> None:
+        keys = [
+            (item.provenance.parent_kind, item.provenance.ref)
+            for item in self.parents
+        ]
+        if len(keys) != len(set(keys)):
+            raise TrainingRowLowererRegistryError(
+                "governed training-row parents contain ambiguous kind/ref declarations"
+            )
+
+    @property
+    def provenance(self) -> list[TrainingRowParentProvenance]:
+        """Return isolated, canonically ordered parent provenance."""
+        return [
+            item.provenance.model_copy(deep=True)
+            for item in sorted(
+                self.parents,
+                key=lambda item: (
+                    item.provenance.parent_kind,
+                    item.provenance.ref,
+                    item.provenance.role,
+                    item.provenance.artifact_id,
+                ),
+            )
+        ]
+
+    def resolve_parent(
+        self, parent: AuthoredIntentParent | ResolvedOutputParent
+    ) -> CompositionNode | dict[str, Any]:
+        """Resolve one exact declaration and recheck its semantic content pin."""
+        matches = [
+            item
+            for item in self.parents
+            if item.provenance.parent_kind == parent.kind
+            and item.provenance.ref == parent.ref
+        ]
+        if len(matches) != 1:
+            state = "missing or undeclared" if not matches else "ambiguous"
+            raise TrainingRowLowererRegistryError(
+                f"governed training-row parent {parent.kind}:{parent.ref!r} is {state}"
+            )
+        governed = matches[0]
+        expected_hash = (
+            parent.content_hash
+            if isinstance(parent, AuthoredIntentParent)
+            else parent.resolved_root_hash
+        )
+        if governed.provenance.semantic_hash != expected_hash:
+            raise TrainingRowLowererRegistryError(
+                f"governed training-row parent {parent.kind}:{parent.ref!r} "
+                "was declared under a different semantic hash"
+            )
+        payload = governed.payload()
+        if isinstance(parent, AuthoredIntentParent):
+            node = CompositionNode.model_validate(payload)
+            observed_hash = authored_envelope_hash(node)
+            result: CompositionNode | dict[str, Any] = node
+        else:
+            observed_hash = training_spec_sha256(payload)
+            result = payload
+        if observed_hash != expected_hash:
+            raise TrainingRowLowererRegistryError(
+                f"governed training-row parent {parent.kind}:{parent.ref!r} "
+                "semantic hash drifted"
+            )
+        return result
 
 
 @dataclass(frozen=True)
@@ -33,7 +142,10 @@ class TrainingRowLowererRegistration:
     lowerer_id: str
     lowerer_version: str
     implementation_sha256: str
-    lower: Callable[[AuthoredTrainingRow], TrainingRowLoweringResult | Mapping[str, Any]]
+    lower: Callable[
+        [AuthoredTrainingRow, TrainingRowLoweringContext],
+        TrainingRowLoweringResult | Mapping[str, Any],
+    ]
     owner: str = "feedbax"
 
     def validate_structure(self) -> None:
@@ -80,7 +192,9 @@ class TrainingRowLowererRegistry:
         return tuple(sorted(self._registrations))
 
     def lower(
-        self, authored_row: AuthoredTrainingRow
+        self,
+        authored_row: AuthoredTrainingRow,
+        context: TrainingRowLoweringContext,
     ) -> TrainingRowLoweringResult | None:
         """Lower a declared authored row; pass explicit TrainingRunSpec rows through."""
         raw_ref = authored_row.payload.get(TRAINING_ROW_LOWERER_REF_FIELD)
@@ -124,7 +238,7 @@ class TrainingRowLowererRegistry:
                 f"training row lowerer {authority.lowerer_id!r} implementation drifted"
             )
         try:
-            raw_result = registration.lower(authored_row.model_copy(deep=True))
+            raw_result = registration.lower(authored_row.model_copy(deep=True), context)
             result = (
                 raw_result
                 if isinstance(raw_result, TrainingRowLoweringResult)

@@ -53,6 +53,11 @@ from feedbax.contracts.run_matrix import (
     apply_composition_deltas,
     apply_override_patches,
 )
+from feedbax.contracts.run_composition import (
+    COMPOSITION_SCHEMA_ID,
+    CompositionNode,
+    flatten_repo_composition,
+)
 from feedbax.contracts.migrations import default_spec_registry, migrate_graph_spec
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
@@ -277,7 +282,9 @@ def _validate_typed_checkpoint_dependencies(
 class TrainingRowLowerer(Protocol):
     """Public typed boundary from authored row intent to execution payload."""
 
-    def __call__(self, row: AuthoredTrainingRow) -> TrainingRowLoweringResult | None:
+    def __call__(
+        self, row: AuthoredTrainingRow, context: Any
+    ) -> TrainingRowLoweringResult | None:
         """Lower one axis-patched authored row without mutating the input."""
 
 
@@ -385,6 +392,7 @@ def materialize_adapted_run_matrix(
     repo_root: Path,
     row_validator: RowPayloadValidator | None = None,
     row_lowerer: TrainingRowLowerer | None = None,
+    row_lowering_context: Any | None = None,
 ) -> MaterializedRunMatrix:
     """Materialize rows through an optional lowerer and validation-only adapter.
 
@@ -400,6 +408,7 @@ def materialize_adapted_run_matrix(
         repo_root=repo_root,
         row_validator=row_validator,
         row_lowerer=row_lowerer,
+        row_lowering_context=row_lowering_context,
     )
 
 
@@ -409,6 +418,7 @@ def _materialize_run_matrix(
     repo_root: Path,
     row_validator: RowPayloadValidator | None,
     row_lowerer: TrainingRowLowerer | None = None,
+    row_lowering_context: Any | None = None,
 ) -> MaterializedRunMatrix:
     if isinstance(spec, TrainingRunMatrixSpec):
         matrix = spec
@@ -427,6 +437,7 @@ def _materialize_run_matrix(
             source_context=source_context,
             row_validator=row_validator,
             row_lowerer=row_lowerer,
+            row_lowering_context=row_lowering_context,
         )
         axes_identity = {
             "mode": "explicit_rows",
@@ -439,6 +450,7 @@ def _materialize_run_matrix(
             source_context=source_context,
             row_validator=row_validator,
             row_lowerer=row_lowerer,
+            row_lowering_context=row_lowering_context,
         )
         axes_identity = axes_block.model_dump(mode="json", exclude_none=True)
 
@@ -1028,6 +1040,27 @@ def _resolve_composed_base(
             )
             attribution.update(local_attribution)
             return resolved, attribution, written
+        if isinstance(document, Mapping) and _is_composition_document(document):
+            if spec.base.payload_path is not None:
+                raise RunMatrixError(
+                    "/base/payload_path is not supported for a composition document"
+                )
+            try:
+                flattened = flatten_repo_composition(
+                    CompositionNode.model_validate(document),
+                    repo_root=repo_root,
+                    source_ref=spec.base.ref,
+                )
+                resolved, local_attribution, written = apply_composition_deltas(
+                    flattened.payload,
+                    spec.deltas,
+                    ancestor_written_paths=set(flattened.attribution),
+                )
+            except ValueError as exc:
+                raise RunMatrixError(f"/base/ref composition resolution failed: {exc}") from exc
+            attribution = dict(flattened.attribution)
+            attribution.update(local_attribution)
+            return resolved, attribution, written
         else:
             payload_path = spec.base.payload_path
     else:
@@ -1055,6 +1088,10 @@ def _is_authored_matrix_document(document: Mapping[str, Any]) -> bool:
     )
 
 
+def _is_composition_document(document: Mapping[str, Any]) -> bool:
+    return document.get("schema_id") == COMPOSITION_SCHEMA_ID
+
+
 def _materialize_explicit_rows(
     matrix: TrainingRunMatrixSpec,
     *,
@@ -1062,6 +1099,7 @@ def _materialize_explicit_rows(
     source_context: ExpressionContext,
     row_validator: RowPayloadValidator | None,
     row_lowerer: TrainingRowLowerer | None,
+    row_lowering_context: Any | None,
 ) -> tuple[list[MaterializedMatrixRow], TrainingRunSetAxes]:
     rows: list[MaterializedMatrixRow] = []
     explicit_records: list[dict[str, Any]] = []
@@ -1098,6 +1136,7 @@ def _materialize_explicit_rows(
             overrides=axis_coordinates["overrides"],
             row_validator=row_validator,
             row_lowerer=row_lowerer,
+            row_lowering_context=row_lowering_context,
         )
         run_id = _planned_run_id(
             payload,
@@ -1142,6 +1181,11 @@ def _materialize_explicit_rows(
                     axis_coordinates=coordinate.model_dump(mode="json", exclude_none=True),
                     overrides=axis_coordinates["overrides"],
                     lowerer_identities=lowerer_identities,
+                    parent_inputs=(
+                        []
+                        if row_lowering_context is None
+                        else row_lowering_context.provenance
+                    ),
                 ),
                 coordinate=None,
                 overrides=list(row.overrides),
@@ -1166,6 +1210,7 @@ def _materialize_sweep_rows(
     source_context: ExpressionContext,
     row_validator: RowPayloadValidator | None,
     row_lowerer: TrainingRowLowerer | None,
+    row_lowering_context: Any | None,
 ) -> tuple[list[MaterializedMatrixRow], TrainingRunSetAxes]:
     axes_with_values = [
         axis.model_copy(update={"values": variation_values(axis.variation)}) for axis in matrix.axes
@@ -1223,6 +1268,7 @@ def _materialize_sweep_rows(
             overrides=override_payloads,
             row_validator=row_validator,
             row_lowerer=row_lowerer,
+            row_lowering_context=row_lowering_context,
         )
         run_id = _planned_run_id(
             payload,
@@ -1256,6 +1302,11 @@ def _materialize_sweep_rows(
                     axis_coordinates=coordinate.model_dump(mode="json", exclude_none=True),
                     overrides=override_payloads,
                     lowerer_identities=lowerer_identities,
+                    parent_inputs=(
+                        []
+                        if row_lowering_context is None
+                        else row_lowering_context.provenance
+                    ),
                 ),
                 coordinate=coordinate,
                 overrides=patches,
@@ -1321,6 +1372,7 @@ def _lower_authored_row(
     overrides: list[dict[str, Any]],
     row_validator: RowPayloadValidator | None,
     row_lowerer: TrainingRowLowerer | None,
+    row_lowering_context: Any | None,
 ) -> tuple[
     dict[str, Any],
     TrainingRunSpec | None,
@@ -1344,7 +1396,14 @@ def _lower_authored_row(
             axis_coordinates=copy.deepcopy(axis_coordinates),
             overrides=copy.deepcopy(overrides),
         )
-        raw_result = row_lowerer(authored_row.model_copy(deep=True))
+        if row_lowering_context is None:
+            from feedbax.training.row_lowering import TrainingRowLoweringContext
+
+            row_lowering_context = TrainingRowLoweringContext()
+        raw_result = row_lowerer(
+            authored_row.model_copy(deep=True),
+            row_lowering_context,
+        )
         if raw_result is None:
             execution_payload = copy.deepcopy(authored_copy)
         else:

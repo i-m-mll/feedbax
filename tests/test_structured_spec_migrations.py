@@ -361,7 +361,7 @@ def test_shadow_launch_evidence_registry_explicitly_rejects_v0() -> None:
         (
             "RunAssemblyRequest",
             "feedbax.spec.run_assembly_request",
-            "feedbax.spec.run_assembly_request.v2",
+            "feedbax.spec.run_assembly_request.v3",
         ),
         (
             "DeploymentPolicy",
@@ -397,6 +397,15 @@ def test_default_registry_registers_assemble_contract_families(
             kind,
             {"schema_id": schema_id, "schema_version": f"{schema_id}.v0"},
         )
+    if kind == "RunAssemblyRequest":
+        with pytest.raises(
+            UnsupportedSpecVersion,
+            match="migration_intentionally_absent=yes",
+        ):
+            default_spec_registry.migrate(
+                kind,
+                {"schema_id": schema_id, "schema_version": f"{schema_id}.v2"},
+            )
 
 
 def test_execution_identity_envelope_v1_migrates_with_unavailable_provenance() -> None:
@@ -710,6 +719,7 @@ def test_row_lowering_contracts_have_explicit_schema_policy(
     family = default_spec_registry.resolve(kind)
     assert family.identity == schema_id
     expected_version = {
+        "TrainingRowLowererRef": "feedbax.spec.training_row_lowerer_ref.v2",
         "TrainingRowPlanningProvenance": TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION,
         "TrainingRowProvenance": TRAINING_ROW_PROVENANCE_SCHEMA_VERSION,
     }.get(kind, f"{schema_id}.v1")

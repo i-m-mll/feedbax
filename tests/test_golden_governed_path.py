@@ -166,7 +166,7 @@ def _write_plugin(path: Path) -> None:
                 "prng": jnp.array([0, 1], dtype=jnp.uint32), "batch_counter": jnp.array(0, dtype=jnp.int32),
             }})
 
-        def lower(row):
+        def lower(row, context):
             return TrainingRowLoweringResult(execution_payload=row.payload["execution_payload"], lowerer_identities=[RowLowererIdentity(lowerer_id={LOWERER_ID!r}, lowerer_version={LOWERER_VERSION!r})])
 
         LOWER_SHA256 = training_row_lowerer_implementation_sha256(lower)
@@ -340,7 +340,8 @@ def test_golden_governed_path_restores_one_authenticated_continuation_batch(tmp_
         "schema_version": AUTHORED_VERSION,
         TRAINING_ROW_LOWERER_REF_FIELD: {
             "schema_id": "feedbax.spec.training_row_lowerer_ref",
-            "schema_version": "feedbax.spec.training_row_lowerer_ref.v1",
+            "schema_version": "feedbax.spec.training_row_lowerer_ref.v2",
+            "context_api_version": "feedbax.training_row_lowering_context.v1",
             "lowerer_id": LOWERER_ID,
             "lowerer_version": LOWERER_VERSION,
             "implementation_sha256": lower_sha.stdout.strip(),
