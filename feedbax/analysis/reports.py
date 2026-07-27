@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
@@ -37,6 +37,11 @@ from feedbax.analysis.validation import (
     validate_report_recipe,
 )
 from feedbax.contracts.staged_execution import StagedExecutionDescriptor
+from feedbax.contracts.figures import (
+    FIGURE_SPEC_SCHEMA_ID,
+    FIGURE_SPEC_SCHEMA_VERSION,
+    FigureSpec,
+)
 from feedbax.contracts.manifest import (
     AnalysisDataProduct,
     AnalysisRunManifest,
@@ -52,6 +57,7 @@ from feedbax.contracts.manifest import (
     ReportSpec,
     SpecPayload,
     StrictModel,
+    canonical_json_bytes,
     collect_git_provenance,
     default_manifest_root,
     report_manifest_id,
@@ -68,7 +74,7 @@ BUNDLE_SUMMARY_REPORT_TYPE = "feedbax.bundle_summary"
 STUDIO_REPORT_TYPE = "feedbax.studio_report"
 ORDERED_FIGURE_REPORT_TYPE = "feedbax.ordered_figure_report"
 ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_ID = "feedbax.spec.report.ordered_figure"
-ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_VERSION = "feedbax.spec.report.ordered_figure.v2"
+ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_VERSION = "feedbax.spec.report.ordered_figure.v3"
 ORDERED_FIGURE_REPORT_SCALAR_PROJECTION_SCHEMA_ID = "feedbax.spec.report.scalar_table_projection"
 ORDERED_FIGURE_REPORT_SCALAR_PROJECTION_SCHEMA_VERSION = (
     "feedbax.spec.report.scalar_table_projection.v1"
@@ -88,6 +94,7 @@ class OrderedFigureReportFigure(StrictModel):
     """One authored figure placement in an ordered report section."""
 
     input_role: str | None = None
+    figure_spec_sha256: str | None = None
     caption: str
     applicability: OrderedFigureReportApplicability = "included"
     not_applicable_reason: str | None = None
@@ -99,11 +106,15 @@ class OrderedFigureReportFigure(StrictModel):
             if self.input_role is None:
                 raise ValueError("included figure requires input_role")
             _require_authored_text(self.input_role, field_name="figure input_role")
+            if self.figure_spec_sha256 is None:
+                raise ValueError("included figure requires figure_spec_sha256")
             if self.not_applicable_reason is not None:
                 raise ValueError("included figure cannot declare not_applicable_reason")
         else:
             if self.input_role is not None:
                 raise ValueError("not-applicable figure cannot declare input_role")
+            if self.figure_spec_sha256 is not None:
+                raise ValueError("not-applicable figure cannot declare figure_spec_sha256")
             if self.not_applicable_reason is None:
                 raise ValueError("not-applicable figure requires not_applicable_reason")
             _require_authored_text(
@@ -111,6 +122,13 @@ class OrderedFigureReportFigure(StrictModel):
                 field_name="figure not_applicable_reason",
             )
         return self
+
+    @field_validator("figure_spec_sha256")
+    @classmethod
+    def _validate_figure_spec_sha256(cls, value: str | None) -> str | None:
+        if value is not None and re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise ValueError("figure_spec_sha256 must be a lowercase SHA-256 digest")
+        return value
 
 
 class OrderedFigureReportScalarProjection(StrictModel):
@@ -978,6 +996,13 @@ def _ordered_figure_inputs_by_role(
         for figure in section.figures
         if figure.applicability == "included"
     }
+    expected_figure_spec_sha256 = {
+        str(figure.input_role): str(figure.figure_spec_sha256)
+        for section in params.sections
+        if section.applicability == "included"
+        for figure in section.figures
+        if figure.applicability == "included"
+    }
     expected_projection_roles = {
         cell.input_role
         for section in params.sections
@@ -1021,6 +1046,16 @@ def _ordered_figure_inputs_by_role(
                 f"ordered figure report input role {role!r} has non-completed status "
                 f"{resolved.manifest.status!r}"
             )
+        figure_spec_sha256 = _validated_figure_spec_sha256(
+            resolved.manifest,
+            input_role=role,
+        )
+        expected_sha256 = expected_figure_spec_sha256[role]
+        if figure_spec_sha256 != expected_sha256:
+            raise ValueError(
+                f"ordered figure report input role {role!r} FigureSpec SHA-256 mismatch: "
+                f"expected={expected_sha256!r}, computed={figure_spec_sha256!r}"
+            )
         renders = [
             artifact
             for artifact in resolved.manifest.artifacts
@@ -1039,6 +1074,35 @@ def _ordered_figure_inputs_by_role(
             + ", ".join(repr(role) for role in missing_roles)
         )
     return resolved_by_role
+
+
+def _validated_figure_spec_sha256(
+    manifest: FigureManifest,
+    *,
+    input_role: str,
+) -> str:
+    payload = manifest.figure_spec
+    if payload.kind != "FigureSpec":
+        raise ValueError(
+            f"ordered figure report input role {input_role!r} has embedded spec kind "
+            f"{payload.kind!r}; expected 'FigureSpec'"
+        )
+    if (
+        payload.schema_id != FIGURE_SPEC_SCHEMA_ID
+        or payload.schema_version != FIGURE_SPEC_SCHEMA_VERSION
+    ):
+        raise ValueError(
+            f"ordered figure report input role {input_role!r} has unsupported embedded "
+            f"FigureSpec schema {payload.schema_id!r}/{payload.schema_version!r}; expected "
+            f"{FIGURE_SPEC_SCHEMA_ID!r}/{FIGURE_SPEC_SCHEMA_VERSION!r}"
+        )
+    try:
+        FigureSpec.model_validate(payload.inline)
+    except ValueError as exc:
+        raise ValueError(
+            f"ordered figure report input role {input_role!r} has malformed embedded FigureSpec"
+        ) from exc
+    return sha256_bytes(canonical_json_bytes(payload.inline))
 
 
 def render_ordered_figure_report_markdown(
