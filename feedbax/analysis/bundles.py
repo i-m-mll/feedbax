@@ -1662,6 +1662,7 @@ def _execute_report_stage(
     root: Path,
     issues: Sequence[str],
     bundle: AnalysisBundleSpec,
+    execution_context: StagedExecutionContext,
 ) -> list[StageMaterialization]:
     def build_spec(inputs: Sequence[ParentRef], index: int) -> ReportSpec:
         stage_params = _params_for_stage(stage, bundle.params_base)
@@ -1672,13 +1673,19 @@ def _execute_report_stage(
             "schema_id": bundle.schema_id,
             "schema_version": bundle.schema_version,
         }
-        return ReportSpec(
-            report_type=str(stage.report_type or BUNDLE_SUMMARY_REPORT_TYPE),
-            inputs=list(inputs),
-            params={
+        report_type = str(stage.report_type or BUNDLE_SUMMARY_REPORT_TYPE)
+        params = (
+            {
                 "stage_params": stage_params,
                 "bundle": bundle_metadata,
-            },
+            }
+            if report_type == BUNDLE_SUMMARY_REPORT_TYPE
+            else stage_params
+        )
+        return ReportSpec(
+            report_type=report_type,
+            inputs=list(inputs),
+            params=params,
             narrative=stage_params.get("narrative"),
         )
 
@@ -1703,6 +1710,7 @@ def _execute_report_stage(
                     "schema_version": bundle.schema_version,
                 }
             },
+            execution_context=execution_context,
         )
 
     return _execute_stage_common(
@@ -2417,6 +2425,7 @@ def execute_staged_analysis_bundle(
                 root=root_path,
                 issues=issue_refs,
                 bundle=bundle,
+                execution_context=execution_context,
             )
         else:  # pragma: no cover - Literal validation keeps this unreachable.
             raise ValueError(f"Unsupported bundle stage kind {stage.kind!r}")
