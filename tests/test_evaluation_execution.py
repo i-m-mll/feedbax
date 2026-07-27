@@ -31,6 +31,10 @@ from feedbax.contracts.evaluation_states import (
     load_evaluation_states_container_bytes,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion
+from feedbax.contracts.matrix_core import (
+    ContentPinnedJsonBase,
+    load_content_pinned_json_base,
+)
 from feedbax.contracts.manifest import (
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
@@ -42,8 +46,10 @@ from feedbax.contracts.manifest import (
     evaluation_states_cache_path,
     load_manifest,
     sha256_file,
+    sha256_bytes,
     spec_payload,
     store_bytes_artifact,
+    canonical_json_bytes,
 )
 from feedbax.persistence.manifest_index import rebuild_manifest_index
 
@@ -153,6 +159,70 @@ def test_evaluation_run_spec_executes_headless_and_reuses_manifest_cache(tmp_pat
         assert edge == ("TrainingRunManifest", parent.id, "training_run")
     finally:
         unregister_evaluation_recipe("testpkg.toy_eval")
+
+
+def test_evaluation_recipe_receives_explicit_repo_root_outside_repository_cwd(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    payload = {"bank": {"gain": 7}}
+    repo_roots = [tmp_path / "repo-a", tmp_path / "repo-b"]
+    for repo_root in repo_roots:
+        repo_root.mkdir()
+        (repo_root / "bank.json").write_text(json.dumps(payload), encoding="utf-8")
+    source = ContentPinnedJsonBase(
+        ref="bank.json",
+        sha256=sha256_bytes(canonical_json_bytes(payload)),
+    )
+    spec = EvaluationRunSpec(
+        evaluation_type="testpkg.repo_root_eval",
+        params={"source": source.model_dump(mode="json")},
+    )
+    seen_roots: list[Path] = []
+
+    def recipe(
+        run_spec: EvaluationRunSpec,
+        _root: Path,
+        _states_path: Path,
+        execution_context,
+    ) -> EvaluationRecipeResult:
+        if execution_context.repo_root is None:
+            raise ValueError("repo_root authority is required by testpkg.repo_root_eval")
+        seen_roots.append(execution_context.repo_root)
+        loaded = load_content_pinned_json_base(
+            ContentPinnedJsonBase.model_validate(run_spec.params["source"]),
+            repo_root=execution_context.repo_root,
+        )
+        return EvaluationRecipeResult(states=loaded)
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+    register_evaluation_recipe("testpkg.repo_root_eval", recipe, replace=True)
+    try:
+        with pytest.raises(EvaluationRecipeExecutionError) as exc_info:
+            execute_evaluation_run_spec(
+                spec,
+                root=tmp_path / "missing-authority",
+                force=True,
+            )
+        assert isinstance(exc_info.value.__cause__, ValueError)
+        assert "repo_root authority is required" in str(exc_info.value.__cause__)
+
+        manifests = [
+            execute_evaluation_run_spec(
+                spec,
+                root=tmp_path / f"output-{index}",
+                repo_root=repo_root,
+                force=True,
+            )[0]
+            for index, repo_root in enumerate(repo_roots)
+        ]
+    finally:
+        unregister_evaluation_recipe("testpkg.repo_root_eval")
+
+    assert seen_roots == [repo_root.resolve() for repo_root in repo_roots]
+    assert manifests[0].id == manifests[1].id == evaluation_run_manifest_id(spec)
 
 
 def test_evaluation_states_durable_custody_round_trips(tmp_path: Path):

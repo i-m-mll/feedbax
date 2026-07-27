@@ -257,6 +257,7 @@ class StagedExecutionContext:
     checkpoint_custody_roots: Mapping[str, Path]
     parent_execution_locations: tuple[StagedParentExecutionLocation, ...]
     manifest_roots: Mapping[str, Path] = field(default_factory=dict)
+    repo_root: Path | None = None
     _checkpoint_custody_root_identities: Mapping[str, tuple[int, int]] = field(
         default_factory=dict,
         repr=False,
@@ -282,6 +283,8 @@ class StagedExecutionContext:
     )
 
     def __post_init__(self) -> None:
+        if self.repo_root is not None:
+            object.__setattr__(self, "repo_root", Path(self.repo_root).resolve())
         object.__setattr__(
             self,
             "opened_artifact_providers",
@@ -834,6 +837,23 @@ def resolve_staged_execution_context(
         checkpoint_custody_roots=checkpoint_roots,
         parent_execution_locations=(),
     )
+
+
+def with_staged_repo_root(
+    context: StagedExecutionContext,
+    repo_root: Path | str | None,
+) -> StagedExecutionContext:
+    """Bind one explicit repository root without changing durable execution identity."""
+    if repo_root is None:
+        return context
+    resolved = Path(repo_root).resolve()
+    if context.repo_root is not None:
+        if context.repo_root != resolved:
+            raise StagedExecutionContextError(
+                "execution_context repo_root disagrees with the explicit repo_root argument"
+            )
+        return context
+    return replace(context, repo_root=resolved)
 
 
 def with_staged_parent_execution_locations(
@@ -1591,4 +1611,5 @@ __all__ = [
     "resolve_staged_execution_context",
     "with_staged_manifest_provider_inputs",
     "with_staged_parent_execution_locations",
+    "with_staged_repo_root",
 ]

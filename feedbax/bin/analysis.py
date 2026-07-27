@@ -425,13 +425,12 @@ def main(argv: list[str] | None = None) -> None:
         )
         execution_kwargs = {
             "root": Path(args.manifest_root) if args.manifest_root else None,
+            "repo_root": Path(args.repo_root) if args.repo_root else None,
             "run_ids": run_ids,
             "issues": list(args.issue),
             "fig_dump_path": Path(args.fig_dump_dir),
             "fig_dump_formats": fig_dump_formats,
         }
-        if isinstance(authored_bundle, AnalysisBundleDeltaSpec):
-            execution_kwargs["repo_root"] = Path(args.repo_root) if args.repo_root else None
         if bundle.templates and not bundle.stages:
             if args.exact_parents is not None:
                 raise ValueError("--exact-parents is only valid for staged analysis bundles")

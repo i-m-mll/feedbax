@@ -304,6 +304,7 @@ def test_run_subcommand_delta_binds_nested_manifest_and_checkpoint_without_copy(
         recipe_calls.append(spec)
         assert inputs[0].manifest == training
         assert inputs[0].path == source_path
+        assert execution_context.repo_root == tmp_path.resolve()
         assert execution_context.checkpoint_custody_root("capture-checkpoints") == checkpoint_root
         return AnalysisRecipeResult(
             analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},

@@ -38,6 +38,7 @@ from feedbax.analysis.execution_context import (
     StagedManifestRootBinding,
     resolve_staged_execution_context,
     with_staged_manifest_provider_inputs,
+    with_staged_repo_root,
 )
 from feedbax.analysis.manifest_inputs import (
     ResolvedManifestInput,
@@ -830,6 +831,7 @@ def execute_analysis_run_spec(
                 authenticated_parents,
             )
         _preflight_checkpoint_binding_names(run_spec.params, execution_context)
+    execution_context = with_staged_repo_root(execution_context, repo_root)
     if flattened is not None:
         # Mirror the evaluation-matrix convention: delta-authored runs embed the
         # single canonical composition-provenance record into durable manifest
