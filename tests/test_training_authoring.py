@@ -55,6 +55,7 @@ from feedbax.plugins.discovery import load_training_method_plugins
 from feedbax.training.preparation import ExecutionPreparationProviderRegistry
 from feedbax.training.row_lowering import (
     TrainingRowLowererRegistry,
+    training_row_lowerer_implementation_sha256,
 )
 from feedbax.training.run_matrix import materialize_adapted_run_matrix
 from feedbax.training.spec_storage import TrainingRunMatrixCompiler
@@ -631,6 +632,21 @@ def test_authoring_rejects_continuation_batch_drift(authoring_registry) -> None:
         )
 
 
+def test_authoring_accepts_matching_continuation(authoring_registry) -> None:
+    compiled = compile_training_method_authoring(
+        _authored_row(),
+        method_ref=METHOD_REF,
+        continuation={"source_completed_batches": 6, "additional_batches": 4},
+    )
+
+    assert compiled.run_spec.checkpoint_progress.continuation is not None
+    assert (
+        compiled.run_spec.checkpoint_progress.continuation.source_completed_batches
+        == 6
+    )
+    assert compiled.run_spec.checkpoint_progress.continuation.additional_batches == 4
+
+
 def test_authoring_rejects_noncanonical_authored_payload_hash(authoring_registry) -> None:
     row = _authored_row().model_copy(update={"payload_hash": "0" * 64})
 
@@ -836,6 +852,47 @@ def test_descriptor_authoring_digest_binds_projector_implementation(
     assert training_method_authoring_implementation_sha256(descriptor) != (
         training_method_authoring_implementation_sha256(drifted)
     )
+
+
+def test_composite_digest_binds_same_module_callable_identity_and_order() -> None:
+    original = training_row_lowerer_implementation_sha256(
+        (_minimal_graph, _method_contract)
+    )
+
+    assert original != training_row_lowerer_implementation_sha256(
+        (_minimal_graph, _mapped_method_contract)
+    )
+    assert original != training_row_lowerer_implementation_sha256(
+        (_method_contract, _minimal_graph)
+    )
+
+
+def test_distinct_methods_cannot_alias_one_derived_lowerer_authority(
+    authoring_registry,
+) -> None:
+    source_registry, _holder = authoring_registry
+    descriptor = source_registry.descriptor(METHOD_REF)
+    assert descriptor is not None
+    other = replace(descriptor, method_ref="example/other/v1")
+
+    with pytest.raises(RuntimeError, match="ambiguous.*implementation sha256"):
+        load_training_method_plugins(
+            registry=TrainingMethodRegistry(),
+            preparation_registry=ExecutionPreparationProviderRegistry(),
+            row_lowerer_registry=TrainingRowLowererRegistry(),
+            entry_points=[
+                SimpleNamespace(
+                    name="colliding-methods",
+                    load=lambda: SimpleNamespace(
+                        register_feedbax_training_methods=lambda registry: (
+                            registry.register_descriptor(descriptor),
+                            registry.register_descriptor(other),
+                        )
+                    ),
+                )
+            ],
+            fail_on_load_error=True,
+        )
 
 
 def test_default_matrix_compiler_reaches_descriptor_authoring(

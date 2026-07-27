@@ -396,6 +396,9 @@ def _training_method_row_lowerer_registration(
         authoring_hook.objective,
         authoring_hook.domain,
     )
+    lower.__feedbax_implementation_identity__ = (  # type: ignore[attr-defined]
+        descriptor.method_ref
+    )
     return TrainingRowLowererRegistration(
         authored_schema_id=descriptor.payload_schema_id,
         authored_schema_version=descriptor.payload_schema_version,
@@ -411,13 +414,16 @@ def training_method_authoring_implementation_sha256(
     descriptor: TrainingMethodDescriptor[Any],
 ) -> str:
     """Return the exact implementation digest for descriptor-derived lowering."""
-    from feedbax.training.row_lowering import training_row_lowerer_implementation_sha256
+    from feedbax.training.row_lowering import (
+        _bound_training_row_lowerer_implementation_sha256,
+    )
 
     authoring_hook = descriptor.authoring_hook
     if authoring_hook is None:
         raise ValueError("descriptor has no authoring hook")
-    return training_row_lowerer_implementation_sha256(
-        (
+    return _bound_training_row_lowerer_implementation_sha256(
+        identity=descriptor.method_ref,
+        dependencies=(
             compile_training_method_authoring,
             authoring_hook.compile,
             authoring_hook.graph,
