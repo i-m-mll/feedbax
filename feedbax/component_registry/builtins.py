@@ -1806,13 +1806,12 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParamSchema(name='B_w', type='array', default=None, required=False),
                 ParamSchema(
                     name='delta_A',
-                    type='array',
-                    default=[
-                        [0.0, 0.0, 0.0, 0.0],
-                        [0.0, 0.0, 0.0, 0.0],
-                        [0.0, 0.0, 0.0, 0.0],
-                        [0.0, 0.0, 0.0, 0.0],
-                    ],
+                    type='object',
+                    default={'shape': [4, 4], 'entries': []},
+                    description=(
+                        'Sparse shape/entries object with row, column, and value fields; '
+                        'dense square arrays remain accepted.'
+                    ),
                     required=True,
                 ),
                 ParamSchema(name='scale', type='float', default=1.0, required=False),

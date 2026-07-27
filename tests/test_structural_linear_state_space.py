@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
+from feedbax.component_registry import ComponentRegistry
 from feedbax.config.mapping import WhereDict
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
@@ -54,6 +56,42 @@ def _spec(*, active: bool = False) -> GraphSpec:
     )
 
 
+def _sparse_spec() -> GraphSpec:
+    return GraphSpec(
+        nodes={
+            "plant": ComponentSpec(
+                type="StructuralLinearStateSpace",
+                params={
+                    "A": jnp.eye(4).tolist(),
+                    "B": [[0.0], [0.0], [0.0], [0.0]],
+                    "B_w": [[0.0], [0.0], [0.0], [0.0]],
+                    "delta_A": {
+                        "shape": [4, 4],
+                        "entries": [{"row": 3, "column": 2, "value": -0.25}],
+                    },
+                    "scale": 2.0,
+                    "active": True,
+                    "label": "structural_field",
+                    "dt": 0.1,
+                    "initial_state": [0.0, 0.0, 1.0, 0.0],
+                    "pos_slice": [0, 2],
+                    "vel_slice": [2, 4],
+                },
+                param_schema_version=STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
+                input_ports=["force", "epsilon"],
+                output_ports=["effector", "state"],
+            )
+        },
+        input_ports=["force", "epsilon"],
+        output_ports=["effector", "state"],
+        input_bindings={"force": ("plant", "force"), "epsilon": ("plant", "epsilon")},
+        output_bindings={
+            "effector": ("plant", "effector"),
+            "state": ("plant", "state"),
+        },
+    )
+
+
 def test_structural_transition_is_state_dependent_not_additive_force() -> None:
     transition = jnp.eye(2)
     input_matrix = jnp.asarray([[0.0], [1.0]])
@@ -71,6 +109,36 @@ def test_structural_transition_is_state_dependent_not_additive_force() -> None:
     assert additive[0] == 0.0
     assert structural_a[0] != transition[0] @ state_a
     assert structural_b[0] - (transition[0] @ state_b) != structural_a[0]
+
+
+def test_sparse_entries_construct_the_same_jittable_dense_transition() -> None:
+    perturbation = StructuralLinearDynamicsPerturbation.from_entries(
+        (4, 4),
+        [(3, 2, -0.25)],
+        scale=2.0,
+    )
+    transition = jnp.eye(4)
+    state = jnp.asarray([0.0, 0.0, 1.0, 0.0])
+
+    result = jax.jit(structural_linear_transition)(transition, state, perturbation)
+
+    assert perturbation.delta_A.shape == (4, 4)
+    assert perturbation.delta_A[3, 2] == pytest.approx(-0.25)
+    assert jnp.allclose(result, jnp.asarray([0.0, 0.0, 1.0, -0.5]))
+
+
+def test_structural_registry_advertises_sparse_delta_a_authoring() -> None:
+    meta = ComponentRegistry(
+        load_user_components=False,
+        discover_plugins=False,
+    ).get("StructuralLinearStateSpace")
+    assert meta is not None
+    delta_A_schema = next(
+        schema for schema in meta.param_schema if schema.name == "delta_A"
+    )
+
+    assert delta_A_schema.type == "object"
+    assert delta_A_schema.default == {"shape": [4, 4], "entries": []}
 
 
 @pytest.mark.parametrize(
@@ -149,6 +217,78 @@ def test_graphspec_round_trip_preserves_structural_identity() -> None:
     assert spec_to_graph(
         GraphSpec.model_validate_json(round_tripped.model_dump_json())
     ).nodes["plant"].label == "structural_field"
+
+
+def test_sparse_graphspec_round_trip_preserves_canonical_entry_identity() -> None:
+    graph = spec_to_graph(_sparse_spec())
+    component = graph.nodes["plant"]
+    outputs, _ = component(
+        {"force": jnp.zeros((1,)), "epsilon": jnp.zeros((1,))},
+        init_state_from_component(component),
+        key=jr.PRNGKey(0),
+    )
+
+    round_tripped = graph_to_spec(graph)
+    node = round_tripped.nodes["plant"]
+
+    assert jnp.allclose(outputs["state"], jnp.asarray([0.0, 0.0, 1.0, -0.5]))
+    assert node.params["delta_A"] == {
+        "shape": [4, 4],
+        "entries": [{"row": 3, "column": 2, "value": -0.25}],
+    }
+    assert (
+        graph_to_spec(
+            spec_to_graph(
+                GraphSpec.model_validate_json(round_tripped.model_dump_json())
+            )
+        )
+        .nodes["plant"]
+        .params["delta_A"]
+        == node.params["delta_A"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("delta_A", "match"),
+    [
+        (
+            {
+                "shape": [4, 4],
+                "entries": [
+                    {"row": 3, "column": 2, "value": -0.25},
+                    {"row": 3, "column": 2, "value": 0.5},
+                ],
+            },
+            "duplicated",
+        ),
+        (
+            {
+                "shape": [4, 4],
+                "entries": [{"row": 4, "column": 2, "value": -0.25}],
+            },
+            "outside shape",
+        ),
+        ({"shape": [4, 3], "entries": []}, "square matrix"),
+    ],
+)
+def test_sparse_graphspec_rejects_invalid_entries(
+    delta_A: dict[str, object],
+    match: str,
+) -> None:
+    spec = _sparse_spec()
+    node = spec.nodes["plant"]
+    invalid = spec.model_copy(
+        update={
+            "nodes": {
+                "plant": node.model_copy(
+                    update={"params": {**node.params, "delta_A": delta_A}}
+                )
+            }
+        }
+    )
+
+    with pytest.raises(ValueError, match=match):
+        spec_to_graph(invalid)
 
 
 def test_structural_component_rejects_unknown_parameter_schema_version() -> None:
