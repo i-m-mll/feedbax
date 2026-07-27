@@ -46,6 +46,10 @@ from feedbax.orchestration.bundle import (
     SchemaArtifactRef,
 )
 from feedbax.orchestration.revision import resolve_feedbax_revision
+from feedbax.training.row_lowering import (
+    GovernedTrainingRowParent,
+    TrainingRowLoweringContext,
+)
 
 if TYPE_CHECKING:
     from feedbax.contracts.migrations import SpecMigrationResult, SpecSchemaRegistry
@@ -468,11 +472,6 @@ def _resolve_training_row_parents(
     *,
     context: AssemblyContext,
 ) -> Any:
-    from feedbax.training.row_lowering import (
-        GovernedTrainingRowParent,
-        TrainingRowLoweringContext,
-    )
-
     parents: list[GovernedTrainingRowParent] = []
     for declaration in declarations:
         payload, artifact_sha256 = _load_training_row_parent_artifact(
