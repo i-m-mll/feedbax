@@ -6,12 +6,18 @@ import hashlib
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol
+from typing import TYPE_CHECKING, Annotated, Any, Callable, Mapping, Protocol
 
 from pydantic import Field, JsonValue, model_validator
 
 from feedbax.contracts.manifest import StrictModel
-from feedbax.contracts.run_matrix import TrainingRowProvenance
+from feedbax.contracts.run_composition import (
+    AuthoredIntentParent,
+    CompositionNode,
+    ResolvedOutputParent,
+    authored_envelope_hash,
+)
+from feedbax.contracts.run_matrix import TrainingRowParentProvenance, TrainingRowProvenance
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.spec_storage import (
     build_resolved_semantics_snapshot,
@@ -19,6 +25,7 @@ from feedbax.contracts.spec_storage import (
     store_canonical_json_artifact,
     training_run_execution_hash,
     training_spec_canonical_bytes,
+    training_spec_sha256,
 )
 from feedbax.orchestration.bundle import (
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
@@ -46,7 +53,8 @@ if TYPE_CHECKING:
 
 RUN_ASSEMBLY_REQUEST_SCHEMA_ID = "feedbax.spec.run_assembly_request"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v1"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v2"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V2 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v2"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v3"
 
 
 class CompilerIdentity(StrictModel):
@@ -72,6 +80,17 @@ class AssemblyInputDeclaration(StrictModel):
         return self
 
 
+class GovernedTrainingRowParentDeclaration(StrictModel):
+    """One content-pinned composition parent available during row lowering."""
+
+    role: str = Field(min_length=1)
+    parent: Annotated[
+        AuthoredIntentParent | ResolvedOutputParent,
+        Field(discriminator="kind"),
+    ]
+    artifact: SchemaArtifactRef
+
+
 class RunAssemblyRequest(StrictModel):
     """Durable authored input consumed by the persisted ASSEMBLE stage."""
 
@@ -80,6 +99,9 @@ class RunAssemblyRequest(StrictModel):
     authored: SchemaArtifactRef
     compiler: CompilerIdentity
     inputs: list[AssemblyInputDeclaration] = Field(default_factory=list)
+    training_row_parents: list[GovernedTrainingRowParentDeclaration] = Field(
+        default_factory=list
+    )
     deployment_policy: DeploymentPolicy
     environment: EnvironmentDeclaration
     launch_policy: LaunchPolicy = Field(default_factory=LaunchPolicy)
@@ -96,6 +118,9 @@ class RunAssemblyRequest(StrictModel):
             raise ValueError("unsupported run assembly request schema_id")
         if self.schema_version != RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION:
             raise ValueError("unsupported run assembly request schema_version")
+        keys = [(item.parent.kind, item.parent.ref) for item in self.training_row_parents]
+        if len(keys) != len(set(keys)):
+            raise ValueError("training_row_parents contain ambiguous kind/ref declarations")
         return self
 
 
@@ -188,6 +213,7 @@ class AssemblyContext:
     environment_digest: str | None = None
     authored_ref: SchemaArtifactRef | None = None
     resolved_inputs: tuple[ImmutableInputIdentity, ...] = ()
+    training_row_lowering_context: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -380,7 +406,15 @@ def assemble_run_bundle(
         key=lambda item: (item.identity.role, item.identity.kind, item.identity.identifier),
     )
     resolved_inputs = [item.identity for item in resolved_input_records]
-    compiler_context = replace(context, resolved_inputs=tuple(resolved_inputs))
+    lowering_context = _resolve_training_row_parents(
+        request.training_row_parents,
+        context=context,
+    )
+    compiler_context = replace(
+        context,
+        resolved_inputs=tuple(resolved_inputs),
+        training_row_lowering_context=lowering_context,
+    )
     compiled = registration.compiler.compile(
         authored=authored,
         run_set_id=run_set_id,
@@ -427,6 +461,86 @@ def assemble_run_bundle(
         deadman_silence_seconds=request.deadman_silence_seconds,
         metadata=request.metadata,
     )
+
+
+def _resolve_training_row_parents(
+    declarations: list[GovernedTrainingRowParentDeclaration],
+    *,
+    context: AssemblyContext,
+) -> Any:
+    from feedbax.training.row_lowering import (
+        GovernedTrainingRowParent,
+        TrainingRowLoweringContext,
+    )
+
+    parents: list[GovernedTrainingRowParent] = []
+    for declaration in declarations:
+        payload, artifact_sha256 = _load_training_row_parent_artifact(
+            declaration.artifact,
+            context=context,
+        )
+        parent = declaration.parent
+        if isinstance(parent, AuthoredIntentParent):
+            observed_hash = authored_envelope_hash(CompositionNode.model_validate(payload))
+            semantic_hash = parent.content_hash
+        else:
+            observed_hash = training_spec_sha256(payload)
+            semantic_hash = parent.resolved_root_hash
+        if observed_hash != semantic_hash:
+            raise ValueError(
+                f"training-row parent {parent.kind}:{parent.ref!r} semantic hash drifted"
+            )
+        parents.append(
+            GovernedTrainingRowParent(
+                provenance=TrainingRowParentProvenance(
+                    role=declaration.role,
+                    parent_kind=parent.kind,
+                    ref=parent.ref,
+                    semantic_hash=semantic_hash,
+                    artifact_id=declaration.artifact.artifact_id,
+                    artifact_sha256=artifact_sha256,
+                    schema_id=declaration.artifact.schema_id,
+                    schema_version=declaration.artifact.schema_version,
+                ),
+                payload=payload,
+            )
+        )
+    return TrainingRowLoweringContext(tuple(parents))
+
+
+def _load_training_row_parent_artifact(
+    ref: SchemaArtifactRef,
+    *,
+    context: AssemblyContext,
+) -> tuple[dict[str, Any], str]:
+    if context.artifact_resolver is not None:
+        data = context.artifact_resolver(ref)
+    elif ref.uri is not None:
+        data = Path(ref.uri).read_bytes()
+    else:
+        raise ValueError(
+            f"training-row parent artifact {ref.artifact_id!r} has no resolver or URI"
+        )
+    actual_sha256 = hashlib.sha256(data).hexdigest()
+    if actual_sha256 != ref.sha256:
+        raise ValueError(
+            f"artifact byte digest mismatch for {ref.artifact_id!r}: "
+            f"expected={ref.sha256} actual={actual_sha256}"
+        )
+    try:
+        payload = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"training-row parent artifact {ref.artifact_id!r} is not valid JSON"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ValueError("training-row parent artifact must contain a JSON object")
+    if (payload.get("schema_id"), payload.get("schema_version")) != (
+        ref.schema_id,
+        ref.schema_version,
+    ):
+        raise ValueError("training-row parent schema identity does not match its declaration")
+    return payload, actual_sha256
 
 
 def _resolve_input(

@@ -231,7 +231,7 @@ def _assemble_lowered_bundle(
         orchestration_root=str(root / "orchestration"),
     )
 
-    def lower(authored_row: Any) -> TrainingRowLoweringResult:
+    def lower(authored_row: Any, _context: Any) -> TrainingRowLoweringResult:
         lowered_gain = int(authored_row.payload["compact"]["gain"])
         return TrainingRowLoweringResult(
             execution_payload=_training_spec(

@@ -89,12 +89,14 @@ from feedbax.contracts.run_matrix import (
     TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION,
     TRAINING_ROW_LOWERER_REF_SCHEMA_ID,
     TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION,
+    TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION_V1,
     TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_ID,
     TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION,
     TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION_V1,
     TRAINING_ROW_PROVENANCE_SCHEMA_ID,
     TRAINING_ROW_PROVENANCE_SCHEMA_VERSION,
     TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1,
+    TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V2,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
@@ -343,7 +345,8 @@ REALIZED_DEPLOYMENT_RECORD_SCHEMA_ID = "feedbax.manifest.realized_deployment"
 REALIZED_DEPLOYMENT_RECORD_SCHEMA_VERSION = "feedbax.manifest.realized_deployment.v1"
 RUN_ASSEMBLY_REQUEST_SCHEMA_ID = "feedbax.spec.run_assembly_request"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1 = "feedbax.spec.run_assembly_request.v1"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v2"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V2 = "feedbax.spec.run_assembly_request.v2"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v3"
 STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID = "feedbax.spec.studio.training_assembly"
 STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION = "feedbax.spec.studio.training_assembly.v1"
 TRAINING_DIAGNOSTICS_SCHEMA_ID = "feedbax.manifest.training_diagnostics"
@@ -2348,8 +2351,12 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Content-pinned public authority selecting an exact authored-row lowerer."
             ),
             stance="reject",
-            rejected_old_versions=(f"{TRAINING_ROW_LOWERER_REF_SCHEMA_ID}.v0",),
+            rejected_old_versions=(
+                f"{TRAINING_ROW_LOWERER_REF_SCHEMA_ID}.v0",
+                TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION_V1,
+            ),
             required_tests=("tests/test_training_row_lowering.py",),
+            notes="v1 lowerers had no governed parent-resolution context.",
         ),
         _family(
             "TrainingRowLoweringResult",
@@ -2391,8 +2398,12 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             rejected_old_versions=(
                 f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v0",
                 TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1,
+                TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V2,
             ),
-            notes="v1 omitted the complete canonical lowered execution-payload hash.",
+            notes=(
+                "v1 omitted the complete canonical lowered execution-payload hash; "
+                "v2 omitted governed compile-time parent provenance."
+            ),
         ),
         _family(
             "DeploymentPolicy",
@@ -2421,7 +2432,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             rejected_old_versions=(
                 f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v0",
                 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1,
+                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V2,
             ),
+            notes="v2 omitted governed compile-time training-row parent declarations.",
         ),
         _family(
             "ExecutionIdentityEnvelope",

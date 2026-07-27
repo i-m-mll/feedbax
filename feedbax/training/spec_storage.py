@@ -101,6 +101,11 @@ def compile_training_run_matrix(
             repo_root=repo_root,
             row_validator=row_validator,
             row_lowerer=row_lowerer,
+            row_lowering_context=getattr(
+                context,
+                "training_row_lowering_context",
+                None,
+            ),
         )
     rows = []
     for row in materialized.rows:

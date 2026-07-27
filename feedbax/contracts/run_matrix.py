@@ -34,11 +34,16 @@ TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION = (
     f"{TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID}.v1"
 )
 TRAINING_ROW_LOWERER_REF_SCHEMA_ID = "feedbax.spec.training_row_lowerer_ref"
-TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION = f"{TRAINING_ROW_LOWERER_REF_SCHEMA_ID}.v1"
+TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION_V1 = (
+    f"{TRAINING_ROW_LOWERER_REF_SCHEMA_ID}.v1"
+)
+TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION = f"{TRAINING_ROW_LOWERER_REF_SCHEMA_ID}.v2"
+TRAINING_ROW_LOWERING_CONTEXT_API_VERSION = "feedbax.training_row_lowering_context.v1"
 TRAINING_ROW_LOWERER_REF_FIELD = "feedbax_row_lowerer"
 TRAINING_ROW_PROVENANCE_SCHEMA_ID = "feedbax.spec.training_row_provenance"
 TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1 = f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v1"
-TRAINING_ROW_PROVENANCE_SCHEMA_VERSION = f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v2"
+TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V2 = f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v2"
+TRAINING_ROW_PROVENANCE_SCHEMA_VERSION = f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v3"
 TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_ID = (
     "feedbax.spec.training_row_planning_provenance"
 )
@@ -305,8 +310,11 @@ class TrainingRowLowererRef(StrictModel):
     schema_id: Literal["feedbax.spec.training_row_lowerer_ref"] = (
         TRAINING_ROW_LOWERER_REF_SCHEMA_ID
     )
-    schema_version: Literal["feedbax.spec.training_row_lowerer_ref.v1"] = (
+    schema_version: Literal["feedbax.spec.training_row_lowerer_ref.v2"] = (
         TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION
+    )
+    context_api_version: Literal["feedbax.training_row_lowering_context.v1"] = (
+        TRAINING_ROW_LOWERING_CONTEXT_API_VERSION
     )
     lowerer_id: str = Field(min_length=1)
     lowerer_version: str = Field(min_length=1)
@@ -357,6 +365,25 @@ class TrainingRowLoweringResult(StrictModel):
     lowerer_identities: list[RowLowererIdentity] = Field(min_length=1)
 
 
+class TrainingRowParentProvenance(StrictModel):
+    """Content and semantic identity of one declared compile-time parent."""
+
+    role: str = Field(min_length=1)
+    parent_kind: Literal["authored_intent", "resolved_output"]
+    ref: str = Field(min_length=1)
+    semantic_hash: str
+    artifact_id: str = Field(min_length=1)
+    artifact_sha256: str
+    schema_id: str = Field(min_length=1)
+    schema_version: str = Field(min_length=1)
+
+    @field_validator("semantic_hash", "artifact_sha256")
+    @classmethod
+    def _validate_hashes(cls, value: str) -> str:
+        _validate_digest(value, "/parent_inputs")
+        return value
+
+
 class TrainingRowPlanningProvenance(StrictModel):
     """Authored and lowerer identity bound into deterministic planned-run IDs."""
 
@@ -384,7 +411,7 @@ class TrainingRowProvenance(StrictModel):
     schema_id: Literal["feedbax.spec.training_row_provenance"] = (
         TRAINING_ROW_PROVENANCE_SCHEMA_ID
     )
-    schema_version: Literal["feedbax.spec.training_row_provenance.v2"] = (
+    schema_version: Literal["feedbax.spec.training_row_provenance.v3"] = (
         TRAINING_ROW_PROVENANCE_SCHEMA_VERSION
     )
     row_id: str = Field(min_length=1)
@@ -396,6 +423,7 @@ class TrainingRowProvenance(StrictModel):
     axis_coordinates: dict[str, Any]
     overrides: list[dict[str, Any]] = Field(default_factory=list)
     lowerer_identities: list[RowLowererIdentity] = Field(default_factory=list)
+    parent_inputs: list[TrainingRowParentProvenance] = Field(default_factory=list)
 
     @field_validator("authored_payload_hash", "lowered_execution_payload_hash")
     @classmethod
@@ -403,6 +431,16 @@ class TrainingRowProvenance(StrictModel):
         if not re.fullmatch(r"[0-9a-f]{64}", value):
             raise ValueError("payload hashes must be lowercase sha256 digests")
         return value
+
+    @model_validator(mode="after")
+    def _canonical_parent_inputs(self) -> "TrainingRowProvenance":
+        keys = [
+            (item.parent_kind, item.ref, item.role, item.artifact_id)
+            for item in self.parent_inputs
+        ]
+        if keys != sorted(keys) or len(keys) != len(set(keys)):
+            raise ValueError("parent_inputs must be unique and canonically ordered")
+        return self
 
 
 class InlineMatrixBaseSpec(StrictModel):
