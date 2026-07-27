@@ -31,6 +31,7 @@ from feedbax.analysis.materialization import (
 from feedbax.contracts.manifest import (
     AnalysisRunSpec,
     ArtifactRef,
+    DataProductParentRef,
     ParentRef,
     REGENERATION_SPEC_SCHEMA_ID,
     RegenerationCommand,
@@ -39,7 +40,10 @@ from feedbax.contracts.manifest import (
     load_manifest,
 )
 from feedbax.persistence.manifest_index import rebuild_manifest_index
-from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.artifact_custody import (
+    ArtifactBlobIntegrityError,
+    ImmutableArtifactBlobProvider,
+)
 from feedbax.analysis.types import AnalysisInputData
 from tests.analysis_fixtures import (
     ARTIFACT_PRODUCER_CALLS,
@@ -437,6 +441,180 @@ def test_record_json_artifact_ingestion_failure_does_not_record_manifest_artifac
     assert context.artifacts == ()
     manifest, _path = context.finalize(status="failed")
     assert manifest.artifacts == []
+
+
+def test_record_data_product_custodies_payload_and_finalizes_exact_record(
+    tmp_path: Path,
+) -> None:
+    parent_metadata = {
+        "ref_schema_id": "feedbax.ref.authenticated_manifest",
+        "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+        "manifest_sha256": "a" * 64,
+        "size_bytes": 123,
+    }
+    parent = ParentRef(
+        kind="AnalysisRunManifest",
+        id="analysis-run:retained-authority",
+        role="retained_analysis",
+        metadata=parent_metadata,
+    )
+    context = AnalysisRunContext(
+        spec=AnalysisRunSpec(
+            analysis_type="toy_scalar_projection",
+            inputs=[parent],
+        ),
+        root=tmp_path,
+        index_manifest=False,
+    )
+
+    product = context.record_data_product(
+        {"value": np.float64(1.25), "path": "metrics.peak"},
+        product_schema_id="downstream.scalar_projection",
+        product_schema_version="downstream.scalar_projection.v1",
+        role="peak_velocity_scalar",
+        logical_name="peak_velocity_scalar",
+        artifact_role="scalar_projection_payload",
+        artifact_logical_name="scalars/peak_velocity.json",
+        parameters={"cohort": "discrete"},
+        materialization={"scalar_path": "value"},
+    )
+
+    assert context.produced_data == (product,)
+    assert context.artifacts == tuple(product.artifacts)
+    assert product.producer_manifest_id == context.manifest_id
+    assert product.parent_manifests == [
+        DataProductParentRef(
+            kind=parent.kind,
+            id=parent.id,
+            role=parent.role,
+            manifest_hash="a" * 64,
+            metadata=parent_metadata,
+        )
+    ]
+    payload_ref = product.artifacts[0]
+    assert payload_ref.role == "scalar_projection_payload"
+    assert payload_ref.uri == payload_ref.artifact_id
+    assert json.loads(ImmutableArtifactBlobProvider(tmp_path).get_bytes(payload_ref)) == {
+        "path": "metrics.peak",
+        "value": 1.25,
+    }
+
+    manifest, path = context.finalize()
+    loaded = load_manifest(path)
+    assert manifest.produced_data == [product]
+    assert loaded.produced_data == [product]
+    assert loaded.produced_data[0].artifacts == [payload_ref]
+
+
+def test_record_data_product_rejects_partial_authenticated_parent_profile(
+    tmp_path: Path,
+) -> None:
+    context = AnalysisRunContext(
+        spec=AnalysisRunSpec(
+            analysis_type="toy_scalar_projection",
+            inputs=[
+                ParentRef(
+                    kind="AnalysisRunManifest",
+                    id="analysis-run:partial-authority",
+                    metadata={
+                        "ref_schema_id": "feedbax.ref.authenticated_manifest",
+                        "manifest_sha256": "a" * 64,
+                    },
+                )
+            ],
+        ),
+        root=tmp_path,
+        index_manifest=False,
+    )
+
+    with pytest.raises(ValueError, match="Authenticated manifest ref .* is incomplete"):
+        context.record_data_product(
+            {"value": 1.25},
+            product_schema_id="downstream.scalar_projection",
+            product_schema_version="downstream.scalar_projection.v1",
+            role="peak_velocity_scalar",
+            logical_name="peak_velocity_scalar",
+        )
+
+    assert context.produced_data == ()
+    assert context.artifacts == ()
+
+
+def test_record_data_product_rejects_duplicate_identity_and_role_schema(
+    tmp_path: Path,
+) -> None:
+    context = AnalysisRunContext(
+        spec=AnalysisRunSpec(analysis_type="toy_scalar_projection"),
+        root=tmp_path,
+        index_manifest=False,
+    )
+    common = {
+        "product_schema_id": "downstream.scalar_projection",
+        "product_schema_version": "downstream.scalar_projection.v1",
+        "role": "peak_velocity_scalar",
+        "logical_name": "peak_velocity_scalar",
+    }
+    context.record_data_product({"value": 1.25}, **common)
+
+    with pytest.raises(ValueError, match="duplicate AnalysisDataProduct"):
+        context.record_data_product({"value": 1.25}, **common)
+    with pytest.raises(ValueError, match="duplicate AnalysisDataProduct role/schema binding"):
+        context.record_data_product(
+            {"value": 2.5},
+            **{
+                **common,
+                "logical_name": "peak_velocity_scalar_alternate",
+            },
+        )
+
+    second = context.record_data_product(
+        {"value": 2.5},
+        **{
+            **common,
+            "role": "pulse_response_scalar",
+            "logical_name": "pulse_response_scalar",
+        },
+    )
+    assert context.produced_data == (context.produced_data[0], second)
+    assert len(context.artifacts) == 2
+
+
+def test_record_data_product_finalization_fails_closed_on_tampered_payload(
+    tmp_path: Path,
+) -> None:
+    context = AnalysisRunContext(
+        spec=AnalysisRunSpec(analysis_type="toy_scalar_projection"),
+        root=tmp_path,
+        index_manifest=False,
+    )
+    product = context.record_data_product(
+        {"value": 1.25},
+        product_schema_id="downstream.scalar_projection",
+        product_schema_version="downstream.scalar_projection.v1",
+        role="peak_velocity_scalar",
+        logical_name="peak_velocity_scalar",
+    )
+    payload_path = tmp_path / product.artifacts[0].metadata["local_relative_path"]
+    payload_path.write_bytes(b'{"value": 9.5}\n')
+
+    with pytest.raises(ArtifactBlobIntegrityError, match="artifact size mismatch|sha256 mismatch"):
+        context.finalize()
+
+    assert context.manifest_path is None
+
+
+def test_analysis_context_finalizes_without_data_products(tmp_path: Path) -> None:
+    context = AnalysisRunContext(
+        spec=AnalysisRunSpec(analysis_type="toy_zero_products"),
+        root=tmp_path,
+        index_manifest=False,
+    )
+
+    manifest, path = context.finalize()
+
+    assert context.produced_data == ()
+    assert manifest.produced_data == []
+    assert load_manifest(path).produced_data == []
 
 
 def test_context_materializer_records_embedded_refs_groups_and_regeneration_specs(
