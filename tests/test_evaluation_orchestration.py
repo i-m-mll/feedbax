@@ -7,9 +7,11 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from feedbax.analysis.evaluation_orchestration import (
     EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_ID,
@@ -23,6 +25,7 @@ from feedbax.contracts.evaluation_lifecycle import (
     EvaluationMatrixBatchPlan,
     EvaluationMatrixBatchUnit,
 )
+from feedbax.contracts.evaluation_preflight import EvaluationOutputPreflightPolicy
 from feedbax.contracts.manifest import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
@@ -43,9 +46,11 @@ from feedbax.orchestration import (
     LaunchPolicy,
     RunAssemblyRequest,
     SchemaArtifactRef,
+    StageEngine,
     assemble_run_bundle,
     build_default_assembly_registry,
 )
+from feedbax.orchestration.assembly import _prepare_run_assembly
 from feedbax.orchestration.staged_root_custody import (
     StagedRootSourceBinding,
     seal_staged_root,
@@ -98,6 +103,7 @@ def _request(
     *,
     driver: str = "local",
     batch_plan: EvaluationMatrixBatchPlan | None = None,
+    output_preflight: EvaluationOutputPreflightPolicy | None = None,
 ) -> RunAssemblyRequest:
     authored_path = tmp_path / "matrix.json"
     authored_bytes = _write_json(authored_path, authored)
@@ -123,9 +129,43 @@ def _request(
         environment=EnvironmentDeclaration(python_version=platform.python_version()),
         launch_policy=LaunchPolicy(max_parallel_rows=1),
         evaluation_batch_plan=batch_plan,
+        evaluation_output_preflight=output_preflight,
         budget=BudgetPolicy(max_wall_clock_seconds=60),
         orchestration_root=str(tmp_path / "orchestration"),
     )
+
+
+def _output_preflight(
+    *,
+    expected_rows: int,
+    bytes_per_row: int = 100,
+    repetitions: int = 2,
+    reserve_bytes: int = 50,
+) -> EvaluationOutputPreflightPolicy:
+    return EvaluationOutputPreflightPolicy(
+        expected_resolved_row_count=expected_rows,
+        retained_bytes_per_resolved_row=bytes_per_row,
+        retained_bytes_per_resolved_row_source="measured representative row fixture",
+        planned_repetitions=repetitions,
+        required_free_space_reserve_bytes=reserve_bytes,
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "expected_resolved_row_count",
+        "retained_bytes_per_resolved_row",
+        "planned_repetitions",
+        "required_free_space_reserve_bytes",
+    ],
+)
+def test_evaluation_output_preflight_policy_rejects_boolean_integers(field: str) -> None:
+    payload = _output_preflight(expected_rows=2).model_dump(mode="json")
+    payload[field] = True
+
+    with pytest.raises(ValidationError, match=field):
+        EvaluationOutputPreflightPolicy.model_validate(payload)
 
 
 def _assemble(request: RunAssemblyRequest, tmp_path: Path, *, run_set_id: str = "run"):
@@ -195,6 +235,205 @@ def test_batch_plan_drift_is_rejected_during_assembly_before_launch(
     )
     with pytest.raises(ValueError, match="ordered union"):
         _assemble(_request(tmp_path, matrix, batch_plan=plan), tmp_path)
+
+
+@pytest.mark.parametrize("driver", ["local", "runpod"])
+def test_explicit_authored_rows_defeat_inert_subset_expectation_before_outputs(
+    tmp_path: Path,
+    driver: str,
+) -> None:
+    request = _request(
+        tmp_path,
+        _matrix(),
+        driver=driver,
+        output_preflight=_output_preflight(expected_rows=1),
+    )
+    output_root = Path(request.orchestration_root) / "cardinality"
+
+    with pytest.raises(
+        ValueError,
+        match=r"resolved row count.*expected=1 resolved=2",
+    ):
+        _assemble(request, tmp_path, run_set_id="cardinality")
+
+    assert not output_root.exists()
+    assert not (tmp_path / "custody").exists()
+
+
+@pytest.mark.parametrize("driver", ["local", "runpod"])
+def test_insufficient_disk_fails_before_run_output_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    driver: str,
+) -> None:
+    from feedbax.orchestration import assembly as assembly_module
+
+    request = _request(
+        tmp_path,
+        _matrix(),
+        driver=driver,
+        output_preflight=_output_preflight(
+            expected_rows=2,
+            bytes_per_row=100,
+            repetitions=3,
+            reserve_bytes=50,
+        ),
+    )
+    disk_paths: list[Path] = []
+
+    def disk_usage(path: Path) -> SimpleNamespace:
+        disk_paths.append(Path(path))
+        return SimpleNamespace(free=649)
+
+    monkeypatch.setattr(assembly_module.shutil, "disk_usage", disk_usage)
+    run_set_id = "disk-refusal"
+    output_root = Path(request.orchestration_root) / run_set_id
+    engine = StageEngine.from_request(
+        request,
+        context=AssemblyContext(
+            custody_root=tmp_path / "custody",
+            repo_root=tmp_path,
+            materializer_commit="d9e62cfd" + "0" * 32,
+        ),
+        registry=build_default_assembly_registry(),
+        driver_factory=lambda _bundle: pytest.fail("driver constructed before disk refusal"),
+        run_set_id=run_set_id,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"required_free_bytes=650 observed_free_bytes=649",
+    ):
+        engine.run()
+
+    assert not output_root.exists()
+    assert not (tmp_path / "custody").exists()
+    assert disk_paths == [tmp_path.resolve()]
+
+
+def test_successful_pre_output_pass_is_pure_before_the_run_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from feedbax.orchestration import assembly as assembly_module
+
+    request = _request(
+        tmp_path,
+        _matrix(),
+        output_preflight=_output_preflight(expected_rows=2),
+    )
+    monkeypatch.setattr(
+        assembly_module.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(free=10_000),
+    )
+
+    prepared = _prepare_run_assembly(
+        request,
+        run_set_id="pure-preflight",
+        context=AssemblyContext(
+            custody_root=tmp_path / "custody",
+            repo_root=tmp_path,
+            materializer_commit="d9e62cfd" + "0" * 32,
+        ),
+        registry=build_default_assembly_registry(),
+    )
+
+    assert prepared.evaluation_output_preflight is not None
+    assert not (Path(request.orchestration_root) / "pure-preflight").exists()
+    assert not (tmp_path / "custody").exists()
+
+
+def test_stage_engine_reuses_the_pre_root_capacity_decision_inside_the_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from feedbax.orchestration import assembly as assembly_module
+
+    request = _request(
+        tmp_path,
+        _matrix(),
+        output_preflight=_output_preflight(expected_rows=2),
+    )
+    disk_paths: list[Path] = []
+
+    def disk_usage(path: Path) -> SimpleNamespace:
+        disk_paths.append(Path(path))
+        if len(disk_paths) > 1:
+            raise AssertionError("disk capacity was re-observed after the output root existed")
+        return SimpleNamespace(free=10_000)
+
+    monkeypatch.setattr(assembly_module.shutil, "disk_usage", disk_usage)
+    run_set_id = "single-pre-root-decision"
+    engine = StageEngine.from_request(
+        request,
+        context=AssemblyContext(
+            custody_root=tmp_path / "custody",
+            repo_root=tmp_path,
+            materializer_commit="d9e62cfd" + "0" * 32,
+        ),
+        registry=build_default_assembly_registry(),
+        driver_factory=lambda _bundle: SimpleNamespace(),
+        run_set_id=run_set_id,
+    )
+
+    state = engine.run(stop_after_stage="ASSEMBLE")
+
+    assert state.stage("ASSEMBLE").status == "completed"
+    assert disk_paths == [tmp_path.resolve()]
+    assert (Path(request.orchestration_root) / run_set_id / "bundle.json").is_file()
+
+
+@pytest.mark.parametrize("driver", ["local", "runpod"])
+def test_sufficient_disk_budget_retains_exact_preflight_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    driver: str,
+) -> None:
+    from feedbax.orchestration import assembly as assembly_module
+
+    policy = _output_preflight(
+        expected_rows=2,
+        bytes_per_row=100,
+        repetitions=3,
+        reserve_bytes=50,
+    )
+    request = _request(
+        tmp_path,
+        _matrix(),
+        driver=driver,
+        output_preflight=policy,
+    )
+    disk_paths: list[Path] = []
+
+    def disk_usage(path: Path) -> SimpleNamespace:
+        disk_paths.append(Path(path))
+        return SimpleNamespace(free=651)
+
+    monkeypatch.setattr(assembly_module.shutil, "disk_usage", disk_usage)
+
+    bundle = _assemble(request, tmp_path, run_set_id="disk-pass")
+
+    evidence = bundle.evaluation_output_preflight
+    assert evidence is not None
+    assert evidence.expected_resolved_row_count == 2
+    assert evidence.resolved_row_count == 2
+    assert evidence.retained_bytes_per_resolved_row == 100
+    assert evidence.retained_bytes_per_resolved_row_source == (
+        "measured representative row fixture"
+    )
+    assert evidence.planned_repetitions == 3
+    assert evidence.estimated_retained_bytes == 600
+    assert evidence.required_free_space_reserve_bytes == 50
+    assert evidence.required_free_bytes == 650
+    assert evidence.observed_free_bytes == 651
+    assert evidence.output_root == str(Path(request.orchestration_root) / "disk-pass")
+    assert evidence.observed_filesystem_path == str(tmp_path.resolve())
+    assert evidence.observed_filesystem_device == tmp_path.stat().st_dev
+    assert disk_paths == [tmp_path.resolve()]
+    assert bundle.rows[0].launch.metadata["batch_plan"]["batches"] == [
+        {"batch_id": "whole-matrix", "ordered_row_ids": ["gain-a", "gain-b"]}
+    ]
 
 
 def test_content_pinned_delta_keeps_authored_payload_and_ordered_resolved_identity(

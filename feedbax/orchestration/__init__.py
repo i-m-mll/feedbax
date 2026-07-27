@@ -18,6 +18,7 @@ __all__ = [
     "RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1",
     "RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V2",
     "RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3",
+    "RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4",
     "RUN_BUNDLE_SCHEMA_ID",
     "RUN_BUNDLE_SCHEMA_VERSION",
     "RUN_BUNDLE_SCHEMA_VERSION_V1",
@@ -28,6 +29,8 @@ __all__ = [
     "RUN_BUNDLE_SCHEMA_VERSION_V6",
     "RUN_BUNDLE_SCHEMA_VERSION_V7",
     "RUN_BUNDLE_SCHEMA_VERSION_V8",
+    "RUN_BUNDLE_SCHEMA_VERSION_V9",
+    "RUN_BUNDLE_SCHEMA_VERSION_V10",
     "STAGED_ROOT_CUSTODY_REF_PREFIX",
     "STAGED_ROOT_CUSTODY_SCHEMA_ID",
     "STAGED_ROOT_CUSTODY_SCHEMA_VERSION",
@@ -65,6 +68,8 @@ __all__ = [
     "DeploymentResourceRequest",
     "DriverRowProbe",
     "EnvironmentDeclaration",
+    "EvaluationOutputPreflightEvidence",
+    "EvaluationOutputPreflightPolicy",
     "ExecutionCapsuleRef",
     "ExecutionIdentityEnvelope",
     "ImmutableInputDigest",
@@ -138,6 +143,7 @@ __all__ = [
 ]
 
 _EXPORT_MODULES = (
+    "feedbax.contracts.evaluation_preflight",
     "feedbax.orchestration.matrix_authority",
     "feedbax.orchestration.bundle",
     "feedbax.orchestration.input_materialization",

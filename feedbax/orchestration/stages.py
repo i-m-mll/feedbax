@@ -32,6 +32,9 @@ from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
     RunAssemblyRequest,
+    _PreparedRunAssembly,
+    _persist_prepared_run_bundle,
+    _prepare_run_assembly,
     assemble_run_bundle,
     persist_assembly_request,
 )
@@ -375,6 +378,7 @@ class StageEngine:
         self._wall_time = wall_time
         self._interruption_probe = interruption_probe
         self._signal_supervisor: _ScopedSignalSupervisor | None = None
+        self._prepared_request: _PreparedRunAssembly | None = None
 
     @classmethod
     def from_request(
@@ -412,6 +416,7 @@ class StageEngine:
         for SIGKILL before an acquired pod's SSH endpoint becomes available; a
         later local process or operator must reconcile it.
         """
+        self._preflight_request_before_output()
         initial = self._initial_state()
         with _ScopedSignalSupervisor() as signal_supervisor:
             self._signal_supervisor = signal_supervisor
@@ -707,13 +712,16 @@ class StageEngine:
         self._write_json_atomically(history_path, history.model_dump(mode="json"))
 
     def _initial_state(self) -> RunSetState:
+        prepared_rows = (
+            self.bundle.rows
+            if self.bundle is not None
+            else (
+                self._prepared_request.compiled.rows if self._prepared_request is not None else ()
+            )
+        )
         return RunSetState(
             run_set_id=self.run_set_id,
-            rows=(
-                {row.row_id: RowState() for row in self.bundle.rows}
-                if self.bundle is not None
-                else {}
-            ),
+            rows={row.row_id: RowState() for row in prepared_rows},
             stages={stage_id: StageState() for stage_id in STAGE_ORDER},
         )
 
@@ -779,13 +787,22 @@ class StageEngine:
             assert self.assembly_registry is not None
             run_set_dir = _request_run_set_dir(self.request, self.run_set_id)
             request_path = run_set_dir / "assembly-request.json"
+            if self._prepared_request is None:
+                self.bundle = assemble_run_bundle(
+                    self.request,
+                    run_set_id=self.run_set_id,
+                    context=self.assembly_context,
+                    registry=self.assembly_registry,
+                )
+            else:
+                self.bundle = _persist_prepared_run_bundle(
+                    self.request,
+                    prepared=self._prepared_request,
+                    run_set_id=self.run_set_id,
+                    context=self.assembly_context,
+                )
+                self._prepared_request = None
             request_sha256 = persist_assembly_request(self.request, request_path)
-            self.bundle = assemble_run_bundle(
-                self.request,
-                run_set_id=self.run_set_id,
-                context=self.assembly_context,
-                registry=self.assembly_registry,
-            )
             assert self.driver_factory is not None
             self.driver = self.driver_factory(self.bundle)
             if not self._poll_interval_explicit:
@@ -829,6 +846,24 @@ class StageEngine:
                 }
             )
         return state, outputs
+
+    def _preflight_request_before_output(self) -> None:
+        """Run pure governed evaluation checks before the run-set output root exists."""
+        if (
+            self.request is None
+            or self.request.evaluation_output_preflight is None
+            or self.bundle is not None
+            or self.store.path.exists()
+        ):
+            return
+        assert self.assembly_context is not None
+        assert self.assembly_registry is not None
+        self._prepared_request = _prepare_run_assembly(
+            self.request,
+            run_set_id=self.run_set_id,
+            context=self.assembly_context,
+            registry=self.assembly_registry,
+        )
 
     def _hydrate_completed_assembly(self, state: RunSetState) -> RunSetState:
         """Load and verify the persisted v3 bundle when resuming after ASSEMBLE."""
