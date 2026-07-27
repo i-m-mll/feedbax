@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import json
+from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, model_validator
@@ -195,6 +197,43 @@ def flatten_composition(node: CompositionNode, resolve_parent: ParentResolver) -
     return FlattenedIntent(payload=payload, attribution=attribution, layer_hashes=hashes)
 
 
+def flatten_repo_composition(
+    node: CompositionNode,
+    *,
+    repo_root: Path,
+    source_ref: str | None = None,
+) -> FlattenedIntent:
+    """Flatten a composition whose parent refs name JSON beneath ``repo_root``.
+
+    ``source_ref`` identifies the already-loaded child document, when known, so
+    a child that points back to itself fails as a reference cycle before any
+    misleading hash-drift diagnosis.
+    """
+    root = repo_root.resolve()
+    resolved_refs: set[Path] = set()
+    if source_ref is not None:
+        resolved_refs.add(_repo_json_path(root, source_ref))
+
+    def resolve_parent(
+        parent: AuthoredIntentParent | ResolvedOutputParent,
+    ) -> CompositionNode | dict[str, Any]:
+        path = _repo_json_path(root, parent.ref)
+        if path in resolved_refs:
+            raise ValueError(f"/parent/ref authored composition cycle: {parent.ref}")
+        resolved_refs.add(path)
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"/parent/ref cannot load JSON document: {parent.ref}") from exc
+        if not isinstance(document, dict):
+            raise ValueError(f"/parent/ref must resolve to a JSON object: {parent.ref}")
+        if isinstance(parent, AuthoredIntentParent):
+            return CompositionNode.model_validate(document)
+        return document
+
+    return flatten_composition(node, resolve_parent)
+
+
 def composed_intent_hash(value: FlattenedIntent | Mapping[str, Any]) -> str:
     payload = value.payload if isinstance(value, FlattenedIntent) else value
     return training_spec_sha256(payload)
@@ -202,3 +241,13 @@ def composed_intent_hash(value: FlattenedIntent | Mapping[str, Any]) -> str:
 
 def _digest(value: str, path: str) -> None:
     validate_sha256(value, field_name=path)
+
+
+def _repo_json_path(repo_root: Path, ref: str) -> Path:
+    path = Path(ref)
+    if path.is_absolute():
+        raise ValueError(f"repository document ref must be relative: {ref}")
+    resolved = (repo_root / path).resolve()
+    if not resolved.is_relative_to(repo_root):
+        raise ValueError(f"repository document ref escapes repo root: {ref}")
+    return resolved

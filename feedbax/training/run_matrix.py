@@ -53,6 +53,11 @@ from feedbax.contracts.run_matrix import (
     apply_composition_deltas,
     apply_override_patches,
 )
+from feedbax.contracts.run_composition import (
+    COMPOSITION_SCHEMA_ID,
+    CompositionNode,
+    flatten_repo_composition,
+)
 from feedbax.contracts.migrations import default_spec_registry, migrate_graph_spec
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
@@ -1028,6 +1033,27 @@ def _resolve_composed_base(
             )
             attribution.update(local_attribution)
             return resolved, attribution, written
+        if isinstance(document, Mapping) and _is_composition_document(document):
+            if spec.base.payload_path is not None:
+                raise RunMatrixError(
+                    "/base/payload_path is not supported for a composition document"
+                )
+            try:
+                flattened = flatten_repo_composition(
+                    CompositionNode.model_validate(document),
+                    repo_root=repo_root,
+                    source_ref=spec.base.ref,
+                )
+                resolved, local_attribution, written = apply_composition_deltas(
+                    flattened.payload,
+                    spec.deltas,
+                    ancestor_written_paths=set(flattened.attribution),
+                )
+            except ValueError as exc:
+                raise RunMatrixError(f"/base/ref composition resolution failed: {exc}") from exc
+            attribution = dict(flattened.attribution)
+            attribution.update(local_attribution)
+            return resolved, attribution, written
         else:
             payload_path = spec.base.payload_path
     else:
@@ -1053,6 +1079,10 @@ def _is_authored_matrix_document(document: Mapping[str, Any]) -> bool:
         isinstance(schema_version, str)
         and schema_version.startswith("feedbax.spec.training_run_matrix.v")
     )
+
+
+def _is_composition_document(document: Mapping[str, Any]) -> bool:
+    return document.get("schema_id") == COMPOSITION_SCHEMA_ID
 
 
 def _materialize_explicit_rows(
