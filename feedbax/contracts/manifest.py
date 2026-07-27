@@ -445,7 +445,7 @@ class AnalysisDataProduct(StrictModel):
                 f"envelope: product_identity_hash={self.product_identity_hash!r}, "
                 f"computed={expected_hash!r}"
             )
-        self.product_identity_hash = expected_hash
+        object.__setattr__(self, "product_identity_hash", expected_hash)
         return self
 
 

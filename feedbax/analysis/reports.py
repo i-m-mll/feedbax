@@ -11,17 +11,27 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from feedbax.analysis.specs import find_manifest_by_id
+from feedbax.analysis.execution_context import (
+    EMPTY_STAGED_EXECUTION_CONTEXT,
+    StagedArtifactProviderRootBinding,
+    StagedCheckpointCustodyRootBinding,
+    StagedExecutionContext,
+    StagedManifestRootBinding,
+    resolve_staged_execution_context,
+    with_staged_manifest_provider_inputs,
+)
 from feedbax.analysis.manifest_inputs import (
     is_authenticated_manifest_ref,
     resolve_manifest_input,
 )
 from feedbax.analysis.rendering import render_markdown_note
+from feedbax.analysis.specs import find_manifest_by_id
 from feedbax.analysis.validation import (
     ReportRecipeProtocol,
     validate_namespaced_type_key,
     validate_report_recipe,
 )
+from feedbax.contracts.staged_execution import StagedExecutionDescriptor
 from feedbax.contracts.manifest import (
     AnalysisDataProduct,
     AnalysisRunManifest,
@@ -52,7 +62,13 @@ BUNDLE_SUMMARY_REPORT_TYPE = "feedbax.bundle_summary"
 STUDIO_REPORT_TYPE = "feedbax.studio_report"
 ORDERED_FIGURE_REPORT_TYPE = "feedbax.ordered_figure_report"
 ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_ID = "feedbax.spec.report.ordered_figure"
-ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_VERSION = "feedbax.spec.report.ordered_figure.v1"
+ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_VERSION = "feedbax.spec.report.ordered_figure.v2"
+ORDERED_FIGURE_REPORT_SCALAR_PROJECTION_SCHEMA_ID = (
+    "feedbax.spec.report.scalar_table_projection"
+)
+ORDERED_FIGURE_REPORT_SCALAR_PROJECTION_SCHEMA_VERSION = (
+    "feedbax.spec.report.scalar_table_projection.v1"
+)
 
 OrderedFigureReportApplicability = Literal["included", "not_applicable"]
 OrderedFigureReportScalar = str | int | float | bool | None
@@ -93,12 +109,56 @@ class OrderedFigureReportFigure(StrictModel):
         return self
 
 
+class OrderedFigureReportScalarProjection(StrictModel):
+    """One exact scalar selected from a custody-backed analysis data product."""
+
+    schema_id: Literal["feedbax.spec.report.scalar_table_projection"] = (
+        ORDERED_FIGURE_REPORT_SCALAR_PROJECTION_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.spec.report.scalar_table_projection.v1"] = (
+        ORDERED_FIGURE_REPORT_SCALAR_PROJECTION_SCHEMA_VERSION
+    )
+    kind: Literal["custody_projection"] = "custody_projection"
+    input_role: str
+    product_role: str
+    product_schema_id: str
+    product_schema_version: str
+    artifact_role: str
+    artifact_provider: str
+    path: list[str | int]
+
+    @model_validator(mode="after")
+    def _validate_projection(self) -> "OrderedFigureReportScalarProjection":
+        for field_name in (
+            "input_role",
+            "product_role",
+            "product_schema_id",
+            "product_schema_version",
+            "artifact_role",
+            "artifact_provider",
+        ):
+            _require_authored_text(getattr(self, field_name), field_name=field_name)
+        if not self.path:
+            raise ValueError("scalar table projection path must not be empty")
+        for component in self.path:
+            if isinstance(component, str):
+                _require_authored_text(component, field_name="scalar table projection path")
+            elif component < 0:
+                raise ValueError("scalar table projection list indices must be non-negative")
+        return self
+
+
+OrderedFigureReportTableCell = (
+    OrderedFigureReportScalarProjection | OrderedFigureReportScalar
+)
+
+
 class OrderedFigureReportScalarTable(StrictModel):
-    """A small authored table whose cells are JSON-native scalar values."""
+    """A small table of authored or custody-projected JSON-native scalar values."""
 
     title: str | None = None
     columns: list[str]
-    rows: list[list[OrderedFigureReportScalar]]
+    rows: list[list[OrderedFigureReportTableCell]]
 
     @model_validator(mode="after")
     def _validate_table(self) -> "OrderedFigureReportScalarTable":
@@ -153,8 +213,8 @@ class OrderedFigureReportSection(StrictModel):
 class OrderedFigureReportParams(StrictModel):
     """Versioned authored content for the generic ordered-figure recipe."""
 
-    schema_id: Literal["feedbax.spec.report.ordered_figure"]
-    schema_version: Literal["feedbax.spec.report.ordered_figure.v1"]
+    schema_id: str
+    schema_version: str
     title: str
     introduction: str | None = None
     sections: list[OrderedFigureReportSection]
@@ -162,6 +222,18 @@ class OrderedFigureReportParams(StrictModel):
 
     @model_validator(mode="after")
     def _validate_report(self) -> "OrderedFigureReportParams":
+        if self.schema_id != ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_ID:
+            raise ValueError(
+                "unsupported ordered figure report schema_id: "
+                f"{self.schema_id!r}; expected {ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_ID!r}"
+            )
+        if self.schema_version != ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported ordered figure report schema_version: "
+                f"{self.schema_version!r}; expected "
+                f"{ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_VERSION!r}; "
+                "older report specs must be re-authored"
+            )
         _require_authored_text(self.title, field_name="report title")
         if not self.sections:
             raise ValueError("ordered figure report requires at least one section")
@@ -180,6 +252,20 @@ class OrderedFigureReportParams(StrictModel):
         ]
         if len(set(included_roles)) != len(included_roles):
             raise ValueError("included figure input_role values must be unique")
+        projection_roles = {
+            cell.input_role
+            for section in self.sections
+            for table in section.tables
+            for row in table.rows
+            for cell in row
+            if isinstance(cell, OrderedFigureReportScalarProjection)
+        }
+        overlapping_roles = sorted(set(included_roles) & projection_roles)
+        if overlapping_roles:
+            raise ValueError(
+                "figure and scalar projection input roles must be disjoint: "
+                + ", ".join(repr(role) for role in overlapping_roles)
+            )
         return self
 
 
@@ -191,6 +277,21 @@ class ResolvedReportInput:
     manifest: AnyManifest | None
     path: Path | None
     produced_data: list[AnalysisDataProduct] = field(default_factory=list)
+    execution_context: StagedExecutionContext = field(
+        default=EMPTY_STAGED_EXECUTION_CONTEXT,
+        repr=False,
+        compare=False,
+    )
+
+
+@dataclass(frozen=True)
+class ResolvedReportScalarProjection:
+    """Authenticated scalar value and the exact product bytes that supplied it."""
+
+    value: OrderedFigureReportScalar
+    input_ref: ParentRef
+    product: AnalysisDataProduct
+    artifact: ArtifactRef
 
 
 @dataclass(frozen=True)
@@ -269,6 +370,7 @@ def resolve_report_inputs(
     spec: ReportSpec,
     *,
     root: Path | str | None = None,
+    execution_context: StagedExecutionContext = EMPTY_STAGED_EXECUTION_CONTEXT,
 ) -> list[ResolvedReportInput]:
     """Resolve ``ReportSpec.inputs`` to manifests and analysis products."""
     root_path = Path(root) if root is not None else default_manifest_root()
@@ -278,7 +380,28 @@ def resolve_report_inputs(
         manifest_path: Path | None = None
         produced_data: list[AnalysisDataProduct] = []
         if is_authenticated_manifest_ref(ref):
-            authenticated = resolve_manifest_input(ref, root_path)
+            locations = [
+                location
+                for location in execution_context.parent_execution_locations
+                if location.parent == ref
+            ]
+            if len(locations) > 1:
+                raise ValueError(
+                    f"report input {ref.id!r} has ambiguous retained runtime authorities"
+                )
+            if locations:
+                authenticated = execution_context.resolve_manifest_input(ref)
+            else:
+                try:
+                    authenticated = resolve_manifest_input(ref, root_path)
+                except FileNotFoundError:
+                    if not (
+                        execution_context.manifest_roots
+                        or execution_context.opened_artifact_providers
+                    ):
+                        raise
+                    bound = with_staged_manifest_provider_inputs(execution_context, [ref])
+                    authenticated = bound.resolve_manifest_input(ref)
             manifest, manifest_path = authenticated.manifest, authenticated.path
         elif ref.kind.endswith("Manifest"):
             manifest, manifest_path = find_manifest_by_id(ref.id, root=root_path)
@@ -292,9 +415,122 @@ def resolve_report_inputs(
                 manifest=manifest,
                 path=manifest_path,
                 produced_data=produced_data,
+                execution_context=execution_context,
             )
         )
     return resolved
+
+
+def resolve_report_scalar_projection(
+    projection: OrderedFigureReportScalarProjection,
+    inputs: Sequence[ResolvedReportInput],
+) -> ResolvedReportScalarProjection:
+    """Resolve one exact scalar from authenticated immutable JSON product bytes."""
+    input_matches = [
+        resolved for resolved in inputs if resolved.ref.role == projection.input_role
+    ]
+    if len(input_matches) != 1:
+        raise ValueError(
+            f"scalar projection input role {projection.input_role!r} resolved "
+            f"{len(input_matches)} inputs; expected exactly one"
+        )
+    resolved_input = input_matches[0]
+    if not isinstance(resolved_input.manifest, AnalysisRunManifest):
+        raise ValueError(
+            f"scalar projection input role {projection.input_role!r} must resolve "
+            "to AnalysisRunManifest"
+        )
+    if resolved_input.manifest.status != "completed":
+        raise ValueError(
+            f"scalar projection input role {projection.input_role!r} has non-completed "
+            f"status {resolved_input.manifest.status!r}"
+        )
+    products = [
+        product
+        for product in resolved_input.produced_data
+        if product.role == projection.product_role
+    ]
+    if len(products) != 1:
+        raise ValueError(
+            f"scalar projection product role {projection.product_role!r} resolved "
+            f"{len(products)} products; expected exactly one"
+        )
+    product = products[0]
+    expected_schema = (
+        projection.product_schema_id,
+        projection.product_schema_version,
+    )
+    observed_schema = (product.product_schema_id, product.product_schema_version)
+    if observed_schema != expected_schema:
+        raise ValueError(
+            f"scalar projection product role {projection.product_role!r} schema mismatch: "
+            f"expected {expected_schema!r}, observed {observed_schema!r}"
+        )
+    artifacts = [
+        artifact
+        for artifact in product.artifacts
+        if artifact.role == projection.artifact_role
+        and artifact.media_type == "application/json"
+    ]
+    if len(artifacts) != 1:
+        raise ValueError(
+            f"scalar projection artifact role {projection.artifact_role!r} resolved "
+            f"{len(artifacts)} JSON artifacts; expected exactly one"
+        )
+    artifact = artifacts[0]
+    try:
+        provider = resolved_input.execution_context.artifact_provider(
+            projection.artifact_provider
+        )
+        raw = provider.get_bytes(artifact)
+    except Exception as exc:
+        raise ValueError(
+            f"scalar projection artifact provider {projection.artifact_provider!r} "
+            f"rejected product role {projection.product_role!r}"
+        ) from exc
+    try:
+        value: Any = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"scalar projection product role {projection.product_role!r} "
+            "artifact is not valid JSON"
+        ) from exc
+    traversed: list[str | int] = []
+    for component in projection.path:
+        traversed.append(component)
+        if isinstance(component, str):
+            if not isinstance(value, Mapping) or component not in value:
+                raise ValueError(
+                    "scalar projection path is missing mapping key at "
+                    f"{traversed!r}"
+                )
+            value = value[component]
+        else:
+            if (
+                not isinstance(value, list)
+                or component < 0
+                or component >= len(value)
+            ):
+                raise ValueError(
+                    "scalar projection path has invalid list index at "
+                    f"{traversed!r}"
+                )
+            value = value[component]
+    if value is not None and not isinstance(value, (str, int, float, bool)):
+        raise ValueError(
+            f"scalar projection path {projection.path!r} resolved non-scalar "
+            f"{type(value).__name__}"
+        )
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(
+            f"scalar projection path {projection.path!r} resolved a non-finite float"
+        )
+    return ResolvedReportScalarProjection(
+        value=value,
+        input_ref=resolved_input.ref,
+        product=product,
+        artifact=artifact,
+    )
 
 
 def execute_report_spec(
@@ -305,12 +541,45 @@ def execute_report_spec(
     issues: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
     regeneration_specs: Sequence[SpecPayload | ParentRef | ArtifactRef] = (),
+    execution_context: StagedExecutionContext = EMPTY_STAGED_EXECUTION_CONTEXT,
+    execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
+    artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
+    manifest_root_bindings: Sequence[StagedManifestRootBinding] = (),
+    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
 ) -> tuple[ReportManifest, Path]:
     """Execute a serialized report spec and write a truthful manifest."""
     report_spec = coerce_report_spec(spec)
     recipe = get_report_recipe(report_spec.report_type)
     root_path = Path(root) if root is not None else default_manifest_root()
     manifest_id = report_manifest_id(report_spec)
+    explicit_runtime = (
+        execution_descriptor is not None
+        or bool(artifact_provider_bindings)
+        or bool(manifest_root_bindings)
+        or bool(checkpoint_custody_bindings)
+    )
+    if explicit_runtime:
+        if execution_context is not EMPTY_STAGED_EXECUTION_CONTEXT:
+            raise ValueError(
+                "execution_context cannot be combined with direct runtime bindings"
+            )
+        execution_context = resolve_staged_execution_context(
+            execution_descriptor,
+            artifact_provider_bindings=artifact_provider_bindings,
+            manifest_root_bindings=manifest_root_bindings,
+            checkpoint_custody_bindings=checkpoint_custody_bindings,
+        )
+        authenticated_inputs = [
+            ref for ref in report_spec.inputs if is_authenticated_manifest_ref(ref)
+        ]
+        if authenticated_inputs and (
+            execution_context.manifest_roots
+            or execution_context.opened_artifact_providers
+        ):
+            execution_context = with_staged_manifest_provider_inputs(
+                execution_context,
+                authenticated_inputs,
+            )
 
     prov = provenance.model_copy(deep=True) if provenance is not None else collect_git_provenance()
     prov.parents = list(report_spec.inputs)
@@ -323,7 +592,11 @@ def execute_report_spec(
         )
 
     manifest_metadata = dict(metadata or {})
-    resolved_inputs = resolve_report_inputs(report_spec, root=root_path)
+    resolved_inputs = resolve_report_inputs(
+        report_spec,
+        root=root_path,
+        execution_context=execution_context,
+    )
     try:
         result = recipe(report_spec, root_path, resolved_inputs)
         _validate_report_result(report_spec.report_type, result)
@@ -513,7 +786,25 @@ def _ordered_figure_report_recipe(
         raise ValueError("ordered figure report narrative must be authored as params.introduction")
     params = OrderedFigureReportParams.model_validate(report_spec.params)
     inputs_by_role = _ordered_figure_inputs_by_role(params, inputs)
-    markdown = _render_ordered_figure_report(params, inputs_by_role)
+    resolved_projections: dict[str, OrderedFigureReportScalar] = {}
+    projection_artifacts: dict[str, ArtifactRef] = {}
+    for section in params.sections:
+        for table in section.tables:
+            for row in table.rows:
+                for cell in row:
+                    if not isinstance(cell, OrderedFigureReportScalarProjection):
+                        continue
+                    key = cell.model_dump_json(exclude_none=True)
+                    if key in resolved_projections:
+                        continue
+                    resolved = resolve_report_scalar_projection(cell, inputs)
+                    resolved_projections[key] = resolved.value
+                    projection_artifacts[resolved.artifact.artifact_id] = resolved.artifact
+    markdown = _render_ordered_figure_report(
+        params,
+        inputs_by_role,
+        resolved_projections,
+    )
     render_artifact = store_bytes_artifact(
         markdown.encode("utf-8"),
         root=root,
@@ -557,8 +848,10 @@ def _ordered_figure_report_recipe(
             "ordered_figure_report": {
                 "schema_id": params.schema_id,
                 "schema_version": params.schema_version,
+                "scalar_projection_artifact_ids": sorted(projection_artifacts),
             }
         },
+        regeneration_specs=list(projection_artifacts.values()),
     )
 
 
@@ -566,24 +859,43 @@ def _ordered_figure_inputs_by_role(
     params: OrderedFigureReportParams,
     inputs: Sequence[ResolvedReportInput],
 ) -> dict[str, FigureManifest]:
-    expected_roles = {
+    expected_figure_roles = {
         str(figure.input_role)
         for section in params.sections
         if section.applicability == "included"
         for figure in section.figures
         if figure.applicability == "included"
     }
+    expected_projection_roles = {
+        cell.input_role
+        for section in params.sections
+        if section.applicability == "included"
+        for table in section.tables
+        for row in table.rows
+        for cell in row
+        if isinstance(cell, OrderedFigureReportScalarProjection)
+    }
+    expected_roles = expected_figure_roles | expected_projection_roles
     resolved_by_role: dict[str, FigureManifest] = {}
+    seen_roles: set[str] = set()
     for resolved in inputs:
         role = resolved.ref.role
         if role is None or not role.strip():
             raise ValueError(
                 f"ordered figure report input {resolved.ref.id!r} requires a non-blank role"
             )
-        if role in resolved_by_role:
+        if role in seen_roles:
             raise ValueError(f"ordered figure report input role {role!r} is duplicated")
+        seen_roles.add(role)
         if role not in expected_roles:
             raise ValueError(f"ordered figure report input role {role!r} is not referenced")
+        if role in expected_projection_roles:
+            if resolved.ref.kind != "AnalysisRunManifest":
+                raise ValueError(
+                    f"ordered figure report projection input role {role!r} must "
+                    "reference AnalysisRunManifest"
+                )
+            continue
         if resolved.ref.kind != "FigureManifest":
             raise ValueError(
                 f"ordered figure report input role {role!r} must reference FigureManifest"
@@ -608,7 +920,7 @@ def _ordered_figure_inputs_by_role(
                 "figure_render artifact"
             )
         resolved_by_role[role] = resolved.manifest
-    missing_roles = sorted(expected_roles - resolved_by_role.keys())
+    missing_roles = sorted(expected_roles - seen_roles)
     if missing_roles:
         raise ValueError(
             "ordered figure report is missing required input roles: "
@@ -620,6 +932,7 @@ def _ordered_figure_inputs_by_role(
 def _render_ordered_figure_report(
     params: OrderedFigureReportParams,
     inputs_by_role: Mapping[str, FigureManifest],
+    resolved_projections: Mapping[str, OrderedFigureReportScalar],
 ) -> str:
     lines = [f"# {params.title}", ""]
     if params.introduction:
@@ -665,7 +978,16 @@ def _render_ordered_figure_report(
             for row in table.rows:
                 lines.append(
                     "| "
-                    + " | ".join(_escape_markdown_cell(_scalar_text(cell)) for cell in row)
+                    + " | ".join(
+                        _escape_markdown_cell(
+                            _scalar_text(
+                                resolved_projections[cell.model_dump_json(exclude_none=True)]
+                                if isinstance(cell, OrderedFigureReportScalarProjection)
+                                else cell
+                            )
+                        )
+                        for cell in row
+                    )
                     + " |"
                 )
             lines.append("")
