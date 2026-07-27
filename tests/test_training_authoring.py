@@ -73,8 +73,6 @@ PAYLOAD_SCHEMA_VERSION = "example.spec.typed_method.v1"
 class TypedPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    schema_id: str = PAYLOAD_SCHEMA_ID
-    schema_version: str = PAYLOAD_SCHEMA_VERSION
     gain: int
     task_name: str
 
@@ -952,12 +950,60 @@ def test_default_matrix_compiler_reaches_descriptor_authoring(
         "name": "typed",
         "version": "v1",
     }
+    execution_method_payload = compiled.rows[0].payload["method_payload"]["payload"]
+    assert execution_method_payload == {"gain": 3, "task_name": "reach"}
+    assert {
+        "schema_id",
+        "schema_version",
+        TRAINING_ROW_LOWERER_REF_FIELD,
+    }.isdisjoint(execution_method_payload)
+    assert compiled.rows[0].provenance.authored_payload_hash == training_spec_sha256(
+        payload
+    )
+    assert (
+        compiled.rows[0].provenance.lowered_execution_payload_hash
+        == training_spec_sha256(compiled.rows[0].payload)
+    )
     assert compiled.rows[0].provenance.lowerer_identities == [
         RowLowererIdentity(
             lowerer_id="example.typed_method.authoring",
             lowerer_version="example.typed_method.authoring.v1",
         )
     ]
+
+
+@pytest.mark.parametrize(
+    ("field", "observed"),
+    [
+        ("schema_id", "example.spec.other"),
+        ("schema_version", "example.spec.typed_method.v2"),
+    ],
+)
+def test_descriptor_authoring_rejects_dispatch_schema_mismatch(
+    authoring_registry,
+    field: str,
+    observed: str,
+) -> None:
+    registry, _holder = authoring_registry
+    descriptor = registry.descriptor(METHOD_REF)
+    assert descriptor is not None
+    payload = {
+        "schema_id": PAYLOAD_SCHEMA_ID,
+        "schema_version": PAYLOAD_SCHEMA_VERSION,
+        "gain": 3,
+        "task_name": "reach",
+        TRAINING_ROW_LOWERER_REF_FIELD: _derived_authority(descriptor),
+    }
+    payload[field] = observed
+
+    with pytest.raises(
+        TrainingMethodAuthoringError,
+        match=rf"{field} does not match bound descriptor authority",
+    ):
+        compile_training_method_authoring(
+            _authored_row(payload),
+            method_ref=METHOD_REF,
+        )
 
 
 def test_fresh_process_plugin_derives_same_authoring_lowerer(tmp_path: Path) -> None:
