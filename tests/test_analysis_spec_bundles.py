@@ -16,6 +16,7 @@ import pytest
 import feedbax.analysis.bundles as bundle_module
 from feedbax.analysis.bundles import (
     ANALYSIS_BUNDLE_SCHEMA_VERSION,
+    AnalysisBundleDeltaSpec,
     AnalysisBundleSpec,
     AnalysisSpecTemplate,
     BundleStageOutputSpec,
@@ -63,6 +64,8 @@ from feedbax.contracts.manifest import (
     load_manifest,
     spec_payload,
     write_manifest,
+    canonical_json_bytes,
+    sha256_bytes,
 )
 from feedbax.contracts.selection import TopKByMetricPerGroup
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -2150,6 +2153,13 @@ def test_analysis_cli_keeps_bundle_progress_off_json_stdout(
         "load_analysis_bundle",
         lambda *_args, **_kwargs: SimpleNamespace(templates=[object()], stages=[]),
     )
+    monkeypatch.setattr(
+        analysis_cli,
+        "resolve_analysis_bundle_authoring",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("direct bundle routing must not invoke delta resolution")
+        ),
+    )
     monkeypatch.setattr(analysis_cli, "execute_analysis_bundle", fake_execute_analysis_bundle)
 
     analysis_cli.main(
@@ -2178,6 +2188,66 @@ def test_analysis_cli_keeps_bundle_progress_off_json_stdout(
             "manifest_path": str(tmp_path / "manifests" / "analysis_runs" / "toy.json"),
         }
     ]
+
+
+def test_analysis_cli_resolves_composed_package_resource_with_explicit_repo_root(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    from feedbax.bin import analysis as analysis_cli
+
+    registry = _write_bundle_package(tmp_path, monkeypatch)
+    base = AnalysisBundleSpec(
+        name="composed_cli",
+        templates=[
+            AnalysisSpecTemplate(
+                name="grouped",
+                mode="grouped",
+                analysis_type=TOY_ANALYSIS_TYPE,
+            )
+        ],
+    ).model_dump(mode="json")
+    (tmp_path / "base.json").write_text(json.dumps(base), encoding="utf-8")
+    base_sha = sha256_bytes(canonical_json_bytes(base))
+    delta = {
+        "schema_id": "feedbax.spec.analysis_bundle_delta",
+        "schema_version": "feedbax.spec.analysis_bundle_delta.v1",
+        "parent": {"ref": "base.json", "sha256": base_sha},
+        "deltas": [{"layer_id": "cli", "patches": []}],
+    }
+    resource = (
+        tmp_path
+        / "toy_bundle_pkg"
+        / "config"
+        / "analysis_bundles"
+        / "composed.yml"
+    )
+    resource.write_text(json.dumps(delta), encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_execute(bundle, **kwargs):
+        captured["bundle"] = bundle
+        captured["repo_root"] = kwargs["repo_root"]
+        return []
+
+    monkeypatch.setattr(analysis_cli, "EXPERIMENT_REGISTRY", registry)
+    monkeypatch.setattr(analysis_cli, "execute_analysis_bundle", fake_execute)
+
+    analysis_cli.main(
+        [
+            "--bundle",
+            "toy/composed",
+            "--repo-root",
+            str(tmp_path),
+            "--manifest-root",
+            str(tmp_path),
+        ]
+    )
+
+    assert isinstance(captured["bundle"], AnalysisBundleDeltaSpec)
+    assert captured["repo_root"] == tmp_path
+    assert json.loads(capsys.readouterr().out) == []
 
 
 def test_analysis_cli_fails_closed_without_cross_executor_fallback(

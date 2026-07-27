@@ -871,6 +871,10 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
         families["StagedAnalysisBundleExecution"].identity
         == "feedbax.manifest.analysis_bundle_execution"
     )
+    assert (
+        families["StagedAnalysisBundleExecution"].current_version
+        == "feedbax.manifest.analysis_bundle_execution.v2"
+    )
     assert families["ValueSchema"].identity == "feedbax.spec.studio.schema.value"
     assert families["StudioApiTransport"].identity == STUDIO_API_TRANSPORT_SCHEMA_ID
     assert families["StudioApiTransport"].current_version == STUDIO_API_TRANSPORT_SCHEMA_VERSION

@@ -1,12 +1,23 @@
 from .types import AnalysisInputData
 from .analysis import AbstractAnalysis, CallWithDeps
 from .bundles import (
+    AnalysisBundleAuthoring,
     AnalysisBundleSpec,
     BundlePerInputPrerequisiteBinding,
     StagedAnalysisBundleExecution,
+    dry_run_staged_analysis_bundle,
+    expand_analysis_bundle,
     execute_analysis_bundle,
     execute_staged_analysis_bundle,
     load_analysis_bundle,
+    resolve_analysis_bundle_authoring,
+)
+from feedbax.contracts.analysis_bundle_composition import (
+    AnalysisBundleDeltaSpec,
+    FlattenedAnalysisBundle,
+    analysis_bundle_composition_provenance,
+    flatten_analysis_bundle_delta,
+    is_analysis_bundle_delta_payload,
 )
 from .exact_parents import (
     STAGED_EXACT_PARENTS_SCHEMA_ID,
@@ -167,6 +178,9 @@ __all__ = [
     "AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION",
     "AbstractAnalysis",
     "AnalysisBundleSpec",
+    "AnalysisBundleAuthoring",
+    "AnalysisBundleDeltaSpec",
+    "FlattenedAnalysisBundle",
     "BundlePerInputPrerequisiteBinding",
     "AnalysisArtifactGroup",
     "AnalysisInputData",
@@ -256,6 +270,8 @@ __all__ = [
     "diff_resolved_rows",
     "directory_artifact_group",
     "execute_analysis_bundle",
+    "dry_run_staged_analysis_bundle",
+    "expand_analysis_bundle",
     "execute_analysis_run_spec",
     "coerce_analysis_run_spec",
     "resolve_analysis_run_authoring",
@@ -272,6 +288,10 @@ __all__ = [
     "feedbax_graph_controller",
     "graph_controller",
     "load_analysis_bundle",
+    "analysis_bundle_composition_provenance",
+    "flatten_analysis_bundle_delta",
+    "is_analysis_bundle_delta_payload",
+    "resolve_analysis_bundle_authoring",
     "manifest_artifact_group",
     "materialization_metadata",
     "materialize_evaluation_run_matrix",

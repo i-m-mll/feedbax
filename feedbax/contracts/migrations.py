@@ -182,6 +182,10 @@ from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_VERSION_V0,
 )
 from feedbax.contracts.manifest import (
+    ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_ID,
+    ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
+    ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_ID,
+    ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_VERSION,
     ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_ID,
     ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
@@ -3537,6 +3541,59 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         ),
         _family(
+            "AnalysisBundleDeltaSpec",
+            ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_ID,
+            ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.analysis_bundle_composition",
+            emitted_by=("authored analysis bundle composition",),
+            consumed_by=("analysis bundle selection and execution",),
+            description=(
+                "Ordered whole-document deltas over one content-pinned parent analysis "
+                "bundle or parent delta spec."
+            ),
+            rejected_old_versions=(f"{ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_analysis_bundle_composition.py",),
+        ),
+        _family(
+            "AnalysisBundleCompositionProvenance",
+            ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_ID,
+            ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.analysis_bundle_composition",
+            emitted_by=(
+                "feedbax.contracts.analysis_bundle_composition."
+                "analysis_bundle_composition_provenance",
+            ),
+            consumed_by=("bundle expansion and durable bundle execution metadata",),
+            description=(
+                "Authored, layer, attribution, and flattened identities for "
+                "delta-composed analysis bundles."
+            ),
+            rejected_old_versions=(
+                f"{ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_ID}.v0",
+            ),
+            required_tests=("tests/test_analysis_bundle_composition.py",),
+        ),
+        _family(
+            "StagedAnalysisBundleExecution",
+            "feedbax.manifest.analysis_bundle_execution",
+            "feedbax.manifest.analysis_bundle_execution.v2",
+            owner_module="feedbax.analysis.bundles",
+            emitted_by=(
+                "feedbax.analysis.execute_staged_analysis_bundle",
+                "provider_manifest.schemas",
+            ),
+            consumed_by=("downstream staged bundle provenance consumers",),
+            description="Durable staged analysis bundle execution provenance.",
+            stance="migrate",
+            supported_old_versions=(
+                "feedbax.manifest.analysis_bundle_execution.v1",
+            ),
+            required_tests=(
+                "tests/test_analysis_bundle_composition.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
             "PathExpression",
             PATH_EXPRESSION_SCHEMA_ID,
             PATH_EXPRESSION_SCHEMA_VERSION,
@@ -4249,12 +4306,6 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
 
     for kind, schema_id, durable, description in (
         ("ProviderManifest", "feedbax.manifest.provider", True, "Provider capability manifest."),
-        (
-            "StagedAnalysisBundleExecution",
-            "feedbax.manifest.analysis_bundle_execution",
-            True,
-            "Durable staged analysis bundle execution provenance.",
-        ),
         ("ProviderHealth", "feedbax.manifest.provider_health", False, "Provider health response."),
         (
             "ProviderValidationResult",
@@ -4455,6 +4506,17 @@ def _migrate_analysis_bundle_v4_to_v5_payload(payload: dict[str, Any]) -> dict[s
     return migrated
 
 
+def _migrate_staged_analysis_bundle_execution_v1_to_v2_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve v1 execution provenance while admitting composition provenance."""
+    if "bundle_composition" in payload:
+        raise ValueError(
+            "StagedAnalysisBundleExecution v1 cannot declare bundle_composition"
+        )
+    return dict(payload)
+
+
 def _migrate_run_bundle_v3_to_v4_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Mark provenance as unavailable on bundles emitted before row handoff v1."""
     migrated = dict(payload)
@@ -4595,6 +4657,19 @@ default_spec_registry.register_migration(
         description=(
             "Preserve v2 stage-local params explicitly while introducing the shared typed "
             "parameter base and per-stage patches."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "StagedAnalysisBundleExecution",
+    SchemaMigration(
+        source_version="feedbax.manifest.analysis_bundle_execution.v1",
+        target_version="feedbax.manifest.analysis_bundle_execution.v2",
+        migration_id="analysis-bundle-execution-v1-to-v2-composition-provenance",
+        migrate=_migrate_staged_analysis_bundle_execution_v1_to_v2_payload,
+        description=(
+            "Preserve v1 staged execution provenance while admitting optional typed "
+            "analysis-bundle composition provenance."
         ),
     ),
 )

@@ -9,7 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeAlias, TypeVar
 from urllib.parse import unquote, urlsplit
 
 from pydantic import Field, field_validator, model_validator
@@ -45,6 +45,13 @@ from feedbax.contracts.expressions import (
     evaluate_expr,
 )
 from feedbax.contracts.figures import FigureSpec
+from feedbax.contracts.analysis_bundle_composition import (
+    AnalysisBundleDeltaSpec,
+    FlattenedAnalysisBundle,
+    analysis_bundle_composition_provenance,
+    flatten_analysis_bundle_delta,
+    is_analysis_bundle_delta_payload,
+)
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
@@ -99,7 +106,12 @@ ANALYSIS_BUNDLE_SCHEMA_VERSION_V3 = "feedbax.spec.analysis_bundle.v3"
 ANALYSIS_BUNDLE_SCHEMA_VERSION_V4 = "feedbax.spec.analysis_bundle.v4"
 ANALYSIS_BUNDLE_SCHEMA_VERSION = "feedbax.spec.analysis_bundle.v5"
 ANALYSIS_BUNDLE_EXECUTION_SCHEMA_ID = "feedbax.manifest.analysis_bundle_execution"
-ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION = "feedbax.manifest.analysis_bundle_execution.v1"
+ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION_V1 = (
+    "feedbax.manifest.analysis_bundle_execution.v1"
+)
+ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION = (
+    "feedbax.manifest.analysis_bundle_execution.v2"
+)
 
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 _IMMUTABLE_MANIFEST_URI_PATTERN = re.compile(r"artifact://sha256/([0-9a-f]{64})")
@@ -312,6 +324,33 @@ class AnalysisBundleSpec(StrictModel):
         return value
 
 
+AnalysisBundleAuthoring: TypeAlias = (
+    AnalysisBundleSpec | AnalysisBundleDeltaSpec | Mapping[str, Any]
+)
+
+
+def resolve_analysis_bundle_authoring(
+    bundle: AnalysisBundleAuthoring,
+    *,
+    repo_root: Path | str | None = None,
+) -> tuple[AnalysisBundleSpec, FlattenedAnalysisBundle | None]:
+    """Resolve direct or delta-authored input to one validated v5 bundle."""
+    if isinstance(bundle, AnalysisBundleSpec):
+        return bundle, None
+    if isinstance(bundle, AnalysisBundleDeltaSpec) or is_analysis_bundle_delta_payload(bundle):
+        delta = (
+            bundle
+            if isinstance(bundle, AnalysisBundleDeltaSpec)
+            else AnalysisBundleDeltaSpec.model_validate(bundle)
+        )
+        flattened = flatten_analysis_bundle_delta(delta, repo_root=repo_root)
+        return AnalysisBundleSpec.model_validate(flattened.payload), flattened
+    from feedbax.contracts.migrations import migrate_structured_spec_payload
+
+    migrated = migrate_structured_spec_payload("AnalysisBundleSpec", dict(bundle))
+    return AnalysisBundleSpec.model_validate(migrated.payload), None
+
+
 @dataclass(frozen=True)
 class BundleExpansion:
     """One executable spec generated from a bundle template."""
@@ -321,6 +360,7 @@ class BundleExpansion:
     mode: AnalysisBundleMode
     matched_run_ids: tuple[str, ...]
     spec: AnalysisRunSpec
+    bundle_composition: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -378,13 +418,21 @@ class BundleStageExecutionRecord(StrictModel):
 class StagedAnalysisBundleExecution(StrictModel):
     """Durable execution provenance for a staged analysis bundle plan."""
 
-    schema_id: str = ANALYSIS_BUNDLE_EXECUTION_SCHEMA_ID
-    schema_version: str = ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION
+    schema_id: Literal[ANALYSIS_BUNDLE_EXECUTION_SCHEMA_ID] = (
+        ANALYSIS_BUNDLE_EXECUTION_SCHEMA_ID
+    )
+    schema_version: Literal[ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION] = (
+        ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION
+    )
     bundle_name: str
     matched_run_ids: list[str] = Field(default_factory=list)
     stages: list[BundleStageExecutionRecord] = Field(default_factory=list)
     report_outputs: list[BundleStageOutputRecord] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    bundle_composition: dict[str, Any] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
 
 class BundleMissingRoleRecord(StrictModel):
@@ -427,6 +475,10 @@ class AnalysisBundleDryRunResult(StrictModel):
     matched_run_ids: list[str] = Field(default_factory=list)
     stages: list[BundleStageDryRunRecord] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    bundle_composition: dict[str, Any] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
 
 def _split_bundle_key(key: str, registry: ExperimentRegistry) -> tuple[str, str]:
@@ -466,8 +518,8 @@ def load_analysis_bundle(
     key: str,
     *,
     registry: ExperimentRegistry | None = None,
-) -> AnalysisBundleSpec:
-    """Load and pydantic-validate an analysis bundle YAML resource."""
+) -> AnalysisBundleSpec | AnalysisBundleDeltaSpec:
+    """Load and validate direct or delta-authored analysis bundle YAML."""
     active_registry = registry or EXPERIMENT_REGISTRY
     package_name, bundle_name = _split_bundle_key(key, active_registry)
     metadata = active_registry.get_package_metadata(package_name)
@@ -485,6 +537,8 @@ def load_analysis_bundle(
         ) from exc
     from feedbax.contracts.migrations import migrate_structured_spec_payload
 
+    if is_analysis_bundle_delta_payload(data):
+        return AnalysisBundleDeltaSpec.model_validate(data)
     migrated = migrate_structured_spec_payload("AnalysisBundleSpec", data)
     return AnalysisBundleSpec.model_validate(migrated.payload)
 
@@ -553,12 +607,14 @@ def predicate_matches_manifest(
 
 
 def select_bundle_manifests(
-    bundle: AnalysisBundleSpec,
+    bundle: AnalysisBundleAuthoring,
     root: Path | str | None = None,
     *,
     run_ids: Iterable[str] | None = None,
+    repo_root: Path | str | None = None,
 ) -> list[AnyManifest]:
     """Select manifests in a root that match a bundle predicate."""
+    bundle, _composition = resolve_analysis_bundle_authoring(bundle, repo_root=repo_root)
     allowed_ids = set(run_ids) if run_ids is not None else None
     candidates = iter_candidate_manifests(root, manifest_kind=bundle.predicate.manifest_kind)
     if bundle.predicate.top_k_by_metric_per_group is not None:
@@ -1704,12 +1760,19 @@ def _execute_stage_common(
 
 
 def expand_analysis_bundle(
-    bundle: AnalysisBundleSpec,
+    bundle: AnalysisBundleAuthoring,
     matched_manifests: Sequence[AnyManifest],
     *,
     execution_parent_refs: Mapping[str, ParentRef] | None = None,
+    repo_root: Path | str | None = None,
 ) -> list[BundleExpansion]:
     """Expand bundle templates into executable analysis run specs."""
+    bundle, flattening = resolve_analysis_bundle_authoring(bundle, repo_root=repo_root)
+    composition = (
+        analysis_bundle_composition_provenance(flattening)
+        if flattening is not None
+        else None
+    )
     if not bundle.templates:
         raise ValueError(f"Analysis bundle {bundle.name!r} has no templates")
     if not matched_manifests:
@@ -1739,6 +1802,7 @@ def expand_analysis_bundle(
                         mode=template.mode,
                         matched_run_ids=(manifest.id,),
                         spec=spec,
+                        bundle_composition=composition,
                     )
                 )
         else:
@@ -1768,21 +1832,30 @@ def expand_analysis_bundle(
                     mode=template.mode,
                     matched_run_ids=tuple(manifest.id for manifest in matched_manifests),
                     spec=spec,
+                    bundle_composition=composition,
                 )
             )
     return expansions
 
 
 def execute_analysis_bundle(
-    bundle: AnalysisBundleSpec,
+    bundle: AnalysisBundleAuthoring,
     *,
     root: Path | str | None = None,
+    repo_root: Path | str | None = None,
     run_ids: Iterable[str] | None = None,
     issues: list[str] | None = None,
     fig_dump_path: Path | str | None = None,
     fig_dump_formats: Sequence[str] = ("html",),
 ) -> list[tuple[BundleExpansion, AnalysisRunManifest, Path]]:
     """Apply a bundle to a manifest root and execute all generated specs."""
+    authored_bundle = bundle
+    bundle, flattening = resolve_analysis_bundle_authoring(bundle, repo_root=repo_root)
+    composition = (
+        analysis_bundle_composition_provenance(flattening)
+        if flattening is not None
+        else None
+    )
     root_path = Path(root) if root is not None else default_manifest_root()
     matched_manifests = select_bundle_manifests(bundle, root_path, run_ids=run_ids)
     execution_parent_refs = {
@@ -1790,25 +1863,27 @@ def execute_analysis_bundle(
         for manifest in matched_manifests
     }
     expansions = expand_analysis_bundle(
-        bundle,
+        authored_bundle,
         matched_manifests,
         execution_parent_refs=execution_parent_refs,
+        repo_root=repo_root,
     )
     outputs: list[tuple[BundleExpansion, AnalysisRunManifest, Path]] = []
     for expansion in expansions:
+        bundle_metadata = {
+            "name": expansion.bundle_name,
+            "template": expansion.template_name,
+            "mode": expansion.mode,
+            "matched_run_ids": list(expansion.matched_run_ids),
+            "metadata": dict(bundle.metadata),
+        }
+        if composition is not None:
+            bundle_metadata["composition"] = composition
         manifest, path = execute_analysis_run_spec(
             expansion.spec,
             root=root_path,
             issues=issues,
-            metadata={
-                "bundle": {
-                    "name": expansion.bundle_name,
-                    "template": expansion.template_name,
-                    "mode": expansion.mode,
-                    "matched_run_ids": list(expansion.matched_run_ids),
-                    "metadata": dict(bundle.metadata),
-                }
-            },
+            metadata={"bundle": bundle_metadata},
             fig_dump_path=fig_dump_path,
             fig_dump_formats=fig_dump_formats,
         )
@@ -1956,9 +2031,10 @@ def _dry_run_products(stage: BundleStageSpec) -> list[StageMaterialization]:
 
 
 def dry_run_staged_analysis_bundle(
-    bundle: AnalysisBundleSpec,
+    bundle: AnalysisBundleAuthoring,
     *,
     root: Path | str | None = None,
+    repo_root: Path | str | None = None,
     selection_spec: SelectionSpec | None = None,
     run_ids: Iterable[str] | None = None,
     exact_parents: StagedExactParents | None = None,
@@ -1968,6 +2044,7 @@ def dry_run_staged_analysis_bundle(
     checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
 ) -> AnalysisBundleDryRunResult:
     """Evaluate staged bundle bindings, conditions, and role dependencies only."""
+    bundle, flattening = resolve_analysis_bundle_authoring(bundle, repo_root=repo_root)
     _execution_context = resolve_staged_execution_context(
         execution_descriptor,
         artifact_provider_bindings=artifact_provider_bindings,
@@ -2139,13 +2216,19 @@ def dry_run_staged_analysis_bundle(
         matched_run_ids=[manifest.id for manifest in matched_manifests],
         stages=records,
         metadata=dict(bundle.metadata),
+        bundle_composition=(
+            analysis_bundle_composition_provenance(flattening)
+            if flattening is not None
+            else None
+        ),
     )
 
 
 def execute_staged_analysis_bundle(
-    bundle: AnalysisBundleSpec,
+    bundle: AnalysisBundleAuthoring,
     *,
     root: Path | str | None = None,
+    repo_root: Path | str | None = None,
     run_ids: Iterable[str] | None = None,
     exact_parents: StagedExactParents | None = None,
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
@@ -2162,6 +2245,7 @@ def execute_staged_analysis_bundle(
     and materialization stages emit ``AnalysisRunManifest`` refs plus artifacts,
     and report stages emit ``ReportManifest`` refs plus report artifacts.
     """
+    bundle, flattening = resolve_analysis_bundle_authoring(bundle, repo_root=repo_root)
     execution_context = resolve_staged_execution_context(
         execution_descriptor,
         artifact_provider_bindings=artifact_provider_bindings,
@@ -2373,4 +2457,9 @@ def execute_staged_analysis_bundle(
         stages=stage_records,
         report_outputs=report_outputs,
         metadata=dict(bundle.metadata),
+        bundle_composition=(
+            analysis_bundle_composition_provenance(flattening)
+            if flattening is not None
+            else None
+        ),
     )
