@@ -559,7 +559,19 @@ def test_harness_cli_persists_execution_policy_evidence(
     spec = tmp_path / f"matrix-{execution_mode}.json"
     policy = tmp_path / f"policy-{execution_mode}.json"
     manifest_root = tmp_path / f"rows-{execution_mode}"
-    spec.write_text(json.dumps(_evaluation_matrix_payload("one", "two")), encoding="utf-8")
+    matrix_payload = _evaluation_matrix_payload("one", "two")
+    matrix_payload["base"] = {
+        "evaluation_type": "example.cli_gate",
+        "params": {"fixture_identity": ""},
+    }
+    matrix_payload["rows"] = [
+        {
+            "row_id": row_id,
+            "deltas": [{"path": "params.fixture_identity", "value": row_id}],
+        }
+        for row_id in ("one", "two")
+    ]
+    spec.write_text(json.dumps(matrix_payload), encoding="utf-8")
     policy_content = json.dumps(
         {
             "per_row_max_rows": 1,
@@ -589,7 +601,8 @@ def test_harness_cli_persists_execution_policy_evidence(
         evaluation.unregister_evaluation_recipe("example.cli_gate")
 
     assert result == 0
-    manifest_path = next((manifest_root / "one" / "manifests" / "evaluation_runs").glob("*.json"))
+    store_root = manifest_root if execution_mode == "batch" else manifest_root / "one"
+    manifest_path = next((store_root / "manifests" / "evaluation_runs").glob("*.json"))
     manifest = load_manifest(manifest_path)
     expected = {
         "content_sha256": sha256_bytes(policy_content),
