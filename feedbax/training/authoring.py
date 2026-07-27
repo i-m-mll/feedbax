@@ -253,7 +253,24 @@ def compile_training_method_authoring(
         )
 
     method_payload = copy.deepcopy(authored_row.payload)
-    method_payload.pop(TRAINING_ROW_LOWERER_REF_FIELD, None)
+    if TRAINING_ROW_LOWERER_REF_FIELD in method_payload:
+        dispatch_identity = {
+            "schema_id": descriptor.payload_schema_id,
+            "schema_version": descriptor.payload_schema_version,
+        }
+        for field, expected in dispatch_identity.items():
+            observed = method_payload.get(field)
+            if observed != expected:
+                raise TrainingMethodAuthoringError(
+                    f"/row/payload/{field} does not match bound descriptor authority; "
+                    f"expected {expected!r}, observed {observed!r}"
+                )
+        for field in (
+            "schema_id",
+            "schema_version",
+            TRAINING_ROW_LOWERER_REF_FIELD,
+        ):
+            method_payload.pop(field)
     try:
         typed_payload = descriptor.payload_model.model_validate(method_payload)
     except Exception as exc:
