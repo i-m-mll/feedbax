@@ -367,7 +367,7 @@ def test_shadow_launch_evidence_registry_explicitly_rejects_v0() -> None:
         (
             "RunAssemblyRequest",
             "feedbax.spec.run_assembly_request",
-            "feedbax.spec.run_assembly_request.v3",
+            "feedbax.spec.run_assembly_request.v4",
         ),
         (
             "DeploymentPolicy",
@@ -378,6 +378,21 @@ def test_shadow_launch_evidence_registry_explicitly_rejects_v0() -> None:
             "StudioTrainingAssemblySpec",
             "feedbax.spec.studio.training_assembly",
             "feedbax.spec.studio.training_assembly.v1",
+        ),
+        (
+            "EvaluationMatrixBatchPlan",
+            "feedbax.spec.evaluation_matrix_batch_plan",
+            "feedbax.spec.evaluation_matrix_batch_plan.v1",
+        ),
+        (
+            "EvaluationMatrixOrderedUnionEvidence",
+            "feedbax.orchestration.evaluation_matrix_ordered_union_evidence",
+            "feedbax.orchestration.evaluation_matrix_ordered_union_evidence.v1",
+        ),
+        (
+            "EvaluationWorkerTopologyEvidence",
+            "feedbax.orchestration.evaluation_worker_topology_evidence",
+            "feedbax.orchestration.evaluation_worker_topology_evidence.v1",
         ),
     ],
 )
@@ -391,7 +406,7 @@ def test_default_registry_registers_assemble_contract_families(
     assert family.identity == schema_id
     assert family.current_version == current_version
     assert family.policy is not None
-    assert family.policy.stance == ("migrate" if kind == "TrainingDiagnostics" else "reject")
+    assert family.policy.stance == ("migrate" if kind == "RunAssemblyRequest" else "reject")
     accepted = default_spec_registry.migrate(
         kind,
         {"schema_id": schema_id, "schema_version": current_version},
@@ -404,6 +419,14 @@ def test_default_registry_registers_assemble_contract_families(
             {"schema_id": schema_id, "schema_version": f"{schema_id}.v0"},
         )
     if kind == "RunAssemblyRequest":
+        migrated = default_spec_registry.migrate(
+            kind,
+            {
+                "schema_id": schema_id,
+                "schema_version": f"{schema_id}.v3",
+            },
+        )
+        assert migrated.payload["staged_roots"] == []
         with pytest.raises(
             UnsupportedSpecVersion,
             match="migration_intentionally_absent=yes",

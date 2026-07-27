@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor
 from contextlib import nullcontext
 import json
+import multiprocessing
+import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,6 +26,80 @@ from feedbax.contracts.manifest import (
 
 CustodyMode = Literal["manifest", "content-addressed"]
 SUPPORTED_EXECUTION_POLICY_OVERRIDE_FLAG = "--allow-large-per-row"
+
+
+def _initialize_evaluation_batch_worker(plugins: tuple[str, ...]) -> None:
+    """Load evaluation plugins once per persistent worker process."""
+    from feedbax.plugins import load_training_method_plugins
+
+    load_training_method_plugins(modules=plugins)
+
+
+def _execute_evaluation_batch_partition(task: Mapping[str, Any]) -> dict[str, Any]:
+    """Execute many authenticated batch units in one persistent worker process."""
+    from feedbax.analysis.evaluation import (
+        EvaluationBatchExecution,
+        execute_evaluation_run_matrix,
+    )
+    from feedbax.analysis.execution_context import resolve_staged_execution_context
+    from feedbax.orchestration.bundle import RunBundle
+    from feedbax.orchestration.input_materialization import (
+        staged_execution_bindings_for_bundle,
+    )
+
+    bundle = RunBundle.model_validate_json(Path(task["bundle_path"]).read_text(encoding="utf-8"))
+    projected = staged_execution_bindings_for_bundle(
+        bundle,
+        inputs_root=task["inputs_root"],
+    )
+    execution_context = resolve_staged_execution_context(
+        projected.descriptor,
+        artifact_provider_bindings=projected.artifact_provider_bindings,
+        manifest_root_bindings=projected.manifest_root_bindings,
+        checkpoint_custody_bindings=projected.checkpoint_custody_bindings,
+    )
+    payload = _read_json_object(task["payload_path"], description="evaluation matrix spec")
+    result = execute_evaluation_run_matrix(
+        payload,
+        root=Path(task["manifest_root"]),
+        repo_root=task["repo_root"],
+        execution_context=execution_context,
+        batch=EvaluationBatchExecution(
+            batch_units=tuple(
+                (batch["batch_id"], tuple(batch["ordered_row_ids"])) for batch in task["batches"]
+            )
+        ),
+    )
+    outcomes_by_id = {row.row_id: row for row in result.rows}
+    completed_batches = []
+    for batch in task["batches"]:
+        outcomes = []
+        for row_id in batch["ordered_row_ids"]:
+            row = outcomes_by_id[row_id]
+            states_schema = getattr(row.result, "metadata", {}).get("states_schema")
+            diagnostic_schema_ids = ()
+            if isinstance(states_schema, str):
+                diagnostic_schema_ids = (states_schema,)
+            elif isinstance(states_schema, Mapping) and isinstance(
+                states_schema.get("schema_id"), str
+            ):
+                diagnostic_schema_ids = (states_schema["schema_id"],)
+            outcomes.append(
+                {
+                    "row_id": row.row_id,
+                    "manifest_id": row.result.id,
+                    "manifest_path": str(row.manifest_path),
+                    "diagnostic_schema_ids": diagnostic_schema_ids,
+                }
+            )
+        completed_batches.append(
+            {
+                "batch_id": batch["batch_id"],
+                "batch_index": batch["batch_index"],
+                "outcomes": outcomes,
+            }
+        )
+    return {"pid": os.getpid(), "batches": completed_batches}
 
 
 @dataclass(frozen=True)
@@ -123,9 +200,12 @@ def semantic_diff(before: Any, after: Any, *, path: str = "$") -> list[SemanticC
             else:
                 changes.extend(semantic_diff(before[key], after[key], path=child))
         return changes
-    if isinstance(before, Sequence) and not isinstance(before, (str, bytes)) and isinstance(
-        after, Sequence
-    ) and not isinstance(after, (str, bytes)):
+    if (
+        isinstance(before, Sequence)
+        and not isinstance(before, (str, bytes))
+        and isinstance(after, Sequence)
+        and not isinstance(after, (str, bytes))
+    ):
         changes = []
         for index in range(max(len(before), len(after))):
             child = f"{path}[{index}]"
@@ -165,8 +245,7 @@ class MatrixMaterializerHarness:
     ):
         if custody not in ("manifest", "content-addressed"):
             raise ValueError(
-                "unknown output custody route; registered routes are: "
-                "content-addressed, manifest"
+                "unknown output custody route; registered routes are: content-addressed, manifest"
             )
         self.root = Path(root)
         self.custody = custody
@@ -238,8 +317,10 @@ class MatrixMaterializerHarness:
                         metadata={"row_id": row_id, "source": source},
                     )
                 )
-            if manifest_path is not None and hasattr(result, "metadata") and hasattr(
-                result, "artifacts"
+            if (
+                manifest_path is not None
+                and hasattr(result, "metadata")
+                and hasattr(result, "artifacts")
             ):
                 result.metadata.setdefault("matrix_harness", {}).update(
                     {
@@ -259,9 +340,7 @@ class MatrixMaterializerHarness:
                     for artifact in artifacts
                     if artifact.artifact_id not in known_artifact_ids
                 )
-                manifest_path = write_manifest(
-                    result, root=row_root, index=not self.shared_store
-                )
+                manifest_path = write_manifest(result, root=row_root, index=not self.shared_store)
             materialized.append(
                 MaterializedRow(
                     row_id=row_id,
@@ -368,6 +447,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     from feedbax.contracts.evaluation_lifecycle import (
         EvaluationLifecycleEvidence,
         EvaluationLifecycleRowOutcome,
+        EvaluationMatrixBatchPlan,
+        EvaluationWorkerProcessEvidence,
+        EvaluationWorkerTopologyEvidence,
     )
     from feedbax.orchestration.bundle import RunBundle
     from feedbax.orchestration.input_materialization import (
@@ -461,6 +543,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "and lifecycle result together"
         )
     resolved_context = None
+    orchestration_batch_plan = None
+    orchestration_worker_count = None
     if args.orchestration_bundle is not None:
         if (
             args.execution_descriptor is not None
@@ -476,6 +560,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if bundle.execution_family != "evaluation-matrix":
             parser.error("orchestration bundle is not an evaluation-matrix family bundle")
+        matching_rows = [row for row in bundle.rows if row.row_id == args.orchestration_row_id]
+        if len(matching_rows) != 1:
+            parser.error("orchestration row id is absent or ambiguous in the bundle")
+        try:
+            orchestration_batch_plan = EvaluationMatrixBatchPlan.model_validate(
+                matching_rows[0].launch.metadata.get("batch_plan")
+            )
+        except ValueError as exc:
+            parser.error(f"orchestration evaluation row lacks an authenticated batch plan: {exc}")
+        orchestration_worker_count = min(
+            bundle.launch_policy.max_parallel_rows,
+            len(orchestration_batch_plan.batches),
+        )
         projected = staged_execution_bindings_for_bundle(
             bundle,
             inputs_root=args.orchestration_inputs_root,
@@ -493,30 +590,104 @@ def main(argv: Sequence[str] | None = None) -> int:
         if emitter is not None:
             emitter.emit("ready", {"executor_family": "evaluation-matrix"})
         try:
-            result = execute_evaluation_run_matrix(
-                payload,
-                root=args.manifest_root,
-                repo_root=args.repo_root,
-                escape_hatch_reason=args.escape_hatch_reason,
-                parent_manifest_root=args.parent_manifest_root,
-                execution_descriptor=execution_descriptor,
-                artifact_provider_bindings=[
-                    StagedArtifactProviderRootBinding(
-                        *binding_parts(value, option="--artifact-provider")
+            evidence = None
+            if (
+                args.batch
+                and orchestration_batch_plan is not None
+                and orchestration_worker_count is not None
+            ):
+                indexed_batches = [
+                    {
+                        "batch_id": batch.batch_id,
+                        "batch_index": index,
+                        "ordered_row_ids": list(batch.ordered_row_ids),
+                    }
+                    for index, batch in enumerate(orchestration_batch_plan.batches)
+                ]
+                partitions = [
+                    indexed_batches[index::orchestration_worker_count]
+                    for index in range(orchestration_worker_count)
+                ]
+                common_task = {
+                    "bundle_path": args.orchestration_bundle,
+                    "inputs_root": args.orchestration_inputs_root,
+                    "payload_path": args.spec,
+                    "manifest_root": args.manifest_root,
+                    "repo_root": args.repo_root,
+                }
+                with ProcessPoolExecutor(
+                    max_workers=orchestration_worker_count,
+                    initializer=_initialize_evaluation_batch_worker,
+                    initargs=(tuple(args.plugin or ()),),
+                    mp_context=multiprocessing.get_context("spawn"),
+                ) as pool:
+                    worker_results = list(
+                        pool.map(
+                            _execute_evaluation_batch_partition,
+                            [{**common_task, "batches": partition} for partition in partitions],
+                        )
                     )
-                    for value in args.artifact_provider
-                ],
-                checkpoint_custody_bindings=[
-                    StagedCheckpointCustodyRootBinding(
-                        *binding_parts(value, option="--checkpoint-custody")
-                    )
-                    for value in args.checkpoint_custody
-                ],
-                execution_context=resolved_context,
-                batch=EvaluationBatchExecution() if args.batch else None,
-                matrix_metadata=policy_metadata,
-            )
-            if args.lifecycle_result is not None:
+                completed_batches = sorted(
+                    (batch for worker in worker_results for batch in worker["batches"]),
+                    key=lambda item: item["batch_index"],
+                )
+                outcomes = tuple(
+                    EvaluationLifecycleRowOutcome.model_validate(outcome)
+                    for batch in completed_batches
+                    for outcome in batch["outcomes"]
+                )
+                evidence = EvaluationLifecycleEvidence(
+                    orchestration_row_id=args.orchestration_row_id,
+                    ordered_row_ids=tuple(item.row_id for item in outcomes),
+                    outcomes=outcomes,
+                )
+                topology = EvaluationWorkerTopologyEvidence(
+                    requested_worker_count=orchestration_worker_count,
+                    batch_count=len(indexed_batches),
+                    processes=tuple(
+                        EvaluationWorkerProcessEvidence(
+                            pid=worker["pid"],
+                            ordered_batch_ids=tuple(
+                                batch["batch_id"] for batch in worker["batches"]
+                            ),
+                        )
+                        for worker in worker_results
+                    ),
+                )
+                Path(args.lifecycle_result).write_text(
+                    json.dumps(evidence.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                Path(args.lifecycle_result).with_name("evaluation-worker-topology.json").write_text(
+                    json.dumps(topology.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                result = None
+            else:
+                result = execute_evaluation_run_matrix(
+                    payload,
+                    root=args.manifest_root,
+                    repo_root=args.repo_root,
+                    escape_hatch_reason=args.escape_hatch_reason,
+                    parent_manifest_root=args.parent_manifest_root,
+                    execution_descriptor=execution_descriptor,
+                    artifact_provider_bindings=[
+                        StagedArtifactProviderRootBinding(
+                            *binding_parts(value, option="--artifact-provider")
+                        )
+                        for value in args.artifact_provider
+                    ],
+                    checkpoint_custody_bindings=[
+                        StagedCheckpointCustodyRootBinding(
+                            *binding_parts(value, option="--checkpoint-custody")
+                        )
+                        for value in args.checkpoint_custody
+                    ],
+                    execution_context=resolved_context,
+                    batch=EvaluationBatchExecution() if args.batch else None,
+                    matrix_metadata=policy_metadata,
+                )
+            if args.lifecycle_result is not None and result is not None:
                 outcomes = []
                 for row in result.rows:
                     states_schema = getattr(row.result, "metadata", {}).get("states_schema")
@@ -542,8 +713,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 destination = Path(args.lifecycle_result)
                 destination.write_text(
-                    json.dumps(evidence.model_dump(mode="json"), indent=2, sort_keys=True)
-                    + "\n",
+                    json.dumps(evidence.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
                     encoding="utf-8",
                 )
         except BaseException:
@@ -559,7 +729,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 {
                     "status": "completed",
                     "executor_family": "evaluation-matrix",
-                    "ordered_row_ids": [row.row_id for row in result.rows],
+                    "ordered_row_ids": (
+                        list(evidence.ordered_row_ids)
+                        if evidence is not None
+                        else [row.row_id for row in result.rows]
+                    ),
                 },
             )
     return 0

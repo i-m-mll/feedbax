@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Callable, Mapping, Protocol
 from pydantic import Field, JsonValue, model_validator
 
 from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.evaluation_lifecycle import EvaluationMatrixBatchPlan
 from feedbax.contracts.run_composition import (
     AuthoredIntentParent,
     CompositionNode,
@@ -47,6 +48,7 @@ from feedbax.orchestration.bundle import (
     SchemaArtifactRef,
 )
 from feedbax.orchestration.revision import resolve_feedbax_revision
+from feedbax.orchestration.staged_root_custody import StagedRootCustody
 from feedbax.training.row_lowering import (
     GovernedTrainingRowParent,
     TrainingRowLoweringContext,
@@ -59,7 +61,8 @@ if TYPE_CHECKING:
 RUN_ASSEMBLY_REQUEST_SCHEMA_ID = "feedbax.spec.run_assembly_request"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v1"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V2 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v2"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v3"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v3"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v4"
 
 
 class CompilerIdentity(StrictModel):
@@ -104,9 +107,9 @@ class RunAssemblyRequest(StrictModel):
     authored: SchemaArtifactRef
     compiler: CompilerIdentity
     inputs: list[AssemblyInputDeclaration] = Field(default_factory=list)
-    training_row_parents: list[GovernedTrainingRowParentDeclaration] = Field(
-        default_factory=list
-    )
+    training_row_parents: list[GovernedTrainingRowParentDeclaration] = Field(default_factory=list)
+    staged_roots: list[StagedRootCustody] = Field(default_factory=list)
+    evaluation_batch_plan: EvaluationMatrixBatchPlan | None = None
     deployment_policy: DeploymentPolicy
     environment: EnvironmentDeclaration
     launch_policy: LaunchPolicy = Field(default_factory=LaunchPolicy)
@@ -126,6 +129,11 @@ class RunAssemblyRequest(StrictModel):
         keys = [(item.parent.kind, item.parent.ref) for item in self.training_row_parents]
         if len(keys) != len(set(keys)):
             raise ValueError("training_row_parents contain ambiguous kind/ref declarations")
+        staged_root_keys = [(item.root_kind, item.binding_name) for item in self.staged_roots]
+        if staged_root_keys != sorted(staged_root_keys):
+            raise ValueError("staged_roots must be in canonical (root_kind, binding_name) order")
+        if len(staged_root_keys) != len(set(staged_root_keys)):
+            raise ValueError("staged_roots contain duplicate typed binding names")
         return self
 
 
@@ -219,6 +227,8 @@ class AssemblyContext:
     environment_digest: str | None = None
     authored_ref: SchemaArtifactRef | None = None
     resolved_inputs: tuple[ImmutableInputIdentity, ...] = ()
+    staged_roots: tuple[StagedRootCustody, ...] = ()
+    evaluation_batch_plan: EvaluationMatrixBatchPlan | None = None
     training_row_lowering_context: Any | None = None
 
 
@@ -263,16 +273,22 @@ class AssemblyCompilerRegistry:
             return self._entries[key]
         except KeyError as exc:
             known = ", ".join(repr(item) for item in sorted(self._entries)) or "<none>"
-            raise ValueError(f"no assembly compiler registered for {key!r}; known: {known}") from exc
+            raise ValueError(
+                f"no assembly compiler registered for {key!r}; known: {known}"
+            ) from exc
 
 
 def build_default_assembly_registry() -> AssemblyCompilerRegistry:
     """Return Feedbax's built-in training-matrix and Studio compiler registry."""
+    from feedbax.analysis.evaluation_orchestration import (
+        register_evaluation_run_matrix_compiler,
+    )
     from feedbax.contracts.studio_training import register_studio_training_compiler
     from feedbax.training.spec_storage import register_training_run_matrix_compiler
 
     registry = AssemblyCompilerRegistry()
     register_training_run_matrix_compiler(registry)
+    register_evaluation_run_matrix_compiler(registry)
     register_studio_training_compiler(registry)
     return registry
 
@@ -305,7 +321,10 @@ def load_schema_artifact(
     payload = json.loads(data)
     if not isinstance(payload, dict):
         raise ValueError("registered structured artifact must contain a JSON object")
-    if payload.get("schema_id") != ref.schema_id or payload.get("schema_version") != ref.schema_version:
+    if (
+        payload.get("schema_id") != ref.schema_id
+        or payload.get("schema_version") != ref.schema_version
+    ):
         raise ValueError("artifact schema identity/version does not match its SchemaArtifactRef")
     registry = context.schema_registry
     if registry is None:
@@ -342,9 +361,7 @@ def persist_compiled_row(
         immutable_inputs=canonical_inputs,
         execution_hash=execution_hash,
     )
-    capsule = dict(
-        identity_adapter.build_capsule(row, identities=identities, context=context)
-    )
+    capsule = dict(identity_adapter.build_capsule(row, identities=identities, context=context))
     if not isinstance(capsule.get("schema_id"), str) or not isinstance(
         capsule.get("schema_version"), str
     ):
@@ -419,6 +436,8 @@ def assemble_run_bundle(
     compiler_context = replace(
         context,
         resolved_inputs=tuple(resolved_inputs),
+        staged_roots=tuple(request.staged_roots),
+        evaluation_batch_plan=request.evaluation_batch_plan,
         training_row_lowering_context=lowering_context,
     )
     compiled = registration.compiler.compile(
@@ -467,6 +486,7 @@ def assemble_run_bundle(
         launch_policy=request.launch_policy,
         budget=request.budget,
         resolved_inputs=resolved_input_records,
+        staged_roots=request.staged_roots,
         orchestration_root=request.orchestration_root,
         keep_alive=request.keep_alive,
         deadman_enabled=request.deadman_enabled,
@@ -525,9 +545,7 @@ def _load_training_row_parent_artifact(
     elif ref.uri is not None:
         data = Path(ref.uri).read_bytes()
     else:
-        raise ValueError(
-            f"training-row parent artifact {ref.artifact_id!r} has no resolver or URI"
-        )
+        raise ValueError(f"training-row parent artifact {ref.artifact_id!r} has no resolver or URI")
     actual_sha256 = hashlib.sha256(data).hexdigest()
     if actual_sha256 != ref.sha256:
         raise ValueError(
@@ -557,7 +575,8 @@ def _resolve_input(
 ) -> ResolvedAssemblyInput:
     if context.input_resolver is None:
         resolved = ResolvedAssemblyInput.model_validate_json(
-            Path(declaration.locator).read_text(encoding="utf-8"))
+            Path(declaration.locator).read_text(encoding="utf-8")
+        )
     else:
         resolved = context.input_resolver(declaration)
     identity = resolved.identity

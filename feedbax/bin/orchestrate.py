@@ -24,6 +24,7 @@ from feedbax.contracts.shadow_launch import ShadowLaunchEvidence, ShadowLaunchRo
 from feedbax.contracts.evaluation_lifecycle import (
     EvaluationLifecycleEvidence,
     EvaluationShadowLaunchEvidence,
+    EvaluationWorkerTopologyEvidence,
 )
 from feedbax.contracts.staged_execution import validate_staged_binding_name
 from feedbax.orchestration import (
@@ -59,6 +60,7 @@ from feedbax.orchestration.drivers.runpod import (
     load_runpod_api_key,
 )
 from feedbax.orchestration.input_materialization import InputProviderRootBinding
+from feedbax.orchestration.executor_family import evaluation_matrix_ordered_union
 from feedbax.orchestration.payload_report import (
     MeasurementBindingExpectation,
     assert_measurement_binding,
@@ -402,12 +404,12 @@ def _shadow_launch_evidence(
     policy = bundle.deployment_policy
     if policy.driver != "local" or policy.venue != "local" or policy.cloud_authorized:
         raise ValueError("shadow-launch cannot emit evidence for a provider-capable bundle")
-    if len(bundle.rows) != 1:
-        raise ValueError("shadow-launch requires exactly one assembled row")
     if state.stage("COLLECT").status != "completed":
         raise ValueError("shadow-launch requires a completed COLLECT stage")
     execution_family = getattr(bundle, "execution_family", "native-training")
     if execution_family == "native-training":
+        if len(bundle.rows) != 1:
+            raise ValueError("native shadow-launch requires exactly one assembled row")
         for stage in ("CERTIFY", "TEARDOWN", "REGISTER"):
             if state.stage(stage).status != "pending":
                 raise ValueError(f"shadow-launch must stop before {stage}")
@@ -421,23 +423,36 @@ def _shadow_launch_evidence(
             "and must stop before REGISTER"
         )
 
-    row = bundle.rows[0]
-    if state.rows.get(row.row_id) is None or state.rows[row.row_id].status != "completed":
-        raise ValueError(f"shadow-launch row {row.row_id!r} did not complete")
+    for row in bundle.rows:
+        if state.rows.get(row.row_id) is None or state.rows[row.row_id].status != "completed":
+            raise ValueError(f"shadow-launch row {row.row_id!r} did not complete")
     if execution_family == "evaluation-matrix":
-        lifecycle_path = state.rows[row.row_id].collected_outputs.get(
-            "evaluation-matrix-result.json"
-        )
-        if not isinstance(lifecycle_path, str):
-            raise ValueError("evaluation shadow launch lacks collected lifecycle evidence")
-        lifecycle = EvaluationLifecycleEvidence.model_validate_json(
-            Path(lifecycle_path).read_text(encoding="utf-8")
-        )
+        lifecycles = []
+        for row in bundle.rows:
+            lifecycle_path = state.rows[row.row_id].collected_outputs.get(
+                "evaluation-matrix-result.json"
+            )
+            if not isinstance(lifecycle_path, str):
+                raise ValueError("evaluation shadow launch lacks collected lifecycle evidence")
+            lifecycles.append(
+                EvaluationLifecycleEvidence.model_validate_json(
+                    Path(lifecycle_path).read_text(encoding="utf-8")
+                )
+            )
         return EvaluationShadowLaunchEvidence(
             run_set_id=bundle.run_set_id,
             bundle_sha256=canonical_run_bundle_sha256(bundle),
-            lifecycle=lifecycle,
+            lifecycles=tuple(lifecycles),
+            ordered_union=evaluation_matrix_ordered_union(bundle, lifecycles),
+            worker_topology=EvaluationWorkerTopologyEvidence.model_validate_json(
+                Path(
+                    state.rows[bundle.rows[0].row_id].collected_outputs[
+                        "evaluation-worker-topology.json"
+                    ]
+                ).read_text(encoding="utf-8")
+            ),
         )
+    row = bundle.rows[0]
     if "--resume" not in row.launch.command:
         raise ValueError("shadow-launch requires a native continuation row")
     if row.execution.row_provenance is None:
@@ -761,9 +776,7 @@ def _staged_root_bindings(values: list[str]) -> tuple[StagedRootSnapshotBinding,
             or not name
             or not root.is_absolute()
         ):
-            raise ValueError(
-                "--staged-root requires KIND:NAME=ABSOLUTE_PATH with a supported KIND"
-            )
+            raise ValueError("--staged-root requires KIND:NAME=ABSOLUTE_PATH with a supported KIND")
         validate_staged_binding_name(name)
         info = root.stat()
         bindings.append(
@@ -783,9 +796,7 @@ def _parse_measurement_expectation(value: str) -> MeasurementBindingExpectation:
         schema_id = value
         schema_version = ""
     if not schema_id or (separator and not schema_version):
-        raise ValueError(
-            "--assert-measurement requires TRACE_SCHEMA_ID or TRACE_SCHEMA_ID@VERSION"
-        )
+        raise ValueError("--assert-measurement requires TRACE_SCHEMA_ID or TRACE_SCHEMA_ID@VERSION")
     return MeasurementBindingExpectation(
         trace_schema_id=schema_id,
         trace_schema_version=schema_version or None,

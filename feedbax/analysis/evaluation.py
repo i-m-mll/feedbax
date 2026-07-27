@@ -150,16 +150,21 @@ class EvaluationBatchExecution:
     grids needing reuse or resume must use per-row mode.
     """
 
+    ordered_row_ids: tuple[str, ...] | None = None
+    batch_units: tuple[tuple[str, tuple[str, ...]], ...] | None = None
+
 
 @dataclass(frozen=True)
 class EvaluationBatchItem:
     """One addressable row supplied to a registered batch recipe."""
+
     row_id: str
     spec: EvaluationRunSpec
 
 
 class EvaluationBatchRowError(RuntimeError):
     """Fail-closed batch diagnostic identifying the row that failed."""
+
     def __init__(self, row_id: str, cause: BaseException):
         super().__init__(f"evaluation batch row {row_id!r} failed: {cause}")
         self.row_id = row_id
@@ -528,6 +533,49 @@ def execute_evaluation_run_matrix(
             raise TypeError("batch must be an EvaluationBatchExecution instance")
         if escape_hatch_reason is not None:
             raise ValueError("batched execution only accepts EvaluationRunMatrixSpec")
+        if batch.ordered_row_ids is not None and batch.batch_units is not None:
+            raise ValueError("batch execution accepts either ordered_row_ids or batch_units")
+        if batch.batch_units is not None:
+            from feedbax.analysis.harness import HarnessResult
+
+            available = {row_id: payload for row_id, payload in rows}
+            completed = []
+            batch_ids = []
+            for batch_id, batch_row_ids in batch.batch_units:
+                if not batch_id or batch_id in batch_ids:
+                    raise ValueError("batch_units require unique non-empty batch ids")
+                unknown = [row_id for row_id in batch_row_ids if row_id not in available]
+                if not batch_row_ids or len(batch_row_ids) != len(set(batch_row_ids)) or unknown:
+                    raise ValueError("batch_units require non-empty unique known ordered row ids")
+                batch_ids.append(batch_id)
+                result = _execute_evaluation_batch_rows(
+                    [(row_id, available[row_id]) for row_id in batch_row_ids],
+                    root=Path(root) / batch_id,
+                    execution_context=execution_context,
+                    matrix_metadata=matrix_metadata,
+                    regeneration_parameters={
+                        **regeneration_parameters,
+                        "batch_execution": {
+                            "mode": "governed_ordered_partition",
+                            "batch_id": batch_id,
+                            "ordered_row_ids": batch_row_ids,
+                        },
+                    },
+                )
+                completed.extend(result.rows)
+            return HarnessResult(
+                rows=tuple(completed),
+                note="Evaluation run matrix persistent-worker partition",
+                metadata={"ordered_batch_ids": batch_ids},
+            )
+        if batch.ordered_row_ids is not None:
+            available = {row_id: payload for row_id, payload in rows}
+            if len(batch.ordered_row_ids) != len(set(batch.ordered_row_ids)):
+                raise ValueError("batch ordered_row_ids must be unique")
+            unknown = [row_id for row_id in batch.ordered_row_ids if row_id not in available]
+            if unknown:
+                raise ValueError(f"batch ordered_row_ids contain unknown matrix rows: {unknown!r}")
+            rows = [(row_id, available[row_id]) for row_id in batch.ordered_row_ids]
         return _execute_evaluation_batch_rows(
             rows,
             root=Path(root),
@@ -535,7 +583,14 @@ def execute_evaluation_run_matrix(
             matrix_metadata=matrix_metadata,
             regeneration_parameters={
                 **regeneration_parameters,
-                "batch_execution": {"mode": "whole_matrix"},
+                "batch_execution": {
+                    "mode": (
+                        "governed_ordered_subset"
+                        if batch.ordered_row_ids is not None
+                        else "whole_matrix"
+                    ),
+                    "ordered_row_ids": batch.ordered_row_ids,
+                },
             },
         )
 
@@ -605,9 +660,9 @@ def _execute_evaluation_batch_rows(
         # Fail closed before any recipe execution or publication.
         rows_by_manifest_id: dict[str, list[str]] = {}
         for item in items:
-            rows_by_manifest_id.setdefault(
-                evaluation_run_manifest_id(item.spec), []
-            ).append(item.row_id)
+            rows_by_manifest_id.setdefault(evaluation_run_manifest_id(item.spec), []).append(
+                item.row_id
+            )
         collisions = {
             manifest_id: row_ids
             for manifest_id, row_ids in rows_by_manifest_id.items()
@@ -692,15 +747,14 @@ def _execute_evaluation_batch_rows(
         try:
             published_rows = []
             for row in result.rows:
+
                 def publish(artifact: ArtifactRef) -> ArtifactRef:
                     if artifact.uri is None:
                         return artifact
                     uri = Path(artifact.uri)
                     if not uri.is_relative_to(staging):
                         return artifact
-                    return artifact.model_copy(
-                        update={"uri": str(root / uri.relative_to(staging))}
-                    )
+                    return artifact.model_copy(update={"uri": str(root / uri.relative_to(staging))})
 
                 manifest = row.result.model_copy(
                     update={"artifacts": [publish(artifact) for artifact in row.result.artifacts]}
@@ -769,7 +823,9 @@ def _store_batched_evaluation_result(
             for value in prerequisites.values()
         ],
     ]
-    prov.entrypoint = EntrypointRef(kind="feedbax-evaluation-recipe", name=item.spec.evaluation_type)
+    prov.entrypoint = EntrypointRef(
+        kind="feedbax-evaluation-recipe", name=item.spec.evaluation_type
+    )
     manifest = _build_evaluation_manifest(
         manifest_id=manifest_id,
         run_spec=item.spec,

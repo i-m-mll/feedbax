@@ -64,8 +64,10 @@ from feedbax.orchestration.drivers.native_execution import (
 )
 from feedbax.orchestration.executor_family import (
     evaluation_lifecycle_payload,
+    evaluation_matrix_ordered_union,
     executor_family_adapter,
 )
+from feedbax.contracts.evaluation_lifecycle import EvaluationLifecycleEvidence
 from feedbax.orchestration.events import RunEventReader
 from feedbax.orchestration.input_materialization import preflight_resolved_inputs
 from feedbax.orchestration.revision import (
@@ -700,9 +702,7 @@ class StageEngine:
                     f"{mismatch_label} registration history is invalid"
                 ) from exc
             if existing != history:
-                raise OrchestrationStageError(
-                    f"{mismatch_label} registration history mismatch"
-                )
+                raise OrchestrationStageError(f"{mismatch_label} registration history mismatch")
             return
         self._write_json_atomically(history_path, history.model_dump(mode="json"))
 
@@ -1169,9 +1169,7 @@ class StageEngine:
                     record.pod_id,
                     timeout_seconds=max(0.0, deadline - self._monotonic()),
                 )
-                adopted_provision_record = self.driver.adopted_provision_record(
-                    original.intent_id
-                )
+                adopted_provision_record = self.driver.adopted_provision_record(original.intent_id)
                 adopted_state = state.model_copy(
                     update={"provision_record": adopted_provision_record}
                 )
@@ -1626,7 +1624,7 @@ class StageEngine:
                 )
             missing_outputs = executor_family_adapter(
                 row.execution_family
-            ).missing_collection_outputs(row, outputs)
+            ).missing_collection_outputs(self.bundle, row, outputs)
             if missing_outputs:
                 evidence = {
                     "kind": "absent_collection_outputs",
@@ -1664,6 +1662,25 @@ class StageEngine:
             state = state.with_row(row.row_id, row_state)
             self.store.save(state)
         stage_outputs: dict[str, Any] = {"rows": collected}
+        if self.bundle.execution_family == "evaluation-matrix" and not executor_failures:
+            lifecycles = [
+                EvaluationLifecycleEvidence.model_validate_json(
+                    Path(collected[row.row_id]["evaluation-matrix-result.json"]).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                for row in self.bundle.rows
+            ]
+            ordered_union = evaluation_matrix_ordered_union(self.bundle, lifecycles)
+            union_path = self.bundle.run_set_dir / "evaluation-matrix-ordered-union.json"
+            union_path.write_text(
+                ordered_union.model_dump_json(indent=2) + "\n",
+                encoding="utf-8",
+            )
+            stage_outputs["evaluation_matrix_ordered_union"] = {
+                **ordered_union.model_dump(mode="json"),
+                "path": str(union_path),
+            }
         if checkpoint_custody:
             stage_outputs["checkpoint_custody"] = checkpoint_custody
         if collection_recovery:
@@ -2991,9 +3008,7 @@ def _preflight_schedule_realization(
 
 def _format_preflight_failures(failed: Sequence[PreflightCheckEntry]) -> str:
     """Render ordered named failures with their actionable details."""
-    rendered = [
-        f"{check.name}: {check.detail}" if check.detail else check.name for check in failed
-    ]
+    rendered = [f"{check.name}: {check.detail}" if check.detail else check.name for check in failed]
     return f"preflight failed: {'; '.join(rendered)}"
 
 

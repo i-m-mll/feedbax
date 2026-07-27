@@ -8,7 +8,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from feedbax.contracts.evaluation_lifecycle import EvaluationLifecycleEvidence
+from feedbax.contracts.evaluation_lifecycle import (
+    EVALUATION_COLLECTION_OUTPUTS,
+    EvaluationLifecycleEvidence,
+    EvaluationMatrixBatchPlan,
+    EvaluationMatrixOrderedUnionEvidence,
+    EvaluationWorkerTopologyEvidence,
+)
+from feedbax.contracts.manifest import canonical_json_bytes, sha256_bytes
 from feedbax.orchestration.bundle import ExecutionFamily, RunBundle, RunRowSpec
 from feedbax.orchestration.drivers.native_execution import (
     bind_native_execution_command,
@@ -17,10 +24,6 @@ from feedbax.orchestration.drivers.native_execution import (
 )
 
 
-EVALUATION_COLLECTION_OUTPUTS = (
-    "evaluation-matrix-result.json",
-    "evaluation",
-)
 _EVALUATION_TRAINING_ONLY_CHECKS = (
     "checkpoint_cadence",
     "completed_batches",
@@ -55,7 +58,10 @@ class ExecutorFamilyAdapter(Protocol):
     ) -> tuple[list[str], RunRowSpec]: ...
 
     def missing_collection_outputs(
-        self, row: RunRowSpec, collected: Mapping[str, str]
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        collected: Mapping[str, str],
     ) -> list[str]: ...
 
     def declared_conformance_inapplicable(self) -> Mapping[str, str]: ...
@@ -98,14 +104,14 @@ class NativeTrainingExecutorAdapter:
         )
 
     def missing_collection_outputs(
-        self, row: RunRowSpec, collected: Mapping[str, str]
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        collected: Mapping[str, str],
     ) -> list[str]:
-        declared_missing = {
-            Path(source).name for source in row.launch.collect
-        } - set(collected)
-        return sorted(
-            declared_missing | set(missing_native_training_collection_outputs(row))
-        )
+        del bundle
+        declared_missing = {Path(source).name for source in row.launch.collect} - set(collected)
+        return sorted(declared_missing | set(missing_native_training_collection_outputs(row)))
 
     def declared_conformance_inapplicable(self) -> Mapping[str, str]:
         return {}
@@ -195,15 +201,37 @@ class EvaluationMatrixExecutorAdapter:
         return normalized, bound_row
 
     def missing_collection_outputs(
-        self, row: RunRowSpec, collected: Mapping[str, str]
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        collected: Mapping[str, str],
     ) -> list[str]:
-        del row
         missing = sorted(set(EVALUATION_COLLECTION_OUTPUTS) - set(collected))
         if missing:
             return missing
         evidence = EvaluationLifecycleEvidence.model_validate_json(
             Path(collected["evaluation-matrix-result.json"]).read_text(encoding="utf-8")
         )
+        topology = EvaluationWorkerTopologyEvidence.model_validate_json(
+            Path(collected["evaluation-worker-topology.json"]).read_text(encoding="utf-8")
+        )
+        plan = EvaluationMatrixBatchPlan.model_validate(row.launch.metadata.get("batch_plan"))
+        expected_worker_count = min(
+            bundle.launch_policy.max_parallel_rows,
+            len(plan.batches),
+        )
+        expected_partitions = tuple(
+            tuple(batch.batch_id for batch in plan.batches[worker_index::expected_worker_count])
+            for worker_index in range(expected_worker_count)
+        )
+        if (
+            topology.requested_worker_count != expected_worker_count
+            or tuple(process.ordered_batch_ids for process in topology.processes)
+            != expected_partitions
+        ):
+            raise ExecutorFamilyError(
+                "evaluation worker topology drifted from the authenticated batch plan"
+            )
         if evidence.executor_family != self.family:
             raise ExecutorFamilyError("collected evaluation lifecycle family drifted")
         return []
@@ -236,6 +264,46 @@ def evaluation_lifecycle_payload(path: Path | str) -> dict[str, object]:
     return json.loads(evidence.model_dump_json())
 
 
+def evaluation_matrix_ordered_union(
+    bundle: RunBundle,
+    lifecycles: Sequence[EvaluationLifecycleEvidence],
+) -> EvaluationMatrixOrderedUnionEvidence:
+    """Verify ordered batch outcomes reconstruct the compiler-bound matrix."""
+    if len(bundle.rows) != 1 or len(lifecycles) != 1:
+        raise ExecutorFamilyError("evaluation ordered-union evidence is incomplete")
+    row = bundle.rows[0]
+    lifecycle = lifecycles[0]
+    metadata = row.launch.metadata
+    try:
+        plan = EvaluationMatrixBatchPlan.model_validate(metadata.get("batch_plan"))
+    except ValueError as exc:
+        raise ExecutorFamilyError("evaluation row lacks an authenticated batch plan") from exc
+    if lifecycle.orchestration_row_id != row.row_id:
+        raise ExecutorFamilyError("evaluation lifecycle row identity drifted")
+    ordered_row_ids = [row_id for batch in plan.batches for row_id in batch.ordered_row_ids]
+    if tuple(ordered_row_ids) != lifecycle.ordered_row_ids:
+        raise ExecutorFamilyError(
+            "evaluation lifecycle outcomes drifted from the batch-plan ordered union"
+        )
+    intent_hash = metadata.get("matrix_intent_hash")
+    expected_hash = metadata.get("matrix_ordered_row_ids_sha256")
+    if plan.matrix_intent_hash != intent_hash:
+        raise ExecutorFamilyError("evaluation batch plan matrix identity drifted")
+    if not isinstance(expected_hash, str):
+        raise ExecutorFamilyError("evaluation row lacks its matrix order hash")
+    observed_hash = sha256_bytes(canonical_json_bytes(ordered_row_ids))
+    if observed_hash != expected_hash:
+        raise ExecutorFamilyError(
+            "evaluation batch ordered union does not reconstruct the authored matrix"
+        )
+    return EvaluationMatrixOrderedUnionEvidence(
+        matrix_intent_hash=plan.matrix_intent_hash,
+        ordered_row_ids_sha256=expected_hash,
+        ordered_batch_ids=tuple(batch.batch_id for batch in plan.batches),
+        ordered_row_ids=tuple(ordered_row_ids),
+    )
+
+
 __all__ = [
     "EVALUATION_COLLECTION_OUTPUTS",
     "EvaluationMatrixExecutorAdapter",
@@ -243,5 +311,6 @@ __all__ = [
     "ExecutorFamilyError",
     "NativeTrainingExecutorAdapter",
     "evaluation_lifecycle_payload",
+    "evaluation_matrix_ordered_union",
     "executor_family_adapter",
 ]
