@@ -450,6 +450,7 @@ def test_batch_reclamation_preflight_bounds_peak_before_any_output(
         leaf_id="velocity",
         consumer_id="tests.velocity",
         consumer_version="v1",
+        terminal_analysis_type="tests.velocity.analysis",
         parameters={"projection": "velocity"},
         accepted_evaluation_state_schema_ids=("tests.states.v1",),
         compact_product_schema_id="tests.velocity.product",
@@ -764,6 +765,7 @@ def register_feedbax_analysis_recipes():
             leaf_id=leaf,
             consumer_id="tests.projector",
             consumer_version="v1",
+            terminal_analysis_type=f"tests.{leaf}.analysis",
             parameters={"leaf": leaf},
             accepted_evaluation_state_schema_ids=("tests.diagnostic.evaluation.v1",),
             compact_product_schema_id=f"tests.{leaf}.product",
@@ -798,23 +800,24 @@ def register_feedbax_analysis_recipes():
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join((str(tmp_path), str(repo_root)))
 
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "feedbax.bin.orchestrate",
-            "shadow-launch",
-            "--assembly-request",
-            str(request_path),
-            *[
-                option
-                for item in sealed
-                for option in (
-                    "--staged-root",
-                    f"{item.custody.root_kind}:{item.custody.binding_name}={item.staging_root}",
-                )
-            ],
+    command = [
+        sys.executable,
+        "-m",
+        "feedbax.bin.orchestrate",
+        "shadow-launch",
+        "--assembly-request",
+        str(request_path),
+        *[
+            option
+            for item in sealed
+            for option in (
+                "--staged-root",
+                f"{item.custody.root_kind}:{item.custody.binding_name}={item.staging_root}",
+            )
         ],
+    ]
+    completed = subprocess.run(
+        command,
         cwd=repo_root,
         env=env,
         text=True,
@@ -856,7 +859,10 @@ def register_feedbax_analysis_recipes():
     assert [item["batch_id"] for item in compaction["reclamations"]] == [
         f"{index:04d}" for index in range(8)
     ]
-    assert len(compaction["terminal_products"]) == 1
+    assert [item["metadata"]["analysis_type"] for item in compaction["terminal_products"]] == [
+        "tests.trajectory.analysis",
+        "tests.velocity.analysis",
+    ]
 
 
 def test_runpod_dry_run_keeps_the_same_public_matrix_executor(
@@ -867,6 +873,7 @@ def test_runpod_dry_run_keeps_the_same_public_matrix_executor(
         leaf_id="velocity",
         consumer_id="tests.velocity",
         consumer_version="v1",
+        terminal_analysis_type="tests.velocity.analysis",
         parameters={"projection": "velocity"},
         accepted_evaluation_state_schema_ids=("tests.states.v1",),
         compact_product_schema_id="tests.velocity.product",
@@ -911,4 +918,10 @@ def test_runpod_dry_run_keeps_the_same_public_matrix_executor(
     assert bundle.rows[0].launch.metadata["batch_plan"]["consumers"][0]["parameters"] == {
         "projection": "velocity"
     }
+    assert (
+        bundle.rows[0].launch.metadata["batch_plan"]["consumers"][0][
+            "terminal_analysis_type"
+        ]
+        == "tests.velocity.analysis"
+    )
     assert bundle.rows[0].launch.collect == local_bundle.rows[0].launch.collect

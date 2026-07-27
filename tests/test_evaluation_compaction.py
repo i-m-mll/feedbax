@@ -24,6 +24,7 @@ from feedbax.analysis.execution_context import (
     StagedExecutionContextError,
     resolve_staged_execution_context,
 )
+from feedbax.analysis.harness import _validate_evaluation_fragment_checkpoint
 from feedbax.contracts.evaluation_lifecycle import (
     EvaluationBatchConsumerDeclaration,
     EvaluationLifecycleRowOutcome,
@@ -53,6 +54,7 @@ def _declaration(leaf_id: str) -> EvaluationBatchConsumerDeclaration:
         leaf_id=leaf_id,
         consumer_id=f"tests.{leaf_id}",
         consumer_version="v1",
+        terminal_analysis_type=f"tests.{leaf_id}.analysis",
         accepted_evaluation_state_schema_ids=("tests.states.v1",),
         compact_product_schema_id=f"tests.{leaf_id}.product",
         compact_product_schema_version=f"tests.{leaf_id}.product.v1",
@@ -238,7 +240,7 @@ def test_consumer_parameters_are_canonical_and_exactly_bound_to_callback_context
         "outcomes": outcomes,
         "manifests": manifests,
         "states": ({"value": 1},),
-        "parent_authorities": (),
+        "parent_authorities": _parent_authorities(outcomes),
     }
 
     with pytest.raises(TypeError):
@@ -277,6 +279,31 @@ def test_consumer_parameters_are_canonical_and_exactly_bound_to_callback_context
         (declaration.parameters, EMPTY_STAGED_EXECUTION_CONTEXT),
     ]
     assert fragment.metadata["consumer_parameters"] == declaration.parameters
+    _validate_evaluation_fragment_checkpoint(
+        declaration,
+        batch,
+        fragment,
+        matrix_intent_hash="a" * 64,
+    )
+    drifted_fragment = fragment.model_copy(
+        update={
+            "metadata": {
+                **fragment.metadata,
+                "terminal_analysis_type": "tests.drifted.analysis",
+            }
+        }
+    )
+    with pytest.raises(ValueError, match="fragment checkpoint contract drifted"):
+        _validate_evaluation_fragment_checkpoint(
+            declaration,
+            batch,
+            drifted_fragment,
+            matrix_intent_hash="a" * 64,
+        )
+    missing_analysis_type = declaration.model_dump(mode="json")
+    missing_analysis_type.pop("terminal_analysis_type")
+    with pytest.raises(ValidationError, match="terminal_analysis_type"):
+        EvaluationBatchConsumerDeclaration.model_validate(missing_analysis_type)
     with pytest.raises(ValidationError):
         EvaluationBatchConsumerDeclaration.model_validate(
             {**declaration.model_dump(mode="json"), "parameters": {"path": tmp_path}}
@@ -383,7 +410,7 @@ def test_consumer_callback_resolves_exact_authenticated_checkpoint_binding(
             outcomes=outcomes,
             manifests=manifests,
             states=({"value": 1},),
-            parent_authorities=(),
+            parent_authorities=_parent_authorities(outcomes),
             parameters=configured.parameters,
             execution_context=execution_context,
         )
@@ -434,14 +461,20 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
         EvaluationMatrixBatchUnit(
             batch_id="0001",
             ordered_row_ids=("row-b",),
-            required_leaf_ids=("trajectory", "velocity"),
+            required_leaf_ids=("velocity",),
         ),
     )
     prior = {}
     all_outcomes = []
+    first_batch_acknowledgements = None
     for batch_index, batch in enumerate(batches):
         outcomes, manifests = _batch_fixture(tmp_path / "raw", batch)
         all_outcomes.extend(outcomes)
+        applicable_declarations = tuple(
+            declaration
+            for declaration in declarations
+            if declaration.leaf_id in (batch.required_leaf_ids or ())
+        )
         fragments = [
             compact_evaluation_batch(
                 declaration,
@@ -451,13 +484,13 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
                     outcomes=outcomes,
                     manifests=manifests,
                     states=({"row": batch.ordered_row_ids[0]},),
-                    parent_authorities=(),
+                    parent_authorities=_parent_authorities(outcomes),
                     parameters=declaration.parameters,
                     execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
                 ),
                 custody_root=tmp_path / "custody",
             )
-            for declaration in declarations
+            for declaration in applicable_declarations
         ]
         acknowledgements = [
             merge_evaluation_batch_fragment(
@@ -470,10 +503,12 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
                 custody_root=tmp_path / "custody",
                 execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
             )
-            for declaration, fragment in zip(declarations, fragments, strict=True)
+            for declaration, fragment in zip(applicable_declarations, fragments, strict=True)
         ]
         for acknowledgement in acknowledgements:
             prior[acknowledgement.leaf_id] = acknowledgement.merge_state
+        if batch_index == 0:
+            first_batch_acknowledgements = acknowledgements
         cache_path = Path(
             json.loads(Path(outcomes[0].manifest_path).read_text())["metadata"]["cache"][
                 "states_path"
@@ -482,20 +517,36 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
         with pytest.raises(ValueError, match="every declared leaf"):
             reclaim_evaluation_batch_caches(
                 batch,
+                matrix_intent_hash="a" * 64,
                 batch_index=batch_index,
                 outcomes=outcomes,
-                acknowledgements=acknowledgements[:1],
-                required_declarations=declarations,
+                acknowledgements=acknowledgements[:-1],
+                required_declarations=applicable_declarations,
                 custody_root=tmp_path / "custody",
                 execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
             )
         assert cache_path.exists()
+        if batch_index == 1:
+            assert first_batch_acknowledgements is not None
+            with pytest.raises(ValueError, match="identity drifted"):
+                reclaim_evaluation_batch_caches(
+                    batch,
+                    matrix_intent_hash="a" * 64,
+                    batch_index=batch_index,
+                    outcomes=outcomes,
+                    acknowledgements=first_batch_acknowledgements[1:],
+                    required_declarations=applicable_declarations,
+                    custody_root=tmp_path / "custody",
+                    execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+                )
+            assert cache_path.exists()
         reclaim_evaluation_batch_caches(
             batch,
+            matrix_intent_hash="a" * 64,
             batch_index=batch_index,
             outcomes=outcomes,
             acknowledgements=acknowledgements,
-            required_declarations=declarations,
+            required_declarations=applicable_declarations,
             custody_root=tmp_path / "custody",
             execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
         )
@@ -515,10 +566,11 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
             )
             legacy_resume = reclaim_evaluation_batch_caches(
                 batch,
+                matrix_intent_hash="a" * 64,
                 batch_index=batch_index,
                 outcomes=outcomes,
                 acknowledgements=acknowledgements,
-                required_declarations=declarations,
+                required_declarations=applicable_declarations,
                 custody_root=tmp_path / "custody",
                 execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
             )
@@ -530,39 +582,121 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
             intent_path.write_text(json.dumps(intent), encoding="utf-8")
             resumed_reclamation = reclaim_evaluation_batch_caches(
                 batch,
+                matrix_intent_hash="a" * 64,
                 batch_index=batch_index,
                 outcomes=outcomes,
                 acknowledgements=acknowledgements,
-                required_declarations=declarations,
+                required_declarations=applicable_declarations,
                 custody_root=tmp_path / "custody",
                 execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
             )
             assert resumed_reclamation.removed_cache_manifest_ids == ("evaluation:row-a",)
 
-    terminal = publish_evaluation_compaction_products(
+    drifted_analysis = declarations[0].model_copy(
+        update={"terminal_analysis_type": "tests.wrong.analysis"}
+    )
+    with pytest.raises(ValueError, match="merge-state identity drifted"):
+        publish_evaluation_compaction_products(
+            (drifted_analysis,),
+            prior,
+            all_outcomes,
+            custody_root=tmp_path / "custody",
+            execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+        )
+    assert not (tmp_path / "custody" / "analysis").exists()
+
+    parent_path = Path(all_outcomes[0].manifest_path)
+    parent_bytes = parent_path.read_bytes()
+    parent_path.write_bytes(parent_bytes + b"\n")
+    with pytest.raises(ValueError, match="parent authority identity drifted"):
+        publish_evaluation_compaction_products(
+            declarations,
+            prior,
+            all_outcomes,
+            custody_root=tmp_path / "custody",
+            execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+        )
+    assert not (tmp_path / "custody" / "analysis").exists()
+    parent_path.write_bytes(parent_bytes)
+
+    terminal_refs = publish_evaluation_compaction_products(
         declarations,
         prior,
         all_outcomes,
         custody_root=tmp_path / "custody",
         execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
-    )[0]
-    manifest_bytes = ImmutableArtifactBlobProvider(tmp_path / "custody").get_bytes(terminal)
-    manifest_path = tmp_path / "terminal.json"
-    manifest_path.write_bytes(manifest_bytes)
-    manifest = load_manifest(manifest_path)
-    assert isinstance(manifest, AnalysisRunManifest)
-    assert [item.role for item in manifest.produced_data] == [
+    )
+    provider = ImmutableArtifactBlobProvider(tmp_path / "custody")
+    terminal_bytes = tuple(provider.get_bytes(ref) for ref in terminal_refs)
+    manifests = []
+    for index, manifest_bytes in enumerate(terminal_bytes):
+        manifest_path = tmp_path / f"terminal-{index}.json"
+        manifest_path.write_bytes(manifest_bytes)
+        manifest = load_manifest(manifest_path)
+        assert isinstance(manifest, AnalysisRunManifest)
+        manifests.append(manifest)
+    assert [manifest.analysis_spec.inline["analysis_type"] for manifest in manifests] == [
+        "tests.trajectory.analysis",
+        "tests.velocity.analysis",
+    ]
+    assert [manifest.produced_data[0].role for manifest in manifests] == [
         "trajectory_result",
         "velocity_result",
     ]
+    expected_parent_outcomes = {
+        "trajectory": all_outcomes[:1],
+        "velocity": all_outcomes,
+    }
+    for declaration, manifest in zip(declarations, manifests, strict=True):
+        product = manifest.produced_data[0]
+        parent_outcomes = expected_parent_outcomes[declaration.leaf_id]
+        assert product.product_schema_id == declaration.compact_product_schema_id
+        assert product.product_schema_version == declaration.compact_product_schema_version
+        assert product.logical_name == declaration.leaf_id
+        assert [parent.id for parent in product.parent_manifests] == [
+            outcome.manifest_id for outcome in parent_outcomes
+        ]
+        assert [parent.manifest_hash for parent in product.parent_manifests] == [
+            sha256_bytes(Path(outcome.manifest_path).read_bytes()) for outcome in parent_outcomes
+        ]
+        assert manifest.provenance.metadata["batch_compaction"]["analysis_type"] == (
+            "feedbax.evaluation.batch_compaction"
+        )
+    resumed_refs = publish_evaluation_compaction_products(
+        declarations,
+        prior,
+        all_outcomes,
+        custody_root=tmp_path / "custody",
+        execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+    )
+    assert resumed_refs == terminal_refs
+    assert tuple(provider.get_bytes(ref) for ref in resumed_refs) == terminal_bytes
+    first_manifest_id = terminal_refs[0].metadata["manifest_id"]
+    first_manifest_path = (
+        tmp_path
+        / "custody"
+        / "analysis"
+        / "manifests"
+        / "analysis_runs"
+        / f"{first_manifest_id.replace(':', '_').replace('/', '_')}.json"
+    )
+    drifted_manifest = json.loads(first_manifest_path.read_text())
+    drifted_manifest["summary_metrics"]["artifact_count"] = 999
+    first_manifest_path.write_text(json.dumps(drifted_manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="terminal manifest identity drifted"):
+        publish_evaluation_compaction_products(
+            declarations,
+            prior,
+            all_outcomes,
+            custody_root=tmp_path / "custody",
+            execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+        )
     assert calls == [
         "compact:trajectory:0000",
         "compact:velocity:0000",
         "merge:trajectory:0000",
         "merge:velocity:0000",
-        "compact:trajectory:0001",
         "compact:velocity:0001",
-        "merge:trajectory:0001",
         "merge:velocity:0001",
     ]
 
@@ -585,7 +719,7 @@ def test_resume_reuses_verified_merge_checkpoint_without_double_application(tmp_
             outcomes=outcomes,
             manifests=manifests,
             states=({"value": 1},),
-            parent_authorities=(),
+            parent_authorities=_parent_authorities(outcomes),
             parameters=declaration.parameters,
             execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
         ),
@@ -602,17 +736,22 @@ def test_resume_reuses_verified_merge_checkpoint_without_double_application(tmp_
         execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
     )
     checkpoint_path = tmp_path / "custody" / "merge-checkpoints" / "velocity" / "resume.json"
-    legacy_checkpoint = json.loads(checkpoint_path.read_text())
-    legacy_checkpoint["schema_version"] = (
-        "feedbax.orchestration.evaluation_batch_merge_checkpoint.v1"
-    )
-    legacy_checkpoint["declaration"].pop("parameters")
-    legacy_checkpoint["acknowledgement"].pop("parameters")
-    for artifact_name in ("fragment", "merge_state"):
-        metadata = legacy_checkpoint["acknowledgement"][artifact_name]["metadata"]
-        metadata.pop("consumer_parameters")
-        metadata.pop("consumer_parameters_sha256")
-    checkpoint_path.write_text(json.dumps(legacy_checkpoint), encoding="utf-8")
+    checkpoint_bytes = checkpoint_path.read_bytes()
+    drifted_checkpoint = json.loads(checkpoint_bytes)
+    drifted_checkpoint["acknowledgement"]["fragment"]["metadata"]["leaf_id"] = "other"
+    checkpoint_path.write_text(json.dumps(drifted_checkpoint), encoding="utf-8")
+    with pytest.raises(ValueError, match="identity drifted"):
+        merge_evaluation_batch_fragment(
+            declaration,
+            matrix_intent_hash="a" * 64,
+            batch=batch,
+            parent_authorities=_parent_authorities(outcomes),
+            fragment=fragment,
+            prior_merge_state=None,
+            custody_root=tmp_path / "custody",
+            execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+        )
+    checkpoint_path.write_bytes(checkpoint_bytes)
     resumed = merge_evaluation_batch_fragment(
         declaration,
         matrix_intent_hash="a" * 64,
@@ -651,6 +790,20 @@ def test_resume_reuses_verified_merge_checkpoint_without_double_application(tmp_
             custody_root=tmp_path / "custody",
             execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
         )
+    changed_analysis = declaration.model_copy(
+        update={"terminal_analysis_type": "tests.changed.analysis"}
+    )
+    with pytest.raises(ValueError, match="fragment identity drifted"):
+        merge_evaluation_batch_fragment(
+            changed_analysis,
+            matrix_intent_hash="a" * 64,
+            batch=batch,
+            parent_authorities=_parent_authorities(outcomes),
+            fragment=fragment,
+            prior_merge_state=None,
+            custody_root=tmp_path / "custody",
+            execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+        )
     changed_batch = batch.model_copy(update={"ordered_row_ids": ("row-b",)})
     with pytest.raises(ValueError, match="checkpoint identity drifted"):
         merge_evaluation_batch_fragment(
@@ -671,7 +824,7 @@ def test_resume_reuses_verified_merge_checkpoint_without_double_application(tmp_
             }
         }
     )
-    with pytest.raises(ValueError, match="checkpoint identity drifted"):
+    with pytest.raises(ValueError, match="identity drifted"):
         merge_evaluation_batch_fragment(
             declaration,
             matrix_intent_hash="a" * 64,
@@ -705,7 +858,7 @@ def test_reclamation_restart_rejects_canonical_numeric_parameter_drift_before_de
             outcomes=outcomes,
             manifests=manifests,
             states=({"value": 1},),
-            parent_authorities=(),
+            parent_authorities=_parent_authorities(outcomes),
             parameters=declaration.parameters,
             execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
         ),
@@ -722,6 +875,18 @@ def test_reclamation_restart_rejects_canonical_numeric_parameter_drift_before_de
         execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
     )
     cache_path = Path(manifests[0]["metadata"]["cache"]["states_path"])
+    with pytest.raises(ValueError, match="identity drifted"):
+        reclaim_evaluation_batch_caches(
+            batch,
+            matrix_intent_hash="b" * 64,
+            batch_index=0,
+            outcomes=outcomes,
+            acknowledgements=(acknowledgement,),
+            required_declarations=(declaration,),
+            custody_root=tmp_path / "custody",
+            execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+        )
+    assert cache_path.is_file()
     real_atomic_write = compaction_module._atomic_write_json
 
     def interrupt_after_intent(path: Path, payload: dict) -> None:
@@ -740,6 +905,7 @@ def test_reclamation_restart_rejects_canonical_numeric_parameter_drift_before_de
     with pytest.raises(RuntimeError, match="before deletion"):
         reclaim_evaluation_batch_caches(
             batch,
+            matrix_intent_hash="a" * 64,
             batch_index=0,
             outcomes=outcomes,
             acknowledgements=(acknowledgement,),
@@ -750,11 +916,31 @@ def test_reclamation_restart_rejects_canonical_numeric_parameter_drift_before_de
     assert cache_path.is_file()
     monkeypatch.setattr(compaction_module, "_atomic_write_json", real_atomic_write)
 
-    drifted_declaration = declaration.model_copy(update={"parameters": {"threshold": 1.0}})
-    drifted_acknowledgement = acknowledgement.model_copy(update={"parameters": {"threshold": 1.0}})
-    with pytest.raises(ValueError, match="reclamation intent identity drifted"):
+    drifted_analysis = declaration.model_copy(
+        update={"terminal_analysis_type": "tests.changed.analysis"}
+    )
+    drifted_analysis_acknowledgement = acknowledgement.model_copy(
+        update={"terminal_analysis_type": "tests.changed.analysis"}
+    )
+    with pytest.raises(ValueError, match="fragment identity drifted"):
         reclaim_evaluation_batch_caches(
             batch,
+            matrix_intent_hash="a" * 64,
+            batch_index=0,
+            outcomes=outcomes,
+            acknowledgements=(drifted_analysis_acknowledgement,),
+            required_declarations=(drifted_analysis,),
+            custody_root=tmp_path / "custody",
+            execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+        )
+    assert cache_path.is_file()
+
+    drifted_declaration = declaration.model_copy(update={"parameters": {"threshold": 1.0}})
+    drifted_acknowledgement = acknowledgement.model_copy(update={"parameters": {"threshold": 1.0}})
+    with pytest.raises(ValueError, match="identity drifted"):
+        reclaim_evaluation_batch_caches(
+            batch,
+            matrix_intent_hash="a" * 64,
             batch_index=0,
             outcomes=outcomes,
             acknowledgements=(drifted_acknowledgement,),
@@ -815,7 +1001,7 @@ def test_fragment_failure_retains_raw_cache(tmp_path: Path, failure: str) -> Non
                     outcomes=outcomes,
                     manifests=manifests,
                     states=({"value": 1},),
-                    parent_authorities=(),
+                    parent_authorities=_parent_authorities(outcomes),
                     parameters=declaration.parameters,
                     execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
                 ),
@@ -830,7 +1016,7 @@ def test_fragment_failure_retains_raw_cache(tmp_path: Path, failure: str) -> Non
                 outcomes=outcomes,
                 manifests=manifests,
                 states=({"value": 1},),
-                parent_authorities=(),
+                parent_authorities=_parent_authorities(outcomes),
                 parameters=declaration.parameters,
                 execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
             ),

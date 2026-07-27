@@ -22,12 +22,18 @@ from feedbax.contracts.evaluation_lifecycle import (
 from feedbax.contracts.manifest import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+    AnalysisRunManifest,
     AnalysisRunSpec,
     ArtifactRef,
+    EntrypointRef,
     ParentRef,
+    Provenance,
     canonical_json_bytes,
     evaluation_states_cache_path,
+    load_manifest,
+    safe_manifest_key,
     sha256_bytes,
+    spec_payload,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
@@ -152,8 +158,13 @@ def compact_evaluation_batch(
         metadata={
             "schema_id": fragment.schema_id,
             "schema_version": fragment.schema_version,
+            "matrix_intent_hash": consumer_input.matrix_intent_hash,
             "batch_id": consumer_input.batch.batch_id,
             "leaf_id": declaration.leaf_id,
+            "terminal_analysis_type": declaration.terminal_analysis_type,
+            "parent_authorities": [
+                item.model_dump(mode="json") for item in consumer_input.parent_authorities
+            ],
             "consumer_parameters": declaration.parameters,
             "consumer_parameters_sha256": _parameters_sha256(declaration),
         },
@@ -182,11 +193,20 @@ def merge_evaluation_batch_fragment(
         or fragment.metadata.get("schema_version") != declaration.compact_product_schema_version
         or fragment.metadata.get("leaf_id") != declaration.leaf_id
         or fragment.metadata.get("batch_id") != batch.batch_id
+        or fragment.metadata.get("matrix_intent_hash") != matrix_intent_hash
+        or fragment.metadata.get("terminal_analysis_type")
+        != declaration.terminal_analysis_type
+        or canonical_json_bytes(fragment.metadata.get("parent_authorities"))
+        != _parent_authorities_bytes(parent_authorities)
         or fragment.metadata.get("consumer_parameters") != declaration.parameters
         or fragment.metadata.get("consumer_parameters_sha256") != _parameters_sha256(declaration)
     ):
         raise ValueError(f"consumer leaf {declaration.leaf_id!r} fragment identity drifted")
     fragment_payload = json.loads(provider.get_bytes(fragment))
+    expected_parent_authorities = _merge_parent_authorities(
+        prior_merge_state,
+        parent_authorities,
+    )
     checkpoint = custody_root / "merge-checkpoints" / declaration.leaf_id / f"{batch.batch_id}.json"
     expected_prior = prior_merge_state.sha256 if prior_merge_state is not None else None
     if checkpoint.is_file():
@@ -219,13 +239,19 @@ def merge_evaluation_batch_fragment(
             )
         acknowledgement = persisted.acknowledgement
         if (
-            acknowledgement.fragment.sha256 != fragment.sha256
+            canonical_json_bytes(acknowledgement.fragment) != canonical_json_bytes(fragment)
             or acknowledgement.prior_merge_state_sha256 != expected_prior
             or acknowledgement.leaf_id != declaration.leaf_id
             or acknowledgement.consumer_id != declaration.consumer_id
             or acknowledgement.consumer_version != declaration.consumer_version
+            or acknowledgement.terminal_analysis_type
+            != declaration.terminal_analysis_type
             or canonical_json_bytes(acknowledgement.parameters)
             != canonical_json_bytes(declaration.parameters)
+            or acknowledgement.compact_product_schema_id
+            != declaration.compact_product_schema_id
+            or acknowledgement.compact_product_schema_version
+            != declaration.compact_product_schema_version
             or acknowledgement.compact_product_role != declaration.compact_product_role
         ):
             raise ValueError(
@@ -235,6 +261,8 @@ def merge_evaluation_batch_fragment(
             declaration,
             acknowledgement.merge_state,
             matrix_intent_hash=matrix_intent_hash,
+            batch_id=batch.batch_id,
+            parent_authorities=expected_parent_authorities,
         )
         provider.get_bytes(acknowledgement.merge_state)
         return acknowledgement.model_copy(update={"reused_verified_fragment": True})
@@ -276,11 +304,18 @@ def merge_evaluation_batch_fragment(
             "batch_id": batch.batch_id,
             "leaf_id": declaration.leaf_id,
             "matrix_intent_hash": matrix_intent_hash,
+            "terminal_analysis_type": declaration.terminal_analysis_type,
+            "compact_product_schema_id": declaration.compact_product_schema_id,
+            "compact_product_schema_version": declaration.compact_product_schema_version,
+            "compact_product_role": declaration.compact_product_role,
             "consumer_parameters": declaration.parameters,
             "consumer_parameters_sha256": _parameters_sha256(declaration),
             "prior_merge_state_sha256": (
                 prior_merge_state.sha256 if prior_merge_state is not None else None
             ),
+            "parent_authorities": [
+                item.model_dump(mode="json") for item in expected_parent_authorities
+            ],
         },
     )
     provider.get_bytes(state_ref)
@@ -288,7 +323,10 @@ def merge_evaluation_batch_fragment(
         leaf_id=declaration.leaf_id,
         consumer_id=declaration.consumer_id,
         consumer_version=declaration.consumer_version,
+        terminal_analysis_type=declaration.terminal_analysis_type,
         parameters=declaration.parameters,
+        compact_product_schema_id=declaration.compact_product_schema_id,
+        compact_product_schema_version=declaration.compact_product_schema_version,
         compact_product_role=declaration.compact_product_role,
         fragment=fragment,
         prior_merge_state_sha256=(
@@ -311,6 +349,7 @@ def merge_evaluation_batch_fragment(
 def reclaim_evaluation_batch_caches(
     batch: EvaluationMatrixBatchUnit,
     *,
+    matrix_intent_hash: str,
     batch_index: int,
     outcomes: Sequence[EvaluationLifecycleRowOutcome],
     acknowledgements: Sequence[EvaluationBatchLeafAcknowledgement],
@@ -323,6 +362,7 @@ def reclaim_evaluation_batch_caches(
     manifest_ids = tuple(outcome.manifest_id for outcome in outcomes)
     if tuple(outcome.row_id for outcome in outcomes) != batch.ordered_row_ids:
         raise ValueError("reclamation outcomes drifted from the authored batch")
+    current_parent_authorities = _parent_authorities_from_outcomes(outcomes)
     declarations_by_leaf = {item.leaf_id: item for item in required_declarations}
     if len(declarations_by_leaf) != len(required_declarations):
         raise ValueError("raw cache reclamation requires unique consumer declarations")
@@ -331,17 +371,36 @@ def reclaim_evaluation_batch_caches(
         len(observed_leaf_ids) != len(set(observed_leaf_ids))
         or set(observed_leaf_ids) != set(declarations_by_leaf)
         or any(
-            acknowledgement.consumer_id != declarations_by_leaf[acknowledgement.leaf_id].consumer_id
-            or acknowledgement.consumer_version
-            != declarations_by_leaf[acknowledgement.leaf_id].consumer_version
-            or canonical_json_bytes(acknowledgement.parameters)
-            != canonical_json_bytes(declarations_by_leaf[acknowledgement.leaf_id].parameters)
-            or acknowledgement.compact_product_role
-            != declarations_by_leaf[acknowledgement.leaf_id].compact_product_role
+            not _acknowledgement_matches_declaration(
+                acknowledgement,
+                declarations_by_leaf[acknowledgement.leaf_id],
+            )
             for acknowledgement in acknowledgements
         )
     ):
         raise ValueError("raw cache reclamation requires every declared leaf acknowledgement")
+    provider = ImmutableArtifactBlobProvider(custody_root)
+    for acknowledgement in acknowledgements:
+        declaration = declarations_by_leaf[acknowledgement.leaf_id]
+        _validate_fragment_ref(
+            declaration,
+            acknowledgement.fragment,
+            matrix_intent_hash=matrix_intent_hash,
+            batch_id=batch.batch_id,
+            parent_authorities=current_parent_authorities,
+        )
+        _validate_merge_state_ref(
+            declaration,
+            acknowledgement.merge_state,
+            matrix_intent_hash=matrix_intent_hash,
+            batch_id=batch.batch_id,
+        )
+        _validate_merge_transition_parent_authorities(
+            acknowledgement.merge_state,
+            current_parent_authorities,
+        )
+        provider.get_bytes(acknowledgement.fragment)
+        provider.get_bytes(acknowledgement.merge_state)
     checkpoint = custody_root / "reclamation-checkpoints" / f"{batch.batch_id}.json"
     if checkpoint.is_file():
         evidence = EvaluationBatchReclamationEvidence.model_validate(
@@ -364,7 +423,8 @@ def reclaim_evaluation_batch_caches(
     if intent_path.is_file():
         intent = json.loads(intent_path.read_text(encoding="utf-8"))
         if (
-            intent.get("batch") != batch.model_dump(mode="json", exclude_none=True)
+            intent.get("matrix_intent_hash") != matrix_intent_hash
+            or intent.get("batch") != batch.model_dump(mode="json", exclude_none=True)
             or intent.get("batch_index") != batch_index
             or canonical_json_bytes(intent.get("consumer_declarations"))
             != canonical_json_bytes(
@@ -413,6 +473,7 @@ def reclaim_evaluation_batch_caches(
                 }
             )
         intent = {
+            "matrix_intent_hash": matrix_intent_hash,
             "batch": batch.model_dump(mode="json", exclude_none=True),
             "batch_index": batch_index,
             "consumer_declarations": [
@@ -469,22 +530,6 @@ def publish_evaluation_compaction_products(
     _require_execution_context(execution_context)
     from feedbax.analysis.context import AnalysisRunContext
 
-    parents = []
-    for outcome in outcomes:
-        data = Path(outcome.manifest_path).read_bytes()
-        parents.append(
-            ParentRef(
-                kind="EvaluationRunManifest",
-                id=outcome.manifest_id,
-                role="evaluation_run",
-                metadata={
-                    "ref_schema_id": AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
-                    "ref_schema_version": AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
-                    "manifest_sha256": sha256_bytes(data),
-                    "size_bytes": len(data),
-                },
-            )
-        )
     provider = ImmutableArtifactBlobProvider(custody_root)
     finalized = []
     for declaration in declarations:
@@ -504,12 +549,15 @@ def publish_evaluation_compaction_products(
             state_ref,
             matrix_intent_hash=matrix_intent_hash,
         )
+        state_parents = _parent_authorities_from_state(state_ref)
+        _validate_publication_parent_authorities(state_parents, outcomes)
         terminal_merge_state = json.loads(provider.get_bytes(state_ref))
         consumer = _resolve_consumer(declaration)
         finalized.append(
             (
                 declaration,
                 state_ref,
+                state_parents,
                 consumer.finalize(
                     EvaluationBatchFinalizeInput(
                         matrix_intent_hash=matrix_intent_hash,
@@ -520,7 +568,7 @@ def publish_evaluation_compaction_products(
                 ),
             )
         )
-    for declaration, _state_ref, terminal in finalized:
+    for declaration, _state_ref, _parents, terminal in finalized:
         if (
             terminal.schema_id != declaration.compact_product_schema_id
             or terminal.schema_version != declaration.compact_product_schema_version
@@ -529,15 +577,35 @@ def publish_evaluation_compaction_products(
             raise ValueError(
                 f"consumer leaf {declaration.leaf_id!r} returned wrong terminal product contract"
             )
-    context = AnalysisRunContext(
-        spec=AnalysisRunSpec(
-            analysis_type="feedbax.evaluation.batch_compaction",
-            inputs=parents,
-        ),
-        root=custody_root / "analysis",
-        index_manifest=False,
-    )
-    for declaration, state_ref, terminal in finalized:
+    manifest_refs = []
+    for declaration, state_ref, parents, terminal in finalized:
+        lineage = {
+            "analysis_type": "feedbax.evaluation.batch_compaction",
+            "consumer_id": declaration.consumer_id,
+            "consumer_version": declaration.consumer_version,
+            "matrix_intent_hash": state_ref.metadata["matrix_intent_hash"],
+            "merge_state_sha256": state_ref.sha256,
+        }
+        context = AnalysisRunContext(
+            spec=AnalysisRunSpec(
+                analysis_type=declaration.terminal_analysis_type,
+                inputs=list(parents or ()),
+                params={
+                    "consumer_id": declaration.consumer_id,
+                    "consumer_version": declaration.consumer_version,
+                    "consumer_parameters": declaration.parameters,
+                    "terminal_product": {
+                        "schema_id": declaration.compact_product_schema_id,
+                        "schema_version": declaration.compact_product_schema_version,
+                        "role": declaration.compact_product_role,
+                        "logical_name": declaration.leaf_id,
+                    },
+                },
+            ),
+            root=custody_root / "analysis",
+            provenance=Provenance(metadata={"batch_compaction": lineage}),
+            index_manifest=False,
+        )
         context.record_data_product(
             terminal.payload,
             product_schema_id=terminal.schema_id,
@@ -552,17 +620,64 @@ def publish_evaluation_compaction_products(
                 "consumer_parameters_sha256": _parameters_sha256(declaration),
             },
         )
-    manifest, manifest_path = context.finalize()
-    manifest_provider = ImmutableArtifactBlobProvider(custody_root)
-    return (
-        manifest_provider.store_bytes(
-            manifest_path.read_bytes(),
-            role="terminal_analysis_manifest",
-            logical_name=f"{manifest.id}.json",
-            media_type="application/json",
-            metadata={"manifest_id": manifest.id, "kind": manifest.kind},
-        ),
-    )
+        manifest_path = (
+            context.root_path
+            / "manifests"
+            / "analysis_runs"
+            / f"{safe_manifest_key(context.manifest_id)}.json"
+        )
+        if manifest_path.is_file():
+            manifest = load_manifest(manifest_path)
+            expected_manifest = AnalysisRunManifest(
+                id=context.manifest_id,
+                created_at=manifest.created_at,
+                status="completed",
+                analysis_spec=spec_payload(
+                    "AnalysisRunSpec",
+                    context.spec.model_dump(mode="json", exclude_none=True),
+                ),
+                inputs=list(parents or ()),
+                summary_metrics={
+                    "artifact_count": len(context.artifacts),
+                    "figure_count": 0,
+                },
+                provenance=Provenance(
+                    entrypoint=EntrypointRef(
+                        kind="feedbax-analysis-context",
+                        name=declaration.terminal_analysis_type,
+                    ),
+                    parents=list(parents or ()),
+                    metadata={"batch_compaction": lineage},
+                ),
+                artifacts=list(context.artifacts),
+                produced_data=list(context.produced_data),
+            )
+            if (
+                not isinstance(manifest, AnalysisRunManifest)
+                or canonical_json_bytes(manifest) != canonical_json_bytes(expected_manifest)
+            ):
+                raise ValueError(
+                    f"consumer leaf {declaration.leaf_id!r} terminal manifest identity drifted"
+                )
+        else:
+            manifest, manifest_path = context.finalize()
+        manifest_refs.append(
+            provider.store_bytes(
+                manifest_path.read_bytes(),
+                role="terminal_analysis_manifest",
+                logical_name=f"{manifest.id}.json",
+                media_type="application/json",
+                metadata={
+                    "manifest_id": manifest.id,
+                    "kind": manifest.kind,
+                    "analysis_type": declaration.terminal_analysis_type,
+                    "product_schema_id": declaration.compact_product_schema_id,
+                    "product_schema_version": declaration.compact_product_schema_version,
+                    "product_role": declaration.compact_product_role,
+                },
+            )
+        )
+    return tuple(manifest_refs)
 
 
 def _resolve_consumer(
@@ -599,6 +714,11 @@ def _validate_callback_input(
 ) -> None:
     if canonical_json_bytes(dict(value.parameters)) != canonical_json_bytes(declaration.parameters):
         raise ValueError(f"consumer leaf {declaration.leaf_id!r} callback parameters drifted")
+    if tuple(parent.id for parent in value.parent_authorities) != tuple(
+        outcome.manifest_id for outcome in value.outcomes
+    ):
+        raise ValueError(f"consumer leaf {declaration.leaf_id!r} parent authorities drifted")
+    _validate_parent_authorities(value.parent_authorities)
     _require_execution_context(value.execution_context)
 
 
@@ -607,6 +727,8 @@ def _validate_merge_state_ref(
     value: ArtifactRef,
     *,
     matrix_intent_hash: str,
+    batch_id: str | None = None,
+    parent_authorities: Sequence[ParentRef] | None = None,
 ) -> None:
     if (
         value.role != f"{declaration.compact_product_role}_merge_state"
@@ -614,10 +736,189 @@ def _validate_merge_state_ref(
         or value.metadata.get("schema_version") != declaration.merge_state_schema_version
         or value.metadata.get("leaf_id") != declaration.leaf_id
         or value.metadata.get("matrix_intent_hash") != matrix_intent_hash
+        or value.metadata.get("terminal_analysis_type") != declaration.terminal_analysis_type
+        or value.metadata.get("compact_product_schema_id")
+        != declaration.compact_product_schema_id
+        or value.metadata.get("compact_product_schema_version")
+        != declaration.compact_product_schema_version
+        or value.metadata.get("compact_product_role") != declaration.compact_product_role
         or value.metadata.get("consumer_parameters") != declaration.parameters
         or value.metadata.get("consumer_parameters_sha256") != _parameters_sha256(declaration)
+        or (batch_id is not None and value.metadata.get("batch_id") != batch_id)
     ):
         raise ValueError(f"consumer leaf {declaration.leaf_id!r} merge-state identity drifted")
+    observed_parents = _parent_authorities_from_state(value)
+    if parent_authorities is not None and _parent_authorities_bytes(
+        observed_parents
+    ) != _parent_authorities_bytes(parent_authorities):
+        raise ValueError(f"consumer leaf {declaration.leaf_id!r} merge-state identity drifted")
+
+
+def _validate_fragment_ref(
+    declaration: EvaluationBatchConsumerDeclaration,
+    value: ArtifactRef,
+    *,
+    matrix_intent_hash: str | None = None,
+    batch_id: str | None = None,
+    parent_authorities: Sequence[ParentRef] | None = None,
+) -> None:
+    if (
+        value.role != declaration.compact_product_role
+        or value.metadata.get("schema_id") != declaration.compact_product_schema_id
+        or value.metadata.get("schema_version") != declaration.compact_product_schema_version
+        or value.metadata.get("leaf_id") != declaration.leaf_id
+        or value.metadata.get("terminal_analysis_type") != declaration.terminal_analysis_type
+        or value.metadata.get("consumer_parameters") != declaration.parameters
+        or value.metadata.get("consumer_parameters_sha256") != _parameters_sha256(declaration)
+        or (
+            matrix_intent_hash is not None
+            and value.metadata.get("matrix_intent_hash") != matrix_intent_hash
+        )
+        or (batch_id is not None and value.metadata.get("batch_id") != batch_id)
+    ):
+        raise ValueError(f"consumer leaf {declaration.leaf_id!r} fragment identity drifted")
+    raw_parents = value.metadata.get("parent_authorities")
+    if not isinstance(raw_parents, list) or not raw_parents:
+        raise ValueError(f"consumer leaf {declaration.leaf_id!r} fragment identity drifted")
+    try:
+        observed_parents = tuple(ParentRef.model_validate(item) for item in raw_parents)
+        _validate_parent_authorities(observed_parents)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"consumer leaf {declaration.leaf_id!r} fragment identity drifted"
+        ) from exc
+    if parent_authorities is not None and _parent_authorities_bytes(
+        observed_parents
+    ) != _parent_authorities_bytes(parent_authorities):
+        raise ValueError(f"consumer leaf {declaration.leaf_id!r} fragment identity drifted")
+
+
+def _parent_authorities_from_state(value: ArtifactRef) -> tuple[ParentRef, ...]:
+    raw_parents = value.metadata.get("parent_authorities")
+    if not isinstance(raw_parents, list) or not raw_parents:
+        raise ValueError("evaluation merge-state parent authority identity is missing")
+    try:
+        parents = tuple(ParentRef.model_validate(item) for item in raw_parents)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("evaluation merge-state parent authority identity drifted") from exc
+    _validate_parent_authorities(parents)
+    return parents
+
+
+def _validate_parent_authorities(parents: Sequence[ParentRef]) -> None:
+    parent_ids = [parent.id for parent in parents]
+    if not parents or len(parent_ids) != len(set(parent_ids)):
+        raise ValueError("evaluation parent authorities must be non-empty and unique")
+    for parent in parents:
+        manifest_sha256 = parent.metadata.get("manifest_sha256")
+        if (
+            parent.kind != "EvaluationRunManifest"
+            or parent.role != "evaluation_run"
+            or parent.metadata.get("ref_schema_id")
+            != AUTHENTICATED_MANIFEST_REF_SCHEMA_ID
+            or parent.metadata.get("ref_schema_version")
+            != AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION
+            or not isinstance(manifest_sha256, str)
+            or len(manifest_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in manifest_sha256)
+            or not isinstance(parent.metadata.get("size_bytes"), int)
+            or parent.metadata["size_bytes"] < 0
+        ):
+            raise ValueError("evaluation parent authority identity drifted")
+
+
+def _merge_parent_authorities(
+    prior_merge_state: ArtifactRef | None,
+    parent_authorities: Sequence[ParentRef],
+) -> tuple[ParentRef, ...]:
+    _validate_parent_authorities(parent_authorities)
+    prior = () if prior_merge_state is None else _parent_authorities_from_state(prior_merge_state)
+    combined = (*prior, *parent_authorities)
+    parent_ids = [parent.id for parent in combined]
+    if len(parent_ids) != len(set(parent_ids)):
+        raise ValueError("evaluation merge-state parent authorities must be unique")
+    return tuple(combined)
+
+
+def _parent_authorities_bytes(parents: Sequence[ParentRef]) -> bytes:
+    return canonical_json_bytes([parent.model_dump(mode="json") for parent in parents])
+
+
+def _parent_authorities_from_outcomes(
+    outcomes: Sequence[EvaluationLifecycleRowOutcome],
+) -> tuple[ParentRef, ...]:
+    parents = []
+    for outcome in outcomes:
+        path = Path(outcome.manifest_path)
+        if not path.is_file():
+            raise ValueError("evaluation parent manifest is unavailable")
+        manifest_bytes = path.read_bytes()
+        parents.append(
+            ParentRef(
+                kind="EvaluationRunManifest",
+                id=outcome.manifest_id,
+                role="evaluation_run",
+                metadata={
+                    "ref_schema_id": AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+                    "ref_schema_version": AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+                    "manifest_sha256": sha256_bytes(manifest_bytes),
+                    "size_bytes": len(manifest_bytes),
+                },
+            )
+        )
+    return tuple(parents)
+
+
+def _validate_merge_transition_parent_authorities(
+    merge_state: ArtifactRef,
+    current_parent_authorities: Sequence[ParentRef],
+) -> None:
+    observed = _parent_authorities_from_state(merge_state)
+    current_count = len(current_parent_authorities)
+    if _parent_authorities_bytes(observed[-current_count:]) != _parent_authorities_bytes(
+        current_parent_authorities
+    ):
+        raise ValueError("evaluation merge-state parent authority identity drifted")
+
+
+def _validate_publication_parent_authorities(
+    parents: Sequence[ParentRef],
+    outcomes: Sequence[EvaluationLifecycleRowOutcome],
+) -> None:
+    parent_ids = tuple(parent.id for parent in parents)
+    selected_outcomes = tuple(
+        outcome for outcome in outcomes if outcome.manifest_id in set(parent_ids)
+    )
+    if parent_ids != tuple(outcome.manifest_id for outcome in selected_outcomes):
+        raise ValueError("terminal consumer parent authority identity drifted")
+    for parent, outcome in zip(parents, selected_outcomes, strict=True):
+        path = Path(outcome.manifest_path)
+        if not path.is_file():
+            raise ValueError("terminal consumer parent manifest is unavailable")
+        manifest_bytes = path.read_bytes()
+        if (
+            parent.metadata["manifest_sha256"] != sha256_bytes(manifest_bytes)
+            or parent.metadata["size_bytes"] != len(manifest_bytes)
+        ):
+            raise ValueError("terminal consumer parent authority identity drifted")
+
+
+def _acknowledgement_matches_declaration(
+    acknowledgement: EvaluationBatchLeafAcknowledgement,
+    declaration: EvaluationBatchConsumerDeclaration,
+) -> bool:
+    return (
+        acknowledgement.consumer_id == declaration.consumer_id
+        and acknowledgement.consumer_version == declaration.consumer_version
+        and acknowledgement.terminal_analysis_type == declaration.terminal_analysis_type
+        and canonical_json_bytes(acknowledgement.parameters)
+        == canonical_json_bytes(declaration.parameters)
+        and acknowledgement.compact_product_schema_id
+        == declaration.compact_product_schema_id
+        and acknowledgement.compact_product_schema_version
+        == declaration.compact_product_schema_version
+        and acknowledgement.compact_product_role == declaration.compact_product_role
+    )
 
 
 def _normalize_legacy_reclamation_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:

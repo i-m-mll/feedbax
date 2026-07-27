@@ -68,6 +68,7 @@ def _declaration() -> EvaluationBatchConsumerDeclaration:
         leaf_id=_LEAF_ID,
         consumer_id=_CONSUMER_ID,
         consumer_version=_CONSUMER_VERSION,
+        terminal_analysis_type="tests.cohort.analysis",
         accepted_evaluation_state_schema_ids=("tests.states.v1",),
         compact_product_schema_id="tests.cohort.product",
         compact_product_schema_version="tests.cohort.product.v1",
@@ -223,6 +224,7 @@ def _source_fixture(
         merge_kwargs["execution_context"] = EMPTY_STAGED_EXECUTION_CONTEXT
     acknowledgement = merge_evaluation_batch_fragment(declaration, **merge_kwargs)
     reclamation_kwargs = {
+        "matrix_intent_hash": matrix_intent_hash,
         "batch_index": 0,
         "outcomes": outcomes,
         "acknowledgements": (acknowledgement,),
@@ -434,6 +436,7 @@ def test_union_runtime_revalidates_model_copy_bypasses(tmp_path: Path, invalid: 
         ("reordered", "missing, duplicated, or reordered"),
         ("wrong_consumer", "checkpoint identity drifted"),
         ("wrong_matrix", "checkpoint identity drifted"),
+        ("wrong_analysis", "terminal analysis identity drifted"),
         ("wrong_coverage", "ordered row coverage drifted"),
         ("tampered", "checkpoint was tampered"),
         ("unmaterialized", "terminal product is unmaterialized"),
@@ -449,14 +452,32 @@ def test_union_sources_fail_closed(tmp_path: Path, failure: str, match: str) -> 
         bindings[1] = bindings[0]
     elif failure == "reordered":
         bindings.reverse()
-    elif failure in {"wrong_consumer", "wrong_matrix"}:
+    elif failure in {"wrong_consumer", "wrong_matrix", "wrong_analysis"}:
         path = bindings[0].terminal_checkpoint_path
         payload = json.loads(path.read_text())
         if failure == "wrong_consumer":
             payload["declaration"]["consumer_id"] = "tests.wrong"
             payload["acknowledgement"]["consumer_id"] = "tests.wrong"
-        else:
+        elif failure == "wrong_matrix":
             payload["matrix_intent_hash"] = "f" * 64
+        else:
+            payload["declaration"]["terminal_analysis_type"] = "tests.wrong.analysis"
+            payload["acknowledgement"]["terminal_analysis_type"] = "tests.wrong.analysis"
+            binding = bindings[0]
+            bindings[0] = EvaluationCompactProductUnionBinding(
+                cohort_key=binding.cohort_key,
+                custody_root=binding.custody_root,
+                compaction_evidence_path=binding.compaction_evidence_path,
+                terminal_checkpoint_path=binding.terminal_checkpoint_path,
+                terminal_manifest=binding.terminal_manifest.model_copy(
+                    update={
+                        "metadata": {
+                            **binding.terminal_manifest.metadata,
+                            "analysis_type": "tests.wrong.analysis",
+                        }
+                    }
+                ),
+            )
         path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
         sources[0] = sources[0].model_copy(
             update={"terminal_checkpoint_sha256": sha256_bytes(path.read_bytes())}

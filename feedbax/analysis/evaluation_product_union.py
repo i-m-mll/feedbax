@@ -365,6 +365,12 @@ def _verify_source(
     ):
         raise ValueError("compact product union terminal manifest identity drifted")
     manifest = AnalysisRunManifest.model_validate_json(manifest_bytes)
+    terminal_analysis_type = checkpoint.declaration.terminal_analysis_type
+    if (
+        binding.terminal_manifest.metadata.get("analysis_type") != terminal_analysis_type
+        or manifest.analysis_spec.inline.get("analysis_type") != terminal_analysis_type
+    ):
+        raise ValueError("compact product union terminal analysis identity drifted")
     products = [
         product
         for product in manifest.produced_data
