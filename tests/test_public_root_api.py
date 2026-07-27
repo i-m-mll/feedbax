@@ -2,6 +2,8 @@ import importlib.util
 import subprocess
 import sys
 
+import pytest
+
 import feedbax
 import feedbax.tasks as task_api
 from feedbax.config.mapping import WhereDict
@@ -49,3 +51,18 @@ def test_plain_package_import_does_not_import_plotly() -> None:
     )
 
     assert result.returncode == 0
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    ("feedbax.orchestration.events", "feedbax.orchestration.bundle"),
+)
+def test_orchestration_modules_import_in_a_fresh_process(module_name: str) -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", f"import {module_name}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr

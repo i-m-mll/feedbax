@@ -16,7 +16,6 @@ from feedbax.contracts.manifest import (
     sha256_bytes,
 )
 from feedbax.contracts.matrix_core import ContentPinnedJsonBase, load_content_pinned_json_base
-from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     MatrixCompositionDelta,
@@ -130,6 +129,8 @@ def flatten_training_run_matrix_delta(
                 f"{TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID!r} or "
                 f"{TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID!r}, got {parent_schema_id!r}"
             )
+        from feedbax.contracts.migrations import default_spec_registry
+
         payload = default_spec_registry.migrate(
             "TrainingRunMatrixSpec", parent_payload
         ).payload
