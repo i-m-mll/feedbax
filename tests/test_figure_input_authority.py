@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.context import AnalysisRunContext
@@ -36,8 +37,11 @@ from feedbax.analysis.specs import (
     unregister_analysis_recipe,
 )
 from feedbax.contracts.figures import (
+    FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID,
+    FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION,
     FigureArtifactPayload,
     FigureInputAuthority,
+    FigureInputRoleAuthority,
     FigureSpec,
 )
 from feedbax.contracts.manifest import (
@@ -48,6 +52,7 @@ from feedbax.contracts.manifest import (
     sha256_bytes,
     spec_payload,
 )
+from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.selection import ManifestPredicate
 from feedbax.contracts.staged_execution import (
@@ -69,7 +74,7 @@ class _ProviderArtifactAnalysis(AbstractAnalysis):
         return {"artifact": artifact}
 
 
-def _authority_case(tmp_path: Path):
+def _authority_case(tmp_path: Path, *, explicit_parent: bool = False):
     provider = ImmutableArtifactBlobProvider(tmp_path / "provider")
     certificate = {
         "schema_id": "rlrmp.bridge.certificate",
@@ -131,15 +136,129 @@ def _authority_case(tmp_path: Path):
         payload_schema_id="rlrmp.bridge.certificate",
         payload_schema_version="rlrmp.bridge.certificate.v1",
     )
+    authority = (
+        FigureInputAuthority(parent=parent, artifact_payloads=[selector])
+        if explicit_parent
+        else FigureInputRoleAuthority(
+            input_role="grouped_analysis",
+            artifact_payloads=[selector],
+        )
+    )
     spec = FigureSpec(
         name="authority",
         assembler="feedbax.grid_figure",
         inputs=[parent],
-        input_authorities=[
-            FigureInputAuthority(parent=parent, artifact_payloads=[selector])
-        ],
+        input_authorities=[authority],
     )
     return provider, artifact, certificate, context, spec
+
+
+def test_role_authority_schema_identity_and_canonical_selector_are_portable() -> None:
+    authority = FigureInputRoleAuthority(input_role="grouped_analysis")
+    payload = authority.model_dump(mode="json")
+
+    assert payload == {
+        "schema_id": FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID,
+        "schema_version": FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION,
+        "input_role": "grouped_analysis",
+        "artifact_payloads": [],
+    }
+    assert b"parent" not in canonical_json_bytes(authority)
+    assert default_spec_registry.current_version("FigureInputRoleAuthority") == (
+        FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION
+    )
+
+    with pytest.raises(ValidationError, match="unsupported FigureInputRoleAuthority"):
+        FigureInputRoleAuthority(
+            schema_version="feedbax.spec.figure_input_role_authority.v0",
+            input_role="grouped_analysis",
+        )
+    with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
+        default_spec_registry.migrate(
+            "FigureInputRoleAuthority",
+            {
+                "schema_id": FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID,
+                "schema_version": "feedbax.spec.figure_input_role_authority.v0",
+                "input_role": "grouped_analysis",
+                "artifact_payloads": [],
+            },
+        )
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        FigureInputRoleAuthority.model_validate(
+            {
+                **payload,
+                "root": "/machine/local/provider",
+            }
+        )
+
+
+def test_role_authority_resolves_to_the_exact_declared_parent() -> None:
+    parent = ParentRef(
+        kind="AnalysisRunManifest",
+        id="feedbax-analysis-run:exact",
+        role="grouped_analysis",
+        metadata={"manifest_sha256": "a" * 64, "size_bytes": 42},
+    )
+    authority = FigureInputRoleAuthority(input_role="grouped_analysis")
+    spec = FigureSpec(
+        name="role-selector",
+        assembler="feedbax.grid_figure",
+        inputs=[parent],
+        input_authorities=[authority],
+    )
+
+    assert authority.resolve_parent(spec.inputs) == parent
+    assert authority.resolve_parent(spec.inputs).model_dump(mode="json") == parent.model_dump(
+        mode="json"
+    )
+
+
+@pytest.mark.parametrize("failure", ["missing", "ambiguous", "duplicate"])
+def test_role_authority_rejects_missing_ambiguous_or_duplicate_selectors(
+    failure: str,
+) -> None:
+    first = ParentRef(
+        kind="AnalysisRunManifest",
+        id="feedbax-analysis-run:first",
+        role="grouped_analysis",
+    )
+    inputs = [first]
+    authorities = [FigureInputRoleAuthority(input_role="grouped_analysis")]
+    match = "matches no declared"
+    if failure == "missing":
+        authorities = [FigureInputRoleAuthority(input_role="absent")]
+    elif failure == "ambiguous":
+        inputs.append(
+            ParentRef(
+                kind="AnalysisRunManifest",
+                id="feedbax-analysis-run:second",
+                role="grouped_analysis",
+            )
+        )
+        match = "is ambiguous"
+    elif failure == "duplicate":
+        authorities.append(FigureInputRoleAuthority(input_role="grouped_analysis"))
+        match = "duplicate exact ParentRef"
+
+    with pytest.raises(ValidationError, match=match):
+        FigureSpec(
+            name="invalid-role-selector",
+            assembler="feedbax.grid_figure",
+            inputs=inputs,
+            input_authorities=authorities,
+        )
+
+
+def test_explicit_parent_authority_form_remains_supported(tmp_path: Path) -> None:
+    _provider, artifact, certificate, context, spec = _authority_case(
+        tmp_path,
+        explicit_parent=True,
+    )
+
+    assert isinstance(spec.input_authorities[0], FigureInputAuthority)
+    resolved = resolve_figure_inputs(spec, execution_context=context)
+    assert resolved[0].artifact_payloads == {"certificate": certificate}
+    assert resolved[0].artifact_refs == (artifact,)
 
 
 def test_provider_canonical_payload_is_decoded_and_constructor_context_is_sanitized(
@@ -323,7 +442,10 @@ def test_staged_figure_resolves_prior_stage_output_through_executor_context(
                 assembler="feedbax.grid_figure",
                 inputs=[parent],
                 input_authorities=[
-                    FigureInputAuthority(parent=parent, artifact_payloads=[selector])
+                    FigureInputRoleAuthority(
+                        input_role="analysis_run",
+                        artifact_payloads=[selector],
+                    )
                 ],
             )
             return AnalysisBundleSpec(
