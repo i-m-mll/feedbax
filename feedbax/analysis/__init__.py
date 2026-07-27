@@ -165,6 +165,13 @@ from .evaluation_compaction import (
     EvaluationBatchMergeState,
     register_evaluation_batch_consumer,
 )
+from .evaluation_product_union import (
+    EvaluationCompactProductUnionBinding,
+    EvaluationCompactProductUnionInput,
+    EvaluationCompactProductUnionValue,
+    finalize_evaluation_compact_product_union,
+    register_evaluation_compact_product_union_finalizer,
+)
 from feedbax.contracts.manifest import EvaluationParamsBase, StagedEvaluationPrerequisite
 from .evaluation_inputs import (
     EvaluationInputAmbiguityError,
@@ -250,6 +257,9 @@ __all__ = [
     "EvaluationStateIdentity",
     "EvaluationStateIdentityMismatch",
     "EvaluationStateProvenance",
+    "EvaluationCompactProductUnionBinding",
+    "EvaluationCompactProductUnionInput",
+    "EvaluationCompactProductUnionValue",
     "compile_evaluation_run_matrix",
     "compile_evaluation_run_matrix_for_orchestration",
     "evaluation_matrix_intent_hash",
@@ -320,6 +330,7 @@ __all__ = [
     "flatten_analysis_run_delta",
     "is_analysis_run_delta_payload",
     "execute_evaluation_run_matrix",
+    "finalize_evaluation_compact_product_union",
     "resolve_staged_evaluation_prerequisite",
     "execute_report_spec",
     "resolve_report_scalar_projection",
@@ -338,6 +349,7 @@ __all__ = [
     "register_analysis_recipe",
     "register_evaluation_authoring_schema",
     "register_evaluation_batch_consumer",
+    "register_evaluation_compact_product_union_finalizer",
     "register_evaluation_recipe",
     "register_report_recipe",
     "read_json_payload",

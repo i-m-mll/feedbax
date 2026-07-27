@@ -140,6 +140,12 @@ from feedbax.contracts.evaluation_lifecycle import (
     EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_ID,
     EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_VERSION,
 )
+from feedbax.contracts.evaluation_product_union import (
+    EVALUATION_COMPACT_PRODUCT_UNION_EVIDENCE_SCHEMA_ID,
+    EVALUATION_COMPACT_PRODUCT_UNION_EVIDENCE_SCHEMA_VERSION,
+    EVALUATION_COMPACT_PRODUCT_UNION_SCHEMA_ID,
+    EVALUATION_COMPACT_PRODUCT_UNION_SCHEMA_VERSION,
+)
 from feedbax.contracts.evaluation_preflight import (
     EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID,
     EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
@@ -3038,6 +3044,34 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             supported_old_versions=(EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V1,),
             rejected_old_versions=(f"{EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID}.v0",),
             required_tests=("tests/test_evaluation_compaction.py",),
+        ),
+        _family(
+            "EvaluationCompactProductUnion",
+            EVALUATION_COMPACT_PRODUCT_UNION_SCHEMA_ID,
+            EVALUATION_COMPACT_PRODUCT_UNION_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_product_union",
+            emitted_by=("evaluation compact-product union authors",),
+            consumed_by=("feedbax.analysis.evaluation_product_union",),
+            description=(
+                "Declared-order authority for terminal compact products across distinct "
+                "governed matrix identities."
+            ),
+            rejected_old_versions=(f"{EVALUATION_COMPACT_PRODUCT_UNION_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_evaluation_product_union.py",),
+        ),
+        _family(
+            "EvaluationCompactProductUnionEvidence",
+            EVALUATION_COMPACT_PRODUCT_UNION_EVIDENCE_SCHEMA_ID,
+            EVALUATION_COMPACT_PRODUCT_UNION_EVIDENCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_product_union",
+            emitted_by=("feedbax.analysis.evaluation_product_union",),
+            consumed_by=("provider-free compact-product union result readers only",),
+            description=(
+                "Terminal publication proof for provider-free union, collection, "
+                "certification, and teardown."
+            ),
+            rejected_old_versions=(f"{EVALUATION_COMPACT_PRODUCT_UNION_EVIDENCE_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_evaluation_product_union.py",),
         ),
         _family(
             "EvaluationLifecycleEvidence",
