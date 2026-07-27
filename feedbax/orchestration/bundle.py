@@ -14,6 +14,7 @@ from typing import Any, Literal, TypeAlias
 from pydantic import Field, field_validator, model_validator
 
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
+from feedbax.contracts.evaluation_preflight import EvaluationOutputPreflightEvidence
 from feedbax.contracts.manifest import ArtifactMigrationRecord, ParentRef, StrictModel
 from feedbax.contracts.run_matrix import TrainingRowProvenance
 from feedbax.contracts.staged_execution import validate_staged_binding_name
@@ -35,7 +36,8 @@ RUN_BUNDLE_SCHEMA_VERSION_V6 = "feedbax.orchestration.run_bundle.v6"
 RUN_BUNDLE_SCHEMA_VERSION_V7 = "feedbax.orchestration.run_bundle.v7"
 RUN_BUNDLE_SCHEMA_VERSION_V8 = "feedbax.orchestration.run_bundle.v8"
 RUN_BUNDLE_SCHEMA_VERSION_V9 = "feedbax.orchestration.run_bundle.v9"
-RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v10"
+RUN_BUNDLE_SCHEMA_VERSION_V10 = "feedbax.orchestration.run_bundle.v10"
+RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v11"
 DEPLOYMENT_POLICY_SCHEMA_ID = "feedbax.spec.deployment_policy"
 DEPLOYMENT_POLICY_SCHEMA_VERSION = "feedbax.spec.deployment_policy.v1"
 EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID = "feedbax.spec.execution_identity_envelope"
@@ -487,7 +489,7 @@ class RunBundle(StrictModel):
     """Schema-versioned orchestration request for a run set."""
 
     schema_id: Literal["feedbax.orchestration.run_bundle"] = RUN_BUNDLE_SCHEMA_ID
-    schema_version: Literal["feedbax.orchestration.run_bundle.v10"] = RUN_BUNDLE_SCHEMA_VERSION
+    schema_version: Literal["feedbax.orchestration.run_bundle.v11"] = RUN_BUNDLE_SCHEMA_VERSION
     run_set_id: str = Field(default_factory=mint_run_set_id)
     feedbax_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     execution_family: ExecutionFamily = "native-training"
@@ -499,6 +501,7 @@ class RunBundle(StrictModel):
     budget: BudgetPolicy
     resolved_inputs: list[ResolvedAssemblyInput] = Field(default_factory=list)
     staged_roots: list[StagedRootCustody] = Field(default_factory=list)
+    evaluation_output_preflight: EvaluationOutputPreflightEvidence | None = None
     orchestration_root: str | None = None
     keep_alive: bool = False
     deadman_enabled: bool = False
@@ -522,9 +525,7 @@ class RunBundle(StrictModel):
             if row.row_id in seen:
                 raise ValueError(f"duplicate row_id: {row.row_id!r}")
             if row.execution_family != self.execution_family:
-                raise ValueError(
-                    f"row {row.row_id!r} execution_family does not match the bundle"
-                )
+                raise ValueError(f"row {row.row_id!r} execution_family does not match the bundle")
             seen.add(row.row_id)
         canonical_identities = canonicalize_immutable_input_identities(
             [item.identity for item in self.resolved_inputs]
@@ -559,6 +560,21 @@ class RunBundle(StrictModel):
             if row_identities != canonical_identities:
                 raise ValueError(
                     f"row {row.row_id!r} immutable inputs do not match resolved_inputs"
+                )
+        if self.evaluation_output_preflight is not None:
+            if self.execution_family != "evaluation-matrix":
+                raise ValueError(
+                    "evaluation_output_preflight is only valid for evaluation-matrix bundles"
+                )
+            root = (
+                Path(self.orchestration_root).expanduser()
+                if self.orchestration_root
+                else default_orchestration_root(self.run_set_id)
+            )
+            expected_output_root = root if root.name == self.run_set_id else root / self.run_set_id
+            if Path(self.evaluation_output_preflight.output_root) != expected_output_root:
+                raise ValueError(
+                    "evaluation_output_preflight output_root does not match the bundle run-set root"
                 )
         return self
 

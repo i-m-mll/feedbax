@@ -102,6 +102,12 @@ from feedbax.contracts.manifest import (
     FIGURE_MANIFEST_SCHEMA_ID,
     FIGURE_MANIFEST_SCHEMA_VERSION,
 )
+from feedbax.contracts.evaluation_preflight import (
+    EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID,
+    EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
+    EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID,
+    EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION,
+)
 from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
@@ -171,6 +177,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V7,
     RUN_BUNDLE_SCHEMA_VERSION_V8,
     RUN_BUNDLE_SCHEMA_VERSION_V9,
+    RUN_BUNDLE_SCHEMA_VERSION_V10,
 )
 from feedbax.orchestration.staged_root_custody import (
     STAGED_ROOT_CUSTODY_SCHEMA_ID,
@@ -367,7 +374,7 @@ def test_shadow_launch_evidence_registry_explicitly_rejects_v0() -> None:
         (
             "RunAssemblyRequest",
             "feedbax.spec.run_assembly_request",
-            "feedbax.spec.run_assembly_request.v4",
+            "feedbax.spec.run_assembly_request.v5",
         ),
         (
             "DeploymentPolicy",
@@ -383,6 +390,16 @@ def test_shadow_launch_evidence_registry_explicitly_rejects_v0() -> None:
             "EvaluationMatrixBatchPlan",
             "feedbax.spec.evaluation_matrix_batch_plan",
             "feedbax.spec.evaluation_matrix_batch_plan.v1",
+        ),
+        (
+            "EvaluationOutputPreflightPolicy",
+            EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID,
+            EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION,
+        ),
+        (
+            "EvaluationOutputPreflightEvidence",
+            EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID,
+            EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
         ),
         (
             "EvaluationMatrixOrderedUnionEvidence",
@@ -649,6 +666,7 @@ def test_nan_attribution_families_are_versioned_and_reject_unknown_versions(
         RUN_BUNDLE_SCHEMA_VERSION_V7,
         RUN_BUNDLE_SCHEMA_VERSION_V8,
         RUN_BUNDLE_SCHEMA_VERSION_V9,
+        RUN_BUNDLE_SCHEMA_VERSION_V10,
     ],
 )
 def test_run_bundle_old_versions_require_reassembly(old_version: str) -> None:
@@ -719,6 +737,19 @@ def test_legacy_assembly_request_requires_reauthorization() -> None:
             "RunAssemblyRequest",
             {"schema_version": "feedbax.spec.run_assembly_request.v1"},
         )
+
+
+def test_run_assembly_request_v4_migrates_without_evaluation_output_policy() -> None:
+    migrated = default_spec_registry.migrate(
+        "RunAssemblyRequest",
+        {
+            "schema_id": "feedbax.spec.run_assembly_request",
+            "schema_version": "feedbax.spec.run_assembly_request.v4",
+        },
+    )
+
+    assert migrated.payload["schema_version"] == "feedbax.spec.run_assembly_request.v5"
+    assert migrated.payload["evaluation_output_preflight"] is None
 
 
 def test_deployment_policy_v0_is_explicitly_rejected() -> None:

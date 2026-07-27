@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Callable, Mapping, Protocol
@@ -12,6 +14,10 @@ from pydantic import Field, JsonValue, model_validator
 
 from feedbax.contracts.manifest import StrictModel
 from feedbax.contracts.evaluation_lifecycle import EvaluationMatrixBatchPlan
+from feedbax.contracts.evaluation_preflight import (
+    EvaluationOutputPreflightEvidence,
+    EvaluationOutputPreflightPolicy,
+)
 from feedbax.contracts.run_composition import (
     AuthoredIntentParent,
     CompositionNode,
@@ -46,6 +52,7 @@ from feedbax.orchestration.bundle import (
     RunBundle,
     RunRowSpec,
     SchemaArtifactRef,
+    default_orchestration_root,
 )
 from feedbax.orchestration.revision import resolve_feedbax_revision
 from feedbax.orchestration.staged_root_custody import StagedRootCustody
@@ -62,7 +69,8 @@ RUN_ASSEMBLY_REQUEST_SCHEMA_ID = "feedbax.spec.run_assembly_request"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v1"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V2 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v2"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v3"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v4"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v4"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v5"
 
 
 class CompilerIdentity(StrictModel):
@@ -110,6 +118,7 @@ class RunAssemblyRequest(StrictModel):
     training_row_parents: list[GovernedTrainingRowParentDeclaration] = Field(default_factory=list)
     staged_roots: list[StagedRootCustody] = Field(default_factory=list)
     evaluation_batch_plan: EvaluationMatrixBatchPlan | None = None
+    evaluation_output_preflight: EvaluationOutputPreflightPolicy | None = None
     deployment_policy: DeploymentPolicy
     environment: EnvironmentDeclaration
     launch_policy: LaunchPolicy = Field(default_factory=LaunchPolicy)
@@ -239,6 +248,20 @@ class _CompilerRegistration:
     compiler_version: str
     compiler: AssemblyCompiler
     identity_adapter: ExecutionIdentityAdapter
+
+
+@dataclass(frozen=True)
+class _PreparedRunAssembly:
+    """Pure assembly result retained before any compiled row custody writes."""
+
+    request_sha256: str
+    run_set_id: str
+    authored_result: "SpecMigrationResult"
+    authored: dict[str, Any]
+    registration: _CompilerRegistration
+    resolved_input_records: tuple[ResolvedAssemblyInput, ...]
+    compiled: CompiledRunSet
+    evaluation_output_preflight: EvaluationOutputPreflightEvidence | None
 
 
 class AssemblyCompilerRegistry:
@@ -421,12 +444,91 @@ def assemble_run_bundle(
     registry: AssemblyCompilerRegistry,
 ) -> RunBundle:
     """Compile a verified authored request and persist a current RunBundle."""
+    prepared = _prepare_run_assembly(
+        request,
+        run_set_id=run_set_id,
+        context=context,
+        registry=registry,
+    )
+    return _persist_prepared_run_bundle(
+        request,
+        prepared=prepared,
+        run_set_id=run_set_id,
+        context=context,
+    )
+
+
+def _persist_prepared_run_bundle(
+    request: RunAssemblyRequest,
+    *,
+    prepared: _PreparedRunAssembly,
+    run_set_id: str,
+    context: AssemblyContext,
+) -> RunBundle:
+    """Persist rows from one already checked pure assembly result."""
+    request_sha256 = hashlib.sha256(training_spec_canonical_bytes(request)).hexdigest()
+    if prepared.request_sha256 != request_sha256 or prepared.run_set_id != run_set_id:
+        raise ValueError("prepared run assembly does not match the request and run_set_id")
+    authored = prepared.authored
+    registration = prepared.registration
+    compiled = prepared.compiled
+    resolved_input_records = list(prepared.resolved_input_records)
+    row_context = replace(context, authored_ref=request.authored)
+    stored = [
+        persist_compiled_row(
+            row,
+            authored=authored,
+            identity_adapter=registration.identity_adapter,
+            context=row_context,
+        )
+        for row in compiled.rows
+    ]
+    execution_family = compiled.rows[0].execution_family
+    return RunBundle(
+        run_set_id=run_set_id,
+        feedbax_revision=resolve_feedbax_revision(),
+        deployment_policy=request.deployment_policy,
+        execution_family=execution_family,
+        migration_evidence=prepared.authored_result.migration_records,
+        rows=[
+            RunRowSpec(
+                row_id=item.row_id,
+                execution_family=compiled.rows[index].execution_family,
+                execution=item.execution,
+                launch=item.launch,
+            )
+            for index, item in enumerate(stored)
+        ],
+        environment=request.environment,
+        launch_policy=request.launch_policy,
+        budget=request.budget,
+        resolved_inputs=resolved_input_records,
+        staged_roots=request.staged_roots,
+        evaluation_output_preflight=prepared.evaluation_output_preflight,
+        orchestration_root=request.orchestration_root,
+        keep_alive=request.keep_alive,
+        deadman_enabled=request.deadman_enabled,
+        deadman_silence_seconds=request.deadman_silence_seconds,
+        metadata=request.metadata,
+    )
+
+
+def _prepare_run_assembly(
+    request: RunAssemblyRequest,
+    *,
+    run_set_id: str,
+    context: AssemblyContext,
+    registry: AssemblyCompilerRegistry,
+) -> _PreparedRunAssembly:
+    """Resolve and compile one request without persisting compiled row artifacts."""
     authored_result = load_schema_artifact(request.authored, context=context)
-    authored = authored_result.payload
+    authored = dict(authored_result.payload)
     registration = registry.resolve(request)
-    resolved_input_records = sorted(
-        (_resolve_input(item, context=context) for item in request.inputs),
-        key=lambda item: (item.identity.role, item.identity.kind, item.identity.identifier),
+    resolved_input_records = tuple(
+        sorted(
+            (_resolve_input(item, context=context) for item in request.inputs),
+            key=lambda item: (item.identity.role, item.identity.kind, item.identity.identifier),
+        )
     )
     resolved_inputs = [item.identity for item in resolved_input_records]
     lowering_context = _resolve_training_row_parents(
@@ -445,6 +547,11 @@ def assemble_run_bundle(
         run_set_id=run_set_id,
         context=compiler_context,
     )
+    evaluation_output_preflight = _preflight_evaluation_output(
+        request,
+        compiled=compiled,
+        run_set_id=run_set_id,
+    )
     if resolved_inputs:
         declared = canonicalize_immutable_input_identities(resolved_inputs)
         for row in compiled.rows:
@@ -453,46 +560,96 @@ def assemble_run_bundle(
                 raise ValueError(
                     f"compiled row {row.row_id!r} immutable inputs do not match resolved request inputs"
                 )
-    row_context = replace(context, authored_ref=request.authored)
-    stored = [
-        persist_compiled_row(
-            row,
-            authored=authored,
-            identity_adapter=registration.identity_adapter,
-            context=row_context,
-        )
-        for row in compiled.rows
-    ]
     execution_families = {row.execution_family for row in compiled.rows}
     if len(execution_families) != 1:
         raise ValueError("compiled run set must contain exactly one execution family")
-    execution_family = next(iter(execution_families))
-    return RunBundle(
+    return _PreparedRunAssembly(
+        request_sha256=hashlib.sha256(training_spec_canonical_bytes(request)).hexdigest(),
         run_set_id=run_set_id,
-        feedbax_revision=resolve_feedbax_revision(),
-        deployment_policy=request.deployment_policy,
-        execution_family=execution_family,
-        migration_evidence=authored_result.migration_records,
-        rows=[
-            RunRowSpec(
-                row_id=item.row_id,
-                execution_family=compiled.rows[index].execution_family,
-                execution=item.execution,
-                launch=item.launch,
-            )
-            for index, item in enumerate(stored)
-        ],
-        environment=request.environment,
-        launch_policy=request.launch_policy,
-        budget=request.budget,
-        resolved_inputs=resolved_input_records,
-        staged_roots=request.staged_roots,
-        orchestration_root=request.orchestration_root,
-        keep_alive=request.keep_alive,
-        deadman_enabled=request.deadman_enabled,
-        deadman_silence_seconds=request.deadman_silence_seconds,
-        metadata=request.metadata,
+        authored_result=authored_result,
+        authored=authored,
+        registration=registration,
+        resolved_input_records=resolved_input_records,
+        compiled=compiled,
+        evaluation_output_preflight=evaluation_output_preflight,
     )
+
+
+def _preflight_evaluation_output(
+    request: RunAssemblyRequest,
+    *,
+    compiled: CompiledRunSet,
+    run_set_id: str,
+) -> EvaluationOutputPreflightEvidence | None:
+    """Refuse cardinality or disk-budget drift before compiled rows are persisted."""
+    policy = request.evaluation_output_preflight
+    if policy is None:
+        return None
+    execution_families = {row.execution_family for row in compiled.rows}
+    if execution_families != {"evaluation-matrix"} or len(compiled.rows) != 1:
+        raise ValueError(
+            "evaluation_output_preflight is only valid for one compiled evaluation matrix"
+        )
+    ordered_row_ids = compiled.rows[0].resolved_semantics.get("ordered_row_ids")
+    if not isinstance(ordered_row_ids, list) or not ordered_row_ids:
+        raise ValueError("evaluation output preflight requires canonical resolved ordered_row_ids")
+    if any(not isinstance(row_id, str) or not row_id for row_id in ordered_row_ids):
+        raise ValueError("evaluation resolved ordered_row_ids must contain non-empty strings")
+    resolved_row_count = len(ordered_row_ids)
+    if resolved_row_count != policy.expected_resolved_row_count:
+        raise ValueError(
+            "evaluation resolved row count does not match authored preflight expectation: "
+            f"expected={policy.expected_resolved_row_count} resolved={resolved_row_count}"
+        )
+
+    output_root = _evaluation_output_root(request, run_set_id=run_set_id)
+    filesystem_path = _nearest_existing_path(output_root)
+    observed_free_bytes = shutil.disk_usage(filesystem_path).free
+    estimated_retained_bytes = (
+        resolved_row_count * policy.retained_bytes_per_resolved_row * policy.planned_repetitions
+    )
+    required_free_bytes = estimated_retained_bytes + policy.required_free_space_reserve_bytes
+    if observed_free_bytes < required_free_bytes:
+        raise ValueError(
+            "evaluation output preflight requires more free space than observed: "
+            f"required_free_bytes={required_free_bytes} "
+            f"observed_free_bytes={observed_free_bytes} "
+            f"output_root={output_root}"
+        )
+    evidence = EvaluationOutputPreflightEvidence(
+        expected_resolved_row_count=policy.expected_resolved_row_count,
+        resolved_row_count=resolved_row_count,
+        retained_bytes_per_resolved_row=policy.retained_bytes_per_resolved_row,
+        retained_bytes_per_resolved_row_source=(policy.retained_bytes_per_resolved_row_source),
+        planned_repetitions=policy.planned_repetitions,
+        estimated_retained_bytes=estimated_retained_bytes,
+        required_free_space_reserve_bytes=policy.required_free_space_reserve_bytes,
+        required_free_bytes=required_free_bytes,
+        observed_free_bytes=observed_free_bytes,
+        output_root=str(output_root),
+        observed_filesystem_path=str(filesystem_path),
+        observed_filesystem_device=os.stat(filesystem_path).st_dev,
+    )
+    return evidence
+
+
+def _evaluation_output_root(request: RunAssemblyRequest, *, run_set_id: str) -> Path:
+    if request.orchestration_root:
+        root = Path(request.orchestration_root).expanduser()
+        return root if root.name == run_set_id else root / run_set_id
+    return default_orchestration_root(run_set_id)
+
+
+def _nearest_existing_path(path: Path) -> Path:
+    candidate = path.expanduser().absolute()
+    while not candidate.exists():
+        parent = candidate.parent
+        if parent == candidate:
+            raise ValueError(f"no existing filesystem ancestor for evaluation output: {path}")
+        candidate = parent
+    if not candidate.is_dir():
+        candidate = candidate.parent
+    return candidate.resolve()
 
 
 def _resolve_training_row_parents(

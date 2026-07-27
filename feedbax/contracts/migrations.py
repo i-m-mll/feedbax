@@ -132,6 +132,12 @@ from feedbax.contracts.evaluation_lifecycle import (
     EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_ID,
     EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_VERSION,
 )
+from feedbax.contracts.evaluation_preflight import (
+    EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID,
+    EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
+    EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID,
+    EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION,
+)
 from feedbax.contracts.remote_smoke import (
     REMOTE_SMOKE_EVIDENCE_SCHEMA_ID,
     REMOTE_SMOKE_EVIDENCE_SCHEMA_VERSION,
@@ -341,6 +347,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V7,
     RUN_BUNDLE_SCHEMA_VERSION_V8,
     RUN_BUNDLE_SCHEMA_VERSION_V9,
+    RUN_BUNDLE_SCHEMA_VERSION_V10,
 )
 from feedbax.orchestration.staged_root_custody import (
     STAGED_ROOT_CUSTODY_SCHEMA_ID,
@@ -378,7 +385,8 @@ RUN_ASSEMBLY_REQUEST_SCHEMA_ID = "feedbax.spec.run_assembly_request"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1 = "feedbax.spec.run_assembly_request.v1"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V2 = "feedbax.spec.run_assembly_request.v2"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3 = "feedbax.spec.run_assembly_request.v3"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v4"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4 = "feedbax.spec.run_assembly_request.v4"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v5"
 EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_ID = (
     "feedbax.manifest.evaluation_matrix_execution_capsule"
 )
@@ -2468,7 +2476,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             consumed_by=("feedbax.orchestration.assembly.assemble_run_bundle",),
             description="Authored request resolved and compiled by persisted ASSEMBLE.",
             stance="migrate",
-            supported_old_versions=(RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3,),
+            supported_old_versions=(
+                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3,
+                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4,
+            ),
             rejected_old_versions=(
                 f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v0",
                 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1,
@@ -2476,7 +2487,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             notes=(
                 "v2 omitted governed compile-time training-row parent declarations; "
-                "v3 omitted additive staged-root custody declarations."
+                "v3 omitted additive staged-root custody declarations; "
+                "v4 omitted the optional typed evaluation output preflight policy."
             ),
         ),
         _family(
@@ -3012,6 +3024,33 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             required_tests=("tests/test_evaluation_orchestration.py",),
         ),
         _family(
+            "EvaluationOutputPreflightPolicy",
+            EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID,
+            EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_preflight",
+            emitted_by=("evaluation matrix orchestration authors",),
+            consumed_by=("feedbax.orchestration.assembly.assemble_run_bundle",),
+            description=(
+                "Authored resolved-cardinality expectation and retained-write budget inputs."
+            ),
+            rejected_old_versions=(f"{EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_evaluation_orchestration.py",),
+        ),
+        _family(
+            "EvaluationOutputPreflightEvidence",
+            EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID,
+            EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_preflight",
+            emitted_by=("feedbax.orchestration.assembly.assemble_run_bundle",),
+            consumed_by=("evaluation run preflight evidence readers",),
+            description=(
+                "Resolved cardinality, retained-byte estimate, and exact filesystem-space "
+                "observation made before evaluation outputs."
+            ),
+            rejected_old_versions=(f"{EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_evaluation_orchestration.py",),
+        ),
+        _family(
             "EvaluationMatrixOrderedUnionEvidence",
             EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_ID,
             EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_VERSION,
@@ -3281,6 +3320,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 RUN_BUNDLE_SCHEMA_VERSION_V7,
                 RUN_BUNDLE_SCHEMA_VERSION_V8,
                 RUN_BUNDLE_SCHEMA_VERSION_V9,
+                RUN_BUNDLE_SCHEMA_VERSION_V10,
             ),
             required_tests=(
                 "tests/test_orchestration_core.py",
@@ -4757,9 +4797,20 @@ def _migrate_run_assembly_request_v3_to_v4_payload(
     """Preserve v3 requests while adding the empty staged-root declaration."""
     migrated = dict(payload)
     migrated["schema_id"] = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
-    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION
+    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4
     migrated.setdefault("staged_roots", [])
     migrated.setdefault("evaluation_batch_plan", None)
+    return migrated
+
+
+def _migrate_run_assembly_request_v4_to_v5_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve v4 behavior with no evaluation output preflight policy."""
+    migrated = dict(payload)
+    migrated["schema_id"] = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
+    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION
+    migrated.setdefault("evaluation_output_preflight", None)
     return migrated
 
 
@@ -4769,12 +4820,22 @@ default_spec_registry.register_migration(
     "RunAssemblyRequest",
     SchemaMigration(
         source_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3,
-        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION,
+        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4,
         migration_id="run-assembly-request-v3-to-v4-staged-roots",
         migrate=_migrate_run_assembly_request_v3_to_v4_payload,
         description=(
             "Preserve existing training requests and add an empty governed staged-root list."
         ),
+    ),
+)
+default_spec_registry.register_migration(
+    "RunAssemblyRequest",
+    SchemaMigration(
+        source_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4,
+        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION,
+        migration_id="run-assembly-request-v4-to-v5-evaluation-output-preflight",
+        migrate=_migrate_run_assembly_request_v4_to_v5_payload,
+        description=("Preserve existing requests with no evaluation output preflight policy."),
     ),
 )
 default_spec_registry.register_migration(
