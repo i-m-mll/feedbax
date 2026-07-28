@@ -15,6 +15,9 @@ from feedbax.analysis.figures import (
     resolve_figure_colorbar,
 )
 from feedbax.contracts.figures import (
+    COLORBAR_PANEL_PLACEMENT_SCHEMA_ID,
+    COLORBAR_PANEL_PLACEMENT_SCHEMA_VERSION,
+    ColorbarPanelPlacement,
     FigureColorbar,
     FigureSpec,
     TraceBinding,
@@ -22,6 +25,7 @@ from feedbax.contracts.figures import (
     TraceFamilyIndex,
     TraceFamilyRange,
 )
+from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     ParentRef,
@@ -32,6 +36,11 @@ from feedbax.contracts.manifest import (
     write_manifest,
 )
 from feedbax.plot.colors import sample_colorscale_at, sample_colorscale_unique
+from feedbax.plot.constructors import (
+    GridFigureParams,
+    get_figure_constructor,
+    register_figure_constructor,
+)
 
 pytestmark = [pytest.mark.feedbax_contract]
 
@@ -153,6 +162,168 @@ def test_figures_without_a_colorbar_render_and_hash_unchanged(tmp_path: Path) ->
     assert figure_manifest_id(spec) != figure_manifest_id(keyed)
     assert len(keyed_rendered["data"]) == len(rendered["data"]) + 1
     assert keyed_rendered["data"][: len(rendered["data"])] == rendered["data"]
+
+
+def test_colorbar_panel_placement_has_explicit_schema_identity() -> None:
+    placement = ColorbarPanelPlacement(panel="main", length_fraction=0.5)
+    colorbar = FigureColorbar(
+        colorscale=COLORSCALE,
+        range=(0.0, 1.0),
+    )
+
+    assert placement.schema_id == COLORBAR_PANEL_PLACEMENT_SCHEMA_ID
+    assert placement.schema_version == COLORBAR_PANEL_PLACEMENT_SCHEMA_VERSION
+    assert placement.center_fraction == 0.5
+    assert placement.side == "right"
+    assert placement.offset_fraction == 0.0
+    assert (
+        default_spec_registry.current_version("ColorbarPanelPlacement")
+        == COLORBAR_PANEL_PLACEMENT_SCHEMA_VERSION
+    )
+    assert "placement" not in colorbar.model_dump(mode="json", exclude_none=True)
+
+    with pytest.raises(
+        ValidationError,
+        match="unsupported ColorbarPanelPlacement schema_version",
+    ):
+        ColorbarPanelPlacement(
+            schema_version="feedbax.spec.colorbar_panel_placement.v0",
+            panel="main",
+            length_fraction=0.5,
+        )
+
+
+def test_colorbar_placement_resolves_against_selected_panel_domain(
+    tmp_path: Path,
+) -> None:
+    spec = FigureSpec(
+        name="panel-relative-colorbar",
+        assembler="feedbax.grid_figure",
+        panels=[
+            {"name": "upper", "row": 1, "col": 1},
+            {"name": "lower", "row": 2, "col": 1},
+        ],
+        traces=[_plain_trace()],
+        colorbar=FigureColorbar(
+            title="s",
+            colorscale=COLORSCALE,
+            range=(0.0, 1.0),
+            placement=ColorbarPanelPlacement(
+                panel="lower",
+                length_fraction=0.5,
+                center_fraction=0.5,
+                side="left",
+                offset_fraction=0.1,
+            ),
+        ),
+    )
+
+    rendered = _render(spec, tmp_path)
+
+    (carrier,) = _colorbar_traces(rendered)
+    colorbar = carrier["marker"]["colorbar"]
+    x_low, x_high = rendered["layout"]["xaxis2"]["domain"]
+    y_low, y_high = rendered["layout"]["yaxis2"]["domain"]
+    assert colorbar["lenmode"] == "fraction"
+    assert colorbar["len"] == pytest.approx((y_high - y_low) * 0.5)
+    assert colorbar["y"] == pytest.approx(y_low + (y_high - y_low) * 0.5)
+    assert colorbar["yanchor"] == "middle"
+    assert colorbar["x"] == pytest.approx(x_low - (x_high - x_low) * 0.1)
+    assert colorbar["xanchor"] == "right"
+    assert colorbar["title"] == {"text": "s"}
+
+
+@pytest.mark.parametrize(
+    ("placement", "match"),
+    [
+        ({"panel": "", "length_fraction": 0.5}, "panel"),
+        ({"panel": "main", "length_fraction": 0.0}, "length_fraction"),
+        ({"panel": "main", "length_fraction": 1.1}, "length_fraction"),
+        (
+            {
+                "panel": "main",
+                "length_fraction": 0.6,
+                "center_fraction": 0.2,
+            },
+            "extend outside",
+        ),
+        (
+            {
+                "panel": "main",
+                "length_fraction": 0.5,
+                "offset_fraction": 1.1,
+            },
+            "offset_fraction",
+        ),
+    ],
+)
+def test_invalid_colorbar_panel_placement_fails_closed(
+    placement: dict[str, Any],
+    match: str,
+) -> None:
+    with pytest.raises(ValidationError, match=match):
+        ColorbarPanelPlacement.model_validate(placement)
+
+
+def test_colorbar_placement_rejects_unknown_panel_without_artifact(
+    tmp_path: Path,
+) -> None:
+    spec = FigureSpec(
+        name="unknown-colorbar-panel",
+        assembler="feedbax.grid_figure",
+        panels=[{"name": "main"}],
+        colorbar=FigureColorbar(
+            colorscale=COLORSCALE,
+            range=(0.0, 1.0),
+            placement=ColorbarPanelPlacement(
+                panel="missing",
+                length_fraction=0.5,
+            ),
+        ),
+    )
+
+    with pytest.raises(FigureSpecExecutionError) as exc_info:
+        execute_figure_spec(spec, root=tmp_path)
+
+    assert "exactly one panel named 'missing'" in exc_info.value.manifest.failure["message"]
+    assert exc_info.value.manifest.artifacts == []
+    assert not (tmp_path / "figures").exists()
+
+
+def test_colorbar_placement_rejects_non_grid_figure_assembler(
+    tmp_path: Path,
+) -> None:
+    grid = get_figure_constructor("feedbax.grid_figure", tier="figure")
+    register_figure_constructor(
+        "feedbax.test_grid_figure_without_panel_placement",
+        tier="figure",
+        constructor=grid.callable,
+        params_model=GridFigureParams,
+        description="Grid-compatible test finalizer without placement authority.",
+        replace=True,
+    )
+    spec = FigureSpec(
+        name="unsupported-colorbar-placement",
+        assembler="feedbax.test_grid_figure_without_panel_placement",
+        panels=[{"name": "main"}],
+        colorbar=FigureColorbar(
+            colorscale=COLORSCALE,
+            range=(0.0, 1.0),
+            placement=ColorbarPanelPlacement(
+                panel="main",
+                length_fraction=0.5,
+            ),
+        ),
+    )
+
+    with pytest.raises(FigureSpecExecutionError) as exc_info:
+        execute_figure_spec(spec, root=tmp_path)
+
+    assert "requires the feedbax.comparison_grid/feedbax.grid_figure" in (
+        exc_info.value.manifest.failure["message"]
+    )
+    assert exc_info.value.manifest.artifacts == []
+    assert not (tmp_path / "figures").exists()
 
 
 def test_family_bound_colorbar_reads_the_family_assigned_colors(tmp_path: Path) -> None:
