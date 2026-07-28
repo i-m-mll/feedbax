@@ -2992,6 +2992,36 @@ def test_launch_row_does_not_double_wrap_normalized_native_command(
     assert "specs/warm.json" in launch_command
 
 
+def test_launch_row_runs_evaluation_matrix_in_realized_uv_environment(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    original = bundle.rows[0]
+    row = original.model_copy(
+        update={
+            "execution_family": "evaluation-matrix",
+            "launch": RowLaunchSpec(
+                command=["python", "-m", "feedbax", "matrix-harness"],
+                payload_routing={"kind": "registered-execution-payload"},
+            ),
+        }
+    )
+    bundle = bundle.model_copy(
+        update={
+            "execution_family": "evaluation-matrix",
+            "rows": [row],
+        }
+    )
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(config=RunPodDriverConfig(), transport=transport)
+
+    driver.launch_row(bundle, row, _state(bundle))
+
+    launch_command = transport.ssh_commands[0]
+    assert launch_command.count("uv run --no-sync") == 1
+    assert "python -m feedbax matrix-harness" in launch_command
+
+
 def test_launch_row_entry_fallback_keeps_single_uv_environment_prefix(
     tmp_path: Path,
 ) -> None:

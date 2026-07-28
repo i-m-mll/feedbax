@@ -3440,7 +3440,7 @@ def build_remote_nohup_sentinel_command(
 def _normalize_explicit_native_launch_command(command: Sequence[str]) -> list[str]:
     """Run an explicit native executor command in the realized uv environment."""
     normalized = [str(part) for part in command]
-    if not is_native_training_command(normalized):
+    if not is_native_training_command(normalized) and "matrix-harness" not in normalized:
         return normalized
     if not normalized or Path(normalized[0]).name != "uv":
         return ["uv", "run", "--no-sync", *normalized]
