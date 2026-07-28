@@ -334,13 +334,8 @@ class LocalOrchestrationDriver:
         paths = _row_paths(bundle, row.row_id)
         process = self._processes.get(row.row_id)
         pid = process.pid if process is not None else _read_pid(paths["pid"])
-        if pid and _pid_alive(pid):
-            try:
-                os.killpg(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            except OSError:
-                os.kill(pid, signal.SIGTERM)
+        if pid:
+            _terminate_process_group(pid, process=process)
         paths["failed"].write_text("stopped\n", encoding="utf-8")
         return {"row_id": row.row_id, "pid": pid, "status": "stopped"}
 
@@ -375,11 +370,18 @@ class LocalOrchestrationDriver:
         dest_dir.mkdir(parents=True, exist_ok=True)
         collected: dict[str, str] = {}
         sources = row.launch.collect or [str(paths["event_log"])]
+        failed_row = state.rows[row.row_id].status in {"failed", "stopped"}
         for source in sources:
             source_path = Path(source)
             if not source_path.is_absolute():
                 source_path = paths["row_dir"] / source_path
             if not source_path.exists():
+                continue
+            # A failed executor may leave a large, actively-written raw/cache tree.
+            # Small declared files remain useful failure evidence, but recursive
+            # directory collection is terminal-output publication and is therefore
+            # forbidden until the executor has completed successfully.
+            if failed_row and source_path.is_dir():
                 continue
             dest = dest_dir / source_path.name
             if source_path.is_dir():
@@ -400,16 +402,24 @@ class LocalOrchestrationDriver:
         stopped: list[str] = []
         for row in bundle.rows:
             probe = self.probe(bundle, row, state)
-            if probe.status == "running":
+            paths = _row_paths(bundle, row.row_id)
+            pid = probe.pid or _read_pid(paths["pid"])
+            if probe.status == "running" or (pid and _process_group_alive(pid)):
                 self.stop_row(bundle, row, state)
                 stopped.append(row.row_id)
+        failed_row_reclamation = [
+            _reclaim_failed_row_tree(bundle, row)
+            for row in bundle.rows
+            if state.rows[row.row_id].status in {"failed", "stopped"}
+            and state.stage("COLLECT").status in {"completed", "failed"}
+        ]
         reclamation: dict[str, Any] = {
             "status": "retained",
             "custody_refs": [custody.custody_ref for custody in bundle.staged_roots],
             "reclaimed_bytes": 0,
             "reason": "terminal-consumer-barrier-not-complete",
         }
-        if _terminal_staged_root_reclamation_allowed(bundle, state, stopped):
+        if _terminal_staged_root_reclamation_allowed(bundle, state):
             result = reclaim_materialized_staged_roots(
                 bundle,
                 inputs_root=bundle.run_set_dir / "inputs",
@@ -422,6 +432,7 @@ class LocalOrchestrationDriver:
         return {
             "driver": "local",
             "stopped_rows": stopped,
+            "failed_row_reclamation": failed_row_reclamation,
             "staged_root_reclamation": reclamation,
         }
 
@@ -470,22 +481,111 @@ def compute_environment_fingerprint(
 def _terminal_staged_root_reclamation_allowed(
     bundle: RunBundle,
     state: RunSetState,
-    stopped_rows: Sequence[str],
 ) -> bool:
-    if not bundle.staged_roots or stopped_rows:
+    if not bundle.staged_roots:
         return False
     if any(state.rows.get(row.row_id) is None for row in bundle.rows):
         return False
-    if any(state.rows[row.row_id].status != "completed" for row in bundle.rows):
+    row_statuses = {state.rows[row.row_id].status for row in bundle.rows}
+    if not row_statuses <= {"completed", "failed", "stopped"}:
         return False
-    required_stages = ("STAGE_INPUTS", "COLLECT", "CERTIFY")
-    if any(state.stage(stage_id).status != "completed" for stage_id in required_stages):
+    if state.stage("STAGE_INPUTS").status != "completed":
+        return False
+    if row_statuses == {"completed"}:
+        if any(
+            state.stage(stage_id).status != "completed"
+            for stage_id in ("COLLECT", "CERTIFY")
+        ):
+            return False
+    elif state.stage("COLLECT").status not in {"completed", "failed"}:
         return False
     if bundle.execution_family == "evaluation-matrix":
         ordered_union = state.stage("COLLECT").outputs.get("evaluation_matrix_ordered_union")
-        if not isinstance(ordered_union, Mapping):
+        if row_statuses == {"completed"} and not isinstance(ordered_union, Mapping):
             return False
     return True
+
+
+def _terminate_process_group(
+    pid: int,
+    *,
+    process: subprocess.Popen[bytes] | None,
+    timeout_seconds: float = 2.0,
+) -> None:
+    """Terminate a row's whole process group even when its leader already exited."""
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except OSError:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+    deadline = time.monotonic() + timeout_seconds
+    while _process_group_alive(pid) and time.monotonic() < deadline:
+        if process is not None:
+            process.poll()
+        time.sleep(0.01)
+    if _process_group_alive(pid):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if process is not None:
+        try:
+            process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            raise LocalDriverError(
+                f"local row process group {pid} did not terminate"
+            ) from exc
+    deadline = time.monotonic() + timeout_seconds
+    while _process_group_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    if _process_group_alive(pid):
+        raise LocalDriverError(f"local row process group {pid} remained live after SIGKILL")
+
+
+def _process_group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _reclaim_failed_row_tree(
+    bundle: RunBundle,
+    row: RunRowSpec,
+) -> Mapping[str, Any]:
+    """Atomically isolate and remove one failed run-owned row tree."""
+    rows_root = bundle.run_set_dir / "rows"
+    row_root = rows_root / row.row_id
+    isolated = rows_root / f".{row.row_id}.failed-reclaiming"
+    if os.path.lexists(row_root) and os.path.lexists(isolated):
+        raise LocalDriverError(
+            f"failed row tree and reclamation isolate both exist for {row.row_id!r}"
+        )
+    target = isolated if os.path.lexists(isolated) else row_root
+    if not os.path.lexists(target):
+        return {"row_id": row.row_id, "status": "already-reclaimed", "reclaimed_bytes": 0}
+    if target.is_symlink() or not target.is_dir():
+        raise LocalDriverError(f"failed row tree is not a run-owned directory: {target}")
+    reclaimed_bytes = sum(
+        entry.stat(follow_symlinks=False).st_blocks * 512
+        for entry in target.rglob("*")
+        if entry.is_file() and not entry.is_symlink()
+    )
+    if target == row_root:
+        os.replace(row_root, isolated)
+    shutil.rmtree(isolated)
+    return {
+        "row_id": row.row_id,
+        "status": "reclaimed",
+        "reclaimed_bytes": reclaimed_bytes,
+    }
 
 
 def _row_command(row: RunRowSpec, python_executable: str) -> list[str]:
