@@ -145,6 +145,7 @@ def test_evaluation_adapter_binds_only_public_whole_matrix_harness(tmp_path: Pat
         payload_path="/run/inputs/matrix.json",
         collection_root="/run/rows/matrix",
         inputs_root="/run/inputs",
+        repo_root="/governed/root",
         environment_fingerprint="fingerprint",
     )
 
@@ -157,6 +158,7 @@ def test_evaluation_adapter_binds_only_public_whole_matrix_harness(tmp_path: Pat
         "--manifest-root",
     ]
     assert "--batch" in command
+    assert command[command.index("--repo-root") + 1] == "/governed/root"
     assert command[command.index("--orchestration-inputs-root") + 1] == "/run/inputs"
     assert bound.execution.payload.uri == "/run/inputs/matrix.json"
 
@@ -168,6 +170,31 @@ def test_evaluation_adapter_binds_only_public_whole_matrix_harness(tmp_path: Pat
             payload_path="/run/inputs/matrix.json",
             collection_root="/run/rows/matrix",
             inputs_root="/run/inputs",
+            repo_root="/governed/root",
+            environment_fingerprint="fingerprint",
+        )
+
+    with pytest.raises(ExecutorFamilyError, match="governed runtime repo root"):
+        executor_family_adapter("evaluation-matrix").bind_command(
+            row.launch.command,
+            bundle=bundle,
+            row=row,
+            payload_path="/run/inputs/matrix.json",
+            collection_root="/run/rows/matrix",
+            inputs_root="/run/inputs",
+            repo_root=None,
+            environment_fingerprint="fingerprint",
+        )
+
+    with pytest.raises(ExecutorFamilyError, match="caller-supplied options"):
+        executor_family_adapter("evaluation-matrix").bind_command(
+            [*row.launch.command, "--repo-root", "/untrusted/root"],
+            bundle=bundle,
+            row=row,
+            payload_path="/run/inputs/matrix.json",
+            collection_root="/run/rows/matrix",
+            inputs_root="/run/inputs",
+            repo_root="/governed/root",
             environment_fingerprint="fingerprint",
         )
 

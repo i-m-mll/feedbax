@@ -3562,6 +3562,7 @@ def build_launch_row_command(
         payload_path=namespace.payload_path,
         collection_root=row_dir,
         inputs_root=str(PurePosixPath(namespace.payload_path).parent),
+        repo_root=workdir,
         environment_fingerprint=env_fingerprint,
         update_budget=update_budget,
         native_context_injector=(

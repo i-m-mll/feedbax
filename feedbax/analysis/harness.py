@@ -82,7 +82,10 @@ def _execute_evaluation_batch_partition(task: Mapping[str, Any]) -> dict[str, An
         sha256_bytes,
     )
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-    from feedbax.analysis.execution_context import resolve_staged_execution_context
+    from feedbax.analysis.execution_context import (
+        resolve_staged_execution_context,
+        with_staged_repo_root,
+    )
     from feedbax.orchestration.bundle import RunBundle
     from feedbax.orchestration.input_materialization import (
         staged_execution_bindings_for_bundle,
@@ -99,6 +102,7 @@ def _execute_evaluation_batch_partition(task: Mapping[str, Any]) -> dict[str, An
         manifest_root_bindings=projected.manifest_root_bindings,
         checkpoint_custody_bindings=projected.checkpoint_custody_bindings,
     )
+    execution_context = with_staged_repo_root(execution_context, task["repo_root"])
     payload = _read_json_object(task["payload_path"], description="evaluation matrix spec")
     batch = EvaluationMatrixBatchUnit.model_validate(task["batch"])
     checkpoint_identity = {

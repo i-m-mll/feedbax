@@ -636,6 +636,9 @@ def test_provider_free_cli_shadow_reaches_terminal_collection_in_fresh_process(
     plugin = tmp_path / "evaluation_plugin.py"
     plugin.write_text(
         """
+import os
+from pathlib import Path
+
 from feedbax.analysis.evaluation import EvaluationRecipeResult, register_evaluation_recipe
 from feedbax.analysis import (
     EvaluationBatchFragment,
@@ -659,6 +662,10 @@ def _batch(items, _context):
 
 def _compact(value):
     leaf = value.parameters["leaf"]
+    repo_root = Path(value.execution_context.repo_root)
+    observed_roots = repo_root / "observed-worker-roots"
+    observed_roots.mkdir(exist_ok=True)
+    (observed_roots / str(os.getpid())).write_text(str(repo_root), encoding="utf-8")
     assert value.execution_context.artifact_provider("artifacts").root.is_dir()
     assert len(value.parent_authorities) == len(value.outcomes)
     assert all(
@@ -759,7 +766,32 @@ def register_feedbax_analysis_recipes():
             snapshot_parent=tmp_path / "shadow-sealed",
         ),
     ]
-    shadow_matrix = _sized_matrix(8)
+    content_pinned_base = {
+        "evaluation_type": "tests.evaluation_orchestration",
+        "params": {"gain": 0.0},
+    }
+    base_path = tmp_path / "content-pinned-base.json"
+    base_path.write_text(json.dumps(content_pinned_base), encoding="utf-8")
+    shadow_matrix = {
+        "schema_id": EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
+        "schema_version": EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        "base": {
+            "ref": base_path.name,
+            "sha256": sha256_bytes(canonical_json_bytes(content_pinned_base)),
+        },
+        "axes": [
+            {
+                "id": "gain",
+                "values": [
+                    {
+                        "id": f"{index:02d}",
+                        "deltas": [{"path": "params.gain", "value": float(index)}],
+                    }
+                    for index in range(8)
+                ],
+            }
+        ],
+    }
     consumers = tuple(
         EvaluationBatchConsumerDeclaration(
             leaf_id=leaf,
@@ -796,9 +828,9 @@ def register_feedbax_analysis_recipes():
     )
     request_path = tmp_path / "request.json"
     request_path.write_text(request.model_dump_json(), encoding="utf-8")
-    repo_root = Path(__file__).resolve().parents[1]
+    feedbax_source_root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join((str(tmp_path), str(repo_root)))
+    env["PYTHONPATH"] = os.pathsep.join((str(tmp_path), str(feedbax_source_root)))
 
     command = [
         sys.executable,
@@ -818,7 +850,7 @@ def register_feedbax_analysis_recipes():
     ]
     completed = subprocess.run(
         command,
-        cwd=repo_root,
+        cwd=tmp_path,
         env=env,
         text=True,
         capture_output=True,
@@ -845,6 +877,11 @@ def register_feedbax_analysis_recipes():
     assert len({item["pid"] for item in topology["processes"]}) == 4
     assert all(item["ordered_batch_ids"] for item in topology["processes"])
     assert sum(len(item["ordered_batch_ids"]) for item in topology["processes"]) == 8
+    observed_roots = tmp_path / "observed-worker-roots"
+    assert len(list(observed_roots.iterdir())) == 4
+    assert {path.read_text(encoding="utf-8") for path in observed_roots.iterdir()} == {
+        str(tmp_path)
+    }
     assert [
         outcome["diagnostic_schema_ids"]
         for lifecycle in evidence["lifecycles"]
