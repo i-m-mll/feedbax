@@ -13,7 +13,9 @@ from pydantic import ValidationError
 import feedbax.orchestration.input_materialization as input_materialization
 from feedbax.analysis.execution_context import resolve_staged_execution_context
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
+from feedbax.contracts.evaluation_lifecycle import EVALUATION_COLLECTION_OUTPUTS
 from feedbax.orchestration.bundle import RunBundle
+from feedbax.orchestration.drivers import local as local_driver
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
 from feedbax.orchestration.drivers.runpod import (
     RunPodDriverConfig,
@@ -38,7 +40,10 @@ from feedbax.orchestration.state import RowState, RunSetState
 from feedbax.orchestration.conformance import build_default_check_registry
 from feedbax.orchestration.stages import StageEngine
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from tests.test_evaluation_lifecycle import _bundle as _evaluation_lifecycle_bundle
+from tests.test_evaluation_lifecycle import (
+    _bundle as _evaluation_lifecycle_bundle,
+    _certificate,
+)
 from tests.test_orchestration_core import _bundle
 from tests.test_runpod_orchestration_driver import FakeRunPodTransport
 
@@ -96,32 +101,78 @@ def _state(bundle: RunBundle, attempts: int = 1) -> RunSetState:
     )
 
 
-def _terminal_state(bundle: RunBundle) -> RunSetState:
-    collect_outputs = {}
-    if bundle.execution_family == "evaluation-matrix":
-        collect_outputs["evaluation_matrix_ordered_union"] = {
-            "matrix_identity": bundle.metadata["matrix_identity"]
-        }
+def _terminal_evaluation_state(bundle: RunBundle) -> RunSetState:
+    row = bundle.rows[0]
+    row_root = bundle.run_set_dir / "rows" / row.row_id
+    raw_store = row_root / "evaluation"
+    raw_store.mkdir(parents=True, exist_ok=True)
+    (raw_store / "states.bin").write_bytes(b"raw")
+    collected_outputs = {
+        name: str(bundle.run_set_dir / "collected" / row.row_id / name)
+        for name in EVALUATION_COLLECTION_OUTPUTS
+    }
+    for name, path in collected_outputs.items():
+        output_path = Path(path)
+        if name == "evaluation-batch-compaction":
+            output_path.mkdir(parents=True, exist_ok=True)
+            (output_path / "fragment").write_bytes(b"compact")
+        else:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("{}\n", encoding="utf-8")
+    plan = row.launch.metadata["batch_plan"]
+    ordered_row_ids = [
+        row_id for batch in plan["batches"] for row_id in batch["ordered_row_ids"]
+    ]
+    union = {
+        "schema_id": "feedbax.orchestration.evaluation_matrix_ordered_union_evidence",
+        "schema_version": (
+            "feedbax.orchestration.evaluation_matrix_ordered_union_evidence.v1"
+        ),
+        "matrix_intent_hash": plan["matrix_intent_hash"],
+        "ordered_row_ids_sha256": row.launch.metadata["matrix_ordered_row_ids_sha256"],
+        "ordered_batch_ids": [batch["batch_id"] for batch in plan["batches"]],
+        "ordered_row_ids": ordered_row_ids,
+    }
+    union_path = bundle.run_set_dir / "evaluation-matrix-ordered-union.json"
+    union_path.write_text(json.dumps(union), encoding="utf-8")
+    certificate_path = bundle.run_set_dir / "conformance.json"
+    certificate_path.write_text(
+        _certificate(bundle).model_dump_json(indent=2) + "\n",
+        encoding="utf-8",
+    )
     return RunSetState(
         run_set_id=bundle.run_set_id,
         environment_fingerprint="fingerprint",
         stages={
             "STAGE_INPUTS": {"status": "completed"},
-            "COLLECT": {"status": "completed", "outputs": collect_outputs},
-            "CERTIFY": {"status": "completed"},
+            "COLLECT": {
+                "status": "completed",
+                "outputs": {
+                    "rows": {row.row_id: collected_outputs},
+                    "evaluation_matrix_ordered_union": {
+                        **union,
+                        "path": str(union_path),
+                    },
+                },
+            },
+            "CERTIFY": {
+                "status": "completed",
+                "outputs": {
+                    "overall": "pass",
+                    "certificate_ref": str(certificate_path),
+                    "certificate_sha256": hashlib.sha256(
+                        certificate_path.read_bytes()
+                    ).hexdigest(),
+                },
+            },
         },
-        rows={row.row_id: RowState(status="completed") for row in bundle.rows},
-    )
-
-
-def _as_evaluation_bundle(bundle: RunBundle, *, matrix_identity: str) -> RunBundle:
-    rows = [row.model_copy(update={"execution_family": "evaluation-matrix"}) for row in bundle.rows]
-    return bundle.model_copy(
-        update={
-            "execution_family": "evaluation-matrix",
-            "metadata": {**bundle.metadata, "matrix_identity": matrix_identity},
-            "rows": rows,
-        }
+        rows={
+            row.row_id: RowState(
+                status="completed",
+                collected_outputs=collected_outputs,
+            )
+        },
+        certificate_ref=str(certificate_path),
     )
 
 
@@ -359,16 +410,35 @@ def test_staged_root_group_cleans_every_partial_failure(
 
 def test_sequential_local_lifecycles_reclaim_run_local_staged_roots(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    first, bindings = _sealed_bundle(tmp_path)
-    first = _as_evaluation_bundle(first, matrix_identity="matrix:first")
-    second = _bundle(
-        tmp_path / "orchestration",
-        run_set_id="2026-01-02-cafebabe",
-    ).model_copy(update={"staged_roots": first.staged_roots})
-    second = _as_evaluation_bundle(second, matrix_identity="matrix:second")
+    authority, bindings = _sealed_bundle(tmp_path)
+    first = _production_evaluation_bundle(
+        tmp_path,
+        run_set_id="evaluation-reclamation-first",
+        matrix_intent_hash="a" * 64,
+        gain_offset=0.0,
+        staged_roots=authority.staged_roots,
+    )
+    second = _production_evaluation_bundle(
+        tmp_path,
+        run_set_id="evaluation-reclamation-second",
+        matrix_intent_hash="b" * 64,
+        gain_offset=10.0,
+        staged_roots=authority.staged_roots,
+    )
     expected_bytes = sum(
         record.size_bytes for custody in first.staged_roots for record in custody.files
+    )
+
+    class VerifiedAdapter:
+        def missing_collection_outputs(self, *_args: object) -> list[str]:
+            return []
+
+    monkeypatch.setattr(
+        local_driver,
+        "executor_family_adapter",
+        lambda _family: VerifiedAdapter(),
     )
     driver = LocalOrchestrationDriver(
         freeze_lines=[],
@@ -379,28 +449,27 @@ def test_sequential_local_lifecycles_reclaim_run_local_staged_roots(
     driver.stage_inputs(first, _state(first))
     first_staged_roots = first.run_set_dir / "inputs" / "staged-roots"
     assert _regular_file_bytes(first_staged_roots) == expected_bytes
-    first_collection = first.run_set_dir / "collected" / "terminal.json"
-    first_collection.write_text('{"terminal":true}\n', encoding="utf-8")
+    first_terminal = _terminal_evaluation_state(first)
+    first_collection = first.run_set_dir / "collected" / first.rows[0].row_id
     first_certificate = first.run_set_dir / "conformance.json"
-    first_certificate.write_text('{"overall":"pass"}\n', encoding="utf-8")
 
-    preterminal = _terminal_state(first).with_stage(
+    preterminal = first_terminal.with_stage(
         "CERTIFY",
-        _terminal_state(first).stage("CERTIFY").model_copy(update={"status": "pending"}),
+        first_terminal.stage("CERTIFY").model_copy(update={"status": "pending"}),
     )
     retained = driver.teardown(first, preterminal)
     assert retained["staged_root_reclamation"]["status"] == "retained"
     assert first_staged_roots.is_dir()
 
-    reclaimed = driver.teardown(first, _terminal_state(first))
+    reclaimed = driver.teardown(first, first_terminal)
     assert reclaimed["staged_root_reclamation"] == {
         "status": "reclaimed",
         "custody_refs": [custody.custody_ref for custody in first.staged_roots],
         "reclaimed_bytes": expected_bytes,
     }
     assert not (first.run_set_dir / "inputs" / "staged-roots").exists()
-    assert first_collection.read_text(encoding="utf-8") == '{"terminal":true}\n'
-    assert first_certificate.read_text(encoding="utf-8") == '{"overall":"pass"}\n'
+    assert first_collection.is_dir()
+    assert first_certificate.is_file()
 
     driver.provision(second, _state(second))
     driver.stage_inputs(second, _state(second))
@@ -408,11 +477,15 @@ def test_sequential_local_lifecycles_reclaim_run_local_staged_roots(
     assert not first_staged_roots.exists()
     assert _regular_file_bytes(second_staged_roots) == expected_bytes
     assert first.run_set_id != second.run_set_id
-    assert first.metadata["matrix_identity"] != second.metadata["matrix_identity"]
+    assert (
+        first.rows[0].launch.metadata["matrix_intent_hash"]
+        != second.rows[0].launch.metadata["matrix_intent_hash"]
+    )
 
-    second_reclaimed = driver.teardown(second, _terminal_state(second))
+    second_terminal = _terminal_evaluation_state(second)
+    second_reclaimed = driver.teardown(second, second_terminal)
     assert second_reclaimed["staged_root_reclamation"]["reclaimed_bytes"] == expected_bytes
-    repeated = driver.teardown(second, _terminal_state(second))
+    repeated = driver.teardown(second, second_terminal)
     assert repeated["staged_root_reclamation"]["status"] == "already-reclaimed"
 
 
