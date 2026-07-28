@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import hashlib
+import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -20,6 +23,7 @@ from feedbax.orchestration.input_materialization import (
     InputMaterializationError,
     materialize_bundle_inputs,
     preflight_staged_root_bindings,
+    reclaim_materialized_staged_roots,
     staged_execution_bindings_for_bundle,
 )
 from feedbax.orchestration.staged_root_custody import (
@@ -31,7 +35,10 @@ from feedbax.orchestration.staged_root_custody import (
     verify_staged_root_snapshot,
 )
 from feedbax.orchestration.state import RowState, RunSetState
+from feedbax.orchestration.conformance import build_default_check_registry
+from feedbax.orchestration.stages import StageEngine
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from tests.test_evaluation_lifecycle import _bundle as _evaluation_lifecycle_bundle
 from tests.test_orchestration_core import _bundle
 from tests.test_runpod_orchestration_driver import FakeRunPodTransport
 
@@ -89,9 +96,125 @@ def _state(bundle: RunBundle, attempts: int = 1) -> RunSetState:
     )
 
 
+def _terminal_state(bundle: RunBundle) -> RunSetState:
+    collect_outputs = {}
+    if bundle.execution_family == "evaluation-matrix":
+        collect_outputs["evaluation_matrix_ordered_union"] = {
+            "matrix_identity": bundle.metadata["matrix_identity"]
+        }
+    return RunSetState(
+        run_set_id=bundle.run_set_id,
+        environment_fingerprint="fingerprint",
+        stages={
+            "STAGE_INPUTS": {"status": "completed"},
+            "COLLECT": {"status": "completed", "outputs": collect_outputs},
+            "CERTIFY": {"status": "completed"},
+        },
+        rows={row.row_id: RowState(status="completed") for row in bundle.rows},
+    )
+
+
+def _as_evaluation_bundle(bundle: RunBundle, *, matrix_identity: str) -> RunBundle:
+    rows = [row.model_copy(update={"execution_family": "evaluation-matrix"}) for row in bundle.rows]
+    return bundle.model_copy(
+        update={
+            "execution_family": "evaluation-matrix",
+            "metadata": {**bundle.metadata, "matrix_identity": matrix_identity},
+            "rows": rows,
+        }
+    )
+
+
 def _make_writable(path: Path) -> None:
     path.parent.chmod(0o700)
     path.chmod(0o600)
+
+
+def _regular_file_bytes(root: Path) -> int:
+    return sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
+
+
+def _production_evaluation_bundle(
+    tmp_path: Path,
+    *,
+    run_set_id: str,
+    matrix_intent_hash: str,
+    gain_offset: float,
+    staged_roots: list[StagedRootCustody],
+) -> RunBundle:
+    matrix = {
+        "schema_id": "feedbax.spec.evaluation_run_matrix",
+        "schema_version": "feedbax.spec.evaluation_run_matrix.v3",
+        "base": {
+            "evaluation_type": "feedbax.test.staged_root_reclamation",
+            "params": {"gain": gain_offset},
+        },
+        "rows": [
+            {
+                "row_id": "gain-a",
+                "deltas": [{"path": "params.gain", "value": gain_offset + 1.0}],
+            },
+            {
+                "row_id": "gain-b",
+                "deltas": [{"path": "params.gain", "value": gain_offset + 2.0}],
+            },
+        ],
+    }
+    matrix_path = tmp_path / f"{run_set_id}.matrix.json"
+    matrix_path.write_text(json.dumps(matrix), encoding="utf-8")
+    bundle = _evaluation_lifecycle_bundle(tmp_path)
+    row = bundle.rows[0]
+    payload = row.execution.payload.model_copy(
+        update={
+            "schema_id": matrix["schema_id"],
+            "schema_version": matrix["schema_version"],
+            "sha256": hashlib.sha256(matrix_path.read_bytes()).hexdigest(),
+            "uri": str(matrix_path),
+        }
+    )
+    batch_plan = {
+        **row.launch.metadata["batch_plan"],
+        "schema_version": "feedbax.spec.evaluation_matrix_batch_plan.v4",
+        "matrix_intent_hash": matrix_intent_hash,
+    }
+    row = row.model_copy(
+        update={
+            "execution": row.execution.model_copy(
+                update={
+                    "payload": payload,
+                    "authored_intent": row.execution.authored_intent.model_copy(
+                        update={"intent_hash": matrix_intent_hash}
+                    ),
+                }
+            ),
+            "launch": row.launch.model_copy(
+                update={
+                    "command": [
+                        "python",
+                        "-m",
+                        "feedbax",
+                        "matrix-harness",
+                        "--plugin",
+                        "evaluation_reclamation_plugin",
+                    ],
+                    "metadata": {
+                        **row.launch.metadata,
+                        "matrix_intent_hash": matrix_intent_hash,
+                        "batch_plan": batch_plan,
+                    },
+                }
+            ),
+        }
+    )
+    return RunBundle.model_validate(
+        bundle.model_copy(
+            update={
+                "run_set_id": run_set_id,
+                "rows": [row],
+                "staged_roots": staged_roots,
+            }
+        ).model_dump(mode="json")
+    )
 
 
 def test_staged_root_contract_round_trip_and_schema_rejection(tmp_path: Path) -> None:
@@ -232,6 +355,453 @@ def test_staged_root_group_cleans_every_partial_failure(
     inputs_root = destination_root / "inputs"
     assert not (inputs_root / "staged-roots").exists()
     assert not list(inputs_root.glob(".staged-roots-*"))
+
+
+def test_sequential_local_lifecycles_reclaim_run_local_staged_roots(
+    tmp_path: Path,
+) -> None:
+    first, bindings = _sealed_bundle(tmp_path)
+    first = _as_evaluation_bundle(first, matrix_identity="matrix:first")
+    second = _bundle(
+        tmp_path / "orchestration",
+        run_set_id="2026-01-02-cafebabe",
+    ).model_copy(update={"staged_roots": first.staged_roots})
+    second = _as_evaluation_bundle(second, matrix_identity="matrix:second")
+    expected_bytes = sum(
+        record.size_bytes for custody in first.staged_roots for record in custody.files
+    )
+    driver = LocalOrchestrationDriver(
+        freeze_lines=[],
+        staged_root_bindings=bindings,
+    )
+
+    driver.provision(first, _state(first))
+    driver.stage_inputs(first, _state(first))
+    first_staged_roots = first.run_set_dir / "inputs" / "staged-roots"
+    assert _regular_file_bytes(first_staged_roots) == expected_bytes
+    first_collection = first.run_set_dir / "collected" / "terminal.json"
+    first_collection.write_text('{"terminal":true}\n', encoding="utf-8")
+    first_certificate = first.run_set_dir / "conformance.json"
+    first_certificate.write_text('{"overall":"pass"}\n', encoding="utf-8")
+
+    preterminal = _terminal_state(first).with_stage(
+        "CERTIFY",
+        _terminal_state(first).stage("CERTIFY").model_copy(update={"status": "pending"}),
+    )
+    retained = driver.teardown(first, preterminal)
+    assert retained["staged_root_reclamation"]["status"] == "retained"
+    assert first_staged_roots.is_dir()
+
+    reclaimed = driver.teardown(first, _terminal_state(first))
+    assert reclaimed["staged_root_reclamation"] == {
+        "status": "reclaimed",
+        "custody_refs": [custody.custody_ref for custody in first.staged_roots],
+        "reclaimed_bytes": expected_bytes,
+    }
+    assert not (first.run_set_dir / "inputs" / "staged-roots").exists()
+    assert first_collection.read_text(encoding="utf-8") == '{"terminal":true}\n'
+    assert first_certificate.read_text(encoding="utf-8") == '{"overall":"pass"}\n'
+
+    driver.provision(second, _state(second))
+    driver.stage_inputs(second, _state(second))
+    second_staged_roots = second.run_set_dir / "inputs" / "staged-roots"
+    assert not first_staged_roots.exists()
+    assert _regular_file_bytes(second_staged_roots) == expected_bytes
+    assert first.run_set_id != second.run_set_id
+    assert first.metadata["matrix_identity"] != second.metadata["matrix_identity"]
+
+    second_reclaimed = driver.teardown(second, _terminal_state(second))
+    assert second_reclaimed["staged_root_reclamation"]["reclaimed_bytes"] == expected_bytes
+    repeated = driver.teardown(second, _terminal_state(second))
+    assert repeated["staged_root_reclamation"]["status"] == "already-reclaimed"
+
+
+def test_provider_free_sequential_lifecycles_bound_staged_root_peak(
+    tmp_path: Path,
+) -> None:
+    plugin = tmp_path / "evaluation_reclamation_plugin.py"
+    plugin.write_text(
+        """
+from feedbax.analysis.evaluation import EvaluationRecipeResult, register_evaluation_recipe
+
+def recipe(_spec, _root, _states_path, _context):
+    return EvaluationRecipeResult(summary_metrics={"ok": 1.0})
+
+def batch(items, _context):
+    return [EvaluationRecipeResult(summary_metrics={"gain": item.spec.params["gain"]})
+            for item in items]
+
+register_evaluation_recipe(
+    "feedbax.test.staged_root_reclamation",
+    recipe,
+    batch_recipe=batch,
+    replace=True,
+)
+""".strip(),
+        encoding="utf-8",
+    )
+    authority, bindings = _sealed_bundle(tmp_path / "authority")
+    expected_bytes = sum(
+        record.size_bytes
+        for custody in authority.staged_roots
+        for record in custody.files
+    )
+    bundles = [
+        _production_evaluation_bundle(
+            tmp_path,
+            run_set_id=f"evaluation-reclamation-{index}",
+            matrix_intent_hash=character * 64,
+            gain_offset=float(index * 10),
+            staged_roots=authority.staged_roots,
+        )
+        for index, character in ((1, "a"), (2, "b"))
+    ]
+    observed_peaks: list[int] = []
+
+    class MeasuringLocalDriver(LocalOrchestrationDriver):
+        def stage_inputs(
+            self,
+            bundle: RunBundle,
+            state: RunSetState,
+        ) -> dict[str, Any]:
+            result = dict(super().stage_inputs(bundle, state))
+            observed_peaks.append(
+                _regular_file_bytes(bundle.run_set_dir / "inputs" / "staged-roots")
+            )
+            return result
+
+    terminal_states = []
+    for bundle in bundles:
+        driver = MeasuringLocalDriver(
+            cwd=tmp_path,
+            freeze_lines=[],
+            staged_root_bindings=bindings,
+        )
+        terminal = StageEngine(
+            bundle=bundle,
+            driver=driver,
+            conformance_registry=build_default_check_registry(include_plugins=False),
+            poll_interval_seconds=0.001,
+        ).run()
+        terminal_states.append(terminal)
+        assert terminal.stage("REGISTER").status == "completed"
+        assert terminal.stage("TEARDOWN").outputs["staged_root_reclamation"][
+            "status"
+        ] == "reclaimed"
+        assert not (bundle.run_set_dir / "inputs" / "staged-roots").exists()
+        assert (bundle.run_set_dir / "inputs" / ".staged-roots-reclaimed.json").is_file()
+        assert (bundle.run_set_dir / "conformance.json").is_file()
+        assert Path(
+            terminal.rows["matrix"].collected_outputs["evaluation-matrix-result.json"]
+        ).is_file()
+
+        resumed = StageEngine(
+            bundle=bundle,
+            driver=MeasuringLocalDriver(
+                cwd=tmp_path,
+                freeze_lines=[],
+                staged_root_bindings=bindings,
+            ),
+            conformance_registry=build_default_check_registry(include_plugins=False),
+            poll_interval_seconds=0.001,
+        ).run()
+        assert resumed.stage("TEARDOWN").outputs == terminal.stage("TEARDOWN").outputs
+
+    assert observed_peaks == [expected_bytes, expected_bytes]
+    assert bundles[0].run_set_id != bundles[1].run_set_id
+    assert (
+        bundles[0].rows[0].launch.metadata["matrix_intent_hash"]
+        != bundles[1].rows[0].launch.metadata["matrix_intent_hash"]
+    )
+    assert all(
+        state.stage("CERTIFY").outputs["overall"] == "pass"
+        for state in terminal_states
+    )
+    assert sum(
+        (bundle.run_set_dir / "inputs" / ".staged-roots-reclaimed.json").stat().st_size
+        for bundle in bundles
+    ) < 32 * 1024
+
+
+def test_staged_root_reclamation_resumes_after_atomic_isolation(
+    tmp_path: Path,
+) -> None:
+    bundle, bindings = _sealed_bundle(tmp_path)
+    materialize_bundle_inputs(
+        bundle,
+        destination_root=bundle.run_set_dir,
+        staged_root_bindings=bindings,
+    )
+    inputs_root = bundle.run_set_dir / "inputs"
+    (inputs_root / "staged-roots").rename(inputs_root / ".staged-roots-reclaiming")
+
+    result = reclaim_materialized_staged_roots(bundle, inputs_root=inputs_root)
+
+    assert result.status == "reclaimed"
+    assert not (inputs_root / "staged-roots").exists()
+    assert not (inputs_root / ".staged-roots-reclaiming").exists()
+
+
+def test_staged_root_reclamation_resumes_partial_authenticated_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, bindings = _sealed_bundle(tmp_path)
+    materialize_bundle_inputs(
+        bundle,
+        destination_root=bundle.run_set_dir,
+        staged_root_bindings=bindings,
+    )
+    inputs_root = bundle.run_set_dir / "inputs"
+    original_remove = input_materialization._remove_materialization_tree
+
+    def interrupt_removal(
+        root: Path,
+        *,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> None:
+        assert expected_identity is not None
+        first_file = next(path for path in root.rglob("*") if path.is_file())
+        _make_writable(first_file)
+        first_file.unlink()
+        raise OSError("injected removal interruption")
+
+    monkeypatch.setattr(
+        input_materialization,
+        "_remove_materialization_tree",
+        interrupt_removal,
+    )
+    with pytest.raises(OSError, match="injected removal interruption"):
+        reclaim_materialized_staged_roots(bundle, inputs_root=inputs_root)
+    assert (inputs_root / ".staged-roots-reclaiming").is_dir()
+    assert (inputs_root / ".staged-roots-reclaiming.json").is_file()
+
+    monkeypatch.setattr(
+        input_materialization,
+        "_remove_materialization_tree",
+        original_remove,
+    )
+    result = reclaim_materialized_staged_roots(bundle, inputs_root=inputs_root)
+
+    assert result.status == "reclaimed"
+    assert not (inputs_root / ".staged-roots-reclaiming").exists()
+    assert not (inputs_root / ".staged-roots-reclaiming.json").exists()
+
+
+def test_staged_root_reclamation_promotes_marker_after_completed_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, bindings = _sealed_bundle(tmp_path)
+    materialize_bundle_inputs(
+        bundle,
+        destination_root=bundle.run_set_dir,
+        staged_root_bindings=bindings,
+    )
+    inputs_root = bundle.run_set_dir / "inputs"
+    original_publish = (
+        input_materialization._publish_staged_root_reclamation_receipt
+    )
+
+    def interrupt_receipt(_marker: Path, _receipt: Path) -> None:
+        raise OSError("injected receipt interruption")
+
+    monkeypatch.setattr(
+        input_materialization,
+        "_publish_staged_root_reclamation_receipt",
+        interrupt_receipt,
+    )
+    with pytest.raises(OSError, match="injected receipt interruption"):
+        reclaim_materialized_staged_roots(bundle, inputs_root=inputs_root)
+    assert not (inputs_root / ".staged-roots-reclaiming").exists()
+    assert (inputs_root / ".staged-roots-reclaiming.json").is_file()
+    assert not (inputs_root / ".staged-roots-reclaimed.json").exists()
+
+    monkeypatch.setattr(
+        input_materialization,
+        "_publish_staged_root_reclamation_receipt",
+        original_publish,
+    )
+    result = reclaim_materialized_staged_roots(bundle, inputs_root=inputs_root)
+
+    assert result.status == "already-reclaimed"
+    assert not (inputs_root / ".staged-roots-reclaiming.json").exists()
+    assert (inputs_root / ".staged-roots-reclaimed.json").is_file()
+
+
+def test_staged_root_reclamation_rejects_missing_tree_without_receipt(
+    tmp_path: Path,
+) -> None:
+    bundle, bindings = _sealed_bundle(tmp_path)
+    materialize_bundle_inputs(
+        bundle,
+        destination_root=bundle.run_set_dir,
+        staged_root_bindings=bindings,
+    )
+    inputs_root = bundle.run_set_dir / "inputs"
+    staged_roots = inputs_root / "staged-roots"
+    staged_roots.rename(inputs_root / "externally-removed-staged-roots")
+
+    with pytest.raises(
+        StagedRootCustodyError,
+        match="missing without a reclamation receipt",
+    ):
+        reclaim_materialized_staged_roots(bundle, inputs_root=inputs_root)
+
+    assert not (inputs_root / ".staged-roots-reclaimed.json").exists()
+
+
+def test_staged_root_reclamation_rejects_stale_restart_marker(
+    tmp_path: Path,
+) -> None:
+    bundle, bindings = _sealed_bundle(tmp_path)
+    materialize_bundle_inputs(
+        bundle,
+        destination_root=bundle.run_set_dir,
+        staged_root_bindings=bindings,
+    )
+    inputs_root = bundle.run_set_dir / "inputs"
+    (inputs_root / "staged-roots").rename(inputs_root / ".staged-roots-reclaiming")
+    marker = inputs_root / ".staged-roots-reclaiming.json"
+    marker.write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(
+        StagedRootCustodyError,
+        match="marker differs from bundle custody",
+    ):
+        reclaim_materialized_staged_roots(bundle, inputs_root=inputs_root)
+
+    assert (inputs_root / ".staged-roots-reclaiming").is_dir()
+    assert marker.is_file()
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["symlink", "unexpected-kind", "unexpected-binding", "missing-bytes"],
+)
+def test_staged_root_reclamation_fails_closed_on_unowned_materialization(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    bundle, bindings = _sealed_bundle(tmp_path)
+    materialize_bundle_inputs(
+        bundle,
+        destination_root=bundle.run_set_dir,
+        staged_root_bindings=bindings,
+    )
+    inputs_root = bundle.run_set_dir / "inputs"
+    staged_roots = inputs_root / "staged-roots"
+    if tamper == "symlink":
+        original = inputs_root / "staged-roots-original"
+        staged_roots.rename(original)
+        staged_roots.symlink_to(original, target_is_directory=True)
+    elif tamper == "unexpected-kind":
+        (staged_roots / "unexpected-kind").mkdir()
+    elif tamper == "unexpected-binding":
+        unexpected = staged_roots / "manifest-store" / "unexpected"
+        unexpected.mkdir()
+    else:
+        custody = bundle.staged_roots[0]
+        missing = (
+            staged_roots / custody.root_kind / custody.binding_name / custody.files[0].relative_path
+        )
+        _make_writable(missing)
+        missing.unlink()
+
+    with pytest.raises(StagedRootCustodyError):
+        reclaim_materialized_staged_roots(bundle, inputs_root=inputs_root)
+
+    assert os.path.lexists(staged_roots)
+
+
+def test_staged_root_reclamation_rejects_parent_replacement_after_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, bindings = _sealed_bundle(tmp_path)
+    materialize_bundle_inputs(
+        bundle,
+        destination_root=bundle.run_set_dir,
+        staged_root_bindings=bindings,
+    )
+    inputs_root = bundle.run_set_dir / "inputs"
+    original_verify = input_materialization._verify_materialized_staged_root_group
+
+    def replace_parent_after_verification(custodies, root):
+        identity = original_verify(custodies, root)
+        inputs_root.rename(bundle.run_set_dir / "inputs-original")
+        replacement = bundle.run_set_dir / "inputs" / "staged-roots"
+        replacement.mkdir(parents=True)
+        (replacement / "unowned").write_text("unowned\n", encoding="utf-8")
+        return identity
+
+    monkeypatch.setattr(
+        input_materialization,
+        "_verify_materialized_staged_root_group",
+        replace_parent_after_verification,
+    )
+    with pytest.raises(
+        StagedRootCustodyError,
+        match="materialization parent was replaced",
+    ):
+        reclaim_materialized_staged_roots(bundle, inputs_root=inputs_root)
+
+    replacement = inputs_root / "staged-roots"
+    assert (replacement / "unowned").read_text(encoding="utf-8") == "unowned\n"
+    assert not (inputs_root / ".staged-roots-reclaiming").exists()
+
+
+def test_staged_root_reclamation_rejects_symlinked_inputs_root(
+    tmp_path: Path,
+) -> None:
+    bundle, bindings = _sealed_bundle(tmp_path)
+    materialize_bundle_inputs(
+        bundle,
+        destination_root=bundle.run_set_dir,
+        staged_root_bindings=bindings,
+    )
+    inputs_root = bundle.run_set_dir / "inputs"
+    alias = bundle.run_set_dir / "inputs-alias"
+    alias.symlink_to(inputs_root, target_is_directory=True)
+
+    with pytest.raises(StagedRootCustodyError, match="must not traverse symlinks"):
+        reclaim_materialized_staged_roots(bundle, inputs_root=alias)
+
+    assert (inputs_root / "staged-roots").is_dir()
+
+
+def test_fd_bound_removal_does_not_delete_replacement_at_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "isolated"
+    root.mkdir()
+    (root / "owned").write_text("owned\n", encoding="utf-8")
+    identity = input_materialization._directory_identity(root)
+    original_scandir = input_materialization.os.scandir
+    replaced = False
+
+    def replace_at_scandir(directory_descriptor):
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            root.rename(tmp_path / "authenticated-original")
+            root.mkdir()
+            (root / "unowned").write_text("unowned\n", encoding="utf-8")
+        return original_scandir(directory_descriptor)
+
+    monkeypatch.setattr(input_materialization.os, "scandir", replace_at_scandir)
+
+    with pytest.raises(
+        StagedRootCustodyError,
+        match="removal target was replaced",
+    ):
+        input_materialization._remove_materialization_tree(
+            root,
+            expected_identity=identity,
+        )
+
+    assert (root / "unowned").read_text(encoding="utf-8") == "unowned\n"
 
 
 def test_runpod_stage_inputs_transports_only_sealed_materialization(
