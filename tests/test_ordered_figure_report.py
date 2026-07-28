@@ -9,11 +9,14 @@ from pydantic import ValidationError
 from feedbax.analysis import (
     AnalysisBundleSpec,
     BundleStageSpec,
+    ORDERED_FIGURE_REPORT_COMPOSITE_SCALAR_SCHEMA_ID,
+    ORDERED_FIGURE_REPORT_COMPOSITE_SCALAR_SCHEMA_VERSION,
     ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_ID,
     ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_VERSION,
     ORDERED_FIGURE_REPORT_SCALAR_PROJECTION_SCHEMA_ID,
     ORDERED_FIGURE_REPORT_SCALAR_PROJECTION_SCHEMA_VERSION,
     ORDERED_FIGURE_REPORT_TYPE,
+    OrderedFigureReportCompositeScalarCell,
     OrderedFigureReportParams,
     OrderedFigureReportScalarProjection,
 )
@@ -250,6 +253,52 @@ def test_ordered_figure_report_requires_authored_figure_spec_pin() -> None:
 
     with pytest.raises(ValidationError, match="requires figure_spec_sha256"):
         OrderedFigureReportParams.model_validate(payload)
+
+
+def test_composite_scalar_cell_is_public_versioned_and_serialisable() -> None:
+    projection = OrderedFigureReportScalarProjection(
+        input_role="summary",
+        product_role="result",
+        product_schema_id="science.result",
+        product_schema_version="science.result.v1",
+        artifact_role="result",
+        artifact_provider="evidence",
+        path=["value"],
+    )
+    cell = OrderedFigureReportCompositeScalarCell(
+        format="{value:.3g}",
+        projections={"value": projection},
+    )
+
+    assert cell.schema_id == ORDERED_FIGURE_REPORT_COMPOSITE_SCALAR_SCHEMA_ID
+    assert cell.schema_version == ORDERED_FIGURE_REPORT_COMPOSITE_SCALAR_SCHEMA_VERSION
+    assert (
+        OrderedFigureReportCompositeScalarCell.model_validate_json(cell.model_dump_json()) == cell
+    )
+
+
+@pytest.mark.parametrize(
+    "authored_format",
+    ["{missing:.3g}", "{value:.2f}", "{value:.18g}", "{value!r:.3g}"],
+)
+def test_composite_scalar_cell_rejects_unsafe_or_non_significant_formats(
+    authored_format: str,
+) -> None:
+    projection = OrderedFigureReportScalarProjection(
+        input_role="summary",
+        product_role="result",
+        product_schema_id="science.result",
+        product_schema_version="science.result.v1",
+        artifact_role="result",
+        artifact_provider="evidence",
+        path=["value"],
+    )
+
+    with pytest.raises(ValidationError):
+        OrderedFigureReportCompositeScalarCell(
+            format=authored_format,
+            projections={"value": projection},
+        )
 
 
 def test_authored_report_cli_executes_exact_parents_without_reauthoring(
@@ -534,6 +583,214 @@ def test_ordered_figure_report_projects_authenticated_product_scalar(
     assert manifest.metadata["ordered_figure_report"][
         "scalar_projection_artifact_ids"
     ] == [artifact.artifact_id]
+
+
+def _composite_scalar_report(
+    tmp_path: Path,
+    *,
+    standard_deviation: object = 0.00804,
+) -> tuple[ReportSpec, Path, list[str]]:
+    provider_root = tmp_path / "retained"
+    provider = ImmutableArtifactBlobProvider(provider_root)
+    parents: list[ParentRef] = []
+    projections: dict[str, OrderedFigureReportScalarProjection] = {}
+    artifact_ids: list[str] = []
+    for name, value in (("mean", 0.7351), ("standard_deviation", standard_deviation)):
+        artifact = provider.store_bytes(
+            canonical_json_bytes({"value": value}),
+            role="scalar_result",
+            logical_name=f"{name}.json",
+            media_type="application/json",
+        )
+        artifact_ids.append(artifact.artifact_id)
+        product = AnalysisDataProduct(
+            product_schema_id="science.scalar_result",
+            product_schema_version="science.scalar_result.v1",
+            role=name,
+            logical_name=name,
+            producer_manifest_id=f"feedbax-analysis-run:{name}",
+            artifacts=[artifact],
+        )
+        manifest = AnalysisRunManifest(
+            id=product.producer_manifest_id,
+            status="completed",
+            analysis_spec=spec_payload(
+                "AnalysisRunSpec",
+                {"analysis_type": "science.scalar_summary"},
+            ),
+            produced_data=[product],
+        )
+        parents.append(_authenticated_provider_manifest_ref(provider, manifest, role=name))
+        projections[name] = OrderedFigureReportScalarProjection(
+            input_role=name,
+            product_role=name,
+            product_schema_id="science.scalar_result",
+            product_schema_version="science.scalar_result.v1",
+            artifact_role="scalar_result",
+            artifact_provider="evidence",
+            path=["value"],
+        )
+    cell = OrderedFigureReportCompositeScalarCell(
+        schema_id=ORDERED_FIGURE_REPORT_COMPOSITE_SCALAR_SCHEMA_ID,
+        schema_version=ORDERED_FIGURE_REPORT_COMPOSITE_SCALAR_SCHEMA_VERSION,
+        format="{mean:.3g} ± {standard_deviation:.1g}",
+        projections=projections,
+    )
+    spec = ReportSpec(
+        report_type=ORDERED_FIGURE_REPORT_TYPE,
+        inputs=parents,
+        params={
+            "schema_id": ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_ID,
+            "schema_version": ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_VERSION,
+            "title": "Composite scalars",
+            "output_name": "composite-scalars.html",
+            "sections": [
+                {
+                    "title": "Scalars",
+                    "tables": [
+                        {
+                            "columns": ["metric", "value"],
+                            "rows": [["score", cell.model_dump(mode="json")]],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    return spec, provider_root, artifact_ids
+
+
+def test_ordered_figure_report_composes_formatted_authenticated_scalars(
+    tmp_path: Path,
+) -> None:
+    spec, provider_root, artifact_ids = _composite_scalar_report(tmp_path)
+
+    manifest, _ = execute_report_spec(
+        spec,
+        root=tmp_path / "output",
+        execution_descriptor=_provider_descriptor("evidence"),
+        artifact_provider_bindings=[StagedArtifactProviderRootBinding("evidence", provider_root)],
+    )
+
+    rendered = Path(manifest.artifacts[0].uri or "").read_text(encoding="utf-8")
+    assert "<td>0.735 ± 0.008</td>" in rendered
+    assert {artifact.artifact_id for artifact in manifest.regeneration_specs} == set(artifact_ids)
+    assert manifest.inputs == spec.inputs
+    assert manifest.metadata["ordered_figure_report"]["scalar_projection_artifact_ids"] == sorted(
+        artifact_ids
+    )
+
+
+def test_composite_projection_mapping_order_is_manifest_invariant(
+    tmp_path: Path,
+) -> None:
+    spec, provider_root, _ = _composite_scalar_report(tmp_path)
+    reversed_params = json.loads(json.dumps(spec.params))
+    projections = reversed_params["sections"][0]["tables"][0]["rows"][0][1]["projections"]
+    reversed_params["sections"][0]["tables"][0]["rows"][0][1]["projections"] = dict(
+        reversed(list(projections.items()))
+    )
+    reversed_spec = spec.model_copy(update={"params": reversed_params})
+    kwargs = {
+        "execution_descriptor": _provider_descriptor("evidence"),
+        "artifact_provider_bindings": [
+            StagedArtifactProviderRootBinding("evidence", provider_root)
+        ],
+    }
+
+    first, _ = execute_report_spec(spec, root=tmp_path / "first", **kwargs)
+    second, _ = execute_report_spec(
+        reversed_spec,
+        root=tmp_path / "second",
+        **kwargs,
+    )
+
+    assert first.id == second.id
+    assert first.artifacts[0].sha256 == second.artifacts[0].sha256
+    assert first.regeneration_specs == second.regeneration_specs
+    assert first.metadata["ordered_figure_report"] == second.metadata["ordered_figure_report"]
+
+
+@pytest.mark.parametrize(
+    ("missing_role", "standard_deviation", "expected"),
+    [
+        ("standard_deviation", 0.00804, "missing required input roles"),
+        (None, {"nested": 0.00804}, "resolved non-scalar dict"),
+    ],
+)
+def test_ordered_figure_report_composite_scalar_fails_closed(
+    tmp_path: Path,
+    missing_role: str | None,
+    standard_deviation: object,
+    expected: str,
+) -> None:
+    spec, provider_root, _ = _composite_scalar_report(
+        tmp_path,
+        standard_deviation=standard_deviation,
+    )
+    if missing_role is not None:
+        spec = spec.model_copy(
+            update={"inputs": [parent for parent in spec.inputs if parent.role != missing_role]}
+        )
+
+    with pytest.raises(ReportRecipeExecutionError) as excinfo:
+        execute_report_spec(
+            spec,
+            root=tmp_path / "output",
+            execution_descriptor=_provider_descriptor("evidence"),
+            artifact_provider_bindings=[
+                StagedArtifactProviderRootBinding("evidence", provider_root)
+            ],
+        )
+
+    assert expected in str(excinfo.value.__cause__)
+    assert excinfo.value.manifest.status == "failed"
+    assert excinfo.value.manifest.artifacts == []
+
+
+def test_ordered_figure_report_single_value_cell_absence_parity(tmp_path: Path) -> None:
+    spec, provider_root, _ = _composite_scalar_report(tmp_path)
+    single_projection = next(
+        cell
+        for cell in OrderedFigureReportParams.model_validate(spec.params)
+        .sections[0]
+        .tables[0]
+        .rows[0]
+        if isinstance(cell, OrderedFigureReportCompositeScalarCell)
+    ).projections["mean"]
+    params = dict(spec.params)
+    params["sections"] = [
+        {
+            "title": "Scalars",
+            "tables": [
+                {
+                    "columns": ["metric", "value"],
+                    "rows": [["score", single_projection.model_dump(mode="json")]],
+                }
+            ],
+        }
+    ]
+    params["output_name"] = "single-scalar.md"
+
+    manifest, _ = execute_report_spec(
+        ReportSpec(
+            report_type=ORDERED_FIGURE_REPORT_TYPE,
+            inputs=[parent for parent in spec.inputs if parent.role == "mean"],
+            params=params,
+        ),
+        root=tmp_path / "output",
+        execution_descriptor=_provider_descriptor("evidence"),
+        artifact_provider_bindings=[StagedArtifactProviderRootBinding("evidence", provider_root)],
+    )
+
+    rendered = Path(manifest.artifacts[0].uri or "").read_text(encoding="utf-8")
+    assert rendered == (
+        "# Composite scalars\n\n"
+        "## Scalars\n\n"
+        "| metric | value |\n"
+        "| --- | --- |\n"
+        "| score | 0.7351 |\n"
+    )
 
 
 def test_report_inputs_resolve_once_across_distinct_retained_roots(
