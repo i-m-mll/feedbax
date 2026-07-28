@@ -33,6 +33,7 @@ from feedbax.orchestration.input_materialization import (
     InputProviderRootBinding,
     materialize_bundle_inputs,
     preflight_bundle_input_bindings,
+    reclaim_materialized_staged_roots,
 )
 from feedbax.orchestration.staged_root_custody import StagedRootSnapshotBinding
 from feedbax.orchestration.state import PreflightCheckEntry, RunSetState
@@ -402,7 +403,27 @@ class LocalOrchestrationDriver:
             if probe.status == "running":
                 self.stop_row(bundle, row, state)
                 stopped.append(row.row_id)
-        return {"driver": "local", "stopped_rows": stopped}
+        reclamation: dict[str, Any] = {
+            "status": "retained",
+            "custody_refs": [custody.custody_ref for custody in bundle.staged_roots],
+            "reclaimed_bytes": 0,
+            "reason": "terminal-consumer-barrier-not-complete",
+        }
+        if _terminal_staged_root_reclamation_allowed(bundle, state, stopped):
+            result = reclaim_materialized_staged_roots(
+                bundle,
+                inputs_root=bundle.run_set_dir / "inputs",
+            )
+            reclamation = {
+                "status": result.status,
+                "custody_refs": list(result.custody_refs),
+                "reclaimed_bytes": result.reclaimed_bytes,
+            }
+        return {
+            "driver": "local",
+            "stopped_rows": stopped,
+            "staged_root_reclamation": reclamation,
+        }
 
 
 def compute_environment_fingerprint(
@@ -444,6 +465,27 @@ def compute_environment_fingerprint(
         )
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _terminal_staged_root_reclamation_allowed(
+    bundle: RunBundle,
+    state: RunSetState,
+    stopped_rows: Sequence[str],
+) -> bool:
+    if not bundle.staged_roots or stopped_rows:
+        return False
+    if any(state.rows.get(row.row_id) is None for row in bundle.rows):
+        return False
+    if any(state.rows[row.row_id].status != "completed" for row in bundle.rows):
+        return False
+    required_stages = ("STAGE_INPUTS", "COLLECT", "CERTIFY")
+    if any(state.stage(stage_id).status != "completed" for stage_id in required_stages):
+        return False
+    if bundle.execution_family == "evaluation-matrix":
+        ordered_union = state.stage("COLLECT").outputs.get("evaluation_matrix_ordered_union")
+        if not isinstance(ordered_union, Mapping):
+            return False
+    return True
 
 
 def _row_command(row: RunRowSpec, python_executable: str) -> list[str]:
