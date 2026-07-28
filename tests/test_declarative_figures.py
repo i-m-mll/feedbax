@@ -25,6 +25,8 @@ from feedbax.analysis.figures import (
 )
 from feedbax.analysis.bundles import AnalysisBundleSpec, BundleStageSpec, StageArtifactDependency
 from feedbax.contracts.figures import (
+    EQUAL_DATA_ASPECT_SCHEMA_ID,
+    EQUAL_DATA_ASPECT_SCHEMA_VERSION,
     FIGURE_SPEC_SCHEMA_ID,
     FIGURE_SPEC_SCHEMA_VERSION,
     PERTURBATION_TIMING_SCHEMA_ID,
@@ -250,7 +252,7 @@ def test_constructor_versions_are_reported_in_catalog_and_manifest(tmp_path: Pat
     expected = {
         "feedbax.profile_band": "v2",
         "feedbax.profile_curves": "v1",
-        "feedbax.comparison_grid": "v2",
+        "feedbax.comparison_grid": "v3",
         "feedbax.grid_figure": "v3",
     }
     catalog_versions = {item["key"]: item["version"] for item in constructor_catalog()}
@@ -652,6 +654,165 @@ def test_panel_axis_rejects_invalid_type_and_range_shape() -> None:
             assembler="feedbax.grid_figure",
             panels=[{"name": "main", "x_axis": {"secondary_y": True}}],
         )
+
+
+def test_equal_data_aspect_has_explicit_schema_identity() -> None:
+    spec = FigureSpec(
+        name="equal-data-aspect-schema",
+        assembler="feedbax.grid_figure",
+        panels=[{"name": "main", "equal_data_aspect": {}}],
+    )
+    aspect = spec.panels[0].equal_data_aspect
+
+    assert aspect is not None
+    assert aspect.schema_id == EQUAL_DATA_ASPECT_SCHEMA_ID
+    assert aspect.schema_version == EQUAL_DATA_ASPECT_SCHEMA_VERSION
+    assert aspect.ratio == 1
+    assert (
+        default_spec_registry.current_version("EqualDataAspect")
+        == EQUAL_DATA_ASPECT_SCHEMA_VERSION
+    )
+
+    with pytest.raises(ValidationError, match="unsupported EqualDataAspect schema_version"):
+        FigureSpec(
+            name="old-equal-data-aspect",
+            assembler="feedbax.grid_figure",
+            panels=[
+                {
+                    "name": "main",
+                    "equal_data_aspect": {
+                        "schema_id": EQUAL_DATA_ASPECT_SCHEMA_ID,
+                        "schema_version": "feedbax.spec.equal_data_aspect.v0",
+                    },
+                }
+            ],
+        )
+
+
+def test_equal_data_aspect_renders_exactly_in_placed_grid_panel(tmp_path: Path) -> None:
+    spec = FigureSpec(
+        name="placed-equal-data-aspect",
+        assembler="feedbax.grid_figure",
+        assembler_params={"shared_yaxes": False},
+        panels=[
+            {"name": "ordinary", "row": 1, "col": 1},
+            {
+                "name": "spatial",
+                "row": 1,
+                "col": 2,
+                "equal_data_aspect": {},
+            },
+        ],
+    )
+
+    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    rendered = figure_manifest_plotly_json(manifest)
+
+    assert rendered is not None
+    assert "scaleanchor" not in rendered["layout"]["yaxis"]
+    assert rendered["layout"]["yaxis2"]["scaleanchor"] == "x2"
+    assert rendered["layout"]["yaxis2"]["scaleratio"] == 1
+    assert manifest.constructor_versions["feedbax.comparison_grid"] == "v3"
+
+
+def test_equal_data_aspect_rejects_inconsistent_axis_declaration() -> None:
+    with pytest.raises(ValidationError, match="requires linear axes"):
+        FigureSpec(
+            name="log-equal-data-aspect",
+            assembler="feedbax.grid_figure",
+            panels=[
+                {
+                    "name": "main",
+                    "x_axis": {"type": "log"},
+                    "equal_data_aspect": {},
+                }
+            ],
+        )
+
+    with pytest.raises(ValidationError, match="equal_data_aspect.ratio"):
+        FigureSpec(
+            name="nonunit-equal-data-aspect",
+            assembler="feedbax.grid_figure",
+            panels=[{"name": "main", "equal_data_aspect": {"ratio": 2}}],
+        )
+
+
+@pytest.mark.parametrize("aspect_col", [1, 2])
+def test_equal_data_aspect_rejects_shared_y_axis(
+    tmp_path: Path,
+    aspect_col: int,
+) -> None:
+    spec = FigureSpec(
+        name="shared-y-equal-data-aspect",
+        assembler="feedbax.grid_figure",
+        panels=[
+            {
+                "name": "spatial",
+                "row": 1,
+                "col": aspect_col,
+                "equal_data_aspect": {},
+            },
+            {"name": "ordinary", "row": 1, "col": 3 - aspect_col},
+        ],
+    )
+
+    with pytest.raises(FigureSpecExecutionError) as exc_info:
+        execute_figure_spec(spec, root=tmp_path)
+
+    assert "cannot constrain shared axes" in exc_info.value.manifest.failure["message"]
+    assert exc_info.value.manifest.artifacts == []
+    assert not (tmp_path / "figures").exists()
+
+
+@pytest.mark.parametrize("aspect_row", [1, 2])
+def test_equal_data_aspect_rejects_shared_x_axis(
+    tmp_path: Path,
+    aspect_row: int,
+) -> None:
+    spec = FigureSpec(
+        name="shared-x-equal-data-aspect",
+        assembler="feedbax.grid_figure",
+        assembler_params={"shared_xaxes": True, "shared_yaxes": False},
+        panels=[
+            {
+                "name": "spatial",
+                "row": aspect_row,
+                "col": 1,
+                "equal_data_aspect": {},
+            },
+            {"name": "ordinary", "row": 3 - aspect_row, "col": 1},
+        ],
+    )
+
+    with pytest.raises(FigureSpecExecutionError) as exc_info:
+        execute_figure_spec(spec, root=tmp_path)
+
+    assert "cannot constrain shared axes" in exc_info.value.manifest.failure["message"]
+    assert "['x']" in exc_info.value.manifest.failure["message"]
+    assert exc_info.value.manifest.artifacts == []
+    assert not (tmp_path / "figures").exists()
+
+
+def test_equal_data_aspect_rejects_unsupported_assembler(tmp_path: Path) -> None:
+    register_figure_constructor(
+        "feedbax.test_custom_figure_without_panel_aspect",
+        tier="custom_figure",
+        constructor=lambda _items, _params: go.Figure(),
+        description="Custom figure without panel aspect support.",
+        replace=True,
+    )
+    spec = FigureSpec(
+        name="unsupported-equal-data-aspect",
+        assembler="feedbax.test_custom_figure_without_panel_aspect",
+        panels=[{"name": "main", "equal_data_aspect": {}}],
+    )
+
+    with pytest.raises(FigureSpecExecutionError) as exc_info:
+        execute_figure_spec(spec, root=tmp_path)
+
+    assert "requires a registered panel assembler" in exc_info.value.manifest.failure["message"]
+    assert exc_info.value.manifest.artifacts == []
+    assert not (tmp_path / "figures").exists()
 
 
 def test_panel_only_assembler_params_preserve_constructor_payload(tmp_path: Path) -> None:

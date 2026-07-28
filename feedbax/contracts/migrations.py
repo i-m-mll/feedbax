@@ -183,6 +183,8 @@ from feedbax.contracts.spec_storage import (
     TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
 )
 from feedbax.contracts.figures import (
+    EQUAL_DATA_ASPECT_SCHEMA_ID,
+    EQUAL_DATA_ASPECT_SCHEMA_VERSION,
     FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID,
     FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION,
     FIGURE_RUNTIME_BINDING_SCHEMA_ID,
@@ -2774,6 +2776,17 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             consumed_by=("feedbax.analysis.figures.resolve_figure_trace_bindings",),
             description="Constrained row family bound to one figure-template slot.",
             required_tests=("tests/test_figure_slot_families.py",),
+        ),
+        _family(
+            "EqualDataAspect",
+            EQUAL_DATA_ASPECT_SCHEMA_ID,
+            EQUAL_DATA_ASPECT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("FigureSpec.panels.equal_data_aspect",),
+            consumed_by=("feedbax.plot.constructors._comparison_grid",),
+            description="Exact 1:1 linear data-unit scaling for one figure panel.",
+            rejected_old_versions=("feedbax.spec.equal_data_aspect.v0",),
+            required_tests=("tests/test_declarative_figures.py",),
         ),
         _family(
             "PerturbationTiming",

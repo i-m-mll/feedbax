@@ -506,6 +506,76 @@ def test_legend_index_gives_exactly_one_member_the_legend_entry(tmp_path: Path) 
     ] == ["knot 1"]
 
 
+def _trajectory_family(**overrides: Any) -> TraceFamily:
+    declaration: dict[str, Any] = {
+        "name": "trajectory-arms",
+        "index": TraceFamilyIndex(range=TraceFamilyRange(stop=3)),
+        "trace": TraceBinding(
+            name="arm {index}",
+            constructor="feedbax.trajectory_2d",
+            panel="main",
+            data={
+                "trajectories": [
+                    [[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]],
+                    [[0.0, 0.0], [0.5, 0.5], [1.0, 0.75]],
+                ]
+            },
+            params={"label": "arm {index}"},
+        ),
+    }
+    return TraceFamily(**{**declaration, **overrides})
+
+
+def test_trajectory_family_showlegend_false_suppresses_all_entries(tmp_path: Path) -> None:
+    family = _trajectory_family(
+        trace=TraceBinding(
+            name="arm {index}",
+            constructor="feedbax.trajectory_2d",
+            panel="main",
+            data={
+                "trajectories": [
+                    [[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]],
+                    [[0.0, 0.0], [0.5, 0.5], [1.0, 0.75]],
+                ]
+            },
+            params={"label": "arm {index}", "showlegend": False},
+        )
+    )
+    spec = FigureSpec(
+        name="trajectory-family-no-legend",
+        assembler="feedbax.grid_figure",
+        panels=[{"name": "main"}],
+        trace_families=[family],
+    )
+
+    rendered, _records = _rendered(spec, tmp_path)
+
+    assert rendered is not None
+    assert not any(trace.get("showlegend") is True for trace in rendered["data"])
+
+
+def test_trajectory_family_legend_index_selects_only_one_member(tmp_path: Path) -> None:
+    spec = FigureSpec(
+        name="trajectory-family-legend-representative",
+        assembler="feedbax.grid_figure",
+        panels=[{"name": "main"}],
+        trace_families=[_trajectory_family(legend_index=1)],
+    )
+
+    (expansion,) = expand_trace_families(spec)
+    rendered, _records = _rendered(spec, tmp_path)
+
+    assert [member.binding.params["showlegend"] for member in expansion.members] == [
+        False,
+        True,
+        False,
+    ]
+    assert rendered is not None
+    assert [
+        trace["name"] for trace in rendered["data"] if trace.get("showlegend") is True
+    ] == ["arm 1", "arm 1 mean"]
+
+
 def test_legend_index_accepts_a_named_index() -> None:
     expansion = _family_expansion(
         _knot_family(index=TraceFamilyIndex(values=["slow", "fast"]), legend_index="fast")

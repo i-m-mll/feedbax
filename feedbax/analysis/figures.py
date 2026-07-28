@@ -677,6 +677,11 @@ def _build_figures(
     custom_registration = get_figure_constructor(assembler_key)
     if custom_registration.tier == "custom_figure":
         exec_trace.constructor_versions[assembler_key] = custom_registration.version
+        if any(panel.equal_data_aspect is not None for panel in spec.panels):
+            raise ValueError(
+                "FigureSpec declares equal_data_aspect, which requires a registered "
+                f"panel assembler; {assembler_key!r} is a custom_figure assembler"
+            )
         if spec.colorbar is not None:
             raise ValueError(
                 "FigureSpec declares a colorbar, which requires a registered figure "
@@ -706,6 +711,14 @@ def _build_figures(
     panel_constructor_key = assembler_params.get("panel_constructor", "feedbax.comparison_grid")
     panel_registration = get_figure_constructor(panel_constructor_key, tier="panel")
     exec_trace.constructor_versions[panel_constructor_key] = panel_registration.version
+    if (
+        any(panel.equal_data_aspect is not None for panel in spec.panels)
+        and panel_registration.key != "feedbax.comparison_grid"
+    ):
+        raise ValueError(
+            "FigureSpec declares equal_data_aspect, but panel assembler "
+            f"{panel_registration.key!r} does not support it"
+        )
     figure_registration = get_figure_constructor(assembler_key, tier="figure")
     exec_trace.constructor_versions[assembler_key] = figure_registration.version
     panel_values, figure_values = _route_assembler_params(
@@ -1090,6 +1103,11 @@ def _panel_contents(
         axes_labels = panel.axes_labels.model_dump() if panel and panel.axes_labels else None
         x_axis = panel.x_axis.model_dump(exclude_none=True) if panel and panel.x_axis else None
         y_axis = panel.y_axis.model_dump(exclude_none=True) if panel and panel.y_axis else None
+        equal_data_aspect = (
+            panel.equal_data_aspect.model_dump(exclude_none=True)
+            if panel and panel.equal_data_aspect
+            else None
+        )
         contents.append(
             PanelContent(
                 name=panel_name,
@@ -1100,6 +1118,7 @@ def _panel_contents(
                 axes_labels=axes_labels,
                 x_axis=x_axis,
                 y_axis=y_axis,
+                equal_data_aspect=equal_data_aspect,
             )
         )
     return contents
@@ -1153,6 +1172,14 @@ def _facet_panel_contents(
                 y_axis=(
                     base_panel.y_axis.model_dump(exclude_none=True)
                     if base_panel is not None and base_panel.y_axis is not None
+                    else None
+                ),
+                equal_data_aspect=(
+                    base_panel.equal_data_aspect.model_dump(exclude_none=True)
+                    if (
+                        base_panel is not None
+                        and base_panel.equal_data_aspect is not None
+                    )
                     else None
                 ),
             )
