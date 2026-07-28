@@ -166,9 +166,14 @@ class EvaluationBatchRowError(RuntimeError):
     """Fail-closed batch diagnostic identifying the row that failed."""
 
     def __init__(self, row_id: str, cause: BaseException):
-        super().__init__(f"evaluation batch row {row_id!r} failed: {cause}")
+        super().__init__(row_id, cause)
         self.row_id = row_id
+        self.cause = cause
         self.__cause__ = cause
+
+    def __str__(self) -> str:
+        """Render the row-scoped cause while keeping pickle reconstruction arguments."""
+        return f"evaluation batch row {self.row_id!r} failed: {self.cause}"
 
 
 @dataclass(frozen=True)
