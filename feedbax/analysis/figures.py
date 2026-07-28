@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field
 from itertools import product
 import json
@@ -176,14 +177,23 @@ class FigureSpecExecutionError(RuntimeError):
         self.__cause__ = cause
 
 
+def _coerce_figure_spec_and_authored_mapping(
+    value: FigureSpec | Mapping[str, Any] | Path | str,
+) -> tuple[FigureSpec, dict[str, Any]]:
+    """Validate a FigureSpec while retaining its exact authored JSON mapping."""
+    if isinstance(value, FigureSpec):
+        return value, value.model_dump(mode="json", exclude_none=True)
+    if isinstance(value, Mapping):
+        authored_mapping = deepcopy(dict(value))
+    else:
+        authored_mapping = json.loads(Path(value).read_text(encoding="utf-8"))
+    authored_spec = FigureSpec.model_validate(authored_mapping)
+    return authored_spec, authored_mapping
+
+
 def coerce_figure_spec(value: FigureSpec | Mapping[str, Any] | Path | str) -> FigureSpec:
     """Load a FigureSpec from an object, mapping, or JSON file path."""
-    if isinstance(value, FigureSpec):
-        return value
-    if isinstance(value, Mapping):
-        return FigureSpec.model_validate(value)
-    path = Path(value)
-    return FigureSpec.model_validate_json(path.read_text(encoding="utf-8"))
+    return _coerce_figure_spec_and_authored_mapping(value)[0]
 
 
 def resolve_figure_inputs(
@@ -375,7 +385,7 @@ def execute_figure_spec(
     execution_context: StagedExecutionContext | None = None,
 ) -> tuple[FigureManifest, Path]:
     """Execute a figure while preserving the exact authored spec in its manifest."""
-    authored_spec = coerce_figure_spec(spec)
+    authored_spec, authored_mapping = _coerce_figure_spec_and_authored_mapping(spec)
     runtime_update: dict[str, Any] = {}
     if runtime_inputs is not None:
         runtime_update["inputs"] = list(runtime_inputs)
@@ -403,7 +413,7 @@ def execute_figure_spec(
             ) from exc
     authored_payload = spec_payload(
         "FigureSpec",
-        authored_spec.model_dump(mode="json", exclude_none=True),
+        authored_mapping,
     )
     runtime_binding_payload = _figure_runtime_binding_payload(
         authored_payload.sha256,

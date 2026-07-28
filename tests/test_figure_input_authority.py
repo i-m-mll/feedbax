@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 
+import plotly.graph_objs as go
 import pytest
 from pydantic import ValidationError
 
@@ -25,6 +26,7 @@ from feedbax.analysis.execution_context import (
 )
 from feedbax.analysis.figures import (
     FigureInputAuthorityError,
+    RenderedFigure,
     _figure_expression_context,
     execute_figure_spec,
     resolve_figure_inputs,
@@ -390,8 +392,47 @@ def test_direct_execution_records_exact_consumed_artifact(tmp_path: Path) -> Non
     assert manifest.regeneration_specs[1:] == [artifact]
 
 
+def test_sparse_authored_mapping_is_preserved_without_expanding_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authored = {
+        "schema_id": "feedbax.spec.figure",
+        "schema_version": "feedbax.spec.figure.v2",
+        "name": "sparse-authored",
+        "assembler": "feedbax.grid_figure",
+        "metadata": {"identity": "authored"},
+    }
+    monkeypatch.setattr(
+        "feedbax.analysis.figures._build_figures",
+        lambda *_args: [RenderedFigure(name="sparse", figure=go.Figure())],
+    )
+
+    manifest, _ = execute_figure_spec(authored, root=tmp_path / "output")
+    authored["metadata"]["identity"] = "mutated"
+
+    assert manifest.figure_spec.inline["metadata"] == {"identity": "authored"}
+
+
+def test_invalid_authored_mapping_is_validated_before_figure_effects(tmp_path: Path) -> None:
+    output_root = tmp_path / "output"
+    authored = {
+        "schema_id": "feedbax.spec.figure",
+        "schema_version": "feedbax.spec.figure.v2",
+        "name": "invalid-authored",
+        "assembler": "feedbax.grid_figure",
+        "unsupported": True,
+    }
+
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        execute_figure_spec(authored, root=output_root)
+
+    assert not output_root.exists()
+
+
 def test_multi_root_runtime_bindings_preserve_authored_figure_identity(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     providers = {
         name: ImmutableArtifactBlobProvider(tmp_path / name) for name in ("left", "right")
@@ -488,25 +529,29 @@ def test_multi_root_runtime_bindings_preserve_authored_figure_identity(
             for parent, runtime_name in zip(parents, providers, strict=True)
         ],
     )
-    authored = FigureSpec(
-        name="multi-root-authored",
-        assembler="feedbax.grid_figure",
-        metadata={
-            "scientific_identity": "K5",
-            "presentation_identity": "ordered-report-panel",
-        },
+    authored_path = (
+        Path(__file__).parent
+        / "fixtures"
+        / "figures"
+        / "sisu_m2_pulse_response.figure.v1.json"
     )
-    authored_payload = spec_payload(
-        "FigureSpec",
-        authored.model_dump(mode="json", exclude_none=True),
+    authored = json.loads(authored_path.read_text(encoding="utf-8"))
+    authored_payload = spec_payload("FigureSpec", authored)
+    expected_authored_sha256 = (
+        "dc979c6acbbec4aa6a1cc0ab23f63e145517511fa3d6f94f92a134018fa14a4b"
     )
+    assert authored_payload.sha256 == expected_authored_sha256
     retained_before = {
         name: sorted(path.relative_to(provider.root) for path in provider.root.rglob("*"))
         for name, provider in providers.items()
     }
+    monkeypatch.setattr(
+        "feedbax.analysis.figures._build_figures",
+        lambda *_args: [RenderedFigure(name="k5", figure=go.Figure())],
+    )
 
     manifest, _ = execute_figure_spec(
-        authored,
+        authored_path,
         runtime_inputs=parents,
         runtime_input_authorities=authorities,
         root=tmp_path / "output",
@@ -514,7 +559,8 @@ def test_multi_root_runtime_bindings_preserve_authored_figure_identity(
     )
 
     assert manifest.figure_spec == authored_payload
-    assert manifest.figure_spec.inline == authored.model_dump(mode="json", exclude_none=True)
+    assert manifest.figure_spec.inline == authored
+    assert manifest.figure_spec.sha256 == expected_authored_sha256
     assert manifest.figure_spec.inline["inputs"] == []
     assert manifest.figure_spec.inline["input_authorities"] == []
     assert manifest.resolved_inputs == parents
@@ -572,7 +618,7 @@ def test_multi_root_runtime_bindings_preserve_authored_figure_identity(
                         "figures": [
                             {
                                 "input_role": "figure",
-                                "figure_spec_sha256": authored_payload.sha256,
+                                "figure_spec_sha256": expected_authored_sha256,
                                 "caption": "Authenticated multi-root figure",
                             }
                         ],
