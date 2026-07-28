@@ -258,11 +258,20 @@ class EvaluationMatrixExecutorAdapter:
         observed_batch_ids = {
             batch_id for process in topology.processes for batch_id in process.ordered_batch_ids
         }
+        timed_batch_ids = {
+            timing.batch_id
+            for process in topology.processes
+            for timing in process.batch_timings
+        }
         if topology.requested_worker_count != expected_worker_count or observed_batch_ids != {
             batch.batch_id for batch in plan.batches
         }:
             raise ExecutorFamilyError(
                 "evaluation worker topology drifted from the authenticated batch plan"
+            )
+        if timed_batch_ids != observed_batch_ids:
+            raise ExecutorFamilyError(
+                "evaluation batch timings drifted from the authenticated worker topology"
             )
         if (
             compaction.matrix_intent_hash != plan.matrix_intent_hash

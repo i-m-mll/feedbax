@@ -356,11 +356,38 @@ class EvaluationMatrixOrderedUnionEvidence(StrictModel):
     ordered_row_ids: tuple[str, ...] = Field(min_length=1)
 
 
+class EvaluationBatchTimingEvidence(StrictModel):
+    """Monotonic timing for one batch executed by a persistent worker."""
+
+    batch_id: str = Field(min_length=1)
+    started_offset_ns: int = Field(ge=0)
+    completed_offset_ns: int = Field(ge=0)
+    duration_ns: int = Field(ge=0)
+    reused_verified_fragments: bool
+
+    @model_validator(mode="after")
+    def _validate_interval(self) -> "EvaluationBatchTimingEvidence":
+        if self.completed_offset_ns < self.started_offset_ns:
+            raise ValueError("evaluation batch timing completion precedes its start")
+        if self.duration_ns != self.completed_offset_ns - self.started_offset_ns:
+            raise ValueError("evaluation batch timing duration does not match its interval")
+        return self
+
+
 class EvaluationWorkerProcessEvidence(StrictModel):
     """Batches observed in one persistent matrix-harness worker process."""
 
     pid: int = Field(gt=0)
     ordered_batch_ids: tuple[str, ...] = Field(min_length=1)
+    batch_timings: tuple[EvaluationBatchTimingEvidence, ...] = ()
+
+    @model_validator(mode="after")
+    def _bind_timings(self) -> "EvaluationWorkerProcessEvidence":
+        if self.batch_timings and tuple(
+            item.batch_id for item in self.batch_timings
+        ) != self.ordered_batch_ids:
+            raise ValueError("evaluation batch timings must preserve worker batch order")
+        return self
 
 
 class EvaluationWorkerTopologyEvidence(StrictModel):

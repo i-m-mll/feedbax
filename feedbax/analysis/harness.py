@@ -8,6 +8,7 @@ from contextlib import nullcontext
 import json
 import multiprocessing
 import os
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,6 +61,8 @@ def _validate_evaluation_fragment_checkpoint(
 
 def _execute_evaluation_batch_partition(task: Mapping[str, Any]) -> dict[str, Any]:
     """Execute and compact one authenticated batch in a persistent worker."""
+    timing_origin_ns = int(task["timing_origin_ns"])
+    started_offset_ns = time.monotonic_ns() - timing_origin_ns
     from feedbax.analysis.evaluation_compaction import (
         EvaluationBatchConsumerInput,
         compact_evaluation_batch,
@@ -150,7 +153,15 @@ def _execute_evaluation_batch_partition(task: Mapping[str, Any]) -> dict[str, An
                 or authority.metadata.get("size_bytes") != len(manifest_bytes)
             ):
                 raise ValueError("evaluation batch fragment checkpoint parent authority drifted")
-        return {**cached, "pid": os.getpid(), "reused_verified_fragments": True}
+        completed_offset_ns = time.monotonic_ns() - timing_origin_ns
+        return {
+            **cached,
+            "pid": os.getpid(),
+            "reused_verified_fragments": True,
+            "started_offset_ns": started_offset_ns,
+            "completed_offset_ns": completed_offset_ns,
+            "duration_ns": completed_offset_ns - started_offset_ns,
+        }
     result = execute_evaluation_run_matrix(
         payload,
         root=Path(task["manifest_root"]),
@@ -226,7 +237,14 @@ def _execute_evaluation_batch_partition(task: Mapping[str, Any]) -> dict[str, An
     }
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     checkpoint.write_text(json.dumps(completed, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return completed
+    completed_offset_ns = time.monotonic_ns() - timing_origin_ns
+    return {
+        **completed,
+        "reused_verified_fragments": False,
+        "started_offset_ns": started_offset_ns,
+        "completed_offset_ns": completed_offset_ns,
+        "duration_ns": completed_offset_ns - started_offset_ns,
+    }
 
 
 @dataclass(frozen=True)
@@ -573,6 +591,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     from feedbax.contracts.evaluation_lifecycle import (
         EvaluationBatchCompactionEvidence,
+        EvaluationBatchTimingEvidence,
         EvaluationLifecycleEvidence,
         EvaluationLifecycleRowOutcome,
         EvaluationMatrixBatchPlan,
@@ -758,9 +777,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 prior_states: dict[str, ArtifactRef] = {}
                 reclamations = []
                 completed_batches = []
+                timing_origin_ns = time.monotonic_ns()
                 tasks = [
                     {
                         **common_task,
+                        "timing_origin_ns": timing_origin_ns,
                         "batch": {
                             "batch_id": item["batch_id"],
                             "ordered_row_ids": item["ordered_row_ids"],
@@ -870,6 +891,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                             pid=pid,
                             ordered_batch_ids=tuple(
                                 item["batch_id"] for item in completed_batches if item["pid"] == pid
+                            ),
+                            batch_timings=tuple(
+                                EvaluationBatchTimingEvidence(
+                                    batch_id=item["batch_id"],
+                                    started_offset_ns=item["started_offset_ns"],
+                                    completed_offset_ns=item["completed_offset_ns"],
+                                    duration_ns=item["duration_ns"],
+                                    reused_verified_fragments=item[
+                                        "reused_verified_fragments"
+                                    ],
+                                )
+                                for item in completed_batches
+                                if item["pid"] == pid
                             ),
                         )
                         for pid in dict.fromkeys(item["pid"] for item in completed_batches)

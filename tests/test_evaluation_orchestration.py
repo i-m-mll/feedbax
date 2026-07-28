@@ -877,6 +877,19 @@ def register_feedbax_analysis_recipes():
     assert len({item["pid"] for item in topology["processes"]}) == 4
     assert all(item["ordered_batch_ids"] for item in topology["processes"])
     assert sum(len(item["ordered_batch_ids"]) for item in topology["processes"]) == 8
+    assert all(
+        [timing["batch_id"] for timing in item["batch_timings"]]
+        == item["ordered_batch_ids"]
+        for item in topology["processes"]
+    )
+    assert all(
+        timing["completed_offset_ns"] >= timing["started_offset_ns"] >= 0
+        and timing["duration_ns"]
+        == timing["completed_offset_ns"] - timing["started_offset_ns"]
+        and not timing["reused_verified_fragments"]
+        for item in topology["processes"]
+        for timing in item["batch_timings"]
+    )
     observed_roots = tmp_path / "observed-worker-roots"
     assert len(list(observed_roots.iterdir())) == 4
     assert {path.read_text(encoding="utf-8") for path in observed_roots.iterdir()} == {
