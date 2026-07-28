@@ -76,7 +76,6 @@ EVALUATION_COLLECTION_OUTPUTS = (
     "evaluation-worker-topology.json",
     "evaluation-batch-compaction.json",
     "evaluation-batch-compaction",
-    "evaluation",
 )
 
 

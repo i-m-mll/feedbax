@@ -2020,6 +2020,19 @@ class RunPodOrchestrationDriver:
                 remote_source = f"{remote_run_dir}/rows/{row.row_id}/{source}"
             else:
                 remote_source = f"{remote_run_dir}/{source}"
+            raw_evaluation_source = (
+                f"{remote_run_dir}/rows/{row.row_id}/evaluation"
+            )
+            if bundle.execution_family == "evaluation-matrix" and (
+                posixpath.normpath(source) == "evaluation"
+                or posixpath.normpath(remote_source) == posixpath.normpath(
+                    raw_evaluation_source
+                )
+            ):
+                # Older bundles may declare the raw working store under
+                # row-relative, run-relative, or absolute spellings. Certified
+                # compact products are the terminal collection contract.
+                continue
             target = dest_dir / Path(source).name
             source_kind = self._remote_collection_source_kind(remote_source)
             delete = False

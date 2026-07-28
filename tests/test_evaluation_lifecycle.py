@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import platform
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -27,11 +28,16 @@ from feedbax.orchestration.bundle import (
     SchemaArtifactRef,
 )
 from feedbax.orchestration.conformance import (
+    CertificateRow,
+    CheckEntry,
     ConformanceRowArtifacts,
+    RealizedDeploymentRecord,
+    RunConformanceCertificate,
     build_default_check_registry,
     check_evaluation_lifecycle,
 )
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
+from feedbax.orchestration.drivers import local as local_driver
 from feedbax.orchestration.drivers.runpod import (
     RunPodDriverConfig,
     dry_run_launch_bundle,
@@ -44,6 +50,8 @@ from feedbax.orchestration.executor_family import (
 from feedbax.contracts.manifest import canonical_json_bytes, sha256_bytes
 from feedbax.orchestration.revision import resolve_feedbax_revision
 from feedbax.orchestration.stages import StageEngine
+from feedbax.orchestration.state import StageState
+from feedbax.orchestration.state import RowState, RunSetState
 
 
 def _execution(tmp_path: Path) -> ExecutionIdentityEnvelope:
@@ -124,10 +132,63 @@ def _bundle(tmp_path: Path, *, family: str = "evaluation-matrix") -> RunBundle:
     )
 
 
+def _certificate(
+    bundle: RunBundle,
+    *,
+    additional_check_status: str = "pass",
+) -> RunConformanceCertificate:
+    observed_at = datetime(2026, 7, 27, tzinfo=timezone.utc)
+    realized = RealizedDeploymentRecord(
+        driver="local",
+        venue="local",
+        provider="local",
+        environment_fingerprint="fixture",
+        provisioned_at=observed_at,
+        row_started_at=observed_at,
+        row_completed_at=observed_at,
+        observed_at=observed_at,
+        wall_time_seconds=0.0,
+        hourly_rate=0.0,
+        accrued_cost=0.0,
+        currency="USD",
+        cost_basis="local-not-billable",
+        observation_basis={"fixture": "focused reclamation test"},
+        unavailable={
+            "gpu_model": "not applicable locally",
+            "gpu_count": "not applicable locally",
+            "region": "not applicable locally",
+            "immutable_image_id": "not applicable locally",
+            "billing_started_at": "not billable locally",
+        },
+    )
+    realized_payload = realized.model_dump(mode="json")
+    checks = [
+        CheckEntry(
+            check_id="realized_deployment",
+            status="pass",
+            observed=realized_payload,
+        ),
+        CheckEntry(check_id="focused_reclamation", status=additional_check_status),
+    ]
+    return RunConformanceCertificate(
+        run_set_id=bundle.run_set_id,
+        generated_at=observed_at,
+        overall=additional_check_status,
+        rows={
+            bundle.rows[0].row_id: CertificateRow(
+                checks=checks,
+                realized_deployment=realized,
+                realized_deployment_evidence=realized_payload,
+            )
+        },
+    )
+
+
 def test_bundle_and_rows_require_one_declared_execution_family(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     assert bundle.execution_family == "evaluation-matrix"
     assert bundle.rows[0].execution_family == "evaluation-matrix"
+    assert "evaluation" not in bundle.rows[0].launch.collect
 
     payload = bundle.model_dump(mode="json")
     payload["execution_family"] = "native-training"
@@ -253,6 +314,234 @@ def test_ordered_nested_outcomes_are_family_conformance_evidence(tmp_path: Path)
         EvaluationLifecycleEvidence.model_validate(payload)
 
 
+def test_successful_local_evaluation_reclamation_is_terminal_and_idempotent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _bundle(tmp_path)
+    row = bundle.rows[0]
+    row_root = bundle.run_set_dir / "rows" / row.row_id
+    raw_store = row_root / "evaluation"
+    compact_store = row_root / "evaluation-batch-compaction"
+    raw_store.mkdir(parents=True)
+    compact_store.mkdir()
+    (raw_store / "states.bin").write_bytes(b"x" * 4096)
+    (compact_store / "fragment").write_bytes(b"compact")
+    collected_compact = bundle.run_set_dir / "collected" / row.row_id / compact_store.name
+    collected_compact.mkdir(parents=True)
+    (collected_compact / "fragment").write_bytes(b"compact")
+    collected_outputs = {
+        name: str(bundle.run_set_dir / "collected" / row.row_id / name)
+        for name in EVALUATION_COLLECTION_OUTPUTS
+    }
+    collected_outputs["evaluation-batch-compaction"] = str(collected_compact)
+    for name in EVALUATION_COLLECTION_OUTPUTS:
+        if name != "evaluation-batch-compaction":
+            Path(collected_outputs[name]).write_text("{}\n", encoding="utf-8")
+
+    class VerifiedAdapter:
+        def missing_collection_outputs(self, *_args: object) -> list[str]:
+            return []
+
+    monkeypatch.setattr(local_driver, "executor_family_adapter", lambda _family: VerifiedAdapter())
+    union_path = bundle.run_set_dir / "evaluation-matrix-ordered-union.json"
+    union = {
+        "schema_id": "feedbax.orchestration.evaluation_matrix_ordered_union_evidence",
+        "schema_version": "feedbax.orchestration.evaluation_matrix_ordered_union_evidence.v1",
+        "matrix_intent_hash": "c" * 64,
+        "ordered_row_ids_sha256": row.launch.metadata["matrix_ordered_row_ids_sha256"],
+        "ordered_batch_ids": ["whole-matrix"],
+        "ordered_row_ids": ["gain-a", "gain-b"],
+    }
+    union_path.parent.mkdir(parents=True, exist_ok=True)
+    union_path.write_text(json.dumps(union), encoding="utf-8")
+    certificate_path = bundle.run_set_dir / "conformance.json"
+    certificate = _certificate(bundle)
+    certificate_path.write_text(certificate.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={
+            row.row_id: RowState(
+                status="completed",
+                collected_outputs=collected_outputs,
+            )
+        },
+        stages={
+            "COLLECT": StageState(
+                status="completed",
+                outputs={
+                    "rows": {row.row_id: collected_outputs},
+                    "evaluation_matrix_ordered_union": {
+                        **union,
+                        "path": str(union_path),
+                    },
+                },
+            ),
+            "CERTIFY": StageState(
+                status="completed",
+                outputs={
+                    "overall": "pass",
+                    "certificate_ref": str(certificate_path),
+                    "certificate_sha256": hashlib.sha256(
+                        certificate_path.read_bytes()
+                    ).hexdigest(),
+                },
+            ),
+        },
+        certificate_ref=str(certificate_path),
+    )
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[])
+
+    durable_union = union_path.with_name("evaluation-matrix-ordered-union.actual.json")
+    union_path.replace(durable_union)
+    union_path.symlink_to(durable_union)
+    with pytest.raises(
+        local_driver.LocalDriverError,
+        match="durable path is unsafe",
+    ):
+        driver.teardown(bundle, state)
+    union_path.unlink()
+    durable_union.replace(union_path)
+
+    collected_row = bundle.run_set_dir / "collected" / row.row_id
+    external_collected_row = tmp_path / "external-collected-row"
+    collected_row.replace(external_collected_row)
+    collected_row.symlink_to(external_collected_row, target_is_directory=True)
+    with pytest.raises(
+        local_driver.LocalDriverError,
+        match="durable path is unsafe",
+    ):
+        driver.teardown(bundle, state)
+    collected_row.unlink()
+    external_collected_row.replace(collected_row)
+
+    external_record = tmp_path / "external-reclamation-record.json"
+    external_record.write_text(
+        json.dumps(
+            {
+                "schema_version": (
+                    "feedbax.orchestration.local_evaluation_store_reclamation.v1"
+                ),
+                "row_id": row.row_id,
+                "source": str(raw_store),
+                "reclaimed_bytes": 4096,
+                "status": "deleting",
+            }
+        ),
+        encoding="utf-8",
+    )
+    reclamation_record = row_root / ".evaluation-store-reclamation.json"
+    reclamation_record.symlink_to(external_record)
+    with pytest.raises(
+        local_driver.LocalDriverError,
+        match="reclamation record is unsafe",
+    ):
+        driver.teardown(bundle, state)
+    reclamation_record.unlink()
+    external_record.unlink()
+
+    malformed_certificate = '{"overall":"pass"}\n'
+    certificate_path.write_text(malformed_certificate, encoding="utf-8")
+    malformed_state = state.with_stage(
+        "CERTIFY",
+        state.stage("CERTIFY").model_copy(
+            update={
+                "outputs": {
+                    **state.stage("CERTIFY").outputs,
+                    "certificate_sha256": hashlib.sha256(
+                        malformed_certificate.encode("utf-8")
+                    ).hexdigest(),
+                }
+            }
+        ),
+    )
+    with pytest.raises(
+        local_driver.LocalDriverError,
+        match="valid passing certificate",
+    ):
+        driver.teardown(bundle, malformed_state)
+
+    failing_certificate = _certificate(bundle, additional_check_status="fail")
+    failing_bytes = (failing_certificate.model_dump_json(indent=2) + "\n").encode("utf-8")
+    certificate_path.write_bytes(failing_bytes)
+    relabeled_state = state.with_stage(
+        "CERTIFY",
+        state.stage("CERTIFY").model_copy(
+            update={
+                "outputs": {
+                    **state.stage("CERTIFY").outputs,
+                    "certificate_sha256": hashlib.sha256(failing_bytes).hexdigest(),
+                }
+            }
+        ),
+    )
+    with pytest.raises(
+        local_driver.LocalDriverError,
+        match="valid passing certificate",
+    ):
+        driver.teardown(bundle, relabeled_state)
+    certificate_path.write_text(certificate.model_dump_json(indent=2) + "\n", encoding="utf-8")
+
+    pending = state.with_stage("CERTIFY", StageState(status="pending"))
+    retained = driver.teardown(bundle, pending)["successful_evaluation_reclamation"]
+    assert retained[0]["status"] == "retained"
+    assert raw_store.is_dir()
+
+    unexpected = row_root / ".evaluation.unexpectedly-missing"
+    raw_store.rename(unexpected)
+    with pytest.raises(
+        local_driver.LocalDriverError,
+        match="disappeared without reclamation authority",
+    ):
+        driver.teardown(bundle, state)
+    unexpected.rename(raw_store)
+
+    original_rmtree = local_driver.shutil.rmtree
+
+    def interrupt_after_isolation(path: Path) -> None:
+        assert path == row_root / ".evaluation.success-reclaiming"
+        raise RuntimeError("simulated crash after isolation")
+
+    monkeypatch.setattr(local_driver.shutil, "rmtree", interrupt_after_isolation)
+    with pytest.raises(RuntimeError, match="simulated crash after isolation"):
+        driver.teardown(bundle, state)
+    deleting_record = json.loads(
+        (row_root / ".evaluation-store-reclamation.json").read_text(encoding="utf-8")
+    )
+    assert deleting_record["status"] == "deleting"
+    assert not raw_store.exists()
+    assert (row_root / ".evaluation.success-reclaiming").is_dir()
+
+    monkeypatch.setattr(local_driver.shutil, "rmtree", original_rmtree)
+    reclaimed = driver.teardown(bundle, state)["successful_evaluation_reclamation"]
+    assert reclaimed[0]["status"] == "reclaimed"
+    assert reclaimed[0]["reclaimed_bytes"] >= 4096
+    assert not raw_store.exists()
+    record_path = row_root / ".evaluation-store-reclamation.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["status"] == "completed"
+    assert record["reclaimed_bytes"] == reclaimed[0]["reclaimed_bytes"]
+    assert (compact_store / "fragment").read_bytes() == b"compact"
+    assert (collected_compact / "fragment").read_bytes() == b"compact"
+
+    drifted_record = {**record, "source": str(row_root / "other-evaluation")}
+    record_path.write_text(json.dumps(drifted_record), encoding="utf-8")
+    with pytest.raises(
+        local_driver.LocalDriverError,
+        match="reclamation record drifted",
+    ):
+        driver.teardown(bundle, state)
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    assert driver.teardown(bundle, state)["successful_evaluation_reclamation"] == [
+        {
+            "row_id": row.row_id,
+            "status": "already-reclaimed",
+            "reclaimed_bytes": 0,
+        }
+    ]
+
+
 def test_local_evaluation_family_traverses_production_lifecycle_to_teardown(
     tmp_path: Path,
 ) -> None:
@@ -314,18 +603,85 @@ register_evaluation_recipe("feedbax.test.lifecycle", recipe, batch_recipe=batch,
                         "matrix-harness",
                         "--plugin",
                         "evaluation_lifecycle_plugin",
-                    ]
+                    ],
+                    # Simulate a durable bundle authored before raw evaluation
+                    # stores were removed from the collection contract.
+                    "collect": [*row.launch.collect, "evaluation"],
                 }
             ),
         }
     )
     bundle = bundle.model_copy(update={"rows": [row]})
-    state = StageEngine(
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[])
+    engine = StageEngine(
         bundle=bundle,
-        driver=LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[]),
+        driver=driver,
         conformance_registry=build_default_check_registry(include_plugins=False),
         poll_interval_seconds=0.001,
-    ).run(stop_after_stage="TEARDOWN")
+    )
+    state = engine.run(stop_after_stage="CERTIFY")
+
+    raw_evaluation = bundle.run_set_dir / "rows" / "matrix" / "evaluation"
+    compact_store = bundle.run_set_dir / "rows" / "matrix" / "evaluation-batch-compaction"
+    collected_compact_store = (
+        bundle.run_set_dir / "collected" / "matrix" / "evaluation-batch-compaction"
+    )
+    assert raw_evaluation.is_dir()
+    assert compact_store.is_dir()
+    assert collected_compact_store.is_dir()
+    assert "evaluation" not in state.rows["matrix"].collected_outputs
+    assert not (bundle.run_set_dir / "collected" / "matrix" / "evaluation").exists()
+
+    external_result = tmp_path / "external-evaluation-matrix-result.json"
+    external_result.write_bytes(
+        Path(state.rows["matrix"].collected_outputs["evaluation-matrix-result.json"]).read_bytes()
+    )
+    tampered_outputs = {
+        **state.rows["matrix"].collected_outputs,
+        "evaluation-matrix-result.json": str(external_result),
+    }
+    tampered_state = state.with_row(
+        "matrix",
+        state.rows["matrix"].model_copy(update={"collected_outputs": tampered_outputs}),
+    ).with_stage(
+        "COLLECT",
+        state.stage("COLLECT").model_copy(
+            update={
+                "outputs": {
+                    **state.stage("COLLECT").outputs,
+                    "rows": {"matrix": tampered_outputs},
+                }
+            }
+        ),
+    )
+    with pytest.raises(
+        local_driver.LocalDriverError,
+        match="collected output path is not run-owned",
+    ):
+        driver.teardown(bundle, tampered_state)
+    assert raw_evaluation.is_dir()
+
+    pre_barrier = state.with_stage("CERTIFY", StageState(status="pending"))
+    retained = driver.teardown(bundle, pre_barrier)["successful_evaluation_reclamation"]
+    assert retained == [
+        {
+            "row_id": "matrix",
+            "status": "retained",
+            "reclaimed_bytes": 0,
+            "reason": "terminal-consumer-barrier-not-complete",
+        }
+    ]
+    assert raw_evaluation.is_dir()
+
+    reclaimed = driver.teardown(bundle, state)["successful_evaluation_reclamation"]
+    assert reclaimed[0]["row_id"] == "matrix"
+    assert reclaimed[0]["status"] == "reclaimed"
+    assert reclaimed[0]["reclaimed_bytes"] > 0
+    assert not raw_evaluation.exists()
+    assert compact_store.is_dir()
+    assert collected_compact_store.is_dir()
+
+    state = engine.run(stop_after_stage="TEARDOWN")
 
     assert state.stage("CERTIFY").status == "completed"
     assert state.stage("TEARDOWN").status == "completed"
@@ -342,6 +698,15 @@ register_evaluation_recipe("feedbax.test.lifecycle", recipe, batch_recipe=batch,
     assert checks["evaluation_lifecycle"]["status"] == "pass"
     assert checks["events_terminal"]["status"] == "pass"
     assert certificate["overall"] == "pass"
+    assert state.stage("TEARDOWN").outputs["successful_evaluation_reclamation"] == [
+        {
+            "row_id": "matrix",
+            "status": "already-reclaimed",
+            "reclaimed_bytes": 0,
+        }
+    ]
+    assert compact_store.is_dir()
+    assert collected_compact_store.is_dir()
     shadow_evidence = orchestrate._shadow_launch_evidence(bundle, state)
     assert shadow_evidence.exercised_through_stage == "TEARDOWN"
     assert shadow_evidence.lifecycles == (evidence,)

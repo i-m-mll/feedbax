@@ -4630,6 +4630,51 @@ def test_collect_rsyncs_requested_outputs_and_verifies_payload(tmp_path: Path) -
     ]
 
 
+@pytest.mark.parametrize(
+    "source_kind",
+    ["row-relative", "row-relative-dot", "run-relative", "absolute"],
+)
+def test_collect_skips_legacy_evaluation_raw_store(
+    tmp_path: Path,
+    source_kind: str,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
+        transport=transport,
+    )
+    row_id = bundle.rows[0].row_id
+    source = {
+        "row-relative": "evaluation",
+        "row-relative-dot": "./evaluation",
+        "run-relative": f"rows/{row_id}/evaluation",
+        "absolute": f"{driver._remote_run_dir(bundle)}/rows/{row_id}/evaluation",
+    }[source_kind]
+    row = bundle.rows[0].model_copy(
+        update={
+            "execution_family": "evaluation-matrix",
+            "launch": bundle.rows[0].launch.model_copy(update={"collect": [source]}),
+        }
+    )
+    bundle = bundle.model_copy(
+        update={
+            "execution_family": "evaluation-matrix",
+            "rows": [row],
+        }
+    )
+
+    collected = driver.collect(bundle, row, _state(bundle))
+
+    event_name = f"{row.row_id}.events.jsonl"
+    assert collected == {
+        event_name: str(bundle.run_set_dir / "events" / event_name),
+    }
+    assert transport.ssh_commands == []
+    assert len(transport.rsync_calls) == 1
+    assert transport.rsync_calls[0][0].endswith(f"/events/{event_name}")
+
+
 def test_collect_native_outputs_uses_row_dir_and_canonical_events(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path, baseline=False)
     row = bundle.rows[0].model_copy(
