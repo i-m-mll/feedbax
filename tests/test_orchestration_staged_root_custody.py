@@ -416,6 +416,38 @@ def test_sequential_local_lifecycles_reclaim_run_local_staged_roots(
     assert repeated["staged_root_reclamation"]["status"] == "already-reclaimed"
 
 
+def test_failed_local_lifecycle_reclaims_authenticated_staged_roots(
+    tmp_path: Path,
+) -> None:
+    bundle, bindings = _sealed_bundle(tmp_path)
+    driver = LocalOrchestrationDriver(
+        freeze_lines=[],
+        staged_root_bindings=bindings,
+    )
+    driver.provision(bundle, _state(bundle))
+    driver.stage_inputs(bundle, _state(bundle))
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        stages={
+            "STAGE_INPUTS": {"status": "completed"},
+            "COLLECT": {"status": "failed"},
+        },
+        rows={
+            row.row_id: RowState(status="failed", error="fixture executor failure")
+            for row in bundle.rows
+        },
+    )
+
+    result = driver.teardown(bundle, state)
+
+    assert result["staged_root_reclamation"]["status"] == "reclaimed"
+    assert not (bundle.run_set_dir / "inputs" / "staged-roots").exists()
+    assert (bundle.run_set_dir / "inputs" / ".staged-roots-reclaimed.json").is_file()
+    assert driver.teardown(bundle, state)["staged_root_reclamation"]["status"] == (
+        "already-reclaimed"
+    )
+
+
 def test_provider_free_sequential_lifecycles_bound_staged_root_peak(
     tmp_path: Path,
 ) -> None:

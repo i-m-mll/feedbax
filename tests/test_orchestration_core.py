@@ -113,6 +113,7 @@ from feedbax.orchestration.drivers.local import (
     LocalDriverError,
     LocalOrchestrationDriver,
     _canonicalize_dependency_inventory,
+    _process_group_alive,
     compute_environment_fingerprint,
 )
 from feedbax.orchestration.drivers.runpod import (
@@ -2949,6 +2950,131 @@ while True:
     assert state.abort_reason == "operator-stop-after-checkpoint"
     assert state.rows["row"].status == "stopped"
     assert state.budget_counters["cancellation"] == decision.as_provenance()
+
+
+def test_failed_local_collection_does_not_copy_raw_directories_and_teardown_reclaims(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(
+        tmp_path,
+        rows=[
+            _compiled_row(
+                "failed",
+                collect=["failure.json", "evaluation"],
+            )
+        ],
+        run_set_id="failed-storage",
+    )
+    row_root = bundle.run_set_dir / "rows" / "failed"
+    raw_root = row_root / "evaluation" / "cache"
+    raw_root.mkdir(parents=True)
+    (raw_root / "states.bin").write_bytes(b"x" * (1024 * 1024))
+    (row_root / "failure.json").write_text('{"failed":true}\n', encoding="utf-8")
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={"failed": RowState(status="failed", error="fixture failure")},
+        stages={
+            "STAGE_INPUTS": StageState(status="completed"),
+            "COLLECT": StageState(status="failed"),
+        },
+    )
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=())
+
+    collected = driver.collect(bundle, bundle.rows[0], state)
+
+    assert set(collected) == {"failure.json"}
+    assert Path(collected["failure.json"]).is_file()
+    assert not (bundle.run_set_dir / "collected" / "failed" / "evaluation").exists()
+    teardown = driver.teardown(bundle, state)
+    reclamation = teardown["failed_row_reclamation"]
+    assert len(reclamation) == 1
+    assert reclamation[0]["row_id"] == "failed"
+    assert reclamation[0]["status"] == "reclaimed"
+    assert reclamation[0]["reclaimed_bytes"] >= 1024 * 1024
+    assert not row_root.exists()
+    assert driver.teardown(bundle, state)["failed_row_reclamation"] == [
+        {
+            "row_id": "failed",
+            "status": "already-reclaimed",
+            "reclaimed_bytes": 0,
+        }
+    ]
+
+
+def test_failed_local_teardown_retains_row_tree_before_collection(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, run_set_id="precollection-failure")
+    row_root = bundle.run_set_dir / "rows" / "row-a"
+    row_root.mkdir(parents=True)
+    (row_root / "failure.log").write_text("failure evidence\n", encoding="utf-8")
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={"row-a": RowState(status="failed", error="fixture failure")},
+        stages={"COLLECT": StageState(status="pending")},
+    )
+
+    result = LocalOrchestrationDriver(
+        cwd=tmp_path,
+        freeze_lines=(),
+    ).teardown(bundle, state)
+
+    assert result["failed_row_reclamation"] == []
+    assert (row_root / "failure.log").is_file()
+
+
+def test_failed_local_teardown_terminates_orphaned_worker_process_group(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "orphan_worker.py"
+    child_pid_path = tmp_path / "child.pid"
+    script.write_text(
+        "\n".join(
+            (
+                "import subprocess",
+                "import sys",
+                "from pathlib import Path",
+                f"pid_path = Path({str(child_pid_path)!r})",
+                "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])",
+                "pid_path.write_text(str(child.pid), encoding='utf-8')",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    bundle = _bundle(
+        tmp_path,
+        rows=[_compiled_row("failed", command=[sys.executable, str(script)])],
+        run_set_id="orphan-worker",
+    )
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=())
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        environment_fingerprint="fixture",
+        rows={"failed": RowState(status="running")},
+    )
+    launch = driver.launch_row(bundle, bundle.rows[0], state)
+    deadline = time.monotonic() + 5
+    while (
+        (not child_pid_path.exists() or driver._processes["failed"].poll() is None)
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+    assert child_pid_path.is_file()
+    assert driver._processes["failed"].poll() == 0
+    assert _process_group_alive(launch["pid"])
+    failed = state.model_copy(
+        update={
+            "rows": {"failed": RowState(status="failed", error="leader exited")},
+            "stages": {
+                "STAGE_INPUTS": StageState(status="completed"),
+                "COLLECT": StageState(status="failed"),
+            },
+        }
+    )
+
+    result = driver.teardown(bundle, failed)
+
+    assert result["stopped_rows"] == ["failed"]
+    assert not _process_group_alive(launch["pid"])
 
 
 @pytest.mark.parametrize(
