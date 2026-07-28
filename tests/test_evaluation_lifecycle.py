@@ -94,7 +94,7 @@ def _bundle(tmp_path: Path, *, family: str = "evaluation-matrix") -> RunBundle:
                 ),
                 "batch_plan": {
                     "schema_id": "feedbax.spec.evaluation_matrix_batch_plan",
-                    "schema_version": "feedbax.spec.evaluation_matrix_batch_plan.v1",
+                    "schema_version": "feedbax.spec.evaluation_matrix_batch_plan.v4",
                     "matrix_intent_hash": "c" * 64,
                     "batches": [
                         {
