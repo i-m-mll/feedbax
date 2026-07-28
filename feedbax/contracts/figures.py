@@ -39,6 +39,11 @@ Additive changelog, 2026-07-27: figure-constructor data may carry the versioned
 ``PerturbationTiming`` contract. It declares bounded, nominal, or full-trial
 applicability plus the authored sample schedule. Constructor data remains
 unchanged when timing is absent.
+
+Additive changelog, 2026-07-28: ``PanelSpec.equal_data_aspect`` accepts the
+versioned ``EqualDataAspect`` declaration. It requests exact 1:1 linear data
+units from a supporting panel assembler. The field is an optional None-default,
+so existing panel and figure identity bytes are unchanged.
 """
 
 from __future__ import annotations
@@ -74,6 +79,8 @@ FIGURE_COLORBAR_SCHEMA_ID = "feedbax.spec.figure_colorbar"
 FIGURE_COLORBAR_SCHEMA_VERSION = "feedbax.spec.figure_colorbar.v1"
 PERTURBATION_TIMING_SCHEMA_ID = "feedbax.spec.perturbation_timing"
 PERTURBATION_TIMING_SCHEMA_VERSION = "feedbax.spec.perturbation_timing.v1"
+EQUAL_DATA_ASPECT_SCHEMA_ID = "feedbax.spec.equal_data_aspect"
+EQUAL_DATA_ASPECT_SCHEMA_VERSION = "feedbax.spec.equal_data_aspect.v1"
 FIGURE_RUNTIME_BINDING_SCHEMA_ID = "feedbax.spec.figure_runtime_binding"
 FIGURE_RUNTIME_BINDING_SCHEMA_VERSION = "feedbax.spec.figure_runtime_binding.v1"
 FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID = "feedbax.spec.figure_data_product_payload"
@@ -163,6 +170,27 @@ class PanelAxis(StrictModel):
 
     type: Literal["linear", "log"] | None = None
     range: tuple[float, float] | None = None
+
+
+class EqualDataAspect(StrictModel):
+    """Request exact 1:1 linear data units for one panel."""
+
+    schema_id: str = EQUAL_DATA_ASPECT_SCHEMA_ID
+    schema_version: str = EQUAL_DATA_ASPECT_SCHEMA_VERSION
+    ratio: Literal[1] = 1
+
+    @model_validator(mode="after")
+    def _validate_schema_identity(self) -> "EqualDataAspect":
+        if self.schema_id != EQUAL_DATA_ASPECT_SCHEMA_ID:
+            raise ValueError(
+                f"unsupported EqualDataAspect schema_id: {self.schema_id!r}"
+            )
+        if self.schema_version != EQUAL_DATA_ASPECT_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported EqualDataAspect schema_version: "
+                f"{self.schema_version!r}"
+            )
+        return self
 
 
 class TraceBinding(StrictModel):
@@ -633,8 +661,25 @@ class PanelSpec(StrictModel):
     axes_labels: AxisLabels | None = None
     x_axis: PanelAxis | None = None
     y_axis: PanelAxis | None = None
+    equal_data_aspect: EqualDataAspect | None = None
     row: int | None = None
     col: int | None = None
+
+    @model_validator(mode="after")
+    def _validate_equal_data_aspect(self) -> "PanelSpec":
+        if self.equal_data_aspect is None:
+            return self
+        nonlinear = [
+            name
+            for name, axis in (("x_axis", self.x_axis), ("y_axis", self.y_axis))
+            if axis is not None and axis.type == "log"
+        ]
+        if nonlinear:
+            raise ValueError(
+                "PanelSpec equal_data_aspect requires linear axes; "
+                f"nonlinear declarations: {nonlinear}"
+            )
+        return self
 
 
 class FigureArtifactPayload(StrictModel):

@@ -53,6 +53,7 @@ class Trajectory2DParams(StrictModel):
     colorscale_axis: int = 0
     stride: int = 1
     show_mean: bool = True
+    showlegend: bool | None = None
     opacity: float = 0.4
     line_width: float = 0.75
     mean_line_width: float = 2.5
@@ -171,6 +172,7 @@ class PanelContent:
     axes_labels: Mapping[str, str | None] | None = None
     x_axis: Mapping[str, Any] | None = None
     y_axis: Mapping[str, Any] | None = None
+    equal_data_aspect: Mapping[str, Any] | None = None
 
 
 TraceConstructor = Callable[[Mapping[str, Any], StrictModel], Sequence[Any]]
@@ -609,7 +611,7 @@ def _trajectory_2d(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any
         scientific_trace = go.Scatter(
             name=label,
             legendgroup=label,
-            showlegend=index == 0,
+            showlegend=index == 0 and p.showlegend is not False,
             x=traj[:, 0],
             y=traj[:, 1],
             mode="lines",
@@ -628,6 +630,9 @@ def _trajectory_2d(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any
         )
     if p.show_mean and trajectories.shape[0] > 1:
         mean = np.nanmean(trajectories, axis=0)
+        mean_trace_kwargs: dict[str, Any] = {}
+        if p.showlegend is not None:
+            mean_trace_kwargs["showlegend"] = p.showlegend
         mean_trace = go.Scatter(
             name=f"{label} mean",
             legendgroup=label,
@@ -635,6 +640,7 @@ def _trajectory_2d(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any
             y=mean[:, 1],
             mode="lines",
             line={"color": group_colors[0], "width": p.mean_line_width},
+            **mean_trace_kwargs,
         )
         traces.extend(
             _trajectory_with_affected_underlay(
@@ -949,6 +955,36 @@ def _comparison_grid(panels: Sequence[PanelContent], params: StrictModel) -> go.
             fig.update_xaxes(**panel.x_axis, row=row, col=col)
         if panel.y_axis:
             fig.update_yaxes(**panel.y_axis, row=row, col=col)
+        if panel.equal_data_aspect:
+            subplot = fig.get_subplot(row, col)
+            if subplot is None or not hasattr(subplot, "xaxis"):
+                raise ValueError(
+                    "equal_data_aspect requires a Cartesian x/y subplot at "
+                    f"row {row}, col {col}"
+                )
+            shared_axes = []
+            for axis_name, axis, layout_axes in (
+                ("x", subplot.xaxis, fig.select_xaxes()),
+                ("y", subplot.yaxis, fig.select_yaxes()),
+            ):
+                axis_ref = axis.plotly_name.replace("axis", "", 1)
+                if axis.matches is not None or any(
+                    other.matches == axis_ref for other in layout_axes
+                ):
+                    shared_axes.append(axis_name)
+            if shared_axes:
+                raise ValueError(
+                    "equal_data_aspect cannot constrain shared axes at "
+                    f"row {row}, col {col}: {shared_axes}; set the corresponding "
+                    "shared_xaxes/shared_yaxes parameter to False"
+                )
+            x_axis_ref = subplot.xaxis.plotly_name.replace("axis", "", 1)
+            fig.update_yaxes(
+                scaleanchor=x_axis_ref,
+                scaleratio=panel.equal_data_aspect["ratio"],
+                row=row,
+                col=col,
+            )
     return fig
 
 
@@ -1095,11 +1131,11 @@ def register_default_figure_constructors() -> None:
     ]
     changed_versions = {
         "feedbax.profile_band": "v2",
-        "feedbax.trajectory_2d": "v3",
+        "feedbax.trajectory_2d": "v4",
         "feedbax.endpoint_markers": "v2",
         "feedbax.hline": "v2",
         "feedbax.vrect": "v3",
-        "feedbax.comparison_grid": "v2",
+        "feedbax.comparison_grid": "v3",
         "feedbax.grid_figure": "v3",
     }
     for key, tier, constructor, params_model, description in defaults:
