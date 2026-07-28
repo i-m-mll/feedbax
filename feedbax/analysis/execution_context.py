@@ -108,6 +108,15 @@ class StagedParentExecutionLocation:
     artifact_provider: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class StagedParentArtifactProviderBinding:
+    """Map one authored provider label to one exact parent's runtime provider."""
+
+    parent: ParentRef
+    authored_provider: str
+    runtime_provider: str
+
+
 _FileState = tuple[int, int, int, int, int, int, int]
 
 
@@ -256,6 +265,7 @@ class StagedExecutionContext:
     opened_artifact_providers: Mapping[str, ImmutableArtifactBlobProvider]
     checkpoint_custody_roots: Mapping[str, Path]
     parent_execution_locations: tuple[StagedParentExecutionLocation, ...]
+    parent_artifact_provider_bindings: tuple[StagedParentArtifactProviderBinding, ...] = ()
     manifest_roots: Mapping[str, Path] = field(default_factory=dict)
     repo_root: Path | None = None
     _checkpoint_custody_root_identities: Mapping[str, tuple[int, int]] = field(
@@ -350,6 +360,22 @@ class StagedExecutionContext:
             "parent_execution_locations",
             tuple(self.parent_execution_locations),
         )
+        bindings = tuple(self.parent_artifact_provider_bindings)
+        binding_keys: set[tuple[str, str]] = set()
+        for binding in bindings:
+            validate_staged_binding_name(binding.authored_provider)
+            validate_staged_binding_name(binding.runtime_provider)
+            key = (
+                binding.parent.model_dump_json(exclude_none=False),
+                binding.authored_provider,
+            )
+            if key in binding_keys:
+                raise StagedExecutionContextError(
+                    "staged execution context contains a duplicate exact-parent "
+                    "artifact-provider binding"
+                )
+            binding_keys.add(key)
+        object.__setattr__(self, "parent_artifact_provider_bindings", bindings)
         parent_identities = tuple(self._parent_execution_root_identities)
         if not parent_identities:
             parent_identities = tuple(
@@ -376,6 +402,49 @@ class StagedExecutionContext:
             self._artifact_provider_root_identities[name],
             kind="artifact provider",
         )
+        return provider
+
+    def artifact_provider_for_parent(
+        self,
+        parent: ParentRef,
+        authored_provider: str,
+    ) -> ImmutableArtifactBlobProvider:
+        """Resolve one authored provider label under exact-parent runtime authority."""
+        validate_staged_binding_name(authored_provider)
+        matches = [
+            binding
+            for binding in self.parent_artifact_provider_bindings
+            if binding.parent == parent and binding.authored_provider == authored_provider
+        ]
+        if not matches:
+            raise StagedExecutionContextError(
+                "staged artifact provider binding is unavailable for the exact parent "
+                f"and authored provider {authored_provider!r}"
+            )
+        if len(matches) != 1:
+            raise StagedExecutionContextError(
+                "staged artifact provider binding is ambiguous for the exact parent "
+                f"and authored provider {authored_provider!r}"
+            )
+        binding = matches[0]
+        location = self.parent_execution_location(parent)
+        if (
+            location.artifact_provider is not None
+            and location.artifact_provider != binding.runtime_provider
+        ):
+            raise StagedExecutionContextError(
+                "exact-parent artifact provider binding disagrees with the parent "
+                "execution provider"
+            )
+        provider = self.artifact_provider(binding.runtime_provider)
+        if (
+            location.artifact_provider is not None
+            and Path(provider.root).resolve() != location.root.resolve()
+        ):
+            raise StagedExecutionContextError(
+                "exact-parent artifact provider binding disagrees with the parent "
+                "execution root"
+            )
         return provider
 
     def resolve_manifest_input(self, parent: ParentRef) -> ResolvedManifestInput:
@@ -890,9 +959,25 @@ def with_staged_parent_execution_locations(
     return replace(
         context,
         parent_execution_locations=tuple(normalized),
+        parent_artifact_provider_bindings=(),
         _parent_execution_root_identities=(),
         _memo=_StagedExecutionMemo(),
     )
+
+
+def with_staged_parent_artifact_provider_bindings(
+    context: StagedExecutionContext,
+    bindings: Sequence[StagedParentArtifactProviderBinding],
+) -> StagedExecutionContext:
+    """Bind authored provider labels to preflight-verified exact parent locations."""
+    bound = replace(
+        context,
+        parent_artifact_provider_bindings=tuple(bindings),
+        _memo=_StagedExecutionMemo(),
+    )
+    for binding in bound.parent_artifact_provider_bindings:
+        bound.artifact_provider_for_parent(binding.parent, binding.authored_provider)
+    return bound
 
 
 def with_staged_manifest_provider_inputs(
@@ -961,6 +1046,31 @@ def with_staged_manifest_provider_inputs(
         )
         located_parents.add(serialized)
     bound = with_staged_parent_execution_locations(context, locations)
+    provider_bindings = list(context.parent_artifact_provider_bindings)
+    binding_keys = {
+        (
+            binding.parent.model_dump_json(exclude_none=False),
+            binding.authored_provider,
+        )
+        for binding in provider_bindings
+    }
+    for location in bound.parent_execution_locations:
+        if location.artifact_provider is None:
+            continue
+        key = (
+            location.parent.model_dump_json(exclude_none=False),
+            location.artifact_provider,
+        )
+        if key not in binding_keys:
+            provider_bindings.append(
+                StagedParentArtifactProviderBinding(
+                    parent=location.parent,
+                    authored_provider=location.artifact_provider,
+                    runtime_provider=location.artifact_provider,
+                )
+            )
+            binding_keys.add(key)
+    bound = with_staged_parent_artifact_provider_bindings(bound, provider_bindings)
     for parent in parents:
         bound.resolve_manifest_input(parent)
     return bound

@@ -74,6 +74,10 @@ FIGURE_COLORBAR_SCHEMA_ID = "feedbax.spec.figure_colorbar"
 FIGURE_COLORBAR_SCHEMA_VERSION = "feedbax.spec.figure_colorbar.v1"
 PERTURBATION_TIMING_SCHEMA_ID = "feedbax.spec.perturbation_timing"
 PERTURBATION_TIMING_SCHEMA_VERSION = "feedbax.spec.perturbation_timing.v1"
+FIGURE_RUNTIME_BINDING_SCHEMA_ID = "feedbax.spec.figure_runtime_binding"
+FIGURE_RUNTIME_BINDING_SCHEMA_VERSION = "feedbax.spec.figure_runtime_binding.v1"
+FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID = "feedbax.spec.figure_data_product_payload"
+FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION = "feedbax.spec.figure_data_product_payload.v1"
 
 #: The two substitution tokens the figure contract understands. Trace families
 #: are indexed substitution, deliberately not a templating or expression
@@ -653,13 +657,61 @@ class FigureArtifactPayload(StrictModel):
         return self
 
 
+class FigureDataProductArtifactPayload(StrictModel):
+    """Select one JSON artifact from one exact typed AnalysisDataProduct."""
+
+    schema_id: str = FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID
+    schema_version: str = FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION
+    name: str
+    authority: Literal["analysis_data_product"] = "analysis_data_product"
+    manifest_role: str
+    product_role: str
+    product_schema_id: str
+    product_schema_version: str
+    artifact_role: str
+    artifact_provider: str
+    media_type: str = "application/json"
+    manifest_status: Literal["completed"] = "completed"
+    payload_schema_id: str | None = None
+    payload_schema_version: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_identity(self) -> "FigureDataProductArtifactPayload":
+        if self.schema_id != FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID:
+            raise ValueError(
+                "unsupported FigureDataProductArtifactPayload schema_id: "
+                f"{self.schema_id!r}"
+            )
+        if self.schema_version != FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported FigureDataProductArtifactPayload schema_version: "
+                f"{self.schema_version!r}"
+            )
+        for field_name in (
+            "product_role",
+            "product_schema_id",
+            "product_schema_version",
+            "artifact_provider",
+        ):
+            if not getattr(self, field_name):
+                raise ValueError(
+                    f"FigureDataProductArtifactPayload {field_name} must be nonempty"
+                )
+        return self
+
+
+FigureArtifactPayloadSpec: TypeAlias = (
+    FigureArtifactPayload | FigureDataProductArtifactPayload
+)
+
+
 class FigureInputAuthority(StrictModel):
     """Portable authority requirements for one exact figure parent."""
 
     schema_id: str = FIGURE_INPUT_AUTHORITY_SCHEMA_ID
     schema_version: str = FIGURE_INPUT_AUTHORITY_SCHEMA_VERSION
     parent: ParentRef
-    artifact_payloads: list[FigureArtifactPayload] = Field(default_factory=list)
+    artifact_payloads: list[FigureArtifactPayloadSpec] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_identity(self) -> "FigureInputAuthority":
@@ -682,7 +734,7 @@ class FigureInputRoleAuthority(StrictModel):
     schema_id: str = FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID
     schema_version: str = FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION
     input_role: str
-    artifact_payloads: list[FigureArtifactPayload] = Field(default_factory=list)
+    artifact_payloads: list[FigureArtifactPayloadSpec] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_identity(self) -> "FigureInputRoleAuthority":
@@ -724,6 +776,67 @@ class FigureInputRoleAuthority(StrictModel):
 
 
 FigureInputAuthoritySpec: TypeAlias = FigureInputAuthority | FigureInputRoleAuthority
+
+
+class FigureRuntimeArtifactProviderBinding(StrictModel):
+    """One exact parent-scoped authored-to-runtime provider binding."""
+
+    parent: ParentRef
+    authored_provider: str
+    runtime_provider: str
+
+    @model_validator(mode="after")
+    def _validate_names(self) -> "FigureRuntimeArtifactProviderBinding":
+        from feedbax.contracts.staged_execution import validate_staged_binding_name
+
+        validate_staged_binding_name(self.authored_provider)
+        validate_staged_binding_name(self.runtime_provider)
+        return self
+
+
+class FigureRuntimeBindingSpec(StrictModel):
+    """Authenticated regeneration metadata kept outside authored FigureSpec identity."""
+
+    schema_id: str = FIGURE_RUNTIME_BINDING_SCHEMA_ID
+    schema_version: str = FIGURE_RUNTIME_BINDING_SCHEMA_VERSION
+    authored_figure_spec_sha256: str
+    inputs: list[ParentRef]
+    input_authorities: list[FigureInputAuthoritySpec]
+    runtime_metadata: dict[str, Any] = Field(default_factory=dict)
+    artifact_provider_bindings: list[FigureRuntimeArtifactProviderBinding]
+
+    @model_validator(mode="after")
+    def _validate_identity(self) -> "FigureRuntimeBindingSpec":
+        if self.schema_id != FIGURE_RUNTIME_BINDING_SCHEMA_ID:
+            raise ValueError(
+                f"unsupported FigureRuntimeBindingSpec schema_id: {self.schema_id!r}"
+            )
+        if self.schema_version != FIGURE_RUNTIME_BINDING_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported FigureRuntimeBindingSpec schema_version: "
+                f"{self.schema_version!r}"
+            )
+        if not re.fullmatch(r"[0-9a-f]{64}", self.authored_figure_spec_sha256):
+            raise ValueError(
+                "FigureRuntimeBindingSpec authored_figure_spec_sha256 must be lowercase sha256"
+            )
+        input_keys = {
+            parent.model_dump_json(exclude_none=False) for parent in self.inputs
+        }
+        binding_keys: set[tuple[str, str]] = set()
+        for binding in self.artifact_provider_bindings:
+            parent_key = binding.parent.model_dump_json(exclude_none=False)
+            if parent_key not in input_keys:
+                raise ValueError(
+                    "FigureRuntimeBindingSpec provider binding parent is not a runtime input"
+                )
+            key = (parent_key, binding.authored_provider)
+            if key in binding_keys:
+                raise ValueError(
+                    "FigureRuntimeBindingSpec has a duplicate exact-parent provider binding"
+                )
+            binding_keys.add(key)
+        return self
 
 
 class SlotSpec(StrictModel):

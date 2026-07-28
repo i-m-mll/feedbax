@@ -102,6 +102,12 @@ from feedbax.contracts.manifest import (
     FIGURE_MANIFEST_SCHEMA_ID,
     FIGURE_MANIFEST_SCHEMA_VERSION,
 )
+from feedbax.contracts.figures import (
+    FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID,
+    FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION,
+    FIGURE_RUNTIME_BINDING_SCHEMA_ID,
+    FIGURE_RUNTIME_BINDING_SCHEMA_VERSION,
+)
 from feedbax.contracts.evaluation_preflight import (
     EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID,
     EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
@@ -888,6 +894,40 @@ def test_default_registry_registers_figure_manifest_family() -> None:
     assert family.policy is not None
     assert family.policy.owner_module == "feedbax.contracts.manifest"
     assert family.policy.stance == "reject"
+
+
+def test_default_registry_registers_figure_data_product_payload_family() -> None:
+    family = default_spec_registry.resolve("FigureDataProductArtifactPayload")
+
+    assert family.identity == FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID
+    assert family.current_version == FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION
+    assert family.policy is not None
+    assert family.policy.stance == "reject"
+    with pytest.raises(UnsupportedSpecVersion):
+        default_spec_registry.migrate(
+            "FigureDataProductArtifactPayload",
+            {
+                "schema_id": FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID,
+                "schema_version": f"{FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID}.v0",
+            },
+        )
+
+
+def test_default_registry_rejects_old_figure_runtime_binding_version() -> None:
+    family = default_spec_registry.resolve("FigureRuntimeBindingSpec")
+
+    assert family.identity == FIGURE_RUNTIME_BINDING_SCHEMA_ID
+    assert family.current_version == FIGURE_RUNTIME_BINDING_SCHEMA_VERSION
+    assert family.policy is not None
+    assert family.policy.stance == "reject"
+    with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
+        default_spec_registry.migrate(
+            "FigureRuntimeBindingSpec",
+            {
+                "schema_id": FIGURE_RUNTIME_BINDING_SCHEMA_ID,
+                "schema_version": f"{FIGURE_RUNTIME_BINDING_SCHEMA_ID}.v0",
+            },
+        )
 
 
 def test_structured_spec_registry_reports_missing_migration_path() -> None:

@@ -21,9 +21,11 @@ from feedbax.analysis.execution_context import (
     StagedArtifactProviderRootBinding,
     StagedCheckpointCustodyRootBinding,
     StagedExecutionContext,
+    StagedParentArtifactProviderBinding,
     StagedParentExecutionLocation,
     resolve_staged_execution_context,
     with_staged_parent_execution_locations,
+    with_staged_parent_artifact_provider_bindings,
     with_staged_repo_root,
 )
 from feedbax.analysis.exact_parents import StagedExactParents
@@ -45,7 +47,7 @@ from feedbax.contracts.expressions import (
     canonical_expression_json,
     evaluate_expr,
 )
-from feedbax.contracts.figures import FigureSpec
+from feedbax.contracts.figures import FigureInputAuthority, FigureSpec
 from feedbax.contracts.analysis_bundle_composition import (
     AnalysisBundleDeltaSpec,
     FlattenedAnalysisBundle,
@@ -1598,27 +1600,70 @@ def _execute_figure_stage(
     if stage.figure is None:
         raise ValueError(f"figure bundle stage {stage.name!r} requires figure")
     for index, inputs in enumerate(input_groups):
-        figure_spec = stage.figure.model_copy(
-            update={
-                "inputs": [*stage.figure.inputs, *inputs],
-                "metadata": {
-                    **stage.figure.metadata,
-                    "bundle": {
-                        "name": bundle.name,
-                        "stage": stage.name,
-                        "index": index,
-                        "schema_id": bundle.schema_id,
-                        "schema_version": bundle.schema_version,
-                    },
-                },
-            },
-            deep=True,
+        runtime_inputs = [*stage.figure.inputs, *inputs]
+        runtime_input_authorities = list(stage.figure.input_authorities)
+        runtime_metadata = {
+            "bundle": {
+                "name": bundle.name,
+                "stage": stage.name,
+                "index": index,
+                "schema_id": bundle.schema_id,
+                "schema_version": bundle.schema_version,
+            }
+        }
+        provider_bindings = list(
+            execution_context.parent_artifact_provider_bindings
+        )
+        binding_keys = {
+            (
+                binding.parent.model_dump_json(exclude_none=False),
+                binding.authored_provider,
+            )
+            for binding in provider_bindings
+        }
+        for authority in runtime_input_authorities:
+            authority_parents = (
+                [authority.parent]
+                if isinstance(authority, FigureInputAuthority)
+                else [
+                    parent
+                    for parent in runtime_inputs
+                    if parent.role == authority.input_role
+                ]
+            )
+            for parent in authority_parents:
+                if not any(
+                    location.parent == parent
+                    for location in execution_context.parent_execution_locations
+                ):
+                    continue
+                for selector in authority.artifact_payloads:
+                    key = (
+                        parent.model_dump_json(exclude_none=False),
+                        selector.artifact_provider,
+                    )
+                    if key in binding_keys:
+                        continue
+                    provider_bindings.append(
+                        StagedParentArtifactProviderBinding(
+                            parent=parent,
+                            authored_provider=selector.artifact_provider,
+                            runtime_provider=selector.artifact_provider,
+                        )
+                    )
+                    binding_keys.add(key)
+        figure_execution_context = with_staged_parent_artifact_provider_bindings(
+            execution_context,
+            provider_bindings,
         )
         manifest, path = execute_figure_spec(
-            figure_spec,
+            stage.figure,
+            runtime_inputs=runtime_inputs,
+            runtime_input_authorities=runtime_input_authorities,
+            runtime_metadata=runtime_metadata,
             root=root,
             provenance=Provenance(
-                parents=list(figure_spec.inputs),
+                parents=runtime_inputs,
                 issues=list(issues),
                 metadata={"bundle": bundle.name, "stage": stage.name},
             ),
@@ -1630,7 +1675,7 @@ def _execute_figure_stage(
                     "schema_version": bundle.schema_version,
                 }
             },
-            execution_context=execution_context,
+            execution_context=figure_execution_context,
         )
         regeneration_payload = _stage_regeneration_payload(
             stage,

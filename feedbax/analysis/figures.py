@@ -12,6 +12,7 @@ import re
 from typing import Any
 
 import plotly.graph_objs as go
+from pydantic import ValidationError
 
 from feedbax.analysis.execution_context import StagedExecutionContext
 from feedbax.analysis.manifest_inputs import (
@@ -32,8 +33,11 @@ from feedbax.contracts.expressions import (
 )
 from feedbax.contracts.figures import (
     FigureColorbar,
+    FigureDataProductArtifactPayload,
     FigureInputAuthority,
     FigureInputAuthoritySpec,
+    FigureRuntimeArtifactProviderBinding,
+    FigureRuntimeBindingSpec,
     FigureSpec,
     FigureTemplate,
     TraceBinding,
@@ -50,6 +54,7 @@ from feedbax.contracts.manifest import (
     ParentRef,
     Provenance,
     ArtifactRef,
+    SpecPayload,
     canonical_json_bytes,
     collect_git_provenance,
     default_manifest_root,
@@ -274,9 +279,36 @@ def _resolve_authority_payloads(
             raise FigureInputAuthorityError(
                 f"figure artifact payload manifest role mismatch for {selector.name!r}"
             )
-        artifacts = list(manifest.artifacts)
-        for data_product in getattr(manifest, "produced_data", []):
-            artifacts.extend(data_product.artifacts)
+        if isinstance(selector, FigureDataProductArtifactPayload):
+            products = [
+                product
+                for product in getattr(manifest, "produced_data", [])
+                if product.role == selector.product_role
+            ]
+            if not products:
+                raise FigureInputAuthorityError(
+                    f"figure data product is missing for selector {selector.name!r}"
+                )
+            if len(products) != 1:
+                raise FigureInputAuthorityError(
+                    f"figure data product is duplicated for selector {selector.name!r}"
+                )
+            product = products[0]
+            if (
+                product.product_schema_id != selector.product_schema_id
+                or product.product_schema_version != selector.product_schema_version
+            ):
+                raise FigureInputAuthorityError(
+                    f"figure data product schema mismatch for selector {selector.name!r}"
+                )
+            artifacts = list(product.artifacts)
+        else:
+            # The v1 selector deliberately covers the manifest's historical
+            # top-level-plus-produced artifact namespace. Typed product
+            # selection uses FigureDataProductArtifactPayload instead.
+            artifacts = list(manifest.artifacts)
+            for data_product in getattr(manifest, "produced_data", []):
+                artifacts.extend(data_product.artifacts)
         matches = [artifact for artifact in artifacts if artifact.role == selector.artifact_role]
         if not matches:
             raise FigureInputAuthorityError(
@@ -296,7 +328,10 @@ def _resolve_authority_payloads(
                 f"figure artifact provider binding is missing for {selector.name!r}"
             )
         try:
-            provider = execution_context.artifact_provider(selector.artifact_provider)
+            provider = execution_context.artifact_provider_for_parent(
+                parent,
+                selector.artifact_provider,
+            )
             raw = provider.get_bytes(artifact)
         except Exception as exc:
             raise FigureInputAuthorityError(
@@ -330,22 +365,61 @@ def _resolve_authority_payloads(
 def execute_figure_spec(
     spec: FigureSpec | Mapping[str, Any] | Path | str,
     *,
+    runtime_inputs: Sequence[ParentRef] | None = None,
+    runtime_input_authorities: Sequence[FigureInputAuthoritySpec] | None = None,
+    runtime_metadata: Mapping[str, Any] | None = None,
     root: Path | str | None = None,
     provenance: Provenance | None = None,
     issues: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
     execution_context: StagedExecutionContext | None = None,
 ) -> tuple[FigureManifest, Path]:
-    """Execute a declarative figure spec and write a FigureManifest."""
-    figure_spec = coerce_figure_spec(spec)
+    """Execute a figure while preserving the exact authored spec in its manifest."""
+    authored_spec = coerce_figure_spec(spec)
+    runtime_update: dict[str, Any] = {}
+    if runtime_inputs is not None:
+        runtime_update["inputs"] = list(runtime_inputs)
+    if runtime_input_authorities is not None:
+        runtime_update["input_authorities"] = list(runtime_input_authorities)
+    if runtime_metadata is not None:
+        runtime_update["metadata"] = {
+            **authored_spec.metadata,
+            **dict(runtime_metadata),
+        }
+    figure_spec = (
+        authored_spec.model_copy(update=runtime_update, deep=True)
+        if runtime_update
+        else authored_spec
+    )
+    # Revalidate runtime overlays as one complete FigureSpec before any effects.
+    if runtime_update:
+        try:
+            figure_spec = FigureSpec.model_validate(
+                figure_spec.model_dump(mode="python", exclude_none=False)
+            )
+        except ValidationError as exc:
+            raise FigureInputAuthorityError(
+                "figure runtime input/authority binding is invalid"
+            ) from exc
+    authored_payload = spec_payload(
+        "FigureSpec",
+        authored_spec.model_dump(mode="json", exclude_none=True),
+    )
+    runtime_binding_payload = _figure_runtime_binding_payload(
+        authored_payload.sha256,
+        figure_spec,
+        execution_context,
+        runtime_overlay=bool(runtime_update),
+        runtime_metadata=dict(runtime_metadata or {}),
+    )
     root_path = Path(root) if root is not None else default_manifest_root()
-    manifest_id = figure_manifest_id(figure_spec)
+    manifest_id = figure_manifest_id(authored_spec)
     prov = provenance.model_copy(deep=True) if provenance is not None else collect_git_provenance()
     prov.parents = list(figure_spec.inputs)
     if issues:
         prov.issues.extend(issue for issue in issues if issue not in prov.issues)
     if prov.entrypoint is None:
-        prov.entrypoint = EntrypointRef(kind="feedbax-figure-spec", name=figure_spec.name)
+        prov.entrypoint = EntrypointRef(kind="feedbax-figure-spec", name=authored_spec.name)
 
     exec_trace = FigureExecutionTrace()
     resolved_inputs = resolve_figure_inputs(
@@ -359,7 +433,10 @@ def execute_figure_spec(
         ):
             manifest = _build_figure_manifest(
                 manifest_id=manifest_id,
-                figure_spec=figure_spec,
+                authored_spec=authored_spec,
+                execution_spec=figure_spec,
+                authored_payload=authored_payload,
+                runtime_binding_payload=runtime_binding_payload,
                 status="completed",
                 provenance=prov,
                 artifacts=[],
@@ -372,13 +449,16 @@ def execute_figure_spec(
         figures = _build_figures(figure_spec, context, exec_trace, root_path)
         artifacts = _write_figure_custody(
             figures,
-            figure_spec,
+            authored_spec,
             root=root_path,
             manifest_id=manifest_id,
         )
         manifest = _build_figure_manifest(
             manifest_id=manifest_id,
-            figure_spec=figure_spec,
+            authored_spec=authored_spec,
+            execution_spec=figure_spec,
+            authored_payload=authored_payload,
+            runtime_binding_payload=runtime_binding_payload,
             status="completed",
             provenance=prov,
             artifacts=artifacts,
@@ -390,7 +470,10 @@ def execute_figure_spec(
     except Exception as exc:
         manifest = _build_figure_manifest(
             manifest_id=manifest_id,
-            figure_spec=figure_spec,
+            authored_spec=authored_spec,
+            execution_spec=figure_spec,
+            authored_payload=authored_payload,
+            runtime_binding_payload=runtime_binding_payload,
             status="failed",
             provenance=prov,
             artifacts=[],
@@ -401,6 +484,43 @@ def execute_figure_spec(
         )
         path = write_manifest(manifest, root=root_path)
         raise FigureSpecExecutionError(manifest, path, exc) from exc
+
+
+def _figure_runtime_binding_payload(
+    authored_spec_sha256: str | None,
+    execution_spec: FigureSpec,
+    execution_context: StagedExecutionContext | None,
+    *,
+    runtime_overlay: bool,
+    runtime_metadata: dict[str, Any],
+) -> SpecPayload | None:
+    bindings = (
+        execution_context.parent_artifact_provider_bindings
+        if execution_context is not None
+        else ()
+    )
+    if not runtime_overlay and not bindings:
+        return None
+    if authored_spec_sha256 is None:
+        raise FigureInputAuthorityError("authored FigureSpec payload is missing its content pin")
+    runtime_spec = FigureRuntimeBindingSpec(
+        authored_figure_spec_sha256=authored_spec_sha256,
+        inputs=list(execution_spec.inputs),
+        input_authorities=list(execution_spec.input_authorities),
+        runtime_metadata=runtime_metadata,
+        artifact_provider_bindings=[
+            FigureRuntimeArtifactProviderBinding(
+                parent=binding.parent,
+                authored_provider=binding.authored_provider,
+                runtime_provider=binding.runtime_provider,
+            )
+            for binding in bindings
+        ],
+    )
+    return spec_payload(
+        "FigureRuntimeBindingSpec",
+        runtime_spec.model_dump(mode="json", exclude_none=True),
+    )
 
 
 def _failure_type(exc: Exception) -> str:
@@ -1295,7 +1415,10 @@ def _safe_figure_name(value: str, index: int) -> str:
 def _build_figure_manifest(
     *,
     manifest_id: str,
-    figure_spec: FigureSpec,
+    authored_spec: FigureSpec,
+    execution_spec: FigureSpec,
+    authored_payload: SpecPayload,
+    runtime_binding_payload: SpecPayload | None,
     status: ManifestStatus,
     provenance: Provenance,
     artifacts: list[ArtifactRef],
@@ -1311,23 +1434,23 @@ def _build_figure_manifest(
     return FigureManifest(
         id=manifest_id,
         status=status,
-        figure_spec=spec_payload(
-            "FigureSpec",
-            figure_spec.model_dump(mode="json", exclude_none=True),
-        ),
-        inputs=list(figure_spec.inputs),
+        figure_spec=authored_payload,
+        inputs=list(execution_spec.inputs),
         resolved_inputs=[item.ref for item in resolved_inputs if item.manifest is not None],
         resolved_pieces=list(execution_trace.resolved_pieces),
         constructor_versions=dict(execution_trace.constructor_versions),
-        template_name=figure_spec.template,
+        template_name=authored_spec.template,
         binding_records=list(execution_trace.binding_records),
         expression_results_digest=sha256_bytes(canonical_json_bytes(binding_payload)),
         provenance=provenance,
         artifacts=artifacts,
         regeneration_specs=[
-            artifact
-            for resolved in resolved_inputs
-            for artifact in resolved.artifact_refs
+            *([runtime_binding_payload] if runtime_binding_payload is not None else []),
+            *(
+                artifact
+                for resolved in resolved_inputs
+                for artifact in resolved.artifact_refs
+            ),
         ],
         failure=failure,
         metadata=metadata,

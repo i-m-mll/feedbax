@@ -183,6 +183,10 @@ from feedbax.contracts.spec_storage import (
     TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
 )
 from feedbax.contracts.figures import (
+    FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID,
+    FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION,
+    FIGURE_RUNTIME_BINDING_SCHEMA_ID,
+    FIGURE_RUNTIME_BINDING_SCHEMA_VERSION,
     FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID,
     FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION,
     FIGURE_PIECE_SCHEMA_ID,
@@ -2727,6 +2731,29 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Durable acausal graph interior specification.",
             rejected_old_versions=("feedbax.spec.acausal_graph.v0",),
             required_tests=("tests/test_graphspec_schema_migrations.py",),
+        ),
+        _family(
+            "FigureDataProductArtifactPayload",
+            FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID,
+            FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("FigureSpec.input_authorities",),
+            consumed_by=("feedbax.analysis.figures.resolve_figure_inputs",),
+            description="Exact typed AnalysisDataProduct artifact selector for figures.",
+            required_tests=("tests/test_figure_input_authority.py",),
+        ),
+        _family(
+            "FigureRuntimeBindingSpec",
+            FIGURE_RUNTIME_BINDING_SCHEMA_ID,
+            FIGURE_RUNTIME_BINDING_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("feedbax.analysis.figures.execute_figure_spec",),
+            consumed_by=("figure regeneration executors",),
+            description=(
+                "Runtime figure inputs, authorities, execution metadata, and exact-parent "
+                "provider aliases."
+            ),
+            required_tests=("tests/test_figure_input_authority.py",),
         ),
         _family(
             "FigureInputRoleAuthority",
