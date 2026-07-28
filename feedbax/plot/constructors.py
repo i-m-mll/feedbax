@@ -988,7 +988,10 @@ def _comparison_grid(panels: Sequence[PanelContent], params: StrictModel) -> go.
     return fig
 
 
-def _colorbar_carrier(colorbar: FigureColorbar) -> go.Scatter:
+def _colorbar_carrier(
+    colorbar: FigureColorbar,
+    layout: Mapping[str, Any] | None = None,
+) -> go.Scatter:
     """Return the point-free trace that draws a resolved colorbar.
 
     Plotly draws a colorbar from a trace that carries a colorscale, so the key
@@ -1010,8 +1013,11 @@ def _colorbar_carrier(colorbar: FigureColorbar) -> go.Scatter:
         "cmax": high,
         "showscale": True,
     }
+    colorbar_layout = dict(layout or {})
     if colorbar.title is not None:
-        marker["colorbar"] = {"title": colorbar.title}
+        colorbar_layout["title"] = colorbar.title
+    if colorbar_layout:
+        marker["colorbar"] = colorbar_layout
     return go.Scatter(
         x=[None],
         y=[None],
@@ -1020,6 +1026,65 @@ def _colorbar_carrier(colorbar: FigureColorbar) -> go.Scatter:
         hoverinfo="skip",
         marker=marker,
     )
+
+
+def _panel_colorbar_layout(
+    fig: go.Figure,
+    panels: Sequence[PanelContent],
+    colorbar: FigureColorbar,
+) -> dict[str, Any]:
+    """Resolve panel-relative colorbar placement into Plotly paper coordinates."""
+    placement = colorbar.placement
+    if placement is None:
+        return {}
+    matches = [
+        (index, panel)
+        for index, panel in enumerate(panels)
+        if panel.name == placement.panel
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            "colorbar placement requires exactly one panel named "
+            f"{placement.panel!r}; found {len(matches)}"
+        )
+    index, panel = matches[0]
+    row = panel.row or index + 1
+    col = panel.col or 1
+    subplot = fig.get_subplot(row, col)
+    if subplot is None or not hasattr(subplot, "xaxis") or not hasattr(subplot, "yaxis"):
+        raise ValueError(
+            "colorbar placement requires a Cartesian panel with resolved x/y domains; "
+            f"panel {placement.panel!r} is at row {row}, col {col}"
+        )
+    x_domain = tuple(subplot.xaxis.domain or ())
+    y_domain = tuple(subplot.yaxis.domain or ())
+    if len(x_domain) != 2 or len(y_domain) != 2:
+        raise ValueError(
+            "colorbar placement requires resolved two-point x/y domains for panel "
+            f"{placement.panel!r}"
+        )
+    x_low, x_high = x_domain
+    y_low, y_high = y_domain
+    width = x_high - x_low
+    height = y_high - y_low
+    if width <= 0.0 or height <= 0.0:
+        raise ValueError(
+            f"colorbar placement panel {placement.panel!r} has a non-positive domain"
+        )
+    if placement.side == "right":
+        x = x_high + placement.offset_fraction * width
+        x_anchor = "left"
+    else:
+        x = x_low - placement.offset_fraction * width
+        x_anchor = "right"
+    return {
+        "len": placement.length_fraction * height,
+        "lenmode": "fraction",
+        "x": x,
+        "xanchor": x_anchor,
+        "y": y_low + placement.center_fraction * height,
+        "yanchor": "middle",
+    }
 
 
 def _grid_figure(fig: go.Figure, panels: Sequence[PanelContent], params: StrictModel) -> go.Figure:
@@ -1050,7 +1115,12 @@ def _grid_figure(fig: go.Figure, panels: Sequence[PanelContent], params: StrictM
     if updates:
         fig.update_layout(**updates)
     if p.colorbar is not None:
-        fig.add_trace(_colorbar_carrier(p.colorbar))
+        fig.add_trace(
+            _colorbar_carrier(
+                p.colorbar,
+                _panel_colorbar_layout(fig, panels, p.colorbar),
+            )
+        )
     return fig
 
 
@@ -1136,7 +1206,7 @@ def register_default_figure_constructors() -> None:
         "feedbax.hline": "v2",
         "feedbax.vrect": "v3",
         "feedbax.comparison_grid": "v3",
-        "feedbax.grid_figure": "v3",
+        "feedbax.grid_figure": "v4",
     }
     for key, tier, constructor, params_model, description in defaults:
         register_figure_constructor(

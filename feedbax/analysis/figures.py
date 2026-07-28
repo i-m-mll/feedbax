@@ -733,6 +733,15 @@ def _build_figures(
                 "FigureSpec declares a colorbar, which requires a figure assembler that "
                 f"renders one; {assembler_key!r} declares no colorbar parameter"
             )
+        if colorbar.placement is not None and (
+            figure_registration.key != "feedbax.grid_figure"
+            or panel_registration.key != "feedbax.comparison_grid"
+        ):
+            raise ValueError(
+                "FigureSpec colorbar panel placement requires the "
+                "feedbax.comparison_grid/feedbax.grid_figure assembler pair; got "
+                f"{panel_registration.key!r}/{figure_registration.key!r}"
+            )
         figure_values = {**figure_values, "colorbar": colorbar}
     panel_params = panel_registration.params(panel_values)
     figure_params = figure_registration.params(figure_values)

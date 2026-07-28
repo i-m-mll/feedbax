@@ -44,6 +44,11 @@ Additive changelog, 2026-07-28: ``PanelSpec.equal_data_aspect`` accepts the
 versioned ``EqualDataAspect`` declaration. It requests exact 1:1 linear data
 units from a supporting panel assembler. The field is an optional None-default,
 so existing panel and figure identity bytes are unchanged.
+
+Additive changelog, 2026-07-28: ``FigureColorbar.placement`` accepts the
+versioned ``ColorbarPanelPlacement`` declaration. It sizes and positions a
+colorbar relative to one resolved grid panel. The field is an optional
+None-default, so existing colorbar and figure identity bytes are unchanged.
 """
 
 from __future__ import annotations
@@ -77,6 +82,8 @@ FIGURE_SLOT_FAMILY_SCHEMA_ID = "feedbax.spec.figure_slot_family"
 FIGURE_SLOT_FAMILY_SCHEMA_VERSION = "feedbax.spec.figure_slot_family.v1"
 FIGURE_COLORBAR_SCHEMA_ID = "feedbax.spec.figure_colorbar"
 FIGURE_COLORBAR_SCHEMA_VERSION = "feedbax.spec.figure_colorbar.v1"
+COLORBAR_PANEL_PLACEMENT_SCHEMA_ID = "feedbax.spec.colorbar_panel_placement"
+COLORBAR_PANEL_PLACEMENT_SCHEMA_VERSION = "feedbax.spec.colorbar_panel_placement.v1"
 PERTURBATION_TIMING_SCHEMA_ID = "feedbax.spec.perturbation_timing"
 PERTURBATION_TIMING_SCHEMA_VERSION = "feedbax.spec.perturbation_timing.v1"
 EQUAL_DATA_ASPECT_SCHEMA_ID = "feedbax.spec.equal_data_aspect"
@@ -599,6 +606,38 @@ class TraceFamily(StrictModel):
         )
 
 
+class ColorbarPanelPlacement(StrictModel):
+    """Size and position a colorbar relative to one resolved grid panel."""
+
+    schema_id: str = COLORBAR_PANEL_PLACEMENT_SCHEMA_ID
+    schema_version: str = COLORBAR_PANEL_PLACEMENT_SCHEMA_VERSION
+    panel: str = Field(min_length=1)
+    length_fraction: float = Field(gt=0.0, le=1.0)
+    center_fraction: float = Field(default=0.5, ge=0.0, le=1.0)
+    side: Literal["left", "right"] = "right"
+    offset_fraction: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _validate_placement(self) -> "ColorbarPanelPlacement":
+        if self.schema_id != COLORBAR_PANEL_PLACEMENT_SCHEMA_ID:
+            raise ValueError(
+                "unsupported ColorbarPanelPlacement schema_id: "
+                f"{self.schema_id!r}"
+            )
+        if self.schema_version != COLORBAR_PANEL_PLACEMENT_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported ColorbarPanelPlacement schema_version: "
+                f"{self.schema_version!r}"
+            )
+        half_length = self.length_fraction / 2.0
+        if not half_length <= self.center_fraction <= 1.0 - half_length:
+            raise ValueError(
+                "ColorbarPanelPlacement center_fraction and length_fraction "
+                "would extend outside the selected panel"
+            )
+        return self
+
+
 class FigureColorbar(StrictModel):
     """The declared key for a figure's color mapping.
 
@@ -628,6 +667,7 @@ class FigureColorbar(StrictModel):
     colorscale: ColorscaleSpec | None = None
     range: tuple[float, float] | None = None
     family: str | None = None
+    placement: ColorbarPanelPlacement | None = None
 
     @model_validator(mode="after")
     def _validate_colorbar(self) -> "FigureColorbar":
