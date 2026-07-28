@@ -3136,6 +3136,7 @@ def test_deadman_is_verified_and_started_once_during_environment_realization(
     assert "echo $$ >" in watchdog
     assert "deadman.installed" in watchdog
     assert 'newest=$(stat -c %Y "$installed"' in watchdog
+    assert 'find "$run_dir/.stage-attempts" -type f -print' in watchdog
     assert 'rm -f "$pid_file"' in watchdog
     assert 'runpodctl remove pod "$pod_id"' in watchdog
     assert ">>" in watchdog
@@ -5424,6 +5425,33 @@ def test_teardown_fails_closed_when_remove_after_stop_fails(tmp_path: Path) -> N
         ("stop", "pod", "pod-123"),
         ("remove", "pod", "pod-123"),
     ]
+
+
+def test_teardown_confirms_absence_when_remove_reports_pod_not_found(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("remove", "pod", "pod-123"),
+        CommandResult(1, "", "Attempted to remove pod that does not exist."),
+    )
+    transport.queue_runpodctl(
+        ("pod", "get", "pod-123", "--output", "json"),
+        CommandResult(1, "", "pod not found"),
+    )
+    transport.queue_empty_global_inventory()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(pod_id="pod-123"),
+        transport=transport,
+    )
+
+    result = driver.teardown(bundle, _owned_state(bundle))
+
+    assert result["teardown"] == "already-absent"
+    assert result["pod_absence"]["verified"] is True
+    assert result["final_pod_inventory"]["verified"] is True
+    assert ("stop", "pod", "pod-123") not in transport.runpodctl_calls
 
 
 def test_teardown_polls_until_exact_owned_pod_is_absent(tmp_path: Path) -> None:

@@ -2132,16 +2132,20 @@ class RunPodOrchestrationDriver:
                 "remove", "pod", pod_id, timeout_seconds=self._teardown_remaining(deadline)
             )
             if result.returncode != 0:
-                self.transport.runpodctl(
-                    "stop", "pod", pod_id, timeout_seconds=self._teardown_remaining(deadline)
-                ).check("runpodctl stop pod")
-                self.transport.runpodctl(
-                    "remove",
-                    "pod",
-                    pod_id,
-                    timeout_seconds=self._teardown_remaining(deadline),
-                ).check("runpodctl remove pod after stop")
-                action = "stopped-then-removed"
+                detail = (result.stderr.strip() or result.stdout.strip()).lower()
+                if any(marker in detail for marker in _POD_NOT_FOUND_MARKERS):
+                    action = "already-absent"
+                else:
+                    self.transport.runpodctl(
+                        "stop", "pod", pod_id, timeout_seconds=self._teardown_remaining(deadline)
+                    ).check("runpodctl stop pod")
+                    self.transport.runpodctl(
+                        "remove",
+                        "pod",
+                        pod_id,
+                        timeout_seconds=self._teardown_remaining(deadline),
+                    ).check("runpodctl remove pod after stop")
+                    action = "stopped-then-removed"
             else:
                 action = "removed"
             absence = self._wait_for_pod_absence(pod_id, deadline=deadline)
@@ -3815,6 +3819,10 @@ def build_deadman_watchdog_command(
         'for path in "$edir"/*.jsonl "$sdir"/*; do [ -e "$path" ] || continue; '
         'mtime=$(stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null || echo 0); '
         '[ "$mtime" -gt "$newest" ] && newest=$mtime; done; '
+        'while IFS= read -r path; do '
+        'mtime=$(stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null || echo 0); '
+        '[ "$mtime" -gt "$newest" ] && newest=$mtime; '
+        'done < <(find "$run_dir/.stage-attempts" -type f -print 2>/dev/null); '
         "age=$((now-newest)); "
         'if [ "$live" -eq 0 ] && [ "$newest" -gt 0 ] && [ "$age" -ge "$silence" ]; then '
         'printf \'deadman removing pod after %ss silence\\n\' "$age" > "$warning"; '
