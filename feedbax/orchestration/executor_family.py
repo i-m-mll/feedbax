@@ -56,6 +56,7 @@ class ExecutorFamilyAdapter(Protocol):
         payload_path: Path | str,
         collection_root: Path | str,
         inputs_root: Path | str,
+        repo_root: Path | str | None,
         environment_fingerprint: str,
         update_budget: int | None = None,
         native_context_injector: Callable[..., list[str]] | None = None,
@@ -86,11 +87,12 @@ class NativeTrainingExecutorAdapter:
         payload_path: Path | str,
         collection_root: Path | str,
         inputs_root: Path | str,
+        repo_root: Path | str | None,
         environment_fingerprint: str,
         update_budget: int | None = None,
         native_context_injector: Callable[..., list[str]] | None = None,
     ) -> tuple[list[str], RunRowSpec]:
-        del bundle, inputs_root
+        del bundle, inputs_root, repo_root
         bound, bound_row = bind_native_execution_command(
             command,
             row=row,
@@ -138,6 +140,7 @@ class EvaluationMatrixExecutorAdapter:
         payload_path: Path | str,
         collection_root: Path | str,
         inputs_root: Path | str,
+        repo_root: Path | str | None,
         environment_fingerprint: str,
         update_budget: int | None = None,
         native_context_injector: Callable[..., list[str]] | None = None,
@@ -150,6 +153,10 @@ class EvaluationMatrixExecutorAdapter:
         if update_budget is not None:
             raise ExecutorFamilyError(
                 "evaluation-matrix executor does not accept a native update budget"
+            )
+        if repo_root is None or not str(repo_root):
+            raise ExecutorFamilyError(
+                "evaluation-matrix executor requires a governed runtime repo root"
             )
         normalized = [str(part) for part in command]
         try:
@@ -168,6 +175,7 @@ class EvaluationMatrixExecutorAdapter:
             )
         owned = (
             "--manifest-root",
+            "--repo-root",
             "--orchestration-bundle",
             "--orchestration-inputs-root",
             "--orchestration-row-id",
@@ -187,6 +195,8 @@ class EvaluationMatrixExecutorAdapter:
             (
                 "--manifest-root",
                 str(Path(collection_root) / "evaluation"),
+                "--repo-root",
+                str(repo_root),
                 "--orchestration-bundle",
                 str(Path(inputs_root) / "run-bundle.json"),
                 "--orchestration-inputs-root",

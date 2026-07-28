@@ -274,6 +274,7 @@ class LocalOrchestrationDriver:
             payload_path=bundle.run_set_dir / "inputs" / f"{row.row_id}.json",
             collection_root=paths["row_dir"],
             inputs_root=bundle.run_set_dir / "inputs",
+            repo_root=self.cwd,
             environment_fingerprint=state.environment_fingerprint or "",
             update_budget=(
                 self.update_budget if row.execution_family == "native-training" else None
