@@ -2711,6 +2711,58 @@ def test_stage_inputs_ignores_checkpoint_shaped_payload_keys(tmp_path: Path) -> 
     assert not any("checkpoint_100" in command for command in transport.ssh_commands)
 
 
+def test_stage_inputs_heartbeats_while_blocking_transfer(tmp_path: Path) -> None:
+    class BlockingTransferTransport(FakeRunPodTransport):
+        def rsync(
+            self,
+            source: str,
+            target: str,
+            *,
+            delete: bool = False,
+            excludes: tuple[str, ...] = (),
+            timeout_seconds: float | None = None,
+        ) -> CommandResult:
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                heartbeats = [
+                    command
+                    for command in self.ssh_commands
+                    if command.startswith("touch -- ") and "/.host-active" in command
+                ]
+                if len(heartbeats) >= 2:
+                    return super().rsync(
+                        source,
+                        target,
+                        delete=delete,
+                        excludes=excludes,
+                        timeout_seconds=timeout_seconds,
+                    )
+                time.sleep(0.005)
+            return CommandResult(1, stderr="host heartbeat did not recur")
+
+    bundle = _bundle(tmp_path, deadman_enabled=True)
+    transport = BlockingTransferTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            ssh_host="198.51.100.10",
+            ssh_port=2222,
+            image=bundle.environment.image_id or "",
+            poll_seconds=0.01,
+        ),
+        transport=transport,
+    )
+
+    driver.stage_inputs(bundle, _state(bundle))
+
+    heartbeats = [
+        command
+        for command in transport.ssh_commands
+        if command.startswith("touch -- ") and "/.host-active" in command
+    ]
+    assert len(heartbeats) >= 2
+    assert all(".stage-attempts/stage-inputs-0" in command for command in heartbeats)
+
+
 def test_stage_inputs_ignores_legacy_runpod_baseline_metadata(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path).model_copy(
         update={

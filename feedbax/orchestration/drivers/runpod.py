@@ -17,11 +17,13 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 import tomllib
 import urllib.error
 import urllib.request
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -1630,43 +1632,93 @@ class RunPodOrchestrationDriver:
             f"mkdir -p {_sq(remote_run_dir + '/.stage-attempts')} && "
             f"mkdir -- {_sq(remote_attempt_root)}"
         )
-        self.transport.rsync(
-            str(attempt_inputs) + "/",
-            remote_attempt_inputs + "/",
-            delete=True,
-        ).check("stage authenticated input tree")
+        with self._stage_inputs_heartbeat(bundle, remote_attempt_root):
+            self.transport.rsync(
+                str(attempt_inputs) + "/",
+                remote_attempt_inputs + "/",
+                delete=True,
+            ).check("stage authenticated input tree")
 
-        transferred: list[dict[str, Any]] = []
-        for staged in staged_inputs:
-            target = f"{remote_run_dir}/inputs/{staged.target_role}"
-            for item in staged.files:
-                relative_path = PurePosixPath(item.relative_path).relative_to("inputs")
-                remote_path = f"{remote_attempt_inputs}/{relative_path}"
-                check_line = f"{item.sha256}  {remote_path}"
+            transferred: list[dict[str, Any]] = []
+            for staged in staged_inputs:
+                target = f"{remote_run_dir}/inputs/{staged.target_role}"
+                for item in staged.files:
+                    relative_path = PurePosixPath(item.relative_path).relative_to("inputs")
+                    remote_path = f"{remote_attempt_inputs}/{relative_path}"
+                    check_line = f"{item.sha256}  {remote_path}"
+                    self._ssh(f"printf %s {_sq(check_line)} | sha256sum -c -")
+                transferred.append(
+                    {
+                        "target_role": staged.target_role,
+                        "source": str(staged.destination),
+                        "target": target,
+                        "file_count": len(staged.files),
+                    }
+                )
+            for name, digest in payload_hashes:
+                check_line = f"{digest}  {remote_attempt_inputs}/{name}"
                 self._ssh(f"printf %s {_sq(check_line)} | sha256sum -c -")
-            transferred.append(
-                {
-                    "target_role": staged.target_role,
-                    "source": str(staged.destination),
-                    "target": target,
-                    "file_count": len(staged.files),
-                }
+            self._ssh(
+                build_atomic_directory_publish_command(
+                    remote_attempt_inputs,
+                    f"{remote_run_dir}/inputs",
+                )
             )
-        for name, digest in payload_hashes:
-            check_line = f"{digest}  {remote_attempt_inputs}/{name}"
-            self._ssh(f"printf %s {_sq(check_line)} | sha256sum -c -")
-        self._ssh(
-            build_atomic_directory_publish_command(
-                remote_attempt_inputs,
-                f"{remote_run_dir}/inputs",
-            )
-        )
         return {
             "input_count": len(transferred),
             "inputs": transferred,
             "payload_count": len(payloads),
             "payloads": payloads,
         }
+
+    @contextmanager
+    def _stage_inputs_heartbeat(
+        self,
+        bundle: RunBundle,
+        remote_attempt_root: str,
+    ) -> Iterator[None]:
+        """Keep the deadman informed only while this host actively stages inputs."""
+        if not bundle.deadman_enabled:
+            yield
+            return
+
+        heartbeat_path = f"{remote_attempt_root}/.host-active"
+        heartbeat_command = f"touch -- {_sq(heartbeat_path)}"
+        self._ssh(heartbeat_command)
+        stop = threading.Event()
+        failures: list[Exception] = []
+        interval = max(
+            0.1,
+            min(self.config.poll_seconds, bundle.deadman_silence_seconds / 3),
+        )
+
+        def heartbeat() -> None:
+            while not stop.wait(interval):
+                try:
+                    self._ssh(heartbeat_command)
+                except Exception as exc:
+                    failures.append(exc)
+                    stop.set()
+
+        thread = threading.Thread(
+            target=heartbeat,
+            name=f"feedbax-stage-inputs-{bundle.run_set_id}",
+            daemon=True,
+        )
+        thread.start()
+        body_error: BaseException | None = None
+        try:
+            yield
+        except BaseException as exc:
+            body_error = exc
+            raise
+        finally:
+            stop.set()
+            thread.join()
+            if body_error is None and failures:
+                raise RunPodDriverError(
+                    "stage-inputs host heartbeat failed"
+                ) from failures[0]
 
     def launch_row(
         self,
