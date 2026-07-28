@@ -9,6 +9,7 @@ import json
 import math
 from pathlib import Path
 import re
+from string import Formatter
 from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -78,6 +79,10 @@ ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_VERSION = "feedbax.spec.report.ordered_figur
 ORDERED_FIGURE_REPORT_SCALAR_PROJECTION_SCHEMA_ID = "feedbax.spec.report.scalar_table_projection"
 ORDERED_FIGURE_REPORT_SCALAR_PROJECTION_SCHEMA_VERSION = (
     "feedbax.spec.report.scalar_table_projection.v1"
+)
+ORDERED_FIGURE_REPORT_COMPOSITE_SCALAR_SCHEMA_ID = "feedbax.spec.report.composite_scalar_table_cell"
+ORDERED_FIGURE_REPORT_COMPOSITE_SCALAR_SCHEMA_VERSION = (
+    "feedbax.spec.report.composite_scalar_table_cell.v1"
 )
 
 OrderedFigureReportApplicability = Literal["included", "not_applicable"]
@@ -170,7 +175,59 @@ class OrderedFigureReportScalarProjection(StrictModel):
         return self
 
 
-OrderedFigureReportTableCell = OrderedFigureReportScalarProjection | OrderedFigureReportScalar
+class OrderedFigureReportCompositeScalarCell(StrictModel):
+    """One formatted cell composed from separately authenticated scalar projections."""
+
+    schema_id: Literal["feedbax.spec.report.composite_scalar_table_cell"] = (
+        ORDERED_FIGURE_REPORT_COMPOSITE_SCALAR_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.spec.report.composite_scalar_table_cell.v1"] = (
+        ORDERED_FIGURE_REPORT_COMPOSITE_SCALAR_SCHEMA_VERSION
+    )
+    kind: Literal["composite_scalar"] = "composite_scalar"
+    format: str
+    projections: dict[str, OrderedFigureReportScalarProjection]
+
+    @model_validator(mode="after")
+    def _validate_composite(self) -> "OrderedFigureReportCompositeScalarCell":
+        _require_authored_text(self.format, field_name="composite scalar cell format")
+        if not self.projections:
+            raise ValueError("composite scalar cell requires at least one projection")
+        for name in self.projections:
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None:
+                raise ValueError("composite scalar projection names must be identifier-like")
+        try:
+            fields = [
+                (field_name, format_spec, conversion)
+                for _, field_name, format_spec, conversion in Formatter().parse(self.format)
+                if field_name is not None
+            ]
+        except ValueError as exc:
+            raise ValueError("composite scalar cell format is malformed") from exc
+        field_names = [field_name for field_name, _, _ in fields]
+        if len(field_names) != len(set(field_names)):
+            raise ValueError("composite scalar cell format must use each projection once")
+        if set(field_names) != set(self.projections):
+            raise ValueError(
+                "composite scalar cell format fields must exactly match projection names"
+            )
+        for field_name, format_spec, conversion in fields:
+            if conversion is not None:
+                raise ValueError("composite scalar cell format conversions are not supported")
+            significant_digits = re.fullmatch(r"\.([1-9][0-9]*)g", format_spec)
+            if significant_digits is None or int(significant_digits.group(1)) > 17:
+                raise ValueError(
+                    f"composite scalar projection {field_name!r} requires an authored "
+                    "significant-digit format from '.1g' through '.17g'"
+                )
+        return self
+
+
+OrderedFigureReportTableCell = (
+    OrderedFigureReportCompositeScalarCell
+    | OrderedFigureReportScalarProjection
+    | OrderedFigureReportScalar
+)
 
 
 class OrderedFigureReportScalarTable(StrictModel):
@@ -276,12 +333,12 @@ class OrderedFigureReportParams(StrictModel):
         if len(set(included_roles)) != len(included_roles):
             raise ValueError("included figure input_role values must be unique")
         projection_roles = {
-            cell.input_role
+            projection.input_role
             for section in self.sections
             for table in section.tables
             for row in table.rows
             for cell in row
-            if isinstance(cell, OrderedFigureReportScalarProjection)
+            for projection in _table_cell_projections(cell)
         }
         overlapping_roles = sorted(set(included_roles) & projection_roles)
         if overlapping_roles:
@@ -712,9 +769,7 @@ def _validate_authored_report_exact_parent_membership(
     if len(set(exact_parent_ids)) != len(exact_parent_ids):
         raise ValueError("StagedExactParents contains a duplicate ParentRef id")
 
-    authored_values = {
-        parent.model_dump_json(exclude_none=False) for parent in authored_inputs
-    }
+    authored_values = {parent.model_dump_json(exclude_none=False) for parent in authored_inputs}
     for authored in authored_inputs:
         serialized = authored.model_dump_json(exclude_none=False)
         if serialized in exact_by_value:
@@ -912,14 +967,13 @@ def _ordered_figure_report_recipe(
         for table in section.tables:
             for row in table.rows:
                 for cell in row:
-                    if not isinstance(cell, OrderedFigureReportScalarProjection):
-                        continue
-                    key = cell.model_dump_json(exclude_none=True)
-                    if key in resolved_projections:
-                        continue
-                    resolved = resolve_report_scalar_projection(cell, inputs)
-                    resolved_projections[key] = resolved.value
-                    projection_artifacts[resolved.artifact.artifact_id] = resolved.artifact
+                    for projection in _table_cell_projections(cell):
+                        key = projection.model_dump_json(exclude_none=True)
+                        if key in resolved_projections:
+                            continue
+                        resolved = resolve_report_scalar_projection(projection, inputs)
+                        resolved_projections[key] = resolved.value
+                        projection_artifacts[resolved.artifact.artifact_id] = resolved.artifact
     output_suffix = Path(params.output_name).suffix
     if output_suffix == ".html":
         rendered = render_ordered_figure_report_html(
@@ -1004,13 +1058,13 @@ def _ordered_figure_inputs_by_role(
         if figure.applicability == "included"
     }
     expected_projection_roles = {
-        cell.input_role
+        projection.input_role
         for section in params.sections
         if section.applicability == "included"
         for table in section.tables
         for row in table.rows
         for cell in row
-        if isinstance(cell, OrderedFigureReportScalarProjection)
+        for projection in _table_cell_projections(cell)
     }
     expected_roles = expected_figure_roles | expected_projection_roles
     resolved_by_role: dict[str, FigureManifest] = {}
@@ -1336,9 +1390,36 @@ def _resolved_table_cell(
     cell: OrderedFigureReportTableCell,
     resolved_projections: Mapping[str, OrderedFigureReportScalar],
 ) -> OrderedFigureReportScalar:
+    if isinstance(cell, OrderedFigureReportCompositeScalarCell):
+        return _composite_scalar_text(cell, resolved_projections)
     if isinstance(cell, OrderedFigureReportScalarProjection):
         return resolved_projections[cell.model_dump_json(exclude_none=True)]
     return cell
+
+
+def _table_cell_projections(
+    cell: OrderedFigureReportTableCell,
+) -> tuple[OrderedFigureReportScalarProjection, ...]:
+    if isinstance(cell, OrderedFigureReportCompositeScalarCell):
+        return tuple(cell.projections[name] for name in sorted(cell.projections))
+    if isinstance(cell, OrderedFigureReportScalarProjection):
+        return (cell,)
+    return ()
+
+
+def _composite_scalar_text(
+    cell: OrderedFigureReportCompositeScalarCell,
+    resolved_projections: Mapping[str, OrderedFigureReportScalar],
+) -> str:
+    values: dict[str, int | float] = {}
+    for name, projection in cell.projections.items():
+        value = resolved_projections[projection.model_dump_json(exclude_none=True)]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(
+                f"composite scalar projection {name!r} resolved non-numeric {type(value).__name__}"
+            )
+        values[name] = value
+    return cell.format.format_map(values)
 
 
 def _scalar_text(value: OrderedFigureReportScalar) -> str:
