@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field
 from itertools import product
 import json
@@ -11,6 +13,7 @@ import re
 from typing import Any
 
 import plotly.graph_objs as go
+from pydantic import ValidationError
 
 from feedbax.analysis.execution_context import StagedExecutionContext
 from feedbax.analysis.manifest_inputs import (
@@ -31,8 +34,13 @@ from feedbax.contracts.expressions import (
 )
 from feedbax.contracts.figures import (
     FigureColorbar,
+    FigureDataProductArtifactPayload,
     FigureInputAuthority,
+    FigureInputAuthoritySpec,
+    FigureRuntimeArtifactProviderBinding,
+    FigureRuntimeBindingSpec,
     FigureSpec,
+    FigureTemplate,
     TraceBinding,
     TraceFamily,
     substitute_index,
@@ -47,6 +55,7 @@ from feedbax.contracts.manifest import (
     ParentRef,
     Provenance,
     ArtifactRef,
+    SpecPayload,
     canonical_json_bytes,
     collect_git_provenance,
     default_manifest_root,
@@ -168,14 +177,23 @@ class FigureSpecExecutionError(RuntimeError):
         self.__cause__ = cause
 
 
+def _coerce_figure_spec_and_authored_mapping(
+    value: FigureSpec | Mapping[str, Any] | Path | str,
+) -> tuple[FigureSpec, dict[str, Any]]:
+    """Validate a FigureSpec while retaining its exact authored JSON mapping."""
+    if isinstance(value, FigureSpec):
+        return value, value.model_dump(mode="json", exclude_none=True)
+    if isinstance(value, Mapping):
+        authored_mapping = deepcopy(dict(value))
+    else:
+        authored_mapping = json.loads(Path(value).read_text(encoding="utf-8"))
+    authored_spec = FigureSpec.model_validate(authored_mapping)
+    return authored_spec, authored_mapping
+
+
 def coerce_figure_spec(value: FigureSpec | Mapping[str, Any] | Path | str) -> FigureSpec:
     """Load a FigureSpec from an object, mapping, or JSON file path."""
-    if isinstance(value, FigureSpec):
-        return value
-    if isinstance(value, Mapping):
-        return FigureSpec.model_validate(value)
-    path = Path(value)
-    return FigureSpec.model_validate_json(path.read_text(encoding="utf-8"))
+    return _coerce_figure_spec_and_authored_mapping(value)[0]
 
 
 def resolve_figure_inputs(
@@ -220,7 +238,7 @@ def resolve_figure_inputs(
             manifest, manifest_path = contained.manifest, contained.path
         authority = _authority_for_parent(spec, ref)
         payloads, artifact_refs = _resolve_authority_payloads(
-            authority, manifest, execution_context
+            authority, ref, manifest, execution_context
         )
         resolved.append(
             ResolvedFigureInput(
@@ -234,8 +252,17 @@ def resolve_figure_inputs(
     return resolved
 
 
-def _authority_for_parent(spec: FigureSpec, ref: ParentRef) -> FigureInputAuthority | None:
-    matches = [authority for authority in spec.input_authorities if authority.parent == ref]
+def _authority_for_parent(spec: FigureSpec, ref: ParentRef) -> FigureInputAuthoritySpec | None:
+    matches = [
+        authority
+        for authority in spec.input_authorities
+        if (
+            authority.parent
+            if isinstance(authority, FigureInputAuthority)
+            else authority.resolve_parent(spec.inputs)
+        )
+        == ref
+    ]
     if len(matches) > 1:
         raise FigureInputAuthorityError(
             f"figure input authority is ambiguous for exact parent {ref.id!r}"
@@ -244,7 +271,8 @@ def _authority_for_parent(spec: FigureSpec, ref: ParentRef) -> FigureInputAuthor
 
 
 def _resolve_authority_payloads(
-    authority: FigureInputAuthority | None,
+    authority: FigureInputAuthoritySpec | None,
+    parent: ParentRef,
     manifest: AnyManifest | None,
     execution_context: StagedExecutionContext | None,
 ) -> tuple[dict[str, Any], tuple[ArtifactRef, ...]]:
@@ -257,13 +285,40 @@ def _resolve_authority_payloads(
     resolved: dict[str, Any] = {}
     resolved_refs: list[ArtifactRef] = []
     for selector in authority.artifact_payloads:
-        if authority.parent.role != selector.manifest_role:
+        if parent.role != selector.manifest_role:
             raise FigureInputAuthorityError(
                 f"figure artifact payload manifest role mismatch for {selector.name!r}"
             )
-        artifacts = list(manifest.artifacts)
-        for data_product in getattr(manifest, "produced_data", []):
-            artifacts.extend(data_product.artifacts)
+        if isinstance(selector, FigureDataProductArtifactPayload):
+            products = [
+                product
+                for product in getattr(manifest, "produced_data", [])
+                if product.role == selector.product_role
+            ]
+            if not products:
+                raise FigureInputAuthorityError(
+                    f"figure data product is missing for selector {selector.name!r}"
+                )
+            if len(products) != 1:
+                raise FigureInputAuthorityError(
+                    f"figure data product is duplicated for selector {selector.name!r}"
+                )
+            product = products[0]
+            if (
+                product.product_schema_id != selector.product_schema_id
+                or product.product_schema_version != selector.product_schema_version
+            ):
+                raise FigureInputAuthorityError(
+                    f"figure data product schema mismatch for selector {selector.name!r}"
+                )
+            artifacts = list(product.artifacts)
+        else:
+            # The v1 selector deliberately covers the manifest's historical
+            # top-level-plus-produced artifact namespace. Typed product
+            # selection uses FigureDataProductArtifactPayload instead.
+            artifacts = list(manifest.artifacts)
+            for data_product in getattr(manifest, "produced_data", []):
+                artifacts.extend(data_product.artifacts)
         matches = [artifact for artifact in artifacts if artifact.role == selector.artifact_role]
         if not matches:
             raise FigureInputAuthorityError(
@@ -283,7 +338,10 @@ def _resolve_authority_payloads(
                 f"figure artifact provider binding is missing for {selector.name!r}"
             )
         try:
-            provider = execution_context.artifact_provider(selector.artifact_provider)
+            provider = execution_context.artifact_provider_for_parent(
+                parent,
+                selector.artifact_provider,
+            )
             raw = provider.get_bytes(artifact)
         except Exception as exc:
             raise FigureInputAuthorityError(
@@ -317,22 +375,61 @@ def _resolve_authority_payloads(
 def execute_figure_spec(
     spec: FigureSpec | Mapping[str, Any] | Path | str,
     *,
+    runtime_inputs: Sequence[ParentRef] | None = None,
+    runtime_input_authorities: Sequence[FigureInputAuthoritySpec] | None = None,
+    runtime_metadata: Mapping[str, Any] | None = None,
     root: Path | str | None = None,
     provenance: Provenance | None = None,
     issues: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
     execution_context: StagedExecutionContext | None = None,
 ) -> tuple[FigureManifest, Path]:
-    """Execute a declarative figure spec and write a FigureManifest."""
-    figure_spec = coerce_figure_spec(spec)
+    """Execute a figure while preserving the exact authored spec in its manifest."""
+    authored_spec, authored_mapping = _coerce_figure_spec_and_authored_mapping(spec)
+    runtime_update: dict[str, Any] = {}
+    if runtime_inputs is not None:
+        runtime_update["inputs"] = list(runtime_inputs)
+    if runtime_input_authorities is not None:
+        runtime_update["input_authorities"] = list(runtime_input_authorities)
+    if runtime_metadata is not None:
+        runtime_update["metadata"] = {
+            **authored_spec.metadata,
+            **dict(runtime_metadata),
+        }
+    figure_spec = (
+        authored_spec.model_copy(update=runtime_update, deep=True)
+        if runtime_update
+        else authored_spec
+    )
+    # Revalidate runtime overlays as one complete FigureSpec before any effects.
+    if runtime_update:
+        try:
+            figure_spec = FigureSpec.model_validate(
+                figure_spec.model_dump(mode="python", exclude_none=False)
+            )
+        except ValidationError as exc:
+            raise FigureInputAuthorityError(
+                "figure runtime input/authority binding is invalid"
+            ) from exc
+    authored_payload = spec_payload(
+        "FigureSpec",
+        authored_mapping,
+    )
+    runtime_binding_payload = _figure_runtime_binding_payload(
+        authored_payload.sha256,
+        figure_spec,
+        execution_context,
+        runtime_overlay=bool(runtime_update),
+        runtime_metadata=dict(runtime_metadata or {}),
+    )
     root_path = Path(root) if root is not None else default_manifest_root()
-    manifest_id = figure_manifest_id(figure_spec)
+    manifest_id = figure_manifest_id(authored_spec)
     prov = provenance.model_copy(deep=True) if provenance is not None else collect_git_provenance()
     prov.parents = list(figure_spec.inputs)
     if issues:
         prov.issues.extend(issue for issue in issues if issue not in prov.issues)
     if prov.entrypoint is None:
-        prov.entrypoint = EntrypointRef(kind="feedbax-figure-spec", name=figure_spec.name)
+        prov.entrypoint = EntrypointRef(kind="feedbax-figure-spec", name=authored_spec.name)
 
     exec_trace = FigureExecutionTrace()
     resolved_inputs = resolve_figure_inputs(
@@ -346,7 +443,10 @@ def execute_figure_spec(
         ):
             manifest = _build_figure_manifest(
                 manifest_id=manifest_id,
-                figure_spec=figure_spec,
+                authored_spec=authored_spec,
+                execution_spec=figure_spec,
+                authored_payload=authored_payload,
+                runtime_binding_payload=runtime_binding_payload,
                 status="completed",
                 provenance=prov,
                 artifacts=[],
@@ -359,13 +459,16 @@ def execute_figure_spec(
         figures = _build_figures(figure_spec, context, exec_trace, root_path)
         artifacts = _write_figure_custody(
             figures,
-            figure_spec,
+            authored_spec,
             root=root_path,
             manifest_id=manifest_id,
         )
         manifest = _build_figure_manifest(
             manifest_id=manifest_id,
-            figure_spec=figure_spec,
+            authored_spec=authored_spec,
+            execution_spec=figure_spec,
+            authored_payload=authored_payload,
+            runtime_binding_payload=runtime_binding_payload,
             status="completed",
             provenance=prov,
             artifacts=artifacts,
@@ -377,7 +480,10 @@ def execute_figure_spec(
     except Exception as exc:
         manifest = _build_figure_manifest(
             manifest_id=manifest_id,
-            figure_spec=figure_spec,
+            authored_spec=authored_spec,
+            execution_spec=figure_spec,
+            authored_payload=authored_payload,
+            runtime_binding_payload=runtime_binding_payload,
             status="failed",
             provenance=prov,
             artifacts=[],
@@ -388,6 +494,43 @@ def execute_figure_spec(
         )
         path = write_manifest(manifest, root=root_path)
         raise FigureSpecExecutionError(manifest, path, exc) from exc
+
+
+def _figure_runtime_binding_payload(
+    authored_spec_sha256: str | None,
+    execution_spec: FigureSpec,
+    execution_context: StagedExecutionContext | None,
+    *,
+    runtime_overlay: bool,
+    runtime_metadata: dict[str, Any],
+) -> SpecPayload | None:
+    bindings = (
+        execution_context.parent_artifact_provider_bindings
+        if execution_context is not None
+        else ()
+    )
+    if not runtime_overlay and not bindings:
+        return None
+    if authored_spec_sha256 is None:
+        raise FigureInputAuthorityError("authored FigureSpec payload is missing its content pin")
+    runtime_spec = FigureRuntimeBindingSpec(
+        authored_figure_spec_sha256=authored_spec_sha256,
+        inputs=list(execution_spec.inputs),
+        input_authorities=list(execution_spec.input_authorities),
+        runtime_metadata=runtime_metadata,
+        artifact_provider_bindings=[
+            FigureRuntimeArtifactProviderBinding(
+                parent=binding.parent,
+                authored_provider=binding.authored_provider,
+                runtime_provider=binding.runtime_provider,
+            )
+            for binding in bindings
+        ],
+    )
+    return spec_payload(
+        "FigureRuntimeBindingSpec",
+        runtime_spec.model_dump(mode="json", exclude_none=True),
+    )
 
 
 def _failure_type(exc: Exception) -> str:
@@ -534,6 +677,11 @@ def _build_figures(
     custom_registration = get_figure_constructor(assembler_key)
     if custom_registration.tier == "custom_figure":
         exec_trace.constructor_versions[assembler_key] = custom_registration.version
+        if any(panel.equal_data_aspect is not None for panel in spec.panels):
+            raise ValueError(
+                "FigureSpec declares equal_data_aspect, which requires a registered "
+                f"panel assembler; {assembler_key!r} is a custom_figure assembler"
+            )
         if spec.colorbar is not None:
             raise ValueError(
                 "FigureSpec declares a colorbar, which requires a registered figure "
@@ -559,10 +707,18 @@ def _build_figures(
             for combination in combinations
         ]
 
-    trace_bindings = _trace_bindings_for_spec(spec, template)
+    trace_bindings = resolve_figure_trace_bindings(spec, template)
     panel_constructor_key = assembler_params.get("panel_constructor", "feedbax.comparison_grid")
     panel_registration = get_figure_constructor(panel_constructor_key, tier="panel")
     exec_trace.constructor_versions[panel_constructor_key] = panel_registration.version
+    if (
+        any(panel.equal_data_aspect is not None for panel in spec.panels)
+        and panel_registration.key != "feedbax.comparison_grid"
+    ):
+        raise ValueError(
+            "FigureSpec declares equal_data_aspect, but panel assembler "
+            f"{panel_registration.key!r} does not support it"
+        )
     figure_registration = get_figure_constructor(assembler_key, tier="figure")
     exec_trace.constructor_versions[assembler_key] = figure_registration.version
     panel_values, figure_values = _route_assembler_params(
@@ -576,6 +732,15 @@ def _build_figures(
             raise ValueError(
                 "FigureSpec declares a colorbar, which requires a figure assembler that "
                 f"renders one; {assembler_key!r} declares no colorbar parameter"
+            )
+        if colorbar.placement is not None and (
+            figure_registration.key != "feedbax.grid_figure"
+            or panel_registration.key != "feedbax.comparison_grid"
+        ):
+            raise ValueError(
+                "FigureSpec colorbar panel placement requires the "
+                "feedbax.comparison_grid/feedbax.grid_figure assembler pair; got "
+                f"{panel_registration.key!r}/{figure_registration.key!r}"
             )
         figure_values = {**figure_values, "colorbar": colorbar}
     panel_params = panel_registration.params(panel_values)
@@ -824,16 +989,36 @@ def resolve_figure_colorbar(spec: FigureSpec) -> FigureColorbar | None:
     )
 
 
-def _trace_bindings_for_spec(spec: FigureSpec, template: Any | None) -> list[TraceBindingPlan]:
+def resolve_figure_trace_bindings(
+    spec: FigureSpec,
+    template: FigureTemplate | None,
+) -> tuple[TraceBindingPlan, ...]:
+    """Resolve every declared trace through the one public binding path.
+
+    Slot families first expand to ordinary bindings; those bindings then pass
+    through exactly the same slot defaults, constructor inheritance, and
+    multiplicity checks as hand-enumerated ``slot_bindings``.
+    """
     bindings: list[TraceBindingPlan] = []
+    slot_families = {family.slot: family for family in (spec.slot_families or [])}
     if template is not None:
-        for slot in getattr(template, "slots", []):
+        known_slots = {slot.name for slot in template.slots}
+        unknown_slots = sorted((set(spec.slot_bindings) | set(slot_families)) - known_slots)
+        if unknown_slots:
+            raise ValueError(f"FigureSpec binds unknown template slots: {unknown_slots}")
+        for slot in template.slots:
             raw = spec.slot_bindings.get(slot.name)
-            if raw is None:
+            family = slot_families.get(slot.name)
+            if raw is None and family is None:
                 if slot.required:
                     raise ValueError(f"FigureSpec missing required template slot {slot.name!r}")
                 continue
-            slot_bindings = raw if isinstance(raw, list) else [raw]
+            if family is not None:
+                slot_bindings = list(family.expand())
+            else:
+                slot_bindings = raw if isinstance(raw, list) else [raw]
+            if not slot_bindings and slot.required:
+                raise ValueError(f"FigureSpec missing required template slot {slot.name!r}")
             if slot.multiplicity in {"one", "per_facet"} and len(slot_bindings) != 1:
                 raise ValueError(
                     f"Template slot {slot.name!r} with multiplicity {slot.multiplicity!r} "
@@ -852,6 +1037,11 @@ def _trace_bindings_for_spec(spec: FigureSpec, template: Any | None) -> list[Tra
                         multiplicity=slot.multiplicity,
                     )
                 )
+    elif spec.slot_bindings or slot_families:
+        unknown_slots = sorted(set(spec.slot_bindings) | set(slot_families))
+        raise ValueError(
+            f"FigureSpec without a template cannot bind template slots: {unknown_slots}"
+        )
     bindings.extend(
         TraceBindingPlan(binding=binding, multiplicity="many") for binding in spec.traces
     )
@@ -883,7 +1073,12 @@ def _trace_bindings_for_spec(spec: FigureSpec, template: Any | None) -> list[Tra
                 multiplicity="many",
             )
         )
-    return bindings
+    collisions = sorted(
+        name for name, count in Counter(plan.binding.name for plan in bindings).items() if count > 1
+    )
+    if collisions:
+        raise ValueError(f"FigureSpec resolved trace names collide: {collisions}")
+    return tuple(bindings)
 
 
 def _panel_contents(
@@ -917,6 +1112,11 @@ def _panel_contents(
         axes_labels = panel.axes_labels.model_dump() if panel and panel.axes_labels else None
         x_axis = panel.x_axis.model_dump(exclude_none=True) if panel and panel.x_axis else None
         y_axis = panel.y_axis.model_dump(exclude_none=True) if panel and panel.y_axis else None
+        equal_data_aspect = (
+            panel.equal_data_aspect.model_dump(exclude_none=True)
+            if panel and panel.equal_data_aspect
+            else None
+        )
         contents.append(
             PanelContent(
                 name=panel_name,
@@ -927,6 +1127,7 @@ def _panel_contents(
                 axes_labels=axes_labels,
                 x_axis=x_axis,
                 y_axis=y_axis,
+                equal_data_aspect=equal_data_aspect,
             )
         )
     return contents
@@ -980,6 +1181,14 @@ def _facet_panel_contents(
                 y_axis=(
                     base_panel.y_axis.model_dump(exclude_none=True)
                     if base_panel is not None and base_panel.y_axis is not None
+                    else None
+                ),
+                equal_data_aspect=(
+                    base_panel.equal_data_aspect.model_dump(exclude_none=True)
+                    if (
+                        base_panel is not None
+                        and base_panel.equal_data_aspect is not None
+                    )
                     else None
                 ),
             )
@@ -1252,7 +1461,10 @@ def _safe_figure_name(value: str, index: int) -> str:
 def _build_figure_manifest(
     *,
     manifest_id: str,
-    figure_spec: FigureSpec,
+    authored_spec: FigureSpec,
+    execution_spec: FigureSpec,
+    authored_payload: SpecPayload,
+    runtime_binding_payload: SpecPayload | None,
     status: ManifestStatus,
     provenance: Provenance,
     artifacts: list[ArtifactRef],
@@ -1268,23 +1480,23 @@ def _build_figure_manifest(
     return FigureManifest(
         id=manifest_id,
         status=status,
-        figure_spec=spec_payload(
-            "FigureSpec",
-            figure_spec.model_dump(mode="json", exclude_none=True),
-        ),
-        inputs=list(figure_spec.inputs),
+        figure_spec=authored_payload,
+        inputs=list(execution_spec.inputs),
         resolved_inputs=[item.ref for item in resolved_inputs if item.manifest is not None],
         resolved_pieces=list(execution_trace.resolved_pieces),
         constructor_versions=dict(execution_trace.constructor_versions),
-        template_name=figure_spec.template,
+        template_name=authored_spec.template,
         binding_records=list(execution_trace.binding_records),
         expression_results_digest=sha256_bytes(canonical_json_bytes(binding_payload)),
         provenance=provenance,
         artifacts=artifacts,
         regeneration_specs=[
-            artifact
-            for resolved in resolved_inputs
-            for artifact in resolved.artifact_refs
+            *([runtime_binding_payload] if runtime_binding_payload is not None else []),
+            *(
+                artifact
+                for resolved in resolved_inputs
+                for artifact in resolved.artifact_refs
+            ),
         ],
         failure=failure,
         metadata=metadata,

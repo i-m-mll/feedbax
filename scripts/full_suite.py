@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import fcntl
@@ -13,12 +13,15 @@ import os
 from pathlib import Path
 import platform
 import re
+import secrets
+import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
 from types import TracebackType
-from typing import Any, Self, Sequence
+from typing import Any, Iterator, Self, Sequence
 
 
 SCHEMA_VERSION = 2
@@ -27,6 +30,7 @@ LOCK_BUSY_EXIT = 75
 LOCK_ENV_VAR = "FULL_SUITE_LOCK_DIR"
 LOCK_FILENAME = "full-suite.lock"
 LOCK_REPOSITORY = "feedbax"
+TEMP_ROOT_MARKER = ".feedbax-full-suite-owner"
 REQUIRED_FINGERPRINT_FIELDS = (
     "git_tree",
     "uv_lock_sha256",
@@ -55,6 +59,72 @@ SUITE_MARKER_EXPRESSIONS = {
 
 class FullSuiteLockBusy(RuntimeError):
     """Raised when another repository-wide full-suite run owns the lock."""
+
+
+class TemporaryRootOwnershipError(RuntimeError):
+    """Raised when suite ownership cannot be proved before cleanup."""
+
+
+def _make_owned_tree_removable(root: Path) -> None:
+    """Add only the owner permissions needed to remove entries at and below ``root``."""
+
+    def add_owner_permissions(path: Path, permissions: int) -> None:
+        status = path.lstat()
+        if stat.S_ISLNK(status.st_mode):
+            return
+        path.chmod(stat.S_IMODE(status.st_mode) | permissions, follow_symlinks=False)
+
+    directory_permissions = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
+    add_owner_permissions(root, directory_permissions)
+    for current, directories, files in os.walk(root, topdown=True, followlinks=False):
+        current_path = Path(current)
+        for directory in directories:
+            add_owner_permissions(current_path / directory, directory_permissions)
+        for filename in files:
+            add_owner_permissions(current_path / filename, stat.S_IWUSR)
+
+
+@contextmanager
+def owned_suite_temporary_root(
+    environ: dict[str, str] | None = None,
+) -> Iterator[Path]:
+    """Yield one marked child beneath the caller-selected temporary directory."""
+    env = dict(os.environ) if environ is None else environ
+    caller_root = env.get("TMPDIR")
+    parent = Path(caller_root).expanduser() if caller_root else Path(tempfile.gettempdir())
+    path = Path(tempfile.mkdtemp(prefix="feedbax-full-suite.", dir=parent)).resolve()
+    identity = path.stat().st_dev, path.stat().st_ino
+    token = secrets.token_hex(32)
+    marker = path / TEMP_ROOT_MARKER
+    try:
+        marker.write_text(token, encoding="utf-8")
+    except BaseException:
+        shutil.rmtree(path)
+        raise
+
+    try:
+        yield path
+    finally:
+        try:
+            path_status = path.lstat()
+            marker_status = marker.lstat()
+            marker_token = marker.read_text(encoding="utf-8")
+        except OSError as error:
+            raise TemporaryRootOwnershipError(
+                f"refusing to remove unverified suite temporary root: {path}"
+            ) from error
+
+        if (
+            not stat.S_ISDIR(path_status.st_mode)
+            or (path_status.st_dev, path_status.st_ino) != identity
+            or not stat.S_ISREG(marker_status.st_mode)
+            or marker_token != token
+        ):
+            raise TemporaryRootOwnershipError(
+                f"refusing to remove unverified suite temporary root: {path}"
+            )
+        _make_owned_tree_removable(path)
+        shutil.rmtree(path)
 
 
 class FullSuiteLock(AbstractContextManager["FullSuiteLock"]):
@@ -496,11 +566,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
 
             print("Running:", " ".join(command))
-            result = subprocess.run(
-                command,
-                cwd=repo_root,
-                check=False,
-            )
+            with owned_suite_temporary_root() as temporary_root:
+                result = subprocess.run(
+                    command,
+                    cwd=repo_root,
+                    env={**os.environ, "TMPDIR": str(temporary_root)},
+                    check=False,
+                )
             if result.returncode == 0 and not args.no_memo and fingerprint.memo_allowed:
                 path = write_green_memo(memo_dir, fingerprint, command)
                 print(f"Recorded full-suite green memo: {path}")

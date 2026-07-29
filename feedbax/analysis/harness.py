@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor
+from contextlib import nullcontext
 import json
+import multiprocessing
+import os
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,8 +17,10 @@ from typing import Any, Literal
 from feedbax.analysis.rendering import render_markdown_note
 from feedbax.contracts.manifest import (
     ArtifactRef,
+    ParentRef,
     RegenerationCommand,
     RegenerationSpec,
+    canonical_json_bytes,
     sha256_bytes,
     store_bytes_artifact,
     store_json_artifact,
@@ -22,6 +29,222 @@ from feedbax.contracts.manifest import (
 
 CustodyMode = Literal["manifest", "content-addressed"]
 SUPPORTED_EXECUTION_POLICY_OVERRIDE_FLAG = "--allow-large-per-row"
+
+
+def _initialize_evaluation_batch_worker(plugins: tuple[str, ...]) -> None:
+    """Load evaluation plugins once per persistent worker process."""
+    from feedbax.plugins import load_training_method_plugins
+
+    load_training_method_plugins(modules=plugins)
+
+
+def _validate_evaluation_fragment_checkpoint(
+    declaration: Any,
+    batch: Any,
+    fragment: ArtifactRef,
+    *,
+    matrix_intent_hash: str,
+) -> None:
+    """Validate one cached fragment against its current terminal declaration."""
+    from feedbax.analysis.evaluation_compaction import _validate_fragment_ref
+
+    try:
+        _validate_fragment_ref(
+            declaration,
+            fragment,
+            matrix_intent_hash=matrix_intent_hash,
+            batch_id=batch.batch_id,
+        )
+    except ValueError as exc:
+        raise ValueError("evaluation batch fragment checkpoint contract drifted") from exc
+
+
+def _execute_evaluation_batch_partition(task: Mapping[str, Any]) -> dict[str, Any]:
+    """Execute and compact one authenticated batch in a persistent worker."""
+    timing_origin_ns = int(task["timing_origin_ns"])
+    started_offset_ns = time.monotonic_ns() - timing_origin_ns
+    from feedbax.analysis.evaluation_compaction import (
+        EvaluationBatchConsumerInput,
+        compact_evaluation_batch,
+    )
+    from feedbax.analysis.evaluation import (
+        EvaluationBatchExecution,
+        execute_evaluation_run_matrix,
+        load_evaluation_states_cache,
+    )
+    from feedbax.contracts.evaluation_lifecycle import (
+        EvaluationBatchConsumerDeclaration,
+        EvaluationLifecycleRowOutcome,
+        EvaluationMatrixBatchUnit,
+    )
+    from feedbax.contracts.manifest import ArtifactRef
+    from feedbax.contracts.manifest import (
+        AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+        AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+        ParentRef,
+        sha256_bytes,
+    )
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+    from feedbax.analysis.execution_context import (
+        resolve_staged_execution_context,
+        with_staged_repo_root,
+    )
+    from feedbax.orchestration.bundle import RunBundle
+    from feedbax.orchestration.input_materialization import (
+        staged_execution_bindings_for_bundle,
+    )
+
+    bundle = RunBundle.model_validate_json(Path(task["bundle_path"]).read_text(encoding="utf-8"))
+    projected = staged_execution_bindings_for_bundle(
+        bundle,
+        inputs_root=task["inputs_root"],
+    )
+    execution_context = resolve_staged_execution_context(
+        projected.descriptor,
+        artifact_provider_bindings=projected.artifact_provider_bindings,
+        manifest_root_bindings=projected.manifest_root_bindings,
+        checkpoint_custody_bindings=projected.checkpoint_custody_bindings,
+    )
+    execution_context = with_staged_repo_root(execution_context, task["repo_root"])
+    payload = _read_json_object(task["payload_path"], description="evaluation matrix spec")
+    batch = EvaluationMatrixBatchUnit.model_validate(task["batch"])
+    checkpoint_identity = {
+        "matrix_intent_hash": task["matrix_intent_hash"],
+        "batch": batch.model_dump(mode="json", exclude_none=True),
+        "consumers": task["consumers"],
+    }
+    checkpoint = Path(task["compaction_root"]) / "fragment-checkpoints" / f"{batch.batch_id}.json"
+    if checkpoint.is_file():
+        cached = json.loads(checkpoint.read_text(encoding="utf-8"))
+        if canonical_json_bytes(cached.get("checkpoint_identity")) != canonical_json_bytes(
+            checkpoint_identity
+        ):
+            raise ValueError("evaluation batch fragment checkpoint identity drifted")
+        provider = ImmutableArtifactBlobProvider(Path(task["compaction_root"]))
+        declarations = [
+            EvaluationBatchConsumerDeclaration.model_validate(value) for value in task["consumers"]
+        ]
+        for declaration, value in zip(
+            declarations,
+            cached.get("fragments", []),
+            strict=True,
+        ):
+            fragment = ArtifactRef.model_validate(value)
+            _validate_evaluation_fragment_checkpoint(
+                declaration,
+                batch,
+                fragment,
+                matrix_intent_hash=task["matrix_intent_hash"],
+            )
+            provider.get_bytes(fragment)
+        for value, authority_value in zip(
+            cached.get("outcomes", []),
+            cached.get("parent_authorities", []),
+            strict=True,
+        ):
+            outcome = EvaluationLifecycleRowOutcome.model_validate(value)
+            if not Path(outcome.manifest_path).is_file():
+                raise ValueError("evaluation batch fragment checkpoint manifest is unavailable")
+            authority = ParentRef.model_validate(authority_value)
+            manifest_bytes = Path(outcome.manifest_path).read_bytes()
+            if (
+                authority.id != outcome.manifest_id
+                or authority.metadata.get("manifest_sha256") != sha256_bytes(manifest_bytes)
+                or authority.metadata.get("size_bytes") != len(manifest_bytes)
+            ):
+                raise ValueError("evaluation batch fragment checkpoint parent authority drifted")
+        completed_offset_ns = time.monotonic_ns() - timing_origin_ns
+        return {
+            **cached,
+            "pid": os.getpid(),
+            "reused_verified_fragments": True,
+            "started_offset_ns": started_offset_ns,
+            "completed_offset_ns": completed_offset_ns,
+            "duration_ns": completed_offset_ns - started_offset_ns,
+        }
+    result = execute_evaluation_run_matrix(
+        payload,
+        root=Path(task["manifest_root"]),
+        repo_root=task["repo_root"],
+        execution_context=execution_context,
+        batch=EvaluationBatchExecution(batch_units=((batch.batch_id, batch.ordered_row_ids),)),
+    )
+    outcomes_by_id = {row.row_id: row for row in result.rows}
+    outcomes = []
+    manifests = []
+    states = []
+    parent_authorities = []
+    for row_id in batch.ordered_row_ids:
+        row = outcomes_by_id[row_id]
+        states_schema = getattr(row.result, "metadata", {}).get("states_schema")
+        diagnostic_schema_ids = ()
+        if isinstance(states_schema, str):
+            diagnostic_schema_ids = (states_schema,)
+        elif isinstance(states_schema, Mapping) and isinstance(states_schema.get("schema_id"), str):
+            diagnostic_schema_ids = (states_schema["schema_id"],)
+        outcome = EvaluationLifecycleRowOutcome(
+            row_id=row.row_id,
+            manifest_id=row.result.id,
+            manifest_path=str(row.manifest_path),
+            diagnostic_schema_ids=diagnostic_schema_ids,
+        )
+        outcomes.append(outcome)
+        manifests.append(row.result.model_dump(mode="json"))
+        manifest_bytes = Path(row.manifest_path).read_bytes()
+        parent_authorities.append(
+            ParentRef(
+                kind="EvaluationRunManifest",
+                id=row.result.id,
+                role="evaluation_run",
+                metadata={
+                    "ref_schema_id": AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+                    "ref_schema_version": AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+                    "manifest_sha256": sha256_bytes(manifest_bytes),
+                    "size_bytes": len(manifest_bytes),
+                },
+            )
+        )
+        if task["consumers"]:
+            cache_path = Path(row.result.metadata["cache"]["states_path"])
+            states.append(load_evaluation_states_cache(cache_path, manifest_id=row.result.id))
+    fragments = []
+    for value in task["consumers"]:
+        declaration = EvaluationBatchConsumerDeclaration.model_validate(value)
+        fragments.append(
+            compact_evaluation_batch(
+                declaration,
+                EvaluationBatchConsumerInput(
+                    matrix_intent_hash=task["matrix_intent_hash"],
+                    batch=batch,
+                    outcomes=tuple(outcomes),
+                    manifests=tuple(manifests),
+                    states=tuple(states),
+                    parent_authorities=tuple(parent_authorities),
+                    parameters=json.loads(json.dumps(declaration.parameters)),
+                    execution_context=execution_context,
+                ),
+                custody_root=Path(task["compaction_root"]),
+            )
+        )
+    completed = {
+        "pid": os.getpid(),
+        "batch_id": batch.batch_id,
+        "batch_index": task["batch_index"],
+        "outcomes": [item.model_dump(mode="json") for item in outcomes],
+        "fragments": [item.model_dump(mode="json") for item in fragments],
+        "parent_authorities": [item.model_dump(mode="json") for item in parent_authorities],
+        "checkpoint_identity": checkpoint_identity,
+    }
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint.write_text(json.dumps(completed, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    completed_offset_ns = time.monotonic_ns() - timing_origin_ns
+    return {
+        **completed,
+        "reused_verified_fragments": False,
+        "started_offset_ns": started_offset_ns,
+        "completed_offset_ns": completed_offset_ns,
+        "duration_ns": completed_offset_ns - started_offset_ns,
+    }
 
 
 @dataclass(frozen=True)
@@ -122,9 +345,12 @@ def semantic_diff(before: Any, after: Any, *, path: str = "$") -> list[SemanticC
             else:
                 changes.extend(semantic_diff(before[key], after[key], path=child))
         return changes
-    if isinstance(before, Sequence) and not isinstance(before, (str, bytes)) and isinstance(
-        after, Sequence
-    ) and not isinstance(after, (str, bytes)):
+    if (
+        isinstance(before, Sequence)
+        and not isinstance(before, (str, bytes))
+        and isinstance(after, Sequence)
+        and not isinstance(after, (str, bytes))
+    ):
         changes = []
         for index in range(max(len(before), len(after))):
             child = f"{path}[{index}]"
@@ -164,8 +390,7 @@ class MatrixMaterializerHarness:
     ):
         if custody not in ("manifest", "content-addressed"):
             raise ValueError(
-                "unknown output custody route; registered routes are: "
-                "content-addressed, manifest"
+                "unknown output custody route; registered routes are: content-addressed, manifest"
             )
         self.root = Path(root)
         self.custody = custody
@@ -237,8 +462,10 @@ class MatrixMaterializerHarness:
                         metadata={"row_id": row_id, "source": source},
                     )
                 )
-            if manifest_path is not None and hasattr(result, "metadata") and hasattr(
-                result, "artifacts"
+            if (
+                manifest_path is not None
+                and hasattr(result, "metadata")
+                and hasattr(result, "artifacts")
             ):
                 result.metadata.setdefault("matrix_harness", {}).update(
                     {
@@ -258,9 +485,7 @@ class MatrixMaterializerHarness:
                     for artifact in artifacts
                     if artifact.artifact_id not in known_artifact_ids
                 )
-                manifest_path = write_manifest(
-                    result, root=row_root, index=not self.shared_store
-                )
+                manifest_path = write_manifest(result, root=row_root, index=not self.shared_store)
             materialized.append(
                 MaterializedRow(
                     row_id=row_id,
@@ -316,6 +541,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--execution-descriptor")
     parser.add_argument("--artifact-provider", action="append", default=[])
     parser.add_argument("--checkpoint-custody", action="append", default=[])
+    parser.add_argument("--orchestration-bundle")
+    parser.add_argument("--orchestration-inputs-root")
+    parser.add_argument("--orchestration-row-id")
+    parser.add_argument("--lifecycle-result")
     parser.add_argument(
         "--batch",
         action="store_true",
@@ -358,6 +587,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     from feedbax.analysis.execution_context import (
         StagedArtifactProviderRootBinding,
         StagedCheckpointCustodyRootBinding,
+        resolve_staged_execution_context,
+    )
+    from feedbax.contracts.evaluation_lifecycle import (
+        EvaluationBatchCompactionEvidence,
+        EvaluationBatchTimingEvidence,
+        EvaluationLifecycleEvidence,
+        EvaluationLifecycleRowOutcome,
+        EvaluationMatrixBatchPlan,
+        EvaluationWorkerProcessEvidence,
+        EvaluationWorkerTopologyEvidence,
+    )
+    from feedbax.contracts.migrations import migrate_structured_spec_payload
+    from feedbax.orchestration.bundle import RunBundle
+    from feedbax.orchestration.input_materialization import (
+        staged_execution_bindings_for_bundle,
     )
 
     def binding_parts(value: str, *, option: str) -> tuple[str, str]:
@@ -433,28 +677,351 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.execution_descriptor is not None
         else None
     )
-    execute_evaluation_run_matrix(
-        payload,
-        root=args.manifest_root,
-        repo_root=args.repo_root,
-        escape_hatch_reason=args.escape_hatch_reason,
-        parent_manifest_root=args.parent_manifest_root,
-        execution_descriptor=execution_descriptor,
-        artifact_provider_bindings=[
-            StagedArtifactProviderRootBinding(
-                *binding_parts(value, option="--artifact-provider")
-            )
-            for value in args.artifact_provider
-        ],
-        checkpoint_custody_bindings=[
-            StagedCheckpointCustodyRootBinding(
-                *binding_parts(value, option="--checkpoint-custody")
-            )
-            for value in args.checkpoint_custody
-        ],
-        batch=EvaluationBatchExecution() if args.batch else None,
-        matrix_metadata=policy_metadata,
+    orchestration_values = (
+        args.orchestration_bundle,
+        args.orchestration_inputs_root,
+        args.orchestration_row_id,
+        args.lifecycle_result,
     )
+    if any(value is not None for value in orchestration_values) and any(
+        value is None for value in orchestration_values
+    ):
+        parser.error(
+            "orchestration lifecycle execution requires bundle, inputs root, row id, "
+            "and lifecycle result together"
+        )
+    resolved_context = None
+    orchestration_batch_plan = None
+    orchestration_worker_count = None
+    if args.orchestration_bundle is not None:
+        if (
+            args.execution_descriptor is not None
+            or args.artifact_provider
+            or args.checkpoint_custody
+        ):
+            parser.error(
+                "orchestration lifecycle bindings cannot be combined with caller-supplied "
+                "staged execution options"
+            )
+        bundle = RunBundle.model_validate_json(
+            Path(args.orchestration_bundle).read_text(encoding="utf-8")
+        )
+        if bundle.execution_family != "evaluation-matrix":
+            parser.error("orchestration bundle is not an evaluation-matrix family bundle")
+        matching_rows = [row for row in bundle.rows if row.row_id == args.orchestration_row_id]
+        if len(matching_rows) != 1:
+            parser.error("orchestration row id is absent or ambiguous in the bundle")
+        try:
+            batch_plan_payload = migrate_structured_spec_payload(
+                "EvaluationMatrixBatchPlan",
+                matching_rows[0].launch.metadata.get("batch_plan"),
+                path="launch.metadata.batch_plan",
+            ).payload
+            orchestration_batch_plan = EvaluationMatrixBatchPlan.model_validate(batch_plan_payload)
+        except ValueError as exc:
+            parser.error(f"orchestration evaluation row lacks an authenticated batch plan: {exc}")
+        orchestration_worker_count = min(
+            bundle.launch_policy.max_parallel_rows,
+            len(orchestration_batch_plan.batches),
+        )
+        projected = staged_execution_bindings_for_bundle(
+            bundle,
+            inputs_root=args.orchestration_inputs_root,
+        )
+        resolved_context = resolve_staged_execution_context(
+            projected.descriptor,
+            artifact_provider_bindings=projected.artifact_provider_bindings,
+            manifest_root_bindings=projected.manifest_root_bindings,
+            checkpoint_custody_bindings=projected.checkpoint_custody_bindings,
+        )
+    from feedbax.orchestration.events import RunEventEmitter
+
+    emitter = RunEventEmitter.from_env(heartbeat_seconds=60.0)
+    with emitter if emitter is not None else nullcontext():
+        if emitter is not None:
+            emitter.emit("ready", {"executor_family": "evaluation-matrix"})
+        try:
+            evidence = None
+            if (
+                args.batch
+                and orchestration_batch_plan is not None
+                and orchestration_worker_count is not None
+            ):
+                indexed_batches = [
+                    {
+                        "batch_id": batch.batch_id,
+                        "batch_index": index,
+                        "ordered_row_ids": list(batch.ordered_row_ids),
+                    }
+                    for index, batch in enumerate(orchestration_batch_plan.batches)
+                ]
+                compaction_root = Path(args.lifecycle_result).with_name(
+                    "evaluation-batch-compaction"
+                )
+                common_task = {
+                    "bundle_path": args.orchestration_bundle,
+                    "inputs_root": args.orchestration_inputs_root,
+                    "payload_path": args.spec,
+                    "manifest_root": args.manifest_root,
+                    "repo_root": args.repo_root,
+                    "matrix_intent_hash": orchestration_batch_plan.matrix_intent_hash,
+                    "compaction_root": str(compaction_root),
+                }
+                from feedbax.analysis.evaluation_compaction import (
+                    merge_evaluation_batch_fragment,
+                    publish_evaluation_compaction_products,
+                    reclaim_evaluation_batch_caches,
+                )
+                from feedbax.contracts.manifest import ArtifactRef
+
+                prior_states: dict[str, ArtifactRef] = {}
+                reclamations = []
+                completed_batches = []
+                timing_origin_ns = time.monotonic_ns()
+                tasks = [
+                    {
+                        **common_task,
+                        "timing_origin_ns": timing_origin_ns,
+                        "batch": {
+                            "batch_id": item["batch_id"],
+                            "ordered_row_ids": item["ordered_row_ids"],
+                            "required_leaf_ids": (
+                                orchestration_batch_plan.batches[
+                                    item["batch_index"]
+                                ].required_leaf_ids
+                                or ()
+                            ),
+                        },
+                        "batch_index": item["batch_index"],
+                        "consumers": [
+                            declaration.model_dump(mode="json")
+                            for declaration in orchestration_batch_plan.consumers
+                            if declaration.leaf_id
+                            in (
+                                orchestration_batch_plan.batches[
+                                    item["batch_index"]
+                                ].required_leaf_ids
+                                or ()
+                            )
+                        ],
+                    }
+                    for item in indexed_batches
+                ]
+                with ProcessPoolExecutor(
+                    max_workers=orchestration_worker_count,
+                    initializer=_initialize_evaluation_batch_worker,
+                    initargs=(tuple(args.plugin or ()),),
+                    mp_context=multiprocessing.get_context("spawn"),
+                ) as pool:
+                    futures = [
+                        pool.submit(_execute_evaluation_batch_partition, task)
+                        for task in tasks[:orchestration_worker_count]
+                    ]
+                    next_task_index = orchestration_worker_count
+                    for batch in orchestration_batch_plan.batches:
+                        future = futures.pop(0)
+                        completed_batch = future.result()
+                        completed_batches.append(completed_batch)
+                        outcomes_for_batch = tuple(
+                            EvaluationLifecycleRowOutcome.model_validate(item)
+                            for item in completed_batch["outcomes"]
+                        )
+                        acknowledgements = []
+                        applicable_declarations = tuple(
+                            declaration
+                            for declaration in orchestration_batch_plan.consumers
+                            if declaration.leaf_id in (batch.required_leaf_ids or ())
+                        )
+                        for declaration, fragment_value in zip(
+                            applicable_declarations,
+                            completed_batch["fragments"],
+                            strict=True,
+                        ):
+                            acknowledgement = merge_evaluation_batch_fragment(
+                                declaration,
+                                matrix_intent_hash=orchestration_batch_plan.matrix_intent_hash,
+                                batch=batch,
+                                parent_authorities=tuple(
+                                    ParentRef.model_validate(value)
+                                    for value in completed_batch["parent_authorities"]
+                                ),
+                                fragment=ArtifactRef.model_validate(fragment_value),
+                                prior_merge_state=prior_states.get(declaration.leaf_id),
+                                custody_root=compaction_root,
+                                execution_context=resolved_context,
+                            )
+                            prior_states[declaration.leaf_id] = acknowledgement.merge_state
+                            acknowledgements.append(acknowledgement)
+                        if orchestration_batch_plan.consumers:
+                            reclamations.append(
+                                reclaim_evaluation_batch_caches(
+                                    batch,
+                                    matrix_intent_hash=orchestration_batch_plan.matrix_intent_hash,
+                                    batch_index=completed_batch["batch_index"],
+                                    outcomes=outcomes_for_batch,
+                                    acknowledgements=acknowledgements,
+                                    required_declarations=applicable_declarations,
+                                    custody_root=compaction_root,
+                                    execution_context=resolved_context,
+                                )
+                            )
+                        if next_task_index < len(tasks):
+                            futures.append(
+                                pool.submit(
+                                    _execute_evaluation_batch_partition,
+                                    tasks[next_task_index],
+                                )
+                            )
+                            next_task_index += 1
+                outcomes = tuple(
+                    EvaluationLifecycleRowOutcome.model_validate(outcome)
+                    for batch in completed_batches
+                    for outcome in batch["outcomes"]
+                )
+                evidence = EvaluationLifecycleEvidence(
+                    orchestration_row_id=args.orchestration_row_id,
+                    ordered_row_ids=tuple(item.row_id for item in outcomes),
+                    outcomes=outcomes,
+                )
+                topology = EvaluationWorkerTopologyEvidence(
+                    requested_worker_count=orchestration_worker_count,
+                    batch_count=len(indexed_batches),
+                    processes=tuple(
+                        EvaluationWorkerProcessEvidence(
+                            pid=pid,
+                            ordered_batch_ids=tuple(
+                                item["batch_id"] for item in completed_batches if item["pid"] == pid
+                            ),
+                            batch_timings=tuple(
+                                EvaluationBatchTimingEvidence(
+                                    batch_id=item["batch_id"],
+                                    started_offset_ns=item["started_offset_ns"],
+                                    completed_offset_ns=item["completed_offset_ns"],
+                                    duration_ns=item["duration_ns"],
+                                    reused_verified_fragments=item[
+                                        "reused_verified_fragments"
+                                    ],
+                                )
+                                for item in completed_batches
+                                if item["pid"] == pid
+                            ),
+                        )
+                        for pid in dict.fromkeys(item["pid"] for item in completed_batches)
+                    ),
+                )
+                compaction = EvaluationBatchCompactionEvidence(
+                    matrix_intent_hash=orchestration_batch_plan.matrix_intent_hash,
+                    ordered_batch_ids=tuple(
+                        batch.batch_id for batch in orchestration_batch_plan.batches
+                    ),
+                    declared_leaf_ids=tuple(
+                        item.leaf_id for item in orchestration_batch_plan.consumers
+                    ),
+                    required_leaf_ids_by_batch={
+                        batch.batch_id: batch.required_leaf_ids or ()
+                        for batch in orchestration_batch_plan.batches
+                    },
+                    reclamations=tuple(reclamations),
+                    terminal_products=(
+                        publish_evaluation_compaction_products(
+                            orchestration_batch_plan.consumers,
+                            prior_states,
+                            outcomes,
+                            custody_root=compaction_root,
+                            execution_context=resolved_context,
+                        )
+                        if orchestration_batch_plan.consumers
+                        else ()
+                    ),
+                )
+                Path(args.lifecycle_result).write_text(
+                    json.dumps(evidence.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                Path(args.lifecycle_result).with_name("evaluation-worker-topology.json").write_text(
+                    json.dumps(topology.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                Path(args.lifecycle_result).with_name(
+                    "evaluation-batch-compaction.json"
+                ).write_text(
+                    json.dumps(compaction.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                result = None
+            else:
+                result = execute_evaluation_run_matrix(
+                    payload,
+                    root=args.manifest_root,
+                    repo_root=args.repo_root,
+                    escape_hatch_reason=args.escape_hatch_reason,
+                    parent_manifest_root=args.parent_manifest_root,
+                    execution_descriptor=execution_descriptor,
+                    artifact_provider_bindings=[
+                        StagedArtifactProviderRootBinding(
+                            *binding_parts(value, option="--artifact-provider")
+                        )
+                        for value in args.artifact_provider
+                    ],
+                    checkpoint_custody_bindings=[
+                        StagedCheckpointCustodyRootBinding(
+                            *binding_parts(value, option="--checkpoint-custody")
+                        )
+                        for value in args.checkpoint_custody
+                    ],
+                    execution_context=resolved_context,
+                    batch=EvaluationBatchExecution() if args.batch else None,
+                    matrix_metadata=policy_metadata,
+                )
+            if args.lifecycle_result is not None and result is not None:
+                outcomes = []
+                for row in result.rows:
+                    states_schema = getattr(row.result, "metadata", {}).get("states_schema")
+                    diagnostic_schema_ids = ()
+                    if isinstance(states_schema, str):
+                        diagnostic_schema_ids = (states_schema,)
+                    elif isinstance(states_schema, Mapping) and isinstance(
+                        states_schema.get("schema_id"), str
+                    ):
+                        diagnostic_schema_ids = (states_schema["schema_id"],)
+                    outcomes.append(
+                        EvaluationLifecycleRowOutcome(
+                            row_id=row.row_id,
+                            manifest_id=row.result.id,
+                            manifest_path=str(row.manifest_path),
+                            diagnostic_schema_ids=diagnostic_schema_ids,
+                        )
+                    )
+                evidence = EvaluationLifecycleEvidence(
+                    orchestration_row_id=args.orchestration_row_id,
+                    ordered_row_ids=tuple(row.row_id for row in result.rows),
+                    outcomes=tuple(outcomes),
+                )
+                destination = Path(args.lifecycle_result)
+                destination.write_text(
+                    json.dumps(evidence.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+        except BaseException:
+            if emitter is not None:
+                emitter.emit_terminal(
+                    "failed",
+                    {"status": "failed", "executor_family": "evaluation-matrix"},
+                )
+            raise
+        if emitter is not None:
+            emitter.emit_terminal(
+                "complete",
+                {
+                    "status": "completed",
+                    "executor_family": "evaluation-matrix",
+                    "ordered_row_ids": (
+                        list(evidence.ordered_row_ids)
+                        if evidence is not None
+                        else [row.row_id for row in result.rows]
+                    ),
+                },
+            )
     return 0
 
 

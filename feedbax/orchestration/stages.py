@@ -32,6 +32,9 @@ from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
     RunAssemblyRequest,
+    _PreparedRunAssembly,
+    _persist_prepared_run_bundle,
+    _prepare_run_assembly,
     assemble_run_bundle,
     persist_assembly_request,
 )
@@ -50,6 +53,7 @@ from feedbax.orchestration.conformance import (
     RunConformanceCertificate,
     assert_certificate_allows_completed_registration,
     write_conformance_certificate,
+    check_evaluation_lifecycle,
 )
 from feedbax.orchestration.drivers.base import (
     AcquisitionCreateError,
@@ -61,6 +65,12 @@ from feedbax.orchestration.drivers.native_execution import (
     missing_native_training_collection_outputs,
     uses_registered_native_execution,
 )
+from feedbax.orchestration.executor_family import (
+    evaluation_lifecycle_payload,
+    evaluation_matrix_ordered_union,
+    executor_family_adapter,
+)
+from feedbax.contracts.evaluation_lifecycle import EvaluationLifecycleEvidence
 from feedbax.orchestration.events import RunEventReader
 from feedbax.orchestration.input_materialization import preflight_resolved_inputs
 from feedbax.orchestration.revision import (
@@ -368,6 +378,7 @@ class StageEngine:
         self._wall_time = wall_time
         self._interruption_probe = interruption_probe
         self._signal_supervisor: _ScopedSignalSupervisor | None = None
+        self._prepared_request: _PreparedRunAssembly | None = None
 
     @classmethod
     def from_request(
@@ -405,6 +416,7 @@ class StageEngine:
         for SIGKILL before an acquired pod's SSH endpoint becomes available; a
         later local process or operator must reconcile it.
         """
+        self._preflight_request_before_output()
         initial = self._initial_state()
         with _ScopedSignalSupervisor() as signal_supervisor:
             self._signal_supervisor = signal_supervisor
@@ -695,20 +707,21 @@ class StageEngine:
                     f"{mismatch_label} registration history is invalid"
                 ) from exc
             if existing != history:
-                raise OrchestrationStageError(
-                    f"{mismatch_label} registration history mismatch"
-                )
+                raise OrchestrationStageError(f"{mismatch_label} registration history mismatch")
             return
         self._write_json_atomically(history_path, history.model_dump(mode="json"))
 
     def _initial_state(self) -> RunSetState:
+        prepared_rows = (
+            self.bundle.rows
+            if self.bundle is not None
+            else (
+                self._prepared_request.compiled.rows if self._prepared_request is not None else ()
+            )
+        )
         return RunSetState(
             run_set_id=self.run_set_id,
-            rows=(
-                {row.row_id: RowState() for row in self.bundle.rows}
-                if self.bundle is not None
-                else {}
-            ),
+            rows={row.row_id: RowState() for row in prepared_rows},
             stages={stage_id: StageState() for stage_id in STAGE_ORDER},
         )
 
@@ -774,13 +787,22 @@ class StageEngine:
             assert self.assembly_registry is not None
             run_set_dir = _request_run_set_dir(self.request, self.run_set_id)
             request_path = run_set_dir / "assembly-request.json"
+            if self._prepared_request is None:
+                self.bundle = assemble_run_bundle(
+                    self.request,
+                    run_set_id=self.run_set_id,
+                    context=self.assembly_context,
+                    registry=self.assembly_registry,
+                )
+            else:
+                self.bundle = _persist_prepared_run_bundle(
+                    self.request,
+                    prepared=self._prepared_request,
+                    run_set_id=self.run_set_id,
+                    context=self.assembly_context,
+                )
+                self._prepared_request = None
             request_sha256 = persist_assembly_request(self.request, request_path)
-            self.bundle = assemble_run_bundle(
-                self.request,
-                run_set_id=self.run_set_id,
-                context=self.assembly_context,
-                registry=self.assembly_registry,
-            )
             assert self.driver_factory is not None
             self.driver = self.driver_factory(self.bundle)
             if not self._poll_interval_explicit:
@@ -824,6 +846,24 @@ class StageEngine:
                 }
             )
         return state, outputs
+
+    def _preflight_request_before_output(self) -> None:
+        """Run pure governed evaluation checks before the run-set output root exists."""
+        if (
+            self.request is None
+            or self.request.evaluation_output_preflight is None
+            or self.bundle is not None
+            or self.store.path.exists()
+        ):
+            return
+        assert self.assembly_context is not None
+        assert self.assembly_registry is not None
+        self._prepared_request = _prepare_run_assembly(
+            self.request,
+            run_set_id=self.run_set_id,
+            context=self.assembly_context,
+            registry=self.assembly_registry,
+        )
 
     def _hydrate_completed_assembly(self, state: RunSetState) -> RunSetState:
         """Load and verify the persisted v3 bundle when resuming after ASSEMBLE."""
@@ -1164,9 +1204,7 @@ class StageEngine:
                     record.pod_id,
                     timeout_seconds=max(0.0, deadline - self._monotonic()),
                 )
-                adopted_provision_record = self.driver.adopted_provision_record(
-                    original.intent_id
-                )
+                adopted_provision_record = self.driver.adopted_provision_record(original.intent_id)
                 adopted_state = state.model_copy(
                     update={"provision_record": adopted_provision_record}
                 )
@@ -1619,7 +1657,9 @@ class StageEngine:
                         "detail": str(exc),
                     }
                 )
-            missing_outputs = _missing_declared_collection_outputs(row, outputs)
+            missing_outputs = executor_family_adapter(
+                row.execution_family
+            ).missing_collection_outputs(self.bundle, row, outputs)
             if missing_outputs:
                 evidence = {
                     "kind": "absent_collection_outputs",
@@ -1657,6 +1697,25 @@ class StageEngine:
             state = state.with_row(row.row_id, row_state)
             self.store.save(state)
         stage_outputs: dict[str, Any] = {"rows": collected}
+        if self.bundle.execution_family == "evaluation-matrix" and not executor_failures:
+            lifecycles = [
+                EvaluationLifecycleEvidence.model_validate_json(
+                    Path(collected[row.row_id]["evaluation-matrix-result.json"]).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                for row in self.bundle.rows
+            ]
+            ordered_union = evaluation_matrix_ordered_union(self.bundle, lifecycles)
+            union_path = self.bundle.run_set_dir / "evaluation-matrix-ordered-union.json"
+            union_path.write_text(
+                ordered_union.model_dump_json(indent=2) + "\n",
+                encoding="utf-8",
+            )
+            stage_outputs["evaluation_matrix_ordered_union"] = {
+                **ordered_union.model_dump(mode="json"),
+                "path": str(union_path),
+            }
         if checkpoint_custody:
             stage_outputs["checkpoint_custody"] = checkpoint_custody
         if collection_recovery:
@@ -1742,12 +1801,41 @@ class StageEngine:
             self._conformance_artifacts(row, state, observed_at=observed_at)
             for row in self.bundle.rows
         ]
+        certificate_registry = CheckRegistry(dict(self.conformance_registry.items()))
+        if self.bundle.execution_family == "evaluation-matrix":
+            certificate_registry.register(
+                "evaluation_lifecycle",
+                check_evaluation_lifecycle,
+            )
+        adapter_inapplicable = dict(
+            executor_family_adapter(
+                self.bundle.execution_family
+            ).declared_conformance_inapplicable()
+        )
+        registered_check_ids = {check_id for check_id, _ in certificate_registry.items()}
+        adapter_inapplicable = {
+            check_id: reason
+            for check_id, reason in adapter_inapplicable.items()
+            if check_id in registered_check_ids
+        }
+        authored_inapplicable = self.bundle.metadata.get("conformance_inapplicable", {})
+        if not isinstance(authored_inapplicable, Mapping):
+            raise OrchestrationStageError("conformance_inapplicable must be a mapping")
+        conflicts = adapter_inapplicable.keys() & authored_inapplicable.keys()
+        if conflicts:
+            raise OrchestrationStageError(
+                "executor-family conformance applicability is orchestration-owned; "
+                f"remove declarations for {sorted(conflicts)!r}"
+            )
         certificate = write_conformance_certificate(
             run_set_dir=self.bundle.run_set_dir,
             run_set_id=self.bundle.run_set_id,
             rows=rows,
-            registry=self.conformance_registry,
-            declared_inapplicable=self.bundle.metadata.get("conformance_inapplicable"),
+            registry=certificate_registry,
+            declared_inapplicable={
+                **dict(authored_inapplicable),
+                **adapter_inapplicable,
+            },
             generated_at=observed_at,
         )
         certificate_path = self.bundle.run_set_dir / "conformance.json"
@@ -1790,12 +1878,19 @@ class StageEngine:
                 # PREFLIGHT owns normalization diagnostics. CERTIFY records the
                 # absent normalized input as a failed manifest-valid verdict.
                 pass
+        evaluation_lifecycle = None
+        lifecycle_path = outputs.get("evaluation-matrix-result.json")
+        if isinstance(lifecycle_path, str):
+            evaluation_lifecycle = evaluation_lifecycle_payload(lifecycle_path)
         return ConformanceRowArtifacts(
             row_id=row.row_id,
             execution=row.execution,
             execution_identity_adapter=self._execution_identity_adapter(),
             schema_registry=(
                 self.assembly_context.schema_registry if self.assembly_context is not None else None
+            ),
+            authored_repo_root=(
+                self.assembly_context.repo_root if self.assembly_context is not None else None
             ),
             event_log=self.bundle.run_set_dir / "events" / f"{row.row_id}.events.jsonl",
             row_status=state.rows[row.row_id].status,
@@ -1812,6 +1907,7 @@ class StageEngine:
             realized_deployment_evidence=self._realized_deployment_evidence(
                 row, state, observed_at=observed_at
             ),
+            evaluation_lifecycle=evaluation_lifecycle,
         )
 
     def _realized_deployment_evidence(
@@ -2947,9 +3043,7 @@ def _preflight_schedule_realization(
 
 def _format_preflight_failures(failed: Sequence[PreflightCheckEntry]) -> str:
     """Render ordered named failures with their actionable details."""
-    rendered = [
-        f"{check.name}: {check.detail}" if check.detail else check.name for check in failed
-    ]
+    rendered = [f"{check.name}: {check.detail}" if check.detail else check.name for check in failed]
     return f"preflight failed: {'; '.join(rendered)}"
 
 

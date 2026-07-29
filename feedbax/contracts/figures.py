@@ -22,6 +22,33 @@ color and enables the ``{value}`` substitution token), and
 instead of as per-family blocks). All three are optional None-defaults, so a
 family declared without them expands exactly as before and every pre-existing
 spec keeps its canonical JSON and figure-manifest identity bytes.
+
+Additive changelog, 2026-07-27: ``FigureSpec.input_authorities`` accepts the
+versioned ``FigureInputRoleAuthority`` form. It selects exactly one already
+declared input by role and resolves to that input's complete ``ParentRef``;
+the existing exact-parent authority form and its canonical bytes are unchanged.
+
+Additive changelog, 2026-07-27: ``FigureSpec.slot_families`` accepts optional
+versioned ``FigureSlotFamily`` declarations. Each declaration binds one
+template slot from an explicit row table and expands to ordinary
+``TraceBinding`` values before template validation. The field is an optional
+None-default, so pre-existing FigureSpec and FigureTemplate identity bytes and
+schema versions are unchanged.
+
+Additive changelog, 2026-07-27: figure-constructor data may carry the versioned
+``PerturbationTiming`` contract. It declares bounded, nominal, or full-trial
+applicability plus the authored sample schedule. Constructor data remains
+unchanged when timing is absent.
+
+Additive changelog, 2026-07-28: ``PanelSpec.equal_data_aspect`` accepts the
+versioned ``EqualDataAspect`` declaration. It requests exact 1:1 linear data
+units from a supporting panel assembler. The field is an optional None-default,
+so existing panel and figure identity bytes are unchanged.
+
+Additive changelog, 2026-07-28: ``FigureColorbar.placement`` accepts the
+versioned ``ColorbarPanelPlacement`` declaration. It sizes and positions a
+colorbar relative to one resolved grid panel. The field is an optional
+None-default, so existing colorbar and figure identity bytes are unchanged.
 """
 
 from __future__ import annotations
@@ -43,14 +70,28 @@ FIGURE_SPEC_SCHEMA_ID = "feedbax.spec.figure"
 FIGURE_SPEC_SCHEMA_VERSION = "feedbax.spec.figure.v2"
 FIGURE_INPUT_AUTHORITY_SCHEMA_ID = "feedbax.spec.figure_input_authority"
 FIGURE_INPUT_AUTHORITY_SCHEMA_VERSION = "feedbax.spec.figure_input_authority.v1"
+FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID = "feedbax.spec.figure_input_role_authority"
+FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION = "feedbax.spec.figure_input_role_authority.v1"
 FIGURE_TEMPLATE_SCHEMA_ID = "feedbax.spec.figure_template"
 FIGURE_TEMPLATE_SCHEMA_VERSION = "feedbax.spec.figure_template.v1"
 FIGURE_PIECE_SCHEMA_ID = "feedbax.spec.figure_piece"
 FIGURE_PIECE_SCHEMA_VERSION = "feedbax.spec.figure_piece.v1"
 FIGURE_TRACE_FAMILY_SCHEMA_ID = "feedbax.spec.figure_trace_family"
 FIGURE_TRACE_FAMILY_SCHEMA_VERSION = "feedbax.spec.figure_trace_family.v1"
+FIGURE_SLOT_FAMILY_SCHEMA_ID = "feedbax.spec.figure_slot_family"
+FIGURE_SLOT_FAMILY_SCHEMA_VERSION = "feedbax.spec.figure_slot_family.v1"
 FIGURE_COLORBAR_SCHEMA_ID = "feedbax.spec.figure_colorbar"
 FIGURE_COLORBAR_SCHEMA_VERSION = "feedbax.spec.figure_colorbar.v1"
+COLORBAR_PANEL_PLACEMENT_SCHEMA_ID = "feedbax.spec.colorbar_panel_placement"
+COLORBAR_PANEL_PLACEMENT_SCHEMA_VERSION = "feedbax.spec.colorbar_panel_placement.v1"
+PERTURBATION_TIMING_SCHEMA_ID = "feedbax.spec.perturbation_timing"
+PERTURBATION_TIMING_SCHEMA_VERSION = "feedbax.spec.perturbation_timing.v1"
+EQUAL_DATA_ASPECT_SCHEMA_ID = "feedbax.spec.equal_data_aspect"
+EQUAL_DATA_ASPECT_SCHEMA_VERSION = "feedbax.spec.equal_data_aspect.v1"
+FIGURE_RUNTIME_BINDING_SCHEMA_ID = "feedbax.spec.figure_runtime_binding"
+FIGURE_RUNTIME_BINDING_SCHEMA_VERSION = "feedbax.spec.figure_runtime_binding.v1"
+FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID = "feedbax.spec.figure_data_product_payload"
+FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION = "feedbax.spec.figure_data_product_payload.v1"
 
 #: The two substitution tokens the figure contract understands. Trace families
 #: are indexed substitution, deliberately not a templating or expression
@@ -72,6 +113,58 @@ FacetTarget = Literal["figures", "panels"]
 ColorscaleSpec: TypeAlias = str | list[str] | list[tuple[float, str]]
 
 
+class PerturbationTiming(StrictModel):
+    """Authored perturbation applicability and discrete sample schedule.
+
+    ``bounded`` timing names the first affected sample and the number of
+    affected samples. ``nominal`` and ``full_trial`` are explicit no-marker
+    cases and therefore forbid bounded interval fields. ``sample_count`` is
+    always required so every consuming constructor can authenticate the
+    schedule against the coordinates it actually plots.
+    """
+
+    schema_id: str = PERTURBATION_TIMING_SCHEMA_ID
+    schema_version: str = PERTURBATION_TIMING_SCHEMA_VERSION
+    applicability: Literal["bounded", "nominal", "full_trial"]
+    sample_count: int = Field(gt=0)
+    start_index: int | None = Field(default=None, ge=0)
+    duration: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _validate_schedule(self) -> "PerturbationTiming":
+        if self.schema_id != PERTURBATION_TIMING_SCHEMA_ID:
+            raise ValueError(f"unsupported PerturbationTiming schema_id: {self.schema_id!r}")
+        if self.schema_version != PERTURBATION_TIMING_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported PerturbationTiming schema_version: "
+                f"{self.schema_version!r}"
+            )
+        if self.applicability == "bounded":
+            if self.start_index is None or self.duration is None:
+                raise ValueError(
+                    "bounded PerturbationTiming requires start_index and duration"
+                )
+            if self.start_index + self.duration > self.sample_count:
+                raise ValueError(
+                    "bounded PerturbationTiming exceeds sample_count: "
+                    f"start_index {self.start_index} + duration {self.duration} "
+                    f"> sample_count {self.sample_count}"
+                )
+        elif self.start_index is not None or self.duration is not None:
+            raise ValueError(
+                f"{self.applicability} PerturbationTiming forbids start_index and duration"
+            )
+        return self
+
+    def affected_range(self) -> tuple[int, int] | None:
+        """Return the half-open affected sample range, or no bounded range."""
+        if self.applicability != "bounded":
+            return None
+        assert self.start_index is not None
+        assert self.duration is not None
+        return self.start_index, self.start_index + self.duration
+
+
 class AxisLabels(StrictModel):
     """Per-panel axis labels."""
 
@@ -86,6 +179,27 @@ class PanelAxis(StrictModel):
     range: tuple[float, float] | None = None
 
 
+class EqualDataAspect(StrictModel):
+    """Request exact 1:1 linear data units for one panel."""
+
+    schema_id: str = EQUAL_DATA_ASPECT_SCHEMA_ID
+    schema_version: str = EQUAL_DATA_ASPECT_SCHEMA_VERSION
+    ratio: Literal[1] = 1
+
+    @model_validator(mode="after")
+    def _validate_schema_identity(self) -> "EqualDataAspect":
+        if self.schema_id != EQUAL_DATA_ASPECT_SCHEMA_ID:
+            raise ValueError(
+                f"unsupported EqualDataAspect schema_id: {self.schema_id!r}"
+            )
+        if self.schema_version != EQUAL_DATA_ASPECT_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported EqualDataAspect schema_version: "
+                f"{self.schema_version!r}"
+            )
+        return self
+
+
 class TraceBinding(StrictModel):
     """One logical trace group in a declarative figure."""
 
@@ -97,6 +211,124 @@ class TraceBinding(StrictModel):
     include_when: Expr | None = None
     required: bool = False
     panel: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_perturbation_timing_identity(self) -> "TraceBinding":
+        raw = self.data.get("perturbation_timing")
+        if raw is None or isinstance(raw, PerturbationTiming):
+            return self
+        if not isinstance(raw, Mapping):
+            raise ValueError("TraceBinding perturbation_timing data must be a mapping")
+        if raw.get("schema_id") != PERTURBATION_TIMING_SCHEMA_ID:
+            raise ValueError(
+                "TraceBinding perturbation_timing requires explicit schema_id "
+                f"{PERTURBATION_TIMING_SCHEMA_ID!r}"
+            )
+        if raw.get("schema_version") != PERTURBATION_TIMING_SCHEMA_VERSION:
+            raise ValueError(
+                "TraceBinding perturbation_timing requires explicit schema_version "
+                f"{PERTURBATION_TIMING_SCHEMA_VERSION!r}"
+            )
+        return self
+
+
+class FigureSlotFamilyRow(StrictModel):
+    """One explicit row in a compact template-slot family.
+
+    Every supported varying field is named directly. Nullable fields are still
+    required in serialized rows, so an omitted label, color, marker, or panel
+    cannot be mistaken for an authoring oversight; use ``null`` deliberately.
+    ``data_paths`` maps constructor data argument names to existing figure
+    value expressions and provides no interpolation or expression syntax of
+    its own.
+    """
+
+    name: str
+    panel: str | None
+    data_paths: dict[str, ValueExpr]
+    label: str | None
+    color: str | None
+    marker: str | None
+
+
+class FigureSlotFamily(StrictModel):
+    """A constrained row family that supplies one figure-template slot."""
+
+    schema_id: str = FIGURE_SLOT_FAMILY_SCHEMA_ID
+    schema_version: str = FIGURE_SLOT_FAMILY_SCHEMA_VERSION
+    name: str
+    slot: str
+    rows: list[FigureSlotFamilyRow] = Field(min_length=1)
+    constructor: str = ""
+    data: dict[str, ValueExpr | Any] = Field(default_factory=dict)
+    params: dict[str, Any] = Field(default_factory=dict)
+    required: bool = False
+
+    @model_validator(mode="after")
+    def _validate_family(self) -> "FigureSlotFamily":
+        if self.schema_id != FIGURE_SLOT_FAMILY_SCHEMA_ID:
+            raise ValueError(f"unsupported FigureSlotFamily schema_id: {self.schema_id!r}")
+        if self.schema_version != FIGURE_SLOT_FAMILY_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported FigureSlotFamily schema_version: {self.schema_version!r}"
+            )
+        if not self.name:
+            raise ValueError("FigureSlotFamily name must be nonempty")
+        if not self.slot:
+            raise ValueError("FigureSlotFamily slot must be nonempty")
+        collisions = _name_collisions([row.name for row in self.rows])
+        if collisions:
+            raise ValueError(
+                f"FigureSlotFamily {self.name!r} rows have duplicate trace names: {collisions}"
+            )
+        for row in self.rows:
+            overlap = sorted(set(self.data) & set(row.data_paths))
+            if overlap:
+                raise ValueError(
+                    f"FigureSlotFamily {self.name!r} row {row.name!r} data paths collide "
+                    f"with common data keys: {overlap}"
+                )
+            row_params = {
+                key
+                for key, value in (
+                    ("label", row.label),
+                    ("color", row.color),
+                    ("marker_symbol", row.marker),
+                )
+                if value is not None
+            }
+            param_overlap = sorted(set(self.params) & row_params)
+            if param_overlap:
+                raise ValueError(
+                    f"FigureSlotFamily {self.name!r} row {row.name!r} fields collide "
+                    f"with common params: {param_overlap}"
+                )
+        return self
+
+    def expand(self) -> tuple[TraceBinding, ...]:
+        """Expand rows deterministically into ordinary concrete bindings."""
+        bindings: list[TraceBinding] = []
+        for row in self.rows:
+            row_params = {
+                key: value
+                for key, value in (
+                    ("label", row.label),
+                    ("color", row.color),
+                    ("marker_symbol", row.marker),
+                )
+                if value is not None
+            }
+            bindings.append(
+                TraceBinding(
+                    name=row.name,
+                    constructor=self.constructor,
+                    data={**self.data, **row.data_paths},
+                    params={**self.params, **row_params},
+                    required=self.required,
+                    panel=row.panel,
+                )
+            )
+        return tuple(bindings)
 
 
 def _name_collisions(names: Sequence[str]) -> list[str]:
@@ -374,6 +606,38 @@ class TraceFamily(StrictModel):
         )
 
 
+class ColorbarPanelPlacement(StrictModel):
+    """Size and position a colorbar relative to one resolved grid panel."""
+
+    schema_id: str = COLORBAR_PANEL_PLACEMENT_SCHEMA_ID
+    schema_version: str = COLORBAR_PANEL_PLACEMENT_SCHEMA_VERSION
+    panel: str = Field(min_length=1)
+    length_fraction: float = Field(gt=0.0, le=1.0)
+    center_fraction: float = Field(default=0.5, ge=0.0, le=1.0)
+    side: Literal["left", "right"] = "right"
+    offset_fraction: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _validate_placement(self) -> "ColorbarPanelPlacement":
+        if self.schema_id != COLORBAR_PANEL_PLACEMENT_SCHEMA_ID:
+            raise ValueError(
+                "unsupported ColorbarPanelPlacement schema_id: "
+                f"{self.schema_id!r}"
+            )
+        if self.schema_version != COLORBAR_PANEL_PLACEMENT_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported ColorbarPanelPlacement schema_version: "
+                f"{self.schema_version!r}"
+            )
+        half_length = self.length_fraction / 2.0
+        if not half_length <= self.center_fraction <= 1.0 - half_length:
+            raise ValueError(
+                "ColorbarPanelPlacement center_fraction and length_fraction "
+                "would extend outside the selected panel"
+            )
+        return self
+
+
 class FigureColorbar(StrictModel):
     """The declared key for a figure's color mapping.
 
@@ -403,6 +667,7 @@ class FigureColorbar(StrictModel):
     colorscale: ColorscaleSpec | None = None
     range: tuple[float, float] | None = None
     family: str | None = None
+    placement: ColorbarPanelPlacement | None = None
 
     @model_validator(mode="after")
     def _validate_colorbar(self) -> "FigureColorbar":
@@ -436,8 +701,25 @@ class PanelSpec(StrictModel):
     axes_labels: AxisLabels | None = None
     x_axis: PanelAxis | None = None
     y_axis: PanelAxis | None = None
+    equal_data_aspect: EqualDataAspect | None = None
     row: int | None = None
     col: int | None = None
+
+    @model_validator(mode="after")
+    def _validate_equal_data_aspect(self) -> "PanelSpec":
+        if self.equal_data_aspect is None:
+            return self
+        nonlinear = [
+            name
+            for name, axis in (("x_axis", self.x_axis), ("y_axis", self.y_axis))
+            if axis is not None and axis.type == "log"
+        ]
+        if nonlinear:
+            raise ValueError(
+                "PanelSpec equal_data_aspect requires linear axes; "
+                f"nonlinear declarations: {nonlinear}"
+            )
+        return self
 
 
 class FigureArtifactPayload(StrictModel):
@@ -460,13 +742,61 @@ class FigureArtifactPayload(StrictModel):
         return self
 
 
+class FigureDataProductArtifactPayload(StrictModel):
+    """Select one JSON artifact from one exact typed AnalysisDataProduct."""
+
+    schema_id: str = FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID
+    schema_version: str = FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION
+    name: str
+    authority: Literal["analysis_data_product"] = "analysis_data_product"
+    manifest_role: str
+    product_role: str
+    product_schema_id: str
+    product_schema_version: str
+    artifact_role: str
+    artifact_provider: str
+    media_type: str = "application/json"
+    manifest_status: Literal["completed"] = "completed"
+    payload_schema_id: str | None = None
+    payload_schema_version: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_identity(self) -> "FigureDataProductArtifactPayload":
+        if self.schema_id != FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID:
+            raise ValueError(
+                "unsupported FigureDataProductArtifactPayload schema_id: "
+                f"{self.schema_id!r}"
+            )
+        if self.schema_version != FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported FigureDataProductArtifactPayload schema_version: "
+                f"{self.schema_version!r}"
+            )
+        for field_name in (
+            "product_role",
+            "product_schema_id",
+            "product_schema_version",
+            "artifact_provider",
+        ):
+            if not getattr(self, field_name):
+                raise ValueError(
+                    f"FigureDataProductArtifactPayload {field_name} must be nonempty"
+                )
+        return self
+
+
+FigureArtifactPayloadSpec: TypeAlias = (
+    FigureArtifactPayload | FigureDataProductArtifactPayload
+)
+
+
 class FigureInputAuthority(StrictModel):
     """Portable authority requirements for one exact figure parent."""
 
     schema_id: str = FIGURE_INPUT_AUTHORITY_SCHEMA_ID
     schema_version: str = FIGURE_INPUT_AUTHORITY_SCHEMA_VERSION
     parent: ParentRef
-    artifact_payloads: list[FigureArtifactPayload] = Field(default_factory=list)
+    artifact_payloads: list[FigureArtifactPayloadSpec] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_identity(self) -> "FigureInputAuthority":
@@ -480,6 +810,117 @@ class FigureInputAuthority(StrictModel):
         names = [payload.name for payload in self.artifact_payloads]
         if len(names) != len(set(names)):
             raise ValueError("FigureInputAuthority artifact payload names must be unique")
+        return self
+
+
+class FigureInputRoleAuthority(StrictModel):
+    """Portable authority requirements for one uniquely role-addressed figure input."""
+
+    schema_id: str = FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID
+    schema_version: str = FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION
+    input_role: str
+    artifact_payloads: list[FigureArtifactPayloadSpec] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_identity(self) -> "FigureInputRoleAuthority":
+        if self.schema_id != FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID:
+            raise ValueError(
+                f"unsupported FigureInputRoleAuthority schema_id: {self.schema_id!r}"
+            )
+        if self.schema_version != FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported FigureInputRoleAuthority schema_version: "
+                f"{self.schema_version!r}"
+            )
+        if not self.input_role:
+            raise ValueError("FigureInputRoleAuthority input_role must be nonempty")
+        names = [payload.name for payload in self.artifact_payloads]
+        if len(names) != len(set(names)):
+            raise ValueError("FigureInputRoleAuthority artifact payload names must be unique")
+        return self
+
+    def resolve_parent(self, inputs: Sequence[ParentRef]) -> ParentRef:
+        """Resolve this selector to one exact declared parent or fail closed."""
+        matches_by_ref = {
+            parent.model_dump_json(): parent
+            for parent in inputs
+            if parent.role == self.input_role
+        }
+        matches = list(matches_by_ref.values())
+        if not matches:
+            raise ValueError(
+                f"FigureInputRoleAuthority input_role {self.input_role!r} matches no "
+                "declared FigureSpec input"
+            )
+        if len(matches) != 1:
+            raise ValueError(
+                f"FigureInputRoleAuthority input_role {self.input_role!r} is ambiguous "
+                f"across {len(matches)} declared FigureSpec inputs"
+            )
+        return matches[0]
+
+
+FigureInputAuthoritySpec: TypeAlias = FigureInputAuthority | FigureInputRoleAuthority
+
+
+class FigureRuntimeArtifactProviderBinding(StrictModel):
+    """One exact parent-scoped authored-to-runtime provider binding."""
+
+    parent: ParentRef
+    authored_provider: str
+    runtime_provider: str
+
+    @model_validator(mode="after")
+    def _validate_names(self) -> "FigureRuntimeArtifactProviderBinding":
+        from feedbax.contracts.staged_execution import validate_staged_binding_name
+
+        validate_staged_binding_name(self.authored_provider)
+        validate_staged_binding_name(self.runtime_provider)
+        return self
+
+
+class FigureRuntimeBindingSpec(StrictModel):
+    """Authenticated regeneration metadata kept outside authored FigureSpec identity."""
+
+    schema_id: str = FIGURE_RUNTIME_BINDING_SCHEMA_ID
+    schema_version: str = FIGURE_RUNTIME_BINDING_SCHEMA_VERSION
+    authored_figure_spec_sha256: str
+    inputs: list[ParentRef]
+    input_authorities: list[FigureInputAuthoritySpec]
+    runtime_metadata: dict[str, Any] = Field(default_factory=dict)
+    artifact_provider_bindings: list[FigureRuntimeArtifactProviderBinding]
+
+    @model_validator(mode="after")
+    def _validate_identity(self) -> "FigureRuntimeBindingSpec":
+        if self.schema_id != FIGURE_RUNTIME_BINDING_SCHEMA_ID:
+            raise ValueError(
+                f"unsupported FigureRuntimeBindingSpec schema_id: {self.schema_id!r}"
+            )
+        if self.schema_version != FIGURE_RUNTIME_BINDING_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported FigureRuntimeBindingSpec schema_version: "
+                f"{self.schema_version!r}"
+            )
+        if not re.fullmatch(r"[0-9a-f]{64}", self.authored_figure_spec_sha256):
+            raise ValueError(
+                "FigureRuntimeBindingSpec authored_figure_spec_sha256 must be lowercase sha256"
+            )
+        input_keys = {
+            parent.model_dump_json(exclude_none=False) for parent in self.inputs
+        }
+        binding_keys: set[tuple[str, str]] = set()
+        for binding in self.artifact_provider_bindings:
+            parent_key = binding.parent.model_dump_json(exclude_none=False)
+            if parent_key not in input_keys:
+                raise ValueError(
+                    "FigureRuntimeBindingSpec provider binding parent is not a runtime input"
+                )
+            key = (parent_key, binding.authored_provider)
+            if key in binding_keys:
+                raise ValueError(
+                    "FigureRuntimeBindingSpec has a duplicate exact-parent provider binding"
+                )
+            binding_keys.add(key)
         return self
 
 
@@ -522,6 +963,9 @@ class FigureTemplate(StrictModel):
             )
         if len(set(self.facet_by)) != len(self.facet_by):
             raise ValueError("FigureTemplate facet_by entries must be unique")
+        slot_collisions = _name_collisions([slot.name for slot in self.slots])
+        if slot_collisions:
+            raise ValueError(f"FigureTemplate slot names collide: {slot_collisions}")
         if any(slot.multiplicity == "per_facet" for slot in self.slots) and not self.facet_by:
             raise ValueError(
                 "FigureTemplate per_facet slots require at least one facet_by dimension"
@@ -579,8 +1023,11 @@ class FigureSpec(StrictModel):
     assembler: str | None = None
     assembler_params: dict[str, Any] = Field(default_factory=dict)
     inputs: list[ParentRef] = Field(default_factory=list)
-    input_authorities: list[FigureInputAuthority] = Field(default_factory=list)
+    input_authorities: list[FigureInputAuthoritySpec] = Field(default_factory=list)
     slot_bindings: dict[str, TraceBinding | list[TraceBinding]] = Field(default_factory=dict)
+    # None-default preserves canonical bytes for FigureSpec documents authored
+    # before compact template-slot families existed.
+    slot_families: list[FigureSlotFamily] | None = None
     traces: list[TraceBinding] = Field(default_factory=list)
     # None-default so per-trace specs authored before trace families keep their
     # exact canonical JSON, spec payload, and figure-manifest identity bytes.
@@ -608,15 +1055,43 @@ class FigureSpec(StrictModel):
             )
         if self.template is None and self.assembler is None:
             raise ValueError("FigureSpec without template requires assembler")
-        authority_parents = [authority.parent for authority in self.input_authorities]
+        authority_parents = [
+            (
+                authority.parent
+                if isinstance(authority, FigureInputAuthority)
+                else authority.resolve_parent(self.inputs)
+            )
+            for authority in self.input_authorities
+        ]
         if len(authority_parents) != len({parent.model_dump_json() for parent in authority_parents}):
-            raise ValueError("FigureSpec input_authorities contain a duplicate exact ParentRef")
+            raise ValueError(
+                "FigureSpec input_authorities resolve to a duplicate exact ParentRef"
+            )
         unknown = [parent for parent in authority_parents if parent not in self.inputs]
         if unknown:
             raise ValueError("FigureSpec input authority parent must exactly match a declared input")
+        self._validate_slot_families()
         self._validate_trace_families()
+        self._validate_trace_names()
         self._validate_colorbar_binding()
         return self
+
+    def _validate_slot_families(self) -> None:
+        families = self.slot_families or []
+        family_collisions = _name_collisions([family.name for family in families])
+        if family_collisions:
+            raise ValueError(f"FigureSpec slot_families names collide: {family_collisions}")
+        slot_collisions = _name_collisions([family.slot for family in families])
+        if slot_collisions:
+            raise ValueError(
+                f"FigureSpec slot_families bind the same slot more than once: {slot_collisions}"
+            )
+        concrete_collisions = sorted(set(self.slot_bindings) & {family.slot for family in families})
+        if concrete_collisions:
+            raise ValueError(
+                "FigureSpec slots are bound by both slot_bindings and slot_families: "
+                f"{concrete_collisions}"
+            )
 
     def _validate_trace_families(self) -> None:
         families = self.trace_families or []
@@ -625,16 +1100,24 @@ class FigureSpec(StrictModel):
         family_collisions = _name_collisions([family.name for family in families])
         if family_collisions:
             raise ValueError(f"FigureSpec trace_families names collide: {family_collisions}")
-        expanded = [name for family in families for name in family.expanded_trace_names()]
-        declared = {trace.name for trace in self.traces}
-        collisions = sorted(
-            set(_name_collisions(expanded)) | (set(expanded) & declared)
+        self._validate_interleave_groups(families)
+
+    def _validate_trace_names(self) -> None:
+        names = [trace.name for trace in self.traces]
+        for raw in self.slot_bindings.values():
+            names.extend(binding.name for binding in (raw if isinstance(raw, list) else [raw]))
+        names.extend(
+            binding.name for family in (self.slot_families or []) for binding in family.expand()
         )
+        names.extend(
+            name for family in (self.trace_families or []) for name in family.expanded_trace_names()
+        )
+        collisions = _name_collisions(names)
         if collisions:
             raise ValueError(
-                f"FigureSpec trace family expansion collides with other trace names: {collisions}"
+                "FigureSpec trace family or slot-family expansion collides with other "
+                f"trace names: {collisions}"
             )
-        self._validate_interleave_groups(families)
 
     @staticmethod
     def _validate_interleave_groups(families: Sequence[TraceFamily]) -> None:

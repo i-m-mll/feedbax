@@ -61,9 +61,14 @@ from feedbax.intervene.intervene import (
     NetworkClamp,
     NetworkConstantInput,
     NetworkIntervenorParams,
+    ThresholdLatchedForce,
+    ThresholdLatchedForceParams,
 )
 from feedbax.objectives.loss import CompositeLoss
-from feedbax.mechanics.linear_state_space import LinearStateSpace
+from feedbax.mechanics.linear_state_space import (
+    LinearStateSpace,
+    StructuralLinearStateSpace,
+)
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 from feedbax.mechanics.backend import DiffraxBackend
 from feedbax.mechanics.body import BodyPreset, default_2link_bounds
@@ -818,6 +823,23 @@ def _build_fixed_field(params: Mapping[str, Any]) -> FixedField:
     )
 
 
+def _build_threshold_latched_force(params: Mapping[str, Any]) -> ThresholdLatchedForce:
+    return ThresholdLatchedForce(
+        state_selector=params["state_selector"],
+        direction=str(params["direction"]),
+        dt=float(params["dt"]),
+        params=ThresholdLatchedForceParams(
+            scale=float(params.get("scale", 1.0)),
+            active=bool(params.get("active", False)),
+            threshold=float(params["threshold"]),
+            force=jnp.asarray(params["force"]),
+            lateral_force=float(params.get("lateral_force", 0.0)),
+            ramp_duration=float(params.get("ramp_duration", 0.0)),
+        ),
+        label=str(params.get("label", "threshold_latched_force")),
+    )
+
+
 def _build_dynamics_matrix_perturb(params: Mapping[str, Any]) -> DynamicsMatrixPerturb:
     if "mass" not in params or params["mass"] is None:
         raise ValueError(
@@ -836,6 +858,28 @@ def _build_dynamics_matrix_perturb(params: Mapping[str, Any]) -> DynamicsMatrixP
         ),
         label=str(params.get("label", "dynamics_matrix_perturb")),
         mass=float(params["mass"]),
+    )
+
+
+def _build_structural_linear_state_space(
+    params: Mapping[str, Any],
+) -> StructuralLinearStateSpace:
+    return StructuralLinearStateSpace(
+        A=jnp.asarray(params["A"]),
+        B=jnp.asarray(params["B"]),
+        delta_A=params["delta_A"],
+        B_w=None if params.get("B_w") is None else jnp.asarray(params["B_w"]),
+        dt=float(params.get("dt", 1.0)),
+        initial_state=(
+            None
+            if params.get("initial_state") is None
+            else jnp.asarray(params["initial_state"])
+        ),
+        pos_slice=tuple(params.get("pos_slice", (0, 2))),
+        vel_slice=tuple(params.get("vel_slice", (2, 4))),
+        scale=float(params.get("scale", 1.0)),
+        active=bool(params.get("active", False)),
+        label=str(params.get("label", "structural_linear_dynamics")),
     )
 
 
@@ -902,6 +946,7 @@ _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     ),
     "AnalyticalMusculoskeletalPlant": _build_analytical_musculoskeletal_plant,
     "LinearStateSpace": _build_linear_state_space,
+    "StructuralLinearStateSpace": _build_structural_linear_state_space,
     "StateFeedbackSelector": build_state_feedback_selector,
     "AffineFeedbackController": build_affine_feedback_controller,
     "Channel": _build_channel,
@@ -909,6 +954,7 @@ _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "FirstOrderFilter": _build_filter,
     "CurlField": _build_curl_field,
     "FixedField": _build_fixed_field,
+    "ThresholdLatchedForce": _build_threshold_latched_force,
     "DynamicsMatrixPerturb": _build_dynamics_matrix_perturb,
     "AffineValueComposer": _build_affine_value_composer,
     "AddNoise": lambda params: AddNoise(

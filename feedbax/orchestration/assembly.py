@@ -4,14 +4,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol
+from typing import TYPE_CHECKING, Annotated, Any, Callable, Mapping, Protocol
 
 from pydantic import Field, JsonValue, model_validator
 
 from feedbax.contracts.manifest import StrictModel
-from feedbax.contracts.run_matrix import TrainingRowProvenance
+from feedbax.contracts.evaluation_lifecycle import EvaluationMatrixBatchPlan
+from feedbax.contracts.evaluation_preflight import (
+    EvaluationOutputPreflightEvidence,
+    EvaluationOutputPreflightPolicy,
+)
+from feedbax.contracts.run_composition import (
+    AuthoredIntentParent,
+    CompositionNode,
+    ResolvedOutputParent,
+    authored_envelope_hash,
+)
+from feedbax.contracts.run_matrix import TrainingRowParentProvenance, TrainingRowProvenance
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.spec_storage import (
     build_resolved_semantics_snapshot,
@@ -19,6 +32,7 @@ from feedbax.contracts.spec_storage import (
     store_canonical_json_artifact,
     training_run_execution_hash,
     training_spec_canonical_bytes,
+    training_spec_sha256,
 )
 from feedbax.orchestration.bundle import (
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
@@ -29,6 +43,7 @@ from feedbax.orchestration.bundle import (
     EnvironmentDeclaration,
     ExecutionCapsuleRef,
     ExecutionIdentityEnvelope,
+    ExecutionFamily,
     ImmutableInputIdentity,
     LaunchPolicy,
     ResolvedSnapshotRef,
@@ -37,8 +52,14 @@ from feedbax.orchestration.bundle import (
     RunBundle,
     RunRowSpec,
     SchemaArtifactRef,
+    default_orchestration_root,
 )
 from feedbax.orchestration.revision import resolve_feedbax_revision
+from feedbax.orchestration.staged_root_custody import StagedRootCustody
+from feedbax.training.row_lowering import (
+    GovernedTrainingRowParent,
+    TrainingRowLoweringContext,
+)
 
 if TYPE_CHECKING:
     from feedbax.contracts.migrations import SpecMigrationResult, SpecSchemaRegistry
@@ -46,7 +67,10 @@ if TYPE_CHECKING:
 
 RUN_ASSEMBLY_REQUEST_SCHEMA_ID = "feedbax.spec.run_assembly_request"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v1"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v2"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V2 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v2"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v3"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v4"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v5"
 
 
 class CompilerIdentity(StrictModel):
@@ -72,6 +96,17 @@ class AssemblyInputDeclaration(StrictModel):
         return self
 
 
+class GovernedTrainingRowParentDeclaration(StrictModel):
+    """One content-pinned composition parent available during row lowering."""
+
+    role: str = Field(min_length=1)
+    parent: Annotated[
+        AuthoredIntentParent | ResolvedOutputParent,
+        Field(discriminator="kind"),
+    ]
+    artifact: SchemaArtifactRef
+
+
 class RunAssemblyRequest(StrictModel):
     """Durable authored input consumed by the persisted ASSEMBLE stage."""
 
@@ -80,6 +115,10 @@ class RunAssemblyRequest(StrictModel):
     authored: SchemaArtifactRef
     compiler: CompilerIdentity
     inputs: list[AssemblyInputDeclaration] = Field(default_factory=list)
+    training_row_parents: list[GovernedTrainingRowParentDeclaration] = Field(default_factory=list)
+    staged_roots: list[StagedRootCustody] = Field(default_factory=list)
+    evaluation_batch_plan: EvaluationMatrixBatchPlan | None = None
+    evaluation_output_preflight: EvaluationOutputPreflightPolicy | None = None
     deployment_policy: DeploymentPolicy
     environment: EnvironmentDeclaration
     launch_policy: LaunchPolicy = Field(default_factory=LaunchPolicy)
@@ -96,6 +135,14 @@ class RunAssemblyRequest(StrictModel):
             raise ValueError("unsupported run assembly request schema_id")
         if self.schema_version != RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION:
             raise ValueError("unsupported run assembly request schema_version")
+        keys = [(item.parent.kind, item.parent.ref) for item in self.training_row_parents]
+        if len(keys) != len(set(keys)):
+            raise ValueError("training_row_parents contain ambiguous kind/ref declarations")
+        staged_root_keys = [(item.root_kind, item.binding_name) for item in self.staged_roots]
+        if staged_root_keys != sorted(staged_root_keys):
+            raise ValueError("staged_roots must be in canonical (root_kind, binding_name) order")
+        if len(staged_root_keys) != len(set(staged_root_keys)):
+            raise ValueError("staged_roots contain duplicate typed binding names")
         return self
 
 
@@ -103,6 +150,7 @@ class CompiledExecutionRow(StrictModel):
     """Pure compiler output before ASSEMBLE writes custody artifacts."""
 
     row_id: str = Field(min_length=1)
+    execution_family: ExecutionFamily = "native-training"
     payload: dict[str, JsonValue]
     resolved_semantics: dict[str, JsonValue]
     provenance: TrainingRowProvenance | None = None
@@ -188,6 +236,9 @@ class AssemblyContext:
     environment_digest: str | None = None
     authored_ref: SchemaArtifactRef | None = None
     resolved_inputs: tuple[ImmutableInputIdentity, ...] = ()
+    staged_roots: tuple[StagedRootCustody, ...] = ()
+    evaluation_batch_plan: EvaluationMatrixBatchPlan | None = None
+    training_row_lowering_context: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -197,6 +248,20 @@ class _CompilerRegistration:
     compiler_version: str
     compiler: AssemblyCompiler
     identity_adapter: ExecutionIdentityAdapter
+
+
+@dataclass(frozen=True)
+class _PreparedRunAssembly:
+    """Pure assembly result retained before any compiled row custody writes."""
+
+    request_sha256: str
+    run_set_id: str
+    authored_result: "SpecMigrationResult"
+    authored: dict[str, Any]
+    registration: _CompilerRegistration
+    resolved_input_records: tuple[ResolvedAssemblyInput, ...]
+    compiled: CompiledRunSet
+    evaluation_output_preflight: EvaluationOutputPreflightEvidence | None
 
 
 class AssemblyCompilerRegistry:
@@ -231,16 +296,22 @@ class AssemblyCompilerRegistry:
             return self._entries[key]
         except KeyError as exc:
             known = ", ".join(repr(item) for item in sorted(self._entries)) or "<none>"
-            raise ValueError(f"no assembly compiler registered for {key!r}; known: {known}") from exc
+            raise ValueError(
+                f"no assembly compiler registered for {key!r}; known: {known}"
+            ) from exc
 
 
 def build_default_assembly_registry() -> AssemblyCompilerRegistry:
     """Return Feedbax's built-in training-matrix and Studio compiler registry."""
+    from feedbax.analysis.evaluation_orchestration import (
+        register_evaluation_run_matrix_compiler,
+    )
     from feedbax.contracts.studio_training import register_studio_training_compiler
     from feedbax.training.spec_storage import register_training_run_matrix_compiler
 
     registry = AssemblyCompilerRegistry()
     register_training_run_matrix_compiler(registry)
+    register_evaluation_run_matrix_compiler(registry)
     register_studio_training_compiler(registry)
     return registry
 
@@ -273,7 +344,10 @@ def load_schema_artifact(
     payload = json.loads(data)
     if not isinstance(payload, dict):
         raise ValueError("registered structured artifact must contain a JSON object")
-    if payload.get("schema_id") != ref.schema_id or payload.get("schema_version") != ref.schema_version:
+    if (
+        payload.get("schema_id") != ref.schema_id
+        or payload.get("schema_version") != ref.schema_version
+    ):
         raise ValueError("artifact schema identity/version does not match its SchemaArtifactRef")
     registry = context.schema_registry
     if registry is None:
@@ -310,9 +384,7 @@ def persist_compiled_row(
         immutable_inputs=canonical_inputs,
         execution_hash=execution_hash,
     )
-    capsule = dict(
-        identity_adapter.build_capsule(row, identities=identities, context=context)
-    )
+    capsule = dict(identity_adapter.build_capsule(row, identities=identities, context=context))
     if not isinstance(capsule.get("schema_id"), str) or not isinstance(
         capsule.get("schema_version"), str
     ):
@@ -372,28 +444,35 @@ def assemble_run_bundle(
     registry: AssemblyCompilerRegistry,
 ) -> RunBundle:
     """Compile a verified authored request and persist a current RunBundle."""
-    authored_result = load_schema_artifact(request.authored, context=context)
-    authored = authored_result.payload
-    registration = registry.resolve(request)
-    resolved_input_records = sorted(
-        (_resolve_input(item, context=context) for item in request.inputs),
-        key=lambda item: (item.identity.role, item.identity.kind, item.identity.identifier),
-    )
-    resolved_inputs = [item.identity for item in resolved_input_records]
-    compiler_context = replace(context, resolved_inputs=tuple(resolved_inputs))
-    compiled = registration.compiler.compile(
-        authored=authored,
+    prepared = _prepare_run_assembly(
+        request,
         run_set_id=run_set_id,
-        context=compiler_context,
+        context=context,
+        registry=registry,
     )
-    if resolved_inputs:
-        declared = canonicalize_immutable_input_identities(resolved_inputs)
-        for row in compiled.rows:
-            row_inputs = canonicalize_immutable_input_identities(row.immutable_inputs)
-            if row_inputs != declared:
-                raise ValueError(
-                    f"compiled row {row.row_id!r} immutable inputs do not match resolved request inputs"
-                )
+    return _persist_prepared_run_bundle(
+        request,
+        prepared=prepared,
+        run_set_id=run_set_id,
+        context=context,
+    )
+
+
+def _persist_prepared_run_bundle(
+    request: RunAssemblyRequest,
+    *,
+    prepared: _PreparedRunAssembly,
+    run_set_id: str,
+    context: AssemblyContext,
+) -> RunBundle:
+    """Persist rows from one already checked pure assembly result."""
+    request_sha256 = hashlib.sha256(training_spec_canonical_bytes(request)).hexdigest()
+    if prepared.request_sha256 != request_sha256 or prepared.run_set_id != run_set_id:
+        raise ValueError("prepared run assembly does not match the request and run_set_id")
+    authored = prepared.authored
+    registration = prepared.registration
+    compiled = prepared.compiled
+    resolved_input_records = list(prepared.resolved_input_records)
     row_context = replace(context, authored_ref=request.authored)
     stored = [
         persist_compiled_row(
@@ -404,29 +483,266 @@ def assemble_run_bundle(
         )
         for row in compiled.rows
     ]
+    execution_family = compiled.rows[0].execution_family
     return RunBundle(
         run_set_id=run_set_id,
         feedbax_revision=resolve_feedbax_revision(),
         deployment_policy=request.deployment_policy,
-        migration_evidence=authored_result.migration_records,
+        execution_family=execution_family,
+        migration_evidence=prepared.authored_result.migration_records,
         rows=[
             RunRowSpec(
                 row_id=item.row_id,
+                execution_family=compiled.rows[index].execution_family,
                 execution=item.execution,
                 launch=item.launch,
             )
-            for item in stored
+            for index, item in enumerate(stored)
         ],
         environment=request.environment,
         launch_policy=request.launch_policy,
         budget=request.budget,
         resolved_inputs=resolved_input_records,
+        staged_roots=request.staged_roots,
+        evaluation_output_preflight=prepared.evaluation_output_preflight,
         orchestration_root=request.orchestration_root,
         keep_alive=request.keep_alive,
         deadman_enabled=request.deadman_enabled,
         deadman_silence_seconds=request.deadman_silence_seconds,
         metadata=request.metadata,
     )
+
+
+def _prepare_run_assembly(
+    request: RunAssemblyRequest,
+    *,
+    run_set_id: str,
+    context: AssemblyContext,
+    registry: AssemblyCompilerRegistry,
+) -> _PreparedRunAssembly:
+    """Resolve and compile one request without persisting compiled row artifacts."""
+    authored_result = load_schema_artifact(request.authored, context=context)
+    authored = dict(authored_result.payload)
+    registration = registry.resolve(request)
+    resolved_input_records = tuple(
+        sorted(
+            (_resolve_input(item, context=context) for item in request.inputs),
+            key=lambda item: (item.identity.role, item.identity.kind, item.identity.identifier),
+        )
+    )
+    resolved_inputs = [item.identity for item in resolved_input_records]
+    lowering_context = _resolve_training_row_parents(
+        request.training_row_parents,
+        context=context,
+    )
+    compiler_context = replace(
+        context,
+        resolved_inputs=tuple(resolved_inputs),
+        staged_roots=tuple(request.staged_roots),
+        evaluation_batch_plan=request.evaluation_batch_plan,
+        training_row_lowering_context=lowering_context,
+    )
+    compiled = registration.compiler.compile(
+        authored=authored,
+        run_set_id=run_set_id,
+        context=compiler_context,
+    )
+    evaluation_output_preflight = _preflight_evaluation_output(
+        request,
+        compiled=compiled,
+        run_set_id=run_set_id,
+    )
+    if resolved_inputs:
+        declared = canonicalize_immutable_input_identities(resolved_inputs)
+        for row in compiled.rows:
+            row_inputs = canonicalize_immutable_input_identities(row.immutable_inputs)
+            if row_inputs != declared:
+                raise ValueError(
+                    f"compiled row {row.row_id!r} immutable inputs do not match resolved request inputs"
+                )
+    execution_families = {row.execution_family for row in compiled.rows}
+    if len(execution_families) != 1:
+        raise ValueError("compiled run set must contain exactly one execution family")
+    return _PreparedRunAssembly(
+        request_sha256=hashlib.sha256(training_spec_canonical_bytes(request)).hexdigest(),
+        run_set_id=run_set_id,
+        authored_result=authored_result,
+        authored=authored,
+        registration=registration,
+        resolved_input_records=resolved_input_records,
+        compiled=compiled,
+        evaluation_output_preflight=evaluation_output_preflight,
+    )
+
+
+def _preflight_evaluation_output(
+    request: RunAssemblyRequest,
+    *,
+    compiled: CompiledRunSet,
+    run_set_id: str,
+) -> EvaluationOutputPreflightEvidence | None:
+    """Refuse cardinality or disk-budget drift before compiled rows are persisted."""
+    policy = request.evaluation_output_preflight
+    if policy is None:
+        return None
+    execution_families = {row.execution_family for row in compiled.rows}
+    if execution_families != {"evaluation-matrix"} or len(compiled.rows) != 1:
+        raise ValueError(
+            "evaluation_output_preflight is only valid for one compiled evaluation matrix"
+        )
+    ordered_row_ids = compiled.rows[0].resolved_semantics.get("ordered_row_ids")
+    if not isinstance(ordered_row_ids, list) or not ordered_row_ids:
+        raise ValueError("evaluation output preflight requires canonical resolved ordered_row_ids")
+    if any(not isinstance(row_id, str) or not row_id for row_id in ordered_row_ids):
+        raise ValueError("evaluation resolved ordered_row_ids must contain non-empty strings")
+    resolved_row_count = len(ordered_row_ids)
+    if resolved_row_count != policy.expected_resolved_row_count:
+        raise ValueError(
+            "evaluation resolved row count does not match authored preflight expectation: "
+            f"expected={policy.expected_resolved_row_count} resolved={resolved_row_count}"
+        )
+
+    output_root = _evaluation_output_root(request, run_set_id=run_set_id)
+    filesystem_path = _nearest_existing_path(output_root)
+    observed_free_bytes = shutil.disk_usage(filesystem_path).free
+    active_batch_count = 0
+    max_rows_per_active_batch = 0
+    if policy.storage_mode == "batch_reclamation":
+        plan = EvaluationMatrixBatchPlan.model_validate(
+            compiled.rows[0].launch.metadata.get("batch_plan")
+        )
+        if not plan.consumers:
+            raise ValueError(
+                "batch-reclamation output preflight requires declared terminal consumers"
+            )
+        active_batch_count = min(request.launch_policy.max_parallel_rows, len(plan.batches))
+        max_rows_per_active_batch = max(len(batch.ordered_row_ids) for batch in plan.batches)
+        raw_row_capacity = active_batch_count * max_rows_per_active_batch
+    else:
+        raw_row_capacity = resolved_row_count
+    estimated_retained_bytes = (
+        raw_row_capacity * policy.retained_bytes_per_resolved_row * policy.planned_repetitions
+        + policy.estimated_compact_retained_bytes
+    )
+    required_free_bytes = estimated_retained_bytes + policy.required_free_space_reserve_bytes
+    if observed_free_bytes < required_free_bytes:
+        raise ValueError(
+            "evaluation output preflight requires more free space than observed: "
+            f"required_free_bytes={required_free_bytes} "
+            f"observed_free_bytes={observed_free_bytes} "
+            f"output_root={output_root}"
+        )
+    evidence = EvaluationOutputPreflightEvidence(
+        expected_resolved_row_count=policy.expected_resolved_row_count,
+        resolved_row_count=resolved_row_count,
+        retained_bytes_per_resolved_row=policy.retained_bytes_per_resolved_row,
+        retained_bytes_per_resolved_row_source=(policy.retained_bytes_per_resolved_row_source),
+        planned_repetitions=policy.planned_repetitions,
+        storage_mode=policy.storage_mode,
+        active_batch_count=active_batch_count,
+        max_rows_per_active_batch=max_rows_per_active_batch,
+        estimated_compact_retained_bytes=policy.estimated_compact_retained_bytes,
+        estimated_retained_bytes=estimated_retained_bytes,
+        required_free_space_reserve_bytes=policy.required_free_space_reserve_bytes,
+        required_free_bytes=required_free_bytes,
+        observed_free_bytes=observed_free_bytes,
+        output_root=str(output_root),
+        observed_filesystem_path=str(filesystem_path),
+        observed_filesystem_device=os.stat(filesystem_path).st_dev,
+    )
+    return evidence
+
+
+def _evaluation_output_root(request: RunAssemblyRequest, *, run_set_id: str) -> Path:
+    if request.orchestration_root:
+        root = Path(request.orchestration_root).expanduser()
+        return root if root.name == run_set_id else root / run_set_id
+    return default_orchestration_root(run_set_id)
+
+
+def _nearest_existing_path(path: Path) -> Path:
+    candidate = path.expanduser().absolute()
+    while not candidate.exists():
+        parent = candidate.parent
+        if parent == candidate:
+            raise ValueError(f"no existing filesystem ancestor for evaluation output: {path}")
+        candidate = parent
+    if not candidate.is_dir():
+        candidate = candidate.parent
+    return candidate.resolve()
+
+
+def _resolve_training_row_parents(
+    declarations: list[GovernedTrainingRowParentDeclaration],
+    *,
+    context: AssemblyContext,
+) -> Any:
+    parents: list[GovernedTrainingRowParent] = []
+    for declaration in declarations:
+        payload, artifact_sha256 = _load_training_row_parent_artifact(
+            declaration.artifact,
+            context=context,
+        )
+        parent = declaration.parent
+        if isinstance(parent, AuthoredIntentParent):
+            observed_hash = authored_envelope_hash(CompositionNode.model_validate(payload))
+            semantic_hash = parent.content_hash
+        else:
+            observed_hash = training_spec_sha256(payload)
+            semantic_hash = parent.resolved_root_hash
+        if observed_hash != semantic_hash:
+            raise ValueError(
+                f"training-row parent {parent.kind}:{parent.ref!r} semantic hash drifted"
+            )
+        parents.append(
+            GovernedTrainingRowParent(
+                provenance=TrainingRowParentProvenance(
+                    role=declaration.role,
+                    parent_kind=parent.kind,
+                    ref=parent.ref,
+                    semantic_hash=semantic_hash,
+                    artifact_id=declaration.artifact.artifact_id,
+                    artifact_sha256=artifact_sha256,
+                    schema_id=declaration.artifact.schema_id,
+                    schema_version=declaration.artifact.schema_version,
+                ),
+                payload=payload,
+            )
+        )
+    return TrainingRowLoweringContext(tuple(parents))
+
+
+def _load_training_row_parent_artifact(
+    ref: SchemaArtifactRef,
+    *,
+    context: AssemblyContext,
+) -> tuple[dict[str, Any], str]:
+    if context.artifact_resolver is not None:
+        data = context.artifact_resolver(ref)
+    elif ref.uri is not None:
+        data = Path(ref.uri).read_bytes()
+    else:
+        raise ValueError(f"training-row parent artifact {ref.artifact_id!r} has no resolver or URI")
+    actual_sha256 = hashlib.sha256(data).hexdigest()
+    if actual_sha256 != ref.sha256:
+        raise ValueError(
+            f"artifact byte digest mismatch for {ref.artifact_id!r}: "
+            f"expected={ref.sha256} actual={actual_sha256}"
+        )
+    try:
+        payload = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"training-row parent artifact {ref.artifact_id!r} is not valid JSON"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ValueError("training-row parent artifact must contain a JSON object")
+    if (payload.get("schema_id"), payload.get("schema_version")) != (
+        ref.schema_id,
+        ref.schema_version,
+    ):
+        raise ValueError("training-row parent schema identity does not match its declaration")
+    return payload, actual_sha256
 
 
 def _resolve_input(
@@ -436,7 +752,8 @@ def _resolve_input(
 ) -> ResolvedAssemblyInput:
     if context.input_resolver is None:
         resolved = ResolvedAssemblyInput.model_validate_json(
-            Path(declaration.locator).read_text(encoding="utf-8"))
+            Path(declaration.locator).read_text(encoding="utf-8")
+        )
     else:
         resolved = context.input_resolver(declaration)
     identity = resolved.identity

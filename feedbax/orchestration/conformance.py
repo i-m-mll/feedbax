@@ -23,6 +23,7 @@ from typing import Any, Literal
 from pydantic import Field, model_validator
 
 from feedbax.contracts.manifest import StrictModel, TrainingRunManifest, load_manifest
+from feedbax.contracts.evaluation_lifecycle import EvaluationLifecycleEvidence
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.spec_storage import canonicalize_immutable_input_identities
 from feedbax.contracts.training import OptimizerSpec
@@ -296,6 +297,7 @@ class ConformanceRowArtifacts:
     execution: ExecutionIdentityEnvelope | None = None
     execution_identity_adapter: Any = None
     schema_registry: Any = None
+    authored_repo_root: Path | str | None = None
     manifest_path: Path | str | None = None
     row_status: str | None = None
     training_diagnostics: Mapping[str, Any] | None = None
@@ -309,6 +311,7 @@ class ConformanceRowArtifacts:
     runtime_inputs: RowConformanceRuntimeInputs | None = None
     deployment_policy: Mapping[str, Any] | None = None
     realized_deployment_evidence: Mapping[str, Any] | None = None
+    evaluation_lifecycle: Mapping[str, Any] | None = None
 
 
 class CheckRegistry:
@@ -546,6 +549,39 @@ def build_core_check_registry() -> CheckRegistry:
     )
 
 
+def check_evaluation_lifecycle(row: ConformanceRowArtifacts) -> CheckEntry:
+    """Verify ordered nested evaluation outcomes for an evaluation-family row."""
+    check_id = "evaluation_lifecycle"
+    if row.evaluation_lifecycle is None:
+        return missing_input_check(check_id, "evaluation_lifecycle")
+    try:
+        evidence = EvaluationLifecycleEvidence.model_validate(row.evaluation_lifecycle)
+    except Exception as exc:
+        return fail_check(
+            check_id,
+            expected="valid ordered evaluation lifecycle evidence",
+            observed=type(exc).__name__,
+            detail=str(exc),
+        )
+    if evidence.orchestration_row_id != row.row_id:
+        return fail_check(
+            check_id,
+            expected={"orchestration_row_id": row.row_id},
+            observed={"orchestration_row_id": evidence.orchestration_row_id},
+        )
+    return pass_check(
+        check_id,
+        expected={"ordered_outcomes": "unique and complete"},
+        observed={
+            "ordered_row_ids": list(evidence.ordered_row_ids),
+            "diagnostic_schema_ids": {
+                item.row_id: list(item.diagnostic_schema_ids)
+                for item in evidence.outcomes
+            },
+        },
+    )
+
+
 def check_realized_deployment(row: ConformanceRowArtifacts) -> CheckEntry:
     """Fail closed unless realized operational facts are independently evidenced."""
     check_id = "realized_deployment"
@@ -675,6 +711,7 @@ def check_execution_identity(row: ConformanceRowArtifacts) -> CheckEntry:
             envelope,
             identity_adapter=row.execution_identity_adapter,
             schema_registry=row.schema_registry,
+            authored_repo_root=row.authored_repo_root,
         )
         manifest = TrainingRunManifest.model_validate(raw_manifest)
         manifest_payload = manifest.model_dump(mode="json")
@@ -710,11 +747,18 @@ def _validate_envelope_artifacts(
     *,
     identity_adapter: Any = None,
     schema_registry: Any = None,
+    authored_repo_root: Path | str | None = None,
 ) -> None:
     payload = _load_schema_artifact(envelope.payload, registry=schema_registry)
     authored = _load_schema_artifact(envelope.authored_intent, registry=schema_registry)
     snapshot = _load_schema_artifact(envelope.resolved_snapshot, registry=schema_registry)
     capsule = _load_schema_artifact(envelope.execution_capsule, registry=schema_registry)
+    if envelope.authored_intent.schema_id == "feedbax.spec.training_run_matrix_delta":
+        _validate_training_matrix_delta_parent_chain(
+            envelope.authored_intent,
+            authored,
+            repo_root=authored_repo_root,
+        )
 
     adapter = identity_adapter or _builtin_identity_adapter(envelope.authored_intent.schema_id)
     intent_hash = adapter.intent_hash(authored)
@@ -748,9 +792,43 @@ def _validate_envelope_artifacts(
         raise TypeError("registered executable payload must be an object")
 
 
+def _validate_training_matrix_delta_parent_chain(
+    ref: SchemaArtifactRef,
+    authored: Mapping[str, Any],
+    *,
+    repo_root: Path | str | None,
+) -> None:
+    """Validate the complete parent chain beneath one explicit governed root."""
+    from feedbax.contracts.training_matrix_composition import (
+        TrainingRunMatrixDeltaSpec,
+        flatten_training_run_matrix_delta,
+    )
+
+    if ref.uri is None:
+        raise ValueError("training matrix delta conformance requires a materialized artifact")
+    if repo_root is None:
+        raise ValueError("training matrix delta conformance requires authored_repo_root")
+    spec = TrainingRunMatrixDeltaSpec.model_validate(authored)
+    artifact_path = Path(ref.uri).expanduser().resolve()
+    root = Path(repo_root).expanduser().resolve()
+    if not artifact_path.is_relative_to(root):
+        raise ValueError(
+            "training matrix delta authored artifact is outside authored_repo_root"
+        )
+    try:
+        flatten_training_run_matrix_delta(spec, repo_root=root)
+    except (OSError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"training matrix delta parent chain cannot be validated: {exc}"
+        ) from exc
+
+
 def _builtin_identity_adapter(schema_id: str) -> Any:
     """Resolve adapters for standalone checks outside a request-based engine."""
-    if schema_id == "feedbax.spec.training_run_matrix":
+    if schema_id in {
+        "feedbax.spec.training_run_matrix",
+        "feedbax.spec.training_run_matrix_delta",
+    }:
         from feedbax.training.spec_storage import TrainingRunIdentityAdapter
 
         return TrainingRunIdentityAdapter()
@@ -806,6 +884,12 @@ def _load_schema_artifact(
         from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
 
         TrainingRunMatrixSpec.model_validate(validated)
+    elif ref.schema_id == "feedbax.spec.training_run_matrix_delta":
+        from feedbax.contracts.training_matrix_composition import (
+            TrainingRunMatrixDeltaSpec,
+        )
+
+        TrainingRunMatrixDeltaSpec.model_validate(validated)
     elif ref.schema_id == "feedbax.spec.studio.training_assembly":
         from feedbax.contracts.studio_training import StudioTrainingAssemblySpec
 

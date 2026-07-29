@@ -102,6 +102,7 @@ from feedbax.contracts.run_matrix import (
     AuthoredTrainingRow,
     RowLowererIdentity,
     TrainingRowLoweringResult,
+    TrainingRowParentProvenance,
     TrainingRowPlanningProvenance,
     TrainingRowProvenance,
 )
@@ -147,6 +148,7 @@ try:
         TrainingRowLowererRegistration,
         TrainingRowLowererRegistry,
         TrainingRowLowererRegistryError,
+        TrainingRowLoweringContext,
     )
     from .authoring import (
         AUTHORING_RESERVED_METADATA_KEYS,
@@ -155,8 +157,8 @@ try:
         TRAINING_METHOD_AUTHORING_LOWERER_VERSION,
         TrainingMethodAuthoringCompilation,
         TrainingMethodAuthoringError,
-        TrainingMethodAuthoringProjectors,
         compile_training_method_authoring,
+        training_method_authoring_implementation_sha256,
     )
 except ImportError:
     pass
@@ -216,8 +218,10 @@ __all__ = [
     "TrainingRowLowererRegistration",
     "TrainingRowLowererRegistry",
     "TrainingRowLowererRegistryError",
+    "TrainingRowLoweringContext",
     "DEFAULT_TRAINING_ROW_LOWERER_REGISTRY",
     "TrainingRowLoweringResult",
+    "TrainingRowParentProvenance",
     "TrainingRowPlanningProvenance",
     "TrainingRowProvenance",
     "TrainingRunExecutorError",
@@ -225,7 +229,6 @@ __all__ = [
     "TrainingMethodAuthoringContribution",
     "TrainingMethodAuthoringError",
     "TrainingMethodAuthoringHook",
-    "TrainingMethodAuthoringProjectors",
     "AUTHORING_RESERVED_METADATA_KEYS",
     "TRAINING_METHOD_AUTHORING_LOWERER_ID",
     "TRAINING_METHOD_AUTHORING_LOWERER_IDENTITY",
@@ -264,6 +267,7 @@ __all__ = [
     "checkpoint_slot_names",
     "checkpoint_slot_specs",
     "compile_training_method_authoring",
+    "training_method_authoring_implementation_sha256",
     "execute_training_run_spec",
     "emit_training_run_spec_storage",
     "fingerprint_checkpoint_custody_inputs",

@@ -89,12 +89,14 @@ from feedbax.contracts.run_matrix import (
     TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION,
     TRAINING_ROW_LOWERER_REF_SCHEMA_ID,
     TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION,
+    TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION_V1,
     TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_ID,
     TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION,
     TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION_V1,
     TRAINING_ROW_PROVENANCE_SCHEMA_ID,
     TRAINING_ROW_PROVENANCE_SCHEMA_VERSION,
     TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1,
+    TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V2,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
@@ -116,6 +118,44 @@ from feedbax.contracts.run_matrix import (
 from feedbax.contracts.shadow_launch import (
     SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
     SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION,
+)
+from feedbax.contracts.evaluation_lifecycle import (
+    EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID,
+    EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION,
+    EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V1,
+    EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V2,
+    EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID,
+    EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION,
+    EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V1,
+    EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V2,
+    EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_ID,
+    EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_VERSION,
+    EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID,
+    EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION,
+    EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V1,
+    EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V2,
+    EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V3,
+    EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_ID,
+    EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_VERSION,
+    EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
+    EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION,
+    EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION_V1,
+    EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_ID,
+    EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_VERSION,
+)
+from feedbax.contracts.evaluation_product_union import (
+    EVALUATION_COMPACT_PRODUCT_UNION_EVIDENCE_SCHEMA_ID,
+    EVALUATION_COMPACT_PRODUCT_UNION_EVIDENCE_SCHEMA_VERSION,
+    EVALUATION_COMPACT_PRODUCT_UNION_SCHEMA_ID,
+    EVALUATION_COMPACT_PRODUCT_UNION_SCHEMA_VERSION,
+)
+from feedbax.contracts.evaluation_preflight import (
+    EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID,
+    EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
+    EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,
+    EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID,
+    EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION,
+    EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,
 )
 from feedbax.contracts.remote_smoke import (
     REMOTE_SMOKE_EVIDENCE_SCHEMA_ID,
@@ -143,12 +183,26 @@ from feedbax.contracts.spec_storage import (
     TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
 )
 from feedbax.contracts.figures import (
+    COLORBAR_PANEL_PLACEMENT_SCHEMA_ID,
+    COLORBAR_PANEL_PLACEMENT_SCHEMA_VERSION,
+    EQUAL_DATA_ASPECT_SCHEMA_ID,
+    EQUAL_DATA_ASPECT_SCHEMA_VERSION,
+    FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID,
+    FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION,
+    FIGURE_RUNTIME_BINDING_SCHEMA_ID,
+    FIGURE_RUNTIME_BINDING_SCHEMA_VERSION,
+    FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID,
+    FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION,
     FIGURE_PIECE_SCHEMA_ID,
     FIGURE_PIECE_SCHEMA_VERSION,
+    FIGURE_SLOT_FAMILY_SCHEMA_ID,
+    FIGURE_SLOT_FAMILY_SCHEMA_VERSION,
     FIGURE_SPEC_SCHEMA_ID,
     FIGURE_SPEC_SCHEMA_VERSION,
     FIGURE_TEMPLATE_SCHEMA_ID,
     FIGURE_TEMPLATE_SCHEMA_VERSION,
+    PERTURBATION_TIMING_SCHEMA_ID,
+    PERTURBATION_TIMING_SCHEMA_VERSION,
 )
 from feedbax.contracts.graph import (
     ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
@@ -180,6 +234,10 @@ from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_VERSION_V0,
 )
 from feedbax.contracts.manifest import (
+    ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_ID,
+    ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
+    ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_ID,
+    ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_VERSION,
     ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_ID,
     ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
@@ -192,6 +250,8 @@ from feedbax.contracts.manifest import (
     EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
     EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
+    TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
+    TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID,
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION,
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1,
@@ -312,6 +372,13 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V5,
     RUN_BUNDLE_SCHEMA_VERSION_V6,
     RUN_BUNDLE_SCHEMA_VERSION_V7,
+    RUN_BUNDLE_SCHEMA_VERSION_V8,
+    RUN_BUNDLE_SCHEMA_VERSION_V9,
+    RUN_BUNDLE_SCHEMA_VERSION_V10,
+)
+from feedbax.orchestration.staged_root_custody import (
+    STAGED_ROOT_CUSTODY_SCHEMA_ID,
+    STAGED_ROOT_CUSTODY_SCHEMA_VERSION,
 )
 from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_ID,
@@ -343,7 +410,16 @@ REALIZED_DEPLOYMENT_RECORD_SCHEMA_ID = "feedbax.manifest.realized_deployment"
 REALIZED_DEPLOYMENT_RECORD_SCHEMA_VERSION = "feedbax.manifest.realized_deployment.v1"
 RUN_ASSEMBLY_REQUEST_SCHEMA_ID = "feedbax.spec.run_assembly_request"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1 = "feedbax.spec.run_assembly_request.v1"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v2"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V2 = "feedbax.spec.run_assembly_request.v2"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3 = "feedbax.spec.run_assembly_request.v3"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4 = "feedbax.spec.run_assembly_request.v4"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v5"
+EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_ID = (
+    "feedbax.manifest.evaluation_matrix_execution_capsule"
+)
+EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_VERSION = (
+    "feedbax.manifest.evaluation_matrix_execution_capsule.v1"
+)
 STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID = "feedbax.spec.studio.training_assembly"
 STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION = "feedbax.spec.studio.training_assembly.v1"
 TRAINING_DIAGNOSTICS_SCHEMA_ID = "feedbax.manifest.training_diagnostics"
@@ -2348,8 +2424,12 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Content-pinned public authority selecting an exact authored-row lowerer."
             ),
             stance="reject",
-            rejected_old_versions=(f"{TRAINING_ROW_LOWERER_REF_SCHEMA_ID}.v0",),
+            rejected_old_versions=(
+                f"{TRAINING_ROW_LOWERER_REF_SCHEMA_ID}.v0",
+                TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION_V1,
+            ),
             required_tests=("tests/test_training_row_lowering.py",),
+            notes="v1 lowerers had no governed parent-resolution context.",
         ),
         _family(
             "TrainingRowLoweringResult",
@@ -2391,8 +2471,12 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             rejected_old_versions=(
                 f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v0",
                 TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1,
+                TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V2,
             ),
-            notes="v1 omitted the complete canonical lowered execution-payload hash.",
+            notes=(
+                "v1 omitted the complete canonical lowered execution-payload hash; "
+                "v2 omitted governed compile-time parent provenance."
+            ),
         ),
         _family(
             "DeploymentPolicy",
@@ -2418,9 +2502,36 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.orchestration.assembly.RunAssemblyRequest",),
             consumed_by=("feedbax.orchestration.assembly.assemble_run_bundle",),
             description="Authored request resolved and compiled by persisted ASSEMBLE.",
+            stance="migrate",
+            supported_old_versions=(
+                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3,
+                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4,
+            ),
             rejected_old_versions=(
                 f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v0",
                 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1,
+                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V2,
+            ),
+            notes=(
+                "v2 omitted governed compile-time training-row parent declarations; "
+                "v3 omitted additive staged-root custody declarations; "
+                "v4 omitted the optional typed evaluation output preflight policy."
+            ),
+        ),
+        _family(
+            "EvaluationMatrixExecutionCapsule",
+            EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_ID,
+            EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_VERSION,
+            owner_module="feedbax.analysis.evaluation_orchestration",
+            emitted_by=(
+                "feedbax.analysis.evaluation_orchestration.EvaluationMatrixIdentityAdapter",
+            ),
+            consumed_by=("feedbax.orchestration.assembly",),
+            description=("Identity capsule for one authored whole-matrix evaluation invocation."),
+            rejected_old_versions=(f"{EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_evaluation_orchestration.py",
+                "tests/test_structured_spec_migrations.py",
             ),
         ),
         _family(
@@ -2624,6 +2735,82 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Durable acausal graph interior specification.",
             rejected_old_versions=("feedbax.spec.acausal_graph.v0",),
             required_tests=("tests/test_graphspec_schema_migrations.py",),
+        ),
+        _family(
+            "FigureDataProductArtifactPayload",
+            FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID,
+            FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("FigureSpec.input_authorities",),
+            consumed_by=("feedbax.analysis.figures.resolve_figure_inputs",),
+            description="Exact typed AnalysisDataProduct artifact selector for figures.",
+            required_tests=("tests/test_figure_input_authority.py",),
+        ),
+        _family(
+            "FigureRuntimeBindingSpec",
+            FIGURE_RUNTIME_BINDING_SCHEMA_ID,
+            FIGURE_RUNTIME_BINDING_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("feedbax.analysis.figures.execute_figure_spec",),
+            consumed_by=("figure regeneration executors",),
+            description=(
+                "Runtime figure inputs, authorities, execution metadata, and exact-parent "
+                "provider aliases."
+            ),
+            required_tests=("tests/test_figure_input_authority.py",),
+        ),
+        _family(
+            "FigureInputRoleAuthority",
+            FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID,
+            FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("FigureSpec.input_authorities",),
+            consumed_by=("feedbax.analysis.figures.resolve_figure_inputs",),
+            description=("Role-addressed authority binding to one declared FigureSpec input."),
+            required_tests=("tests/test_figure_input_authority.py",),
+        ),
+        _family(
+            "FigureSlotFamily",
+            FIGURE_SLOT_FAMILY_SCHEMA_ID,
+            FIGURE_SLOT_FAMILY_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("FigureSpec.slot_families",),
+            consumed_by=("feedbax.analysis.figures.resolve_figure_trace_bindings",),
+            description="Constrained row family bound to one figure-template slot.",
+            required_tests=("tests/test_figure_slot_families.py",),
+        ),
+        _family(
+            "ColorbarPanelPlacement",
+            COLORBAR_PANEL_PLACEMENT_SCHEMA_ID,
+            COLORBAR_PANEL_PLACEMENT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("FigureSpec.colorbar.placement",),
+            consumed_by=("feedbax.plot.constructors._grid_figure",),
+            description="Panel-relative length and position for one figure colorbar.",
+            rejected_old_versions=("feedbax.spec.colorbar_panel_placement.v0",),
+            required_tests=("tests/test_figure_colorbar.py",),
+        ),
+        _family(
+            "EqualDataAspect",
+            EQUAL_DATA_ASPECT_SCHEMA_ID,
+            EQUAL_DATA_ASPECT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("FigureSpec.panels.equal_data_aspect",),
+            consumed_by=("feedbax.plot.constructors._comparison_grid",),
+            description="Exact 1:1 linear data-unit scaling for one figure panel.",
+            rejected_old_versions=("feedbax.spec.equal_data_aspect.v0",),
+            required_tests=("tests/test_declarative_figures.py",),
+        ),
+        _family(
+            "PerturbationTiming",
+            PERTURBATION_TIMING_SCHEMA_ID,
+            PERTURBATION_TIMING_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("FigureSpec.traces.data.perturbation_timing",),
+            consumed_by=("feedbax.plot.constructors",),
+            description="Explicit applicability and sample schedule for figure annotations.",
+            rejected_old_versions=("feedbax.spec.perturbation_timing.v0",),
+            required_tests=("tests/test_declarative_figures.py",),
         ),
         _family(
             "FigureSpec",
@@ -2842,6 +3029,23 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         ),
         _family(
+            "TrainingRunMatrixDeltaSpec",
+            TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
+            TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.training_matrix_composition",
+            emitted_by=("authored training matrix composition",),
+            consumed_by=(
+                "feedbax.training.spec_storage.compile_training_run_matrix",
+                "feedbax.orchestration.matrix_authority",
+            ),
+            description=(
+                "Ordered whole-document deltas over one content-pinned parent training "
+                "matrix or parent delta spec."
+            ),
+            rejected_old_versions=(f"{TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_training_matrix_delta_composition.py",),
+        ),
+        _family(
             "TrainingRunMatrixAuthority",
             TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID,
             TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_VERSION,
@@ -2865,6 +3069,169 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             required_tests=("tests/test_orchestration_cli.py",),
             rejected_old_versions=(f"{SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID}.v0",),
+        ),
+        _family(
+            "EvaluationBatchMergeCheckpoint",
+            EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID,
+            EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_lifecycle",
+            emitted_by=("feedbax.analysis.evaluation_compaction",),
+            consumed_by=("feedbax.analysis.evaluation_compaction",),
+            description=(
+                "Authenticated batch, consumer declaration, parent authority, and "
+                "exactly-once merge transition checkpoint."
+            ),
+            rejected_old_versions=(
+                f"{EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID}.v0",
+                EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V1,
+                EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V2,
+            ),
+            required_tests=("tests/test_evaluation_compaction.py",),
+        ),
+        _family(
+            "EvaluationBatchCompactionEvidence",
+            EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID,
+            EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_lifecycle",
+            emitted_by=("feedbax.analysis.harness",),
+            consumed_by=("feedbax.orchestration.executor_family.EvaluationMatrixExecutorAdapter",),
+            description=(
+                "Authored-order compact-fragment, merge-state, and raw-cache reclamation proof."
+            ),
+            rejected_old_versions=(
+                f"{EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID}.v0",
+                EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V1,
+                EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V2,
+            ),
+            required_tests=("tests/test_evaluation_compaction.py",),
+        ),
+        _family(
+            "EvaluationCompactProductUnion",
+            EVALUATION_COMPACT_PRODUCT_UNION_SCHEMA_ID,
+            EVALUATION_COMPACT_PRODUCT_UNION_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_product_union",
+            emitted_by=("evaluation compact-product union authors",),
+            consumed_by=("feedbax.analysis.evaluation_product_union",),
+            description=(
+                "Declared-order authority for terminal compact products across distinct "
+                "governed matrix identities."
+            ),
+            rejected_old_versions=(f"{EVALUATION_COMPACT_PRODUCT_UNION_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_evaluation_product_union.py",),
+        ),
+        _family(
+            "EvaluationCompactProductUnionEvidence",
+            EVALUATION_COMPACT_PRODUCT_UNION_EVIDENCE_SCHEMA_ID,
+            EVALUATION_COMPACT_PRODUCT_UNION_EVIDENCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_product_union",
+            emitted_by=("feedbax.analysis.evaluation_product_union",),
+            consumed_by=("provider-free compact-product union result readers only",),
+            description=(
+                "Terminal publication proof for provider-free union, collection, "
+                "certification, and teardown."
+            ),
+            rejected_old_versions=(f"{EVALUATION_COMPACT_PRODUCT_UNION_EVIDENCE_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_evaluation_product_union.py",),
+        ),
+        _family(
+            "EvaluationLifecycleEvidence",
+            EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_ID,
+            EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_lifecycle",
+            emitted_by=("feedbax.analysis.harness",),
+            consumed_by=("feedbax.orchestration.executor_family",),
+            description="Ordered nested outcomes for one governed evaluation matrix.",
+            required_tests=("tests/test_evaluation_lifecycle.py",),
+            rejected_old_versions=(f"{EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_ID}.v0",),
+        ),
+        _family(
+            "EvaluationMatrixBatchPlan",
+            EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID,
+            EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_lifecycle",
+            emitted_by=("evaluation matrix orchestration authors",),
+            consumed_by=(
+                "feedbax.analysis.evaluation_orchestration."
+                "compile_evaluation_run_matrix_for_orchestration",
+            ),
+            description=("Ordered matrix subsets assigned inside the governed public harness."),
+            rejected_old_versions=(
+                f"{EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID}.v0",
+                EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V1,
+                EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V2,
+                EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V3,
+            ),
+            required_tests=("tests/test_evaluation_orchestration.py",),
+        ),
+        _family(
+            "EvaluationOutputPreflightPolicy",
+            EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID,
+            EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_preflight",
+            emitted_by=("evaluation matrix orchestration authors",),
+            consumed_by=("feedbax.orchestration.assembly.assemble_run_bundle",),
+            description=(
+                "Authored resolved-cardinality expectation and retained-write budget inputs."
+            ),
+            stance="migrate",
+            supported_old_versions=(EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,),
+            rejected_old_versions=(f"{EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_evaluation_orchestration.py",),
+        ),
+        _family(
+            "EvaluationOutputPreflightEvidence",
+            EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID,
+            EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_preflight",
+            emitted_by=("feedbax.orchestration.assembly.assemble_run_bundle",),
+            consumed_by=("evaluation run preflight evidence readers",),
+            description=(
+                "Resolved cardinality, retained-byte estimate, and exact filesystem-space "
+                "observation made before evaluation outputs."
+            ),
+            stance="migrate",
+            supported_old_versions=(EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,),
+            rejected_old_versions=(f"{EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_evaluation_orchestration.py",),
+        ),
+        _family(
+            "EvaluationMatrixOrderedUnionEvidence",
+            EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_ID,
+            EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_lifecycle",
+            emitted_by=("feedbax.orchestration.stages.StageEngine",),
+            consumed_by=("evaluation matrix terminal evidence readers",),
+            description=("Hash-bound ordered-union proof across governed matrix batch units."),
+            rejected_old_versions=(f"{EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_evaluation_orchestration.py",),
+        ),
+        _family(
+            "EvaluationWorkerTopologyEvidence",
+            EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_ID,
+            EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_lifecycle",
+            emitted_by=("feedbax.analysis.harness",),
+            consumed_by=("feedbax.orchestration.executor_family.EvaluationMatrixExecutorAdapter",),
+            description=(
+                "Observed persistent worker processes and their governed batch assignments."
+            ),
+            rejected_old_versions=(f"{EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_evaluation_orchestration.py",),
+        ),
+        _family(
+            "EvaluationShadowLaunchEvidence",
+            EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
+            EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_lifecycle",
+            emitted_by=("feedbax.bin.orchestrate",),
+            consumed_by=("provider-free shadow-launch result readers only",),
+            description="Provider-free evaluation-family lifecycle traversal evidence.",
+            required_tests=("tests/test_evaluation_lifecycle.py",),
+            rejected_old_versions=(
+                f"{EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID}.v0",
+                EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION_V1,
+            ),
+            notes="v1 could prove only one whole-matrix subprocess.",
         ),
         _family(
             "RemoteSmokeEvidence",
@@ -2977,9 +3344,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Embedded authored, layer, and flattened identities for delta-composed "
                 "evaluation matrices."
             ),
-            rejected_old_versions=(
-                f"{EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_ID}.v0",
-            ),
+            rejected_old_versions=(f"{EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_ID}.v0",),
             required_tests=("tests/test_evaluation_matrix_composition.py",),
         ),
         _family(
@@ -3097,9 +3462,29 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 RUN_BUNDLE_SCHEMA_VERSION_V5,
                 RUN_BUNDLE_SCHEMA_VERSION_V6,
                 RUN_BUNDLE_SCHEMA_VERSION_V7,
+                RUN_BUNDLE_SCHEMA_VERSION_V8,
+                RUN_BUNDLE_SCHEMA_VERSION_V9,
+                RUN_BUNDLE_SCHEMA_VERSION_V10,
             ),
             required_tests=(
                 "tests/test_orchestration_core.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "StagedRootCustody",
+            STAGED_ROOT_CUSTODY_SCHEMA_ID,
+            STAGED_ROOT_CUSTODY_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.staged_root_custody.StagedRootCustody",
+            emitted_by=("feedbax.orchestration.staged_root_custody.seal_staged_root",),
+            consumed_by=(
+                "feedbax.orchestration.input_materialization",
+                "Feedbax staged evaluation execution",
+            ),
+            description="Exact content-addressed custody for one typed staged execution root.",
+            rejected_old_versions=(f"{STAGED_ROOT_CUSTODY_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_orchestration_staged_root_custody.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),
@@ -3520,6 +3905,55 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             required_tests=(
                 "tests/test_analysis_bundle_base_patches.py",
                 "tests/test_analysis_spec_bundles.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "AnalysisBundleDeltaSpec",
+            ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_ID,
+            ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.analysis_bundle_composition",
+            emitted_by=("authored analysis bundle composition",),
+            consumed_by=("analysis bundle selection and execution",),
+            description=(
+                "Ordered whole-document deltas over one content-pinned parent analysis "
+                "bundle or parent delta spec."
+            ),
+            rejected_old_versions=(f"{ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_analysis_bundle_composition.py",),
+        ),
+        _family(
+            "AnalysisBundleCompositionProvenance",
+            ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_ID,
+            ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.analysis_bundle_composition",
+            emitted_by=(
+                "feedbax.contracts.analysis_bundle_composition."
+                "analysis_bundle_composition_provenance",
+            ),
+            consumed_by=("bundle expansion and durable bundle execution metadata",),
+            description=(
+                "Authored, layer, attribution, and flattened identities for "
+                "delta-composed analysis bundles."
+            ),
+            rejected_old_versions=(f"{ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_analysis_bundle_composition.py",),
+        ),
+        _family(
+            "StagedAnalysisBundleExecution",
+            "feedbax.manifest.analysis_bundle_execution",
+            "feedbax.manifest.analysis_bundle_execution.v2",
+            owner_module="feedbax.analysis.bundles",
+            emitted_by=(
+                "feedbax.analysis.execute_staged_analysis_bundle",
+                "provider_manifest.schemas",
+            ),
+            consumed_by=("downstream staged bundle provenance consumers",),
+            description="Durable staged analysis bundle execution provenance.",
+            stance="migrate",
+            supported_old_versions=("feedbax.manifest.analysis_bundle_execution.v1",),
+            required_tests=(
+                "tests/test_analysis_bundle_composition.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),
@@ -4236,12 +4670,6 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
 
     for kind, schema_id, durable, description in (
         ("ProviderManifest", "feedbax.manifest.provider", True, "Provider capability manifest."),
-        (
-            "StagedAnalysisBundleExecution",
-            "feedbax.manifest.analysis_bundle_execution",
-            True,
-            "Durable staged analysis bundle execution provenance.",
-        ),
         ("ProviderHealth", "feedbax.manifest.provider_health", False, "Provider health response."),
         (
             "ProviderValidationResult",
@@ -4442,6 +4870,15 @@ def _migrate_analysis_bundle_v4_to_v5_payload(payload: dict[str, Any]) -> dict[s
     return migrated
 
 
+def _migrate_staged_analysis_bundle_execution_v1_to_v2_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve v1 execution provenance while admitting composition provenance."""
+    if "bundle_composition" in payload:
+        raise ValueError("StagedAnalysisBundleExecution v1 cannot declare bundle_composition")
+    return dict(payload)
+
+
 def _migrate_run_bundle_v3_to_v4_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Mark provenance as unavailable on bundles emitted before row handoff v1."""
     migrated = dict(payload)
@@ -4498,8 +4935,209 @@ def _migrate_run_bundle_v4_to_v5_payload(payload: dict[str, Any]) -> dict[str, A
     return migrated
 
 
+def _migrate_run_assembly_request_v3_to_v4_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve v3 requests while adding the empty staged-root declaration."""
+    migrated = dict(payload)
+    migrated["schema_id"] = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
+    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4
+    migrated.setdefault("staged_roots", [])
+    migrated.setdefault("evaluation_batch_plan", None)
+    return migrated
+
+
+def _migrate_run_assembly_request_v4_to_v5_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve v4 behavior with no evaluation output preflight policy."""
+    migrated = dict(payload)
+    migrated["schema_id"] = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
+    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION
+    migrated.setdefault("evaluation_output_preflight", None)
+    return migrated
+
+
+def _migrate_evaluation_matrix_batch_plan_v1(payload: dict[str, Any]) -> dict[str, Any]:
+    """Preserve v1 retain-all plans with no batch consumers."""
+    migrated = dict(payload)
+    migrated["schema_id"] = EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID
+    migrated["schema_version"] = EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V2
+    migrated.setdefault("consumers", [])
+    return migrated
+
+
+def _migrate_evaluation_matrix_batch_plan_v2(payload: dict[str, Any]) -> dict[str, Any]:
+    """Preserve parameter-free v2 consumer declarations."""
+    migrated = dict(payload)
+    migrated["schema_id"] = EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID
+    migrated["schema_version"] = EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V3
+    migrated["consumers"] = [
+        {**consumer, "parameters": consumer.get("parameters", {})}
+        for consumer in migrated.get("consumers", [])
+    ]
+    return migrated
+
+
+def _parameter_free_acknowledgement_v2(payload: Mapping[str, Any]) -> dict[str, Any]:
+    migrated = deepcopy(dict(payload))
+    migrated.setdefault("parameters", {})
+    parameters_sha256 = sha256_bytes(canonical_json_bytes(migrated["parameters"]))
+    for field_name in ("fragment", "merge_state"):
+        artifact = migrated.get(field_name)
+        if isinstance(artifact, dict):
+            metadata = dict(artifact.get("metadata", {}))
+            metadata.setdefault("consumer_parameters", migrated["parameters"])
+            metadata.setdefault("consumer_parameters_sha256", parameters_sha256)
+            artifact["metadata"] = metadata
+    return migrated
+
+
+def _migrate_evaluation_batch_merge_checkpoint_v1(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Bind legacy parameter-free merge identity explicitly."""
+    migrated = deepcopy(payload)
+    migrated["schema_id"] = EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID
+    migrated["schema_version"] = EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION
+    declaration = dict(migrated.get("declaration", {}))
+    declaration.setdefault("parameters", {})
+    migrated["declaration"] = declaration
+    migrated["acknowledgement"] = _parameter_free_acknowledgement_v2(
+        migrated.get("acknowledgement", {})
+    )
+    return migrated
+
+
+def _migrate_evaluation_batch_compaction_evidence_v1(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Bind legacy parameter-free reclamation acknowledgements explicitly."""
+    migrated = deepcopy(payload)
+    migrated["schema_id"] = EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID
+    migrated["schema_version"] = EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION
+    reclamations = []
+    for reclamation_value in migrated.get("reclamations", []):
+        reclamation = dict(reclamation_value)
+        reclamation["leaf_acknowledgements"] = [
+            _parameter_free_acknowledgement_v2(value)
+            for value in reclamation.get("leaf_acknowledgements", [])
+        ]
+        reclamations.append(reclamation)
+    migrated["reclamations"] = reclamations
+    return migrated
+
+
+def _migrate_evaluation_output_preflight_policy_v1(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve the v1 complete-matrix retained-storage estimate."""
+    migrated = dict(payload)
+    migrated["schema_id"] = EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID
+    migrated["schema_version"] = EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION
+    migrated.setdefault("storage_mode", "retain_all")
+    migrated.setdefault("estimated_compact_retained_bytes", 0)
+    return migrated
+
+
+def _migrate_evaluation_output_preflight_evidence_v1(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve v1 evidence as an explicit retain-all capacity decision."""
+    migrated = dict(payload)
+    migrated["schema_id"] = EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID
+    migrated["schema_version"] = EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION
+    migrated.setdefault("storage_mode", "retain_all")
+    migrated.setdefault("active_batch_count", 0)
+    migrated.setdefault("max_rows_per_active_batch", 0)
+    migrated.setdefault("estimated_compact_retained_bytes", 0)
+    return migrated
+
+
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "EvaluationBatchMergeCheckpoint",
+    SchemaMigration(
+        source_version=EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V1,
+        target_version=EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V2,
+        migration_id="evaluation-batch-merge-checkpoint-v1-to-v2-consumer-parameters",
+        migrate=_migrate_evaluation_batch_merge_checkpoint_v1,
+        description="Bind v1 merge checkpoints to explicit parameter-free consumers.",
+    ),
+)
+default_spec_registry.register_migration(
+    "EvaluationBatchCompactionEvidence",
+    SchemaMigration(
+        source_version=EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V1,
+        target_version=EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V2,
+        migration_id="evaluation-batch-compaction-v1-to-v2-consumer-parameters",
+        migrate=_migrate_evaluation_batch_compaction_evidence_v1,
+        description="Bind v1 reclamation evidence to explicit parameter-free consumers.",
+    ),
+)
+default_spec_registry.register_migration(
+    "EvaluationMatrixBatchPlan",
+    SchemaMigration(
+        source_version=EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V1,
+        target_version=EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V2,
+        migration_id="evaluation-matrix-batch-plan-v1-to-v2-consumers",
+        migrate=_migrate_evaluation_matrix_batch_plan_v1,
+        description="Preserve v1 plans with no declared compact terminal consumers.",
+    ),
+)
+default_spec_registry.register_migration(
+    "EvaluationMatrixBatchPlan",
+    SchemaMigration(
+        source_version=EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V2,
+        target_version=EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V3,
+        migration_id="evaluation-matrix-batch-plan-v2-to-v3-consumer-parameters",
+        migrate=_migrate_evaluation_matrix_batch_plan_v2,
+        description="Preserve v2 declarations as explicitly parameter-free consumers.",
+    ),
+)
+default_spec_registry.register_migration(
+    "EvaluationOutputPreflightPolicy",
+    SchemaMigration(
+        source_version=EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,
+        target_version=EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION,
+        migration_id="evaluation-output-preflight-policy-v1-to-v2-storage-mode",
+        migrate=_migrate_evaluation_output_preflight_policy_v1,
+        description="Preserve v1 complete-matrix retained-storage sizing.",
+    ),
+)
+default_spec_registry.register_migration(
+    "EvaluationOutputPreflightEvidence",
+    SchemaMigration(
+        source_version=EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,
+        target_version=EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
+        migration_id="evaluation-output-preflight-evidence-v1-to-v2-storage-mode",
+        migrate=_migrate_evaluation_output_preflight_evidence_v1,
+        description="Preserve v1 evidence as an explicit retain-all decision.",
+    ),
+)
+default_spec_registry.register_migration(
+    "RunAssemblyRequest",
+    SchemaMigration(
+        source_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3,
+        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4,
+        migration_id="run-assembly-request-v3-to-v4-staged-roots",
+        migrate=_migrate_run_assembly_request_v3_to_v4_payload,
+        description=(
+            "Preserve existing training requests and add an empty governed staged-root list."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "RunAssemblyRequest",
+    SchemaMigration(
+        source_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4,
+        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION,
+        migration_id="run-assembly-request-v4-to-v5-evaluation-output-preflight",
+        migrate=_migrate_run_assembly_request_v4_to_v5_payload,
+        description=("Preserve existing requests with no evaluation output preflight policy."),
+    ),
+)
 default_spec_registry.register_migration(
     "CheckpointForkPlan",
     SchemaMigration(
@@ -4582,6 +5220,19 @@ default_spec_registry.register_migration(
         description=(
             "Preserve v2 stage-local params explicitly while introducing the shared typed "
             "parameter base and per-stage patches."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "StagedAnalysisBundleExecution",
+    SchemaMigration(
+        source_version="feedbax.manifest.analysis_bundle_execution.v1",
+        target_version="feedbax.manifest.analysis_bundle_execution.v2",
+        migration_id="analysis-bundle-execution-v1-to-v2-composition-provenance",
+        migrate=_migrate_staged_analysis_bundle_execution_v1_to_v2_payload,
+        description=(
+            "Preserve v1 staged execution provenance while admitting optional typed "
+            "analysis-bundle composition provenance."
         ),
     ),
 )

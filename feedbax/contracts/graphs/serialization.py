@@ -46,8 +46,14 @@ from feedbax.intervene.intervene import (
     FixedField,
     NetworkClamp,
     NetworkConstantInput,
+    THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
+    ThresholdLatchedForce,
 )
-from feedbax.mechanics.linear_state_space import LinearStateSpace
+from feedbax.mechanics.linear_state_space import (
+    STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
+    LinearStateSpace,
+    StructuralLinearStateSpace,
+)
 from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.muscles.relu_muscle import ReluMuscle
 from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
@@ -587,6 +593,44 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 )
             continue
 
+        if isinstance(component, StructuralLinearStateSpace):
+            if component.initial_delta_A_entries is None:
+                delta_A_param = [
+                    list(row) for row in component.initial_delta_A
+                ]
+            else:
+                delta_A_param = {
+                    "shape": [
+                        len(component.initial_delta_A),
+                        len(component.initial_delta_A),
+                    ],
+                    "entries": [
+                        {"row": row, "column": column, "value": value}
+                        for row, column, value in component.initial_delta_A_entries
+                    ],
+                }
+            params = {
+                "A": component.A.tolist(),
+                "B": component.B.tolist(),
+                "B_w": component.B_w.tolist(),
+                "delta_A": delta_A_param,
+                "scale": component.initial_scale,
+                "active": component.initial_active,
+                "label": component.label,
+                "dt": component.dt,
+                "initial_state": list(component.initial_state),
+                "pos_slice": list(component.pos_slice),
+                "vel_slice": list(component.vel_slice),
+            }
+            nodes[name] = ComponentSpec(
+                type="StructuralLinearStateSpace",
+                params=params,
+                param_schema_version=STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+
         if isinstance(component, LinearStateSpace):
             params = {
                 "A": component.A.tolist(),
@@ -725,6 +769,16 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             nodes[name] = ComponentSpec(
                 type="FixedField",
                 params=params,
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+
+        if isinstance(component, ThresholdLatchedForce):
+            nodes[name] = ComponentSpec(
+                type="ThresholdLatchedForce",
+                params=component.to_params(),
+                param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
             )

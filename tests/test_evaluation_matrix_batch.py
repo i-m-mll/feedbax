@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
 from pathlib import Path
 from typing import NamedTuple
 from unittest.mock import patch
@@ -50,6 +52,10 @@ from feedbax.contracts.matrix_core import MatrixRow
 
 EVALUATION_TYPE = "feedbax.test.batched_matrix"
 ANALYSIS_TYPE = "feedbax.test.batched_matrix_analysis"
+
+
+def _raise_pickled_evaluation_batch_row_error() -> None:
+    raise EvaluationBatchRowError("spawned-row", ValueError("spawned failure"))
 
 
 def _matrix() -> EvaluationRunMatrixSpec:
@@ -125,6 +131,47 @@ def _resolve_typed_rows(batch, root: Path) -> list[TypedRowStates]:
         ]
     finally:
         unregister_analysis_recipe(ANALYSIS_TYPE)
+
+
+def test_matrix_recipes_receive_one_resolved_repo_root_for_scalar_and_batch(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    scalar_roots: list[Path | None] = []
+    batch_roots: list[Path | None] = []
+
+    def scalar_recipe(spec, _root, _states_path, execution_context):
+        scalar_roots.append(execution_context.repo_root)
+        return _result(spec.params["gain"])
+
+    def batch_recipe(items, execution_context):
+        batch_roots.append(execution_context.repo_root)
+        return [_result(item.spec.params["gain"]) for item in items]
+
+    register_evaluation_recipe(
+        EVALUATION_TYPE,
+        scalar_recipe,
+        batch_recipe=batch_recipe,
+        replace=True,
+    )
+    try:
+        execute_evaluation_run_matrix(
+            _matrix(),
+            root=tmp_path / "scalar",
+            repo_root=repo_root,
+        )
+        execute_evaluation_run_matrix(
+            _matrix(),
+            root=tmp_path / "batch",
+            repo_root=repo_root,
+            batch=EvaluationBatchExecution(),
+        )
+    finally:
+        unregister_evaluation_recipe(EVALUATION_TYPE)
+
+    assert scalar_roots == [repo_root.resolve()] * 3
+    assert batch_roots == [repo_root.resolve()]
 
 
 def _staged_matrix(tmp_path: Path, states):
@@ -433,6 +480,23 @@ def test_batched_matrix_fails_closed_with_typed_row_diagnostic(tmp_path: Path) -
 
     assert exc_info.value.row_id == "row-1"
     assert not output.exists()
+
+
+def test_batch_row_error_survives_spawned_process_boundary() -> None:
+    with ProcessPoolExecutor(
+        max_workers=1,
+        mp_context=multiprocessing.get_context("spawn"),
+    ) as pool:
+        future = pool.submit(_raise_pickled_evaluation_batch_row_error)
+        with pytest.raises(
+            EvaluationBatchRowError,
+            match="spawned-row.*spawned failure",
+        ) as exc_info:
+            future.result()
+
+    assert exc_info.value.row_id == "spawned-row"
+    assert isinstance(exc_info.value.cause, ValueError)
+    assert str(exc_info.value.cause) == "spawned failure"
 
 
 def test_batched_matrix_rejects_content_identical_row_manifest_ids(tmp_path: Path) -> None:

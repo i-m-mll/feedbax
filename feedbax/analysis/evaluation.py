@@ -94,6 +94,7 @@ from feedbax.analysis.execution_context import (
     StagedParentExecutionLocation,
     resolve_staged_execution_context,
     with_staged_parent_execution_locations,
+    with_staged_repo_root,
 )
 from feedbax.analysis.manifest_inputs import (
     is_authenticated_manifest_ref,
@@ -149,20 +150,30 @@ class EvaluationBatchExecution:
     grids needing reuse or resume must use per-row mode.
     """
 
+    ordered_row_ids: tuple[str, ...] | None = None
+    batch_units: tuple[tuple[str, tuple[str, ...]], ...] | None = None
+
 
 @dataclass(frozen=True)
 class EvaluationBatchItem:
     """One addressable row supplied to a registered batch recipe."""
+
     row_id: str
     spec: EvaluationRunSpec
 
 
 class EvaluationBatchRowError(RuntimeError):
     """Fail-closed batch diagnostic identifying the row that failed."""
+
     def __init__(self, row_id: str, cause: BaseException):
-        super().__init__(f"evaluation batch row {row_id!r} failed: {cause}")
+        super().__init__(row_id, cause)
         self.row_id = row_id
+        self.cause = cause
         self.__cause__ = cause
+
+    def __str__(self) -> str:
+        """Render the row-scoped cause while keeping pickle reconstruction arguments."""
+        return f"evaluation batch row {self.row_id!r} failed: {self.cause}"
 
 
 @dataclass(frozen=True)
@@ -397,12 +408,21 @@ def execute_evaluation_run_matrix(
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
     checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
+    execution_context: StagedExecutionContext | None = None,
     batch: EvaluationBatchExecution | None = None,
     matrix_metadata: Mapping[str, Any] | None = None,
 ):
     """Resolve and execute every evaluation condition through the shared harness."""
     from feedbax.analysis.harness import MatrixMaterializerHarness
 
+    if execution_context is not None and (
+        execution_descriptor is not None
+        or artifact_provider_bindings
+        or checkpoint_custody_bindings
+    ):
+        raise StagedExecutionContextError(
+            "pre-resolved execution_context cannot be combined with raw staged bindings"
+        )
     matrix_metadata = dict(matrix_metadata or {})
     staged_parents: dict[str, Any] = {}
     if isinstance(spec, EvaluationRunSpec) or (
@@ -417,11 +437,12 @@ def execute_evaluation_run_matrix(
         )
         rows = [("flat", run_spec.model_dump(mode="python"))]
         executable_spec = run_spec.model_dump(mode="json", exclude_none=True)
-        execution_context = resolve_staged_execution_context(
-            execution_descriptor,
-            artifact_provider_bindings=artifact_provider_bindings,
-            checkpoint_custody_bindings=checkpoint_custody_bindings,
-        )
+        if execution_context is None:
+            execution_context = resolve_staged_execution_context(
+                execution_descriptor,
+                artifact_provider_bindings=artifact_provider_bindings,
+                checkpoint_custody_bindings=checkpoint_custody_bindings,
+            )
     else:
         matrix, composition = resolve_evaluation_matrix_authoring(spec, repo_root=repo_root)
         flattened_spec = matrix.model_dump(mode="json", exclude_none=True)
@@ -437,6 +458,7 @@ def execute_evaluation_run_matrix(
             execution_descriptor=execution_descriptor,
             artifact_provider_bindings=artifact_provider_bindings,
             checkpoint_custody_bindings=checkpoint_custody_bindings,
+            execution_context=execution_context,
         )
         if isinstance(matrix.base, ContentPinnedJsonBase):
             matrix_metadata["axis_expansion"] = {
@@ -488,6 +510,7 @@ def execute_evaluation_run_matrix(
             }
         staged_parents = matrix_metadata.get("staged_parents", {})
 
+    execution_context = with_staged_repo_root(execution_context, repo_root)
     regeneration_parameters = {
         "executable_spec": executable_spec,
         "manifest_root": str(Path(root).resolve()),
@@ -515,6 +538,49 @@ def execute_evaluation_run_matrix(
             raise TypeError("batch must be an EvaluationBatchExecution instance")
         if escape_hatch_reason is not None:
             raise ValueError("batched execution only accepts EvaluationRunMatrixSpec")
+        if batch.ordered_row_ids is not None and batch.batch_units is not None:
+            raise ValueError("batch execution accepts either ordered_row_ids or batch_units")
+        if batch.batch_units is not None:
+            from feedbax.analysis.harness import HarnessResult
+
+            available = {row_id: payload for row_id, payload in rows}
+            completed = []
+            batch_ids = []
+            for batch_id, batch_row_ids in batch.batch_units:
+                if not batch_id or batch_id in batch_ids:
+                    raise ValueError("batch_units require unique non-empty batch ids")
+                unknown = [row_id for row_id in batch_row_ids if row_id not in available]
+                if not batch_row_ids or len(batch_row_ids) != len(set(batch_row_ids)) or unknown:
+                    raise ValueError("batch_units require non-empty unique known ordered row ids")
+                batch_ids.append(batch_id)
+                result = _execute_evaluation_batch_rows(
+                    [(row_id, available[row_id]) for row_id in batch_row_ids],
+                    root=Path(root) / batch_id,
+                    execution_context=execution_context,
+                    matrix_metadata=matrix_metadata,
+                    regeneration_parameters={
+                        **regeneration_parameters,
+                        "batch_execution": {
+                            "mode": "governed_ordered_partition",
+                            "batch_id": batch_id,
+                            "ordered_row_ids": batch_row_ids,
+                        },
+                    },
+                )
+                completed.extend(result.rows)
+            return HarnessResult(
+                rows=tuple(completed),
+                note="Evaluation run matrix persistent-worker partition",
+                metadata={"ordered_batch_ids": batch_ids},
+            )
+        if batch.ordered_row_ids is not None:
+            available = {row_id: payload for row_id, payload in rows}
+            if len(batch.ordered_row_ids) != len(set(batch.ordered_row_ids)):
+                raise ValueError("batch ordered_row_ids must be unique")
+            unknown = [row_id for row_id in batch.ordered_row_ids if row_id not in available]
+            if unknown:
+                raise ValueError(f"batch ordered_row_ids contain unknown matrix rows: {unknown!r}")
+            rows = [(row_id, available[row_id]) for row_id in batch.ordered_row_ids]
         return _execute_evaluation_batch_rows(
             rows,
             root=Path(root),
@@ -522,7 +588,14 @@ def execute_evaluation_run_matrix(
             matrix_metadata=matrix_metadata,
             regeneration_parameters={
                 **regeneration_parameters,
-                "batch_execution": {"mode": "whole_matrix"},
+                "batch_execution": {
+                    "mode": (
+                        "governed_ordered_subset"
+                        if batch.ordered_row_ids is not None
+                        else "whole_matrix"
+                    ),
+                    "ordered_row_ids": batch.ordered_row_ids,
+                },
             },
         )
 
@@ -592,9 +665,9 @@ def _execute_evaluation_batch_rows(
         # Fail closed before any recipe execution or publication.
         rows_by_manifest_id: dict[str, list[str]] = {}
         for item in items:
-            rows_by_manifest_id.setdefault(
-                evaluation_run_manifest_id(item.spec), []
-            ).append(item.row_id)
+            rows_by_manifest_id.setdefault(evaluation_run_manifest_id(item.spec), []).append(
+                item.row_id
+            )
         collisions = {
             manifest_id: row_ids
             for manifest_id, row_ids in rows_by_manifest_id.items()
@@ -679,15 +752,14 @@ def _execute_evaluation_batch_rows(
         try:
             published_rows = []
             for row in result.rows:
+
                 def publish(artifact: ArtifactRef) -> ArtifactRef:
                     if artifact.uri is None:
                         return artifact
                     uri = Path(artifact.uri)
                     if not uri.is_relative_to(staging):
                         return artifact
-                    return artifact.model_copy(
-                        update={"uri": str(root / uri.relative_to(staging))}
-                    )
+                    return artifact.model_copy(update={"uri": str(root / uri.relative_to(staging))})
 
                 manifest = row.result.model_copy(
                     update={"artifacts": [publish(artifact) for artifact in row.result.artifacts]}
@@ -756,7 +828,9 @@ def _store_batched_evaluation_result(
             for value in prerequisites.values()
         ],
     ]
-    prov.entrypoint = EntrypointRef(kind="feedbax-evaluation-recipe", name=item.spec.evaluation_type)
+    prov.entrypoint = EntrypointRef(
+        kind="feedbax-evaluation-recipe", name=item.spec.evaluation_type
+    )
     manifest = _build_evaluation_manifest(
         manifest_id=manifest_id,
         run_spec=item.spec,
@@ -814,38 +888,51 @@ def _resolve_matrix_staged_parents(
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding],
     checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding],
+    execution_context: StagedExecutionContext | None = None,
 ) -> StagedExecutionContext:
     """Bind and authenticate matrix parents before any row root or recipe effect."""
-    context = resolve_staged_execution_context(
+    if execution_context is not None and (
+        execution_descriptor is not None
+        or artifact_provider_bindings
+        or checkpoint_custody_bindings
+    ):
+        raise StagedExecutionContextError(
+            "pre-resolved execution_context cannot be combined with raw staged bindings"
+        )
+    context = execution_context or resolve_staged_execution_context(
         execution_descriptor,
         artifact_provider_bindings=artifact_provider_bindings,
         checkpoint_custody_bindings=checkpoint_custody_bindings,
     )
     locations: list[StagedParentExecutionLocation] = []
-    local_root: Path | None = None
     for name, prerequisite in matrix.staged_parents.items():
         parent = prerequisite.parent
         if prerequisite.artifact_provider is None:
-            if parent_manifest_root is None:
+            bound_manifest_root = context.manifest_roots.get(name)
+            if bound_manifest_root is not None:
+                candidate_root = bound_manifest_root
+            elif parent_manifest_root is not None:
+                candidate_root = Path(parent_manifest_root)
+            else:
                 raise StagedExecutionContextError(
-                    f"local matrix staged parent {name!r} requires parent_manifest_root"
+                    f"local matrix staged parent {name!r} requires parent_manifest_root "
+                    "or a bound manifest root"
                 )
-            if local_root is None:
-                local_root = Path(parent_manifest_root)
-                if not local_root.is_absolute() or ".." in local_root.parts:
-                    raise StagedExecutionContextError(
-                        "matrix parent manifest root must be absolute and contain no '..'"
-                    )
-                try:
-                    resolved_root = local_root.resolve(strict=True)
-                except OSError as exc:
-                    raise StagedExecutionContextError(
-                        f"matrix parent manifest root is unavailable: {local_root}"
-                    ) from exc
-                if resolved_root != local_root:
-                    raise StagedExecutionContextError(
-                        "matrix parent manifest root must not traverse symbolic links"
-                    )
+            local_root = Path(candidate_root)
+            if not local_root.is_absolute() or ".." in local_root.parts:
+                raise StagedExecutionContextError(
+                    "matrix parent manifest root must be absolute and contain no '..'"
+                )
+            try:
+                resolved_root = local_root.resolve(strict=True)
+            except OSError as exc:
+                raise StagedExecutionContextError(
+                    f"matrix parent manifest root is unavailable: {local_root}"
+                ) from exc
+            if resolved_root != local_root:
+                raise StagedExecutionContextError(
+                    "matrix parent manifest root must not traverse symbolic links"
+                )
             if parent.kind == "TrainingRunManifest":
                 resolved_training = resolve_evaluation_inputs(
                     EvaluationRunSpec(
@@ -1087,6 +1174,7 @@ def execute_evaluation_run_spec(
     spec: EvaluationRunSpec | Mapping[str, Any] | Path | str,
     *,
     root: Path | str | None = None,
+    repo_root: Path | str | None = None,
     provenance: Provenance | None = None,
     issues: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -1103,6 +1191,7 @@ def execute_evaluation_run_spec(
     run_spec = coerce_evaluation_run_spec(spec)
     recipe = get_evaluation_recipe(run_spec.evaluation_type)
     root_path = Path(root) if root is not None else default_manifest_root()
+    execution_context = with_staged_repo_root(execution_context, repo_root)
     manifest_id = evaluation_run_manifest_id(run_spec)
     states_path = evaluation_states_cache_path(manifest_id, root=root_path)
     manifest_path = (

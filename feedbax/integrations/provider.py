@@ -58,6 +58,7 @@ from feedbax.contracts.manifest import (
     utc_now,
 )
 from feedbax.contracts.selection import SelectionSpec
+from feedbax.contracts.training_matrix_composition import TrainingRunMatrixDeltaSpec
 from feedbax.contracts.migrations import (
     UnsupportedSpecVersion,
     migrate_graph_spec,
@@ -260,6 +261,7 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "TrainingSpec": TrainingSpec,
         "TrainingRunSpec": TrainingRunSpec,
         "TrainingRunMatrixSpec": TrainingRunMatrixSpec,
+        "TrainingRunMatrixDeltaSpec": TrainingRunMatrixDeltaSpec,
         "LrScheduleSpec": LrScheduleSpec,
         "TaskSpec": TaskSpec,
         "LossTermSpec": LossTermSpec,
@@ -321,6 +323,7 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "EvaluationRunMatrixDeltaSpec": analysis_pkg.EvaluationRunMatrixDeltaSpec,
         "CheckpointSelectionManifest": CheckpointSelectionManifest,
         "AnalysisBundleSpec": analysis_pkg.AnalysisBundleSpec,
+        "AnalysisBundleDeltaSpec": analysis_pkg.AnalysisBundleDeltaSpec,
         "StagedAnalysisBundleExecution": analysis_pkg.StagedAnalysisBundleExecution,
         "AnalysisRunManifest": AnalysisRunManifest,
         "AnalysisRunDeltaSpec": analysis_pkg.AnalysisRunDeltaSpec,

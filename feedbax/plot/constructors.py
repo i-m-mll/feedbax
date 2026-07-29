@@ -12,7 +12,7 @@ import numpy as np
 import plotly.graph_objs as go
 from plotly.subplots import make_subplots
 
-from feedbax.contracts.figures import ColorscaleSpec, FigureColorbar
+from feedbax.contracts.figures import ColorscaleSpec, FigureColorbar, PerturbationTiming
 from feedbax.contracts.manifest import StrictModel
 from feedbax.plot.colors import color_add_alpha, sample_colorscale_unique
 
@@ -53,9 +53,13 @@ class Trajectory2DParams(StrictModel):
     colorscale_axis: int = 0
     stride: int = 1
     show_mean: bool = True
+    showlegend: bool | None = None
     opacity: float = 0.4
     line_width: float = 0.75
     mean_line_width: float = 2.5
+    affected_color: str = "rgba(255, 160, 160, 0.65)"
+    affected_line_width: float = 6.0
+    affected_marker_size: float = 10.0
 
 
 class EndpointMarkerParams(StrictModel):
@@ -103,6 +107,8 @@ class VRectParams(StrictModel):
     opacity: float = 0.2
     line_color: str | None = None
     line_width: float = 0.0
+    event_line_dash: str = "solid"
+    event_line_width: float = 1.5
 
 
 class ComparisonGridParams(StrictModel):
@@ -166,6 +172,7 @@ class PanelContent:
     axes_labels: Mapping[str, str | None] | None = None
     x_axis: Mapping[str, Any] | None = None
     y_axis: Mapping[str, Any] | None = None
+    equal_data_aspect: Mapping[str, Any] | None = None
 
 
 TraceConstructor = Callable[[Mapping[str, Any], StrictModel], Sequence[Any]]
@@ -563,6 +570,13 @@ def _trajectory_2d(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any
             "trajectory_2d requires trajectories with shape (..., time, 2), "
             f"got {trajectories.shape}"
         )
+    timing = _perturbation_timing(data, constructor="trajectory_2d")
+    if timing is not None and trajectories.shape[-2] != timing.sample_count:
+        raise ValueError(
+            "trajectory_2d perturbation timing sample_count "
+            f"{timing.sample_count} does not match every plotted trajectory length "
+            f"{trajectories.shape[-2]}"
+        )
     label = p.label or str(data.get("label", "Trajectory"))
     colorscale = p.colorscale
     if colorscale is None and p.colorscale_key is not None:
@@ -594,31 +608,82 @@ def _trajectory_2d(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any
     colors = [color for color in group_colors for _ in range(curves_per_group)]
     traces: list[Any] = []
     for index, (traj, color) in enumerate(zip(trajectories, colors, strict=True)):
-        traces.append(
-            go.Scatter(
-                name=label,
-                legendgroup=label,
-                showlegend=index == 0,
-                x=traj[:, 0],
-                y=traj[:, 1],
-                mode="lines",
-                opacity=p.opacity,
-                line={"color": color, "width": p.line_width},
+        scientific_trace = go.Scatter(
+            name=label,
+            legendgroup=label,
+            showlegend=index == 0 and p.showlegend is not False,
+            x=traj[:, 0],
+            y=traj[:, 1],
+            mode="lines",
+            opacity=p.opacity,
+            line={"color": color, "width": p.line_width},
+        )
+        traces.extend(
+            _trajectory_with_affected_underlay(
+                scientific_trace,
+                traj,
+                timing,
+                color=p.affected_color,
+                width=p.affected_line_width,
+                marker_size=p.affected_marker_size,
             )
         )
     if p.show_mean and trajectories.shape[0] > 1:
         mean = np.nanmean(trajectories, axis=0)
-        traces.append(
-            go.Scatter(
-                name=f"{label} mean",
-                legendgroup=label,
-                x=mean[:, 0],
-                y=mean[:, 1],
-                mode="lines",
-                line={"color": group_colors[0], "width": p.mean_line_width},
+        mean_trace_kwargs: dict[str, Any] = {}
+        if p.showlegend is not None:
+            mean_trace_kwargs["showlegend"] = p.showlegend
+        mean_trace = go.Scatter(
+            name=f"{label} mean",
+            legendgroup=label,
+            x=mean[:, 0],
+            y=mean[:, 1],
+            mode="lines",
+            line={"color": group_colors[0], "width": p.mean_line_width},
+            **mean_trace_kwargs,
+        )
+        traces.extend(
+            _trajectory_with_affected_underlay(
+                mean_trace,
+                mean,
+                timing,
+                color=p.affected_color,
+                width=p.affected_line_width,
+                marker_size=p.affected_marker_size,
             )
         )
     return traces
+
+
+def _trajectory_with_affected_underlay(
+    scientific_trace: go.Scatter,
+    trajectory: np.ndarray,
+    timing: PerturbationTiming | None,
+    *,
+    color: str,
+    width: float,
+    marker_size: float,
+) -> list[go.Scatter]:
+    """Return an optional affected-segment underlay immediately before its trace."""
+    if timing is None or timing.applicability != "bounded":
+        return [scientific_trace]
+    affected_range = timing.affected_range()
+    assert affected_range is not None
+    start, stop = affected_range
+    affected = trajectory[start:stop]
+    singleton = affected.shape[0] == 1
+    underlay = go.Scatter(
+        name=f"{scientific_trace.name} affected segment",
+        legendgroup=scientific_trace.legendgroup,
+        showlegend=False,
+        hoverinfo="skip",
+        x=affected[:, 0],
+        y=affected[:, 1],
+        mode="markers" if singleton else "lines",
+        line={"color": color, "width": width},
+        marker={"color": color, "size": marker_size} if singleton else None,
+    )
+    return [underlay, scientific_trace]
 
 
 def _endpoint_markers(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any]:
@@ -757,6 +822,50 @@ def _hline(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any]:
 
 def _vrect(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any]:
     p = VRectParams.model_validate(params.model_dump())
+    timing = _perturbation_timing(data, constructor="vrect")
+    if timing is not None:
+        if p.x0 is not None or p.x1 is not None or "x0" in data or "x1" in data:
+            raise ValueError(
+                "vrect perturbation timing cannot be combined with explicit x0 or x1"
+            )
+        x = _perturbation_coordinates(data, timing)
+        affected_range = timing.affected_range()
+        if affected_range is None:
+            return []
+        start, stop = affected_range
+        if timing.duration == 1:
+            position = float(x[start])
+            return [
+                go.layout.Shape(
+                    type="line",
+                    x0=position,
+                    x1=position,
+                    xref="x",
+                    y0=0,
+                    y1=1,
+                    yref="y domain",
+                    line={
+                        "color": p.line_color or p.fillcolor,
+                        "dash": p.event_line_dash,
+                        "width": p.event_line_width,
+                    },
+                    opacity=p.opacity,
+                )
+            ]
+        return [
+            go.layout.Shape(
+                type="rect",
+                x0=float(x[start]),
+                x1=float(x[stop - 1]),
+                xref="x",
+                y0=0,
+                y1=1,
+                yref="y domain",
+                fillcolor=p.fillcolor,
+                opacity=p.opacity,
+                line={"color": p.line_color or p.fillcolor, "width": p.line_width},
+            )
+        ]
     x0 = p.x0 if p.x0 is not None else data.get("x0")
     x1 = p.x1 if p.x1 is not None else data.get("x1")
     if x0 is None or x1 is None:
@@ -775,6 +884,45 @@ def _vrect(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any]:
             line={"color": p.line_color or p.fillcolor, "width": p.line_width},
         )
     ]
+
+
+def _perturbation_timing(
+    data: Mapping[str, Any],
+    *,
+    constructor: str,
+) -> PerturbationTiming | None:
+    raw = data.get("perturbation_timing")
+    if raw is None:
+        return None
+    try:
+        return PerturbationTiming.model_validate(raw)
+    except Exception as exc:
+        raise ValueError(f"{constructor} perturbation_timing is invalid: {exc}") from exc
+
+
+def _perturbation_coordinates(
+    data: Mapping[str, Any],
+    timing: PerturbationTiming,
+) -> np.ndarray:
+    if "x" not in data:
+        raise ValueError("vrect perturbation timing requires plotted x coordinates")
+    x = _array(data["x"])
+    if x.ndim != 1:
+        raise ValueError(
+            f"vrect perturbation timing requires 1-D x coordinates, got shape {x.shape}"
+        )
+    if x.shape[0] != timing.sample_count:
+        raise ValueError(
+            "vrect perturbation timing sample_count "
+            f"{timing.sample_count} does not match plotted x coordinate length {x.shape[0]}"
+        )
+    if not np.all(np.isfinite(x)):
+        raise ValueError("vrect perturbation timing requires finite x coordinates")
+    if np.any(np.diff(x) <= 0):
+        raise ValueError(
+            "vrect perturbation timing requires strictly increasing x coordinates"
+        )
+    return x
 
 
 def _comparison_grid(panels: Sequence[PanelContent], params: StrictModel) -> go.Figure:
@@ -807,10 +955,43 @@ def _comparison_grid(panels: Sequence[PanelContent], params: StrictModel) -> go.
             fig.update_xaxes(**panel.x_axis, row=row, col=col)
         if panel.y_axis:
             fig.update_yaxes(**panel.y_axis, row=row, col=col)
+        if panel.equal_data_aspect:
+            subplot = fig.get_subplot(row, col)
+            if subplot is None or not hasattr(subplot, "xaxis"):
+                raise ValueError(
+                    "equal_data_aspect requires a Cartesian x/y subplot at "
+                    f"row {row}, col {col}"
+                )
+            shared_axes = []
+            for axis_name, axis, layout_axes in (
+                ("x", subplot.xaxis, fig.select_xaxes()),
+                ("y", subplot.yaxis, fig.select_yaxes()),
+            ):
+                axis_ref = axis.plotly_name.replace("axis", "", 1)
+                if axis.matches is not None or any(
+                    other.matches == axis_ref for other in layout_axes
+                ):
+                    shared_axes.append(axis_name)
+            if shared_axes:
+                raise ValueError(
+                    "equal_data_aspect cannot constrain shared axes at "
+                    f"row {row}, col {col}: {shared_axes}; set the corresponding "
+                    "shared_xaxes/shared_yaxes parameter to False"
+                )
+            x_axis_ref = subplot.xaxis.plotly_name.replace("axis", "", 1)
+            fig.update_yaxes(
+                scaleanchor=x_axis_ref,
+                scaleratio=panel.equal_data_aspect["ratio"],
+                row=row,
+                col=col,
+            )
     return fig
 
 
-def _colorbar_carrier(colorbar: FigureColorbar) -> go.Scatter:
+def _colorbar_carrier(
+    colorbar: FigureColorbar,
+    layout: Mapping[str, Any] | None = None,
+) -> go.Scatter:
     """Return the point-free trace that draws a resolved colorbar.
 
     Plotly draws a colorbar from a trace that carries a colorscale, so the key
@@ -832,8 +1013,11 @@ def _colorbar_carrier(colorbar: FigureColorbar) -> go.Scatter:
         "cmax": high,
         "showscale": True,
     }
+    colorbar_layout = dict(layout or {})
     if colorbar.title is not None:
-        marker["colorbar"] = {"title": colorbar.title}
+        colorbar_layout["title"] = colorbar.title
+    if colorbar_layout:
+        marker["colorbar"] = colorbar_layout
     return go.Scatter(
         x=[None],
         y=[None],
@@ -842,6 +1026,65 @@ def _colorbar_carrier(colorbar: FigureColorbar) -> go.Scatter:
         hoverinfo="skip",
         marker=marker,
     )
+
+
+def _panel_colorbar_layout(
+    fig: go.Figure,
+    panels: Sequence[PanelContent],
+    colorbar: FigureColorbar,
+) -> dict[str, Any]:
+    """Resolve panel-relative colorbar placement into Plotly paper coordinates."""
+    placement = colorbar.placement
+    if placement is None:
+        return {}
+    matches = [
+        (index, panel)
+        for index, panel in enumerate(panels)
+        if panel.name == placement.panel
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            "colorbar placement requires exactly one panel named "
+            f"{placement.panel!r}; found {len(matches)}"
+        )
+    index, panel = matches[0]
+    row = panel.row or index + 1
+    col = panel.col or 1
+    subplot = fig.get_subplot(row, col)
+    if subplot is None or not hasattr(subplot, "xaxis") or not hasattr(subplot, "yaxis"):
+        raise ValueError(
+            "colorbar placement requires a Cartesian panel with resolved x/y domains; "
+            f"panel {placement.panel!r} is at row {row}, col {col}"
+        )
+    x_domain = tuple(subplot.xaxis.domain or ())
+    y_domain = tuple(subplot.yaxis.domain or ())
+    if len(x_domain) != 2 or len(y_domain) != 2:
+        raise ValueError(
+            "colorbar placement requires resolved two-point x/y domains for panel "
+            f"{placement.panel!r}"
+        )
+    x_low, x_high = x_domain
+    y_low, y_high = y_domain
+    width = x_high - x_low
+    height = y_high - y_low
+    if width <= 0.0 or height <= 0.0:
+        raise ValueError(
+            f"colorbar placement panel {placement.panel!r} has a non-positive domain"
+        )
+    if placement.side == "right":
+        x = x_high + placement.offset_fraction * width
+        x_anchor = "left"
+    else:
+        x = x_low - placement.offset_fraction * width
+        x_anchor = "right"
+    return {
+        "len": placement.length_fraction * height,
+        "lenmode": "fraction",
+        "x": x,
+        "xanchor": x_anchor,
+        "y": y_low + placement.center_fraction * height,
+        "yanchor": "middle",
+    }
 
 
 def _grid_figure(fig: go.Figure, panels: Sequence[PanelContent], params: StrictModel) -> go.Figure:
@@ -872,7 +1115,12 @@ def _grid_figure(fig: go.Figure, panels: Sequence[PanelContent], params: StrictM
     if updates:
         fig.update_layout(**updates)
     if p.colorbar is not None:
-        fig.add_trace(_colorbar_carrier(p.colorbar))
+        fig.add_trace(
+            _colorbar_carrier(
+                p.colorbar,
+                _panel_colorbar_layout(fig, panels, p.colorbar),
+            )
+        )
     return fig
 
 
@@ -953,12 +1201,12 @@ def register_default_figure_constructors() -> None:
     ]
     changed_versions = {
         "feedbax.profile_band": "v2",
-        "feedbax.trajectory_2d": "v2",
+        "feedbax.trajectory_2d": "v4",
         "feedbax.endpoint_markers": "v2",
         "feedbax.hline": "v2",
-        "feedbax.vrect": "v2",
-        "feedbax.comparison_grid": "v2",
-        "feedbax.grid_figure": "v3",
+        "feedbax.vrect": "v3",
+        "feedbax.comparison_grid": "v3",
+        "feedbax.grid_figure": "v4",
     }
     for key, tier, constructor, params_model, description in defaults:
         register_figure_constructor(

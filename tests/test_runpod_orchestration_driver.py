@@ -2711,6 +2711,58 @@ def test_stage_inputs_ignores_checkpoint_shaped_payload_keys(tmp_path: Path) -> 
     assert not any("checkpoint_100" in command for command in transport.ssh_commands)
 
 
+def test_stage_inputs_heartbeats_while_blocking_transfer(tmp_path: Path) -> None:
+    class BlockingTransferTransport(FakeRunPodTransport):
+        def rsync(
+            self,
+            source: str,
+            target: str,
+            *,
+            delete: bool = False,
+            excludes: tuple[str, ...] = (),
+            timeout_seconds: float | None = None,
+        ) -> CommandResult:
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                heartbeats = [
+                    command
+                    for command in self.ssh_commands
+                    if command.startswith("touch -- ") and "/.host-active" in command
+                ]
+                if len(heartbeats) >= 2:
+                    return super().rsync(
+                        source,
+                        target,
+                        delete=delete,
+                        excludes=excludes,
+                        timeout_seconds=timeout_seconds,
+                    )
+                time.sleep(0.005)
+            return CommandResult(1, stderr="host heartbeat did not recur")
+
+    bundle = _bundle(tmp_path, deadman_enabled=True)
+    transport = BlockingTransferTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            ssh_host="198.51.100.10",
+            ssh_port=2222,
+            image=bundle.environment.image_id or "",
+            poll_seconds=0.01,
+        ),
+        transport=transport,
+    )
+
+    driver.stage_inputs(bundle, _state(bundle))
+
+    heartbeats = [
+        command
+        for command in transport.ssh_commands
+        if command.startswith("touch -- ") and "/.host-active" in command
+    ]
+    assert len(heartbeats) >= 2
+    assert all(".stage-attempts/stage-inputs-0" in command for command in heartbeats)
+
+
 def test_stage_inputs_ignores_legacy_runpod_baseline_metadata(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path).model_copy(
         update={
@@ -2992,6 +3044,36 @@ def test_launch_row_does_not_double_wrap_normalized_native_command(
     assert "specs/warm.json" in launch_command
 
 
+def test_launch_row_runs_evaluation_matrix_in_realized_uv_environment(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    original = bundle.rows[0]
+    row = original.model_copy(
+        update={
+            "execution_family": "evaluation-matrix",
+            "launch": RowLaunchSpec(
+                command=["python", "-m", "feedbax", "matrix-harness"],
+                payload_routing={"kind": "registered-execution-payload"},
+            ),
+        }
+    )
+    bundle = bundle.model_copy(
+        update={
+            "execution_family": "evaluation-matrix",
+            "rows": [row],
+        }
+    )
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(config=RunPodDriverConfig(), transport=transport)
+
+    driver.launch_row(bundle, row, _state(bundle))
+
+    launch_command = transport.ssh_commands[0]
+    assert launch_command.count("uv run --no-sync") == 1
+    assert "python -m feedbax matrix-harness" in launch_command
+
+
 def test_launch_row_entry_fallback_keeps_single_uv_environment_prefix(
     tmp_path: Path,
 ) -> None:
@@ -3106,6 +3188,7 @@ def test_deadman_is_verified_and_started_once_during_environment_realization(
     assert "echo $$ >" in watchdog
     assert "deadman.installed" in watchdog
     assert 'newest=$(stat -c %Y "$installed"' in watchdog
+    assert 'find "$run_dir/.stage-attempts" -type f -print' in watchdog
     assert 'rm -f "$pid_file"' in watchdog
     assert 'runpodctl remove pod "$pod_id"' in watchdog
     assert ">>" in watchdog
@@ -4630,6 +4713,51 @@ def test_collect_rsyncs_requested_outputs_and_verifies_payload(tmp_path: Path) -
     ]
 
 
+@pytest.mark.parametrize(
+    "source_kind",
+    ["row-relative", "row-relative-dot", "run-relative", "absolute"],
+)
+def test_collect_skips_legacy_evaluation_raw_store(
+    tmp_path: Path,
+    source_kind: str,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
+        transport=transport,
+    )
+    row_id = bundle.rows[0].row_id
+    source = {
+        "row-relative": "evaluation",
+        "row-relative-dot": "./evaluation",
+        "run-relative": f"rows/{row_id}/evaluation",
+        "absolute": f"{driver._remote_run_dir(bundle)}/rows/{row_id}/evaluation",
+    }[source_kind]
+    row = bundle.rows[0].model_copy(
+        update={
+            "execution_family": "evaluation-matrix",
+            "launch": bundle.rows[0].launch.model_copy(update={"collect": [source]}),
+        }
+    )
+    bundle = bundle.model_copy(
+        update={
+            "execution_family": "evaluation-matrix",
+            "rows": [row],
+        }
+    )
+
+    collected = driver.collect(bundle, row, _state(bundle))
+
+    event_name = f"{row.row_id}.events.jsonl"
+    assert collected == {
+        event_name: str(bundle.run_set_dir / "events" / event_name),
+    }
+    assert transport.ssh_commands == []
+    assert len(transport.rsync_calls) == 1
+    assert transport.rsync_calls[0][0].endswith(f"/events/{event_name}")
+
+
 def test_collect_native_outputs_uses_row_dir_and_canonical_events(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path, baseline=False)
     row = bundle.rows[0].model_copy(
@@ -5349,6 +5477,33 @@ def test_teardown_fails_closed_when_remove_after_stop_fails(tmp_path: Path) -> N
         ("stop", "pod", "pod-123"),
         ("remove", "pod", "pod-123"),
     ]
+
+
+def test_teardown_confirms_absence_when_remove_reports_pod_not_found(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("remove", "pod", "pod-123"),
+        CommandResult(1, "", "Attempted to remove pod that does not exist."),
+    )
+    transport.queue_runpodctl(
+        ("pod", "get", "pod-123", "--output", "json"),
+        CommandResult(1, "", "pod not found"),
+    )
+    transport.queue_empty_global_inventory()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(pod_id="pod-123"),
+        transport=transport,
+    )
+
+    result = driver.teardown(bundle, _owned_state(bundle))
+
+    assert result["teardown"] == "already-absent"
+    assert result["pod_absence"]["verified"] is True
+    assert result["final_pod_inventory"]["verified"] is True
+    assert ("stop", "pod", "pod-123") not in transport.runpodctl_calls
 
 
 def test_teardown_polls_until_exact_owned_pod_is_absent(tmp_path: Path) -> None:

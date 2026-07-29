@@ -14,11 +14,13 @@ from jaxtyping import PyTree
 from sqlalchemy.orm import Session
 
 from feedbax.contracts.manifest import (
+    AnalysisDataProduct,
     AnalysisEvaluationStateResolutionDiagnostic,
     AnalysisEvaluationStateSource,
     AnalysisRunManifest,
     AnalysisRunSpec,
     ArtifactRef,
+    DataProductParentRef,
     EntrypointRef,
     ManifestStatus,
     ParentRef,
@@ -27,6 +29,7 @@ from feedbax.contracts.manifest import (
     SpecPayload,
     analysis_results_cache_dir,
     analysis_run_manifest_id,
+    authenticated_manifest_ref_profile,
     collect_git_provenance,
     default_manifest_root,
     media_type_for_extension,
@@ -91,6 +94,7 @@ class AnalysisRunContext:
     _evaluation_state_resolution_diagnostics: list[
         AnalysisEvaluationStateResolutionDiagnostic
     ] = field(default_factory=list, init=False)
+    _produced_data: list[AnalysisDataProduct] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
         self.root = Path(self.root) if self.root is not None else default_manifest_root()
@@ -127,6 +131,11 @@ class AnalysisRunContext:
     def regeneration_specs(self) -> tuple[SpecPayload | ParentRef | ArtifactRef, ...]:
         """Return regeneration specs recorded so far."""
         return tuple(self._regeneration_specs)
+
+    @property
+    def produced_data(self) -> tuple[AnalysisDataProduct, ...]:
+        """Return typed data products recorded so far."""
+        return tuple(self._produced_data)
 
     def record_evaluation_state_sources(
         self,
@@ -184,6 +193,105 @@ class AnalysisRunContext:
         group_metadata: dict[str, Any] | None = None,
     ) -> ArtifactRef:
         """Persist stable JSON payload and record it on this analysis run."""
+        artifact = self._store_json_artifact(
+            value,
+            role=role,
+            logical_name=logical_name,
+            metadata=metadata,
+            group_id=group_id,
+            group_role=group_role,
+            group_metadata=group_metadata,
+        )
+        self.record_artifact_refs([artifact])
+        return artifact
+
+    def record_data_product(
+        self,
+        payload: Any,
+        *,
+        product_schema_id: str,
+        product_schema_version: str,
+        role: str,
+        logical_name: str,
+        label: str | None = None,
+        artifact_role: str | None = None,
+        artifact_logical_name: str | None = None,
+        artifact_metadata: dict[str, Any] | None = None,
+        producer_manifest_hash: str | None = None,
+        parent_manifests: Sequence[DataProductParentRef] | None = None,
+        checkpoint_policy: dict[str, Any] | None = None,
+        rollout_policy: dict[str, Any] | None = None,
+        parameters: dict[str, Any] | None = None,
+        descriptor_basis_hash: str | None = None,
+        materialization: dict[str, Any] | None = None,
+        regeneration: Sequence[RegenerationSpec | ParentRef | ArtifactRef] = (),
+        metadata: dict[str, Any] | None = None,
+    ) -> AnalysisDataProduct:
+        """Store and record one typed, content-addressed JSON data product.
+
+        The product payload is retained by the analysis root's immutable artifact
+        provider. Product identity and output-binding collisions fail before a
+        second product is recorded.
+        """
+        parents = (
+            list(parent_manifests)
+            if parent_manifests is not None
+            else [self._data_product_parent(parent) for parent in self.spec.inputs]
+        )
+        product_fields = {
+            "product_schema_id": product_schema_id,
+            "product_schema_version": product_schema_version,
+            "role": role,
+            "logical_name": logical_name,
+            "label": label,
+            "producer_manifest_id": self.manifest_id,
+            "producer_manifest_hash": producer_manifest_hash,
+            "parent_manifests": parents,
+            "checkpoint_policy": dict(checkpoint_policy or {}),
+            "rollout_policy": dict(rollout_policy or {}),
+            "parameters": arrays_to_lists(dict(parameters or {})),
+            "descriptor_basis_hash": descriptor_basis_hash,
+            "materialization": arrays_to_lists(dict(materialization or {})),
+            "regeneration": list(regeneration),
+            "metadata": arrays_to_lists(dict(metadata or {})),
+        }
+        candidate = AnalysisDataProduct.model_validate(
+            {
+                **product_fields,
+                "artifacts": [],
+            }
+        )
+        self._reject_data_product_collision(candidate)
+
+        artifact = self._store_json_artifact(
+            payload,
+            role=artifact_role or role,
+            logical_name=artifact_logical_name or f"{logical_name}.json",
+            metadata=artifact_metadata,
+        )
+        product = AnalysisDataProduct.model_validate(
+            {
+                **product_fields,
+                "artifacts": [artifact],
+            }
+        )
+        self._reject_data_product_collision(product)
+        self._artifacts.append(artifact)
+        self._produced_data.append(product)
+        return product
+
+    def _store_json_artifact(
+        self,
+        value: Any,
+        *,
+        role: str,
+        logical_name: str,
+        metadata: dict[str, Any] | None = None,
+        group_id: str | None = None,
+        group_role: str | None = None,
+        group_metadata: dict[str, Any] | None = None,
+    ) -> ArtifactRef:
+        """Store stable JSON bytes without mutating the context record."""
         data = json.dumps(arrays_to_lists(value), indent=2, sort_keys=True).encode() + b"\n"
         provider = ImmutableArtifactBlobProvider(self.root_path.absolute())
         artifact = provider.store_bytes(
@@ -206,7 +314,6 @@ class AnalysisRunContext:
                 }
             }
         )
-        self.record_artifact_refs([artifact])
         return artifact
 
     def record_artifact_group(
@@ -361,6 +468,7 @@ class AnalysisRunContext:
         metadata: dict[str, Any] | None = None,
     ) -> tuple[AnalysisRunManifest, Path]:
         """Write the completed analysis manifest and optional SQLite manifest index row."""
+        self._validate_produced_data_custody()
         provenance = self._provenance()
         manifest = AnalysisRunManifest(
             id=self.manifest_id,
@@ -382,6 +490,7 @@ class AnalysisRunContext:
             provenance=provenance,
             artifacts=list(self._artifacts),
             regeneration_specs=list(self._regeneration_specs),
+            produced_data=list(self._produced_data),
             metadata={
                 **(self.metadata or {}),
                 **(metadata or {}),
@@ -527,6 +636,58 @@ class AnalysisRunContext:
                 name=self.spec.analysis_type,
             )
         return provenance
+
+    def _data_product_parent(self, parent: ParentRef) -> DataProductParentRef:
+        profile = authenticated_manifest_ref_profile(parent)
+        return DataProductParentRef(
+            kind=parent.kind,
+            id=parent.id,
+            role=parent.role,
+            manifest_hash=profile[0] if profile is not None else None,
+            uri=parent.uri,
+            metadata=dict(parent.metadata),
+        )
+
+    def _reject_data_product_collision(self, product: AnalysisDataProduct) -> None:
+        for existing in self._produced_data:
+            if existing.product_identity_hash == product.product_identity_hash:
+                raise ValueError(
+                    f"duplicate AnalysisDataProduct identity: {product.product_identity_hash}"
+                )
+            if (
+                existing.role,
+                existing.product_schema_id,
+                existing.product_schema_version,
+            ) == (
+                product.role,
+                product.product_schema_id,
+                product.product_schema_version,
+            ):
+                raise ValueError(
+                    "duplicate AnalysisDataProduct role/schema binding: "
+                    f"role={product.role!r}, "
+                    f"product_schema_id={product.product_schema_id!r}, "
+                    f"product_schema_version={product.product_schema_version!r}"
+                )
+
+    def _validate_produced_data_custody(self) -> None:
+        provider = ImmutableArtifactBlobProvider(self.root_path.absolute())
+        for product in self._produced_data:
+            validated = AnalysisDataProduct.model_validate(
+                product.model_dump(mode="python", exclude_none=True)
+            )
+            if validated.product_identity_hash != product.product_identity_hash:
+                raise ValueError(
+                    "recorded AnalysisDataProduct identity changed before finalization: "
+                    f"role={product.role!r}"
+                )
+            if not product.artifacts:
+                raise ValueError(
+                    "recorded AnalysisDataProduct has no materialized payload artifact: "
+                    f"role={product.role!r}"
+                )
+            for artifact in product.artifacts:
+                provider.get_bytes(artifact)
 
     def _artifact_metadata(
         self,

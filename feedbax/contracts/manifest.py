@@ -58,6 +58,16 @@ ANALYSIS_RUN_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.analysis_run.v1"
 ANALYSIS_RUN_SPEC_SCHEMA_VERSION = "feedbax.spec.analysis_run.v2"
 ANALYSIS_RUN_DELTA_SPEC_SCHEMA_ID = "feedbax.spec.analysis_run_delta"
 ANALYSIS_RUN_DELTA_SPEC_SCHEMA_VERSION = "feedbax.spec.analysis_run_delta.v1"
+ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_ID = "feedbax.spec.analysis_bundle_delta"
+ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_VERSION = "feedbax.spec.analysis_bundle_delta.v1"
+TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID = "feedbax.spec.training_run_matrix_delta"
+TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run_matrix_delta.v1"
+ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_ID = (
+    "feedbax.manifest.analysis_bundle_composition_provenance"
+)
+ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_VERSION = (
+    "feedbax.manifest.analysis_bundle_composition_provenance.v1"
+)
 ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_ID = (
     "feedbax.manifest.analysis_composition_provenance"
 )
@@ -437,7 +447,7 @@ class AnalysisDataProduct(StrictModel):
                 f"envelope: product_identity_hash={self.product_identity_hash!r}, "
                 f"computed={expected_hash!r}"
             )
-        self.product_identity_hash = expected_hash
+        object.__setattr__(self, "product_identity_hash", expected_hash)
         return self
 
 

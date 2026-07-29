@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -22,7 +23,17 @@ from feedbax.contracts.run_matrix import (
     TrainingRowLowererRef,
     TrainingRowLoweringResult,
 )
-from feedbax.contracts.spec_storage import training_spec_sha256
+from feedbax.contracts.run_composition import (
+    AuthoredIntentParent,
+    CompositionNode,
+    ResolvedOutputParent,
+    authored_envelope_hash,
+    flatten_composition,
+)
+from feedbax.contracts.spec_storage import (
+    training_spec_canonical_bytes,
+    training_spec_sha256,
+)
 from feedbax.contracts.training import (
     LossTermSpec,
     ObjectiveSlotSpec,
@@ -30,29 +41,39 @@ from feedbax.contracts.training import (
     TrainingConfig,
     TrainingRunSpec,
     WorkerExecutionSpec,
+    default_training_method_registry,
     standard_supervised_effective_phase_spec,
     standard_supervised_method_contract,
     standard_supervised_method_payload,
     standard_supervised_method_ref,
 )
 from feedbax.orchestration import (
+    AssemblyCompilerRegistry,
+    AssemblyContext,
     BudgetPolicy,
     CompilerIdentity,
     DeploymentPolicy,
     EnvironmentDeclaration,
+    GovernedTrainingRowParentDeclaration,
     LaunchPolicy,
     RunAssemblyRequest,
     SchemaArtifactRef,
+    assemble_run_bundle,
+    run_authority_preflight_checks,
 )
+from feedbax.plugins import load_training_method_plugins
+from feedbax.training.preparation import ExecutionPreparationProviderRegistry
 from feedbax.training.row_lowering import (
     TrainingRowLowererRegistration,
     TrainingRowLowererRegistry,
     TrainingRowLowererRegistryError,
+    TrainingRowLoweringContext,
     training_row_lowerer_implementation_sha256,
 )
 from feedbax.training.spec_storage import (
     TRAINING_RUN_MATRIX_COMPILER_ID,
     TRAINING_RUN_MATRIX_COMPILER_VERSION,
+    register_training_run_matrix_compiler,
 )
 
 
@@ -108,7 +129,8 @@ def _authored_payload(implementation_sha256: str | None = None) -> dict[str, obj
         "schema_version": _AUTHORED_SCHEMA_VERSION,
         TRAINING_ROW_LOWERER_REF_FIELD: {
             "schema_id": "feedbax.spec.training_row_lowerer_ref",
-            "schema_version": "feedbax.spec.training_row_lowerer_ref.v1",
+            "schema_version": "feedbax.spec.training_row_lowerer_ref.v2",
+            "context_api_version": "feedbax.training_row_lowering_context.v1",
             "lowerer_id": _LOWERER_ID,
             "lowerer_version": _LOWERER_VERSION,
             "implementation_sha256": implementation_sha256
@@ -119,7 +141,9 @@ def _authored_payload(implementation_sha256: str | None = None) -> dict[str, obj
 
 
 def _registration(*, broken: bool = False) -> TrainingRowLowererRegistration:
-    def lower(row: AuthoredTrainingRow) -> TrainingRowLoweringResult:
+    def lower(
+        row: AuthoredTrainingRow, _context: object
+    ) -> TrainingRowLoweringResult:
         if broken:
             raise RuntimeError("broken by design")
         return TrainingRowLoweringResult(
@@ -192,6 +216,93 @@ def _write_request(
     return request_path
 
 
+def _write_parent_request(
+    tmp_path: Path,
+    *,
+    orchestration_name: str,
+    implementation_sha256: str,
+) -> Path:
+    terminal = _execution_payload()
+    terminal_parent = ResolvedOutputParent(
+        ref="terminal",
+        resolved_root_hash=training_spec_sha256(terminal),
+    )
+    authored_parent = CompositionNode(name="parent", parent=terminal_parent)
+    child_parent = AuthoredIntentParent(
+        ref="parent",
+        content_hash=authored_envelope_hash(authored_parent),
+    )
+    authored_payload = _authored_payload(implementation_sha256)
+    authored_payload.pop("execution_payload")
+    authored_payload["composition"] = CompositionNode(
+        name="child",
+        parent=child_parent,
+    ).model_dump(mode="json", exclude_none=True)
+    authored_path = tmp_path / "parent-aware-row.json"
+    authored_path.write_bytes(training_spec_canonical_bytes(authored_payload))
+    matrix = {
+        "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+        "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        "name": "parent-aware authored matrix",
+        "base": {
+            "kind": "authored_intent",
+            "ref": authored_path.name,
+            "content_hash": training_spec_sha256(authored_payload),
+        },
+        "rows": [{"row_id": "parent-aware-row", "seed": 7}],
+    }
+    documents = {
+        "matrix": matrix,
+        "parent": authored_parent.model_dump(mode="json", exclude_none=True),
+        "terminal": terminal,
+    }
+    refs = {}
+    for name, document in documents.items():
+        data = training_spec_canonical_bytes(document)
+        path = tmp_path / f"{name}.json"
+        path.write_bytes(data)
+        refs[name] = SchemaArtifactRef(
+            schema_id=str(document["schema_id"]),
+            schema_version=str(document["schema_version"]),
+            artifact_id=f"fixture:{name}",
+            sha256=hashlib.sha256(data).hexdigest(),
+            uri=str(path),
+        )
+    request = RunAssemblyRequest(
+        authored=refs["matrix"],
+        compiler=CompilerIdentity(
+            compiler_id=TRAINING_RUN_MATRIX_COMPILER_ID,
+            compiler_version=TRAINING_RUN_MATRIX_COMPILER_VERSION,
+        ),
+        training_row_parents=[
+            GovernedTrainingRowParentDeclaration(
+                role="parent",
+                parent=child_parent,
+                artifact=refs["parent"],
+            ),
+            GovernedTrainingRowParentDeclaration(
+                role="terminal",
+                parent=terminal_parent,
+                artifact=refs["terminal"],
+            ),
+        ],
+        deployment_policy=DeploymentPolicy(
+            driver="local",
+            venue="local",
+            cloud_authorized=False,
+            review_required=False,
+            review_authorized=False,
+        ),
+        environment=EnvironmentDeclaration(python_version="3.13"),
+        launch_policy=LaunchPolicy(max_parallel_rows=1),
+        budget=BudgetPolicy(max_wall_clock_seconds=30),
+        orchestration_root=str(tmp_path / orchestration_name),
+    )
+    request_path = tmp_path / f"{orchestration_name}.request.json"
+    request_path.write_text(request.model_dump_json(), encoding="utf-8")
+    return request_path
+
+
 def test_orchestration_cli_discovers_and_lowers_downstream_rows(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -230,7 +341,88 @@ def test_orchestration_cli_discovers_and_lowers_downstream_rows(
     ]["payload"]["sha256"]
 
 
-def test_registry_fails_closed_on_missing_broken_ambiguous_and_drifted_lowerers() -> None:
+def test_registry_exact_registration_replay_is_idempotent() -> None:
+    registry = TrainingRowLowererRegistry()
+    registration = _registration()
+
+    registry.register(registration)
+    keys = registry.available_keys()
+    registry.register(_registration())
+
+    assert registry.available_keys() == keys
+
+
+def test_plugin_style_second_load_replays_exact_registration() -> None:
+    registry = TrainingRowLowererRegistry()
+    plugin = SimpleNamespace(
+        register_feedbax_training_row_lowerers=lambda target: target.register(
+            _registration()
+        )
+    )
+    entry_point = SimpleNamespace(name="downstream", load=lambda: plugin)
+
+    for _ in range(2):
+        load_training_method_plugins(
+            registry=default_training_method_registry(),
+            preparation_registry=ExecutionPreparationProviderRegistry(),
+            row_lowerer_registry=registry,
+            entry_points=[entry_point],
+            fail_on_load_error=True,
+        )
+
+    assert registry.available_keys() == (
+        (
+            _AUTHORED_SCHEMA_ID,
+            _AUTHORED_SCHEMA_VERSION,
+            _LOWERER_ID,
+            _LOWERER_VERSION,
+        ),
+    )
+
+
+def test_registry_rejects_conflicting_registration_owner() -> None:
+    registry = TrainingRowLowererRegistry()
+    registration = _registration()
+    registry.register(registration)
+
+    with pytest.raises(
+        TrainingRowLowererRegistryError,
+        match="ambiguous.*owners 'tests' and 'other'",
+    ):
+        registry.register(replace(registration, owner="other"))
+
+    assert registry.available_keys() == (
+        (
+            _AUTHORED_SCHEMA_ID,
+            _AUTHORED_SCHEMA_VERSION,
+            _LOWERER_ID,
+            _LOWERER_VERSION,
+        ),
+    )
+
+
+def test_registry_rejects_conflicting_registration_implementation() -> None:
+    registry = TrainingRowLowererRegistry()
+    registration = _registration()
+    registry.register(registration)
+
+    with pytest.raises(
+        TrainingRowLowererRegistryError,
+        match="ambiguous.*implementation sha256 values",
+    ):
+        registry.register(replace(registration, implementation_sha256="0" * 64))
+
+    assert registry.available_keys() == (
+        (
+            _AUTHORED_SCHEMA_ID,
+            _AUTHORED_SCHEMA_VERSION,
+            _LOWERER_ID,
+            _LOWERER_VERSION,
+        ),
+    )
+
+
+def test_registry_fails_closed_on_missing_broken_and_drifted_lowerers() -> None:
     row = AuthoredTrainingRow(
         row_id="row",
         row_index=0,
@@ -239,17 +431,12 @@ def test_registry_fails_closed_on_missing_broken_ambiguous_and_drifted_lowerers(
         axis_coordinates={},
     )
     with pytest.raises(TrainingRowLowererRegistryError, match="no exact"):
-        TrainingRowLowererRegistry().lower(row)
+        TrainingRowLowererRegistry().lower(row, TrainingRowLoweringContext())
 
     broken = TrainingRowLowererRegistry()
     broken.register(_registration(broken=True))
     with pytest.raises(TrainingRowLowererRegistryError, match="broken by design"):
-        broken.lower(row)
-
-    ambiguous = TrainingRowLowererRegistry()
-    ambiguous.register(_registration())
-    with pytest.raises(TrainingRowLowererRegistryError, match="ambiguous"):
-        ambiguous.register(_registration())
+        broken.lower(row, TrainingRowLoweringContext())
 
     drifted = TrainingRowLowererRegistry()
     registration = _registration()
@@ -257,7 +444,7 @@ def test_registry_fails_closed_on_missing_broken_ambiguous_and_drifted_lowerers(
         TrainingRowLowererRegistration(
             **{
                 **registration.__dict__,
-                "lower": lambda authored: TrainingRowLoweringResult(
+                "lower": lambda authored, _context: TrainingRowLoweringResult(
                     execution_payload=authored.payload["execution_payload"],
                     lowerer_identities=[
                         RowLowererIdentity(
@@ -270,21 +457,184 @@ def test_registry_fails_closed_on_missing_broken_ambiguous_and_drifted_lowerers(
         )
     )
     with pytest.raises(TrainingRowLowererRegistryError, match="drifted identity"):
-        drifted.lower(row)
+        drifted.lower(row, TrainingRowLoweringContext())
+
+
+def test_assembly_supplies_exact_composition_parents_and_binds_provenance(
+    tmp_path: Path,
+) -> None:
+    terminal = _execution_payload()
+    terminal_parent = ResolvedOutputParent(
+        ref="terminal",
+        resolved_root_hash=training_spec_sha256(terminal),
+    )
+    authored_parent = CompositionNode(name="parent", parent=terminal_parent)
+    child_parent = AuthoredIntentParent(
+        ref="parent",
+        content_hash=authored_envelope_hash(authored_parent),
+    )
+    child = CompositionNode(name="child", parent=child_parent)
+
+    def lower(
+        row: AuthoredTrainingRow,
+        context: TrainingRowLoweringContext,
+    ) -> TrainingRowLoweringResult:
+        copy_one = context.resolve_parent(child_parent)
+        assert isinstance(copy_one, CompositionNode)
+        copy_one.name = "mutated"
+        assert context.resolve_parent(child_parent).name == "parent"
+        flattened = flatten_composition(
+            CompositionNode.model_validate(row.payload["composition"]),
+            context.resolve_parent,
+        )
+        return TrainingRowLoweringResult(
+            execution_payload=flattened.payload,
+            lowerer_identities=[
+                RowLowererIdentity(
+                    lowerer_id=_LOWERER_ID,
+                    lowerer_version=_LOWERER_VERSION,
+                )
+            ],
+        )
+
+    registration = TrainingRowLowererRegistration(
+        authored_schema_id=_AUTHORED_SCHEMA_ID,
+        authored_schema_version=_AUTHORED_SCHEMA_VERSION,
+        lowerer_id=_LOWERER_ID,
+        lowerer_version=_LOWERER_VERSION,
+        implementation_sha256=training_row_lowerer_implementation_sha256(lower),
+        lower=lower,
+        owner="tests",
+    )
+    lowerers = TrainingRowLowererRegistry()
+    lowerers.register(registration)
+    authored_row = {
+        **_authored_payload(registration.implementation_sha256),
+        "composition": child.model_dump(mode="json", exclude_none=True),
+    }
+    authored_row.pop("execution_payload")
+    authored_path = tmp_path / "authored-row.json"
+    authored_path.write_bytes(training_spec_canonical_bytes(authored_row))
+    matrix = {
+        "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+        "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        "name": "declared parents",
+        "base": {
+            "kind": "authored_intent",
+            "ref": authored_path.name,
+            "content_hash": training_spec_sha256(authored_row),
+        },
+        "rows": [{"row_id": "row", "seed": 7}],
+    }
+    payloads = {
+        "matrix": training_spec_canonical_bytes(matrix),
+        "parent": training_spec_canonical_bytes(
+            authored_parent.model_dump(mode="json", exclude_none=True)
+        ),
+        "terminal": training_spec_canonical_bytes(terminal),
+    }
+
+    def artifact_ref(name: str, payload: dict[str, object]) -> SchemaArtifactRef:
+        return SchemaArtifactRef(
+            schema_id=str(payload["schema_id"]),
+            schema_version=str(payload["schema_version"]),
+            artifact_id=name,
+            sha256=hashlib.sha256(payloads[name]).hexdigest(),
+        )
+
+    request = RunAssemblyRequest(
+        authored=artifact_ref("matrix", matrix),
+        compiler=CompilerIdentity(
+            compiler_id=TRAINING_RUN_MATRIX_COMPILER_ID,
+            compiler_version=TRAINING_RUN_MATRIX_COMPILER_VERSION,
+        ),
+        training_row_parents=[
+            GovernedTrainingRowParentDeclaration(
+                role="parent",
+                parent=child_parent,
+                artifact=artifact_ref(
+                    "parent",
+                    authored_parent.model_dump(mode="json", exclude_none=True),
+                ),
+            ),
+            GovernedTrainingRowParentDeclaration(
+                role="terminal",
+                parent=terminal_parent,
+                artifact=artifact_ref("terminal", terminal),
+            ),
+        ],
+        deployment_policy=DeploymentPolicy(
+            driver="local",
+            venue="local",
+            cloud_authorized=False,
+            review_required=False,
+            review_authorized=False,
+        ),
+        environment=EnvironmentDeclaration(python_version="3.13"),
+        launch_policy=LaunchPolicy(max_parallel_rows=1),
+        budget=BudgetPolicy(max_wall_clock_seconds=30),
+    )
+    registry = AssemblyCompilerRegistry()
+    register_training_run_matrix_compiler(registry, row_lowerer=lowerers.lower)
+
+    def assemble(candidate: RunAssemblyRequest, name: str):
+        return assemble_run_bundle(
+            candidate,
+            run_set_id=name,
+            context=AssemblyContext(
+                custody_root=tmp_path / name,
+                repo_root=tmp_path,
+                artifact_resolver=lambda ref: bytes(payloads[ref.artifact_id]),
+            ),
+            registry=registry,
+        )
+
+    bundle = assemble(request, "valid")
+    provenance = bundle.rows[0].execution.row_provenance
+    assert provenance is not None
+    assert [(item.parent_kind, item.ref) for item in provenance.parent_inputs] == [
+        ("authored_intent", "parent"),
+        ("resolved_output", "terminal"),
+    ]
+    assert all(check.status == "pass" for check in run_authority_preflight_checks(bundle))
+
+    with pytest.raises(TrainingRowLowererRegistryError, match="missing or undeclared"):
+        assemble(
+            request.model_copy(
+                update={"training_row_parents": request.training_row_parents[:1]}
+            ),
+            "missing",
+        )
+    duplicated = request.model_dump(mode="json")
+    duplicated["training_row_parents"].append(duplicated["training_row_parents"][0])
+    with pytest.raises(ValidationError, match="ambiguous"):
+        RunAssemblyRequest.model_validate(duplicated)
+    payloads["terminal"] = training_spec_canonical_bytes(
+        {**terminal, "metadata": {"tampered": True}}
+    )
+    with pytest.raises(ValueError, match="artifact byte digest mismatch"):
+        assemble(request, "tampered")
 
 
 def test_lowerer_reference_rejects_unsupported_versions() -> None:
     payload = _authored_payload()[TRAINING_ROW_LOWERER_REF_FIELD]
     assert isinstance(payload, dict)
-    with pytest.raises(ValidationError, match="schema_version"):
-        TrainingRowLowererRef.model_validate(
-            {**payload, "schema_version": "feedbax.spec.training_row_lowerer_ref.v0"}
-        )
-    with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
-        default_spec_registry.migrate(
-            "TrainingRowLowererRef",
-            {"schema_version": "feedbax.spec.training_row_lowerer_ref.v0"},
-        )
+    for version in (
+        "feedbax.spec.training_row_lowerer_ref.v0",
+        "feedbax.spec.training_row_lowerer_ref.v1",
+    ):
+        with pytest.raises(ValidationError, match="schema_version"):
+            TrainingRowLowererRef.model_validate(
+                {**payload, "schema_version": version}
+            )
+        with pytest.raises(
+            UnsupportedSpecVersion,
+            match="migration_intentionally_absent=yes",
+        ):
+            default_spec_registry.migrate(
+                "TrainingRowLowererRef",
+                {"schema_version": version},
+            )
 
 
 def test_installed_plugin_replays_identical_rows_across_fresh_processes(
@@ -293,13 +643,18 @@ def test_installed_plugin_replays_identical_rows_across_fresh_processes(
     plugin_path = tmp_path / "downstream_row_plugin.py"
     plugin_path.write_text(
         """
+from feedbax.contracts.run_composition import CompositionNode, flatten_composition
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowLoweringResult
 from feedbax.training.row_lowering import TrainingRowLowererRegistration, training_row_lowerer_implementation_sha256
 
 def register_feedbax_training_row_lowerers(registry):
-    def lower(row):
+    def lower(row, context):
+        flattened = flatten_composition(
+            CompositionNode.model_validate(row.payload["composition"]),
+            context.resolve_parent,
+        )
         return TrainingRowLoweringResult(
-            execution_payload=row.payload["execution_payload"],
+            execution_payload=flattened.payload,
             lowerer_identities=[RowLowererIdentity(
                 lowerer_id="tests.downstream-row",
                 lowerer_version="tests.downstream-row.v1",
@@ -317,7 +672,7 @@ def register_feedbax_training_row_lowerers(registry):
 """.lstrip(),
         encoding="utf-8",
     )
-    request_path = _write_request(
+    request_path = _write_parent_request(
         tmp_path,
         orchestration_name="fresh",
         implementation_sha256=hashlib.sha256(plugin_path.read_bytes()).hexdigest(),
@@ -374,6 +729,10 @@ print(json.dumps({
         observed.append(json.loads(result.stdout))
 
     assert observed[0] == observed[1]
+    assert [
+        (item["parent_kind"], item["ref"])
+        for item in observed[0]["provenance"]["parent_inputs"]
+    ] == [("authored_intent", "parent"), ("resolved_output", "terminal")]
     plugin_path.write_text(plugin_path.read_text(encoding="utf-8") + "# drift\n")
     with pytest.raises(subprocess.CalledProcessError) as error:
         subprocess.run(
@@ -393,4 +752,4 @@ def test_explicit_training_run_rows_are_not_attributed_to_lowerers() -> None:
         axis_coordinates={},
     )
 
-    assert registry.lower(row) is None
+    assert registry.lower(row, TrainingRowLoweringContext()) is None

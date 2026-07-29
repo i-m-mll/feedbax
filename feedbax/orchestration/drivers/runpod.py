@@ -17,11 +17,13 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 import tomllib
 import urllib.error
 import urllib.request
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -56,18 +58,18 @@ from feedbax.orchestration.drivers.base import (
     ProviderPodInventoryRecord,
 )
 from feedbax.orchestration.drivers.native_execution import (
-    bind_native_execution_command,
     inject_native_execution_context,
     is_native_training_command,
     native_resume_checkpoint_authority_json,
     native_resume_checkpoint_source,
     SECURE_CHECKPOINT_SEED_SCRIPT,
 )
+from feedbax.orchestration.executor_family import executor_family_adapter
 from feedbax.orchestration.input_materialization import (
     InputMaterializationError,
     InputProviderRootBinding,
     materialize_bundle_inputs,
-    preflight_input_provider_bindings,
+    preflight_bundle_input_bindings,
 )
 from feedbax.orchestration.matrix_authority import (
     MatrixAuthorityError,
@@ -80,6 +82,7 @@ from feedbax.orchestration.repo_snapshot import (
     restore_repo_snapshots,
     verify_repo_snapshot,
 )
+from feedbax.orchestration.staged_root_custody import StagedRootSnapshotBinding
 from feedbax.orchestration.repo_realization import (
     EditableSourceResolution,
     RepoRealizationEntry,
@@ -763,6 +766,7 @@ class RunPodOrchestrationDriver:
         sleep: Any = time.sleep,
         monotonic: Any = time.monotonic,
         input_provider_bindings: Sequence[InputProviderRootBinding] = (),
+        staged_root_bindings: Sequence[StagedRootSnapshotBinding] = (),
         collection_recovery_bindings: Sequence[CollectionRecoveryBinding] = (),
     ) -> None:
         self.config = config or RunPodDriverConfig()
@@ -773,6 +777,7 @@ class RunPodOrchestrationDriver:
         self._sleep = sleep
         self._monotonic = monotonic
         self.input_provider_bindings = tuple(input_provider_bindings)
+        self.staged_root_bindings = tuple(staged_root_bindings)
         self.collection_recovery_bindings = tuple(collection_recovery_bindings)
         self._collection_recovery_evidence: dict[str, Mapping[str, object]] = {}
         self._repo_snapshots: SealedRepoSnapshots | None = None
@@ -890,7 +895,11 @@ class RunPodOrchestrationDriver:
                     observed=plan.model_dump(mode="json"),
                 )
 
-        failures, observed = preflight_input_provider_bindings(bundle, self.input_provider_bindings)
+        failures, observed = preflight_bundle_input_bindings(
+            bundle,
+            provider_bindings=self.input_provider_bindings,
+            staged_root_bindings=self.staged_root_bindings,
+        )
         checks_by_name["input-provider-bindings"] = _preflight_check(
             "input-provider-bindings",
             not failures,
@@ -900,7 +909,17 @@ class RunPodOrchestrationDriver:
         non_native_smoke_rows = [
             row.row_id
             for row in bundle.rows
-            if bundle.smoke_enabled and not _row_uses_registered_native_execution(row)
+            if bundle.smoke_enabled
+            and (
+                (
+                    row.execution_family == "native-training"
+                    and not _row_uses_registered_native_execution(row)
+                )
+                or (
+                    row.execution_family == "evaluation-matrix"
+                    and "matrix-harness" not in _row_launch_command_parts(row)
+                )
+            )
         ]
         checks_by_name["runpod-remote-smoke-applicability"] = _preflight_check(
             "runpod-remote-smoke-applicability",
@@ -1308,7 +1327,7 @@ class RunPodOrchestrationDriver:
 
     def _preflight_driver_contract(self) -> dict[str, Any]:
         """Project the complete effective RunPod config without exposing secrets."""
-        return {
+        contract = {
             "pod_id": self.config.pod_id,
             "ssh_host": self.config.ssh_host,
             "ssh_port": self.config.ssh_port,
@@ -1346,6 +1365,11 @@ class RunPodOrchestrationDriver:
                 binding.name for binding in self.input_provider_bindings
             ),
         }
+        if self.staged_root_bindings:
+            contract["staged_root_bindings"] = sorted(
+                (binding.kind, binding.name) for binding in self.staged_root_bindings
+            )
+        return contract
 
     def _validate_preflight_checks(
         self, bundle: RunBundle, checks: Sequence[PreflightCheckEntry]
@@ -1366,8 +1390,10 @@ class RunPodOrchestrationDriver:
         ):
             raise RunPodDriverError("completed PREFLIGHT includes a failing check")
 
-        failures, resolved_observed = preflight_input_provider_bindings(
-            bundle, self.input_provider_bindings
+        failures, resolved_observed = preflight_bundle_input_bindings(
+            bundle,
+            provider_bindings=self.input_provider_bindings,
+            staged_root_bindings=self.staged_root_bindings,
         )
         if failures:
             raise RunPodDriverError(
@@ -1555,12 +1581,20 @@ class RunPodOrchestrationDriver:
                 bundle,
                 destination_root=attempt_root,
                 provider_bindings=self.input_provider_bindings,
+                staged_root_bindings=self.staged_root_bindings,
             )
         except InputMaterializationError as exc:
             raise RunPodDriverError(str(exc)) from exc
         attempt_inputs = attempt_root / "inputs"
         payloads: list[dict[str, str]] = []
         payload_hashes: list[tuple[str, str]] = []
+        if bundle.execution_family == "evaluation-matrix":
+            bundle_data = bundle.model_dump_json(exclude_none=True).encode("utf-8")
+            bundle_target = attempt_inputs / "run-bundle.json"
+            bundle_target.write_bytes(bundle_data)
+            payload_hashes.append(
+                (bundle_target.name, hashlib.sha256(bundle_data).hexdigest())
+            )
         for row in bundle.rows:
             if row.launch.payload_routing.get("kind") != "registered-execution-payload":
                 continue
@@ -1598,43 +1632,93 @@ class RunPodOrchestrationDriver:
             f"mkdir -p {_sq(remote_run_dir + '/.stage-attempts')} && "
             f"mkdir -- {_sq(remote_attempt_root)}"
         )
-        self.transport.rsync(
-            str(attempt_inputs) + "/",
-            remote_attempt_inputs + "/",
-            delete=True,
-        ).check("stage authenticated input tree")
+        with self._stage_inputs_heartbeat(bundle, remote_attempt_root):
+            self.transport.rsync(
+                str(attempt_inputs) + "/",
+                remote_attempt_inputs + "/",
+                delete=True,
+            ).check("stage authenticated input tree")
 
-        transferred: list[dict[str, Any]] = []
-        for staged in staged_inputs:
-            target = f"{remote_run_dir}/inputs/{staged.target_role}"
-            for item in staged.files:
-                relative_path = PurePosixPath(item.relative_path).relative_to("inputs")
-                remote_path = f"{remote_attempt_inputs}/{relative_path}"
-                check_line = f"{item.sha256}  {remote_path}"
+            transferred: list[dict[str, Any]] = []
+            for staged in staged_inputs:
+                target = f"{remote_run_dir}/inputs/{staged.target_role}"
+                for item in staged.files:
+                    relative_path = PurePosixPath(item.relative_path).relative_to("inputs")
+                    remote_path = f"{remote_attempt_inputs}/{relative_path}"
+                    check_line = f"{item.sha256}  {remote_path}"
+                    self._ssh(f"printf %s {_sq(check_line)} | sha256sum -c -")
+                transferred.append(
+                    {
+                        "target_role": staged.target_role,
+                        "source": str(staged.destination),
+                        "target": target,
+                        "file_count": len(staged.files),
+                    }
+                )
+            for name, digest in payload_hashes:
+                check_line = f"{digest}  {remote_attempt_inputs}/{name}"
                 self._ssh(f"printf %s {_sq(check_line)} | sha256sum -c -")
-            transferred.append(
-                {
-                    "target_role": staged.target_role,
-                    "source": str(staged.destination),
-                    "target": target,
-                    "file_count": len(staged.files),
-                }
+            self._ssh(
+                build_atomic_directory_publish_command(
+                    remote_attempt_inputs,
+                    f"{remote_run_dir}/inputs",
+                )
             )
-        for name, digest in payload_hashes:
-            check_line = f"{digest}  {remote_attempt_inputs}/{name}"
-            self._ssh(f"printf %s {_sq(check_line)} | sha256sum -c -")
-        self._ssh(
-            build_atomic_directory_publish_command(
-                remote_attempt_inputs,
-                f"{remote_run_dir}/inputs",
-            )
-        )
         return {
             "input_count": len(transferred),
             "inputs": transferred,
             "payload_count": len(payloads),
             "payloads": payloads,
         }
+
+    @contextmanager
+    def _stage_inputs_heartbeat(
+        self,
+        bundle: RunBundle,
+        remote_attempt_root: str,
+    ) -> Iterator[None]:
+        """Keep the deadman informed only while this host actively stages inputs."""
+        if not bundle.deadman_enabled:
+            yield
+            return
+
+        heartbeat_path = f"{remote_attempt_root}/.host-active"
+        heartbeat_command = f"touch -- {_sq(heartbeat_path)}"
+        self._ssh(heartbeat_command)
+        stop = threading.Event()
+        failures: list[Exception] = []
+        interval = max(
+            0.1,
+            min(self.config.poll_seconds, bundle.deadman_silence_seconds / 3),
+        )
+
+        def heartbeat() -> None:
+            while not stop.wait(interval):
+                try:
+                    self._ssh(heartbeat_command)
+                except Exception as exc:
+                    failures.append(exc)
+                    stop.set()
+
+        thread = threading.Thread(
+            target=heartbeat,
+            name=f"feedbax-stage-inputs-{bundle.run_set_id}",
+            daemon=True,
+        )
+        thread.start()
+        body_error: BaseException | None = None
+        try:
+            yield
+        except BaseException as exc:
+            body_error = exc
+            raise
+        finally:
+            stop.set()
+            thread.join()
+            if body_error is None and failures:
+                raise RunPodDriverError(
+                    "stage-inputs host heartbeat failed"
+                ) from failures[0]
 
     def launch_row(
         self,
@@ -1669,6 +1753,19 @@ class RunPodOrchestrationDriver:
         state: RunSetState,
     ) -> Mapping[str, Any]:
         """Run one bounded native execution in an authenticated scratch namespace."""
+        if row.execution_family == "evaluation-matrix":
+            return {
+                "row_id": row.row_id,
+                "status": "opted-out",
+                "update_budget": bundle.smoke_update_budget,
+                "payload_binding_status": "not-run",
+                "cleanup_status": "not-created",
+                "deadline_seconds": bundle.smoke_deadline_seconds,
+                "opt_out_reason": (
+                    "evaluation-matrix smoke is the provider-free production shadow; "
+                    "RunPod launch reuses the same bound public harness command"
+                ),
+            }
         if not _row_uses_registered_native_execution(row):
             raise RunPodDriverError(
                 f"remote smoke row {row.row_id!r} is not registered native execution"
@@ -1971,10 +2068,23 @@ class RunPodOrchestrationDriver:
         for source in sources:
             if source.startswith("/"):
                 remote_source = source
-            elif "/" not in source and is_native_training_command(row.launch.command):
+            elif "/" not in source:
                 remote_source = f"{remote_run_dir}/rows/{row.row_id}/{source}"
             else:
                 remote_source = f"{remote_run_dir}/{source}"
+            raw_evaluation_source = (
+                f"{remote_run_dir}/rows/{row.row_id}/evaluation"
+            )
+            if bundle.execution_family == "evaluation-matrix" and (
+                posixpath.normpath(source) == "evaluation"
+                or posixpath.normpath(remote_source) == posixpath.normpath(
+                    raw_evaluation_source
+                )
+            ):
+                # Older bundles may declare the raw working store under
+                # row-relative, run-relative, or absolute spellings. Certified
+                # compact products are the terminal collection contract.
+                continue
             target = dest_dir / Path(source).name
             source_kind = self._remote_collection_source_kind(remote_source)
             delete = False
@@ -1993,7 +2103,10 @@ class RunPodOrchestrationDriver:
                 f"collect {row.row_id}:{source}"
             )
             collected[Path(source).name] = str(target)
-        if is_native_training_command(row.launch.command):
+        if (
+            is_native_training_command(row.launch.command)
+            or row.execution_family == "evaluation-matrix"
+        ):
             event_name = f"{row.row_id}.events.jsonl"
             event_target = bundle.run_set_dir / "events" / event_name
             event_target.parent.mkdir(parents=True, exist_ok=True)
@@ -2071,16 +2184,20 @@ class RunPodOrchestrationDriver:
                 "remove", "pod", pod_id, timeout_seconds=self._teardown_remaining(deadline)
             )
             if result.returncode != 0:
-                self.transport.runpodctl(
-                    "stop", "pod", pod_id, timeout_seconds=self._teardown_remaining(deadline)
-                ).check("runpodctl stop pod")
-                self.transport.runpodctl(
-                    "remove",
-                    "pod",
-                    pod_id,
-                    timeout_seconds=self._teardown_remaining(deadline),
-                ).check("runpodctl remove pod after stop")
-                action = "stopped-then-removed"
+                detail = (result.stderr.strip() or result.stdout.strip()).lower()
+                if any(marker in detail for marker in _POD_NOT_FOUND_MARKERS):
+                    action = "already-absent"
+                else:
+                    self.transport.runpodctl(
+                        "stop", "pod", pod_id, timeout_seconds=self._teardown_remaining(deadline)
+                    ).check("runpodctl stop pod")
+                    self.transport.runpodctl(
+                        "remove",
+                        "pod",
+                        pod_id,
+                        timeout_seconds=self._teardown_remaining(deadline),
+                    ).check("runpodctl remove pod after stop")
+                    action = "stopped-then-removed"
             else:
                 action = "removed"
             absence = self._wait_for_pod_absence(pod_id, deadline=deadline)
@@ -3379,7 +3496,7 @@ def build_remote_nohup_sentinel_command(
 def _normalize_explicit_native_launch_command(command: Sequence[str]) -> list[str]:
     """Run an explicit native executor command in the realized uv environment."""
     normalized = [str(part) for part in command]
-    if not is_native_training_command(normalized):
+    if not is_native_training_command(normalized) and "matrix-harness" not in normalized:
         return normalized
     if not normalized or Path(normalized[0]).name != "uv":
         return ["uv", "run", "--no-sync", *normalized]
@@ -3507,18 +3624,21 @@ def build_launch_row_command(
     checkpoint_source = native_resume_checkpoint_source(bundle, row)
     command_parts = _row_launch_command_parts(row)
     execution_row = _execution_row(row, namespace)
-    command_parts, execution_row = bind_native_execution_command(
+    command_parts, execution_row = executor_family_adapter(row.execution_family).bind_command(
         command_parts,
+        bundle=bundle,
         row=execution_row,
         payload_path=namespace.payload_path,
         collection_root=row_dir,
-        update_budget=update_budget,
-    )
-    command_parts = inject_native_execution_context(
-        command_parts,
-        row=execution_row,
+        inputs_root=str(PurePosixPath(namespace.payload_path).parent),
+        repo_root=workdir,
         environment_fingerprint=env_fingerprint,
-        collection_root=row_dir,
+        update_budget=update_budget,
+        native_context_injector=(
+            inject_native_execution_context
+            if row.execution_family == "native-training"
+            else None
+        ),
     )
     if row.launch.command:
         command_parts = _normalize_explicit_native_launch_command(command_parts)
@@ -3656,9 +3776,14 @@ def dry_run_launch_bundle(
     bundle: RunBundle,
     config: RunPodDriverConfig,
     input_provider_bindings: Sequence[InputProviderRootBinding] = (),
+    staged_root_bindings: Sequence[StagedRootSnapshotBinding] = (),
 ) -> tuple[str, ...]:
     """Bind all RunPod launch rows without constructing a transport."""
-    failures, _ = preflight_input_provider_bindings(bundle, input_provider_bindings)
+    failures, _ = preflight_bundle_input_bindings(
+        bundle,
+        provider_bindings=input_provider_bindings,
+        staged_root_bindings=staged_root_bindings,
+    )
     if failures:
         raise RunPodDriverError("; ".join(failures))
     remote_run_dir = f"{config.remote_run_root.rstrip('/')}/{bundle.run_set_id}"
@@ -3746,6 +3871,10 @@ def build_deadman_watchdog_command(
         'for path in "$edir"/*.jsonl "$sdir"/*; do [ -e "$path" ] || continue; '
         'mtime=$(stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null || echo 0); '
         '[ "$mtime" -gt "$newest" ] && newest=$mtime; done; '
+        'while IFS= read -r path; do '
+        'mtime=$(stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null || echo 0); '
+        '[ "$mtime" -gt "$newest" ] && newest=$mtime; '
+        'done < <(find "$run_dir/.stage-attempts" -type f -print 2>/dev/null); '
         "age=$((now-newest)); "
         'if [ "$live" -eq 0 ] && [ "$newest" -gt 0 ] && [ "$age" -ge "$silence" ]; then '
         'printf \'deadman removing pod after %ss silence\\n\' "$age" > "$warning"; '
