@@ -43,6 +43,21 @@ class ProfileBandParams(ProfileParams):
     show_band: bool = True
 
 
+class TrajectoryStartMarkerParams(StrictModel):
+    """Marker on the first sample of every plotted 2D trajectory.
+
+    A ``color`` of ``None`` means each marker inherits the color of the
+    trajectory it belongs to, so markers follow a continuous colorscale
+    instead of collapsing to one flat color.
+    """
+
+    label: str | None = None
+    color: str | None = None
+    size: float = 8.0
+    symbol: str = "circle"
+    showlegend: bool | None = None
+
+
 class Trajectory2DParams(StrictModel):
     """Defaults for 2D trajectory traces."""
 
@@ -55,8 +70,10 @@ class Trajectory2DParams(StrictModel):
     show_mean: bool = True
     showlegend: bool | None = None
     opacity: float = 0.4
+    line_dash: str | None = None
     line_width: float = 0.75
     mean_line_width: float = 2.5
+    start_marker: TrajectoryStartMarkerParams | None = None
     affected_color: str = "rgba(255, 160, 160, 0.65)"
     affected_line_width: float = 6.0
     affected_marker_size: float = 10.0
@@ -69,6 +86,7 @@ class EndpointMarkerParams(StrictModel):
     color: str = "rgb(25, 25, 25)"
     marker_size: int = 7
     straight_guides: bool = True
+    showlegend: bool | None = None
 
 
 class ScalarScatterParams(StrictModel):
@@ -608,6 +626,9 @@ def _trajectory_2d(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any
     colors = [color for color in group_colors for _ in range(curves_per_group)]
     traces: list[Any] = []
     for index, (traj, color) in enumerate(zip(trajectories, colors, strict=True)):
+        line: dict[str, Any] = {"color": color, "width": p.line_width}
+        if p.line_dash is not None:
+            line["dash"] = p.line_dash
         scientific_trace = go.Scatter(
             name=label,
             legendgroup=label,
@@ -616,7 +637,7 @@ def _trajectory_2d(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any
             y=traj[:, 1],
             mode="lines",
             opacity=p.opacity,
-            line={"color": color, "width": p.line_width},
+            line=line,
         )
         traces.extend(
             _trajectory_with_affected_underlay(
@@ -633,13 +654,16 @@ def _trajectory_2d(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any
         mean_trace_kwargs: dict[str, Any] = {}
         if p.showlegend is not None:
             mean_trace_kwargs["showlegend"] = p.showlegend
+        mean_line: dict[str, Any] = {"color": group_colors[0], "width": p.mean_line_width}
+        if p.line_dash is not None:
+            mean_line["dash"] = p.line_dash
         mean_trace = go.Scatter(
             name=f"{label} mean",
             legendgroup=label,
             x=mean[:, 0],
             y=mean[:, 1],
             mode="lines",
-            line={"color": group_colors[0], "width": p.mean_line_width},
+            line=mean_line,
             **mean_trace_kwargs,
         )
         traces.extend(
@@ -650,6 +674,20 @@ def _trajectory_2d(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any
                 color=p.affected_color,
                 width=p.affected_line_width,
                 marker_size=p.affected_marker_size,
+            )
+        )
+    if p.start_marker is not None and trajectories.shape[0] > 0:
+        marker = p.start_marker
+        marker_label = marker.label or f"{label} start"
+        traces.append(
+            _point_marker_trace(
+                trajectories[:, 0, :],
+                name=marker_label,
+                color=marker.color if marker.color is not None else colors,
+                size=marker.size,
+                symbol=marker.symbol,
+                legendgroup=marker_label,
+                showlegend=marker.showlegend,
             )
         )
     return traces
@@ -686,6 +724,42 @@ def _trajectory_with_affected_underlay(
     return [underlay, scientific_trace]
 
 
+def _point_marker_trace(
+    points: np.ndarray,
+    *,
+    name: str,
+    color: Any,
+    size: float,
+    symbol: str,
+    legendgroup: str | None = None,
+    showlegend: bool | None = None,
+) -> go.Scatter:
+    """Return one markers-only trace over an array of plotted points.
+
+    Args:
+        points: Marker positions with shape ``(n, 2)``.
+        name: Trace name, which is also the legend entry text.
+        color: One Plotly color for every marker, or one color per point.
+        size: Marker size.
+        symbol: Plotly marker symbol.
+        legendgroup: Optional legend group; omitted when ``None``.
+        showlegend: Optional legend visibility; Plotly's default when ``None``.
+    """
+    optional: dict[str, Any] = {}
+    if legendgroup is not None:
+        optional["legendgroup"] = legendgroup
+    if showlegend is not None:
+        optional["showlegend"] = showlegend
+    return go.Scatter(
+        name=name,
+        x=points[:, 0],
+        y=points[:, 1],
+        mode="markers",
+        marker={"color": color, "size": size, "symbol": symbol},
+        **optional,
+    )
+
+
 def _endpoint_markers(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any]:
     p = EndpointMarkerParams.model_validate(params.model_dump())
     trajectories_value = data.get("trajectories")
@@ -718,12 +792,13 @@ def _endpoint_markers(data: Mapping[str, Any], params: StrictModel) -> Sequence[
             starts = starts[None, :]
         starts = np.broadcast_to(starts, endpoints.shape)
     traces: list[Any] = [
-        go.Scatter(
+        _point_marker_trace(
+            endpoints,
             name=p.label,
-            x=endpoints[:, 0],
-            y=endpoints[:, 1],
-            mode="markers",
-            marker={"color": p.color, "size": p.marker_size, "symbol": "circle-open"},
+            color=p.color,
+            size=p.marker_size,
+            symbol="circle-open",
+            showlegend=p.showlegend,
         )
     ]
     if p.straight_guides:
@@ -1201,8 +1276,8 @@ def register_default_figure_constructors() -> None:
     ]
     changed_versions = {
         "feedbax.profile_band": "v2",
-        "feedbax.trajectory_2d": "v4",
-        "feedbax.endpoint_markers": "v2",
+        "feedbax.trajectory_2d": "v5",
+        "feedbax.endpoint_markers": "v3",
         "feedbax.hline": "v2",
         "feedbax.vrect": "v3",
         "feedbax.comparison_grid": "v3",

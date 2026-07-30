@@ -517,6 +517,23 @@ def _split_bundle_key(key: str, registry: ExperimentRegistry) -> tuple[str, str]
     return matches[0], key
 
 
+def authored_analysis_bundle_from_payload(
+    data: Mapping[str, Any],
+) -> AnalysisBundleSpec | AnalysisBundleDeltaSpec:
+    """Validate one loaded bundle document as direct or delta-authored bundle authoring.
+
+    This is the single place that decides how a serialized bundle document becomes
+    authoring input, whether it came from a packaged registry resource or a file
+    on disk.
+    """
+    if is_analysis_bundle_delta_payload(data):
+        return AnalysisBundleDeltaSpec.model_validate(data)
+    from feedbax.contracts.migrations import migrate_structured_spec_payload
+
+    migrated = migrate_structured_spec_payload("AnalysisBundleSpec", dict(data))
+    return AnalysisBundleSpec.model_validate(migrated.payload)
+
+
 def load_analysis_bundle(
     key: str,
     *,
@@ -538,12 +555,7 @@ def load_analysis_bundle(
         raise FileNotFoundError(
             f"Analysis bundle {bundle_name!r} not found under {resource_root}"
         ) from exc
-    from feedbax.contracts.migrations import migrate_structured_spec_payload
-
-    if is_analysis_bundle_delta_payload(data):
-        return AnalysisBundleDeltaSpec.model_validate(data)
-    migrated = migrate_structured_spec_payload("AnalysisBundleSpec", data)
-    return AnalysisBundleSpec.model_validate(migrated.payload)
+    return authored_analysis_bundle_from_payload(data)
 
 
 def iter_candidate_manifests(
@@ -1898,11 +1910,20 @@ def execute_analysis_bundle(
     root: Path | str | None = None,
     repo_root: Path | str | None = None,
     run_ids: Iterable[str] | None = None,
+    execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
+    artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
+    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
     issues: list[str] | None = None,
     fig_dump_path: Path | str | None = None,
     fig_dump_formats: Sequence[str] = ("html",),
 ) -> list[tuple[BundleExpansion, AnalysisRunManifest, Path]]:
-    """Apply a bundle to a manifest root and execute all generated specs."""
+    """Apply a bundle to a manifest root and execute all generated specs.
+
+    The staged execution bindings mirror `execute_staged_analysis_bundle` and are
+    forwarded unresolved to each expanded `execute_analysis_run_spec` call, so a
+    template whose recipe needs checkpoint custody or an artifact provider gets
+    the same per-spec binding preflight as a directly executed run spec.
+    """
     authored_bundle = bundle
     bundle, flattening = resolve_analysis_bundle_authoring(bundle, repo_root=repo_root)
     composition = (
@@ -1939,6 +1960,9 @@ def execute_analysis_bundle(
             repo_root=repo_root,
             issues=issues,
             metadata={"bundle": bundle_metadata},
+            execution_descriptor=execution_descriptor,
+            artifact_provider_bindings=artifact_provider_bindings,
+            checkpoint_custody_bindings=checkpoint_custody_bindings,
             fig_dump_path=fig_dump_path,
             fig_dump_formats=fig_dump_formats,
         )
