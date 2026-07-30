@@ -1161,7 +1161,7 @@ def test_canonical_artifact_backed_piece_supplies_exact_trace_data(tmp_path: Pat
 
 def test_endpoint_markers_derive_curved_reach_guides_from_trajectory() -> None:
     endpoint_constructor = get_figure_constructor("feedbax.endpoint_markers", tier="trace")
-    assert endpoint_constructor.version == "v2"
+    assert endpoint_constructor.version == "v3"
     curved = [[[2, 3], [3, 7], [5, 8]]]
     endpoint_traces = endpoint_constructor.callable(
         {"trajectories": curved},
@@ -1388,6 +1388,206 @@ def test_trajectory_2d_resolves_colorscale_key() -> None:
         trajectory.params({"colorscale_key": "condition", "show_mean": False}),
     )
     assert trajectory_traces[0].line.color != trajectory_traces[1].line.color
+
+
+def test_trajectory_2d_default_params_leave_style_and_markers_untouched() -> None:
+    constructor = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+    assert constructor.version == "v5"
+    params = constructor.params()
+    assert params.line_dash is None
+    assert params.start_marker is None
+
+    traces = constructor.callable(
+        {"trajectories": [[[0, 0], [1, 1]], [[0, 0], [2, 2]]]},
+        params,
+    )
+
+    assert [trace.mode for trace in traces] == ["lines", "lines", "lines"]
+    assert [trace.line.dash for trace in traces] == [None, None, None]
+
+
+def test_trajectory_2d_line_dash_reaches_scientific_and_mean_lines(tmp_path: Path) -> None:
+    spec = FigureSpec(
+        name="dashed-trajectories",
+        assembler="feedbax.grid_figure",
+        traces=[
+            TraceBinding(
+                name="reach",
+                constructor="feedbax.trajectory_2d",
+                data={"trajectories": [[[0, 0], [1, 1]], [[0, 0], [2, 2]]]},
+                params={"line_dash": "dashdot"},
+            )
+        ],
+    )
+
+    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    rendered = figure_manifest_plotly_json(manifest)
+
+    assert rendered is not None
+    assert [trace["line"]["dash"] for trace in rendered["data"]] == ["dashdot"] * 3
+
+
+def test_trajectory_2d_rejects_invalid_plotly_dash() -> None:
+    constructor = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+
+    with pytest.raises(ValueError, match="dash"):
+        constructor.callable(
+            {"trajectories": [[[0, 0], [1, 1]]]},
+            constructor.params({"line_dash": "not-a-dash"}),
+        )
+
+
+def test_trajectory_2d_start_marker_inherits_trajectory_colorscale_colors() -> None:
+    constructor = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+    traces = constructor.callable(
+        {
+            "trajectories": [
+                [[0, 0], [1, 1]],
+                [[0, 0], [2, 2]],
+                [[0, 0], [3, 3]],
+            ],
+            "colorscales": {"condition": "Viridis"},
+        },
+        constructor.params(
+            {
+                "colorscale_key": "condition",
+                "show_mean": False,
+                "start_marker": {"size": 12.0, "symbol": "diamond"},
+            }
+        ),
+    )
+
+    line_colors = [trace.line.color for trace in traces[:3]]
+    marker_trace = traces[-1]
+    assert len(traces) == 4
+    assert len(set(line_colors)) == 3
+    assert marker_trace.mode == "markers"
+    assert list(marker_trace.marker.color) == line_colors
+    assert marker_trace.marker.size == 12.0
+    assert marker_trace.marker.symbol == "diamond"
+    assert list(marker_trace.x) == [0, 0, 0]
+    assert list(marker_trace.y) == [0, 0, 0]
+    assert marker_trace.name == "Trajectory start"
+
+
+def test_trajectory_2d_start_marker_accepts_flat_color_override() -> None:
+    constructor = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+    traces = constructor.callable(
+        {
+            "trajectories": [[[0, 0], [1, 1]], [[0, 0], [2, 2]]],
+            "colorscales": {"condition": "Viridis"},
+        },
+        constructor.params(
+            {
+                "colorscale_key": "condition",
+                "show_mean": False,
+                "start_marker": {"color": "rgb(0, 0, 0)"},
+            }
+        ),
+    )
+
+    assert traces[-1].marker.color == "rgb(0, 0, 0)"
+
+
+def test_trajectory_2d_start_marker_legend_visibility_is_authored() -> None:
+    constructor = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+    data = {"trajectories": [[[0, 0], [1, 1]], [[0, 0], [2, 2]], [[0, 0], [3, 3]]]}
+
+    hidden = constructor.callable(
+        data,
+        constructor.params(
+            {"show_mean": False, "start_marker": {"label": "Start", "showlegend": False}}
+        ),
+    )
+    assert [trace.mode for trace in hidden].count("markers") == 1
+    assert hidden[-1].name == "Start"
+    assert hidden[-1].legendgroup == "Start"
+    assert hidden[-1].showlegend is False
+
+    shown = constructor.callable(
+        data,
+        constructor.params({"show_mean": False, "start_marker": {"label": "Start"}}),
+    )
+    assert shown[-1].showlegend is None
+
+
+def test_endpoint_markers_legend_visibility_is_authored() -> None:
+    constructor = get_figure_constructor("feedbax.endpoint_markers", tier="trace")
+    data = {"trajectories": [[[0, 0], [1, 1]]]}
+
+    default_traces = constructor.callable(data, constructor.params())
+    assert default_traces[0].showlegend is None
+    assert default_traces[0].marker.symbol == "circle-open"
+
+    hidden = constructor.callable(data, constructor.params({"showlegend": False}))
+    assert hidden[0].showlegend is False
+
+
+def test_trajectory_2d_expresses_dashed_directions_with_conditioned_start_markers(
+    tmp_path: Path,
+) -> None:
+    """Four dashed reach directions by eleven conditioning levels in one panel.
+
+    Color carries the continuous conditioning variable, line dash carries reach
+    direction, every trajectory's first sample carries a marker in that
+    trajectory's own color, and the legend holds one entry per direction plus
+    one for the marker type.
+    """
+    dashes = {"east": "solid", "north": "dash", "west": "dot", "south": "dashdot"}
+    levels = 11
+    bindings = []
+    for index, (direction, dash) in enumerate(dashes.items()):
+        bindings.append(
+            TraceBinding(
+                name=direction,
+                constructor="feedbax.trajectory_2d",
+                data={
+                    "trajectories": [
+                        [[0.0, 0.0], [float(index + 1), float(level + 1)]]
+                        for level in range(levels)
+                    ],
+                    "colorscales": {"condition": "Viridis"},
+                },
+                params={
+                    "label": direction,
+                    "colorscale_key": "condition",
+                    "show_mean": False,
+                    "line_dash": dash,
+                    "start_marker": {
+                        "label": "Reach start",
+                        "size": 10.0,
+                        "showlegend": index == 0,
+                    },
+                },
+            )
+        )
+    spec = FigureSpec(
+        name="conditioned-reach-directions",
+        assembler="feedbax.grid_figure",
+        traces=bindings,
+    )
+
+    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    rendered = figure_manifest_plotly_json(manifest)
+
+    assert rendered is not None
+    assert len(rendered["data"]) == len(dashes) * (levels + 1)
+    assert [trace["name"] for trace in rendered["data"] if trace.get("showlegend", True)] == [
+        "east",
+        "Reach start",
+        "north",
+        "west",
+        "south",
+    ]
+
+    for index, dash in enumerate(dashes.values()):
+        block = rendered["data"][index * (levels + 1) : (index + 1) * (levels + 1)]
+        line_colors = [trace["line"]["color"] for trace in block[:levels]]
+        assert {trace["line"]["dash"] for trace in block[:levels]} == {dash}
+        assert len(set(line_colors)) == levels
+        assert block[-1]["mode"] == "markers"
+        assert list(block[-1]["marker"]["color"]) == line_colors
+        assert block[-1]["marker"]["size"] == 10.0
 
 
 def test_trajectory_2d_inserts_affected_underlay_before_every_scientific_trace() -> None:
