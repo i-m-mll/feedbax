@@ -11,6 +11,8 @@ import tomllib
 import pytest
 from pydantic import ValidationError
 
+from feedbax.orchestration import CustodyPreservationRequired, PrimaryStatePersistenceError
+
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_SRC = ROOT / "external" / "feedbax_conformance_fixture" / "src"
@@ -673,6 +675,11 @@ def test_custody_persistence_case_uses_public_installed_contract(fixture_package
     lifecycle = importlib.import_module(f"{fixture_package.__name__}.lifecycle")
 
     assert lifecycle.check_custody_persistence_recovery()
+
+
+def test_custody_persistence_exceptions_are_public_typed_contracts() -> None:
+    assert issubclass(PrimaryStatePersistenceError, OSError)
+    assert issubclass(CustodyPreservationRequired, RuntimeError)
 
 
 def test_local_lifecycle_child_is_fixed_print_only(fixture_package) -> None:

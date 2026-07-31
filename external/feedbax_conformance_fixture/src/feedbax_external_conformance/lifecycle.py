@@ -25,9 +25,11 @@ from feedbax.orchestration import (
     CheckRegistry,
     CompiledExecutionRow,
     CompiledRunSet,
+    CustodyPreservationRequired,
     DeploymentPolicy,
     EnvironmentDeclaration,
     LaunchPolicy,
+    PrimaryStatePersistenceError,
     RowLaunchSpec,
     RunAssemblyRequest,
     RunSetState,
@@ -159,15 +161,16 @@ class _MonitorEnospcStore(RunSetStateStore):
         super().__init__(path)
         self.primary_failed = False
 
-    def _save(self, state: RunSetState, *, crash_before_replace: bool = False) -> Path:
+    def save(self, state: RunSetState, *, crash_before_replace: bool = False) -> Path:
         if (
             not self.primary_failed
             and state.current_stage == "MONITOR"
             and state.stage("MONITOR").status == "running"
         ):
             self.primary_failed = True
-            raise OSError(errno.ENOSPC, "external fixture primary state ENOSPC")
-        return super()._save(state, crash_before_replace=crash_before_replace)
+            cause = OSError(errno.ENOSPC, "external fixture primary state ENOSPC")
+            raise PrimaryStatePersistenceError(self.path, cause) from cause
+        return super().save(state, crash_before_replace=crash_before_replace)
 
 
 class _CustodyDriver:
@@ -371,9 +374,9 @@ def check_custody_persistence_recovery() -> bool:
                 store=store,
                 conformance_registry=checks,
             ).run()
-        except Exception as exc:
-            if exc.__class__.__name__ != "PrimaryStatePersistenceError" or "ENOSPC" not in str(exc):
-                raise
+        except PrimaryStatePersistenceError as exc:
+            if exc.cause.errno != errno.ENOSPC:
+                raise AssertionError("primary fault did not retain ENOSPC identity") from exc
         else:
             raise AssertionError("primary ENOSPC did not interrupt the installed lifecycle")
 
@@ -402,11 +405,9 @@ def check_custody_persistence_recovery() -> bool:
                 store=restarted_store,
                 conformance_registry=checks,
             ).run()
-        except Exception as exc:
-            if exc.__class__.__name__ != "CustodyPreservationRequired" or (
-                "requires custody first" not in str(exc)
-            ):
-                raise
+        except CustodyPreservationRequired as exc:
+            if "requires custody first" not in str(exc):
+                raise AssertionError("custody gate reported an unexpected reason") from exc
         else:
             raise AssertionError("restart deletion was not blocked before custody")
         if blocked_driver.delete_calls:
