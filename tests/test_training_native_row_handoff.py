@@ -103,7 +103,9 @@ from feedbax.training.diagnostics import (
 )
 from feedbax.training.executor import execute_training_run_spec
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.training.checkpoint_custody import produce_checkpoint_custody_archive
+from feedbax.training.run_matrix import _validate_training_payload
 from feedbax.training.spec_storage import (
     TRAINING_RUN_MATRIX_COMPILER_ID,
     TRAINING_RUN_MATRIX_COMPILER_VERSION,
@@ -252,10 +254,17 @@ def _assemble_lowered_bundle(
         )
 
     registry = AssemblyCompilerRegistry()
+    registries = new_application_registry_bundle(local_component_source=None)
     register_training_run_matrix_compiler(
         registry,
+        method_registry=registries.training_methods,
         allow_inline_base=True,
         row_lowerer=lower,
+        row_validator=lambda payload, row_id: _validate_training_payload(
+            payload,
+            row_id=row_id,
+            method_registry=registries.training_methods,
+        ),
     )
 
     def resolve_input(declaration: AssemblyInputDeclaration) -> ResolvedAssemblyInput:
@@ -517,6 +526,7 @@ def test_authored_row_changes_propagate_through_assembly_identity_and_custody(
 def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
     tmp_path: Path,
 ) -> None:
+    registries = new_application_registry_bundle(local_component_source=None)
     bundle = _assemble_lowered_bundle(tmp_path / "source", gain=2)
     row = bundle.rows[0]
     provenance = row.execution.row_provenance
@@ -532,6 +542,7 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
         manifest_root=collection_root / "manifests",
         checkpoint_root=checkpoint_root,
         execution_context=context,
+        registry=registries.training_methods,
     )
 
     assert result.run_id == provenance.planned_run_id
@@ -716,6 +727,7 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
             collection_root=resumed_collection_root,
             current_step=1,
         ),
+        registry=registries.training_methods,
     )
 
     assert resumed.run_id == resumed_provenance.planned_run_id
@@ -1473,6 +1485,7 @@ def test_secure_checkpoint_clone_rejects_concurrent_source_mutation(
 def test_local_driver_executes_authenticated_custody_continuation_with_parent_lineage(
     tmp_path: Path,
 ) -> None:
+    registries = new_application_registry_bundle(local_component_source=None)
     parent_bundle = _without_resolved_inputs(
         _assemble_lowered_bundle(tmp_path / "authenticated-parent", gain=2)
     )
@@ -1487,6 +1500,7 @@ def test_local_driver_executes_authenticated_custody_continuation_with_parent_li
             parent_bundle,
             collection_root=parent_bundle.run_set_dir / "rows" / parent_row.row_id,
         ),
+        registry=registries.training_methods,
     )
     parent_write = parent_result.checkpoint_writes[0]
     parent_ref = ParentRef(
@@ -1563,6 +1577,7 @@ def test_local_driver_executes_authenticated_custody_continuation_with_parent_li
     schedule_failures, schedule_observed = _preflight_continuation_schedule_consistency(
         resumed_bundle,
         [InputProviderRootBinding("checkpoint.inputs", provider_root)],
+        training_method_registry=registries.training_methods,
     )
     assert schedule_failures == []
     assert schedule_observed[resumed_row.row_id]["coordinates"] == [1, 2, 3]
@@ -1601,6 +1616,7 @@ def test_local_driver_executes_authenticated_custody_continuation_with_parent_li
             collection_root=row_dir,
             current_step=1,
         ),
+        registry=registries.training_methods,
     )
 
     assert resumed_result.checkpoint_writes[0].manifest.parent_lineage[0].transaction_id == (

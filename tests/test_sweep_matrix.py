@@ -37,7 +37,7 @@ def _base_specs() -> tuple[dict, dict, dict]:
     )
 
 
-def test_sweep_matrix_cross_expands_cartesian_coordinates() -> None:
+def test_sweep_matrix_cross_expands_cartesian_coordinates(application_registry_bundle) -> None:
     graph_spec, training_spec, task_spec = _base_specs()
 
     expanded = expand_sweep_matrix(
@@ -53,6 +53,8 @@ def test_sweep_matrix_cross_expands_cartesian_coordinates() -> None:
         task_spec=task_spec,
         task_binding_spec=None,
         default_name="Cross",
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer_registry=application_registry_bundle.row_lowerers,
     )
 
     assert len(expanded.runs) == 6
@@ -63,7 +65,9 @@ def test_sweep_matrix_cross_expands_cartesian_coordinates() -> None:
     assert expanded.axes.runs[-1].values == {"loss_weight": 1e-5, "seed": 3}
 
 
-def test_studio_sweep_adapter_returns_shared_materialized_run_set() -> None:
+def test_studio_sweep_adapter_returns_shared_materialized_run_set(
+    application_registry_bundle,
+) -> None:
     graph_spec, training_spec, task_spec = _base_specs()
 
     materialized = materialize_sweep_matrix(
@@ -79,6 +83,8 @@ def test_studio_sweep_adapter_returns_shared_materialized_run_set() -> None:
         task_spec=task_spec,
         task_binding_spec=None,
         default_name="Fallback",
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer_registry=application_registry_bundle.row_lowerers,
     )
 
     assert materialized.run_set_manifest.id == materialized.run_set_id
@@ -91,7 +97,7 @@ def test_studio_sweep_adapter_returns_shared_materialized_run_set() -> None:
     assert materialized.run_set_manifest.metadata["studio_legacy_adapter"] is True
 
 
-def test_sweep_matrix_zip_rejects_mismatched_lengths() -> None:
+def test_sweep_matrix_zip_rejects_mismatched_lengths(application_registry_bundle) -> None:
     graph_spec, training_spec, task_spec = _base_specs()
 
     with pytest.raises(SweepMatrixError, match="mismatched lengths"):
@@ -112,10 +118,14 @@ def test_sweep_matrix_zip_rejects_mismatched_lengths() -> None:
             task_spec=task_spec,
             task_binding_spec=None,
             default_name="Zip",
+            method_registry=application_registry_bundle.training_methods,
+            row_lowerer_registry=application_registry_bundle.row_lowerers,
         )
 
 
-def test_sweep_matrix_groups_zip_internally_and_cross_across_groups() -> None:
+def test_sweep_matrix_groups_zip_internally_and_cross_across_groups(
+    application_registry_bundle,
+) -> None:
     graph_spec, training_spec, task_spec = _base_specs()
 
     expanded = expand_sweep_matrix(
@@ -138,6 +148,8 @@ def test_sweep_matrix_groups_zip_internally_and_cross_across_groups() -> None:
         task_spec=task_spec,
         task_binding_spec=None,
         default_name="Grouped",
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer_registry=application_registry_bundle.row_lowerers,
     )
 
     assert len(expanded.runs) == 6
@@ -145,7 +157,9 @@ def test_sweep_matrix_groups_zip_internally_and_cross_across_groups() -> None:
     assert expanded.axes.runs[3].values == {"lr": 1e-4, "seed": 20, "weight": 0}
 
 
-def test_sweep_matrix_rejects_grouped_designs_that_omit_declared_axes() -> None:
+def test_sweep_matrix_rejects_grouped_designs_that_omit_declared_axes(
+    application_registry_bundle,
+) -> None:
     graph_spec, training_spec, task_spec = _base_specs()
 
     with pytest.raises(SweepMatrixError, match="must cover every declared axis"):
@@ -172,10 +186,14 @@ def test_sweep_matrix_rejects_grouped_designs_that_omit_declared_axes() -> None:
             task_spec=task_spec,
             task_binding_spec=None,
             default_name="Grouped",
+            method_registry=application_registry_bundle.training_methods,
+            row_lowerer_registry=application_registry_bundle.row_lowerers,
         )
 
 
-def test_sweep_matrix_rejects_typo_axis_path_without_creating_fields() -> None:
+def test_sweep_matrix_rejects_typo_axis_path_without_creating_fields(
+    application_registry_bundle,
+) -> None:
     graph_spec, training_spec, task_spec = _base_specs()
 
     with pytest.raises(SweepMatrixError, match="targets a missing key/index.*weigth"):
@@ -195,11 +213,13 @@ def test_sweep_matrix_rejects_typo_axis_path_without_creating_fields() -> None:
             task_spec=task_spec,
             task_binding_spec=None,
             default_name="Typo",
+            method_registry=application_registry_bundle.training_methods,
+            row_lowerer_registry=application_registry_bundle.row_lowerers,
         )
     assert "weigth" not in training_spec["loss"]
 
 
-def test_sweep_matrix_expands_ranges_and_seeded_sampler() -> None:
+def test_sweep_matrix_expands_ranges_and_seeded_sampler(application_registry_bundle) -> None:
     graph_spec, training_spec, task_spec = _base_specs()
 
     expanded = expand_sweep_matrix(
@@ -234,6 +254,8 @@ def test_sweep_matrix_expands_ranges_and_seeded_sampler() -> None:
         task_spec=task_spec,
         task_binding_spec=None,
         default_name="Ranges",
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer_registry=application_registry_bundle.row_lowerers,
     )
 
     assert [run.task_spec["params"]["duration"] for run in expanded.runs] == [10, 15, 20]
@@ -249,7 +271,7 @@ def test_sweep_matrix_expands_ranges_and_seeded_sampler() -> None:
     ]
 
 
-def test_sweep_matrix_manual_coordinates_prune_expanded_design() -> None:
+def test_sweep_matrix_manual_coordinates_prune_expanded_design(application_registry_bundle) -> None:
     graph_spec, training_spec, task_spec = _base_specs()
 
     expanded = expand_sweep_matrix(
@@ -271,6 +293,8 @@ def test_sweep_matrix_manual_coordinates_prune_expanded_design() -> None:
         task_spec=task_spec,
         task_binding_spec=None,
         default_name="Manual",
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer_registry=application_registry_bundle.row_lowerers,
     )
 
     assert len(expanded.runs) == 2

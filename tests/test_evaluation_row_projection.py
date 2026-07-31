@@ -34,6 +34,7 @@ from feedbax.contracts.manifest import (
     evaluation_states_cache_path,
     write_manifest,
 )
+from feedbax.plugins.application import new_application_registry_bundle
 
 
 class _Parameters(BaseModel):
@@ -117,6 +118,7 @@ def _resolved_input(
     target: int = 0,
     states: Any | None = None,
 ) -> ResolvedAnalysisInput:
+    registries = new_application_registry_bundle(local_component_source=None)
     states = {"velocity": np.asarray(target + 0.5)} if states is None else states
     manifest, manifest_input = _manifest_input(
         root,
@@ -145,6 +147,8 @@ def _resolved_input(
         ),
         root=root,
         authenticated_inputs={0: manifest_input},
+        registry=registries.analysis_recipes,
+        evaluation_registry=registries.evaluation_recipes,
     )[0]
 
 
