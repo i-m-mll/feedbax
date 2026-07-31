@@ -5,7 +5,17 @@ provider, worker, and web layers. Transport-specific API models should remain
 under their transport package.
 """
 
-from feedbax.contracts.component import ComponentDefinition, PortType, PortTypeSpec
+from feedbax.contracts.component import (
+    ComponentDefinition,
+    DynamicPortLayout as DynamicPortLayout,
+    DynamicPortPolicy as DynamicPortPolicy,
+    DynamicPortPolicyError as DynamicPortPolicyError,
+    PortType,
+    PortTypeSpec,
+    derive_dynamic_port_count as derive_dynamic_port_count,
+    derive_dynamic_port_layout as derive_dynamic_port_layout,
+    validate_dynamic_port_layout as validate_dynamic_port_layout,
+)
 from feedbax.contracts.staged_execution import (
     STAGED_CHECKPOINT_CUSTODY_BACKEND,
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,

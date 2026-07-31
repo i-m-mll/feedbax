@@ -7,7 +7,7 @@ from typing import Any, Protocol
 import jax.numpy as jnp
 import jax.tree as jt
 
-from feedbax.contracts.component import PortType, PortTypeSpec
+from feedbax.contracts.component import DynamicPortPolicy, PortType, PortTypeSpec
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, PENZAI_DOMAIN_ID
 from feedbax.contracts.graphs.mechanics_templates import point_mass_template_graph
 from feedbax.contracts.graph import ParamSchema
@@ -3032,6 +3032,14 @@ def register_builtin_components(registry: _Registry) -> None:
                 },
                 outputs={"output": PortType(dtype="vector")},
             ),
+            dynamic_port_policy=DynamicPortPolicy(
+                count_param="n_inputs",
+                count_mode="integer",
+                direction="input",
+                fixed_output_ports=("output",),
+                generated_name_template="in_{index}",
+                dynamic_port_type=PortType(dtype="vector"),
+            ),
             output_prototype_fn=mux_output_prototype,
         )
     )
@@ -3068,6 +3076,14 @@ def register_builtin_components(registry: _Registry) -> None:
                     "out_0": PortType(dtype="vector"),
                     "out_1": PortType(dtype="vector"),
                 },
+            ),
+            dynamic_port_policy=DynamicPortPolicy(
+                count_param="sizes",
+                count_mode="sequence_length",
+                direction="output",
+                fixed_input_ports=("input",),
+                generated_name_template="out_{index}",
+                dynamic_port_type=PortType(dtype="vector"),
             ),
             output_prototype_fn=demux_output_prototype,
         )

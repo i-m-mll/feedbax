@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import queue
 from types import SimpleNamespace
 import threading
 
@@ -27,6 +28,9 @@ from feedbax.web.worker.execution import (
     rollout_graph,
     run_training_graph,
 )
+from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.plugins.bootstrap import BootstrapState
+from feedbax.web.worker.app import _Job, _require_worker_specs
 
 
 def _linear_graph_spec(component_type: str = "Linear", output_size: int = 1) -> dict:
@@ -882,6 +886,33 @@ def test_worker_materializes_task_binding_fed_mux_prototypes_after_normalization
     assert compiled.graph.nodes["mux"].input_ports == ("in_0", "in_1")
     assert rollout["outputs"]["output"].shape == (5, 3)
     assert jnp.allclose(rollout["outputs"]["output"][0], jnp.array([1.0, 2.0, 0.5]))
+
+
+def test_worker_request_materializes_omitted_dynamic_ports_from_bootstrap_registry() -> None:
+    graph_spec = GraphSpec.model_validate(_mux_graph_spec())
+    graph_spec.nodes["mux"].input_ports = []
+    graph_spec.nodes["mux"].output_ports = []
+    job = _Job(
+        job_id="dynamic-ports",
+        run_set_id="run-set",
+        total_batches=1,
+        event_queue=queue.Queue(),
+        stop_event=threading.Event(),
+        training_spec=_training_spec(),
+        task_spec={"type": "Generic", "params": {}},
+        task_binding_spec=_mux_task_binding_spec(),
+        graph_spec=graph_spec.model_dump(mode="json", exclude_none=True),
+    )
+    state = BootstrapState(
+        bundle=new_application_registry_bundle(local_component_source=None),
+        provenance=(),
+    )
+
+    _require_worker_specs(job, state)
+
+    normalized = GraphSpec.model_validate(job.graph_spec)
+    assert normalized.nodes["mux"].input_ports == ["in_0", "in_1"]
+    assert normalized.nodes["mux"].output_ports == ["output"]
 
 
 def test_worker_rejects_degenerate_single_input_mux_before_materialization() -> None:
