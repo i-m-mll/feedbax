@@ -1,0 +1,141 @@
+"""Clean-installed fixture orchestration and leakage checks."""
+
+from __future__ import annotations
+
+import ast
+import importlib.metadata
+import json
+from pathlib import Path
+import sys
+from types import ModuleType
+
+import feedbax
+
+from feedbax.orchestration.revision import FeedbaxRevisionError, resolve_feedbax_revision
+
+from .cases import (
+    check_component_registration_and_migration,
+    check_exact_parent_migration,
+    check_material_dependencies,
+    check_ordered_registration,
+    check_value_identity,
+)
+from .result import ConformanceResult, LifecycleResult
+
+
+_LIFECYCLE_BLOCKER = "feedbax-7e7dac8-wheel-provenance-unavailable"
+
+
+def _package_root(module: ModuleType) -> Path:
+    source = getattr(module, "__file__", None)
+    if source is None:
+        raise AssertionError(f"installed module {module.__name__!r} has no file")
+    return Path(source).resolve().parent
+
+
+def _require_clean_install(module: ModuleType, *, source_root: Path | None) -> Path:
+    root = _package_root(module)
+    if not root.is_relative_to(Path(sys.prefix).resolve()):
+        raise AssertionError(f"{module.__name__} was not imported from the clean environment")
+    if source_root is not None:
+        if root.is_relative_to(source_root):
+            raise AssertionError(f"{module.__name__} leaked from the source checkout")
+        leaked_paths = [
+            str(candidate)
+            for raw in sys.path
+            if raw
+            if (candidate := Path(raw).resolve()).is_relative_to(source_root)
+        ]
+        if leaked_paths:
+            raise AssertionError(f"source checkout leaked onto sys.path: {leaked_paths!r}")
+    return root
+
+
+def _require_noneditable_distribution(name: str) -> None:
+    direct_url = importlib.metadata.distribution(name).read_text("direct_url.json")
+    if direct_url is None:
+        return
+    payload = json.loads(direct_url)
+    if payload.get("dir_info", {}).get("editable") is True:
+        raise AssertionError(f"{name} was installed editably")
+
+
+def _require_no_private_feedbax_imports(fixture_root: Path) -> None:
+    for path in fixture_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module is not None:
+                names.append(node.module)
+            for name in names:
+                if name == "feedbax" or not name.startswith("feedbax."):
+                    continue
+                if any(part.startswith("_") for part in name.split(".")[1:]):
+                    raise AssertionError(f"private Feedbax import in installed fixture: {name}")
+
+
+def _require_loaded_feedbax_modules_under(root: Path) -> None:
+    leaked: list[str] = []
+    for name, module in tuple(sys.modules.items()):
+        if name != "feedbax" and not name.startswith("feedbax."):
+            continue
+        source = getattr(module, "__file__", None)
+        if source is not None and not Path(source).resolve().is_relative_to(root):
+            leaked.append(f"{name}={Path(source).resolve()}")
+    if leaked:
+        raise AssertionError(f"Feedbax modules leaked outside installed wheel: {leaked!r}")
+
+
+def _wheel_revision_rejection() -> bool:
+    try:
+        resolve_feedbax_revision()
+    except FeedbaxRevisionError as exc:
+        if "cannot resolve the revision" not in str(exc):
+            raise
+        return True
+    raise AssertionError(
+        "wheel revision provenance is now resolvable; replace the blocker canary "
+        "with the production StageEngine recovery case"
+    )
+
+
+def run_fixture(*, source_root: Path | None = None) -> ConformanceResult:
+    """Run bounded clean-installed foundation cases without network access."""
+    import feedbax_external_conformance
+
+    resolved_source_root = source_root.resolve() if source_root is not None else None
+    feedbax_root = _require_clean_install(feedbax, source_root=resolved_source_root)
+    fixture_root = _require_clean_install(
+        feedbax_external_conformance,
+        source_root=resolved_source_root,
+    )
+    _require_noneditable_distribution("feedbax")
+    _require_noneditable_distribution("feedbax-external-conformance")
+    _require_no_private_feedbax_imports(fixture_root)
+
+    cases = {
+        "ordered_registration": check_ordered_registration(),
+        "component_registration_and_migration": check_component_registration_and_migration(),
+        "value_identity": check_value_identity(),
+        "material_dependencies": check_material_dependencies(),
+        "staged_exact_parent_migration": check_exact_parent_migration(),
+        "wheel_revision_gate_rejects_unverifiable_install": _wheel_revision_rejection(),
+    }
+
+    _require_loaded_feedbax_modules_under(feedbax_root)
+    return ConformanceResult(
+        status="blocked",
+        feedbax_version=importlib.metadata.version("feedbax"),
+        feedbax_install_root=str(feedbax_root),
+        fixture_install_root=str(fixture_root),
+        cases=cases,
+        lifecycle=LifecycleResult(
+            status="blocked",
+            reason_code=_LIFECYCLE_BLOCKER,
+        ),
+    )
+
+
+__all__ = ["run_fixture"]

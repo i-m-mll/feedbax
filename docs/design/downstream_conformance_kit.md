@@ -44,3 +44,33 @@ ratchet, closing the same-cardinality replacement hole in the reference JSON
 writer. Generic TOML baselines are read-only because rewriting TOML without a
 format-preserving editor would destroy downstream comments; downstream code
 edits the list explicitly after inspecting the ratchet diff.
+
+## Clean-installed external fixture
+
+`external/feedbax_conformance_fixture` is the repo-owned downstream-author
+example and vertical extension of this kit. It is separately packaged and
+keeps fixture-specific builders private to that package. The fixture reuses
+`check_material_dependency_contract` rather than copying its admission
+canaries, and exercises public ordered registration, component migration,
+value identity, material dependencies, and exact-parent migration.
+
+`uv run --no-sync python scripts/run_external_conformance.py` builds Feedbax
+and the fixture as wheels, installs both non-editably into a fresh environment,
+and executes away from this checkout with `PYTHONPATH` removed. The installed
+fixture rejects private Feedbax imports, verifies all loaded Feedbax modules
+come from the wheel, uses unique runtime cache roots, creates no shared custody
+writes, and denies network access during execution.
+
+The versioned machine result is
+`feedbax.external_conformance.result.v2`; v1 migrates by adding separate
+unbound `current` and `minimum` protocol role slots, while other versions are
+rejected. Those slots are not stability guarantees and remain unbound until
+the owner-ratified policy exists.
+
+The production lifecycle case is currently reported as blocked rather than
+passed. Issue `7e7dac8` owns the non-Git wheel-provenance seam required by
+`StageEngine` preflight and launch and blocks issue `380f897`. The fixture
+asserts the current rejection as a negative canary. It must be replaced by the
+bounded `StageEngine`/`LocalOrchestrationDriver` persisted recovery case when
+that seam integrates; no copied lifecycle runner or revision bypass is
+permitted.
