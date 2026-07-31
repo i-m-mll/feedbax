@@ -17,6 +17,7 @@ Schema/migration table:
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal, TypeAlias
 
@@ -109,16 +110,22 @@ class MaterialDependencySet(StrictModel):
                     "admission waiver manifest mismatch: the exact manifest is not "
                     "a declared material dependency"
                 )
-            artifact_digests = {
-                digest
+            artifact_matches = [
+                dependency.name
                 for dependency in self.dependencies
                 if dependency.value != self.waiver.manifest
-                if (digest := dependency_value_sha256(dependency.value)) is not None
-            }
-            if self.waiver.artifact_sha256 not in artifact_digests:
+                if dependency_value_sha256(dependency.value)
+                == self.waiver.artifact_sha256
+            ]
+            if not artifact_matches:
                 raise ValueError(
                     "admission waiver artifact hash mismatch: the exact artifact is not "
                     "a declared material dependency"
+                )
+            if len(artifact_matches) > 1:
+                raise ValueError(
+                    "admission waiver artifact hash is ambiguous across declared material "
+                    f"dependencies: matches={sorted(artifact_matches)!r}"
                 )
         return self
 
@@ -158,7 +165,10 @@ def material_dependency_identity_sha256(spec: MaterialDependencySet) -> str:
     values = [
         {
             "name": name,
-            "value": by_name[name].value.model_dump(mode="json", exclude_none=True),
+            "value": _material_dependency_value_identity(
+                by_name[name].value,
+                dependency_name=name,
+            ),
         }
         for name in spec.identity_inputs
     ]
@@ -200,9 +210,15 @@ def validate_material_dependency_admission(
         if observation is None or not observation.available:
             detail = observation.diagnostic if observation is not None else "no observation"
             raise ValueError(f"material dependency {name!r} is missing: {detail}")
-        if observation.value != declaration.value:
+        if _material_dependency_value_identity(
+            observation.value,
+            dependency_name=name,
+        ) != _material_dependency_value_identity(
+            declaration.value,
+            dependency_name=name,
+        ):
             raise ValueError(
-                f"material dependency {name!r} resolved to a different declared value"
+                f"material dependency {name!r} resolved to a different material identity"
             )
         if not observation.authentic:
             detail = observation.diagnostic or "authentication failed"
@@ -260,6 +276,41 @@ def dependency_value_sha256(value: MaterialDependencyValue) -> str | None:
     return None
 
 
+def _material_dependency_value_identity(
+    value: MaterialDependencyValue,
+    *,
+    dependency_name: str,
+) -> dict[str, str]:
+    """Project a dependency value to only its material identity.
+
+    Runtime locators, authored roles, arbitrary metadata, provenance, and value
+    realization fingerprints deliberately remain outside this projection.
+    """
+    if isinstance(value, ValueIdentityRecord):
+        return {
+            "dependency_type": "semantic_value",
+            "schema_id": value.schema_id,
+            "schema_version": value.schema_version,
+            "semantic_sha256": value.semantic_sha256,
+        }
+    digest = dependency_value_sha256(value)
+    if digest is None or re.fullmatch(_SHA256_PATTERN, digest) is None:
+        raise ValueError(
+            f"material dependency {dependency_name!r} requires an exact lowercase "
+            "SHA-256 content identity"
+        )
+    if isinstance(value, ArtifactRef):
+        return {
+            "dependency_type": "artifact",
+            "content_sha256": digest,
+        }
+    return {
+        "dependency_type": "parent",
+        "kind": value.kind,
+        "content_sha256": digest,
+    }
+
+
 def _topological_dependency_order(
     graph: Mapping[str, Sequence[str]],
 ) -> list[str]:
@@ -273,13 +324,13 @@ def _topological_dependency_order(
         if name in visiting:
             raise ValueError(f"material dependency graph contains a cycle at {name!r}")
         visiting.add(name)
-        for dependency in graph[name]:
+        for dependency in sorted(graph[name]):
             visit(dependency)
         visiting.remove(name)
         visited.add(name)
         order.append(name)
 
-    for name in graph:
+    for name in sorted(graph):
         visit(name)
     return order
 

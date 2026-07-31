@@ -993,12 +993,12 @@ def _dependency_observations_for_training_run(
     *,
     parent: ParentRef,
     manifest: TrainingRunManifest,
-) -> tuple[list[MaterialDependencyObservation], str | None]:
+    execution_context: StagedExecutionContext,
+) -> list[MaterialDependencyObservation]:
     """Project authenticated manifest/certification facts into generic admission."""
     certification = training_run_certification(manifest)
     certified = tuple(certification.certified_artifacts)
     observations: list[MaterialDependencyObservation] = []
-    artifact_digests: list[str] = []
     for dependency in spec.dependencies:
         value = dependency.value
         if isinstance(value, ValueIdentityRecord):
@@ -1014,28 +1014,27 @@ def _dependency_observations_for_training_run(
                 )
             )
             continue
-        if isinstance(value, ParentRef) and value == parent:
+        if isinstance(value, ParentRef) and _same_material_ref(value, parent):
             available = True
-            authentic = (
-                value.metadata.get("manifest_sha256")
-                == parent.metadata.get("manifest_sha256")
-            )
+            authentic = True
             diagnostic = None
         else:
-            available = value in certified
-            digest = dependency_value_sha256(value)
-            authentic = (
-                available
-                and isinstance(digest, str)
-                and _SHA256_PATTERN.fullmatch(digest) is not None
+            certified_match = any(
+                _same_material_ref(value, candidate)
+                for candidate in certified
             )
-            diagnostic = (
-                None
-                if available and authentic
-                else "not present with an exact content pin in the certified artifact prefix"
-            )
-            if isinstance(digest, str) and _SHA256_PATTERN.fullmatch(digest) is not None:
-                artifact_digests.append(digest)
+            if not certified_match:
+                available = False
+                authentic = False
+                diagnostic = (
+                    "not present with the same material identity in the certified "
+                    "artifact prefix"
+                )
+            else:
+                available, authentic, diagnostic = _authenticate_material_dependency(
+                    value,
+                    execution_context=execution_context,
+                )
         observations.append(
             MaterialDependencyObservation(
                 name=dependency.name,
@@ -1045,7 +1044,79 @@ def _dependency_observations_for_training_run(
                 diagnostic=diagnostic,
             )
         )
-    return observations, artifact_digests[0] if artifact_digests else None
+    return observations
+
+
+def _same_material_ref(
+    declared: ParentRef | ArtifactRef,
+    observed: ParentRef | ArtifactRef,
+) -> bool:
+    if isinstance(declared, ParentRef) != isinstance(observed, ParentRef):
+        return False
+    if (
+        isinstance(declared, ParentRef)
+        and isinstance(observed, ParentRef)
+        and declared.kind != observed.kind
+    ):
+        return False
+    declared_digest = dependency_value_sha256(declared)
+    return (
+        declared_digest is not None
+        and _SHA256_PATTERN.fullmatch(declared_digest) is not None
+        and declared_digest == dependency_value_sha256(observed)
+    )
+
+
+def _authenticate_material_dependency(
+    value: ParentRef | ArtifactRef,
+    *,
+    execution_context: StagedExecutionContext,
+) -> tuple[bool, bool, str | None]:
+    """Authenticate one certified value through existing runtime authority."""
+    if isinstance(value, ParentRef):
+        try:
+            if value.kind == "TrainingCheckpointTransactionManifest":
+                resolved = execution_context.resolve_checkpoint_custody_ref(value)
+                expected_digest = dependency_value_sha256(value)
+                if resolved.manifest_sha256 != expected_digest:
+                    return (
+                        True,
+                        False,
+                        "checkpoint custody resolved a different manifest digest",
+                    )
+                return True, True, None
+            resolved_manifest = execution_context.resolve_manifest_input(value)
+            expected_digest = dependency_value_sha256(value)
+            if resolved_manifest.sha256 != expected_digest:
+                return True, False, "manifest authority resolved a different digest"
+            return True, True, None
+        except Exception as exc:
+            diagnostic = str(exc)
+            missing = (
+                isinstance(exc, FileNotFoundError)
+                or " is missing:" in diagnostic
+                or "binding is unavailable" in diagnostic
+                or "location is unavailable" in diagnostic
+                or "root is not a directory" in diagnostic
+            )
+            return not missing, False, diagnostic
+
+    if not execution_context.opened_artifact_providers:
+        return False, False, "no immutable artifact provider is bound"
+    missing_diagnostics: list[str] = []
+    integrity_diagnostics: list[str] = []
+    for provider_name in sorted(execution_context.opened_artifact_providers):
+        provider = execution_context.artifact_provider(provider_name)
+        try:
+            provider.get_bytes(value)
+            return True, True, None
+        except FileNotFoundError as exc:
+            missing_diagnostics.append(f"{provider_name}: {exc}")
+        except Exception as exc:
+            integrity_diagnostics.append(f"{provider_name}: {exc}")
+    if integrity_diagnostics:
+        return True, False, "; ".join(integrity_diagnostics)
+    return False, False, "; ".join(missing_diagnostics) or "artifact bytes are unavailable"
 
 
 def _admit_exact_parent_material_dependencies(
@@ -1053,27 +1124,42 @@ def _admit_exact_parent_material_dependencies(
     *,
     parent: ParentRef,
     manifest: TrainingRunManifest,
+    execution_context: StagedExecutionContext,
 ) -> str:
-    observations, artifact_sha256 = _dependency_observations_for_training_run(
+    observations = _dependency_observations_for_training_run(
         spec,
         parent=parent,
         manifest=manifest,
+        execution_context=execution_context,
     )
     incidental_failures = []
     if manifest.status != "completed":
-        if artifact_sha256 is None:
+        waiver = spec.waiver
+        if waiver is None:
             raise ValueError(
-                "non-completed material dependency admission requires one exact "
-                "certified artifact dependency for waiver targeting"
+                "incidental admission check 'manifest_status_completed' failed without "
+                "an authored waiver"
+            )
+        target_matches = [
+            dependency.name
+            for dependency in spec.dependencies
+            if dependency.value != waiver.manifest
+            and dependency_value_sha256(dependency.value) == waiver.artifact_sha256
+        ]
+        if len(target_matches) != 1:
+            raise ValueError(
+                "admission waiver artifact hash must select exactly one declared "
+                f"dependency; matches={sorted(target_matches)!r}"
             )
         incidental_failures.append(
             IncidentalAdmissionFailure(
                 check="manifest_status_completed",
                 manifest=parent,
-                artifact_sha256=artifact_sha256,
+                artifact_sha256=waiver.artifact_sha256,
                 diagnostic=(
                     f"TrainingRunManifest status is {manifest.status!r}; "
-                    "the declared certified dependency remains independently admissible"
+                    f"declared certified dependency {target_matches[0]!r} remains "
+                    "independently admissible"
                 ),
             )
         )
@@ -1090,6 +1176,7 @@ def _preflight_staged_exact_parents(
     exact_parents: StagedExactParents,
     *,
     root: Path,
+    execution_context: StagedExecutionContext,
 ) -> tuple[
     list[TrainingRunManifest],
     tuple[ParentRef, ...],
@@ -1186,6 +1273,7 @@ def _preflight_staged_exact_parents(
                 entry.material_dependencies,
                 parent=parent,
                 manifest=resolved.manifest,
+                execution_context=execution_context,
             )
             execution_parent = parent.model_copy(
                 update={
@@ -2304,6 +2392,7 @@ def dry_run_staged_analysis_bundle(
             bundle,
             exact_parents,
             root=root_path,
+            execution_context=_execution_context,
         )
         _execution_context = with_staged_parent_execution_locations(
             _execution_context,
@@ -2507,6 +2596,7 @@ def execute_staged_analysis_bundle(
             bundle,
             exact_parents,
             root=root_path,
+            execution_context=execution_context,
         )
         execution_context = with_staged_parent_execution_locations(
             execution_context,

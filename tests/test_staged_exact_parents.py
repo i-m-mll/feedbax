@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from feedbax.analysis.bundles import (
     AnalysisBundleSpec,
     BundleStageSpec,
+    dry_run_staged_analysis_bundle,
     execute_staged_analysis_bundle,
 )
 from feedbax.analysis.evaluation import (
@@ -28,9 +29,14 @@ from feedbax.analysis.exact_parents import (
     StagedExactParentEntry,
     StagedExactParents,
 )
+from feedbax.analysis.execution_context import (
+    StagedArtifactProviderRootBinding,
+    StagedCheckpointCustodyRootBinding,
+)
 from feedbax.analysis.manifest_inputs import resolve_manifest_input
 from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE
 from feedbax.contracts.manifest import (
+    ArtifactRef,
     EvaluationRunSpec,
     ParentRef,
     TRAINING_RUN_CERTIFICATION_SCHEMA_ID,
@@ -49,8 +55,22 @@ from feedbax.contracts.material_dependencies import (
     AdmissionWaiver,
     MaterialDependency,
     MaterialDependencySet,
+    dependency_value_sha256,
 )
+from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.selection import ManifestPredicate, TopKByMetricPerGroup
+from feedbax.contracts.staged_execution import (
+    STAGED_CHECKPOINT_CUSTODY_BACKEND,
+    STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+    STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+    StagedCheckpointCustodySpec,
+    StagedExecutionDescriptor,
+)
+from tests.test_checkpoint_custody import (
+    _resolver_parent_ref,
+    _write_resolver_checkpoint,
+)
+from feedbax.persistence.artifact_custody import open_immutable_artifact_blob_provider
 
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.analysis_recipe_contract]
@@ -182,17 +202,23 @@ def _write_diverged_exact_parent(
     *,
     suffix: str = "",
     certified: bool = True,
+    checkpoint: ParentRef | ArtifactRef | None = None,
     waiver_manifest_digest: str | None = None,
     waiver_artifact_digest: str | None = None,
 ) -> StagedExactParentEntry:
-    checkpoint_digest = "b" * 64
-    checkpoint = ParentRef(
-        kind="TrainingCheckpointTransactionManifest",
-        id="checkpoint:certified",
-        role="training_checkpoint_custody",
-        uri="transactions/certified.json",
-        metadata={"manifest_sha256": checkpoint_digest},
-    )
+    if checkpoint is None:
+        checkpoint_result = _write_resolver_checkpoint(root / "checkpoint-custody")
+        checkpoint = _resolver_parent_ref(checkpoint_result)
+        checkpoint = checkpoint.model_copy(
+            update={
+                "metadata": {
+                    **checkpoint.metadata,
+                    "checkpoint_custody_binding": "certified-checkpoints",
+                }
+            }
+        )
+    checkpoint_digest = dependency_value_sha256(checkpoint)
+    assert checkpoint_digest is not None
     run_id = "feedbax-training-run:diverged"
     manifest = TrainingRunManifest(
         id=run_id,
@@ -293,6 +319,48 @@ def _write_diverged_exact_parent(
     )
 
 
+def _material_dependency_execution_kwargs(
+    root: Path,
+    *,
+    checkpoint_root: Path | None = None,
+) -> dict[str, object]:
+    return {
+        "execution_descriptor": StagedExecutionDescriptor(
+            schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+            schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+            artifact_providers={},
+            checkpoint_custody={
+                "certified-checkpoints": StagedCheckpointCustodySpec(
+                    backend=STAGED_CHECKPOINT_CUSTODY_BACKEND
+                )
+            },
+        ),
+        "checkpoint_custody_bindings": [
+            StagedCheckpointCustodyRootBinding(
+                "certified-checkpoints",
+                checkpoint_root or root / "checkpoint-custody",
+            )
+        ],
+    }
+
+
+def _artifact_dependency_execution_kwargs(root: Path) -> dict[str, object]:
+    return {
+        "execution_descriptor": StagedExecutionDescriptor(
+            schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+            schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+            artifact_providers={"certified-artifacts": ImmutableArtifactBlobProviderSpec()},
+            checkpoint_custody={},
+        ),
+        "artifact_provider_bindings": [
+            StagedArtifactProviderRootBinding(
+                "certified-artifacts",
+                root / "artifact-provider",
+            )
+        ],
+    }
+
+
 def _rewrite_manifest_metadata(
     root: Path,
     entry: StagedExactParentEntry,
@@ -375,17 +443,28 @@ def test_diverged_run_admits_certified_checkpoint_and_scopes_evaluation_identity
     first_root = tmp_path / "first"
     second_root = tmp_path / "second"
     first = _write_diverged_exact_parent(first_root, suffix="-provenance-one")
-    second = _write_diverged_exact_parent(second_root, suffix="-provenance-two")
+    checkpoint = first.material_dependencies.dependencies[1].value
+    assert isinstance(checkpoint, ParentRef)
+    second = _write_diverged_exact_parent(
+        second_root,
+        suffix="-provenance-two",
+        checkpoint=checkpoint,
+    )
 
     first_execution = execute_staged_analysis_bundle(
         _bundle(),
         root=first_root,
         exact_parents=_exact_document(first),
+        **_material_dependency_execution_kwargs(first_root),
     )
     second_execution = execute_staged_analysis_bundle(
         _bundle(),
         root=second_root,
         exact_parents=_exact_document(second),
+        **_material_dependency_execution_kwargs(
+            second_root,
+            checkpoint_root=first_root / "checkpoint-custody",
+        ),
     )
 
     first_ref = first_execution.stages[0].manifest_refs[0]
@@ -402,10 +481,61 @@ def test_diverged_run_admits_certified_checkpoint_and_scopes_evaluation_identity
     )
 
 
+def test_material_dependency_dry_run_authenticates_checkpoint_bytes(
+    tmp_path: Path,
+) -> None:
+    entry = _write_diverged_exact_parent(tmp_path)
+    checkpoint = entry.material_dependencies.dependencies[1].value
+    assert isinstance(checkpoint, ParentRef)
+    checkpoint_path = tmp_path / "checkpoint-custody" / str(checkpoint.uri)
+    checkpoint_path.write_bytes(checkpoint_path.read_bytes() + b"tampered")
+
+    with pytest.raises(ValueError, match="certified_checkpoint.*unauthentic"):
+        dry_run_staged_analysis_bundle(
+            _bundle(),
+            root=tmp_path,
+            exact_parents=_exact_document(entry),
+            **_material_dependency_execution_kwargs(tmp_path),
+        )
+
+    assert not (tmp_path / "cache").exists()
+    assert not (tmp_path / "manifests").exists()
+
+
+def test_material_dependency_dry_run_authenticates_provider_artifact_bytes(
+    tmp_path: Path,
+) -> None:
+    provider_root = tmp_path / "artifact-provider"
+    provider_root.mkdir(parents=True)
+    provider = open_immutable_artifact_blob_provider(
+        ImmutableArtifactBlobProviderSpec(),
+        explicit_root=provider_root,
+    )
+    artifact = provider.store_bytes(
+        b"certified analysis input",
+        role="certified_analysis_input",
+        logical_name="certified.bin",
+    )
+    entry = _write_diverged_exact_parent(tmp_path, checkpoint=artifact)
+
+    result = dry_run_staged_analysis_bundle(
+        _bundle(),
+        root=tmp_path,
+        exact_parents=_exact_document(entry),
+        **_artifact_dependency_execution_kwargs(tmp_path),
+    )
+
+    assert result.matched_run_ids == [entry.parent.id]
+    assert not (tmp_path / "cache").exists()
+    assert not (tmp_path / "manifests").exists()
+
+
 @pytest.mark.parametrize(
     ("case", "message"),
     [
-        ("missing_checkpoint", "certified_checkpoint.*missing"),
+        ("uncertified_checkpoint", "certified_checkpoint.*missing"),
+        ("missing_checkpoint_bytes", "certified_checkpoint.*missing"),
+        ("tampered_checkpoint_bytes", "certified_checkpoint.*unauthentic"),
         ("waiver_manifest", "waiver manifest mismatch"),
         ("waiver_artifact", "waiver artifact hash mismatch"),
     ],
@@ -424,12 +554,23 @@ def test_material_dependency_admission_rejects_before_outputs(
                 waiver_artifact_digest="d" * 64 if case == "waiver_artifact" else None,
             )
     else:
-        entry = _write_diverged_exact_parent(tmp_path, certified=False)
+        entry = _write_diverged_exact_parent(
+            tmp_path,
+            certified=case != "uncertified_checkpoint",
+        )
+        checkpoint = entry.material_dependencies.dependencies[1].value
+        assert isinstance(checkpoint, ParentRef)
+        checkpoint_path = tmp_path / "checkpoint-custody" / str(checkpoint.uri)
+        if case == "missing_checkpoint_bytes":
+            checkpoint_path.unlink()
+        elif case == "tampered_checkpoint_bytes":
+            checkpoint_path.write_bytes(checkpoint_path.read_bytes() + b"tampered")
         with pytest.raises(ValueError, match=message):
             execute_staged_analysis_bundle(
                 _bundle(),
                 root=tmp_path,
                 exact_parents=_exact_document(entry),
+                **_material_dependency_execution_kwargs(tmp_path),
             )
 
     assert exact_evaluation_calls == []

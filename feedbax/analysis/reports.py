@@ -718,6 +718,18 @@ def execute_authored_report_spec(
     exact = migrate_staged_exact_parents(exact_payload)
     root_path = Path(root)
 
+    material_entries = [
+        entry.parent.id
+        for entry in exact.parents
+        if entry.material_dependencies is not None
+    ]
+    if material_entries:
+        raise ValueError(
+            "authored report execution cannot ignore StagedExactParents "
+            "material_dependencies; route these parents through the shared staged "
+            f"analysis bundle preflight first: parents={sorted(material_entries)!r}"
+        )
+
     exact_refs = tuple(entry.parent for entry in exact.parents)
     _validate_authored_report_exact_parent_membership(report_spec.inputs, exact_refs)
 

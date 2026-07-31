@@ -29,10 +29,15 @@ from feedbax.contracts import (
     validate_material_dependency_admission,
 )
 from feedbax.contracts.manifest import (
+    ArtifactRef,
     EvaluationRunSpec,
     ParentRef,
     TrainingRunManifest,
     evaluation_run_manifest_id,
+)
+from feedbax.contracts.value_identity import (
+    ValueIdentityRecord,
+    realization_value_sha256,
 )
 from feedbax.testing import check_material_dependency_contract
 
@@ -104,11 +109,92 @@ def _observations(spec: MaterialDependencySet) -> list[MaterialDependencyObserva
 def test_identity_uses_only_declared_material_dependencies() -> None:
     first = _spec(parent=_parent(provenance="one"))
     second = _spec(parent=_parent(provenance="two")).model_copy(
-        update={"provenance_metadata": {"sampling_contract": "changed"}}
+        update={
+            "dependencies": list(reversed(_spec(parent=_parent(provenance="two")).dependencies)),
+            "provenance_metadata": {"sampling_contract": "changed"},
+        }
     )
 
     assert material_dependency_identity_sha256(first) == (
         material_dependency_identity_sha256(second)
+    )
+    assert validate_material_dependency_admission(
+        first,
+        _observations(first),
+    ) == validate_material_dependency_admission(
+        second,
+        _observations(second),
+    )
+
+
+def test_identity_projects_refs_and_values_to_material_identity() -> None:
+    first_checkpoint = _checkpoint()
+    second_checkpoint = first_checkpoint.model_copy(
+        update={
+            "id": "checkpoint:relocated",
+            "role": "incidental-role",
+            "uri": "other/location.json",
+            "metadata": {
+                "manifest_sha256": "b" * 64,
+                "provenance": "changed",
+            },
+        }
+    )
+    first_artifact = ArtifactRef(
+        role="result",
+        logical_name="first.bin",
+        artifact_id=f"artifact://sha256/{'c' * 64}",
+        sha256="c" * 64,
+        size_bytes=10,
+        uri=f"artifact://sha256/{'c' * 64}",
+        metadata={"provenance": "first"},
+    )
+    second_artifact = first_artifact.model_copy(
+        update={
+            "role": "other-role",
+            "logical_name": "renamed.bin",
+            "artifact_id": None,
+            "size_bytes": 999,
+            "uri": "movable/location.bin",
+            "metadata": {"provenance": "second"},
+        }
+    )
+    semantic_digest = "d" * 64
+    first_value = ValueIdentityRecord(
+        authored_sha256="e" * 64,
+        semantic_sha256=semantic_digest,
+        authored_identity_chain=("e" * 64,),
+    )
+    second_value = ValueIdentityRecord(
+        authored_sha256="f" * 64,
+        semantic_sha256=semantic_digest,
+        realization_sha256=realization_value_sha256(
+            semantic_digest,
+            layout_fingerprint="layout-two",
+            backend_fingerprint="backend-two",
+        ),
+        runtime_layout_fingerprint="layout-two",
+        runtime_backend_fingerprint="backend-two",
+        authored_identity_chain=("a" * 64, "f" * 64),
+        expected_semantic_sha256=semantic_digest,
+    )
+
+    def identity(*values: ParentRef | ArtifactRef | ValueIdentityRecord) -> str:
+        spec = MaterialDependencySet(
+            schema_id=MATERIAL_DEPENDENCIES_SCHEMA_ID,
+            schema_version=MATERIAL_DEPENDENCIES_SCHEMA_VERSION,
+            dependencies=[
+                MaterialDependency(name=f"value_{index}", value=value)
+                for index, value in enumerate(values)
+            ],
+            identity_inputs=[f"value_{index}" for index in range(len(values))],
+        )
+        return material_dependency_identity_sha256(spec)
+
+    assert identity(first_checkpoint, first_artifact, first_value) == identity(
+        second_checkpoint,
+        second_artifact,
+        second_value,
     )
 
 
@@ -192,6 +278,17 @@ def test_waiver_is_exact_and_cannot_waive_material_failure() -> None:
         incidental_failures=[failure],
     )
     assert admitted.waived_checks == ["manifest_status_completed"]
+    reordered = MaterialDependencySet(
+        **{
+            **spec.model_dump(mode="json"),
+            "dependencies": list(reversed(spec.dependencies)),
+        }
+    )
+    assert validate_material_dependency_admission(
+        reordered,
+        _observations(reordered),
+        incidental_failures=[failure],
+    ) == admitted
 
     for changed in (
         failure.model_copy(update={"manifest": _parent("c" * 64)}),
@@ -211,6 +308,32 @@ def test_waiver_is_exact_and_cannot_waive_material_failure() -> None:
             incidental_failures=[
                 failure.model_copy(update={"material_dependency": "certified_checkpoint"})
             ],
+        )
+
+
+def test_waiver_rejects_ambiguous_declared_artifact_hash() -> None:
+    parent = _parent()
+    with pytest.raises(ValidationError, match="artifact hash is ambiguous"):
+        MaterialDependencySet(
+            schema_id=MATERIAL_DEPENDENCIES_SCHEMA_ID,
+            schema_version=MATERIAL_DEPENDENCIES_SCHEMA_VERSION,
+            dependencies=[
+                MaterialDependency(name="manifest", value=parent),
+                MaterialDependency(name="checkpoint_a", value=_checkpoint()),
+                MaterialDependency(
+                    name="checkpoint_b",
+                    value=_checkpoint().model_copy(update={"id": "checkpoint:other"}),
+                ),
+            ],
+            identity_inputs=["checkpoint_a"],
+            waiver=AdmissionWaiver(
+                schema_id=ADMISSION_WAIVER_SCHEMA_ID,
+                schema_version=ADMISSION_WAIVER_SCHEMA_VERSION,
+                incidental_check="manifest_status_completed",
+                manifest=parent,
+                artifact_sha256="b" * 64,
+                reason="exact incident authorization",
+            ),
         )
 
 
