@@ -29,9 +29,14 @@ from feedbax.contracts.studio_training import (
 from feedbax.orchestration.events import RUN_EVENT_SCHEMA_ID, RunEvent
 from feedbax.orchestration.assembly import assemble_run_bundle
 from feedbax.orchestration.drivers.base import DriverRowProbe
+from feedbax.orchestration.drivers.capabilities import DriverRegistration, DriverRegistry
 from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore
 from feedbax.web.services.training_service import TrainingService
-from feedbax.web.services.worker_driver import _worker_start_body, load_worker_execution_payload
+from feedbax.web.services.worker_driver import (
+    WorkerHttpDriver,
+    _worker_start_body,
+    load_worker_execution_payload,
+)
 from feedbax.web.worker.app import WorkerStatus
 
 
@@ -134,7 +139,7 @@ def _wait_for_worker_status(
 
 
 def test_worker_routes_keep_terminal_state_for_distinct_job_ids(monkeypatch) -> None:
-    def fake_run_training(job: worker_app._Job) -> None:
+    def fake_run_training(job: worker_app._Job, _bootstrap_state) -> None:
         loss = float(job.total_batches)
         with job._state_lock:
             job.batch = job.total_batches
@@ -154,32 +159,32 @@ def test_worker_routes_keep_terminal_state_for_distinct_job_ids(monkeypatch) -> 
 
     monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
 
-    client = TestClient(worker_app.create_app())
-    first = client.post(
-        "/start",
-        json={"job_id": "job-a", "run_set_id": "set-a", "total_batches": 1},
-    ).json()["job_id"]
-    first_status = _wait_for_worker_status(client, first, WorkerStatus.COMPLETED)
-    second = client.post(
-        "/start",
-        json={"job_id": "job-b", "run_set_id": "set-b", "total_batches": 2},
-    ).json()["job_id"]
-    second_status = _wait_for_worker_status(client, second, WorkerStatus.COMPLETED)
+    with TestClient(worker_app.create_app()) as client:
+        first = client.post(
+            "/start",
+            json={"job_id": "job-a", "run_set_id": "set-a", "total_batches": 1},
+        ).json()["job_id"]
+        first_status = _wait_for_worker_status(client, first, WorkerStatus.COMPLETED)
+        second = client.post(
+            "/start",
+            json={"job_id": "job-b", "run_set_id": "set-b", "total_batches": 2},
+        ).json()["job_id"]
+        second_status = _wait_for_worker_status(client, second, WorkerStatus.COMPLETED)
 
-    first_manifest = client.get(f"/jobs/{first}/manifest")
-    second_manifest = client.get(f"/jobs/{second}/manifest")
+        first_manifest = client.get(f"/jobs/{first}/manifest")
+        second_manifest = client.get(f"/jobs/{second}/manifest")
 
-    assert first_status.status_code == 200
-    assert second_status.status_code == 200
-    assert first == "job-a"
-    assert second == "job-b"
-    assert first_status.json()["job_id"] == first
-    assert second_status.json()["job_id"] == second
-    assert first_status.json()["last_loss"] == 1.0
-    assert second_status.json()["last_loss"] == 2.0
-    assert first_manifest.json()["job_id"] == first
-    assert second_manifest.json()["job_id"] == second
-    assert client.get("/jobs/missing/status").status_code == 404
+        assert first_status.status_code == 200
+        assert second_status.status_code == 200
+        assert first == "job-a"
+        assert second == "job-b"
+        assert first_status.json()["job_id"] == first
+        assert second_status.json()["job_id"] == second
+        assert first_status.json()["last_loss"] == 1.0
+        assert second_status.json()["last_loss"] == 2.0
+        assert first_manifest.json()["job_id"] == first
+        assert second_manifest.json()["job_id"] == second
+        assert client.get("/jobs/missing/status").status_code == 404
 
 
 def test_worker_start_requires_external_identity() -> None:
@@ -190,11 +195,18 @@ def test_worker_start_requires_external_identity() -> None:
     assert client.post("/start", json={"job_id": "job-a", "total_batches": 1}).status_code == 400
 
 
+def test_worker_lifespan_publishes_bootstrap_state_before_routes() -> None:
+    app = worker_app.create_app()
+    with TestClient(app) as client:
+        assert client.get("/health").status_code == 200
+        assert app.state.bootstrap_state.bundle.components.get("Gain") is not None
+
+
 def test_worker_rejects_start_while_job_running(monkeypatch) -> None:
     release = threading.Event()
     entered = threading.Event()
 
-    def fake_run_training(job: worker_app._Job) -> None:
+    def fake_run_training(job: worker_app._Job, _bootstrap_state) -> None:
         entered.set()
         assert release.wait(timeout=2)
         with job._state_lock:
@@ -214,32 +226,32 @@ def test_worker_rejects_start_while_job_running(monkeypatch) -> None:
 
     monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
 
-    client = TestClient(worker_app.create_app())
-    first = client.post(
-        "/start",
-        json={"job_id": "job-running", "run_set_id": "set-running", "total_batches": 1},
-    ).json()["job_id"]
-    assert entered.wait(timeout=2)
+    with TestClient(worker_app.create_app()) as client:
+        first = client.post(
+            "/start",
+            json={"job_id": "job-running", "run_set_id": "set-running", "total_batches": 1},
+        ).json()["job_id"]
+        assert entered.wait(timeout=2)
 
-    conflict = client.post(
-        "/start",
-        json={"job_id": "job-conflict", "run_set_id": "set-conflict", "total_batches": 1},
-    )
-    assert conflict.status_code == 409
-    assert "already running job" in conflict.json()["detail"]
+        conflict = client.post(
+            "/start",
+            json={"job_id": "job-conflict", "run_set_id": "set-conflict", "total_batches": 1},
+        )
+        assert conflict.status_code == 409
+        assert "already running job" in conflict.json()["detail"]
 
-    release.set()
-    assert _wait_for_worker_status(client, first, WorkerStatus.COMPLETED).status_code == 200
+        release.set()
+        assert _wait_for_worker_status(client, first, WorkerStatus.COMPLETED).status_code == 200
 
-    second = client.post(
-        "/start",
-        json={"job_id": "job-second", "run_set_id": "set-second", "total_batches": 1},
-    )
-    assert second.status_code == 200
+        second = client.post(
+            "/start",
+            json={"job_id": "job-second", "run_set_id": "set-second", "total_batches": 1},
+        )
+        assert second.status_code == 200
 
 
 def test_worker_evicts_oldest_terminal_jobs(monkeypatch) -> None:
-    def fake_run_training(job: worker_app._Job) -> None:
+    def fake_run_training(job: worker_app._Job, _bootstrap_state) -> None:
         with job._state_lock:
             job.batch = job.total_batches
             job.last_loss = float(job.total_batches)
@@ -259,32 +271,37 @@ def test_worker_evicts_oldest_terminal_jobs(monkeypatch) -> None:
     monkeypatch.setattr(worker_app, "_TERMINAL_JOB_RETENTION_MAX", 2)
     monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
 
-    client = TestClient(worker_app.create_app())
-    first = client.post(
-        "/start",
-        json={"job_id": "job-first", "run_set_id": "set-first", "total_batches": 1},
-    ).json()["job_id"]
-    assert _wait_for_worker_status(client, first, WorkerStatus.COMPLETED).status_code == 200
-    second = client.post(
-        "/start",
-        json={"job_id": "job-second", "run_set_id": "set-second", "total_batches": 2},
-    ).json()["job_id"]
-    assert _wait_for_worker_status(client, second, WorkerStatus.COMPLETED).status_code == 200
-    third = client.post(
-        "/start",
-        json={"job_id": "job-third", "run_set_id": "set-third", "total_batches": 3},
-    ).json()["job_id"]
-    assert _wait_for_worker_status(client, third, WorkerStatus.COMPLETED).status_code == 200
+    with TestClient(worker_app.create_app()) as client:
+        first = client.post(
+            "/start",
+            json={"job_id": "job-first", "run_set_id": "set-first", "total_batches": 1},
+        ).json()["job_id"]
+        assert _wait_for_worker_status(client, first, WorkerStatus.COMPLETED).status_code == 200
+        second = client.post(
+            "/start",
+            json={"job_id": "job-second", "run_set_id": "set-second", "total_batches": 2},
+        ).json()["job_id"]
+        assert _wait_for_worker_status(client, second, WorkerStatus.COMPLETED).status_code == 200
+        third = client.post(
+            "/start",
+            json={"job_id": "job-third", "run_set_id": "set-third", "total_batches": 3},
+        ).json()["job_id"]
+        assert _wait_for_worker_status(client, third, WorkerStatus.COMPLETED).status_code == 200
 
-    assert client.get(f"/jobs/{first}/status").status_code == 404
-    assert client.get(f"/jobs/{second}/status").status_code == 200
-    assert client.get(f"/jobs/{third}/manifest").json()["job_id"] == third
+        assert client.get(f"/jobs/{first}/status").status_code == 404
+        assert client.get(f"/jobs/{second}/status").status_code == 200
+        assert client.get(f"/jobs/{third}/manifest").json()["job_id"] == third
 
 
-def test_training_service_starts_state_backed_worker_run(monkeypatch, tmp_path) -> None:
+def test_training_service_starts_state_backed_worker_run(
+    monkeypatch, tmp_path, application_registry_bundle
+) -> None:
     starts: list[dict[str, Any]] = []
 
     class FakeWorkerDriver:
+        realized_capabilities = WorkerHttpDriver.realized_capabilities
+        poll_interval_seconds = WorkerHttpDriver.poll_interval_seconds
+
         def __init__(self, *, base_url: str, auth_token: str | None = None) -> None:
             assert base_url == "http://worker"
             assert auth_token is None
@@ -353,12 +370,30 @@ def test_training_service_starts_state_backed_worker_run(monkeypatch, tmp_path) 
 
     async def run() -> None:
         monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orch"))
-        monkeypatch.setattr(training_service_module, "WorkerHttpDriver", FakeWorkerDriver)
+        envelope = WorkerHttpDriver.capability_envelope
+        driver_registry = DriverRegistry(
+            (
+                DriverRegistration(
+                    name="worker-http",
+                    supported_capabilities=envelope,
+                    resolve_capabilities=lambda _context: envelope.realize("external-service"),
+                    factory=lambda context, _realized: FakeWorkerDriver(
+                        base_url=str(context.configuration["base_url"]),
+                        auth_token=context.credentials.get("worker_http_token"),
+                    ),
+                ),
+            )
+        )
 
         service = TrainingService()
         service.connect_remote("http://worker")
 
-        job_id = await service.start_training(3)
+        job_id = await service.start_training(
+            3,
+            conformance_registry=application_registry_bundle.conformance_checks,
+            driver_registry=driver_registry,
+            plugin_provenance=(),
+        )
         deadline = time.monotonic() + 2.0
         status = None
         while time.monotonic() < deadline:
@@ -385,7 +420,9 @@ def test_training_service_starts_state_backed_worker_run(monkeypatch, tmp_path) 
     asyncio.run(run())
 
 
-def test_training_service_reads_legacy_v2_terminal_status_without_mutating(monkeypatch, tmp_path) -> None:
+def test_training_service_reads_legacy_v2_terminal_status_without_mutating(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
     bundle = SimpleNamespace(run_set_id="set-terminal", run_set_dir=tmp_path / "set-terminal")
     bundle.run_set_dir.mkdir(parents=True)
@@ -439,7 +476,9 @@ def test_training_service_reads_legacy_v2_terminal_status_without_mutating(monke
     assert store.load().rows["job-terminal"].status == "running"
 
 
-def test_training_service_reads_legacy_v2_orphan_status_without_mutating(monkeypatch, tmp_path) -> None:
+def test_training_service_reads_legacy_v2_orphan_status_without_mutating(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
     bundle = SimpleNamespace(run_set_id="set-orphan", run_set_dir=tmp_path / "set-orphan")
     bundle.run_set_dir.mkdir(parents=True)
@@ -672,10 +711,7 @@ def test_worker_client_emits_gap_marker_after_reconnect(monkeypatch) -> None:
             worker_client.httpx.ReadError("dropped"),
         ),
         (
-            [
-                'data: {"type": "training_complete", "job_id": "job-gap", '
-                '"seq": 3, "batch": 1}\n'
-            ],
+            ['data: {"type": "training_complete", "job_id": "job-gap", "seq": 3, "batch": 1}\n'],
             None,
         ),
     ]
@@ -729,10 +765,7 @@ def test_worker_client_emits_gap_marker_after_reconnect(monkeypatch) -> None:
     async def run() -> list[dict]:
         monkeypatch.setattr(worker_client.httpx, "AsyncClient", FakeClient)
         monkeypatch.setattr(worker_client, "_RECONNECT_DELAY", 0)
-        return [
-            event
-            async for event in worker_client.stream_events("http://worker", "job-gap")
-        ]
+        return [event async for event in worker_client.stream_events("http://worker", "job-gap")]
 
     events = asyncio.run(run())
 

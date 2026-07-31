@@ -88,12 +88,14 @@ from .manifest_inputs import (
     resolve_manifest_input,
 )
 from .specs import (
+    AnalysisRecipeRegistry,
     AnalysisRecipeResult,
+    ResolvedAnalysisInput,
+    ResolvedEvaluationStateHandle,
     coerce_analysis_run_spec,
     execute_analysis_run_spec,
-    register_analysis_recipe,
+    resolve_analysis_inputs,
     resolve_analysis_run_authoring,
-    unregister_analysis_recipe,
 )
 from feedbax.contracts.analysis_composition import (
     AnalysisRunDeltaSpec,
@@ -119,12 +121,10 @@ from .reports import (
     OrderedFigureReportScalarTable,
     OrderedFigureReportScalarProjection,
     OrderedFigureReportSection,
+    ReportRecipeRegistry,
     ReportRecipeResult,
     execute_report_spec,
     resolve_report_scalar_projection,
-    register_report_recipe,
-    registered_report_types,
-    unregister_report_recipe,
 )
 from .validation import (
     AnalysisRecipeProtocol,
@@ -137,21 +137,16 @@ from .validation import (
     validate_report_recipe,
 )
 from .evaluation import (
+    EvaluationRecipeRegistry,
     EvaluationAuthoringSchema,
     EvaluationRunMatrixDeltaSpec,
     EvaluationRunMatrixSpec,
     compile_evaluation_run_matrix,
     execute_evaluation_run_matrix,
     flatten_evaluation_run_matrix_delta,
-    get_evaluation_recipe,
     materialize_evaluation_run_matrix,
     resolve_evaluation_matrix_authoring,
-    register_evaluation_authoring_schema,
-    register_evaluation_recipe,
-    registered_evaluation_recipes,
     resolve_staged_evaluation_prerequisite,
-    unregister_evaluation_recipe,
-    unregister_evaluation_authoring_schema,
 )
 from .evaluation_orchestration import (
     EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_ID,
@@ -164,19 +159,19 @@ from .evaluation_orchestration import (
 )
 from .evaluation_compaction import (
     EvaluationBatchConsumer,
+    EvaluationBatchConsumerRegistry,
     EvaluationBatchConsumerInput,
     EvaluationBatchFragment,
     EvaluationBatchFinalizeInput,
     EvaluationBatchMergeInput,
     EvaluationBatchMergeState,
-    register_evaluation_batch_consumer,
 )
 from .evaluation_product_union import (
     EvaluationCompactProductUnionBinding,
+    EvaluationCompactProductUnionFinalizerRegistry,
     EvaluationCompactProductUnionInput,
     EvaluationCompactProductUnionValue,
     finalize_evaluation_compact_product_union,
-    register_evaluation_compact_product_union_finalizer,
 )
 from feedbax.contracts.manifest import EvaluationParamsBase, StagedEvaluationPrerequisite
 from .evaluation_inputs import (
@@ -189,6 +184,12 @@ from .evaluation_inputs import (
     EvaluationInputResolutionError,
     ResolvedEvaluationInput,
     resolve_evaluation_inputs,
+)
+from .evaluation_rows import (
+    EvaluationRowProjectionError,
+    EvaluationRowProjectionErrorCode,
+    ResolvedEvaluationRow,
+    project_evaluation_rows,
 )
 from .harness import (
     HarnessResult,
@@ -234,6 +235,8 @@ __all__ = [
     "ContextMaterializerFn",
     "DataContextMaterializerFn",
     "EvaluationRecipeProtocol",
+    "EvaluationRowProjectionError",
+    "EvaluationRowProjectionErrorCode",
     "EvaluationChannelEvidence",
     "EvaluationChannelEvidenceError",
     "EvaluationParamsBase",
@@ -264,6 +267,7 @@ __all__ = [
     "EvaluationStateIdentityMismatch",
     "EvaluationStateProvenance",
     "EvaluationCompactProductUnionBinding",
+    "EvaluationCompactProductUnionFinalizerRegistry",
     "EvaluationCompactProductUnionInput",
     "EvaluationCompactProductUnionValue",
     "compile_evaluation_run_matrix",
@@ -281,6 +285,9 @@ __all__ = [
     "MatrixMaterializerHarness",
     "RecipeValidationError",
     "ResolvedEvaluationInput",
+    "ResolvedAnalysisInput",
+    "ResolvedEvaluationRow",
+    "ResolvedEvaluationStateHandle",
     "ReportRecipeProtocol",
     "ReportRecipeResult",
     "REPORT_RENDER_ROLE",
@@ -322,6 +329,10 @@ __all__ = [
     "STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION",
     "SemanticChange",
     "TrialStructureError",
+    "AnalysisRecipeRegistry",
+    "EvaluationBatchConsumerRegistry",
+    "EvaluationRecipeRegistry",
+    "ReportRecipeRegistry",
     "capture_evaluation_state",
     "compiled_trial_rollout",
     "stack_trials",
@@ -357,26 +368,15 @@ __all__ = [
     "manifest_artifact_group",
     "materialization_metadata",
     "materialize_evaluation_run_matrix",
-    "register_analysis_recipe",
-    "register_evaluation_authoring_schema",
-    "register_evaluation_batch_consumer",
-    "register_evaluation_compact_product_union_finalizer",
-    "register_evaluation_recipe",
-    "register_report_recipe",
+    "project_evaluation_rows",
     "read_json_payload",
-    "registered_evaluation_recipes",
     "resolve_evaluation_inputs",
+    "resolve_analysis_inputs",
     "resolve_authenticated_evaluation_channels",
     "resolve_staged_execution_context",
     "with_staged_manifest_provider_inputs",
     "with_staged_parent_artifact_provider_bindings",
     "with_staged_repo_root",
-    "registered_report_types",
-    "get_evaluation_recipe",
-    "unregister_analysis_recipe",
-    "unregister_evaluation_authoring_schema",
-    "unregister_evaluation_recipe",
-    "unregister_report_recipe",
     "validate_namespaced_type_key",
     "validate_analysis_recipe",
     "validate_evaluation_recipe",

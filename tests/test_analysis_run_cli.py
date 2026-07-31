@@ -9,12 +9,18 @@ from types import SimpleNamespace
 import plotly.io as pio
 import pytest
 
-from feedbax.plugins import discovery as plugin_discovery
+from feedbax.plugins import (
+    ANALYSIS_RECIPES,
+    BootstrapError,
+    BootstrapState,
+    FamilyRequirement,
+    PluginDeclaration,
+    PluginRegistration,
+)
+from feedbax.plugins import bootstrap as plugin_bootstrap
 from feedbax.analysis.specs import (
     AnalysisRecipeResult,
     execute_analysis_run_spec,
-    register_analysis_recipe,
-    unregister_analysis_recipe,
 )
 from feedbax.analysis.execution_context import (
     StagedCheckpointCustodyRootBinding,
@@ -52,18 +58,24 @@ CLI_ANALYSIS_TYPE = "feedbax.test.run_cli_analysis"
 
 
 @pytest.fixture
-def toy_analysis_recipe():
+def analysis_state(application_registry_bundle, monkeypatch):
+    async def compose_application(**_kwargs):
+        return BootstrapState(application_registry_bundle, ())
+
+    monkeypatch.setattr(analysis_cli, "compose_application", compose_application)
+    return application_registry_bundle
+
+
+@pytest.fixture
+def toy_analysis_recipe(analysis_state):
     def recipe(spec: AnalysisRunSpec, _root: Path, _inputs, _execution_context):
         return AnalysisRecipeResult(
             analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
             data=build_toy_analysis_data(value=int(spec.params["value"])),
         )
 
-    register_analysis_recipe(CLI_ANALYSIS_TYPE, recipe, replace=True)
-    try:
-        yield
-    finally:
-        unregister_analysis_recipe(CLI_ANALYSIS_TYPE)
+    analysis_state.analysis_recipes.register(CLI_ANALYSIS_TYPE, recipe)
+    return analysis_state.analysis_recipes
 
 
 @pytest.fixture
@@ -129,22 +141,25 @@ def test_run_subcommand_loads_installed_plugin_before_recipe_execution(
             data=build_toy_analysis_data(value=2),
         )
 
-    plugin = SimpleNamespace(
-        register_feedbax_analysis_recipes=lambda: register_analysis_recipe(
-            analysis_type,
-            recipe,
-            replace=True,
-        )
+    registration = PluginRegistration(
+        PluginDeclaration(
+            "tests.installed_direct_plugin",
+            "1",
+            1,
+            families=(FamilyRequirement(ANALYSIS_RECIPES.family),),
+        ),
+        lambda context: context.registry(ANALYSIS_RECIPES).register(analysis_type, recipe),
     )
     entry_point = SimpleNamespace(
         name="downstream-analysis",
-        module="downstream.analysis",
-        load=lambda: plugin,
+        value="downstream.analysis:PLUGIN_REGISTRATION",
+        dist=None,
+        load=lambda: registration,
     )
     monkeypatch.setattr(
-        plugin_discovery,
-        "feedbax_plugin_entry_points",
-        lambda _group: [entry_point],
+        plugin_bootstrap.importlib.metadata,
+        "entry_points",
+        lambda **_kwargs: [entry_point],
     )
     spec_path = tmp_path / "plugin-analysis.json"
     spec_path.write_text(
@@ -155,10 +170,7 @@ def test_run_subcommand_loads_installed_plugin_before_recipe_execution(
         encoding="utf-8",
     )
 
-    try:
-        analysis_cli.main(["run", str(spec_path), "--root", str(tmp_path / "output")])
-    finally:
-        unregister_analysis_recipe(analysis_type)
+    analysis_cli.main(["run", str(spec_path), "--root", str(tmp_path / "output")])
 
     assert json.loads(capsys.readouterr().out)["status"] == "completed"
     assert calls == [analysis_type]
@@ -168,26 +180,28 @@ def test_run_subcommand_fails_before_spec_when_plugin_registration_fails(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    def fail_registration() -> None:
+    def fail_registration(_context) -> None:
         raise RuntimeError("plugin registration exploded")
 
+    registration = PluginRegistration(
+        PluginDeclaration("tests.broken_analysis", "1", 1),
+        fail_registration,
+    )
     entry_point = SimpleNamespace(
         name="broken-analysis",
-        module="downstream.broken",
-        load=lambda: SimpleNamespace(register_feedbax_analysis_recipes=fail_registration),
+        value="downstream.broken:PLUGIN_REGISTRATION",
+        dist=None,
+        load=lambda: registration,
     )
     monkeypatch.setattr(
-        plugin_discovery,
-        "feedbax_plugin_entry_points",
-        lambda _group: [entry_point],
+        plugin_bootstrap.importlib.metadata,
+        "entry_points",
+        lambda **_kwargs: [entry_point],
     )
 
     with pytest.raises(
-        RuntimeError,
-        match=(
-            "Failed to register Feedbax analysis recipes from "
-            "entry-point:broken-analysis: plugin registration exploded"
-        ),
+        BootstrapError,
+        match="tests.broken_analysis.*plugin registration exploded",
     ):
         analysis_cli.main(["run", str(tmp_path / "missing-spec.json")])
 
@@ -234,6 +248,7 @@ def test_plotly_template_default_honours_explicit_request(restore_plotly_templat
 def test_run_subcommand_delta_binds_nested_manifest_and_checkpoint_without_copy(
     tmp_path: Path,
     capsys,
+    analysis_state,
 ):
     analysis_type = "feedbax.test.direct_runtime_bindings"
     provider_root = tmp_path / "retained" / "parent" / "store"
@@ -311,26 +326,23 @@ def test_run_subcommand_delta_binds_nested_manifest_and_checkpoint_without_copy(
             data=build_toy_analysis_data(value=int(spec.params["value"])),
         )
 
-    register_analysis_recipe(analysis_type, recipe, replace=True)
-    try:
-        analysis_cli.main(
-            [
-                "run",
-                str(spec_path),
-                "--root",
-                str(output_root),
-                "--repo-root",
-                str(tmp_path),
-                "--execution-descriptor",
-                str(descriptor_path),
-                "--manifest-root",
-                f"retained={provider_root}",
-                "--checkpoint-custody",
-                f"capture-checkpoints={checkpoint_root}",
-            ]
-        )
-    finally:
-        unregister_analysis_recipe(analysis_type)
+    analysis_state.analysis_recipes.register(analysis_type, recipe)
+    analysis_cli.main(
+        [
+            "run",
+            str(spec_path),
+            "--root",
+            str(output_root),
+            "--repo-root",
+            str(tmp_path),
+            "--execution-descriptor",
+            str(descriptor_path),
+            "--manifest-root",
+            f"retained={provider_root}",
+            "--checkpoint-custody",
+            f"capture-checkpoints={checkpoint_root}",
+        ]
+    )
 
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "completed"
@@ -343,6 +355,7 @@ def test_run_subcommand_delta_binds_nested_manifest_and_checkpoint_without_copy(
 
 def test_direct_python_entrypoint_rejects_unknown_checkpoint_binding_before_recipe(
     tmp_path: Path,
+    analysis_state,
 ) -> None:
     analysis_type = "feedbax.test.unknown_direct_checkpoint_binding"
     checkpoint_root = tmp_path / "checkpoints"
@@ -353,31 +366,31 @@ def test_direct_python_entrypoint_rejects_unknown_checkpoint_binding_before_reci
         calls.append(args)
         raise AssertionError("recipe must not run")
 
-    register_analysis_recipe(analysis_type, recipe, replace=True)
-    try:
-        with pytest.raises(StagedExecutionContextError, match="unavailable.*unknown"):
-            execute_analysis_run_spec(
-                AnalysisRunSpec(
-                    analysis_type=analysis_type,
-                    params={"checkpoint_custody_binding": "unknown"},
-                ),
-                root=tmp_path / "output",
-                execution_descriptor=StagedExecutionDescriptor(
-                    schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
-                    schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
-                    artifact_providers={},
-                    checkpoint_custody={
-                        "known": StagedCheckpointCustodySpec(
-                            backend="feedbax-checkpoint-transaction-tree"
-                        )
-                    },
-                ),
-                checkpoint_custody_bindings=[
-                    StagedCheckpointCustodyRootBinding("known", checkpoint_root)
-                ],
-            )
-    finally:
-        unregister_analysis_recipe(analysis_type)
+    analysis_state.analysis_recipes.register(analysis_type, recipe)
+    with pytest.raises(StagedExecutionContextError, match="unavailable.*unknown"):
+        execute_analysis_run_spec(
+            AnalysisRunSpec(
+                analysis_type=analysis_type,
+                params={"checkpoint_custody_binding": "unknown"},
+            ),
+            root=tmp_path / "output",
+            execution_descriptor=StagedExecutionDescriptor(
+                schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+                schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+                artifact_providers={},
+                checkpoint_custody={
+                    "known": StagedCheckpointCustodySpec(
+                        backend="feedbax-checkpoint-transaction-tree"
+                    )
+                },
+            ),
+            checkpoint_custody_bindings=[
+                StagedCheckpointCustodyRootBinding("known", checkpoint_root)
+            ],
+            registry=analysis_state.analysis_recipes,
+            evaluation_registry=analysis_state.evaluation_recipes,
+            experiment_registry=analysis_state.experiment_packages,
+        )
 
     assert calls == []
     assert not (tmp_path / "output").exists()

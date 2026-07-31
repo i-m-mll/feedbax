@@ -40,11 +40,14 @@ from feedbax.contracts.checkpoints import (
     structural_abi_content_sha256,
 )
 from feedbax.contracts.component import (
+    COMPONENT_DEFINITION_DYNAMIC_PORT_POLICY_MIGRATION_ID,
     COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID,
     COMPONENT_DEFINITION_SCHEMA_ID,
     COMPONENT_DEFINITION_SCHEMA_VERSION,
     COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
-    migrate_component_definition_payload,
+    COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
+    migrate_component_definition_v1_to_v2_payload,
+    migrate_component_definition_v2_to_v3_payload,
 )
 from feedbax.contracts.descriptors import (
     COMPONENT_DESCRIPTOR_SCHEMA_ID,
@@ -156,6 +159,7 @@ from feedbax.contracts.evaluation_preflight import (
     EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID,
     EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION,
     EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,
+    EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V2,
 )
 from feedbax.contracts.remote_smoke import (
     REMOTE_SMOKE_EVIDENCE_SCHEMA_ID,
@@ -187,10 +191,16 @@ from feedbax.contracts.figures import (
     COLORBAR_PANEL_PLACEMENT_SCHEMA_VERSION,
     EQUAL_DATA_ASPECT_SCHEMA_ID,
     EQUAL_DATA_ASPECT_SCHEMA_VERSION,
+    FIGURE_COMPOSITION_PROVENANCE_SCHEMA_ID,
+    FIGURE_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
+    FIGURE_COMPOSITION_SPEC_SCHEMA_ID,
+    FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION,
+    FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION_V1,
     FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID,
     FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION,
     FIGURE_RUNTIME_BINDING_SCHEMA_ID,
     FIGURE_RUNTIME_BINDING_SCHEMA_VERSION,
+    FIGURE_RUNTIME_BINDING_SCHEMA_VERSION_V1,
     FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID,
     FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION,
     FIGURE_PIECE_SCHEMA_ID,
@@ -213,6 +223,7 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_VERSION_V2,
     GRAPH_SPEC_SCHEMA_VERSION_V3,
+    GRAPH_SPEC_SCHEMA_VERSION_V4,
     LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     STUDIO_BIOMECHANICS_SCHEMA_ID,
@@ -220,6 +231,12 @@ from feedbax.contracts.graph import (
     STUDIO_SCENARIO_SCHEMA_VERSION,
     STUDIO_SCENARIO_SCHEMA_VERSION_V1,
     GraphSpec,
+)
+from feedbax.contracts.array_values import (
+    ARRAY_VALUE_SCHEMA_ID,
+    ARRAY_VALUE_SCHEMA_VERSION,
+    SparseCooArrayValueSpec,
+    SparseCooEntrySpec,
 )
 from feedbax.contracts.acausal import (
     ACAUSAL_GRAPH_SCHEMA_ID,
@@ -362,6 +379,7 @@ from feedbax.orchestration.events import (
 from feedbax.orchestration.bundle import (
     DEPLOYMENT_POLICY_SCHEMA_ID,
     DEPLOYMENT_POLICY_SCHEMA_VERSION,
+    DEPLOYMENT_POLICY_SCHEMA_VERSION_V1,
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION,
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1,
@@ -377,12 +395,15 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V8,
     RUN_BUNDLE_SCHEMA_VERSION_V9,
     RUN_BUNDLE_SCHEMA_VERSION_V10,
+    RUN_BUNDLE_SCHEMA_VERSION_V11,
 )
 from feedbax.orchestration.staged_root_custody import (
     STAGED_ROOT_CUSTODY_SCHEMA_ID,
     STAGED_ROOT_CUSTODY_SCHEMA_VERSION,
 )
 from feedbax.orchestration.state import (
+    EMERGENCY_RUN_SET_RECORD_SCHEMA_ID,
+    EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION,
     RUN_SET_STATE_SCHEMA_ID,
     RUN_SET_STATE_SCHEMA_VERSION,
     RUN_SET_STATE_SCHEMA_VERSION_V1,
@@ -415,7 +436,8 @@ RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1 = "feedbax.spec.run_assembly_request.v1"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V2 = "feedbax.spec.run_assembly_request.v2"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3 = "feedbax.spec.run_assembly_request.v3"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4 = "feedbax.spec.run_assembly_request.v4"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v5"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5 = "feedbax.spec.run_assembly_request.v5"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v6"
 EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_ID = (
     "feedbax.manifest.evaluation_matrix_execution_capsule"
 )
@@ -1531,6 +1553,64 @@ def _migrate_graph_spec_v3_to_v4_payload(payload: dict[str, Any]) -> dict[str, A
     return migrated
 
 
+def _migrate_graph_spec_v4_to_v5_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Tag only the legacy StructuralLinearStateSpace sparse delta_A form."""
+    migrated = dict(payload)
+    migrated.setdefault("schema_id", GRAPH_SPEC_SCHEMA_ID)
+    raw_nodes = migrated.get("nodes")
+    if not isinstance(raw_nodes, Mapping):
+        return migrated
+
+    nodes = dict(raw_nodes)
+    for node_id, raw_node in raw_nodes.items():
+        if (
+            not isinstance(raw_node, Mapping)
+            or raw_node.get("type") != "StructuralLinearStateSpace"
+        ):
+            continue
+        raw_params = raw_node.get("params")
+        if not isinstance(raw_params, Mapping):
+            continue
+        raw_delta = raw_params.get("delta_A")
+        if not isinstance(raw_delta, Mapping) or set(raw_delta) != {"shape", "entries"}:
+            continue
+        raw_entries = raw_delta.get("entries")
+        if not isinstance(raw_entries, list | tuple):
+            raise TypeError("legacy StructuralLinearStateSpace delta_A.entries must be a sequence")
+        entries: list[SparseCooEntrySpec] = []
+        for index, raw_entry in enumerate(raw_entries):
+            if isinstance(raw_entry, Mapping) and set(raw_entry) == {"row", "column", "value"}:
+                row, column, value = (
+                    raw_entry["row"],
+                    raw_entry["column"],
+                    raw_entry["value"],
+                )
+            elif isinstance(raw_entry, list | tuple) and len(raw_entry) == 3:
+                row, column, value = raw_entry
+            else:
+                raise ValueError(
+                    "legacy StructuralLinearStateSpace "
+                    f"delta_A.entries[{index}] must contain row, column, and value"
+                )
+            entries.append(SparseCooEntrySpec(coordinate=(row, column), value=value))
+        tagged = SparseCooArrayValueSpec(
+            schema_id=ARRAY_VALUE_SCHEMA_ID,
+            schema_version=ARRAY_VALUE_SCHEMA_VERSION,
+            encoding="sparse_coo",
+            shape=raw_delta.get("shape"),
+            dtype="float64",
+            nonfinite="forbid",
+            fill=0.0,
+            entries=entries,
+        ).model_dump(mode="json")
+        nodes[str(node_id)] = {
+            **raw_node,
+            "params": {**raw_params, "delta_A": tagged},
+        }
+    migrated["nodes"] = nodes
+    return migrated
+
+
 def _migrate_studio_task_binding_v1_payload(payload: dict[str, Any]) -> dict[str, Any]:
     migrated = dict(payload)
     if "exposed_outputs" in migrated and "exposed_data" not in migrated:
@@ -2494,6 +2574,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "orchestration CLI",
             ),
             description="Requested venue, launch authorization, and resource policy.",
+            stance="migrate",
+            supported_old_versions=(DEPLOYMENT_POLICY_SCHEMA_VERSION_V1,),
             rejected_old_versions=(f"{DEPLOYMENT_POLICY_SCHEMA_ID}.v0",),
         ),
         _family(
@@ -2508,6 +2590,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             supported_old_versions=(
                 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3,
                 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4,
+                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5,
             ),
             rejected_old_versions=(
                 f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v0",
@@ -2723,6 +2806,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
                 GRAPH_SPEC_SCHEMA_VERSION_V2,
                 GRAPH_SPEC_SCHEMA_VERSION_V3,
+                GRAPH_SPEC_SCHEMA_VERSION_V4,
             ),
             rejected_old_versions=(),
             required_tests=("tests/test_graphspec_schema_migrations.py",),
@@ -2759,6 +2843,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Runtime figure inputs, authorities, execution metadata, and exact-parent "
                 "provider aliases."
             ),
+            stance="migrate",
+            supported_old_versions=(FIGURE_RUNTIME_BINDING_SCHEMA_VERSION_V1,),
+            rejected_old_versions=("feedbax.spec.figure_runtime_binding.v0",),
             required_tests=("tests/test_figure_input_authority.py",),
         ),
         _family(
@@ -2841,10 +2928,38 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Executable declarative figure specification.",
             rejected_old_versions=("feedbax.spec.figure.v1",),
             required_tests=(
+                "tests/test_figure_composition.py",
                 "tests/test_declarative_figures.py",
                 "tests/test_figure_trace_families.py",
                 "tests/test_figure_colorbar.py",
             ),
+        ),
+        _family(
+            "FigureCompositionSpec",
+            FIGURE_COMPOSITION_SPEC_SCHEMA_ID,
+            FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("feedbax-figure resolve",),
+            consumed_by=(
+                "feedbax.analysis.figures.resolve_figure_spec",
+                "feedbax.analysis.figures.execute_figure_spec",
+            ),
+            description="Content-pinned ordered composition envelope for FigureSpec.",
+            stance="migrate",
+            supported_old_versions=(FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION_V1,),
+            rejected_old_versions=("feedbax.spec.figure_composition.v0",),
+            required_tests=("tests/test_figure_composition.py",),
+        ),
+        _family(
+            "FigureCompositionProvenance",
+            FIGURE_COMPOSITION_PROVENANCE_SCHEMA_ID,
+            FIGURE_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("feedbax.analysis.figures.resolve_figure_spec",),
+            consumed_by=("figure manifest and resolution inspection",),
+            description="Authored-to-resolved FigureSpec identity and delta lineage.",
+            rejected_old_versions=("feedbax.spec.figure_composition_provenance.v0",),
+            required_tests=("tests/test_figure_composition.py",),
         ),
         _family(
             "FigureTemplate",
@@ -2875,7 +2990,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             consumed_by=("Studio frontend", "component registry clients"),
             description="Discoverable component metadata and port typing contract.",
             stance="migrate",
-            supported_old_versions=(COMPONENT_DEFINITION_SCHEMA_VERSION_V1,),
+            supported_old_versions=(
+                COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
+                COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
+            ),
             rejected_old_versions=(),
             required_tests=("tests/test_component_registration.py",),
         ),
@@ -3186,9 +3304,15 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description=(
                 "Authored resolved-cardinality expectation and retained-write budget inputs."
             ),
-            stance="migrate",
-            supported_old_versions=(EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,),
-            rejected_old_versions=(f"{EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID}.v0",),
+            rejected_old_versions=(
+                f"{EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID}.v0",
+                EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,
+                EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V2,
+            ),
+            notes=(
+                "v1 and v2 are rejected because absent storage_mode meant retain_all; "
+                "migration would infer the authored choice required by v3."
+            ),
             required_tests=("tests/test_evaluation_orchestration.py",),
         ),
         _family(
@@ -3466,6 +3590,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "orchestration CLI",
             ),
             description="Durable run-set orchestration request bundle.",
+            stance="migrate",
+            supported_old_versions=(RUN_BUNDLE_SCHEMA_VERSION_V11,),
             rejected_old_versions=(
                 "feedbax.orchestration.run_bundle.v0",
                 RUN_BUNDLE_SCHEMA_VERSION_V1,
@@ -3529,6 +3655,28 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             rejected_old_versions=(f"{REPO_REALIZATION_PLAN_SCHEMA_ID}.v0",),
             required_tests=(
                 "tests/test_repo_realization.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "EmergencyRunSetRecord",
+            EMERGENCY_RUN_SET_RECORD_SCHEMA_ID,
+            EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.state",
+            emitted_by=("feedbax.orchestration.state.RunSetStateStore.save_emergency",),
+            consumed_by=(
+                "feedbax.orchestration.state.RunSetStateStore.load_emergency",
+                "feedbax.orchestration.stages.StageEngine",
+                "feedbax.bin.orchestrate.cmd_status",
+            ),
+            description=(
+                "Bounded fail-closed recovery and custody gate for control-state failures."
+            ),
+            rejected_old_versions=(f"{EMERGENCY_RUN_SET_RECORD_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_orchestration_core.py",
+                "tests/test_orchestration_cli.py",
+                "tests/test_orchestration_state_persistence.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),
@@ -3900,7 +4048,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         _family(
             "AnalysisBundleSpec",
             "feedbax.spec.analysis_bundle",
-            "feedbax.spec.analysis_bundle.v5",
+            "feedbax.spec.analysis_bundle.v6",
             owner_module="feedbax.analysis.bundles",
             emitted_by=("analysis bundle YAML", "StagedAnalysisBundleExecution"),
             consumed_by=("feedbax.analysis.bundles", "downstream bundle consumers"),
@@ -3913,6 +4061,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "feedbax.spec.analysis_bundle.v2",
                 "feedbax.spec.analysis_bundle.v3",
                 "feedbax.spec.analysis_bundle.v4",
+                "feedbax.spec.analysis_bundle.v5",
             ),
             rejected_old_versions=("feedbax.spec.analysis_bundle.v1",),
             required_tests=(
@@ -4883,6 +5032,48 @@ def _migrate_analysis_bundle_v4_to_v5_payload(payload: dict[str, Any]) -> dict[s
     return migrated
 
 
+def _migrate_analysis_bundle_v5_to_v6_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Admit FigureCompositionSpec at figure stages without changing v5 plans."""
+    migrated = dict(payload)
+    raw_stages = migrated.get("stages", [])
+    if isinstance(raw_stages, list):
+        stages: list[Any] = []
+        for raw_stage in raw_stages:
+            if not isinstance(raw_stage, Mapping):
+                stages.append(raw_stage)
+                continue
+            stage = dict(raw_stage)
+            raw_figure = stage.get("figure")
+            if isinstance(raw_figure, Mapping):
+                figure = dict(raw_figure)
+                figure.setdefault("schema_id", FIGURE_SPEC_SCHEMA_ID)
+                figure.setdefault("schema_version", FIGURE_SPEC_SCHEMA_VERSION)
+                stage["figure"] = figure
+            stages.append(stage)
+        migrated["stages"] = stages
+    return migrated
+
+
+def _migrate_figure_composition_v1_to_v2_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve v1 deltas while moving figure-only structure into v2 deltas."""
+    return dict(payload)
+
+
+def _migrate_figure_runtime_binding_v1_to_v2_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Split the v1 resolved hash without silently changing its old meaning."""
+    migrated = dict(payload)
+    resolved = migrated.pop("authored_figure_spec_sha256")
+    migrated["authored_figure_source_sha256"] = None
+    migrated["authored_identity_unavailable_reason"] = "v1_recorded_resolved_hash_only"
+    migrated["resolved_figure_spec_sha256"] = resolved
+    migrated["schema_version"] = FIGURE_RUNTIME_BINDING_SCHEMA_VERSION
+    return migrated
+
+
 def _migrate_staged_analysis_bundle_execution_v1_to_v2_payload(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -4966,8 +5157,40 @@ def _migrate_run_assembly_request_v4_to_v5_payload(
     """Preserve v4 behavior with no evaluation output preflight policy."""
     migrated = dict(payload)
     migrated["schema_id"] = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
-    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION
+    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5
     migrated.setdefault("evaluation_output_preflight", None)
+    return migrated
+
+
+def _migrate_deployment_policy_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Preserve policy intent while moving driver semantics to registry validation."""
+    migrated = dict(payload)
+    migrated["schema_id"] = DEPLOYMENT_POLICY_SCHEMA_ID
+    migrated["schema_version"] = DEPLOYMENT_POLICY_SCHEMA_VERSION
+    return migrated
+
+
+def _migrate_run_assembly_request_v5_to_v6_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Lift the nested deployment policy to the registry-resolved schema."""
+    migrated = dict(payload)
+    migrated["schema_id"] = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
+    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION
+    policy = migrated.get("deployment_policy")
+    if isinstance(policy, Mapping):
+        migrated["deployment_policy"] = _migrate_deployment_policy_v1_to_v2_payload(dict(policy))
+    return migrated
+
+
+def _migrate_run_bundle_v11_to_v12_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Lift the nested deployment policy to the registry-resolved schema."""
+    migrated = dict(payload)
+    migrated["schema_id"] = RUN_BUNDLE_SCHEMA_ID
+    migrated["schema_version"] = RUN_BUNDLE_SCHEMA_VERSION
+    policy = migrated.get("deployment_policy")
+    if isinstance(policy, Mapping):
+        migrated["deployment_policy"] = _migrate_deployment_policy_v1_to_v2_payload(dict(policy))
     return migrated
 
 
@@ -5041,18 +5264,6 @@ def _migrate_evaluation_batch_compaction_evidence_v1(
     return migrated
 
 
-def _migrate_evaluation_output_preflight_policy_v1(
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    """Preserve the v1 complete-matrix retained-storage estimate."""
-    migrated = dict(payload)
-    migrated["schema_id"] = EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID
-    migrated["schema_version"] = EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION
-    migrated.setdefault("storage_mode", "retain_all")
-    migrated.setdefault("estimated_compact_retained_bytes", 0)
-    return migrated
-
-
 def _migrate_evaluation_output_preflight_evidence_v1(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -5110,16 +5321,6 @@ default_spec_registry.register_migration(
     ),
 )
 default_spec_registry.register_migration(
-    "EvaluationOutputPreflightPolicy",
-    SchemaMigration(
-        source_version=EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,
-        target_version=EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION,
-        migration_id="evaluation-output-preflight-policy-v1-to-v2-storage-mode",
-        migrate=_migrate_evaluation_output_preflight_policy_v1,
-        description="Preserve v1 complete-matrix retained-storage sizing.",
-    ),
-)
-default_spec_registry.register_migration(
     "EvaluationOutputPreflightEvidence",
     SchemaMigration(
         source_version=EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,
@@ -5145,10 +5346,40 @@ default_spec_registry.register_migration(
     "RunAssemblyRequest",
     SchemaMigration(
         source_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4,
-        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION,
+        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5,
         migration_id="run-assembly-request-v4-to-v5-evaluation-output-preflight",
         migrate=_migrate_run_assembly_request_v4_to_v5_payload,
         description=("Preserve existing requests with no evaluation output preflight policy."),
+    ),
+)
+default_spec_registry.register_migration(
+    "DeploymentPolicy",
+    SchemaMigration(
+        source_version=DEPLOYMENT_POLICY_SCHEMA_VERSION_V1,
+        target_version=DEPLOYMENT_POLICY_SCHEMA_VERSION,
+        migration_id="deployment-policy-v1-to-v2-registry-driver",
+        migrate=_migrate_deployment_policy_v1_to_v2_payload,
+        description="Preserve policy intent while delegating driver semantics to its registry.",
+    ),
+)
+default_spec_registry.register_migration(
+    "RunAssemblyRequest",
+    SchemaMigration(
+        source_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5,
+        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION,
+        migration_id="run-assembly-request-v5-to-v6-registry-driver",
+        migrate=_migrate_run_assembly_request_v5_to_v6_payload,
+        description="Lift the nested deployment policy to its registry-resolved schema.",
+    ),
+)
+default_spec_registry.register_migration(
+    "RunBundle",
+    SchemaMigration(
+        source_version=RUN_BUNDLE_SCHEMA_VERSION_V11,
+        target_version=RUN_BUNDLE_SCHEMA_VERSION,
+        migration_id="run-bundle-v11-to-v12-registry-driver",
+        migrate=_migrate_run_bundle_v11_to_v12_payload,
+        description="Lift the nested deployment policy to its registry-resolved schema.",
     ),
 )
 default_spec_registry.register_migration(
@@ -5194,6 +5425,44 @@ default_spec_registry.register_migration(
         description=(
             "Preserve envelopes from compiler families that predate typed training-row "
             "provenance and mark that provenance explicitly unavailable."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "FigureCompositionSpec",
+    SchemaMigration(
+        source_version=FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION_V1,
+        target_version=FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION,
+        migration_id="figure-composition-v1-to-v2-figure-specific-structural-additions",
+        migrate=_migrate_figure_composition_v1_to_v2_payload,
+        description=(
+            "Preserve v1 patch semantics while admitting figure-scoped typed additions."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "FigureRuntimeBindingSpec",
+    SchemaMigration(
+        source_version=FIGURE_RUNTIME_BINDING_SCHEMA_VERSION_V1,
+        target_version=FIGURE_RUNTIME_BINDING_SCHEMA_VERSION,
+        migration_id="figure-runtime-binding-v1-to-v2-distinct-source-and-resolved-identities",
+        migrate=_migrate_figure_runtime_binding_v1_to_v2_payload,
+        description=(
+            "Preserve the v1 field's resolved-figure meaning while introducing explicit "
+            "authored-source and resolved-FigureSpec identity fields."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "AnalysisBundleSpec",
+    SchemaMigration(
+        source_version="feedbax.spec.analysis_bundle.v5",
+        target_version="feedbax.spec.analysis_bundle.v6",
+        migration_id="analysis-bundle-v5-to-v6-composable-figure-stage",
+        migrate=_migrate_analysis_bundle_v5_to_v6_payload,
+        description=(
+            "Preserve v5 bundle behavior while admitting FigureCompositionSpec at figure "
+            "stages resolved beneath the staged execution trusted repository root."
         ),
     ),
 )
@@ -5672,20 +5941,43 @@ default_spec_registry.register_migration(
     "GraphSpec",
     SchemaMigration(
         source_version=GRAPH_SPEC_SCHEMA_VERSION_V3,
-        target_version=GRAPH_SPEC_SCHEMA_VERSION,
+        target_version=GRAPH_SPEC_SCHEMA_VERSION_V4,
         migration_id="graph-spec-v3-to-v4-discriminated-subgraphs",
         migrate=_migrate_graph_spec_v3_to_v4_payload,
         description="Allow discriminated causal/acausal subgraph payloads.",
     ),
 )
 default_spec_registry.register_migration(
+    "GraphSpec",
+    SchemaMigration(
+        source_version=GRAPH_SPEC_SCHEMA_VERSION_V4,
+        target_version=GRAPH_SPEC_SCHEMA_VERSION,
+        migration_id="graph-spec-v4-to-v5-component-param-array-values",
+        migrate=_migrate_graph_spec_v4_to_v5_payload,
+        description=(
+            "Tag the legacy StructuralLinearStateSpace sparse delta_A form while "
+            "leaving dense and unrelated component parameters unchanged."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
     "ComponentDefinition",
     SchemaMigration(
         source_version=COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
-        target_version=COMPONENT_DEFINITION_SCHEMA_VERSION,
+        target_version=COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
         migration_id=COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID,
-        migrate=migrate_component_definition_payload,
+        migrate=migrate_component_definition_v1_to_v2_payload,
         description="Default legacy component port metadata to explicit signal ports.",
+    ),
+)
+default_spec_registry.register_migration(
+    "ComponentDefinition",
+    SchemaMigration(
+        source_version=COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
+        target_version=COMPONENT_DEFINITION_SCHEMA_VERSION,
+        migration_id=COMPONENT_DEFINITION_DYNAMIC_PORT_POLICY_MIGRATION_ID,
+        migrate=migrate_component_definition_v2_to_v3_payload,
+        description="Add the optional declarative dynamic-port policy field.",
     ),
 )
 default_spec_registry.register_migration(

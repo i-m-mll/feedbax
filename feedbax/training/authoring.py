@@ -6,7 +6,7 @@ import copy
 import json
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import BaseModel
 
@@ -37,6 +37,9 @@ from feedbax.contracts.training import (
     TrainingRunSpec,
     WorkerExecutionSpec,
 )
+
+if TYPE_CHECKING:
+    from feedbax.training.row_lowering import TrainingRowLowererRegistration
 
 
 TRAINING_METHOD_AUTHORING_LOWERER_ID = "feedbax.training.method_authoring"
@@ -203,7 +206,7 @@ def compile_training_method_authoring(
     continuation: CheckpointContinuationRequest | Mapping[str, Any] | None = None,
     artifacts: ArtifactPolicySpec | None = None,
     risk_aggregation: RiskAggregationSpec | None = None,
-    _registry: training_contracts.TrainingMethodRegistry | None = None,
+    registry: training_contracts.TrainingMethodRegistry,
 ) -> TrainingMethodAuthoringCompilation:
     """Compile one compact typed method payload into canonical run contracts.
 
@@ -224,7 +227,6 @@ def compile_training_method_authoring(
             "/row/payload_hash does not match the canonical authored payload"
         )
     normalized_ref = _normalize_method_ref(method_ref)
-    registry = _registry or training_contracts.DEFAULT_TRAINING_METHOD_REGISTRY
     descriptor = _descriptor_for_authoring(normalized_ref, registry)
     artifact_policy = _copy_typed_option(
         artifacts,
@@ -376,10 +378,10 @@ def compile_training_method_authoring(
     )
 
 
-def _training_method_row_lowerer_registration(
+def training_method_row_lowerer_registration(
     descriptor: TrainingMethodDescriptor[Any],
     registry: training_contracts.TrainingMethodRegistry,
-) -> Any:
+) -> TrainingRowLowererRegistration:
     """Derive one row-lowering registration from a complete authoring hook."""
     from feedbax.training.row_lowering import TrainingRowLowererRegistration
 
@@ -398,7 +400,7 @@ def _training_method_row_lowerer_registration(
         compiled = compile_training_method_authoring(
             row,
             method_ref=descriptor.method_ref,
-            _registry=registry,
+            registry=registry,
         )
         return TrainingRowLoweringResult(
             execution_payload=compiled.lowering_result.execution_payload,
@@ -447,5 +449,5 @@ def training_method_authoring_implementation_sha256(
             authoring_hook.task,
             authoring_hook.objective,
             authoring_hook.domain,
-        )
+        ),
     )

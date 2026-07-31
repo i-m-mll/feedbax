@@ -45,6 +45,10 @@ from feedbax.contracts.graphs.prototypes import infer_node_input_prototypes
 from feedbax.runtime.state import CartesianState
 
 
+def _components() -> ComponentRegistry:
+    return ComponentRegistry(load_user_components=False)
+
+
 def _single_node_spec(
     component_type: str,
     params: Mapping[str, Any],
@@ -164,7 +168,7 @@ def test_elementwise_affine_modulator_graphspec_round_trips_and_runs() -> None:
         output_bindings={"output": ("modulate", "output")},
     )
 
-    graph = spec_to_graph(spec)
+    graph = spec_to_graph(spec, component_registry=_components())
     component = graph.nodes["modulate"]
     assert isinstance(component, ElementwiseAffineModulator)
     assert component.signal_shape == (3,)
@@ -179,8 +183,7 @@ def test_elementwise_affine_modulator_graphspec_round_trips_and_runs() -> None:
         key=jax.random.PRNGKey(0),
     )
     expected = (
-        jnp.array([2.0, 4.0, 8.0])
-        * (1.0 + jnp.array([0.5, -1.0, 2.0]) * 0.5)
+        jnp.array([2.0, 4.0, 8.0]) * (1.0 + jnp.array([0.5, -1.0, 2.0]) * 0.5)
         + jnp.array([0.1, 0.0, -0.2]) * 0.5
     )
     assert jnp.allclose(outputs["output"], expected)
@@ -277,7 +280,11 @@ def test_task_data_reference_vector_composes_into_affine_controller_reference() 
         output_bindings={"command": ("controller", "command")},
     )
 
-    graph = spec_to_graph(spec, input_prototypes=prototypes_from_task_bindings(task_binding_spec))
+    graph = spec_to_graph(
+        spec,
+        component_registry=_components(),
+        input_prototypes=prototypes_from_task_bindings(task_binding_spec),
+    )
     graph, plans = expose_task_inputs(
         graph,
         StudioTaskBindingSpec.model_validate(task_binding_spec),
@@ -400,7 +407,11 @@ def test_derived_dimension_rule_sets_gru_input_size_from_task_data_mux_fan_in() 
     spec = _derived_mux_gru_spec()
     task_binding_spec = _derived_mux_task_bindings()
 
-    graph = spec_to_graph(spec, input_prototypes=prototypes_from_task_bindings(task_binding_spec))
+    graph = spec_to_graph(
+        spec,
+        component_registry=_components(),
+        input_prototypes=prototypes_from_task_bindings(task_binding_spec),
+    )
 
     assert graph.nodes["cell"].input_size == 3
     spec_payload = spec.model_dump(mode="json", exclude_none=True)
@@ -415,7 +426,11 @@ def test_derived_dimension_rule_counts_component_parameter_mux_fan_in() -> None:
         second_shape=["time", 4],
     )
 
-    graph = spec_to_graph(spec, input_prototypes=prototypes_from_task_bindings(task_binding_spec))
+    graph = spec_to_graph(
+        spec,
+        component_registry=_components(),
+        input_prototypes=prototypes_from_task_bindings(task_binding_spec),
+    )
 
     assert graph.nodes["cell"].input_size == 6
 
@@ -425,7 +440,11 @@ def test_derived_dimension_rule_rejects_declared_conflict() -> None:
     task_binding_spec = _derived_mux_task_bindings()
 
     with pytest.raises(ValueError, match="Derived dimension conflict"):
-        spec_to_graph(spec, input_prototypes=prototypes_from_task_bindings(task_binding_spec))
+        spec_to_graph(
+            spec,
+            component_registry=_components(),
+            input_prototypes=prototypes_from_task_bindings(task_binding_spec),
+        )
 
 
 def test_derived_dimension_rule_rejects_null_declaration() -> None:
@@ -433,7 +452,11 @@ def test_derived_dimension_rule_rejects_null_declaration() -> None:
     task_binding_spec = _derived_mux_task_bindings()
 
     with pytest.raises(ValueError, match="declared null"):
-        spec_to_graph(spec, input_prototypes=prototypes_from_task_bindings(task_binding_spec))
+        spec_to_graph(
+            spec,
+            component_registry=_components(),
+            input_prototypes=prototypes_from_task_bindings(task_binding_spec),
+        )
 
 
 def test_point_mass_graphspec_preserves_mass_damping_and_dt() -> None:
@@ -452,7 +475,7 @@ def test_point_mass_graphspec_preserves_mass_damping_and_dt() -> None:
         output_bindings={"effector": ("mechanics", "effector")},
     )
 
-    graph = spec_to_graph(spec)
+    graph = spec_to_graph(spec, component_registry=_components())
 
     mechanics = graph.nodes["mechanics"]
     assert isinstance(mechanics, Mechanics)
@@ -506,7 +529,7 @@ def test_feedback_channels_materialize_point_mass_selector() -> None:
         output_bindings={"feedback": ("feedback", "feedback")},
     )
 
-    graph = spec_to_graph(spec)
+    graph = spec_to_graph(spec, component_registry=_components())
 
     mechanics = graph.nodes["mechanics"]
     feedback = graph.nodes["feedback"]
@@ -556,7 +579,7 @@ def test_channel_structured_motor_noise_round_trips() -> None:
         output_bindings={"output": ("efferent", "output")},
     )
 
-    graph = spec_to_graph(spec)
+    graph = spec_to_graph(spec, component_registry=_components())
 
     channel = graph.nodes["efferent"]
     assert isinstance(channel, Channel)
@@ -603,7 +626,8 @@ def test_channel_can_express_plant_process_force_noise_role() -> None:
             output_ports=["force"],
             input_bindings={"force": ("plant_noise", "input")},
             output_bindings={"force": ("plant_noise", "output")},
-        )
+        ),
+        component_registry=_components(),
     )
 
     channel = graph.nodes["plant_noise"]
@@ -632,7 +656,7 @@ def test_force_field_graphspec_builders_preserve_contract_and_runtime(
         output_ports=["force"],
     )
 
-    graph = spec_to_graph(spec)
+    graph = spec_to_graph(spec, component_registry=_components())
     materialized = graph.nodes["field"]
 
     assert isinstance(materialized, type(direct_component))
@@ -665,7 +689,7 @@ def test_force_field_graphspec_builders_preserve_contract_and_runtime(
 
 
 def test_force_field_registry_exposes_params_override_ports_and_builders() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
 
     expected = {
         "FixedField": {"force", "params_override"},
@@ -696,7 +720,7 @@ def test_force_field_output_prototypes_passthrough_force(
     component_type: str,
     input_ports: list[str],
 ) -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     force_proto = jnp.zeros((2,), dtype=jnp.float32)
     node_spec = ComponentSpec(
         type=component_type,
@@ -728,7 +752,7 @@ def test_force_field_output_prototypes_require_force_input(
     component_type: str,
     input_ports: list[str],
 ) -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     node_spec = ComponentSpec(
         type=component_type,
         params={},
@@ -752,7 +776,7 @@ def _registered_outputs(
     input_ports: list[str],
     output_ports: list[str],
 ) -> dict[str, Any]:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     node_spec = ComponentSpec(
         type=component_type,
         params=dict(params),
@@ -1147,7 +1171,7 @@ def test_demux_output_prototype_rejects_width_mismatch() -> None:
 
 
 def test_demux_output_prototype_infers_through_graph_with_deferred_input() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     spec = GraphSpec(
         nodes={
             "join": ComponentSpec(
@@ -1226,7 +1250,8 @@ def test_fixed_field_graphspec_preserves_params_override_semantics() -> None:
             },
             input_ports=["force", "params_override"],
             output_ports=["force"],
-        )
+        ),
+        component_registry=_components(),
     )
     field = graph.nodes["field"]
 
@@ -1259,7 +1284,8 @@ def test_dynamics_matrix_perturb_graphspec_rejects_bad_delta_shape() -> None:
                 },
                 input_ports=["effector", "force", "params_override"],
                 output_ports=["force"],
-            )
+            ),
+            component_registry=_components(),
         )
 
 
@@ -1271,7 +1297,8 @@ def test_dynamics_matrix_perturb_graphspec_requires_explicit_mass() -> None:
                 {"scale": 1.0, "delta_A": [[1.0, 0.0], [0.0, 1.0]], "active": True},
                 input_ports=["effector", "force", "params_override"],
                 output_ports=["force"],
-            )
+            ),
+            component_registry=_components(),
         )
 
 
@@ -1338,7 +1365,7 @@ def test_affine_value_composer_graphspec_materializes_round_trips_and_overrides(
         output_ports=["value"],
     )
 
-    graph = spec_to_graph(spec)
+    graph = spec_to_graph(spec, component_registry=_components())
     component = graph.nodes["field"]
 
     assert isinstance(component, AffineValueComposer)
@@ -1374,7 +1401,9 @@ def test_affine_value_composer_graphspec_materializes_round_trips_and_overrides(
     assert node.params["label"] == "composer_binding"
 
 
-def test_affine_value_composer_component_parameter_binding_updates_state() -> None:
+def test_affine_value_composer_component_parameter_binding_updates_state(
+    application_registry_bundle,
+) -> None:
     spec = GraphSpec(
         nodes={
             "field": ComponentSpec(
@@ -1393,7 +1422,10 @@ def test_affine_value_composer_component_parameter_binding_updates_state() -> No
         },
         output_bindings={"value": ("field", "value")},
     )
-    graph = spec_to_graph(spec)
+    graph = spec_to_graph(
+        spec,
+        component_registry=application_registry_bundle.components,
+    )
     binding_spec = StudioTaskBindingSpec.model_validate(
         {
             "schema_version": "feedbax.spec.studio.task_bindings.v2",
@@ -1449,7 +1481,12 @@ def test_affine_value_composer_component_parameter_binding_updates_state() -> No
         }
     )
 
-    issues = validate_task_binding_schema(binding_spec, spec, "/task_binding_spec")
+    issues = validate_task_binding_schema(
+        binding_spec,
+        spec,
+        "/task_binding_spec",
+        component_registry=application_registry_bundle.components,
+    )
     assert not [issue for issue in issues if issue.severity == "error"]
     exposure = expose_task_bindings(graph, binding_spec)
     assert exposure.input_plans == ()
@@ -1478,7 +1515,7 @@ def test_affine_value_composer_component_parameter_binding_updates_state() -> No
 
 
 def test_affine_value_composer_output_prototypes_and_negative_validation() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     node_spec = ComponentSpec(
         type="AffineValueComposer",
         params=_affine_composer_params(),
@@ -1539,7 +1576,7 @@ def test_affine_value_composer_output_prototypes_and_negative_validation() -> No
 
 
 def test_affine_value_composer_registry_metadata() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     meta = registry.get("AffineValueComposer")
 
     assert meta is not None
@@ -1567,7 +1604,8 @@ def test_channel_rejects_unknown_noise_model() -> None:
                 output_ports=["output"],
                 input_bindings={"input": ("channel", "input")},
                 output_bindings={"output": ("channel", "output")},
-            )
+            ),
+            component_registry=_components(),
         )
 
 
@@ -1591,7 +1629,7 @@ def test_demux_graphspec_materializes_and_round_trips_dynamic_ports() -> None:
         },
     )
 
-    graph = spec_to_graph(spec)
+    graph = spec_to_graph(spec, component_registry=_components())
 
     split = graph.nodes["split"]
     assert isinstance(split, Demux)
@@ -1614,6 +1652,40 @@ def test_demux_graphspec_materializes_and_round_trips_dynamic_ports() -> None:
     assert roundtrip.output_bindings == spec.output_bindings
 
 
+def test_graphspec_build_materializes_omitted_dynamic_ports_from_policy() -> None:
+    spec = GraphSpec(
+        nodes={
+            "join": ComponentSpec(type="Mux", params={"n_inputs": 2}),
+            "split": ComponentSpec(type="Demux", params={"sizes": [2, 1]}),
+        },
+        wires=[
+            WireSpec(
+                source_node="join",
+                source_port="output",
+                target_node="split",
+                target_port="input",
+            )
+        ],
+        input_ports=["left", "right"],
+        output_ports=["left", "right"],
+        input_bindings={"left": ("join", "in_0"), "right": ("join", "in_1")},
+        output_bindings={"left": ("split", "out_0"), "right": ("split", "out_1")},
+    )
+
+    graph = spec_to_graph(spec, component_registry=_components())
+    state = init_state_from_component(graph)
+    outputs, _ = graph(
+        {"left": jnp.array([1.0, 2.0]), "right": jnp.array([3.0])},
+        state,
+        key=jax.random.PRNGKey(0),
+    )
+
+    assert tuple(graph.nodes["join"].input_ports) == ("in_0", "in_1")
+    assert tuple(graph.nodes["split"].output_ports) == ("out_0", "out_1")
+    assert jnp.allclose(outputs["left"], jnp.array([1.0, 2.0]))
+    assert jnp.allclose(outputs["right"], jnp.array([3.0]))
+
+
 def test_mux_graphspec_rejects_n_inputs_port_count_mismatch() -> None:
     with pytest.raises(ValueError, match="Mux node 'join'.*n_inputs=2"):
         spec_to_graph(
@@ -1628,7 +1700,8 @@ def test_mux_graphspec_rejects_n_inputs_port_count_mismatch() -> None:
                 },
                 output_ports=["output"],
                 output_bindings={"output": ("join", "output")},
-            )
+            ),
+            component_registry=_components(),
         )
 
 
@@ -1648,7 +1721,8 @@ def test_demux_graphspec_rejects_sizes_output_port_count_mismatch() -> None:
                 output_ports=["tail"],
                 input_bindings={"input": ("split", "input")},
                 output_bindings={"tail": ("split", "out_1")},
-            )
+            ),
+            component_registry=_components(),
         )
 
 
@@ -1682,7 +1756,7 @@ def test_demux_graphspec_executes_as_internal_node() -> None:
         output_bindings={"left": ("split", "out_0"), "right": ("split", "out_1")},
     )
 
-    graph = spec_to_graph(spec)
+    graph = spec_to_graph(spec, component_registry=_components())
     state = init_state_from_component(graph)
     outputs, _ = graph(
         {"left": jnp.array([1.0, 2.0]), "right": jnp.array([3.0])},
@@ -1710,7 +1784,8 @@ def test_demux_graphspec_rejects_invalid_sizes() -> None:
                 output_ports=["output"],
                 input_bindings={"input": ("split", "input")},
                 output_bindings={"output": ("split", "out_0")},
-            )
+            ),
+            component_registry=_components(),
         )
 
 
@@ -1729,7 +1804,8 @@ def test_demux_rejects_mismatched_input_width() -> None:
             output_ports=["output"],
             input_bindings={"input": ("split", "input")},
             output_bindings={"output": ("split", "out_0")},
-        )
+        ),
+        component_registry=_components(),
     )
     state = init_state_from_component(graph)
 

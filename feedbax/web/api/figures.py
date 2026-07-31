@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
@@ -154,13 +154,13 @@ def _render_artifact(manifest: FigureManifest, fmt: str):
 
 
 @router.get("/constructors")
-async def list_figure_constructors() -> list[dict[str, Any]]:
+async def list_figure_constructors(request: Request) -> list[dict[str, Any]]:
     """List registered figure constructors with descriptions and params schemas."""
-    return constructor_catalog()
+    return constructor_catalog(registry=request.app.state.bootstrap_state.bundle.figures)
 
 
 @router.get("/templates", response_model=list[RegistryItem])
-async def list_figure_templates() -> list[RegistryItem]:
+async def list_figure_templates(request: Request) -> list[RegistryItem]:
     """List registered figure templates."""
     return [
         RegistryItem(
@@ -168,12 +168,14 @@ async def list_figure_templates() -> list[RegistryItem]:
             description=template.description,
             metadata=template.model_dump(mode="json", exclude_none=True),
         )
-        for template in registered_figure_templates()
+        for template in registered_figure_templates(
+            registry=request.app.state.bootstrap_state.bundle.figures
+        )
     ]
 
 
 @router.get("/pieces", response_model=list[RegistryItem])
-async def list_figure_pieces() -> list[RegistryItem]:
+async def list_figure_pieces(request: Request) -> list[RegistryItem]:
     """List registered figure pieces."""
     return [
         RegistryItem(
@@ -181,7 +183,9 @@ async def list_figure_pieces() -> list[RegistryItem]:
             description=piece.description,
             metadata=piece.model_dump(mode="json", exclude_none=True),
         )
-        for piece in registered_figure_pieces()
+        for piece in registered_figure_pieces(
+            registry=request.app.state.bootstrap_state.bundle.figures
+        )
     ]
 
 
@@ -266,12 +270,10 @@ async def get_figure(figure_hash: str) -> FigureDetail:
         **info.model_dump(),
         available_files=_available_formats(manifest),
         artifacts=[
-            artifact.model_dump(mode="json", exclude_none=True)
-            for artifact in manifest.artifacts
+            artifact.model_dump(mode="json", exclude_none=True) for artifact in manifest.artifacts
         ],
         binding_records=[
-            record.model_dump(mode="json", exclude_none=True)
-            for record in manifest.binding_records
+            record.model_dump(mode="json", exclude_none=True) for record in manifest.binding_records
         ],
     )
 

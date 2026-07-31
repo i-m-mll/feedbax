@@ -33,7 +33,7 @@ from feedbax.orchestration.conformance import (
     ConformanceRowArtifacts,
     RealizedDeploymentRecord,
     RunConformanceCertificate,
-    build_default_check_registry,
+    build_core_check_registry,
     check_evaluation_lifecycle,
 )
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
@@ -382,9 +382,7 @@ def test_successful_local_evaluation_reclamation_is_terminal_and_idempotent(
                 outputs={
                     "overall": "pass",
                     "certificate_ref": str(certificate_path),
-                    "certificate_sha256": hashlib.sha256(
-                        certificate_path.read_bytes()
-                    ).hexdigest(),
+                    "certificate_sha256": hashlib.sha256(certificate_path.read_bytes()).hexdigest(),
                 },
             ),
         },
@@ -419,9 +417,7 @@ def test_successful_local_evaluation_reclamation_is_terminal_and_idempotent(
     external_record.write_text(
         json.dumps(
             {
-                "schema_version": (
-                    "feedbax.orchestration.local_evaluation_store_reclamation.v1"
-                ),
+                "schema_version": ("feedbax.orchestration.local_evaluation_store_reclamation.v1"),
                 "row_id": row.row_id,
                 "source": str(raw_store),
                 "reclaimed_bytes": 4096,
@@ -548,7 +544,9 @@ def test_local_evaluation_family_traverses_production_lifecycle_to_teardown(
     plugin = tmp_path / "evaluation_lifecycle_plugin.py"
     plugin.write_text(
         """
-from feedbax.analysis.evaluation import EvaluationRecipeResult, register_evaluation_recipe
+from feedbax.analysis.evaluation import EvaluationRecipeResult
+from feedbax.plugins.application import EVALUATION_RECIPES
+from feedbax.plugins.bootstrap import FamilyRequirement, PluginDeclaration, PluginRegistration
 
 def recipe(_spec, _root, _states_path, _context):
     return EvaluationRecipeResult(summary_metrics={"ok": 1.0})
@@ -557,7 +555,20 @@ def batch(items, _context):
     return [EvaluationRecipeResult(summary_metrics={"gain": item.spec.params["gain"]})
             for item in items]
 
-register_evaluation_recipe("feedbax.test.lifecycle", recipe, batch_recipe=batch, replace=True)
+def register(context):
+    context.registry(EVALUATION_RECIPES).register(
+        "feedbax.test.lifecycle", recipe, batch_recipe=batch
+    )
+
+PLUGIN_REGISTRATION = PluginRegistration(
+    PluginDeclaration(
+        "feedbax.test.lifecycle",
+        "1",
+        1,
+        families=(FamilyRequirement(EVALUATION_RECIPES.family),),
+    ),
+    register,
+)
 """.strip(),
         encoding="utf-8",
     )
@@ -616,7 +627,7 @@ register_evaluation_recipe("feedbax.test.lifecycle", recipe, batch_recipe=batch,
     engine = StageEngine(
         bundle=bundle,
         driver=driver,
-        conformance_registry=build_default_check_registry(include_plugins=False),
+        conformance_registry=build_core_check_registry(),
         poll_interval_seconds=0.001,
     )
     state = engine.run(stop_after_stage="CERTIFY")

@@ -7,9 +7,18 @@ import pytest
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.config.mapping import WhereDict
-from feedbax.contracts.graph import ComponentSpec, GraphSpec
+from feedbax.contracts.graph import (
+    GRAPH_SPEC_SCHEMA_ID,
+    GRAPH_SPEC_SCHEMA_VERSION_V4,
+    ComponentSpec,
+    GraphSpec,
+)
+from feedbax.contracts.array_values import (
+    ARRAY_VALUE_SCHEMA_ID,
+    ARRAY_VALUE_SCHEMA_VERSION,
+)
 from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
-from feedbax.contracts.migrations import UnsupportedComponentMigration
+from feedbax.contracts.migrations import UnsupportedComponentMigration, migrate_graph_spec
 from feedbax.mechanics import (
     STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
     StructuralLinearDynamicsPerturbation,
@@ -66,8 +75,14 @@ def _sparse_spec() -> GraphSpec:
                     "B": [[0.0], [0.0], [0.0], [0.0]],
                     "B_w": [[0.0], [0.0], [0.0], [0.0]],
                     "delta_A": {
+                        "schema_id": ARRAY_VALUE_SCHEMA_ID,
+                        "schema_version": ARRAY_VALUE_SCHEMA_VERSION,
+                        "encoding": "sparse_coo",
                         "shape": [4, 4],
-                        "entries": [{"row": 3, "column": 2, "value": -0.25}],
+                        "dtype": "float32",
+                        "nonfinite": "forbid",
+                        "fill": 0.0,
+                        "entries": [{"coordinate": [3, 2], "value": -0.25}],
                     },
                     "scale": 2.0,
                     "active": True,
@@ -128,17 +143,21 @@ def test_sparse_entries_construct_the_same_jittable_dense_transition() -> None:
 
 
 def test_structural_registry_advertises_sparse_delta_a_authoring() -> None:
-    meta = ComponentRegistry(
-        load_user_components=False,
-        discover_plugins=False,
-    ).get("StructuralLinearStateSpace")
+    meta = ComponentRegistry(load_user_components=False).get("StructuralLinearStateSpace")
     assert meta is not None
-    delta_A_schema = next(
-        schema for schema in meta.param_schema if schema.name == "delta_A"
-    )
+    delta_A_schema = next(schema for schema in meta.param_schema if schema.name == "delta_A")
 
     assert delta_A_schema.type == "object"
-    assert delta_A_schema.default == {"shape": [4, 4], "entries": []}
+    assert delta_A_schema.default == {
+        "schema_id": ARRAY_VALUE_SCHEMA_ID,
+        "schema_version": ARRAY_VALUE_SCHEMA_VERSION,
+        "shape": [4, 4],
+        "dtype": "float32",
+        "nonfinite": "forbid",
+        "encoding": "sparse_coo",
+        "fill": 0.0,
+        "entries": [],
+    }
 
 
 @pytest.mark.parametrize(
@@ -174,7 +193,7 @@ def test_signed_and_nominal_structural_variants(
 
 
 def test_task_trial_selects_one_constant_structural_variant() -> None:
-    graph = spec_to_graph(_spec())
+    graph = spec_to_graph(_spec(), ComponentRegistry(load_user_components=False))
     component = graph.nodes["plant"]
     trial = TaskTrialSpec(
         inits=WhereDict(),
@@ -205,7 +224,8 @@ def test_task_trial_selects_one_constant_structural_variant() -> None:
 
 
 def test_graphspec_round_trip_preserves_structural_identity() -> None:
-    graph = spec_to_graph(_spec(active=True))
+    registry = ComponentRegistry(load_user_components=False)
+    graph = spec_to_graph(_spec(active=True), registry)
     round_tripped = graph_to_spec(graph)
     node = round_tripped.nodes["plant"]
 
@@ -214,13 +234,17 @@ def test_graphspec_round_trip_preserves_structural_identity() -> None:
     assert node.params["delta_A"] == [[0.0, 0.5], [0.0, 0.0]]
     assert node.params["label"] == "structural_field"
     assert node.params["active"] is True
-    assert spec_to_graph(
-        GraphSpec.model_validate_json(round_tripped.model_dump_json())
-    ).nodes["plant"].label == "structural_field"
+    assert (
+        spec_to_graph(GraphSpec.model_validate_json(round_tripped.model_dump_json()), registry)
+        .nodes["plant"]
+        .label
+        == "structural_field"
+    )
 
 
 def test_sparse_graphspec_round_trip_preserves_canonical_entry_identity() -> None:
-    graph = spec_to_graph(_sparse_spec())
+    registry = ComponentRegistry(load_user_components=False)
+    graph = spec_to_graph(_sparse_spec(), registry)
     component = graph.nodes["plant"]
     outputs, _ = component(
         {"force": jnp.zeros((1,)), "epsilon": jnp.zeros((1,))},
@@ -233,14 +257,18 @@ def test_sparse_graphspec_round_trip_preserves_canonical_entry_identity() -> Non
 
     assert jnp.allclose(outputs["state"], jnp.asarray([0.0, 0.0, 1.0, -0.5]))
     assert node.params["delta_A"] == {
+        "schema_id": ARRAY_VALUE_SCHEMA_ID,
+        "schema_version": ARRAY_VALUE_SCHEMA_VERSION,
+        "encoding": "sparse_coo",
         "shape": [4, 4],
-        "entries": [{"row": 3, "column": 2, "value": -0.25}],
+        "dtype": "float32",
+        "nonfinite": "forbid",
+        "fill": 0.0,
+        "entries": [{"coordinate": [3, 2], "value": -0.25}],
     }
     assert (
         graph_to_spec(
-            spec_to_graph(
-                GraphSpec.model_validate_json(round_tripped.model_dump_json())
-            )
+            spec_to_graph(GraphSpec.model_validate_json(round_tripped.model_dump_json()), registry)
         )
         .nodes["plant"]
         .params["delta_A"]
@@ -248,27 +276,112 @@ def test_sparse_graphspec_round_trip_preserves_canonical_entry_identity() -> Non
     )
 
 
+def test_nested_v4_sparse_migration_materializes_losslessly_and_preserves_envelope() -> None:
+    high_precision = 1.0000000000000002
+    legacy = {
+        "schema_id": GRAPH_SPEC_SCHEMA_ID,
+        "schema_version": GRAPH_SPEC_SCHEMA_VERSION_V4,
+        "nodes": {
+            "wrapper": {
+                "type": "Subgraph",
+                "params": {},
+                "input_ports": [],
+                "output_ports": [],
+            }
+        },
+        "wires": [],
+        "subgraphs": {
+            "wrapper": {
+                "schema_id": GRAPH_SPEC_SCHEMA_ID,
+                "schema_version": GRAPH_SPEC_SCHEMA_VERSION_V4,
+                "nodes": {
+                    "plant": {
+                        "type": "StructuralLinearStateSpace",
+                        "params": {
+                            "A": [[1.0, 0.0], [0.0, 1.0]],
+                            "B": [[0.0], [0.0]],
+                            "B_w": [[0.0], [0.0]],
+                            "delta_A": {
+                                "shape": [2, 2],
+                                "entries": [{"row": 0, "column": 1, "value": high_precision}],
+                            },
+                            "initial_state": [0.0, 0.0],
+                            "pos_slice": [0, 1],
+                            "vel_slice": [1, 2],
+                        },
+                        "param_schema_version": (
+                            STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION
+                        ),
+                        "input_ports": ["force", "epsilon"],
+                        "output_ports": ["effector", "state"],
+                    }
+                },
+                "wires": [],
+            }
+        },
+    }
+
+    migration = migrate_graph_spec(legacy)
+    nested_delta = migration.payload["subgraphs"]["wrapper"]["nodes"]["plant"]["params"]["delta_A"]
+    assert nested_delta["dtype"] == "float64"
+    with jax.experimental.enable_x64():
+        graph = spec_to_graph(
+            GraphSpec.model_validate(migration.payload),
+            ComponentRegistry(load_user_components=False),
+        )
+        component = graph.nodes["wrapper"].nodes["plant"]
+
+    assert component.initial_delta_A[0][1] == high_precision
+    round_tripped = graph_to_spec(graph)
+    round_trip_delta = round_tripped.subgraphs["wrapper"].nodes["plant"].params["delta_A"]
+    assert round_trip_delta == nested_delta
+
+
 @pytest.mark.parametrize(
     ("delta_A", "match"),
     [
         (
             {
+                "schema_id": ARRAY_VALUE_SCHEMA_ID,
+                "schema_version": ARRAY_VALUE_SCHEMA_VERSION,
+                "encoding": "sparse_coo",
                 "shape": [4, 4],
+                "dtype": "float32",
+                "nonfinite": "forbid",
+                "fill": 0.0,
                 "entries": [
-                    {"row": 3, "column": 2, "value": -0.25},
-                    {"row": 3, "column": 2, "value": 0.5},
+                    {"coordinate": [3, 2], "value": -0.25},
+                    {"coordinate": [3, 2], "value": 0.5},
                 ],
             },
             "duplicated",
         ),
         (
             {
+                "schema_id": ARRAY_VALUE_SCHEMA_ID,
+                "schema_version": ARRAY_VALUE_SCHEMA_VERSION,
+                "encoding": "sparse_coo",
                 "shape": [4, 4],
-                "entries": [{"row": 4, "column": 2, "value": -0.25}],
+                "dtype": "float32",
+                "nonfinite": "forbid",
+                "fill": 0.0,
+                "entries": [{"coordinate": [4, 2], "value": -0.25}],
             },
             "outside shape",
         ),
-        ({"shape": [4, 3], "entries": []}, "square matrix"),
+        (
+            {
+                "schema_id": ARRAY_VALUE_SCHEMA_ID,
+                "schema_version": ARRAY_VALUE_SCHEMA_VERSION,
+                "encoding": "sparse_coo",
+                "shape": [4, 3],
+                "dtype": "float32",
+                "nonfinite": "forbid",
+                "fill": 0.0,
+                "entries": [],
+            },
+            "square matrix",
+        ),
     ],
 )
 def test_sparse_graphspec_rejects_invalid_entries(
@@ -280,15 +393,13 @@ def test_sparse_graphspec_rejects_invalid_entries(
     invalid = spec.model_copy(
         update={
             "nodes": {
-                "plant": node.model_copy(
-                    update={"params": {**node.params, "delta_A": delta_A}}
-                )
+                "plant": node.model_copy(update={"params": {**node.params, "delta_A": delta_A}})
             }
         }
     )
 
     with pytest.raises(ValueError, match=match):
-        spec_to_graph(invalid)
+        spec_to_graph(invalid, ComponentRegistry(load_user_components=False))
 
 
 def test_structural_component_rejects_unknown_parameter_schema_version() -> None:
@@ -302,4 +413,4 @@ def test_structural_component_rejects_unknown_parameter_schema_version() -> None
         UnsupportedComponentMigration,
         match="No component migration registered",
     ):
-        spec_to_graph(incompatible)
+        spec_to_graph(incompatible, ComponentRegistry(load_user_components=False))

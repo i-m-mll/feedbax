@@ -33,7 +33,16 @@ from feedbax.contracts.expressions import (
     expression_hash,
 )
 from feedbax.contracts.figures import (
+    FIGURE_COMPOSITION_SPEC_SCHEMA_ID,
+    FIGURE_PANEL_SCHEMA_ID,
+    FIGURE_PANEL_SCHEMA_VERSION,
+    FIGURE_SPEC_SCHEMA_ID,
+    FIGURE_SPEC_SCHEMA_VERSION,
     FigureColorbar,
+    FigureCompositionDocument,
+    FigureCompositionLayer,
+    FigureCompositionProvenance,
+    FigureCompositionSpec,
     FigureDataProductArtifactPayload,
     FigureInputAuthority,
     FigureInputAuthoritySpec,
@@ -41,10 +50,21 @@ from feedbax.contracts.figures import (
     FigureRuntimeBindingSpec,
     FigureSpec,
     FigureTemplate,
+    PanelSpec,
+    ResolvedFigureSpec,
     TraceBinding,
     TraceFamily,
+    figure_composition_payload_identity_sha256,
     substitute_index,
 )
+from feedbax.contracts.matrix_core import (
+    SOURCE_DOCUMENT_INHERITANCE_KEY,
+    SourceDocumentInheritance,
+    load_content_pinned_json_document,
+    materialize_inherited_document_with_custody,
+)
+from feedbax.contracts.migrations import default_spec_registry
+from feedbax.contracts.run_matrix import apply_composition_deltas
 from feedbax.contracts.manifest import (
     AnyManifest,
     EntrypointRef,
@@ -70,6 +90,7 @@ from feedbax.contracts.manifest import (
 from feedbax.plot.colors import sample_colorscale_at, sample_colorscale_unique
 from feedbax.plot.constructors import (
     FigureConstructorRegistration,
+    FigureRegistry,
     PanelContent,
     get_figure_constructor,
     get_figure_piece,
@@ -82,8 +103,7 @@ FIGURE_RENDER_ROLE = "figure_render"
 FIGURE_SPEC_ROLE = "figure_spec"
 FIGURE_MANIFEST_ROLE = "figure_manifest"
 FIGURE_RENDER_MEDIA_TYPES = frozenset(
-    media_type_for_extension(extension)
-    for extension in ("json", "html", "png", "svg", "pdf")
+    media_type_for_extension(extension) for extension in ("json", "html", "png", "svg", "pdf")
 )
 
 
@@ -177,23 +197,391 @@ class FigureSpecExecutionError(RuntimeError):
         self.__cause__ = cause
 
 
-def _coerce_figure_spec_and_authored_mapping(
-    value: FigureSpec | Mapping[str, Any] | Path | str,
-) -> tuple[FigureSpec, dict[str, Any]]:
-    """Validate a FigureSpec while retaining its exact authored JSON mapping."""
+FigureSpecInput = (
+    FigureSpec | FigureCompositionSpec | ResolvedFigureSpec | Mapping[str, Any] | Path | str
+)
+MAX_FIGURE_COMPOSITION_DEPTH = 64
+
+
+def _figure_authored_mapping(value: FigureSpecInput) -> dict[str, Any]:
+    """Load one direct or composed figure document without changing its bytes."""
     if isinstance(value, FigureSpec):
-        return value, value.model_dump(mode="json", exclude_none=True)
+        return value.model_dump(mode="json", exclude_none=True)
+    if isinstance(value, FigureCompositionSpec):
+        return value.model_dump(mode="json", exclude_none=True)
+    if isinstance(value, ResolvedFigureSpec):
+        return deepcopy(value.authored)
     if isinstance(value, Mapping):
-        authored_mapping = deepcopy(dict(value))
-    else:
-        authored_mapping = json.loads(Path(value).read_text(encoding="utf-8"))
-    authored_spec = FigureSpec.model_validate(authored_mapping)
-    return authored_spec, authored_mapping
+        payload = deepcopy(dict(value))
+        _require_durable_figure_identity(payload, label="figure mapping")
+        return payload
+    payload = json.loads(Path(value).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("figure document must contain a JSON object")
+    _require_durable_figure_identity(payload, label=f"figure document {str(value)!r}")
+    return payload
 
 
-def coerce_figure_spec(value: FigureSpec | Mapping[str, Any] | Path | str) -> FigureSpec:
-    """Load a FigureSpec from an object, mapping, or JSON file path."""
-    return _coerce_figure_spec_and_authored_mapping(value)[0]
+def _require_durable_figure_identity(payload: Mapping[str, Any], *, label: str) -> None:
+    missing = [field for field in ("schema_id", "schema_version") if field not in payload]
+    if missing:
+        raise ValueError(f"{label} must explicitly declare {', '.join(missing)}")
+
+
+def _figure_authored_ref(value: FigureSpecInput) -> str:
+    if isinstance(value, (str, Path)):
+        return str(value)
+    return "<inline>"
+
+
+def figure_composition_envelope(spec: FigureCompositionSpec) -> dict[str, Any]:
+    """Return the canonical authored identity envelope, excluding the parent locator."""
+    return _raw_figure_composition_envelope(
+        spec.model_dump(mode="json", exclude_none=True)
+    )
+
+
+def figure_composition_envelope_hash(spec: FigureCompositionSpec) -> str:
+    """Return deterministic authored identity for one composition envelope."""
+    return spec.identity_sha256()
+
+
+def _raw_figure_composition_envelope(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return identity bytes from one exact authored v1 or v2 envelope."""
+    parent = deepcopy(dict(payload["parent"]))
+    parent.pop("ref", None)
+    return {
+        "schema_id": payload["schema_id"],
+        "schema_version": payload["schema_version"],
+        "parent": parent,
+        "deltas": deepcopy(payload["deltas"]),
+    }
+
+
+def _raw_figure_composition_envelope_hash(payload: Mapping[str, Any]) -> str:
+    return figure_composition_payload_identity_sha256(payload)
+
+
+def _current_figure_spec(payload: Mapping[str, Any]) -> FigureSpec:
+    if payload.get("schema_id", FIGURE_SPEC_SCHEMA_ID) != FIGURE_SPEC_SCHEMA_ID:
+        raise ValueError(
+            "figure composition parent must declare schema_id "
+            f"{FIGURE_SPEC_SCHEMA_ID!r}, got {payload.get('schema_id')!r}"
+        )
+    migrated = default_spec_registry.migrate(
+        "FigureSpec",
+        payload,
+        assume_current="schema_version" not in payload,
+    ).payload
+    return FigureSpec.model_validate(migrated)
+
+
+def _current_figure_composition_spec(
+    payload: Mapping[str, Any],
+) -> FigureCompositionSpec:
+    migrated = default_spec_registry.migrate("FigureCompositionSpec", payload).payload
+    return FigureCompositionSpec.model_validate(migrated)
+
+
+def resolve_figure_spec(
+    value: FigureSpecInput,
+    *,
+    repo_root: Path | str | None = None,
+    registry: FigureRegistry | None = None,
+) -> ResolvedFigureSpec:
+    """Resolve direct or composed authoring to one ordinary current FigureSpec.
+
+    The returned authored identity covers the direct document or composition
+    envelope. The resolved identity covers only the ordinary FigureSpec bytes
+    consumed by display and execution. Composition locators and lineage never
+    enter the resolved semantic hash.
+    """
+    if isinstance(value, ResolvedFigureSpec):
+        resolved_payload = value.figure_spec.model_dump(mode="json", exclude_none=True)
+        if sha256_bytes(canonical_json_bytes(resolved_payload)) != value.resolved_identity_sha256:
+            raise ValueError("ResolvedFigureSpec resolved identity disagrees with FigureSpec")
+        _validate_resolved_template(value.figure_spec, registry)
+        return value
+    authored = _figure_authored_mapping(value)
+    authored_schema_id = str(authored.get("schema_id", FIGURE_SPEC_SCHEMA_ID))
+    if authored_schema_id != FIGURE_COMPOSITION_SPEC_SCHEMA_ID:
+        figure_spec = _current_figure_spec(authored)
+        authored_identity = sha256_bytes(canonical_json_bytes(authored))
+        resolved_identity = sha256_bytes(
+            canonical_json_bytes(figure_spec.model_dump(mode="json", exclude_none=True))
+        )
+        _validate_resolved_template(figure_spec, registry)
+        return ResolvedFigureSpec(
+            authored=authored,
+            authored_schema_id=authored_schema_id,
+            authored_identity_sha256=authored_identity,
+            resolved_identity_sha256=resolved_identity,
+            figure_spec=figure_spec,
+        )
+
+    spec = _current_figure_composition_spec(authored)
+    chain: list[tuple[str, FigureCompositionSpec, dict[str, Any]]] = []
+    loaded_documents: list[tuple[dict[str, Any], dict[str, Any], Any]] = []
+    first_seen: dict[str, int] = {}
+    parent_first_seen: dict[tuple[str, tuple[str, ...] | None], int] = {}
+    current = spec
+    current_authored = authored
+    while True:
+        if len(chain) >= MAX_FIGURE_COMPOSITION_DEPTH:
+            path = " -> ".join(node.parent.ref for _, node, _ in chain)
+            raise ValueError(
+                f"figure composition exceeds maximum depth {MAX_FIGURE_COMPOSITION_DEPTH}: {path}"
+            )
+        digest = _raw_figure_composition_envelope_hash(current_authored)
+        if digest in first_seen:
+            cycle_start = first_seen[digest]
+            cycle = [node.parent.ref for _, node, _ in chain[cycle_start:]]
+            raise ValueError(f"figure composition cycle detected: {' -> '.join(cycle)}")
+        first_seen[digest] = len(chain)
+        chain.append((digest, current, current_authored))
+        parent_key = (current.parent.ref, current.parent.payload_path)
+        if parent_key in parent_first_seen:
+            cycle_start = parent_first_seen[parent_key]
+            cycle = [node.parent.ref for _, node, _ in chain[cycle_start:]]
+            raise ValueError(f"figure composition cycle detected: {' -> '.join(cycle)}")
+        parent_first_seen[parent_key] = len(chain) - 1
+        parent_document, parent_payload = load_content_pinned_json_document(
+            current.parent, repo_root=repo_root
+        )
+        _require_durable_figure_identity(
+            parent_payload,
+            label=f"figure composition parent {current.parent.ref!r}",
+        )
+        loaded_documents.append((parent_document, parent_payload, current.parent))
+        parent_schema_id = parent_payload.get("schema_id", FIGURE_SPEC_SCHEMA_ID)
+        if parent_schema_id == FIGURE_COMPOSITION_SPEC_SCHEMA_ID:
+            current_authored = deepcopy(parent_payload)
+            current = _current_figure_composition_spec(parent_payload)
+            continue
+        if parent_schema_id != FIGURE_SPEC_SCHEMA_ID:
+            raise ValueError(
+                "figure composition parent must declare schema_id "
+                f"{FIGURE_SPEC_SCHEMA_ID!r} or {FIGURE_COMPOSITION_SPEC_SCHEMA_ID!r}, "
+                f"got {parent_schema_id!r} at {current.parent.ref!r}"
+            )
+        source_inheritance = None
+        inherited_source_documents: list[tuple[Any, dict[str, Any], dict[str, Any]]] = []
+        if SOURCE_DOCUMENT_INHERITANCE_KEY in parent_payload:
+            source_inheritance = SourceDocumentInheritance.model_validate(
+                parent_payload[SOURCE_DOCUMENT_INHERITANCE_KEY]
+            )
+            parent_payload, inherited_source_documents = (
+                materialize_inherited_document_with_custody(
+                parent_payload, repo_root=repo_root
+                )
+            )
+            parent_payload.pop(SOURCE_DOCUMENT_INHERITANCE_KEY, None)
+        payload = _current_figure_spec(parent_payload).model_dump(mode="json", exclude_none=True)
+        root_parent = current.parent
+        break
+
+    attribution: dict[str, str] = {}
+    written: set[str] = set()
+    layers: list[FigureCompositionLayer] = []
+    for digest, node, _raw_node in reversed(chain):
+        local_attribution: dict[str, str] = {}
+        for delta in node.deltas:
+            before = deepcopy(payload)
+            declared = {
+                addition.path: (addition.schema_id, addition.schema_version)
+                for addition in (delta.same_schema_structural_additions or [])
+            }
+            payload, delta_attribution, written = apply_composition_deltas(
+                payload,
+                [delta.matrix_delta()],
+                ancestor_written_paths=written,
+                allowed_same_schema_structural_additions_by_layer={
+                    delta.layer_id: declared
+                },
+            )
+            added = _figure_added_structural_identities(before, payload)
+            if declared != added:
+                missing = {
+                    path: identity
+                    for path, identity in added.items()
+                    if declared.get(path) != identity
+                }
+                invalid = {
+                    path: identity
+                    for path, identity in declared.items()
+                    if added.get(path) != identity
+                }
+                raise ValueError(
+                    f"/deltas/{delta.layer_id} same-schema structural additions must "
+                    "exactly qualify the complete added typed structure; "
+                    f"unqualified_or_mismatched={missing!r}, "
+                    f"declared_but_absent_or_invalid={invalid!r}"
+                )
+            local_attribution.update(delta_attribution)
+        qualified = {
+            path: f"{digest}:{layer_id}" for path, layer_id in local_attribution.items()
+        }
+        attribution.update(qualified)
+        layer_ids = [delta.layer_id for delta in node.deltas]
+        layers.append(
+            FigureCompositionLayer(
+                envelope_sha256=digest,
+                parent_ref=node.parent.ref,
+                parent_sha256=node.parent.sha256,
+                layer_ids=layer_ids,
+                qualified_layer_ids=[f"{digest}:{layer_id}" for layer_id in layer_ids],
+                parent_payload_path=node.parent.payload_path,
+            )
+        )
+    figure_spec = FigureSpec.model_validate(payload)
+    resolved_payload = figure_spec.model_dump(mode="json", exclude_none=True)
+    resolved_identity = sha256_bytes(canonical_json_bytes(resolved_payload))
+    custody_documents: list[FigureCompositionDocument] = []
+    for order, (document, selected, parent) in enumerate(reversed(loaded_documents)):
+        custody_documents.append(
+            FigureCompositionDocument(
+                order=order,
+                role=(
+                    "root_figure"
+                    if selected.get("schema_id") == FIGURE_SPEC_SCHEMA_ID
+                    else "composition_envelope"
+                ),
+                ref=parent.ref,
+                sha256=sha256_bytes(canonical_json_bytes(document)),
+                payload_path=parent.payload_path,
+                selected_sha256=sha256_bytes(canonical_json_bytes(selected)),
+                inline=document,
+                selected_inline=selected,
+            )
+        )
+    custody_documents.append(
+        FigureCompositionDocument(
+            order=len(custody_documents),
+            role="authored_leaf",
+            ref=_figure_authored_ref(value),
+            sha256=sha256_bytes(canonical_json_bytes(authored)),
+            selected_sha256=sha256_bytes(canonical_json_bytes(authored)),
+            inline=authored,
+            selected_inline=authored,
+        )
+    )
+    inherited_custody: list[FigureCompositionDocument] = []
+    inherited_seen: set[tuple[str, str, tuple[str, ...] | None]] = set()
+    for parent, document, selected in inherited_source_documents:
+        key = (parent.ref, parent.sha256, parent.payload_path)
+        if key in inherited_seen:
+            continue
+        inherited_seen.add(key)
+        inherited_custody.append(
+            FigureCompositionDocument(
+                order=len(inherited_custody),
+                role="inherited_source",
+                ref=parent.ref,
+                sha256=sha256_bytes(canonical_json_bytes(document)),
+                payload_path=parent.payload_path,
+                selected_sha256=sha256_bytes(canonical_json_bytes(selected)),
+                inline=document,
+                selected_inline=selected,
+            )
+        )
+    provenance = FigureCompositionProvenance(
+        authored_envelope_sha256=_raw_figure_composition_envelope_hash(authored),
+        root_figure=root_parent,
+        layers=layers,
+        documents=custody_documents,
+        inherited_documents=inherited_custody,
+        attribution=attribution,
+        resolved_figure_spec_sha256=resolved_identity,
+        source_inheritance=source_inheritance,
+    )
+    _validate_resolved_template(figure_spec, registry)
+    return ResolvedFigureSpec(
+        authored=authored,
+        authored_schema_id=authored_schema_id,
+        authored_identity_sha256=provenance.authored_envelope_sha256,
+        resolved_identity_sha256=resolved_identity,
+        figure_spec=figure_spec,
+        composition=provenance,
+    )
+
+
+def _figure_added_structural_identities(
+    before: dict[str, Any], after: dict[str, Any]
+) -> dict[str, tuple[str, str]]:
+    """Return every typed path introduced by one figure delta."""
+    before_identities = _figure_structural_identities(before)
+    after_identities = _figure_structural_identities(after)
+    return {
+        path: identity
+        for path, identity in after_identities.items()
+        if path not in before_identities
+    }
+
+
+def _figure_structural_identities(
+    payload: dict[str, Any],
+) -> dict[str, tuple[str, str]]:
+    identities: dict[str, tuple[str, str]] = {}
+
+    def visit(value: Any, path: str = "") -> None:
+        if isinstance(value, dict):
+            if isinstance(value.get("schema_id"), str) and isinstance(
+                value.get("schema_version"), str
+            ):
+                identities[path or "/"] = (
+                    value["schema_id"],
+                    value["schema_version"],
+                )
+            if (
+                value.get("schema_id") == FIGURE_SPEC_SCHEMA_ID
+                and value.get("schema_version") == FIGURE_SPEC_SCHEMA_VERSION
+            ):
+                panels = value.get("panels", [])
+                if not isinstance(panels, list):
+                    raise ValueError("FigureSpec panels must remain a list during composition")
+                panel_prefix = f"{path}.panels" if path else "panels"
+                for index, panel in enumerate(panels):
+                    try:
+                        PanelSpec.model_validate(panel)
+                    except ValidationError as error:
+                        raise ValueError(
+                            f"same-schema structural addition "
+                            f"'{panel_prefix}.{index}' is not a valid PanelSpec: {error}"
+                        ) from error
+                    identities[f"{panel_prefix}.{index}"] = (
+                        FIGURE_PANEL_SCHEMA_ID,
+                        FIGURE_PANEL_SCHEMA_VERSION,
+                    )
+            for key, child in value.items():
+                visit(child, f"{path}.{key}" if path else str(key))
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                visit(child, f"{path}.{index}" if path else str(index))
+
+    visit(payload)
+    return identities
+
+
+def _validate_resolved_template(
+    spec: FigureSpec,
+    registry: FigureRegistry | None,
+) -> None:
+    if spec.template is None or registry is None:
+        return
+    try:
+        get_figure_template(spec.template, registry=registry)
+    except (KeyError, ValueError) as exc:
+        raise ValueError(f"resolved FigureSpec names unknown template {spec.template!r}") from exc
+
+
+def coerce_figure_spec(
+    value: FigureSpecInput,
+    *,
+    repo_root: Path | str | None = None,
+    registry: FigureRegistry | None = None,
+) -> FigureSpec:
+    """Resolve any supported authoring root to one ordinary current FigureSpec."""
+    return resolve_figure_spec(value, repo_root=repo_root, registry=registry).figure_spec
 
 
 def resolve_figure_inputs(
@@ -373,19 +761,22 @@ def _resolve_authority_payloads(
 
 
 def execute_figure_spec(
-    spec: FigureSpec | Mapping[str, Any] | Path | str,
+    spec: FigureSpecInput,
     *,
     runtime_inputs: Sequence[ParentRef] | None = None,
     runtime_input_authorities: Sequence[FigureInputAuthoritySpec] | None = None,
     runtime_metadata: Mapping[str, Any] | None = None,
+    repo_root: Path | str | None = None,
     root: Path | str | None = None,
     provenance: Provenance | None = None,
     issues: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
     execution_context: StagedExecutionContext | None = None,
+    registry: FigureRegistry,
 ) -> tuple[FigureManifest, Path]:
-    """Execute a figure while preserving the exact authored spec in its manifest."""
-    authored_spec, authored_mapping = _coerce_figure_spec_and_authored_mapping(spec)
+    """Resolve and execute exactly the ordinary FigureSpec exposed by display."""
+    resolution = resolve_figure_spec(spec, repo_root=repo_root, registry=registry)
+    resolved_spec = resolution.figure_spec
     runtime_update: dict[str, Any] = {}
     if runtime_inputs is not None:
         runtime_update["inputs"] = list(runtime_inputs)
@@ -393,13 +784,13 @@ def execute_figure_spec(
         runtime_update["input_authorities"] = list(runtime_input_authorities)
     if runtime_metadata is not None:
         runtime_update["metadata"] = {
-            **authored_spec.metadata,
+            **resolved_spec.metadata,
             **dict(runtime_metadata),
         }
     figure_spec = (
-        authored_spec.model_copy(update=runtime_update, deep=True)
+        resolved_spec.model_copy(update=runtime_update, deep=True)
         if runtime_update
-        else authored_spec
+        else resolved_spec
     )
     # Revalidate runtime overlays as one complete FigureSpec before any effects.
     if runtime_update:
@@ -411,25 +802,37 @@ def execute_figure_spec(
             raise FigureInputAuthorityError(
                 "figure runtime input/authority binding is invalid"
             ) from exc
-    authored_payload = spec_payload(
-        "FigureSpec",
-        authored_mapping,
+    semantic_payload = (
+        resolved_spec.model_dump(mode="json", exclude_none=True)
+        if resolution.composition is not None
+        else resolution.authored
     )
+    resolved_payload = spec_payload("FigureSpec", semantic_payload)
+    composition_payloads: list[SpecPayload] = []
+    if resolution.composition is not None:
+        composition_payloads = [
+            spec_payload("FigureCompositionSpec", resolution.authored),
+            spec_payload(
+                "FigureCompositionProvenance",
+                resolution.composition.model_dump(mode="json", exclude_none=True),
+            ),
+        ]
     runtime_binding_payload = _figure_runtime_binding_payload(
-        authored_payload.sha256,
+        resolution.authored_identity_sha256,
+        resolution.resolved_identity_sha256,
         figure_spec,
         execution_context,
         runtime_overlay=bool(runtime_update),
         runtime_metadata=dict(runtime_metadata or {}),
     )
     root_path = Path(root) if root is not None else default_manifest_root()
-    manifest_id = figure_manifest_id(authored_spec)
+    manifest_id = figure_manifest_id(resolved_spec)
     prov = provenance.model_copy(deep=True) if provenance is not None else collect_git_provenance()
     prov.parents = list(figure_spec.inputs)
     if issues:
         prov.issues.extend(issue for issue in issues if issue not in prov.issues)
     if prov.entrypoint is None:
-        prov.entrypoint = EntrypointRef(kind="feedbax-figure-spec", name=authored_spec.name)
+        prov.entrypoint = EntrypointRef(kind="feedbax-figure-spec", name=resolved_spec.name)
 
     exec_trace = FigureExecutionTrace()
     resolved_inputs = resolve_figure_inputs(
@@ -443,9 +846,10 @@ def execute_figure_spec(
         ):
             manifest = _build_figure_manifest(
                 manifest_id=manifest_id,
-                authored_spec=authored_spec,
+                resolved_spec=resolved_spec,
                 execution_spec=figure_spec,
-                authored_payload=authored_payload,
+                authored_payload=resolved_payload,
+                composition_payloads=composition_payloads,
                 runtime_binding_payload=runtime_binding_payload,
                 status="completed",
                 provenance=prov,
@@ -456,18 +860,19 @@ def execute_figure_spec(
             )
             return manifest, write_manifest(manifest, root=root_path)
 
-        figures = _build_figures(figure_spec, context, exec_trace, root_path)
+        figures = _build_figures(figure_spec, context, exec_trace, root_path, registry)
         artifacts = _write_figure_custody(
             figures,
-            authored_spec,
+            resolved_spec,
             root=root_path,
             manifest_id=manifest_id,
         )
         manifest = _build_figure_manifest(
             manifest_id=manifest_id,
-            authored_spec=authored_spec,
+            resolved_spec=resolved_spec,
             execution_spec=figure_spec,
-            authored_payload=authored_payload,
+            authored_payload=resolved_payload,
+            composition_payloads=composition_payloads,
             runtime_binding_payload=runtime_binding_payload,
             status="completed",
             provenance=prov,
@@ -480,9 +885,10 @@ def execute_figure_spec(
     except Exception as exc:
         manifest = _build_figure_manifest(
             manifest_id=manifest_id,
-            authored_spec=authored_spec,
+            resolved_spec=resolved_spec,
             execution_spec=figure_spec,
-            authored_payload=authored_payload,
+            authored_payload=resolved_payload,
+            composition_payloads=composition_payloads,
             runtime_binding_payload=runtime_binding_payload,
             status="failed",
             provenance=prov,
@@ -497,7 +903,8 @@ def execute_figure_spec(
 
 
 def _figure_runtime_binding_payload(
-    authored_spec_sha256: str | None,
+    authored_source_sha256: str,
+    resolved_spec_sha256: str,
     execution_spec: FigureSpec,
     execution_context: StagedExecutionContext | None,
     *,
@@ -505,16 +912,13 @@ def _figure_runtime_binding_payload(
     runtime_metadata: dict[str, Any],
 ) -> SpecPayload | None:
     bindings = (
-        execution_context.parent_artifact_provider_bindings
-        if execution_context is not None
-        else ()
+        execution_context.parent_artifact_provider_bindings if execution_context is not None else ()
     )
     if not runtime_overlay and not bindings:
         return None
-    if authored_spec_sha256 is None:
-        raise FigureInputAuthorityError("authored FigureSpec payload is missing its content pin")
     runtime_spec = FigureRuntimeBindingSpec(
-        authored_figure_spec_sha256=authored_spec_sha256,
+        authored_figure_source_sha256=authored_source_sha256,
+        resolved_figure_spec_sha256=resolved_spec_sha256,
         inputs=list(execution_spec.inputs),
         input_authorities=list(execution_spec.input_authorities),
         runtime_metadata=runtime_metadata,
@@ -593,20 +997,20 @@ def _manifest_payload(manifest: AnyManifest | None, ref: ParentRef) -> dict[str,
         if hasattr(manifest, attr):
             value = getattr(manifest, attr)
             if isinstance(value, list):
-                payload[attr] = _portable_value([
-                    item.model_dump(mode="json", exclude_none=True)
-                    if hasattr(item, "model_dump")
-                    else item
-                    for item in value
-                ])
+                payload[attr] = _portable_value(
+                    [
+                        item.model_dump(mode="json", exclude_none=True)
+                        if hasattr(item, "model_dump")
+                        else item
+                        for item in value
+                    ]
+                )
             else:
                 payload[attr] = _portable_value(value)
     return payload
 
 
-_RUNTIME_CONTEXT_KEYS = frozenset(
-    {"uri", "path", "root", "callback", "execution_context"}
-)
+_RUNTIME_CONTEXT_KEYS = frozenset({"uri", "path", "root", "callback", "execution_context"})
 
 
 def _portable_value(value: Any) -> Any:
@@ -679,8 +1083,9 @@ def _build_figures(
     context: ExpressionContext,
     exec_trace: FigureExecutionTrace,
     root: Path,
+    registry: FigureRegistry,
 ) -> list[RenderedFigure]:
-    template = get_figure_template(spec.template) if spec.template else None
+    template = get_figure_template(spec.template, registry=registry) if spec.template else None
     assembler_key = spec.assembler or template.assembler
     assembler_params = {
         **(getattr(template, "assembler_params", {}) if template is not None else {}),
@@ -693,7 +1098,7 @@ def _build_figures(
         )
 
     facet_combinations = _facet_combinations(spec, template, context)
-    custom_registration = get_figure_constructor(assembler_key)
+    custom_registration = get_figure_constructor(assembler_key, registry=registry)
     if custom_registration.tier == "custom_figure":
         exec_trace.constructor_versions[assembler_key] = custom_registration.version
         if any(panel.equal_data_aspect is not None for panel in spec.panels):
@@ -732,9 +1137,11 @@ def _build_figures(
             for combination in combinations
         ]
 
-    trace_bindings = resolve_figure_trace_bindings(spec, template)
+    trace_bindings = resolve_figure_trace_bindings(spec, template, registry=registry)
     panel_constructor_key = assembler_params.get("panel_constructor", "feedbax.comparison_grid")
-    panel_registration = get_figure_constructor(panel_constructor_key, tier="panel")
+    panel_registration = get_figure_constructor(
+        panel_constructor_key, registry=registry, tier="panel"
+    )
     exec_trace.constructor_versions[panel_constructor_key] = panel_registration.version
     if (
         any(panel.equal_data_aspect is not None for panel in spec.panels)
@@ -750,7 +1157,7 @@ def _build_figures(
             f"FigureSpec declares {declared}, but panel assembler "
             f"{panel_registration.key!r} does not support it"
         )
-    figure_registration = get_figure_constructor(assembler_key, tier="figure")
+    figure_registration = get_figure_constructor(assembler_key, registry=registry, tier="figure")
     exec_trace.constructor_versions[assembler_key] = figure_registration.version
     panel_values, figure_values = _route_assembler_params(
         assembler_params,
@@ -785,6 +1192,7 @@ def _build_figures(
             trace_bindings,
             exec_trace,
             root,
+            registry,
         )
         figure = panel_registration.callable(panel_contents, panel_params)  # type: ignore[misc]
         return [
@@ -808,6 +1216,7 @@ def _build_figures(
             trace_bindings,
             exec_trace,
             root,
+            registry,
             nonfacet_context=context,
         )
         figure = panel_registration.callable(panel_contents, panel_params)  # type: ignore[misc]
@@ -918,9 +1327,7 @@ def _expand_trace_family(family: TraceFamily) -> TraceFamilyExpansion:
             params["showlegend"] = str(index) == legend_index
         if params:
             binding = binding.model_copy(update={"params": {**binding.params, **params}})
-        members.append(
-            TraceFamilyMember(index=index, color=color, binding=binding, value=value)
-        )
+        members.append(TraceFamilyMember(index=index, color=color, binding=binding, value=value))
     return TraceFamilyExpansion(family=family, members=tuple(members))
 
 
@@ -1023,6 +1430,8 @@ def resolve_figure_colorbar(spec: FigureSpec) -> FigureColorbar | None:
 def resolve_figure_trace_bindings(
     spec: FigureSpec,
     template: FigureTemplate | None,
+    *,
+    registry: FigureRegistry,
 ) -> tuple[TraceBindingPlan, ...]:
     """Resolve every declared trace through the one public binding path.
 
@@ -1090,7 +1499,7 @@ def resolve_figure_trace_bindings(
     for piece_name in piece_names:
         if piece_name in excluded:
             continue
-        piece = get_figure_piece(piece_name)
+        piece = get_figure_piece(piece_name, registry=registry)
         bindings.append(
             TraceBindingPlan(
                 binding=TraceBinding(
@@ -1118,6 +1527,7 @@ def _panel_contents(
     trace_bindings: Sequence[TraceBindingPlan],
     exec_trace: FigureExecutionTrace,
     root: Path,
+    registry: FigureRegistry,
     *,
     nonfacet_context: ExpressionContext | None = None,
 ) -> list[PanelContent]:
@@ -1133,6 +1543,7 @@ def _panel_contents(
             context if plan.multiplicity == "per_facet" else (nonfacet_context or context),
             exec_trace,
             root,
+            registry,
             panel_name=panel_name,
         )
         traces_by_panel.setdefault(panel_name, []).extend(traces)
@@ -1177,6 +1588,7 @@ def _facet_panel_contents(
     trace_bindings: Sequence[TraceBindingPlan],
     exec_trace: FigureExecutionTrace,
     root: Path,
+    registry: FigureRegistry,
 ) -> list[PanelContent]:
     base_panel = spec.panels[0] if spec.panels else None
     contents: list[PanelContent] = []
@@ -1190,6 +1602,7 @@ def _facet_panel_contents(
                     facet_context if plan.multiplicity == "per_facet" else context,
                     exec_trace,
                     root,
+                    registry,
                     panel_name=combination.label,
                 )
             )
@@ -1222,10 +1635,7 @@ def _facet_panel_contents(
                 ),
                 equal_data_aspect=(
                     base_panel.equal_data_aspect.model_dump(exclude_none=True)
-                    if (
-                        base_panel is not None
-                        and base_panel.equal_data_aspect is not None
-                    )
+                    if (base_panel is not None and base_panel.equal_data_aspect is not None)
                     else None
                 ),
                 z_axis=(
@@ -1247,6 +1657,7 @@ def _execute_trace_binding(
     context: ExpressionContext,
     exec_trace: FigureExecutionTrace,
     root: Path,
+    registry: FigureRegistry,
     *,
     panel_name: str | None = None,
 ) -> list[Any]:
@@ -1264,7 +1675,7 @@ def _execute_trace_binding(
         )
         return []
     try:
-        data = _binding_data(binding, context, exec_trace, root)
+        data = _binding_data(binding, context, exec_trace, root, registry)
     except ExpressionPathMissing as exc:
         if binding.required:
             exec_trace.binding_records.append(
@@ -1302,7 +1713,7 @@ def _execute_trace_binding(
         )
         raise
 
-    registration = get_figure_constructor(binding.constructor, tier="trace")
+    registration = get_figure_constructor(binding.constructor, registry=registry, tier="trace")
     exec_trace.constructor_versions[binding.constructor] = registration.version
     params = registration.params(binding.params)
     traces = list(registration.callable(data, params))  # type: ignore[misc]
@@ -1323,10 +1734,11 @@ def _binding_data(
     context: ExpressionContext,
     exec_trace: FigureExecutionTrace,
     root: Path,
+    registry: FigureRegistry,
 ) -> dict[str, Any]:
     data = {name: _evaluate_value(value, context) for name, value in binding.data.items()}
     if binding.piece is not None:
-        piece = get_figure_piece(binding.piece)
+        piece = get_figure_piece(binding.piece, registry=registry)
         data = {**_piece_data(piece, root), **data}
         data.setdefault("label", piece.label)
         data.update({key: value for key, value in piece.style.items() if key not in data})
@@ -1507,9 +1919,10 @@ def _safe_figure_name(value: str, index: int) -> str:
 def _build_figure_manifest(
     *,
     manifest_id: str,
-    authored_spec: FigureSpec,
+    resolved_spec: FigureSpec,
     execution_spec: FigureSpec,
     authored_payload: SpecPayload,
+    composition_payloads: Sequence[SpecPayload],
     runtime_binding_payload: SpecPayload | None,
     status: ManifestStatus,
     provenance: Provenance,
@@ -1531,18 +1944,15 @@ def _build_figure_manifest(
         resolved_inputs=[item.ref for item in resolved_inputs if item.manifest is not None],
         resolved_pieces=list(execution_trace.resolved_pieces),
         constructor_versions=dict(execution_trace.constructor_versions),
-        template_name=authored_spec.template,
+        template_name=resolved_spec.template,
         binding_records=list(execution_trace.binding_records),
         expression_results_digest=sha256_bytes(canonical_json_bytes(binding_payload)),
         provenance=provenance,
         artifacts=artifacts,
         regeneration_specs=[
+            *composition_payloads,
             *([runtime_binding_payload] if runtime_binding_payload is not None else []),
-            *(
-                artifact
-                for resolved in resolved_inputs
-                for artifact in resolved.artifact_refs
-            ),
+            *(artifact for resolved in resolved_inputs for artifact in resolved.artifact_refs),
         ],
         failure=failure,
         metadata=metadata,

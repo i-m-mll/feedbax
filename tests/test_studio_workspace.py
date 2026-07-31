@@ -5,12 +5,18 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import (
+    ComponentSpec,
     GraphMetadata,
     GraphSpec,
     GraphUIState,
     StudioStageSpec,
     StudioWorkspaceSpec,
+)
+from feedbax.contracts.array_values import (
+    ARRAY_VALUE_SCHEMA_ID,
+    ARRAY_VALUE_SCHEMA_VERSION,
 )
 from feedbax.web.app import create_app
 import feedbax.web.api.graphs as graphs_api
@@ -92,6 +98,71 @@ def test_create_graph_persists_default_workspace(tmp_path):
 
     reloaded = service.get_graph(record.graph_id)
     assert reloaded.project.workspace == workspace
+
+
+def test_studio_save_load_materializes_dynamic_ports_with_explicit_registry(tmp_path):
+    service = GraphService(storage_dir=tmp_path)
+    registry = ComponentRegistry(load_user_components=False)
+    graph = GraphSpec(
+        nodes={
+            "mux": ComponentSpec(type="Mux", params={"n_inputs": 3}),
+        },
+        output_ports=["output"],
+        output_bindings={"output": ("mux", "output")},
+    )
+
+    record = service.create_graph(
+        graph,
+        _ui_state(),
+        component_registry=registry,
+    )
+    reloaded = service.get_graph(
+        record.graph_id,
+        component_registry=registry,
+    )
+
+    node = reloaded.project.graph.nodes["mux"]
+    assert node.input_ports == ["in_0", "in_1", "in_2"]
+    assert node.output_ports == ["output"]
+    train_stage = next(
+        stage for stage in reloaded.project.workspace.stages if stage.kind == "train"
+    )
+    scenario = reloaded.project.workspace.scenarios[train_stage.scenario_id]
+    assert scenario.graph.nodes["mux"].input_ports == node.input_ports
+
+
+def test_studio_save_load_preserves_read_only_array_value_envelopes(tmp_path):
+    service = GraphService(storage_dir=tmp_path)
+    declaration = {
+        "schema_id": ARRAY_VALUE_SCHEMA_ID,
+        "schema_version": ARRAY_VALUE_SCHEMA_VERSION,
+        "encoding": "constant",
+        "shape": [3, 2],
+        "dtype": "float32",
+        "nonfinite": "forbid",
+        "value": 1.5,
+    }
+    graph = _graph().model_copy(
+        update={
+            "nodes": {
+                "fixture": ComponentSpec(
+                    type="fixture.Component",
+                    params={"nested": {"matrix": declaration}},
+                )
+            }
+        }
+    )
+
+    record = service.create_graph(graph, _ui_state())
+    reloaded = service.get_graph(record.graph_id)
+
+    assert reloaded.project.graph.nodes["fixture"].params["nested"]["matrix"] == declaration
+    assert (
+        reloaded.project.workspace.scenarios["scenario:train"]
+        .graph.nodes["fixture"]
+        .params["nested"]["matrix"]
+        == declaration
+    )
 
 
 def test_legacy_project_load_materializes_workspace(tmp_path):

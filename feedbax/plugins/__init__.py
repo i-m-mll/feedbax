@@ -1,49 +1,191 @@
-"""Plugin system for feedbax experiments framework."""
+"""Public typed Feedbax plugin bootstrap interface."""
 
-from typing import TYPE_CHECKING
-
-from .discovery import (
-    discover_experiment_packages,
-    feedbax_plugin_entry_points,
-    load_conformance_check_plugins,
-    load_training_method_plugins,
+from .application import (
+    APPLICATION_REGISTRY_KEYS,
+    ANALYSIS_RECIPES,
+    COMPONENTS,
+    CONFORMANCE_CHECKS,
+    DRIVERS,
+    EVALUATION_BATCH_CONSUMERS,
+    EVALUATION_PRODUCT_UNION_FINALIZERS,
+    EVALUATION_RECIPES,
+    EXECUTION_PREPARATIONS,
+    EXPERIMENT_PACKAGES,
+    FIGURES,
+    REPORT_RECIPES,
+    ROW_LOWERERS,
+    TRAINING_METHODS,
+    ApplicationRegistryBundle,
+    new_registration_context,
 )
-from .registry import ExperimentRegistry, get_default_registry
+from .bootstrap import (
+    BootstrapError,
+    BootstrapErrorCode,
+    BootstrapState,
+    DOWNSTREAM_INTERFACE_POLICY_ID,
+    DOWNSTREAM_POLICY_EFFECTIVE_RELEASE,
+    DOWNSTREAM_PROTOCOL_CURRENT,
+    DOWNSTREAM_PROTOCOL_MINIMUM,
+    BOOTSTRAP_CONTEXT_VERSION,
+    FamilyRequirement,
+    PluginDeclaration,
+    PluginDependency,
+    PluginProvenance,
+    PluginRegistration,
+    PLUGIN_DECLARATION_SCHEMA_ID,
+    PLUGIN_DECLARATION_SCHEMA_VERSION,
+    PLUGIN_DECLARATION_SCHEMA_VERSION_V1,
+    PLUGIN_PROTOCOL_VERSION,
+    RegistrationContext,
+    RegistryFamilyRegistration,
+    RegistryKey,
+    UnsupportedDownstreamProtocolVersion,
+    bootstrap_application,
+    discover_plugin_registrations,
+    validate_downstream_protocol_version,
+)
+from .registry import ExperimentRegistry
+from feedbax.analysis.evaluation import (
+    EvaluationAuthoringSchema,
+    EvaluationBatchRecipe,
+    EvaluationBatchItem,
+    EvaluationBatchRowError,
+    EvaluationRecipe,
+    EvaluationRecipeRegistry,
+    EvaluationRecipeResult,
+)
+from feedbax.analysis.evaluation_compaction import (
+    EvaluationBatchConsumer,
+    EvaluationBatchConsumerInput,
+    EvaluationBatchConsumerRegistry,
+    EvaluationBatchFinalizeInput,
+    EvaluationBatchFragment,
+    EvaluationBatchMergeInput,
+    EvaluationBatchMergeState,
+)
+from feedbax.analysis.evaluation_product_union import (
+    EvaluationCompactProductUnionFinalizerRegistry,
+    EvaluationCompactProductUnionInput,
+)
+from feedbax.analysis.specs import (
+    AnalysisRecipe,
+    AnalysisRecipeRegistry,
+    AnalysisRecipeResult,
+)
+from feedbax.analysis.execution_context import (
+    EMPTY_STAGED_EXECUTION_CONTEXT,
+    StagedExecutionContext,
+)
+from feedbax.analysis.validation import EvaluationStatesStructureProviderProtocol
+from feedbax.contracts.training import TrainingMethodDescriptor, TrainingMethodRegistry
+from feedbax.training.authoring import (
+    compile_training_method_authoring,
+    training_method_row_lowerer_registration,
+)
+from feedbax.training.preparation import (
+    ExecutionPreparationPlan,
+    ExecutionPreparationProvider,
+    ExecutionPreparationProviderRegistry,
+    ExecutionPreparationRegistration,
+    ExecutionPreparationRequest,
+    ExecutionPreparationResult,
+)
+from feedbax.training.row_lowering import (
+    TrainingRowLowererRegistration,
+    TrainingRowLowererRegistry,
+    TrainingRowLoweringContext,
+)
+from feedbax.contracts.run_matrix import TrainingRowLoweringResult
 
-# `EXPERIMENT_REGISTRY` is discovered lazily on first access rather than as an
-# import-time side effect. Running `discover_experiment_packages()` at import
-# time creates a circular import: `feedbax.config` imports `feedbax.plugins`
-# before its own module-level globals (`PATHS`, etc.) are populated, discovery
-# loads experiment-package entry points (e.g. `rlrmp`), and those packages
-# import back into the still-partially-initialized `feedbax.config`. Deferring
-# discovery until the registry is actually used lets `feedbax.config` finish
-# initializing first. See issue ccfe63a.
-_EXPERIMENT_REGISTRY: "ExperimentRegistry | None" = None
-
-if TYPE_CHECKING:
-    EXPERIMENT_REGISTRY: ExperimentRegistry
-
-
-def _get_experiment_registry() -> "ExperimentRegistry":
-    """Return the discovered experiment registry, running discovery once."""
-    global _EXPERIMENT_REGISTRY
-    if _EXPERIMENT_REGISTRY is None:
-        _EXPERIMENT_REGISTRY = discover_experiment_packages()
-    return _EXPERIMENT_REGISTRY
-
-
-def __getattr__(name: str):
-    if name == "EXPERIMENT_REGISTRY":
-        return _get_experiment_registry()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
+_NON_GUARANTEED_PLUGIN_EXPORTS = (
+    "CONFORMANCE_CHECKS",
+    "EXPERIMENT_PACKAGES",
+    "FIGURES",
+    "REPORT_RECIPES",
+    "BOOTSTRAP_CONTEXT_VERSION",
+    "ExperimentRegistry",
+    "PLUGIN_DECLARATION_SCHEMA_ID",
+    "PLUGIN_DECLARATION_SCHEMA_VERSION",
+    "PLUGIN_DECLARATION_SCHEMA_VERSION_V1",
+    "PLUGIN_PROTOCOL_VERSION",
+)
 
 __all__ = [
-    "EXPERIMENT_REGISTRY",
+    "DOWNSTREAM_INTERFACE_POLICY_ID",
+    "DOWNSTREAM_PROTOCOL_CURRENT",
+    "DOWNSTREAM_PROTOCOL_MINIMUM",
+    "DOWNSTREAM_POLICY_EFFECTIVE_RELEASE",
+    "UnsupportedDownstreamProtocolVersion",
+    "validate_downstream_protocol_version",
+    "BootstrapError",
+    "BootstrapErrorCode",
+    "BootstrapState",
+    "FamilyRequirement",
+    "PluginDeclaration",
+    "PluginDependency",
+    "PluginProvenance",
+    "PluginRegistration",
+    "RegistrationContext",
+    "RegistryKey",
+    "RegistryFamilyRegistration",
+    "bootstrap_application",
+    "discover_plugin_registrations",
+    "new_registration_context",
+    "DRIVERS",
+    "APPLICATION_REGISTRY_KEYS",
+    "ApplicationRegistryBundle",
+    "COMPONENTS",
+    "TRAINING_METHODS",
+    "ROW_LOWERERS",
+    "EXECUTION_PREPARATIONS",
+    "ANALYSIS_RECIPES",
+    "EVALUATION_RECIPES",
+    "EVALUATION_BATCH_CONSUMERS",
+    "EVALUATION_PRODUCT_UNION_FINALIZERS",
+    "TrainingMethodDescriptor",
+    "TrainingMethodRegistry",
+    "TrainingRowLowererRegistration",
+    "TrainingRowLowererRegistry",
+    "TrainingRowLoweringContext",
+    "TrainingRowLoweringResult",
+    "ExecutionPreparationProvider",
+    "ExecutionPreparationProviderRegistry",
+    "ExecutionPreparationRegistration",
+    "ExecutionPreparationRequest",
+    "ExecutionPreparationResult",
+    "ExecutionPreparationPlan",
+    "compile_training_method_authoring",
+    "training_method_row_lowerer_registration",
+    "AnalysisRecipe",
+    "AnalysisRecipeRegistry",
+    "AnalysisRecipeResult",
+    "EvaluationRecipe",
+    "EvaluationRecipeRegistry",
+    "EvaluationRecipeResult",
+    "EvaluationBatchRecipe",
+    "EvaluationAuthoringSchema",
+    "EvaluationBatchItem",
+    "EvaluationBatchRowError",
+    "EvaluationStatesStructureProviderProtocol",
+    "StagedExecutionContext",
+    "EMPTY_STAGED_EXECUTION_CONTEXT",
+    "EvaluationBatchConsumer",
+    "EvaluationBatchConsumerRegistry",
+    "EvaluationBatchConsumerInput",
+    "EvaluationBatchMergeInput",
+    "EvaluationBatchMergeState",
+    "EvaluationBatchFinalizeInput",
+    "EvaluationBatchFragment",
+    "EvaluationCompactProductUnionFinalizerRegistry",
+    "EvaluationCompactProductUnionInput",
+    "CONFORMANCE_CHECKS",
+    "EXPERIMENT_PACKAGES",
+    "FIGURES",
+    "REPORT_RECIPES",
+    "BOOTSTRAP_CONTEXT_VERSION",
     "ExperimentRegistry",
-    "get_default_registry",
-    "discover_experiment_packages",
-    "feedbax_plugin_entry_points",
-    "load_conformance_check_plugins",
-    "load_training_method_plugins",
+    "PLUGIN_DECLARATION_SCHEMA_ID",
+    "PLUGIN_DECLARATION_SCHEMA_VERSION",
+    "PLUGIN_DECLARATION_SCHEMA_VERSION_V1",
+    "PLUGIN_PROTOCOL_VERSION",
 ]

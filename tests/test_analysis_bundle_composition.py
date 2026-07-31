@@ -25,8 +25,6 @@ from feedbax.analysis.bundles import (
 )
 from feedbax.analysis.evaluation import (
     EvaluationRecipeResult,
-    register_evaluation_recipe,
-    unregister_evaluation_recipe,
 )
 from feedbax.contracts import analysis_bundle_composition
 from feedbax.contracts.analysis_bundle_composition import (
@@ -123,9 +121,7 @@ def test_shared_base_supports_thin_authority_bindings_and_equivalent_expansion(
     )
     composed_expansions = expand_analysis_bundle(child, [manifest], repo_root=tmp_path)
     direct_expansions = expand_analysis_bundle(direct, [manifest])
-    assert [item.spec for item in composed_expansions] == [
-        item.spec for item in direct_expansions
-    ]
+    assert [item.spec for item in composed_expansions] == [item.spec for item in direct_expansions]
     assert composed_expansions[0].bundle_composition == (
         analysis_bundle_composition_provenance(flattening)
     )
@@ -178,9 +174,7 @@ def test_nested_composition_records_root_to_child_provenance(tmp_path: Path) -> 
         AnalysisBundleDeltaSpec.model_validate(leaf)
     )
     assert provenance["schema_id"] == ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_ID
-    assert provenance["schema_version"] == (
-        ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_VERSION
-    )
+    assert provenance["schema_version"] == (ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_VERSION)
     assert provenance["root_bundle"] == {"ref": "base.json", "sha256": base_sha}
     assert provenance["attribution"] == {
         "metadata.model": "leaf",
@@ -293,6 +287,7 @@ def test_unacknowledged_ancestor_override_fails_closed(tmp_path: Path) -> None:
 def test_composed_execution_accepts_authoring_and_records_provenance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    application_registry_bundle,
 ) -> None:
     run_id = "feedbax-training-run:target"
     base_sha = _write(tmp_path, "base.json", _base_bundle(run_ids=[run_id]))
@@ -305,17 +300,21 @@ def test_composed_execution_accepts_authoring_and_records_provenance(
         return object(), Path(root) / "out.json"
 
     monkeypatch.setattr(bundles, "execute_analysis_run_spec", fake_execute)
-    outputs = execute_analysis_bundle(child, root=tmp_path, repo_root=tmp_path)
+    outputs = execute_analysis_bundle(
+        child, root=tmp_path, repo_root=tmp_path, registries=application_registry_bundle
+    )
 
     assert len(outputs) == 1
     provenance = captured["metadata"]["bundle"]["composition"]
-    assert provenance["authored_envelope_sha256"] == outputs[0][0].bundle_composition[
-        "authored_envelope_sha256"
-    ]
+    assert (
+        provenance["authored_envelope_sha256"]
+        == outputs[0][0].bundle_composition["authored_envelope_sha256"]
+    )
 
 
 def test_staged_execution_accepts_composed_authoring_and_keeps_direct_metadata_unchanged(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     base = AnalysisBundleSpec.model_validate(
         {
@@ -337,8 +336,12 @@ def test_staged_execution_accepts_composed_authoring_and_keeps_direct_metadata_u
     base_sha = _write(tmp_path, "staged.json", base)
     child = _delta("staged.json", base_sha, [{"layer_id": "authority", "patches": []}])
 
-    composed = execute_staged_analysis_bundle(child, root=tmp_path, repo_root=tmp_path)
-    direct = execute_staged_analysis_bundle(base, root=tmp_path)
+    composed = execute_staged_analysis_bundle(
+        child, root=tmp_path, repo_root=tmp_path, registries=application_registry_bundle
+    )
+    direct = execute_staged_analysis_bundle(
+        base, root=tmp_path, registries=application_registry_bundle
+    )
     dry_run = dry_run_staged_analysis_bundle(child, root=tmp_path, repo_root=tmp_path)
     direct_dry_run = dry_run_staged_analysis_bundle(base, root=tmp_path)
 
@@ -347,9 +350,7 @@ def test_staged_execution_accepts_composed_authoring_and_keeps_direct_metadata_u
         "sha256": base_sha,
     }
     assert dry_run.bundle_composition == composed.bundle_composition
-    assert composed.metadata["bundle_composition"] == {
-        "authored": "must-remain-user-owned"
-    }
+    assert composed.metadata["bundle_composition"] == {"authored": "must-remain-user-owned"}
     assert dry_run.metadata == composed.metadata
     assert direct.metadata == composed.metadata
     assert direct.bundle_composition is None
@@ -361,6 +362,7 @@ def test_staged_execution_accepts_composed_authoring_and_keeps_direct_metadata_u
 
 def test_staged_execution_v1_migrates_and_composed_v2_serializes_provenance(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     base = AnalysisBundleSpec.model_validate(
         {
@@ -375,7 +377,9 @@ def test_staged_execution_v1_migrates_and_composed_v2_serializes_provenance(
             ],
         }
     ).model_dump(mode="json")
-    direct = execute_staged_analysis_bundle(base, root=tmp_path)
+    direct = execute_staged_analysis_bundle(
+        base, root=tmp_path, registries=application_registry_bundle
+    )
     legacy_payload = direct.model_dump(mode="json")
     legacy_payload["schema_version"] = ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION_V1
 
@@ -408,6 +412,7 @@ def test_staged_execution_v1_migrates_and_composed_v2_serializes_provenance(
         child,
         root=tmp_path,
         repo_root=tmp_path,
+        registries=application_registry_bundle,
     ).model_dump(mode="json")
 
     assert composed_payload["schema_version"] == ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION
@@ -415,63 +420,67 @@ def test_staged_execution_v1_migrates_and_composed_v2_serializes_provenance(
         "ref": "versioned-staged.json",
         "sha256": base_sha,
     }
-    provider_version = provider_manifest().schemas["StagedAnalysisBundleExecution"][
-        "properties"
-    ]["schema_version"]
+    provider_version = provider_manifest().schemas["StagedAnalysisBundleExecution"]["properties"][
+        "schema_version"
+    ]
     assert provider_version["const"] == ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION
     assert provider_version["default"] == ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION
 
 
-def test_real_composed_staged_child_executes_and_records_provenance(tmp_path: Path) -> None:
+def test_real_composed_staged_child_executes_and_records_provenance(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     evaluation_type = "feedbax.test.composed_bundle_evaluation"
     run_id = "feedbax-training-run:composed"
 
     def recipe(spec, _root, _states_path, _execution_context):
         return EvaluationRecipeResult(summary_metrics={"authority": spec.params["authority"]})
 
-    register_evaluation_recipe(evaluation_type, recipe, replace=True)
-    try:
-        write_manifest(
-            TrainingRunManifest(id=run_id, run_set_id="composed", status="completed"),
-            root=tmp_path,
-        )
-        base = AnalysisBundleSpec.model_validate(
+    application_registry_bundle.evaluation_recipes.register(evaluation_type, recipe)
+    write_manifest(
+        TrainingRunManifest(id=run_id, run_set_id="composed", status="completed"),
+        root=tmp_path,
+    )
+    base = AnalysisBundleSpec.model_validate(
+        {
+            "name": "staged-real",
+            "predicate": {
+                "manifest_kind": "TrainingRunManifest",
+                "run_ids": [run_id],
+            },
+            "stages": [
+                {
+                    "name": "evaluate",
+                    "kind": "evaluation",
+                    "evaluation_type": evaluation_type,
+                    "local_params": {"authority": "base"},
+                }
+            ],
+        }
+    ).model_dump(mode="json")
+    base_sha = _write(tmp_path, "staged-real.json", base)
+    child = _delta(
+        "staged-real.json",
+        base_sha,
+        [
             {
-                "name": "staged-real",
-                "predicate": {
-                    "manifest_kind": "TrainingRunManifest",
-                    "run_ids": [run_id],
-                },
-                "stages": [
+                "layer_id": "checkpoint-authority",
+                "patches": [
                     {
-                        "name": "evaluate",
-                        "kind": "evaluation",
-                        "evaluation_type": evaluation_type,
-                        "local_params": {"authority": "base"},
+                        "path": "stages.0.local_params.authority",
+                        "value": "child",
                     }
                 ],
             }
-        ).model_dump(mode="json")
-        base_sha = _write(tmp_path, "staged-real.json", base)
-        child = _delta(
-            "staged-real.json",
-            base_sha,
-            [
-                {
-                    "layer_id": "checkpoint-authority",
-                    "patches": [
-                        {
-                            "path": "stages.0.local_params.authority",
-                            "value": "child",
-                        }
-                    ],
-                }
-            ],
-        )
+        ],
+    )
 
-        result = execute_staged_analysis_bundle(child, root=tmp_path, repo_root=tmp_path)
-    finally:
-        unregister_evaluation_recipe(evaluation_type)
+    result = execute_staged_analysis_bundle(
+        child,
+        root=tmp_path,
+        repo_root=tmp_path,
+        registries=application_registry_bundle,
+    )
 
     assert result.stages[0].status == "materialized"
     assert result.stages[0].manifest_refs[0].kind == "EvaluationRunManifest"
@@ -499,10 +508,10 @@ def test_recursive_parent_migrates_supported_older_direct_bundle(tmp_path: Path)
 
     resolved, flattening = resolve_analysis_bundle_authoring(child, repo_root=tmp_path)
 
-    assert resolved.schema_version == "feedbax.spec.analysis_bundle.v5"
+    assert resolved.schema_version == "feedbax.spec.analysis_bundle.v6"
     assert resolved.stages[0].local_params == {"window": 11}
     assert flattening is not None
-    assert flattening.payload["schema_version"] == "feedbax.spec.analysis_bundle.v5"
+    assert flattening.payload["schema_version"] == "feedbax.spec.analysis_bundle.v6"
 
 
 def test_provider_and_migration_registry_publish_separate_authoring_schema() -> None:

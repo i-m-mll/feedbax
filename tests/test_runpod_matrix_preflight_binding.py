@@ -16,6 +16,7 @@ from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     TrainingRowLoweringResult,
 )
+from feedbax.contracts.training import default_training_method_registry
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
@@ -167,7 +168,13 @@ def _matrix_case(
             lowerer_identities=[{"lowerer_id": "tests.matrix", "lowerer_version": "v1"}],
         )
 
-    register_training_run_matrix_compiler(registry, allow_inline_base=True, row_lowerer=lower)
+    register_training_run_matrix_compiler(
+        registry,
+        allow_inline_base=True,
+        row_lowerer=lower,
+        row_validator=lambda _payload, _row_id: None,
+        method_registry=default_training_method_registry(),
+    )
     context = AssemblyContext(custody_root=root / "runs" / "custody", repo_root=root)
     bundle = assemble_run_bundle(
         request, run_set_id="matrix-run-set", context=context, registry=registry
@@ -230,7 +237,9 @@ def _driver(bundle: RunBundle, repo: Path, transport: RecordingTransport):
 
 def _completed_preflight(bundle: RunBundle, repo: Path, root: Path) -> Any:
     store = RunSetStateStore(root / "state.json")
-    return StageEngine(bundle=bundle, driver=_driver(bundle, repo, RecordingTransport()), store=store).run(stop_after_stage=STAGE_PREFLIGHT)
+    return StageEngine(
+        bundle=bundle, driver=_driver(bundle, repo, RecordingTransport()), store=store
+    ).run(stop_after_stage=STAGE_PREFLIGHT)
 
 
 class _AcquiredPreflightTransport(RecordingTransport):
@@ -292,9 +301,15 @@ def test_matrix_preflight_emits_canonical_v4_without_private_paths(tmp_path: Pat
     binding = evidence["matrix_binding"]
     assert [row["row_id"] for row in binding["rows"]] == ["first", "second"]
     assert [row["locked_training_depth"] for row in binding["rows"]] == [7, 7]
-    assert binding["monitor"]["event_paths"] == [f"events/{row}.events.jsonl" for row in ("first", "second")]
+    assert binding["monitor"]["event_paths"] == [
+        f"events/{row}.events.jsonl" for row in ("first", "second")
+    ]
     authority = binding["code_authorities"][0]
-    assert (authority["repo"], authority["protected_ref"], authority["clean"]) == ("science", "refs/heads/main", True)
+    assert (authority["repo"], authority["protected_ref"], authority["clean"]) == (
+        "science",
+        "refs/heads/main",
+        True,
+    )
     assert authority["declared_revision"] == authority["protected_revision"] == revision
     assert authority["observed_revision"] == revision
     assert str(tmp_path) not in json.dumps(evidence)
@@ -324,27 +339,12 @@ def test_authority_only_cli_is_isolated_and_matches_real_runpod_evidence(
     request, registry, bundle = _matrix_case(tmp_path, revision=revision)
     request_path = tmp_path / "request.json"
     request_path.write_text(request.model_dump_json(indent=2) + "\n", encoding="utf-8")
-    monkeypatch.setattr(orchestrate, "build_default_assembly_registry", lambda: registry)
-    monkeypatch.setattr(
-        orchestrate,
-        "load_training_method_plugins",
-        lambda **_kwargs: pytest.fail("authority-only preflight loaded plugins"),
-    )
+    monkeypatch.setattr(orchestrate, "build_default_assembly_registry", lambda **_kwargs: registry)
     monkeypatch.setattr(
         orchestrate,
         "load_runpod_api_key",
-        lambda: pytest.fail("authority-only preflight read environment/config/keychain credentials"),
-    )
-    monkeypatch.setattr(
-        orchestrate,
-        "_runpod_config_for_bundle",
-        lambda _bundle: pytest.fail("authority-only preflight constructed provider config"),
-    )
-    monkeypatch.setattr(
-        orchestrate,
-        "RunPodOrchestrationDriver",
-        lambda *_args, **_kwargs: pytest.fail(
-            "authority-only preflight constructed provider driver"
+        lambda: pytest.fail(
+            "authority-only preflight read environment/config/keychain credentials"
         ),
     )
     real_run = subprocess.run
@@ -358,23 +358,33 @@ def test_authority_only_cli_is_isolated_and_matches_real_runpod_evidence(
 
     monkeypatch.setattr(matrix_authority.subprocess, "run", isolated_run)
 
-    assert orchestrate.main(
-        [
-            "preflight",
-            "--authority-only",
-            "--run-set-id",
-            bundle.run_set_id,
-            "--assembly-request",
-            str(request_path),
-        ]
-    ) == 0
+    assert (
+        orchestrate.main(
+            [
+                "preflight",
+                "--authority-only",
+                "--run-set-id",
+                bundle.run_set_id,
+                "--assembly-request",
+                str(request_path),
+            ]
+        )
+        == 0
+    )
     neutral = json.loads(capsys.readouterr().out)
     assert neutral["authority_state"] == "provider_unverified"
     assert "nested_preflight_evidence_sha256" not in neutral
     assert neutral["bundle_sha256"] == canonical_run_bundle_sha256(bundle)
     state = _completed_preflight(bundle, repo, tmp_path)
     provider = state.stage(STAGE_PREFLIGHT).outputs["driver_evidence"]
-    for key in ("matrix", "rows", "resolved_inputs", "code_authorities", "monitor", "bundle_sha256"):
+    for key in (
+        "matrix",
+        "rows",
+        "resolved_inputs",
+        "code_authorities",
+        "monitor",
+        "bundle_sha256",
+    ):
         assert provider["matrix_binding"][key] == neutral[key]
     stage = state.stage(STAGE_PREFLIGHT)
     state = state.with_stage(
@@ -419,23 +429,8 @@ def test_authority_only_cli_authenticates_content_pinned_custom_lowered_bundle(
     )
     monkeypatch.setattr(
         orchestrate,
-        "load_training_method_plugins",
-        lambda **_kwargs: pytest.fail("bundle authority loaded plugins"),
-    )
-    monkeypatch.setattr(
-        orchestrate,
         "load_runpod_api_key",
         lambda: pytest.fail("bundle authority read credentials"),
-    )
-    monkeypatch.setattr(
-        orchestrate,
-        "_runpod_config_for_bundle",
-        lambda _bundle: pytest.fail("bundle authority constructed provider config"),
-    )
-    monkeypatch.setattr(
-        orchestrate,
-        "RunPodOrchestrationDriver",
-        lambda *_args, **_kwargs: pytest.fail("bundle authority constructed provider driver"),
     )
 
     checks = {check.name: check for check in run_authority_preflight_checks(bundle)}
@@ -444,7 +439,6 @@ def test_authority_only_cli_authenticates_content_pinned_custom_lowered_bundle(
         "feedbax-revision-pin",
         "row-identity",
         "budget-presence",
-        "driver-preconditions",
         "environment-declaration",
         "input-custody-authority",
         "native-output-custody",
@@ -452,18 +446,21 @@ def test_authority_only_cli_authenticates_content_pinned_custom_lowered_bundle(
     }
     assert all(check.status == "pass" for check in checks.values())
 
-    assert orchestrate.main(
-        [
-            "preflight",
-            "--authority-only",
-            "--run-set-id",
-            bundle.run_set_id,
-            "--bundle",
-            str(bundle_path),
-            "--bundle-sha256",
-            bundle_sha256,
-        ]
-    ) == 0
+    assert (
+        orchestrate.main(
+            [
+                "preflight",
+                "--authority-only",
+                "--run-set-id",
+                bundle.run_set_id,
+                "--bundle",
+                str(bundle_path),
+                "--bundle-sha256",
+                bundle_sha256,
+            ]
+        )
+        == 0
+    )
     authority = json.loads(capsys.readouterr().out)
     assert authority["authority_state"] == "provider_unverified"
     assert authority["bundle_sha256"] == bundle_sha256
@@ -484,11 +481,15 @@ def test_authority_only_bundle_cli_rejects_invalid_schedule_context(
         "current_step": 12_000,
         "optimizer_count_at_current_step": 12_000,
     }
-    observed = None if invalid_context == "missing" else {
-        "schedule_origin_step": 0,
-        "current_step": 0,
-        "optimizer_count_at_current_step": 0,
-    }
+    observed = (
+        None
+        if invalid_context == "missing"
+        else {
+            "schedule_origin_step": 0,
+            "current_step": 0,
+            "optimizer_count_at_current_step": 0,
+        }
+    )
     _request, _registry, bundle = _matrix_case(
         tmp_path,
         revision=revision,
@@ -506,18 +507,21 @@ def test_authority_only_bundle_cli_rejects_invalid_schedule_context(
         lambda *_args, **_kwargs: pytest.fail("invalid schedule reached authority emission"),
     )
 
-    assert orchestrate.main(
-        [
-            "preflight",
-            "--authority-only",
-            "--run-set-id",
-            bundle.run_set_id,
-            "--bundle",
-            str(bundle_path),
-            "--bundle-sha256",
-            canonical_run_bundle_sha256(bundle),
-        ]
-    ) == orchestrate.EXIT_PREFLIGHT
+    assert (
+        orchestrate.main(
+            [
+                "preflight",
+                "--authority-only",
+                "--run-set-id",
+                bundle.run_set_id,
+                "--bundle",
+                str(bundle_path),
+                "--bundle-sha256",
+                canonical_run_bundle_sha256(bundle),
+            ]
+        )
+        == orchestrate.EXIT_PREFLIGHT
+    )
 
 
 @pytest.mark.parametrize("tamper", ["bundle", "matrix", "capsule", "run-set"])
@@ -563,7 +567,20 @@ def test_content_pinned_bundle_authority_tampering_fails_closed(
     assert "counterfeit" not in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("invalid", ["missing-policy", "synthetic", "dirty", "missing-ref", "raw-commit-ref", "intent", "row-identity", "missing-row", "reordered-rows"])
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "missing-policy",
+        "synthetic",
+        "dirty",
+        "missing-ref",
+        "raw-commit-ref",
+        "intent",
+        "row-identity",
+        "missing-row",
+        "reordered-rows",
+    ],
+)
 def test_invalid_matrix_authority_stops_before_transport(tmp_path: Path, invalid: str) -> None:
     repo, revision = _authority_repo(tmp_path)
     bundle = _matrix_bundle(
@@ -599,7 +616,9 @@ def test_invalid_matrix_authority_stops_before_transport(tmp_path: Path, invalid
         row = bundle.rows[0]
         provenance = row.execution.row_provenance.model_copy(update={"planned_run_id": "fake"})
         execution = row.execution.model_copy(update={"row_provenance": provenance})
-        bundle = bundle.model_copy(update={"rows": [row.model_copy(update={"execution": execution}), *bundle.rows[1:]]})
+        bundle = bundle.model_copy(
+            update={"rows": [row.model_copy(update={"execution": execution}), *bundle.rows[1:]]}
+        )
         driver = _driver(bundle, repo, transport)
     elif invalid in {"missing-row", "reordered-rows"}:
         rows = bundle.rows[:-1] if invalid == "missing-row" else list(reversed(bundle.rows))
@@ -626,12 +645,8 @@ def test_invalid_matrix_authority_stops_before_transport(tmp_path: Path, invalid
         "runpod-deadman-credentials",
     ]
     named = {check.name: check for check in checks}
-    assert named["runpod-credentials"].observed["outcome"] == (
-        "skipped-due-to-dependency"
-    )
-    assert "training-matrix-authority" in named["runpod-credentials"].observed[
-        "dependencies"
-    ]
+    assert named["runpod-credentials"].observed["outcome"] == ("skipped-due-to-dependency")
+    assert "training-matrix-authority" in named["runpod-credentials"].observed["dependencies"]
     assert transport.operations == []
 
 

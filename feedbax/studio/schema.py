@@ -34,7 +34,11 @@ from feedbax.contracts.graphs.prototypes import (
     prototypes_from_task_bindings,
 )
 from feedbax.runtime.task_bindings import COMPONENT_PARAMETER_ROLE, task_data_temporality
-from feedbax.contracts.component import PortType
+from feedbax.contracts.component import (
+    DynamicPortPolicyError,
+    PortType,
+    derive_dynamic_port_layout,
+)
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec, StudioWorkspaceSpec
 
 
@@ -220,6 +224,7 @@ def enumerate_studio_schema_registry(
     *,
     runtime_introspection: RuntimeIntrospectionOptions | bool | dict[str, Any] | None = None,
     runtime_introspector: Optional[RuntimeSchemaIntrospector] = None,
+    component_registry: Any,
 ) -> StudioSchemaRegistry:
     """Enumerate Studio schemas, optionally enriched by an explicit runtime hook.
 
@@ -309,28 +314,33 @@ def enumerate_studio_schema_registry(
             )
         )
     else:
-        authoring_graph = normalize_graph_for_studio_authoring(scenario.graph)
+        authoring_graph = normalize_graph_for_studio_authoring(
+            scenario.graph,
+            component_registry=component_registry,
+        )
         task_binding_spec = normalize_task_binding_spec_for_studio_authoring(
             task_binding_spec,
             authoring_graph,
         )
-        schema_graph = _normalize_dynamic_graph_ports(
-            authoring_graph,
-            task_binding_spec,
-        )
+        schema_graph = authoring_graph
         schema_graph = _normalize_derived_dimensions_for_schema(
             schema_graph,
             task_binding_spec,
         )
-        registry.ports = _enumerate_graph_ports(schema_graph, task_binding_spec)
+        registry.ports = _enumerate_graph_ports(
+            schema_graph, task_binding_spec, component_registry=component_registry
+        )
         registry.selector_targets.extend(_port_selector_targets(registry.ports))
-        registry.selector_targets.extend(_graph_structural_selector_targets(schema_graph))
+        registry.selector_targets.extend(
+            _graph_structural_selector_targets(schema_graph, component_registry=component_registry)
+        )
         registry.selector_targets.extend(_graph_probe_selector_targets(schema_graph))
         registry.issues.extend(
             validate_graph_connection_schema(
                 schema_graph,
                 f"/scenarios/{scenario.id}/graph",
                 task_binding_spec,
+                component_registry=component_registry,
             )
         )
 
@@ -351,6 +361,7 @@ def enumerate_studio_schema_registry(
                 task_binding_spec,
                 schema_graph,
                 f"/scenarios/{scenario.id}/task_binding_spec",
+                component_registry=component_registry,
             )
         )
         _mark_bound_ports(registry.ports, task_binding_spec)
@@ -381,10 +392,12 @@ def validate_graph_connection_schema(
     graph: GraphSpec,
     base_path: str = "",
     task_binding_spec: Optional[StudioTaskBindingSpec] = None,
+    *,
+    component_registry: Any,
 ) -> list[SchemaValidationIssue]:
     """Validate graph wires against provider-owned port schema records."""
 
-    ports = _enumerate_graph_ports(graph)
+    ports = _enumerate_graph_ports(graph, component_registry=component_registry)
     by_node_port_direction = {
         (port.node_id, port.port, port.direction): port
         for port in ports
@@ -395,8 +408,17 @@ def validate_graph_connection_schema(
     for binding in graph.input_bindings.values():
         occupied[(binding[0], binding[1])] = -1
 
-    issues: list[SchemaValidationIssue] = _missing_subgraph_issues(graph, base_path)
-    issues.extend(_dynamic_port_arity_issues(graph, task_binding_spec, base_path))
+    issues: list[SchemaValidationIssue] = _missing_subgraph_issues(
+        graph, base_path, component_registry=component_registry
+    )
+    issues.extend(
+        _dynamic_port_arity_issues(
+            graph,
+            task_binding_spec,
+            base_path,
+            component_registry=component_registry,
+        )
+    )
     for index, wire in enumerate(graph.wires):
         wire_path = f"{base_path}/wires/{index}"
         source = by_node_port_direction.get((wire.source_node, wire.source_port, "output"))
@@ -511,10 +533,10 @@ def validate_graph_connection_schema(
     return issues
 
 
-def _missing_subgraph_issues(graph: GraphSpec, base_path: str) -> list[SchemaValidationIssue]:
-    from feedbax.component_registry import ComponentRegistry
-
-    registry = ComponentRegistry()
+def _missing_subgraph_issues(
+    graph: GraphSpec, base_path: str, *, component_registry: Any
+) -> list[SchemaValidationIssue]:
+    registry = component_registry
     subgraphs = graph.subgraphs or {}
     issues: list[SchemaValidationIssue] = []
     for node_id, node in graph.nodes.items():
@@ -617,10 +639,7 @@ def _mux_connected_input_issues(
     }
     wired_ports = {(wire.target_node, wire.target_port) for wire in graph.wires}
     task_bound_ports = (
-        {
-            (binding.target_node_id, binding.target_port)
-            for binding in task_binding_spec.bindings
-        }
+        {(binding.target_node_id, binding.target_port) for binding in task_binding_spec.bindings}
         if task_binding_spec is not None
         else set()
     )
@@ -629,11 +648,7 @@ def _mux_connected_input_issues(
     for node_id, node in graph.nodes.items():
         if node.type != "Mux":
             continue
-        connected_inputs = {
-            port
-            for port in node.input_ports
-            if (node_id, port) in occupied_ports
-        }
+        connected_inputs = {port for port in node.input_ports if (node_id, port) in occupied_ports}
         if len(connected_inputs) >= 2:
             continue
         issues.append(
@@ -811,44 +826,54 @@ def _workspace_reference_issues(workspace: StudioWorkspaceSpec) -> list[SchemaVa
     return issues
 
 
-def _mux_input_index(port_name: str) -> Optional[int]:
-    if not port_name.startswith("in_"):
-        return None
-    suffix = port_name.removeprefix("in_")
-    if not suffix.isdigit():
-        return None
-    return int(suffix)
-
-
 def _dynamic_port_arity_issues(
     graph: GraphSpec,
     task_binding_spec: Optional[StudioTaskBindingSpec],
     base_path: str,
+    *,
+    component_registry: Any,
 ) -> list[SchemaValidationIssue]:
     issues: list[SchemaValidationIssue] = []
-    graph_input_targets = {
-        tuple(binding) for binding in graph.input_bindings.values()
-    }
     for node_id, node in graph.nodes.items():
-        if node.type == "Mux":
-            n_inputs = node.params.get("n_inputs", 2)
-            if isinstance(n_inputs, bool) or not isinstance(n_inputs, int) or n_inputs < 1:
-                continue
-            expected = [f"in_{index}" for index in range(n_inputs)]
-            if node.input_ports != expected:
-                issues.append(
-                    SchemaValidationIssue(
-                        type="dynamic_port_arity_mismatch",
-                        message=(
-                            f"Mux node {node_id!r} declares input_ports {node.input_ports!r} "
-                            f"but n_inputs={n_inputs} requires {expected!r}"
-                        ),
-                        location={"path": f"{base_path}/nodes/{node_id}/input_ports"},
-                    )
+        meta = component_registry.get(node.type)
+        if meta is None or meta.dynamic_port_policy is None:
+            continue
+        try:
+            expected = component_registry.dynamic_port_layout(node.type, node.params)
+        except DynamicPortPolicyError as exc:
+            issues.append(
+                SchemaValidationIssue(
+                    type="dynamic_port_policy_invalid",
+                    message=f"{node.type} node {node_id!r}: {exc}",
+                    location={"path": f"{base_path}/nodes/{node_id}/params"},
                 )
+            )
+            continue
+        assert expected is not None
+        if (
+            tuple(node.input_ports) != expected.input_ports
+            or tuple(node.output_ports) != expected.output_ports
+        ):
+            count_param = meta.dynamic_port_policy.count_param
+            issues.append(
+                SchemaValidationIssue(
+                    type="dynamic_port_arity_mismatch",
+                    message=(
+                        f"{node.type} node {node_id!r} declares input_ports "
+                        f"{node.input_ports!r} and output_ports {node.output_ports!r}, but "
+                        f"{count_param}={node.params.get(count_param, meta.default_params.get(count_param))!r} "
+                        f"requires input_ports {list(expected.input_ports)!r} and "
+                        f"output_ports {list(expected.output_ports)!r}"
+                    ),
+                    location={
+                        "path": f"{base_path}/nodes/{node_id}/{meta.dynamic_port_policy.direction}_ports"
+                    },
+                )
+            )
+        if meta.dynamic_port_policy.direction == "input":
             referenced = {
                 port
-                for target_node, port in graph_input_targets
+                for target_node, port in graph.input_bindings.values()
                 if target_node == node_id
             }
             referenced.update(
@@ -860,86 +885,44 @@ def _dynamic_port_arity_issues(
                     for binding in task_binding_spec.bindings
                     if binding.target_node_id == node_id
                 )
-            for port in sorted(referenced):
-                if _mux_input_index(port) is not None and port not in expected:
-                    issues.append(
-                        SchemaValidationIssue(
-                            type="dynamic_port_arity_mismatch",
-                            message=(
-                                f"Mux node {node_id!r} received a connection to {port!r} "
-                                f"outside declared n_inputs={n_inputs}; update n_inputs and "
-                                "input_ports explicitly"
-                            ),
-                            location={"path": f"{base_path}/nodes/{node_id}/input_ports"},
-                        )
-                    )
-        elif node.type == "Demux":
-            sizes = node.params.get("sizes")
-            if not (
-                isinstance(sizes, list)
-                and all(isinstance(size, int) and not isinstance(size, bool) and size > 0 for size in sizes)
-            ):
-                continue
-            expected_outputs = [f"out_{index}" for index in range(len(sizes))]
-            if node.input_ports != ["input"] or node.output_ports != expected_outputs:
-                issues.append(
-                    SchemaValidationIssue(
-                        type="dynamic_port_arity_mismatch",
-                        message=(
-                            f"Demux node {node_id!r} declares input_ports {node.input_ports!r} "
-                            f"and output_ports {node.output_ports!r}, but sizes={sizes!r} "
-                            f"requires input_ports ['input'] and output_ports {expected_outputs!r}"
-                        ),
-                        location={"path": f"{base_path}/nodes/{node_id}/output_ports"},
-                    )
-                )
-            referenced_outputs = {
+            allowed = expected.input_ports
+        else:
+            referenced = {
                 port
-                for output_node, port in graph.output_bindings.values()
-                if output_node == node_id
+                for source_node, port in graph.output_bindings.values()
+                if source_node == node_id
             }
-            referenced_outputs.update(
+            referenced.update(
                 wire.source_port for wire in graph.wires if wire.source_node == node_id
             )
-            for port in sorted(referenced_outputs):
-                if (
-                    port.startswith("out_")
-                    and port.removeprefix("out_").isdigit()
-                    and port not in expected_outputs
-                ):
-                    issues.append(
-                        SchemaValidationIssue(
-                            type="dynamic_port_arity_mismatch",
-                            message=(
-                                f"Demux node {node_id!r} exposes {port!r} outside declared "
-                                f"sizes={sizes!r}; update sizes and output_ports explicitly"
-                            ),
-                            location={"path": f"{base_path}/nodes/{node_id}/output_ports"},
+            allowed = expected.output_ports
+        for port in sorted(set(referenced).difference(allowed)):
+            issues.append(
+                SchemaValidationIssue(
+                    type="dynamic_port_arity_mismatch",
+                    message=(
+                        f"{node.type} node {node_id!r} has a connection to {port!r} "
+                        f"outside its policy-derived {meta.dynamic_port_policy.direction} "
+                        f"namespace {list(allowed)!r}"
+                    ),
+                    location={
+                        "path": (
+                            f"{base_path}/nodes/{node_id}/"
+                            f"{meta.dynamic_port_policy.direction}_ports"
                         )
-                    )
+                    },
+                )
+            )
     return issues
-
-
-def _normalize_dynamic_graph_ports(
-    graph: GraphSpec,
-    task_binding_spec: Optional[StudioTaskBindingSpec] = None,
-) -> GraphSpec:
-    """Preserve declared dynamic ports for validation.
-
-    Mux and Demux arity is part of the graph contract. Studio used to project
-    incidental wiring into ``n_inputs``/``sizes``-derived ports here; validation
-    now reports those mismatches instead.
-    """
-    return graph
 
 
 def _enumerate_graph_ports(
     graph: GraphSpec,
     task_binding_spec: Optional[StudioTaskBindingSpec] = None,
+    *,
+    component_registry: Any,
 ) -> list[PortSchema]:
-    from feedbax.component_registry import ComponentRegistry
-
-    registry = ComponentRegistry()
+    registry = component_registry
     ports: list[PortSchema] = []
     for node_id, node in graph.nodes.items():
         meta = registry.get(node.type)
@@ -947,7 +930,7 @@ def _enumerate_graph_ports(
         input_ports = list(node.input_ports or (meta.input_ports if meta is not None else []))
         output_ports = list(node.output_ports or (meta.output_ports if meta is not None else []))
         for port_name in input_ports:
-            port_type = _component_input_port_type(meta, node.type, port_name)
+            port_type = _component_input_port_type(meta, node.params, port_name)
             ports.append(
                 _port_schema(
                     node_id=node_id,
@@ -957,10 +940,11 @@ def _enumerate_graph_ports(
                     direction="input",
                     port_type=port_type,
                     subgraph=subgraph,
+                    component_registry=component_registry,
                 )
             )
         for port_name in output_ports:
-            port_type = _component_output_port_type(meta, node.type, port_name)
+            port_type = _component_output_port_type(meta, node.params, port_name)
             ports.append(
                 _port_schema(
                     node_id=node_id,
@@ -970,6 +954,7 @@ def _enumerate_graph_ports(
                     direction="output",
                     port_type=port_type,
                     subgraph=subgraph,
+                    component_registry=component_registry,
                 )
             )
     for port_name in graph.input_ports:
@@ -995,34 +980,36 @@ def _enumerate_graph_ports(
 
 
 def _component_input_port_type(
-    meta: Any, component_type: str, port_name: str
+    meta: Any, params: dict[str, Any], port_name: str
 ) -> Optional[PortType]:
-    if meta is None or meta.port_types is None:
+    if meta is None:
         return None
-    port_type = meta.port_types.inputs.get(port_name)
-    if (
-        port_type is None
-        and component_type == "Mux"
-        and port_name.startswith("in_")
-        and port_name.removeprefix("in_").isdigit()
-    ):
-        port_type = meta.port_types.inputs.get("in_0") or meta.port_types.inputs.get("in_1")
+    port_type = meta.port_types.inputs.get(port_name) if meta.port_types is not None else None
+    if port_type is None and meta.dynamic_port_policy is not None:
+        effective_params = {**meta.default_params, **params}
+        try:
+            layout = derive_dynamic_port_layout(meta.dynamic_port_policy, effective_params)
+        except DynamicPortPolicyError:
+            return None
+        if meta.dynamic_port_policy.direction == "input" and port_name in layout.input_ports:
+            port_type = meta.dynamic_port_policy.dynamic_port_type
     return port_type
 
 
 def _component_output_port_type(
-    meta: Any, component_type: str, port_name: str
+    meta: Any, params: dict[str, Any], port_name: str
 ) -> Optional[PortType]:
-    if meta is None or meta.port_types is None:
+    if meta is None:
         return None
-    port_type = meta.port_types.outputs.get(port_name)
-    if (
-        port_type is None
-        and component_type == "Demux"
-        and port_name.startswith("out_")
-        and port_name.removeprefix("out_").isdigit()
-    ):
-        port_type = meta.port_types.outputs.get("out_0") or meta.port_types.outputs.get("out_1")
+    port_type = meta.port_types.outputs.get(port_name) if meta.port_types is not None else None
+    if port_type is None and meta.dynamic_port_policy is not None:
+        effective_params = {**meta.default_params, **params}
+        try:
+            layout = derive_dynamic_port_layout(meta.dynamic_port_policy, effective_params)
+        except DynamicPortPolicyError:
+            return None
+        if meta.dynamic_port_policy.direction == "output" and port_name in layout.output_ports:
+            port_type = meta.dynamic_port_policy.dynamic_port_type
     return port_type
 
 
@@ -1031,9 +1018,9 @@ def _value_schema_for_graph_port(
     node_id: str,
     port: str,
     direction: Literal["input", "output"],
+    *,
+    component_registry: Any,
 ) -> ValueSchema:
-    from feedbax.component_registry import ComponentRegistry
-
     node = graph.nodes.get(node_id)
     if node is None:
         return ValueSchema(
@@ -1042,13 +1029,13 @@ def _value_schema_for_graph_port(
             kind="unknown",
             origin="unknown",
         )
-    registry = ComponentRegistry()
+    registry = component_registry
     meta = registry.get(node.type)
     subgraph = graph.subgraphs.get(node_id) if graph.subgraphs else None
     port_type = (
-        _component_input_port_type(meta, node.type, port)
+        _component_input_port_type(meta, node.params, port)
         if direction == "input"
-        else _component_output_port_type(meta, node.type, port)
+        else _component_output_port_type(meta, node.params, port)
     )
     return _port_schema(
         node_id=node_id,
@@ -1058,6 +1045,7 @@ def _value_schema_for_graph_port(
         direction=direction,
         port_type=port_type,
         subgraph=subgraph,
+        component_registry=component_registry,
     ).value_schema
 
 
@@ -1070,6 +1058,7 @@ def _port_schema(
     direction: Literal["input", "output"],
     port_type: Optional[PortType],
     subgraph: Optional[GraphSpec] = None,
+    component_registry: Any,
 ) -> PortSchema:
     port_id = f"port:{node_id}.{port}:{direction}"
     dtype = port_type.dtype if port_type is not None else None
@@ -1088,7 +1077,9 @@ def _port_schema(
         rank = len(inferred["shape"])
         origin = "inferred_static"
         metadata.update(inferred["metadata"])
-    boundary = _subgraph_boundary_value_schema(subgraph, port, direction)
+    boundary = _subgraph_boundary_value_schema(
+        subgraph, port, direction, component_registry=component_registry
+    )
     if shape is None and boundary is not None and boundary.shape is not None:
         shape = boundary.shape
         rank = boundary.rank if boundary.rank is not None else len(boundary.shape)
@@ -1215,6 +1206,8 @@ def _subgraph_boundary_value_schema(
     subgraph: Any,
     port: str,
     direction: Literal["input", "output"],
+    *,
+    component_registry: Any,
 ) -> Optional[ValueSchema]:
     if subgraph is None:
         return None
@@ -1237,7 +1230,7 @@ def _subgraph_boundary_value_schema(
     if binding is None:
         return None
     node_id, bound_port = binding
-    for schema in _enumerate_graph_ports(subgraph):
+    for schema in _enumerate_graph_ports(subgraph, component_registry=component_registry):
         if (
             schema.node_id == node_id
             and schema.port == bound_port
@@ -1446,6 +1439,8 @@ def validate_task_binding_schema(
     task_binding_spec: StudioTaskBindingSpec,
     graph: Optional[GraphSpec],
     base_path: str,
+    *,
+    component_registry: Any,
 ) -> list[SchemaValidationIssue]:
     """Validate task-data bindings against task-data and graph port schemas."""
 
@@ -1484,7 +1479,9 @@ def validate_task_binding_schema(
     }
     port_schemas = {
         (port.node_id, port.port): port
-        for port in _enumerate_graph_ports(graph, task_binding_spec)
+        for port in _enumerate_graph_ports(
+            graph, task_binding_spec, component_registry=component_registry
+        )
         if port.direction == "input" and port.node_id is not None
     }
     binding_targets: set[tuple[str, str]] = set()
@@ -1642,8 +1639,10 @@ def _task_data_role_issues(
                 location={"path": f"{data_path}/bindable"},
             )
         )
-    if role != COMPONENT_PARAMETER_ROLE and data.bindable and (
-        data.kind in PROTOCOL_TASK_DATA_KINDS or task_data_uses_protocol_path(data)
+    if (
+        role != COMPONENT_PARAMETER_ROLE
+        and data.bindable
+        and (data.kind in PROTOCOL_TASK_DATA_KINDS or task_data_uses_protocol_path(data))
     ):
         issues.append(
             SchemaValidationIssue(
@@ -2136,12 +2135,16 @@ def _port_selector_targets(ports: list[PortSchema]) -> list[SelectorTargetSchema
     return targets
 
 
-def _graph_structural_selector_targets(graph: GraphSpec) -> list[SelectorTargetSchema]:
+def _graph_structural_selector_targets(
+    graph: GraphSpec, *, component_registry: Any
+) -> list[SelectorTargetSchema]:
     targets: list[SelectorTargetSchema] = []
     for output_name, binding in graph.output_bindings.items():
         node_id, port = binding
         selector = f"graph_output:{output_name}"
-        port_schema = _value_schema_for_graph_port(graph, node_id, port, "output")
+        port_schema = _value_schema_for_graph_port(
+            graph, node_id, port, "output", component_registry=component_registry
+        )
         targets.append(
             SelectorTargetSchema(
                 id=f"selector:{selector}",
@@ -2164,14 +2167,14 @@ def _graph_structural_selector_targets(graph: GraphSpec) -> list[SelectorTargetS
         )
     for index, wire in enumerate(graph.wires):
         edge_selector = (
-            f"edge:{wire.source_node}.{wire.source_port}->"
-            f"{wire.target_node}.{wire.target_port}"
+            f"edge:{wire.source_node}.{wire.source_port}->{wire.target_node}.{wire.target_port}"
         )
         source_schema = _value_schema_for_graph_port(
             graph,
             wire.source_node,
             wire.source_port,
             "output",
+            component_registry=component_registry,
         )
         kind: Literal["edge", "recurrent_carry"] = (
             "recurrent_carry" if wire.temporality == "recurrent" else "edge"
@@ -2427,7 +2430,9 @@ def _selector_target_from_retained_observable(
     retention = observable.get("retention") if isinstance(observable.get("retention"), dict) else {}
     label = str(observable.get("label") or selector)
     target_kind = str(target.get("kind") or "")
-    selector_kind: Literal["probe", "port", "edge", "graph_output", "recurrent_carry", "state_path", "task_data"]
+    selector_kind: Literal[
+        "probe", "port", "edge", "graph_output", "recurrent_carry", "state_path", "task_data"
+    ]
     if target_kind in {
         "port",
         "edge",

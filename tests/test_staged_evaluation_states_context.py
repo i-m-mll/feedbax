@@ -31,9 +31,7 @@ from feedbax.analysis.execution_context import (
 from feedbax.analysis.evaluation import (
     EvaluationRecipeResult,
     execute_evaluation_run_spec,
-    register_evaluation_recipe,
     resolve_staged_evaluation_prerequisite,
-    unregister_evaluation_recipe,
 )
 from feedbax.analysis.manifest_inputs import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
@@ -132,9 +130,7 @@ def test_load_evaluation_states_uses_retained_local_authority(tmp_path: Path) ->
         root=tmp_path,
         manifest_id="feedbax-evaluation-run:authority-test",
     )
-    context, parent = _local_context(
-        _manifest(artifact), tmp_path, normalize_locators=False
-    )
+    context, parent = _local_context(_manifest(artifact), tmp_path, normalize_locators=False)
 
     states = context.load_evaluation_states(parent)
     np.testing.assert_array_equal(states["trajectory"], expected["trajectory"])
@@ -205,9 +201,9 @@ def test_authenticated_manifest_snapshot_rejects_authority_substitution(
     with pytest.raises(TypeError, match="immutable"):
         resolved.manifest.artifacts[0] = replacement
     with pytest.raises((TypeError, ValueError), match="frozen|immutable"):
-        resolved.manifest.artifacts[0].metadata["relative_path"] = (
-            second_artifact.metadata["relative_path"]
-        )
+        resolved.manifest.artifacts[0].metadata["relative_path"] = second_artifact.metadata[
+            "relative_path"
+        ]
 
     states = context.load_evaluation_states(parent)
     np.testing.assert_array_equal(states["trajectory"], np.asarray([1, 2]))
@@ -235,9 +231,7 @@ def test_authenticated_manifest_deep_copies_are_independent_and_mutable(
         assert copied.artifacts[0].metadata is not original.artifacts[0].metadata
         assert copied.metadata is not original.metadata
         assert copied.metadata["nested"] is not original.metadata["nested"]
-        assert copied.metadata["nested"]["labels"] is not original.metadata["nested"][
-            "labels"
-        ]
+        assert copied.metadata["nested"]["labels"] is not original.metadata["nested"]["labels"]
 
         copied.status = "failed"
         copied.artifacts[0].metadata["copied"] = True
@@ -566,9 +560,7 @@ def test_authenticated_channel_evidence_is_cached_with_its_state_authority(
                         "dtype": channel.dtype.str,
                         "byte_order": channel.dtype.str[0],
                         "c_contiguous": True,
-                        "sha256": hashlib.sha256(
-                            channel.tobytes(order="C")
-                        ).hexdigest(),
+                        "sha256": hashlib.sha256(channel.tobytes(order="C")).hexdigest(),
                     }
                 ]
             }
@@ -670,6 +662,7 @@ def test_load_evaluation_states_uses_bound_provider_after_source_deletion(
 
 def test_public_producer_round_trips_through_authored_provider_binding(
     tmp_path: Path,
+    evaluation_registry,
 ) -> None:
     source_root = tmp_path / "source"
     provider_root = tmp_path / "provider"
@@ -681,17 +674,15 @@ def test_public_producer_round_trips_through_authored_provider_binding(
     def recipe(*_args) -> EvaluationRecipeResult:
         return EvaluationRecipeResult(states=expected)
 
-    register_evaluation_recipe(evaluation_type, recipe, replace=True)
-    try:
-        manifest, manifest_path = execute_evaluation_run_spec(
-            EvaluationRunSpec(
-                evaluation_type=evaluation_type,
-                params={"states_custody": "durable"},
-            ),
-            root=source_root,
-        )
-    finally:
-        unregister_evaluation_recipe(evaluation_type)
+    evaluation_registry.register(evaluation_type, recipe)
+    manifest, manifest_path = execute_evaluation_run_spec(
+        EvaluationRunSpec(
+            evaluation_type=evaluation_type,
+            params={"states_custody": "durable"},
+        ),
+        registry=evaluation_registry,
+        root=source_root,
+    )
 
     artifact = next(item for item in manifest.artifacts if item.role == "evaluation_states")
     relative_path = artifact.metadata["relative_path"]
@@ -714,9 +705,7 @@ def test_public_producer_round_trips_through_authored_provider_binding(
             artifact_providers={"external": ImmutableArtifactBlobProviderSpec()},
             checkpoint_custody={},
         ),
-        artifact_provider_bindings=[
-            StagedArtifactProviderRootBinding("external", provider_root)
-        ],
+        artifact_provider_bindings=[StagedArtifactProviderRootBinding("external", provider_root)],
     )
     context = with_staged_parent_execution_locations(
         context,
@@ -813,9 +802,7 @@ def test_load_evaluation_states_rejects_absolute_local_locator(tmp_path: Path) -
     artifact = store_evaluation_states_artifact(
         {"value": np.asarray([1])}, root=tmp_path, manifest_id="locator"
     ).model_copy(update={"uri": "/tmp/absolute.npz"})
-    context, parent = _local_context(
-        _manifest(artifact), tmp_path, normalize_locators=False
-    )
+    context, parent = _local_context(_manifest(artifact), tmp_path, normalize_locators=False)
 
     with pytest.raises(StagedLocatorAbsoluteError, match="machine-local absolute") as excinfo:
         context.load_evaluation_states(parent)
@@ -842,9 +829,7 @@ def test_load_evaluation_states_rejects_local_path_escape(tmp_path: Path) -> Non
             "metadata": {"relative_path": "../escape.npz"},
         }
     )
-    context, parent = _local_context(
-        _manifest(artifact), tmp_path, normalize_locators=False
-    )
+    context, parent = _local_context(_manifest(artifact), tmp_path, normalize_locators=False)
 
     with pytest.raises(StagedLocatorTraversalError, match="escapes its explicit root") as excinfo:
         context.load_evaluation_states(parent)
@@ -855,12 +840,8 @@ def test_load_evaluation_states_rejects_serialized_raw_nul_locator(tmp_path: Pat
     locator = "bad\x00name.npz"
     artifact = store_evaluation_states_artifact(
         {"value": np.asarray([1])}, root=tmp_path, manifest_id="raw-nul"
-    ).model_copy(
-        update={"uri": locator, "metadata": {"relative_path": locator}}
-    )
-    context, parent = _local_context(
-        _manifest(artifact), tmp_path, normalize_locators=False
-    )
+    ).model_copy(update={"uri": locator, "metadata": {"relative_path": locator}})
+    context, parent = _local_context(_manifest(artifact), tmp_path, normalize_locators=False)
 
     with pytest.raises(StagedLocatorTraversalError) as excinfo:
         context.load_evaluation_states(parent)
@@ -871,9 +852,7 @@ def test_load_evaluation_states_rejects_conflicting_local_locators(tmp_path: Pat
     artifact = store_evaluation_states_artifact(
         {"value": np.asarray([1])}, root=tmp_path, manifest_id="conflict"
     ).model_copy(update={"uri": "other/states.npz"})
-    context, parent = _local_context(
-        _manifest(artifact), tmp_path, normalize_locators=False
-    )
+    context, parent = _local_context(_manifest(artifact), tmp_path, normalize_locators=False)
 
     with pytest.raises(StagedLocatorMismatchError, match="must equal canonical path") as excinfo:
         context.load_evaluation_states(parent)
@@ -1109,9 +1088,7 @@ def test_load_evaluation_states_rejects_provider_artifact_reference_drift(
     if mutation == "size":
         artifact = artifact.model_copy(update={"size_bytes": artifact.size_bytes + 1})
     else:
-        artifact = artifact.model_copy(
-            update={"artifact_id": "artifact://sha256/" + "0" * 64}
-        )
+        artifact = artifact.model_copy(update={"artifact_id": "artifact://sha256/" + "0" * 64})
     manifest = _manifest(artifact)
     raw = (manifest.model_dump_json(indent=2, exclude_none=True) + "\n").encode()
     manifest_artifact = provider.store_bytes(

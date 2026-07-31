@@ -13,11 +13,12 @@ Exit codes: 0 success; 2 preflight or conformance failure; 3 row failure;
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.shadow_launch import ShadowLaunchEvidence, ShadowLaunchRowEvidence
@@ -27,11 +28,12 @@ from feedbax.contracts.evaluation_lifecycle import (
     EvaluationWorkerTopologyEvidence,
 )
 from feedbax.contracts.staged_execution import validate_staged_binding_name
+from feedbax.contracts.training import TrainingMethodRegistry
 from feedbax.orchestration import (
     STAGE_ORDER,
-    LocalOrchestrationDriver,
     MatrixAuthorityError,
     AssemblyContext,
+    EmergencyRunSetRecord,
     RunAssemblyRequest,
     RunBundle,
     RunEvent,
@@ -43,7 +45,6 @@ from feedbax.orchestration import (
     build_default_assembly_registry,
     build_training_run_matrix_authority,
     run_authority_preflight_checks,
-    run_preflight_checks,
 )
 from feedbax.orchestration.bundle import (
     canonical_run_bundle_sha256,
@@ -52,13 +53,14 @@ from feedbax.orchestration.bundle import (
 )
 from feedbax.orchestration.collection_recovery import CollectionRecoveryBinding
 from feedbax.orchestration.staged_root_custody import StagedRootSnapshotBinding
-from feedbax.orchestration.conformance import build_default_check_registry
-from feedbax.orchestration.drivers.runpod import (
-    RunPodDriverConfig,
-    RunPodOrchestrationDriver,
-    dry_run_launch_bundle,
-    load_runpod_api_key,
+from feedbax.orchestration.conformance import CheckRegistry
+from feedbax.orchestration.drivers.capabilities import (
+    DriverAuthority,
+    DriverConstructionContext,
+    DriverHook,
+    DriverRegistry,
 )
+from feedbax.orchestration.drivers.runpod import load_runpod_api_key
 from feedbax.orchestration.input_materialization import InputProviderRootBinding
 from feedbax.orchestration.executor_family import evaluation_matrix_ordered_union
 from feedbax.orchestration.payload_report import (
@@ -73,7 +75,7 @@ from feedbax.orchestration.stages import (
     PreflightFailed,
     StageEngine,
 )
-from feedbax.plugins import load_training_method_plugins
+from feedbax.plugins.composition import compose_application
 from feedbax.training.interruption import CancellationDecision, RunInterruptionController
 
 
@@ -91,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        args.bootstrap_state = asyncio.run(compose_application())
         return int(args.func(args))
     except StateLockError as exc:
         _print_error(exc)
@@ -140,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     launch = subparsers.add_parser("launch", help="Launch or resume a run bundle")
     launch.add_argument("--assembly-request", required=True, help="RunAssemblyRequest JSON path")
-    launch.add_argument("--driver", choices=["local", "runpod"], help="Driver override")
+    launch.add_argument("--driver", help="Driver identity (validated after application bootstrap)")
     launch.add_argument(
         "--dry-run",
         action="store_true",
@@ -240,7 +243,6 @@ def cmd_preflight(args: argparse.Namespace) -> int:
             raise ValueError("--bundle is supported only with --authority-only")
         if args.bundle_sha256:
             raise ValueError("--bundle-sha256 is supported only with --authority-only")
-        load_training_method_plugins(fail_on_load_error=True)
     if args.authority_only:
         if not args.run_set_id:
             raise ValueError("--authority-only requires --run-set-id")
@@ -258,11 +260,9 @@ def cmd_preflight(args: argparse.Namespace) -> int:
                 request,
                 run_set_id=args.run_set_id,
                 context=AssemblyContext(custody_root=root / "custody", repo_root=Path.cwd()),
-                registry=build_default_assembly_registry(),
+                registry=_assembly_registry(args.bootstrap_state.bundle),
             )
-        checks = (
-            run_authority_preflight_checks(bundle) if args.bundle else run_preflight_checks(bundle)
-        )
+        checks = run_authority_preflight_checks(bundle)
         if any(check.status == "fail" for check in checks):
             return EXIT_PREFLIGHT
         metadata = bundle.environment.metadata
@@ -287,6 +287,9 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         run_set_id=args.run_set_id,
         input_provider_bindings=_input_provider_bindings(args.input_provider),
         staged_root_bindings=_staged_root_bindings(args.staged_root),
+        conformance_registry=args.bootstrap_state.bundle.conformance_checks,
+        plugin_provenance=args.bootstrap_state.provenance,
+        registry_bundle=args.bootstrap_state.bundle,
     )
     try:
         state = engine.run(stop_after_stage="PREFLIGHT")
@@ -300,7 +303,6 @@ def cmd_preflight(args: argparse.Namespace) -> int:
 
 
 def cmd_launch(args: argparse.Namespace) -> int:
-    load_training_method_plugins(fail_on_load_error=True)
     request_path = Path(args.assembly_request)
     request = _load_assembly_request(request_path)
     if args.driver:
@@ -323,8 +325,6 @@ def cmd_launch(args: argparse.Namespace) -> int:
     if args.dry_run:
         if args.resume_run_set:
             raise ValueError("--dry-run does not support --resume-run-set")
-        if request.deployment_policy.driver != "runpod":
-            raise ValueError("--dry-run requires deployment_policy.driver='runpod'")
         root = (
             Path(request.orchestration_root).expanduser()
             if request.orchestration_root
@@ -334,14 +334,22 @@ def cmd_launch(args: argparse.Namespace) -> int:
             request,
             run_set_id=mint_run_set_id(),
             context=AssemblyContext(custody_root=root / "custody", repo_root=Path.cwd()),
-            registry=build_default_assembly_registry(),
+            registry=_assembly_registry(args.bootstrap_state.bundle),
         )
-        commands = dry_run_launch_bundle(
+        driver = _construct_driver(
             bundle,
-            _runpod_config_for_bundle(bundle, load_credentials=False),
-            input_provider_bindings,
-            staged_root_bindings,
+            driver_registry=args.bootstrap_state.bundle.drivers,
+            training_method_registry=args.bootstrap_state.bundle.training_methods,
+            input_provider_bindings=input_provider_bindings,
+            staged_root_bindings=staged_root_bindings,
+            load_credentials=False,
         )
+        if not driver.realized_capabilities.facts.supports(DriverHook.DRY_RUN_LAUNCH):
+            raise ValueError(
+                f"driver {bundle.deployment_policy.driver!r} capability variant "
+                f"{driver.realized_capabilities.variant_id!r} does not support dry-run launch"
+            )
+        commands = driver.dry_run_launch(bundle)
         for row, _command in zip(bundle.rows, commands, strict=True):
             print(f"row={row.row_id} dry-run=accepted")
         return EXIT_SUCCESS
@@ -353,6 +361,9 @@ def cmd_launch(args: argparse.Namespace) -> int:
             interruption_probe=interruption.poll,
             input_provider_bindings=input_provider_bindings,
             staged_root_bindings=staged_root_bindings,
+            conformance_registry=args.bootstrap_state.bundle.conformance_checks,
+            plugin_provenance=args.bootstrap_state.provenance,
+            registry_bundle=args.bootstrap_state.bundle,
         )
         state = engine.run()
     return _state_exit_code(state)
@@ -360,7 +371,6 @@ def cmd_launch(args: argparse.Namespace) -> int:
 
 def cmd_shadow_launch(args: argparse.Namespace) -> int:
     """Run the one local governed scenario without entering provider readiness stages."""
-    load_training_method_plugins(fail_on_load_error=True)
     request_path = Path(args.assembly_request)
     request = _load_assembly_request(request_path)
     _require_provider_free_shadow_request(request)
@@ -370,6 +380,9 @@ def cmd_shadow_launch(args: argparse.Namespace) -> int:
         input_provider_bindings=_input_provider_bindings(args.input_provider),
         staged_root_bindings=_staged_root_bindings(args.staged_root),
         native_update_budget=1,
+        conformance_registry=args.bootstrap_state.bundle.conformance_checks,
+        plugin_provenance=args.bootstrap_state.provenance,
+        registry_bundle=args.bootstrap_state.bundle,
     )
     state = engine.run(stop_after_stage="COLLECT")
     if engine.bundle is None:
@@ -385,12 +398,7 @@ def cmd_shadow_launch(args: argparse.Namespace) -> int:
 
 def _require_provider_free_shadow_request(request: RunAssemblyRequest) -> None:
     policy = request.deployment_policy
-    if (
-        policy.driver != "local"
-        or policy.venue != "local"
-        or policy.cloud_authorized
-        or policy.review_authorized
-    ):
+    if policy.venue != "local" or policy.cloud_authorized or policy.review_authorized:
         raise ValueError(
             "shadow-launch requires an unauthorized local DeploymentPolicy; "
             "provider-capable requests are not eligible"
@@ -402,7 +410,7 @@ def _shadow_launch_evidence(
 ) -> ShadowLaunchEvidence | EvaluationShadowLaunchEvidence:
     """Validate the bounded local result and emit non-readiness evidence only."""
     policy = bundle.deployment_policy
-    if policy.driver != "local" or policy.venue != "local" or policy.cloud_authorized:
+    if policy.venue != "local" or policy.cloud_authorized:
         raise ValueError("shadow-launch cannot emit evidence for a provider-capable bundle")
     if state.stage("COLLECT").status != "completed":
         raise ValueError("shadow-launch requires a completed COLLECT stage")
@@ -506,7 +514,13 @@ def cmd_describe(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    state = _load_state(args.run_set)
+    state = _load_status_state(args.run_set)
+    if isinstance(state, EmergencyRunSetRecord):
+        if args.json:
+            _write_json(state)
+        else:
+            print(_format_emergency_status(state))
+        return EXIT_OTHER
     if args.json:
         _write_json(state)
     else:
@@ -538,12 +552,15 @@ def cmd_collect(args: argparse.Namespace) -> int:
         args.run_set,
         stop_after_stage="COLLECT",
         collection_recovery_bindings=_collection_recovery_bindings(args.recover_collected_root),
+        conformance_registry=args.bootstrap_state.bundle.conformance_checks,
+        training_method_registry=args.bootstrap_state.bundle.training_methods,
+        driver_registry=args.bootstrap_state.bundle.drivers,
+        plugin_provenance=args.bootstrap_state.provenance,
     )
     return _state_exit_code(state)
 
 
 def cmd_certify(args: argparse.Namespace) -> int:
-    load_training_method_plugins(fail_on_load_error=True)
     run_options: dict[str, Any] = {
         "stop_after_stage": "CERTIFY",
         "retry_failed_certification": True,
@@ -551,25 +568,43 @@ def cmd_certify(args: argparse.Namespace) -> int:
     input_bindings = _input_provider_bindings(args.input_provider)
     if input_bindings:
         run_options["input_provider_bindings"] = input_bindings
-    state = _run_existing(args.run_set, **run_options)
+    state = _run_existing(
+        args.run_set,
+        conformance_registry=args.bootstrap_state.bundle.conformance_checks,
+        training_method_registry=args.bootstrap_state.bundle.training_methods,
+        driver_registry=args.bootstrap_state.bundle.drivers,
+        plugin_provenance=args.bootstrap_state.provenance,
+        **run_options,
+    )
     if state.stage("CERTIFY").outputs.get("overall") == "fail":
         return EXIT_PREFLIGHT
     return _state_exit_code(state)
 
 
 def cmd_teardown(args: argparse.Namespace) -> int:
-    state = _run_existing(args.run_set, stop_after_stage="TEARDOWN", break_stale_lock=args.force)
+    state = _run_existing(
+        args.run_set,
+        stop_after_stage="TEARDOWN",
+        break_stale_lock=args.force,
+        conformance_registry=args.bootstrap_state.bundle.conformance_checks,
+        training_method_registry=args.bootstrap_state.bundle.training_methods,
+        driver_registry=args.bootstrap_state.bundle.drivers,
+        plugin_provenance=args.bootstrap_state.provenance,
+    )
     return _state_exit_code(state)
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
-    load_training_method_plugins(fail_on_load_error=True)
     with RunInterruptionController() as interruption:
         state = _run_existing(
             args.run_set,
             interruption_probe=interruption.poll,
             input_provider_bindings=_input_provider_bindings(args.input_provider),
             collection_recovery_bindings=_collection_recovery_bindings(args.recover_collected_root),
+            conformance_registry=args.bootstrap_state.bundle.conformance_checks,
+            training_method_registry=args.bootstrap_state.bundle.training_methods,
+            driver_registry=args.bootstrap_state.bundle.drivers,
+            plugin_provenance=args.bootstrap_state.provenance,
         )
     return _state_exit_code(state)
 
@@ -613,28 +648,24 @@ def _run_engine(
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
     collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
     staged_root_bindings: tuple[StagedRootSnapshotBinding, ...] = (),
+    conformance_registry: CheckRegistry,
+    training_method_registry: TrainingMethodRegistry,
+    driver_registry: DriverRegistry,
+    plugin_provenance: Sequence[Any],
 ) -> RunSetState:
-    if collection_recovery_bindings:
-        driver = _driver_for_bundle(
-            bundle,
-            input_provider_bindings,
-            collection_recovery_bindings=collection_recovery_bindings,
-            staged_root_bindings=staged_root_bindings,
-        )
-    else:
-        driver = (
-            _driver_for_bundle(
-                bundle,
-                input_provider_bindings,
-                staged_root_bindings=staged_root_bindings,
-            )
-            if staged_root_bindings
-            else _driver_for_bundle(bundle, input_provider_bindings)
-        )
+    driver = _construct_driver(
+        bundle,
+        driver_registry=driver_registry,
+        training_method_registry=training_method_registry,
+        input_provider_bindings=input_provider_bindings,
+        collection_recovery_bindings=collection_recovery_bindings,
+        staged_root_bindings=staged_root_bindings,
+    )
     state = StageEngine(
         bundle=bundle,
         driver=driver,
-        conformance_registry=build_default_check_registry(),
+        conformance_registry=conformance_registry,
+        plugin_provenance=plugin_provenance,
         interruption_probe=interruption_probe,
     ).run(
         break_stale_lock=break_stale_lock,
@@ -653,6 +684,10 @@ def _run_existing(
     break_stale_lock: bool = False,
     retry_failed_certification: bool = False,
     interruption_probe: Callable[[], CancellationDecision | None] | None = None,
+    conformance_registry: CheckRegistry,
+    training_method_registry: TrainingMethodRegistry,
+    driver_registry: DriverRegistry,
+    plugin_provenance: Sequence[Any],
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
     collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
 ) -> RunSetState:
@@ -663,37 +698,75 @@ def _run_existing(
         break_stale_lock=break_stale_lock,
         retry_failed_certification=retry_failed_certification,
         interruption_probe=interruption_probe,
+        conformance_registry=conformance_registry,
+        training_method_registry=training_method_registry,
+        driver_registry=driver_registry,
+        plugin_provenance=plugin_provenance,
         input_provider_bindings=input_provider_bindings,
         collection_recovery_bindings=collection_recovery_bindings,
     )
 
 
-def _driver_for_bundle(
+def _construct_driver(
     bundle: RunBundle,
-    bindings: tuple[InputProviderRootBinding, ...] = (),
+    *,
+    driver_registry: DriverRegistry,
+    training_method_registry: TrainingMethodRegistry,
+    input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
     collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
     native_update_budget: int | None = None,
     staged_root_bindings: tuple[StagedRootSnapshotBinding, ...] = (),
-) -> LocalOrchestrationDriver | RunPodOrchestrationDriver:
-    driver_name = bundle.deployment_policy.driver
-    if driver_name == "local":
-        if collection_recovery_bindings:
-            raise ValueError("collection recovery is only supported for a torn-down RunPod run")
-        return LocalOrchestrationDriver(
-            input_provider_bindings=bindings,
-            update_budget=native_update_budget,
-            staged_root_bindings=staged_root_bindings,
-        )
-    if driver_name == "runpod":
-        if native_update_budget is not None:
-            raise ValueError("native update-budget runtime binding is local shadow-launch only")
-        return RunPodOrchestrationDriver(
-            config=_runpod_config_for_bundle(bundle),
-            input_provider_bindings=bindings,
+    load_credentials: bool = True,
+):
+    return driver_registry.construct(
+        bundle.deployment_policy.driver,
+        _driver_construction_context(
+            bundle,
+            input_provider_bindings=input_provider_bindings,
             collection_recovery_bindings=collection_recovery_bindings,
+            native_update_budget=native_update_budget,
             staged_root_bindings=staged_root_bindings,
-        )
-    raise RuntimeError(f"Unsupported orchestration driver: {driver_name!r}")
+            training_method_registry=training_method_registry,
+            load_credentials=load_credentials,
+        ),
+    )
+
+
+def _driver_construction_context(
+    bundle: RunBundle,
+    *,
+    input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
+    collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
+    native_update_budget: int | None = None,
+    staged_root_bindings: tuple[StagedRootSnapshotBinding, ...] = (),
+    training_method_registry: TrainingMethodRegistry,
+    load_credentials: bool = True,
+) -> DriverConstructionContext:
+    api_key = load_runpod_api_key() if load_credentials else None
+    return DriverConstructionContext(
+        configuration={
+            "bundle": bundle,
+            "preserve_owned_resources": bundle.keep_alive,
+        },
+        runtime_bindings={
+            "input_provider_bindings": input_provider_bindings,
+            "collection_recovery_bindings": collection_recovery_bindings,
+            "native_update_budget": native_update_budget,
+            "staged_root_bindings": staged_root_bindings,
+            "training_method_registry": training_method_registry,
+        },
+        credentials=({"runpod_api_key": api_key} if api_key is not None else {}),
+        authority=DriverAuthority(
+            cloud_authorized=bundle.deployment_policy.cloud_authorized,
+            spend_authorized=bundle.deployment_policy.cloud_authorized,
+            credential_names=frozenset({"runpod_api_key"} if api_key is not None else ()),
+        ),
+        recovery_inputs=(
+            {"collection_recovery_bindings": collection_recovery_bindings}
+            if collection_recovery_bindings
+            else {}
+        ),
+    )
 
 
 def _load_bundle(path: str | Path) -> RunBundle:
@@ -717,6 +790,9 @@ def _request_engine(
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
     native_update_budget: int | None = None,
     staged_root_bindings: tuple[StagedRootSnapshotBinding, ...] = (),
+    conformance_registry: CheckRegistry,
+    plugin_provenance: Sequence[Any],
+    registry_bundle: Any,
 ) -> StageEngine:
     root = (
         Path(request.orchestration_root).expanduser()
@@ -730,24 +806,27 @@ def _request_engine(
     return StageEngine.from_request(
         request,
         context=context,
-        registry=build_default_assembly_registry(),
-        driver_factory=lambda bundle: (
-            _driver_for_bundle(
-                bundle,
-                input_provider_bindings,
-                native_update_budget=native_update_budget,
-                staged_root_bindings=staged_root_bindings,
-            )
-            if staged_root_bindings
-            else _driver_for_bundle(
-                bundle,
-                input_provider_bindings,
-                native_update_budget=native_update_budget,
-            )
+        registry=_assembly_registry(registry_bundle),
+        driver_registry=registry_bundle.drivers,
+        driver_context=lambda bundle: _driver_construction_context(
+            bundle,
+            input_provider_bindings=input_provider_bindings,
+            native_update_budget=native_update_budget,
+            staged_root_bindings=staged_root_bindings,
+            training_method_registry=registry_bundle.training_methods,
         ),
         run_set_id=run_set_id,
-        conformance_registry=build_default_check_registry(),
+        conformance_registry=conformance_registry,
+        plugin_provenance=plugin_provenance,
         interruption_probe=interruption_probe,
+    )
+
+
+def _assembly_registry(bundle: Any) -> Any:
+    return build_default_assembly_registry(
+        method_registry=bundle.training_methods,
+        row_lowerer_registry=bundle.row_lowerers,
+        evaluation_registry=bundle.evaluation_recipes,
     )
 
 
@@ -816,42 +895,6 @@ def _collection_recovery_bindings(
     return tuple(bindings)
 
 
-def _runpod_config_for_bundle(
-    bundle: RunBundle, *, load_credentials: bool = True
-) -> RunPodDriverConfig:
-    metadata = bundle.environment.metadata
-    resources = bundle.deployment_policy.resources
-    raw_patches = metadata.get("runpod_path_patches", ())
-    path_patches = tuple(
-        (str(item["remote_file"]), str(item["from"]), str(item["to"])) for item in raw_patches
-    )
-    return RunPodDriverConfig(
-        pod_id=_optional_string(metadata.get("runpod_pod_id")),
-        ssh_host=_optional_string(metadata.get("runpod_ssh_host")),
-        ssh_port=(int(metadata["runpod_ssh_port"]) if metadata.get("runpod_ssh_port") else None),
-        gpu_id=resources.gpu_id,
-        datacenters=tuple(resources.regions),
-        api_key=load_runpod_api_key() if load_credentials else None,
-        min_balance_usd=float(metadata.get("runpod_min_balance_usd", 5.0)),
-        image=bundle.environment.image_id or "runpod/pytorch:latest",
-        local_repos={
-            str(name): str(path) for name, path in metadata.get("runpod_local_repos", {}).items()
-        },
-        remote_repos={
-            str(name): str(path) for name, path in metadata.get("runpod_remote_repos", {}).items()
-        },
-        primary_repo=_optional_string(metadata.get("runpod_primary_repo")),
-        protected_refs={
-            str(name): str(ref) for name, ref in metadata.get("runpod_protected_refs", {}).items()
-        },
-        path_patches=path_patches,
-    )
-
-
-def _optional_string(value: Any) -> str | None:
-    return str(value) if value not in (None, "") else None
-
-
 def _load_launch_bundle(path: str | Path, resume_run_set: str | None) -> RunBundle:
     if resume_run_set:
         existing = _run_set_dir(resume_run_set) / "bundle.json"
@@ -870,6 +913,32 @@ def _load_existing_bundle(run_set_id: str) -> RunBundle:
 
 def _load_state(run_set_id: str) -> RunSetState:
     return RunSetStateStore(_run_set_dir(run_set_id) / "state.json").load()
+
+
+def _load_status_state(run_set_id: str) -> RunSetState | EmergencyRunSetRecord:
+    store = RunSetStateStore(_run_set_dir(run_set_id) / "state.json")
+    emergency = store.load_emergency() if store.emergency_path.exists() else None
+    if emergency is not None and emergency.preservation_state != "release-authorized":
+        return emergency
+    try:
+        return store.load()
+    except (OSError, ValueError):
+        if emergency is not None:
+            return emergency
+        raise
+
+
+def _format_emergency_status(record: EmergencyRunSetRecord) -> str:
+    return " ".join(
+        (
+            f"run_set={record.run_set_id}",
+            f"recovery={record.preservation_state}",
+            f"provider={record.provider_identity.provider}",
+            f"resource_id={record.provider_identity.resource_id}",
+            f"custody_complete={str(record.custody_complete).lower()}",
+            "next_recovery_action=" + json.dumps(record.next_recovery_action),
+        )
+    )
 
 
 def _run_set_dir(run_set_id: str) -> Path:

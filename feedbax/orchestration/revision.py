@@ -34,11 +34,19 @@ import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import feedbax
+from feedbax._distribution_provenance import (
+    PROVENANCE_FILENAME,
+    SCHEMA_VERSION,
+    DistributionProvenanceError,
+    load_and_verify_provenance,
+)
 
 
 _GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
+FEEDBAX_DISTRIBUTION_PROVENANCE_SCHEMA_VERSION = SCHEMA_VERSION
 
 _GIT_ENVIRONMENT = {
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -74,9 +82,17 @@ def _feedbax_package_root() -> Path:
     return Path(source).resolve().parent
 
 
-def resolve_feedbax_revision() -> str:
-    """Return the full commit of the checkout that supplied the imported package."""
-    package_root = _feedbax_package_root()
+def _resolve_checkout_revision(package_root: Path) -> str | None:
+    """Return a revision only when Git owns this exact package directory."""
+    top_level = _run_git(package_root, ["rev-parse", "--show-toplevel"])
+    if top_level is None or top_level.returncode != 0:
+        return None
+    checkout_root = Path(top_level.stdout.strip()).resolve()
+    if package_root != checkout_root / "feedbax":
+        return None
+    tracked = _run_git(checkout_root, ["ls-files", "--error-unmatch", "feedbax/__init__.py"])
+    if tracked is None or tracked.returncode != 0:
+        return None
     try:
         result = subprocess.run(
             ["git", "-C", str(package_root), "rev-parse", "--verify", "HEAD^{commit}"],
@@ -97,6 +113,40 @@ def resolve_feedbax_revision() -> str:
     return revision
 
 
+def _load_distribution_revision(package_root: Path) -> str | None:
+    """Load and verify the versioned provenance embedded in an installed wheel."""
+    provenance_path = package_root / PROVENANCE_FILENAME
+    if not provenance_path.exists():
+        return None
+    try:
+        _encoded, revision = load_and_verify_provenance(package_root)
+    except DistributionProvenanceError as exc:
+        raise FeedbaxRevisionError(f"installed {exc}") from exc
+    return revision
+
+
+def resolve_feedbax_revision() -> str:
+    """Return the verified commit identity of the imported checkout or wheel."""
+    package_root = _feedbax_package_root()
+    checkout_revision = _resolve_checkout_revision(package_root)
+    distribution_revision = _load_distribution_revision(package_root)
+    if checkout_revision is not None and distribution_revision is not None:
+        if checkout_revision != distribution_revision:
+            raise FeedbaxRevisionError(
+                "conflicting Feedbax revision identities: "
+                f"checkout={checkout_revision} distribution={distribution_revision}"
+            )
+        return checkout_revision
+    if checkout_revision is not None:
+        return checkout_revision
+    if distribution_revision is not None:
+        return distribution_revision
+    raise FeedbaxRevisionError(
+        "cannot resolve a verified revision identity for the imported Feedbax package; "
+        "it is neither a Git-owned checkout nor a provenance-bearing wheel"
+    )
+
+
 def assert_feedbax_revision_exact(locked_revision: str) -> str:
     """Fail closed unless the imported Feedbax package matches ``locked_revision``.
 
@@ -112,8 +162,7 @@ def assert_feedbax_revision_exact(locked_revision: str) -> str:
     actual_revision = resolve_feedbax_revision()
     if actual_revision != locked_revision:
         raise FeedbaxRevisionError(
-            "Feedbax revision pin mismatch: "
-            f"locked={locked_revision} loaded={actual_revision}"
+            f"Feedbax revision pin mismatch: locked={locked_revision} loaded={actual_revision}"
         )
     return actual_revision
 
@@ -292,13 +341,13 @@ def _git_toplevel(path: Path) -> Path:
             text=True,
         )
     except (OSError, subprocess.CalledProcessError) as exc:
-        raise FeedbaxRevisionError(
-            f"cannot resolve the Git top-level directory of {path}"
-        ) from exc
+        raise FeedbaxRevisionError(f"cannot resolve the Git top-level directory of {path}") from exc
     return Path(result.stdout.strip()).resolve()
 
 
-def resolve_science_repo_import_revisions() -> dict[str, str]:
+def resolve_science_repo_import_revisions(
+    plugin_provenance: Sequence[Any],
+) -> dict[str, str]:
     """Resolve the revision of every checkout supplying ``feedbax.plugins`` modules.
 
     CERTIFY re-derives row payloads by importing the science-repo code published
@@ -313,12 +362,10 @@ def resolve_science_repo_import_revisions() -> dict[str, str]:
         whose module source or containing checkout cannot be resolved are skipped
         rather than guessed; the caller decides how to treat an empty result.
     """
-    from feedbax.plugins.discovery import feedbax_plugin_entry_points
-
     feedbax_root = _git_toplevel(_feedbax_package_root())
     revisions: dict[str, str] = {}
-    for entry_point in feedbax_plugin_entry_points():
-        module_name = getattr(entry_point, "module", None)
+    for provenance in plugin_provenance:
+        module_name = str(getattr(provenance, "entry_point_value", "")).partition(":")[0]
         if not isinstance(module_name, str) or not module_name:
             continue
         top_level = module_name.split(".", 1)[0]
@@ -397,8 +444,7 @@ def _feedbax_tree_is_dirty(package_root: Path) -> bool:
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise FeedbaxRevisionError(
-            "cannot resolve the working-tree cleanliness of the imported Feedbax "
-            "module source"
+            "cannot resolve the working-tree cleanliness of the imported Feedbax module source"
         ) from exc
     return bool(result.stdout.strip())
 
@@ -410,9 +456,13 @@ def resolve_feedbax_provenance() -> FeedbaxProvenance:
     cleanliness of the supplying checkout cannot be resolved. Unverifiable
     provenance is never silently treated as clean or matching.
     """
-    revision = resolve_feedbax_revision()
     package_root = _feedbax_package_root()
-    dirty = _feedbax_tree_is_dirty(package_root)
+    revision = resolve_feedbax_revision()
+    dirty = (
+        _feedbax_tree_is_dirty(package_root)
+        if _resolve_checkout_revision(package_root) is not None
+        else False
+    )
     return FeedbaxProvenance(source_path=package_root, revision=revision, dirty=dirty)
 
 
@@ -447,8 +497,7 @@ def check_feedbax_provenance(
             provenance = resolve_feedbax_provenance()
         except FeedbaxRevisionError as exc:
             warnings.warn(
-                "Feedbax provenance override in effect; unverifiable provenance "
-                f"ignored: {exc}",
+                f"Feedbax provenance override in effect; unverifiable provenance ignored: {exc}",
                 stacklevel=2,
             )
             return None
@@ -468,7 +517,6 @@ def check_feedbax_provenance(
         )
     if provenance.revision != locked_revision:
         raise FeedbaxRevisionError(
-            "Feedbax revision pin mismatch: "
-            f"locked={locked_revision} loaded={provenance.revision}"
+            f"Feedbax revision pin mismatch: locked={locked_revision} loaded={provenance.revision}"
         )
     return provenance

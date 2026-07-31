@@ -34,6 +34,7 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.migrations import migrate_structured_spec_payload
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.registry_errors import RegistryCollisionError
 
 
 @dataclass(frozen=True)
@@ -65,26 +66,53 @@ class EvaluationCompactProductUnionInput:
     sources: tuple[EvaluationCompactProductUnionValue, ...]
 
 
-_FINALIZERS: dict[
-    tuple[str, str],
-    Callable[[EvaluationCompactProductUnionInput], EvaluationBatchFragment],
-] = {}
+class EvaluationCompactProductUnionFinalizerRegistry:
+    """Caller-owned finalizers for governed compact-product unions."""
 
+    def __init__(self) -> None:
+        self._sealed = False
+        self._finalizers: dict[
+            tuple[str, str],
+            Callable[[EvaluationCompactProductUnionInput], EvaluationBatchFragment],
+        ] = {}
 
-def register_evaluation_compact_product_union_finalizer(
-    consumer_id: str,
-    consumer_version: str,
-    *,
-    finalize: Callable[[EvaluationCompactProductUnionInput], EvaluationBatchFragment],
-    replace: bool = False,
-) -> None:
-    """Register the consumer-owned semantic union without adding an executor."""
-    key = (consumer_id, consumer_version)
-    if not consumer_id or not consumer_version:
-        raise ValueError("compact product union consumer identity must be non-empty")
-    if key in _FINALIZERS and not replace:
-        raise ValueError(f"compact product union finalizer {key!r} is already registered")
-    _FINALIZERS[key] = finalize
+    def register(
+        self,
+        consumer_id: str,
+        consumer_version: str,
+        finalize: Callable[[EvaluationCompactProductUnionInput], EvaluationBatchFragment],
+    ) -> None:
+        if self._sealed:
+            raise RuntimeError("compact product union finalizer registry is sealed")
+        if not consumer_id or not consumer_version or not callable(finalize):
+            raise ValueError("compact product union finalizer declaration is invalid")
+        key = (consumer_id, consumer_version)
+        if key in self._finalizers:
+            raise RegistryCollisionError(
+                f"compact product union finalizer {key!r} is already registered"
+            )
+        self._finalizers[key] = finalize
+
+    def get(
+        self,
+        consumer_id: str,
+        consumer_version: str,
+    ) -> Callable[[EvaluationCompactProductUnionInput], EvaluationBatchFragment]:
+        try:
+            return self._finalizers[(consumer_id, consumer_version)]
+        except KeyError as exc:
+            raise ValueError(
+                "no registered compact product union finalizer for "
+                f"{consumer_id!r}@{consumer_version!r}"
+            ) from exc
+
+    def keys(self) -> tuple[str, ...]:
+        return tuple(
+            f"{consumer_id}@{version}" for consumer_id, version in sorted(self._finalizers)
+        )
+
+    def seal(self) -> None:
+        self._sealed = True
 
 
 def finalize_evaluation_compact_product_union(
@@ -92,6 +120,7 @@ def finalize_evaluation_compact_product_union(
     bindings: Sequence[EvaluationCompactProductUnionBinding],
     *,
     custody_root: Path,
+    finalizer_registry: EvaluationCompactProductUnionFinalizerRegistry,
 ) -> EvaluationCompactProductUnionEvidence:
     """Authenticate, union, publish, certify, and tear down without provider action."""
     declaration = EvaluationCompactProductUnion.model_validate(declaration.model_dump(mode="json"))
@@ -147,13 +176,10 @@ def finalize_evaluation_compact_product_union(
         _atomic_write_json(checkpoint_path, evidence.model_dump(mode="json"))
         return evidence
 
-    try:
-        finalizer = _FINALIZERS[(declaration.consumer_id, declaration.consumer_version)]
-    except KeyError as exc:
-        raise ValueError(
-            "no registered compact product union finalizer for "
-            f"{declaration.consumer_id!r}@{declaration.consumer_version!r}"
-        ) from exc
+    finalizer = finalizer_registry.get(
+        declaration.consumer_id,
+        declaration.consumer_version,
+    )
     terminal = finalizer(
         EvaluationCompactProductUnionInput(
             declaration=declaration,
@@ -495,8 +521,8 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 __all__ = [
     "EvaluationCompactProductUnionBinding",
+    "EvaluationCompactProductUnionFinalizerRegistry",
     "EvaluationCompactProductUnionInput",
     "EvaluationCompactProductUnionValue",
     "finalize_evaluation_compact_product_union",
-    "register_evaluation_compact_product_union_finalizer",
 ]

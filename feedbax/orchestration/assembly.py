@@ -70,7 +70,8 @@ RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v1"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V2 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v2"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v3"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v4"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v5"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v5"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v6"
 
 
 class CompilerIdentity(StrictModel):
@@ -301,17 +302,27 @@ class AssemblyCompilerRegistry:
             ) from exc
 
 
-def build_default_assembly_registry() -> AssemblyCompilerRegistry:
+def build_default_assembly_registry(
+    *, method_registry: Any, row_lowerer_registry: Any, evaluation_registry: Any
+) -> AssemblyCompilerRegistry:
     """Return Feedbax's built-in training-matrix and Studio compiler registry."""
     from feedbax.analysis.evaluation_orchestration import (
         register_evaluation_run_matrix_compiler,
     )
     from feedbax.contracts.studio_training import register_studio_training_compiler
+    from feedbax.training.run_matrix import _validate_training_payload
     from feedbax.training.spec_storage import register_training_run_matrix_compiler
 
     registry = AssemblyCompilerRegistry()
-    register_training_run_matrix_compiler(registry)
-    register_evaluation_run_matrix_compiler(registry)
+    register_training_run_matrix_compiler(
+        registry,
+        method_registry=method_registry,
+        row_validator=lambda payload, row_id: _validate_training_payload(
+            payload, row_id=row_id, method_registry=method_registry
+        ),
+        row_lowerer=row_lowerer_registry.lower,
+    )
+    register_evaluation_run_matrix_compiler(registry, evaluation_registry=evaluation_registry)
     register_studio_training_compiler(registry)
     return registry
 
@@ -583,10 +594,18 @@ def _preflight_evaluation_output(
 ) -> EvaluationOutputPreflightEvidence | None:
     """Refuse cardinality or disk-budget drift before compiled rows are persisted."""
     policy = request.evaluation_output_preflight
-    if policy is None:
-        return None
     execution_families = {row.execution_family for row in compiled.rows}
-    if execution_families != {"evaluation-matrix"} or len(compiled.rows) != 1:
+    if execution_families == {"evaluation-matrix"}:
+        if len(compiled.rows) != 1:
+            raise ValueError("evaluation output preflight requires one compiled evaluation matrix")
+        if policy is None:
+            raise ValueError(
+                "evaluation-matrix assembly requires authored evaluation_output_preflight "
+                "with an explicit storage_mode choice"
+            )
+    elif policy is None:
+        return None
+    else:
         raise ValueError(
             "evaluation_output_preflight is only valid for one compiled evaluation matrix"
         )
@@ -608,6 +627,11 @@ def _preflight_evaluation_output(
     active_batch_count = 0
     max_rows_per_active_batch = 0
     if policy.storage_mode == "batch_reclamation":
+        if request.evaluation_batch_plan is None:
+            raise ValueError(
+                "evaluation_batch_plan is required when "
+                "evaluation_output_preflight.storage_mode='batch_reclamation'"
+            )
         plan = EvaluationMatrixBatchPlan.model_validate(
             compiled.rows[0].launch.metadata.get("batch_plan")
         )

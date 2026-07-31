@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 import hashlib
 import json
@@ -61,8 +62,15 @@ from feedbax.orchestration import (
     assemble_run_bundle,
     run_authority_preflight_checks,
 )
-from feedbax.plugins import load_training_method_plugins
-from feedbax.training.preparation import ExecutionPreparationProviderRegistry
+from feedbax.plugins import (
+    ROW_LOWERERS,
+    FamilyRequirement,
+    PluginDeclaration,
+    PluginRegistration,
+    bootstrap_application,
+    new_registration_context,
+)
+import feedbax.plugins.bootstrap as plugin_bootstrap
 from feedbax.training.row_lowering import (
     TrainingRowLowererRegistration,
     TrainingRowLowererRegistry,
@@ -81,6 +89,18 @@ _AUTHORED_SCHEMA_ID = "tests.spec.downstream_authored_row"
 _AUTHORED_SCHEMA_VERSION = f"{_AUTHORED_SCHEMA_ID}.v1"
 _LOWERER_ID = "tests.downstream-row"
 _LOWERER_VERSION = f"{_LOWERER_ID}.v1"
+
+
+def _lowerer_plugin(plugin_id: str = "tests.downstream") -> PluginRegistration:
+    return PluginRegistration(
+        PluginDeclaration(
+            plugin_id,
+            "1",
+            1,
+            families=(FamilyRequirement("row_lowerers"),),
+        ),
+        lambda context: context.registry(ROW_LOWERERS).register(_registration()),
+    )
 
 
 def _execution_payload() -> dict[str, object]:
@@ -133,17 +153,14 @@ def _authored_payload(implementation_sha256: str | None = None) -> dict[str, obj
             "context_api_version": "feedbax.training_row_lowering_context.v1",
             "lowerer_id": _LOWERER_ID,
             "lowerer_version": _LOWERER_VERSION,
-            "implementation_sha256": implementation_sha256
-            or _registration().implementation_sha256,
+            "implementation_sha256": implementation_sha256 or _registration().implementation_sha256,
         },
         "execution_payload": _execution_payload(),
     }
 
 
 def _registration(*, broken: bool = False) -> TrainingRowLowererRegistration:
-    def lower(
-        row: AuthoredTrainingRow, _context: object
-    ) -> TrainingRowLoweringResult:
+    def lower(row: AuthoredTrainingRow, _context: object) -> TrainingRowLoweringResult:
         if broken:
             raise RuntimeError("broken by design")
         return TrainingRowLoweringResult(
@@ -307,19 +324,16 @@ def test_orchestration_cli_discovers_and_lowers_downstream_rows(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    registry = TrainingRowLowererRegistry()
-    plugin = SimpleNamespace(
-        register_feedbax_training_row_lowerers=lambda target: target.register(
-            _registration()
-        )
-    )
     monkeypatch.setattr(
-        "feedbax.training.row_lowering.DEFAULT_TRAINING_ROW_LOWERER_REGISTRY",
-        registry,
-    )
-    monkeypatch.setattr(
-        "feedbax.plugins.discovery.feedbax_plugin_entry_points",
-        lambda _group: [SimpleNamespace(name="downstream", load=lambda: plugin)],
+        plugin_bootstrap,
+        "_installed_entry_points",
+        lambda _group: (
+            SimpleNamespace(
+                name="downstream",
+                value="tests:PLUGIN_REGISTRATION",
+                load=_lowerer_plugin,
+            ),
+        ),
     )
     monkeypatch.chdir(tmp_path)
     request_path = _write_request(tmp_path, orchestration_name="cli")
@@ -333,44 +347,34 @@ def test_orchestration_cli_discovers_and_lowers_downstream_rows(
     assert provenance["lowerer_identities"] == [
         {"lowerer_id": _LOWERER_ID, "lowerer_version": _LOWERER_VERSION}
     ]
-    assert provenance["authored_payload_hash"] == training_spec_sha256(
-        _authored_payload()
+    assert provenance["authored_payload_hash"] == training_spec_sha256(_authored_payload())
+    assert (
+        provenance["lowered_execution_payload_hash"]
+        == bundle["rows"][0]["execution"]["payload"]["sha256"]
     )
-    assert provenance["lowered_execution_payload_hash"] == bundle["rows"][0][
-        "execution"
-    ]["payload"]["sha256"]
 
 
-def test_registry_exact_registration_replay_is_idempotent() -> None:
+def test_registry_exact_registration_replay_is_a_collision() -> None:
     registry = TrainingRowLowererRegistry()
     registration = _registration()
 
     registry.register(registration)
-    keys = registry.available_keys()
-    registry.register(_registration())
-
-    assert registry.available_keys() == keys
+    with pytest.raises(TrainingRowLowererRegistryError, match="ambiguous"):
+        registry.register(_registration())
 
 
-def test_plugin_style_second_load_replays_exact_registration() -> None:
-    registry = TrainingRowLowererRegistry()
-    plugin = SimpleNamespace(
-        register_feedbax_training_row_lowerers=lambda target: target.register(
-            _registration()
+def test_plugin_registration_replays_in_isolated_contexts() -> None:
+    states = tuple(
+        asyncio.run(
+            bootstrap_application(
+                new_registration_context(local_component_source=None),
+                registrations=(_lowerer_plugin(f"tests.downstream.{index}"),),
+            )
         )
+        for index in range(2)
     )
-    entry_point = SimpleNamespace(name="downstream", load=lambda: plugin)
 
-    for _ in range(2):
-        load_training_method_plugins(
-            registry=default_training_method_registry(),
-            preparation_registry=ExecutionPreparationProviderRegistry(),
-            row_lowerer_registry=registry,
-            entry_points=[entry_point],
-            fail_on_load_error=True,
-        )
-
-    assert registry.available_keys() == (
+    expected = (
         (
             _AUTHORED_SCHEMA_ID,
             _AUTHORED_SCHEMA_VERSION,
@@ -378,6 +382,7 @@ def test_plugin_style_second_load_replays_exact_registration() -> None:
             _LOWERER_VERSION,
         ),
     )
+    assert all(state.bundle.row_lowerers.available_keys() == expected for state in states)
 
 
 def test_registry_rejects_conflicting_registration_owner() -> None:
@@ -575,7 +580,12 @@ def test_assembly_supplies_exact_composition_parents_and_binds_provenance(
         budget=BudgetPolicy(max_wall_clock_seconds=30),
     )
     registry = AssemblyCompilerRegistry()
-    register_training_run_matrix_compiler(registry, row_lowerer=lowerers.lower)
+    register_training_run_matrix_compiler(
+        registry,
+        method_registry=default_training_method_registry(),
+        row_lowerer=lowerers.lower,
+        row_validator=lambda payload, _row_id: TrainingRunSpec.model_validate(payload),
+    )
 
     def assemble(candidate: RunAssemblyRequest, name: str):
         return assemble_run_bundle(
@@ -600,9 +610,7 @@ def test_assembly_supplies_exact_composition_parents_and_binds_provenance(
 
     with pytest.raises(TrainingRowLowererRegistryError, match="missing or undeclared"):
         assemble(
-            request.model_copy(
-                update={"training_row_parents": request.training_row_parents[:1]}
-            ),
+            request.model_copy(update={"training_row_parents": request.training_row_parents[:1]}),
             "missing",
         )
     duplicated = request.model_dump(mode="json")
@@ -624,9 +632,7 @@ def test_lowerer_reference_rejects_unsupported_versions() -> None:
         "feedbax.spec.training_row_lowerer_ref.v1",
     ):
         with pytest.raises(ValidationError, match="schema_version"):
-            TrainingRowLowererRef.model_validate(
-                {**payload, "schema_version": version}
-            )
+            TrainingRowLowererRef.model_validate({**payload, "schema_version": version})
         with pytest.raises(
             UnsupportedSpecVersion,
             match="migration_intentionally_absent=yes",
@@ -645,9 +651,10 @@ def test_installed_plugin_replays_identical_rows_across_fresh_processes(
         """
 from feedbax.contracts.run_composition import CompositionNode, flatten_composition
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowLoweringResult
+from feedbax.plugins import FamilyRequirement, PluginDeclaration, PluginRegistration, ROW_LOWERERS
 from feedbax.training.row_lowering import TrainingRowLowererRegistration, training_row_lowerer_implementation_sha256
 
-def register_feedbax_training_row_lowerers(registry):
+def register(context):
     def lower(row, context):
         flattened = flatten_composition(
             CompositionNode.model_validate(row.payload["composition"]),
@@ -660,7 +667,7 @@ def register_feedbax_training_row_lowerers(registry):
                 lowerer_version="tests.downstream-row.v1",
             )],
         )
-    registry.register(TrainingRowLowererRegistration(
+    context.registry(ROW_LOWERERS).register(TrainingRowLowererRegistration(
         authored_schema_id="tests.spec.downstream_authored_row",
         authored_schema_version="tests.spec.downstream_authored_row.v1",
         lowerer_id="tests.downstream-row",
@@ -669,6 +676,16 @@ def register_feedbax_training_row_lowerers(registry):
         lower=lower,
         owner="fresh-process-plugin",
     ))
+
+PLUGIN_REGISTRATION = PluginRegistration(
+    PluginDeclaration(
+        "tests.downstream_row",
+        "1",
+        1,
+        families=(FamilyRequirement("row_lowerers"),),
+    ),
+    register,
+)
 """.lstrip(),
         encoding="utf-8",
     )
@@ -680,24 +697,29 @@ def register_feedbax_training_row_lowerers(registry):
     dist_info = tmp_path / "downstream_row_plugin-1.0.dist-info"
     dist_info.mkdir()
     (dist_info / "entry_points.txt").write_text(
-        "[feedbax.plugins]\ndownstream-row = downstream_row_plugin\n",
+        "[feedbax.plugins]\ndownstream-row = downstream_row_plugin:PLUGIN_REGISTRATION\n",
         encoding="utf-8",
     )
     script = """
 import json
+import asyncio
 from pathlib import Path
 import sys
 from feedbax.bin.orchestrate import _load_assembly_request
 from feedbax.orchestration import AssemblyContext, assemble_run_bundle, build_default_assembly_registry
-from feedbax.plugins import load_training_method_plugins
+from feedbax.plugins.composition import compose_application
 
-load_training_method_plugins(fail_on_load_error=True)
+state = asyncio.run(compose_application(local_component_source=None))
 request = _load_assembly_request(sys.argv[1])
 bundle = assemble_run_bundle(
     request,
     run_set_id="fresh-process",
     context=AssemblyContext(custody_root=Path(sys.argv[2]), repo_root=Path(sys.argv[3])),
-    registry=build_default_assembly_registry(),
+    registry=build_default_assembly_registry(
+        method_registry=state.bundle.training_methods,
+        row_lowerer_registry=state.bundle.row_lowerers,
+        evaluation_registry=state.bundle.evaluation_recipes,
+    ),
 )
 row = bundle.rows[0]
 print(json.dumps({
@@ -707,9 +729,7 @@ print(json.dumps({
 }, sort_keys=True))
 """
     environment = dict(os.environ)
-    environment["PYTHONPATH"] = os.pathsep.join(
-        [str(tmp_path), str(Path(__file__).parents[1])]
-    )
+    environment["PYTHONPATH"] = os.pathsep.join([str(tmp_path), str(Path(__file__).parents[1])])
     observed = []
     for index in range(2):
         result = subprocess.run(
@@ -730,14 +750,23 @@ print(json.dumps({
 
     assert observed[0] == observed[1]
     assert [
-        (item["parent_kind"], item["ref"])
-        for item in observed[0]["provenance"]["parent_inputs"]
+        (item["parent_kind"], item["ref"]) for item in observed[0]["provenance"]["parent_inputs"]
     ] == [("authored_intent", "parent"), ("resolved_output", "terminal")]
     plugin_path.write_text(plugin_path.read_text(encoding="utf-8") + "# drift\n")
     with pytest.raises(subprocess.CalledProcessError) as error:
         subprocess.run(
-            [sys.executable, "-c", script, str(request_path), str(tmp_path / "drift"), str(tmp_path)],
-            check=True, capture_output=True, text=True, env=environment,
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(request_path),
+                str(tmp_path / "drift"),
+                str(tmp_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
         )
     assert "implementation drifted" in error.value.stderr
 

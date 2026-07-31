@@ -38,8 +38,6 @@ from feedbax.analysis.manifest_inputs import (
 )
 from feedbax.analysis.specs import (
     AnalysisRecipeResult,
-    register_analysis_recipe,
-    unregister_analysis_recipe,
 )
 from feedbax.contracts.figures import (
     FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID,
@@ -359,9 +357,7 @@ def test_recorded_json_artifact_round_trips_through_public_figure_payload_path(
         name="recorded-payload",
         assembler="feedbax.grid_figure",
         inputs=[parent],
-        input_authorities=[
-            FigureInputAuthority(parent=parent, artifact_payloads=[selector])
-        ],
+        input_authorities=[FigureInputAuthority(parent=parent, artifact_payloads=[selector])],
     )
 
     resolved = resolve_figure_inputs(figure_spec, execution_context=execution_context)
@@ -380,12 +376,15 @@ def test_recorded_json_artifact_round_trips_through_public_figure_payload_path(
     )
 
 
-def test_direct_execution_records_exact_consumed_artifact(tmp_path: Path) -> None:
+def test_direct_execution_records_exact_consumed_artifact(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     _provider, artifact, _certificate, context, spec = _authority_case(tmp_path)
     manifest, path = execute_figure_spec(
         spec,
         root=tmp_path / "outputs",
         execution_context=context,
+        registry=application_registry_bundle.figures,
     )
     assert path.is_file()
     assert manifest.regeneration_specs[0].kind == "FigureRuntimeBindingSpec"
@@ -395,6 +394,7 @@ def test_direct_execution_records_exact_consumed_artifact(tmp_path: Path) -> Non
 def test_sparse_authored_mapping_is_preserved_without_expanding_defaults(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    application_registry_bundle,
 ) -> None:
     authored = {
         "schema_id": "feedbax.spec.figure",
@@ -408,13 +408,17 @@ def test_sparse_authored_mapping_is_preserved_without_expanding_defaults(
         lambda *_args: [RenderedFigure(name="sparse", figure=go.Figure())],
     )
 
-    manifest, _ = execute_figure_spec(authored, root=tmp_path / "output")
+    manifest, _ = execute_figure_spec(
+        authored, root=tmp_path / "output", registry=application_registry_bundle.figures
+    )
     authored["metadata"]["identity"] = "mutated"
 
     assert manifest.figure_spec.inline["metadata"] == {"identity": "authored"}
 
 
-def test_invalid_authored_mapping_is_validated_before_figure_effects(tmp_path: Path) -> None:
+def test_invalid_authored_mapping_is_validated_before_figure_effects(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     output_root = tmp_path / "output"
     authored = {
         "schema_id": "feedbax.spec.figure",
@@ -425,7 +429,9 @@ def test_invalid_authored_mapping_is_validated_before_figure_effects(tmp_path: P
     }
 
     with pytest.raises(ValidationError, match="extra_forbidden"):
-        execute_figure_spec(authored, root=output_root)
+        execute_figure_spec(
+            authored, root=output_root, registry=application_registry_bundle.figures
+        )
 
     assert not output_root.exists()
 
@@ -433,10 +439,9 @@ def test_invalid_authored_mapping_is_validated_before_figure_effects(tmp_path: P
 def test_multi_root_runtime_bindings_preserve_authored_figure_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    application_registry_bundle,
 ) -> None:
-    providers = {
-        name: ImmutableArtifactBlobProvider(tmp_path / name) for name in ("left", "right")
-    }
+    providers = {name: ImmutableArtifactBlobProvider(tmp_path / name) for name in ("left", "right")}
     parents: list[ParentRef] = []
     locations: list[StagedParentExecutionLocation] = []
     authorities: list[FigureInputAuthority] = []
@@ -530,16 +535,11 @@ def test_multi_root_runtime_bindings_preserve_authored_figure_identity(
         ],
     )
     authored_path = (
-        Path(__file__).parent
-        / "fixtures"
-        / "figures"
-        / "sisu_m2_pulse_response.figure.v1.json"
+        Path(__file__).parent / "fixtures" / "figures" / "sisu_m2_pulse_response.figure.v1.json"
     )
     authored = json.loads(authored_path.read_text(encoding="utf-8"))
     authored_payload = spec_payload("FigureSpec", authored)
-    expected_authored_sha256 = (
-        "dc979c6acbbec4aa6a1cc0ab23f63e145517511fa3d6f94f92a134018fa14a4b"
-    )
+    expected_authored_sha256 = "dc979c6acbbec4aa6a1cc0ab23f63e145517511fa3d6f94f92a134018fa14a4b"
     assert authored_payload.sha256 == expected_authored_sha256
     retained_before = {
         name: sorted(path.relative_to(provider.root) for path in provider.root.rglob("*"))
@@ -556,6 +556,7 @@ def test_multi_root_runtime_bindings_preserve_authored_figure_identity(
         runtime_input_authorities=authorities,
         root=tmp_path / "output",
         execution_context=context,
+        registry=application_registry_bundle.figures,
     )
 
     assert manifest.figure_spec == authored_payload
@@ -565,8 +566,13 @@ def test_multi_root_runtime_bindings_preserve_authored_figure_identity(
     assert manifest.figure_spec.inline["input_authorities"] == []
     assert manifest.resolved_inputs == parents
     assert manifest.regeneration_specs[0].kind == "FigureRuntimeBindingSpec"
-    assert manifest.regeneration_specs[0].inline["authored_figure_spec_sha256"] == (
+    assert manifest.regeneration_specs[0].inline["authored_figure_source_sha256"] == (
         authored_payload.sha256
+    )
+    assert manifest.regeneration_specs[0].inline["resolved_figure_spec_sha256"] == sha256_bytes(
+        canonical_json_bytes(
+            FigureSpec.model_validate(authored).model_dump(mode="json", exclude_none=True)
+        )
     )
     assert manifest.regeneration_specs[0].inline["inputs"] == [
         parent.model_dump(mode="json", exclude_none=True) for parent in parents
@@ -626,6 +632,7 @@ def test_multi_root_runtime_bindings_preserve_authored_figure_identity(
                 ],
             },
         ),
+        registry=application_registry_bundle.report_recipes,
         root=tmp_path / "report",
         execution_descriptor=StagedExecutionDescriptor(
             schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
@@ -633,9 +640,7 @@ def test_multi_root_runtime_bindings_preserve_authored_figure_identity(
             artifact_providers={"evidence": ImmutableArtifactBlobProviderSpec()},
             checkpoint_custody={},
         ),
-        artifact_provider_bindings=[
-            StagedArtifactProviderRootBinding("evidence", evidence.root)
-        ],
+        artifact_provider_bindings=[StagedArtifactProviderRootBinding("evidence", evidence.root)],
     )
     assert report.status == "completed"
 
@@ -812,9 +817,7 @@ def test_data_product_selector_failures_precede_figure_effects(
     failure: str,
     message: str,
 ) -> None:
-    provider, artifact, _certificate, original_context, original_spec = _authority_case(
-        tmp_path
-    )
+    provider, artifact, _certificate, original_context, original_spec = _authority_case(tmp_path)
     original_parent = original_spec.inputs[0]
     original_manifest = original_context.resolve_manifest_input(original_parent).manifest
     product = AnalysisDataProduct(
@@ -883,9 +886,7 @@ def test_data_product_selector_failures_precede_figure_effects(
         name="typed-product-selector",
         assembler="feedbax.grid_figure",
         inputs=[parent],
-        input_authorities=[
-            FigureInputAuthority(parent=parent, artifact_payloads=[selector])
-        ],
+        input_authorities=[FigureInputAuthority(parent=parent, artifact_payloads=[selector])],
     )
     context = StagedExecutionContext(
         descriptor=None,
@@ -910,6 +911,7 @@ def test_data_product_selector_failures_precede_figure_effects(
 
 def test_staged_figure_resolves_prior_stage_output_through_executor_context(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     provider = ImmutableArtifactBlobProvider(tmp_path / "provider")
     certificate = {
@@ -926,9 +928,7 @@ def test_staged_figure_resolves_prior_stage_output_through_executor_context(
 
     def recipe(_spec, _root, _inputs, _execution_context):
         return AnalysisRecipeResult(
-            analyses={
-                "provider": _ProviderArtifactAnalysis(variant="provider", cache_result=True)
-            },
+            analyses={"provider": _ProviderArtifactAnalysis(variant="provider", cache_result=True)},
             data=build_toy_analysis_data(value=0),
             common_inputs={"artifact": artifact},
         )
@@ -948,128 +948,127 @@ def test_staged_figure_resolves_prior_stage_output_through_executor_context(
     )
     bindings = [StagedArtifactProviderRootBinding("certificates", provider.root)]
     root = tmp_path / "outputs"
-    register_analysis_recipe(_STAGED_PROVIDER_ANALYSIS_TYPE, recipe, replace=True)
-    try:
-        first_execution = execute_staged_analysis_bundle(
-            AnalysisBundleSpec(
-                name="authority-producer",
-                predicate=ManifestPredicate(manifest_kind="TrainingRunManifest"),
-                stages=[stage_one],
-            ),
-            root=root,
-            execution_descriptor=descriptor,
-            artifact_provider_bindings=bindings,
+    application_registry_bundle.analysis_recipes.register(_STAGED_PROVIDER_ANALYSIS_TYPE, recipe)
+    first_execution = execute_staged_analysis_bundle(
+        AnalysisBundleSpec(
+            name="authority-producer",
+            predicate=ManifestPredicate(manifest_kind="TrainingRunManifest"),
+            stages=[stage_one],
+        ),
+        root=root,
+        execution_descriptor=descriptor,
+        artifact_provider_bindings=bindings,
+        registries=application_registry_bundle,
+    )
+    produced_parent = first_execution.stages[0].manifest_refs[0]
+    selector = FigureArtifactPayload(
+        name="certificate",
+        manifest_role="analysis_run",
+        artifact_role="rlrmp-bridge-standard-certificate",
+        artifact_provider="certificates",
+        payload_schema_id="rlrmp.bridge.certificate",
+        payload_schema_version="rlrmp.bridge.certificate.v1",
+    )
+
+    def bundle_for(parent: ParentRef) -> AnalysisBundleSpec:
+        figure = FigureSpec(
+            name="authority",
+            assembler="feedbax.grid_figure",
+            inputs=[parent],
+            input_authorities=[
+                FigureInputRoleAuthority(
+                    input_role="analysis_run",
+                    artifact_payloads=[selector],
+                )
+            ],
         )
-        produced_parent = first_execution.stages[0].manifest_refs[0]
-        selector = FigureArtifactPayload(
-            name="certificate",
-            manifest_role="analysis_run",
-            artifact_role="rlrmp-bridge-standard-certificate",
-            artifact_provider="certificates",
-            payload_schema_id="rlrmp.bridge.certificate",
-            payload_schema_version="rlrmp.bridge.certificate.v1",
+        return AnalysisBundleSpec(
+            name="authority-bundle",
+            predicate=ManifestPredicate(manifest_kind="TrainingRunManifest"),
+            stages=[
+                stage_one,
+                BundleStageSpec(
+                    name="figure",
+                    kind="figure",
+                    depends_on=["produce"],
+                    figure=figure,
+                ),
+            ],
         )
 
-        def bundle_for(parent: ParentRef) -> AnalysisBundleSpec:
-            figure = FigureSpec(
-                name="authority",
-                assembler="feedbax.grid_figure",
-                inputs=[parent],
-                input_authorities=[
-                    FigureInputRoleAuthority(
-                        input_role="analysis_run",
-                        artifact_payloads=[selector],
-                    )
-                ],
-            )
-            return AnalysisBundleSpec(
-                name="authority-bundle",
-                predicate=ManifestPredicate(manifest_kind="TrainingRunManifest"),
-                stages=[
-                    stage_one,
-                    BundleStageSpec(
-                        name="figure",
-                        kind="figure",
-                        depends_on=["produce"],
-                        figure=figure,
-                    ),
-                ],
-            )
-
-        bundle = bundle_for(produced_parent)
-        authored_figure = bundle.stages[1].figure
-        assert authored_figure is not None
-        authored_payload = spec_payload(
-            "FigureSpec",
-            authored_figure.model_dump(mode="json", exclude_none=True),
-        )
-        execution = execute_staged_analysis_bundle(
-            bundle,
-            root=root,
-            execution_descriptor=descriptor,
-            artifact_provider_bindings=bindings,
-        )
-        assert execution.stages[0].manifest_refs == [produced_parent]
-        assert execution.stages[1].inputs == [produced_parent]
-        staged_manifest = resolve_manifest_input(
-            execution.stages[1].manifest_refs[0], root
-        ).manifest
-        assert staged_manifest.figure_spec == authored_payload
-        assert staged_manifest.figure_spec.inline == authored_figure.model_dump(
-            mode="json",
-            exclude_none=True,
-        )
-        assert staged_manifest.figure_spec.sha256 == authored_payload.sha256
-        runtime_binding = next(
-            payload
-            for payload in staged_manifest.regeneration_specs
-            if payload.kind == "FigureRuntimeBindingSpec"
-        )
-        assert runtime_binding.inline["authored_figure_spec_sha256"] == authored_payload.sha256
-        assert runtime_binding.inline["inputs"] == [
-            parent.model_dump(mode="json", exclude_none=True)
-            for parent in [*authored_figure.inputs, produced_parent]
-        ]
-        assert runtime_binding.inline["input_authorities"] == [
-            authority.model_dump(mode="json", exclude_none=True)
-            for authority in authored_figure.input_authorities
-        ]
-        assert runtime_binding.inline["runtime_metadata"] == {
-            "bundle": {
-                "name": bundle.name,
-                "stage": "figure",
-                "index": 0,
-                "schema_id": bundle.schema_id,
-                "schema_version": bundle.schema_version,
-            }
+    bundle = bundle_for(produced_parent)
+    authored_figure = bundle.stages[1].figure
+    assert authored_figure is not None
+    authored_payload = spec_payload(
+        "FigureSpec",
+        authored_figure.model_dump(mode="json", exclude_none=True),
+    )
+    execution = execute_staged_analysis_bundle(
+        bundle,
+        root=root,
+        execution_descriptor=descriptor,
+        artifact_provider_bindings=bindings,
+        registries=application_registry_bundle,
+    )
+    assert execution.stages[0].manifest_refs == [produced_parent]
+    assert execution.stages[1].inputs == [produced_parent]
+    staged_manifest = resolve_manifest_input(execution.stages[1].manifest_refs[0], root).manifest
+    assert staged_manifest.figure_spec == authored_payload
+    assert staged_manifest.figure_spec.inline == authored_figure.model_dump(
+        mode="json",
+        exclude_none=True,
+    )
+    assert staged_manifest.figure_spec.sha256 == authored_payload.sha256
+    runtime_binding = next(
+        payload
+        for payload in staged_manifest.regeneration_specs
+        if payload.kind == "FigureRuntimeBindingSpec"
+    )
+    assert runtime_binding.inline["authored_figure_source_sha256"] == authored_payload.sha256
+    assert runtime_binding.inline["resolved_figure_spec_sha256"] == authored_payload.sha256
+    assert runtime_binding.inline["inputs"] == [
+        parent.model_dump(mode="json", exclude_none=True)
+        for parent in [*authored_figure.inputs, produced_parent]
+    ]
+    assert runtime_binding.inline["input_authorities"] == [
+        authority.model_dump(mode="json", exclude_none=True)
+        for authority in authored_figure.input_authorities
+    ]
+    assert runtime_binding.inline["runtime_metadata"] == {
+        "bundle": {
+            "name": bundle.name,
+            "stage": "figure",
+            "index": 0,
+            "schema_id": bundle.schema_id,
+            "schema_version": bundle.schema_version,
         }
-        assert runtime_binding.inline["artifact_provider_bindings"] == [
-            {
-                "parent": produced_parent.model_dump(mode="json", exclude_none=True),
-                "authored_provider": "certificates",
-                "runtime_provider": "certificates",
-            }
-        ]
-        assert artifact in staged_manifest.regeneration_specs
+    }
+    assert runtime_binding.inline["artifact_provider_bindings"] == [
+        {
+            "parent": produced_parent.model_dump(mode="json", exclude_none=True),
+            "authored_provider": "certificates",
+            "runtime_provider": "certificates",
+        }
+    ]
+    assert artifact in staged_manifest.regeneration_specs
 
-        missing_parent = produced_parent.model_copy(
-            update={"id": f"{produced_parent.id}:missing"}
+    missing_parent = produced_parent.model_copy(update={"id": f"{produced_parent.id}:missing"})
+    with pytest.raises(
+        FigureInputAuthorityError,
+        match="runtime input/authority binding is invalid",
+    ):
+        execute_staged_analysis_bundle(
+            bundle_for(missing_parent),
+            root=root,
+            execution_descriptor=descriptor,
+            artifact_provider_bindings=bindings,
+            registries=application_registry_bundle,
         )
-        with pytest.raises(
-            FigureInputAuthorityError,
-            match="runtime input/authority binding is invalid",
-        ):
-            execute_staged_analysis_bundle(
-                bundle_for(missing_parent),
-                root=root,
-                execution_descriptor=descriptor,
-                artifact_provider_bindings=bindings,
-            )
-    finally:
-        unregister_analysis_recipe(_STAGED_PROVIDER_ANALYSIS_TYPE)
 
 
-def test_contained_manifest_hardlink_precedes_direct_figure_effects(tmp_path: Path) -> None:
+def test_contained_manifest_hardlink_precedes_direct_figure_effects(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     provider, _artifact, _certificate, context, spec = _authority_case(tmp_path)
     parent = spec.inputs[0]
     source = tmp_path / "contained" / "manifest.json"
@@ -1091,7 +1090,12 @@ def test_contained_manifest_hardlink_precedes_direct_figure_effects(tmp_path: Pa
     output_root = tmp_path / "outputs"
 
     with pytest.raises(FigureInputAuthorityError, match="authority rejected exact parent"):
-        execute_figure_spec(spec, root=output_root, execution_context=contained_context)
+        execute_figure_spec(
+            spec,
+            root=output_root,
+            execution_context=contained_context,
+            registry=application_registry_bundle.figures,
+        )
     assert not output_root.exists()
 
 
@@ -1110,6 +1114,7 @@ def test_semantic_selector_failures_precede_figure_effects(
     tmp_path: Path,
     mutation: str,
     message: str,
+    application_registry_bundle,
 ) -> None:
     provider, artifact, _certificate, context, spec = _authority_case(tmp_path)
     selector = spec.input_authorities[0].artifact_payloads[0]
@@ -1179,5 +1184,10 @@ def test_semantic_selector_failures_precede_figure_effects(
         )
     output_root = tmp_path / "outputs"
     with pytest.raises(FigureInputAuthorityError, match=message):
-        execute_figure_spec(spec, root=output_root, execution_context=context)
+        execute_figure_spec(
+            spec,
+            root=output_root,
+            execution_context=context,
+            registry=application_registry_bundle.figures,
+        )
     assert not output_root.exists()

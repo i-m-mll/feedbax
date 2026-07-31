@@ -52,11 +52,22 @@ from feedbax.orchestration import (
     build_default_assembly_registry,
 )
 from feedbax.orchestration.assembly import _prepare_run_assembly
+from feedbax.orchestration.drivers.capabilities import DriverConstructionContext
 from feedbax.orchestration.staged_root_custody import (
     StagedRootSourceBinding,
     seal_staged_root,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.plugins.application import new_application_registry_bundle
+
+
+def _assembly_registry():
+    registries = new_application_registry_bundle(local_component_source=None)
+    return build_default_assembly_registry(
+        method_registry=registries.training_methods,
+        row_lowerer_registry=registries.row_lowerers,
+        evaluation_registry=registries.evaluation_recipes,
+    )
 
 
 def _matrix() -> dict[str, Any]:
@@ -102,9 +113,9 @@ def _request(
     tmp_path: Path,
     authored: dict[str, Any],
     *,
+    output_preflight: EvaluationOutputPreflightPolicy | None,
     driver: str = "local",
     batch_plan: EvaluationMatrixBatchPlan | None = None,
-    output_preflight: EvaluationOutputPreflightPolicy | None = None,
 ) -> RunAssemblyRequest:
     authored_path = tmp_path / "matrix.json"
     authored_bytes = _write_json(authored_path, authored)
@@ -148,6 +159,7 @@ def _output_preflight(
         retained_bytes_per_resolved_row=bytes_per_row,
         retained_bytes_per_resolved_row_source="measured representative row fixture",
         planned_repetitions=repetitions,
+        storage_mode="retain_all",
         required_free_space_reserve_bytes=reserve_bytes,
     )
 
@@ -169,6 +181,14 @@ def test_evaluation_output_preflight_policy_rejects_boolean_integers(field: str)
         EvaluationOutputPreflightPolicy.model_validate(payload)
 
 
+def test_evaluation_output_preflight_policy_requires_explicit_storage_mode() -> None:
+    payload = _output_preflight(expected_rows=2).model_dump(mode="json")
+    del payload["storage_mode"]
+
+    with pytest.raises(ValidationError, match="storage_mode"):
+        EvaluationOutputPreflightPolicy.model_validate(payload)
+
+
 def _assemble(request: RunAssemblyRequest, tmp_path: Path, *, run_set_id: str = "run"):
     return assemble_run_bundle(
         request,
@@ -178,7 +198,7 @@ def _assemble(request: RunAssemblyRequest, tmp_path: Path, *, run_set_id: str = 
             repo_root=tmp_path,
             materializer_commit="d9e62cfd" + "0" * 32,
         ),
-        registry=build_default_assembly_registry(),
+        registry=_assembly_registry(),
     )
 
 
@@ -194,9 +214,12 @@ def test_authored_matrix_compiles_ordered_batches_under_one_matrix_identity(
             EvaluationMatrixBatchUnit(batch_id="0001", ordered_row_ids=("gain-b",)),
         ),
     )
-    request = _request(tmp_path, matrix, batch_plan=plan).model_copy(
-        update={"launch_policy": LaunchPolicy(max_parallel_rows=4)}
-    )
+    request = _request(
+        tmp_path,
+        matrix,
+        batch_plan=plan,
+        output_preflight=_output_preflight(expected_rows=2),
+    ).model_copy(update={"launch_policy": LaunchPolicy(max_parallel_rows=4)})
     bundle = _assemble(request, tmp_path)
 
     assert bundle.execution_family == "evaluation-matrix"
@@ -235,7 +258,31 @@ def test_batch_plan_drift_is_rejected_during_assembly_before_launch(
         ),
     )
     with pytest.raises(ValueError, match="ordered union"):
-        _assemble(_request(tmp_path, matrix, batch_plan=plan), tmp_path)
+        _assemble(
+            _request(
+                tmp_path,
+                matrix,
+                batch_plan=plan,
+                output_preflight=_output_preflight(expected_rows=2),
+            ),
+            tmp_path,
+        )
+
+
+def test_evaluation_matrix_requires_authored_output_adequacy_before_outputs(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path, _matrix(), output_preflight=None)
+    output_root = Path(request.orchestration_root) / "missing-output-adequacy"
+
+    with pytest.raises(
+        ValueError,
+        match=r"evaluation_output_preflight.*explicit storage_mode choice",
+    ):
+        _assemble(request, tmp_path, run_set_id="missing-output-adequacy")
+
+    assert not output_root.exists()
+    assert not (tmp_path / "custody").exists()
 
 
 @pytest.mark.parametrize("driver", ["local", "runpod"])
@@ -286,9 +333,14 @@ def test_insufficient_disk_fails_before_run_output_root(
         disk_paths.append(Path(path))
         return SimpleNamespace(free=649)
 
-    monkeypatch.setattr(assembly_module.shutil, "disk_usage", disk_usage)
+    monkeypatch.setattr(
+        assembly_module,
+        "shutil",
+        SimpleNamespace(disk_usage=disk_usage),
+    )
     run_set_id = "disk-refusal"
     output_root = Path(request.orchestration_root) / run_set_id
+    registries = new_application_registry_bundle(local_component_source=None)
     engine = StageEngine.from_request(
         request,
         context=AssemblyContext(
@@ -296,8 +348,9 @@ def test_insufficient_disk_fails_before_run_output_root(
             repo_root=tmp_path,
             materializer_commit="d9e62cfd" + "0" * 32,
         ),
-        registry=build_default_assembly_registry(),
-        driver_factory=lambda _bundle: pytest.fail("driver constructed before disk refusal"),
+        registry=_assembly_registry(),
+        driver_registry=registries.drivers,
+        driver_context=lambda _bundle: pytest.fail("driver constructed before disk refusal"),
         run_set_id=run_set_id,
     )
 
@@ -337,7 +390,7 @@ def test_successful_pre_output_pass_is_pure_before_the_run_lock(
             repo_root=tmp_path,
             materializer_commit="d9e62cfd" + "0" * 32,
         ),
-        registry=build_default_assembly_registry(),
+        registry=_assembly_registry(),
     )
 
     assert prepared.evaluation_output_preflight is not None
@@ -364,8 +417,13 @@ def test_stage_engine_reuses_the_pre_root_capacity_decision_inside_the_lock(
             raise AssertionError("disk capacity was re-observed after the output root existed")
         return SimpleNamespace(free=10_000)
 
-    monkeypatch.setattr(assembly_module.shutil, "disk_usage", disk_usage)
+    monkeypatch.setattr(
+        assembly_module,
+        "shutil",
+        SimpleNamespace(disk_usage=disk_usage),
+    )
     run_set_id = "single-pre-root-decision"
+    registries = new_application_registry_bundle(local_component_source=None)
     engine = StageEngine.from_request(
         request,
         context=AssemblyContext(
@@ -373,8 +431,9 @@ def test_stage_engine_reuses_the_pre_root_capacity_decision_inside_the_lock(
             repo_root=tmp_path,
             materializer_commit="d9e62cfd" + "0" * 32,
         ),
-        registry=build_default_assembly_registry(),
-        driver_factory=lambda _bundle: SimpleNamespace(),
+        registry=_assembly_registry(),
+        driver_registry=registries.drivers,
+        driver_context=lambda bundle: DriverConstructionContext(configuration={"bundle": bundle}),
         run_set_id=run_set_id,
     )
 
@@ -517,6 +576,58 @@ def test_batch_reclamation_preflight_bounds_peak_before_any_output(
     assert bundle.rows[0].launch.metadata["batch_plan"]["consumers"][0]["leaf_id"] == "velocity"
 
 
+@pytest.mark.parametrize(
+    ("batch_plan", "message"),
+    [
+        (None, "evaluation_batch_plan is required"),
+        ("without-consumers", "declared terminal consumers"),
+    ],
+)
+def test_batch_reclamation_requires_authored_plan_and_terminal_consumers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    batch_plan: EvaluationMatrixBatchPlan | str | None,
+    message: str,
+) -> None:
+    from feedbax.orchestration import assembly as assembly_module
+
+    matrix = _matrix()
+    if batch_plan == "without-consumers":
+        batch_plan = EvaluationMatrixBatchPlan(
+            matrix_intent_hash=evaluation_matrix_intent_hash(matrix),
+            batches=(
+                EvaluationMatrixBatchUnit(
+                    batch_id="whole-matrix",
+                    ordered_row_ids=("gain-a", "gain-b"),
+                ),
+            ),
+        )
+    policy = EvaluationOutputPreflightPolicy(
+        expected_resolved_row_count=2,
+        retained_bytes_per_resolved_row=100,
+        retained_bytes_per_resolved_row_source="fixture",
+        planned_repetitions=1,
+        storage_mode="batch_reclamation",
+        required_free_space_reserve_bytes=0,
+    )
+    monkeypatch.setattr(
+        assembly_module.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(free=10_000),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        _assemble(
+            _request(
+                tmp_path,
+                matrix,
+                batch_plan=batch_plan,
+                output_preflight=policy,
+            ),
+            tmp_path,
+        )
+
+
 def test_content_pinned_delta_keeps_authored_payload_and_ordered_resolved_identity(
     tmp_path: Path,
 ) -> None:
@@ -537,7 +648,15 @@ def test_content_pinned_delta_keeps_authored_payload_and_ordered_resolved_identi
             }
         ],
     }
-    bundle = _assemble(_request(tmp_path, delta), tmp_path, run_set_id="delta")
+    bundle = _assemble(
+        _request(
+            tmp_path,
+            delta,
+            output_preflight=_output_preflight(expected_rows=2),
+        ),
+        tmp_path,
+        run_set_id="delta",
+    )
     row = bundle.rows[0]
     payload = json.loads(Path(row.execution.payload.uri).read_text(encoding="utf-8"))
     snapshot = decode_resolved_snapshot(
@@ -582,7 +701,11 @@ def test_matrix_staged_parents_require_and_bind_exact_governed_root_custody(
         "remote": remote,
     }
     matrix["staged_parents"] = {"local": local, "remote": remote}
-    request = _request(tmp_path, matrix)
+    request = _request(
+        tmp_path,
+        matrix,
+        output_preflight=_output_preflight(expected_rows=2),
+    )
     with pytest.raises(ValueError, match="lack governed staged-root custody"):
         _assemble(request, tmp_path)
 
@@ -639,12 +762,18 @@ def test_provider_free_cli_shadow_reaches_terminal_collection_in_fresh_process(
 import os
 from pathlib import Path
 
-from feedbax.analysis.evaluation import EvaluationRecipeResult, register_evaluation_recipe
+from feedbax.analysis.evaluation import EvaluationRecipeResult
 from feedbax.analysis import (
     EvaluationBatchFragment,
     EvaluationBatchFinalizeInput,
     EvaluationBatchMergeState,
-    register_evaluation_batch_consumer,
+)
+from feedbax.plugins import (
+    EVALUATION_BATCH_CONSUMERS,
+    EVALUATION_RECIPES,
+    FamilyRequirement,
+    PluginDeclaration,
+    PluginRegistration,
 )
 
 def _recipe(_spec, _root, _states_path, _context):
@@ -679,14 +808,13 @@ def _compact(value):
         role=f"{leaf}_result",
     )
 
-def register_feedbax_analysis_recipes():
-    register_evaluation_recipe(
+def _register(context):
+    context.registry(EVALUATION_RECIPES).register(
         "tests.evaluation_orchestration",
         _recipe,
         batch_recipe=_batch,
-        replace=True,
     )
-    register_evaluation_batch_consumer(
+    context.registry(EVALUATION_BATCH_CONSUMERS).register(
         "tests.projector",
         "v1",
         compact=_compact,
@@ -711,8 +839,20 @@ def register_feedbax_analysis_recipes():
             schema_version=f"tests.{value.parameters['leaf']}.product.v1",
             role=f"{value.parameters['leaf']}_result",
         ),
-        replace=True,
     )
+
+PLUGIN_REGISTRATION = PluginRegistration(
+    declaration=PluginDeclaration(
+        plugin_id="tests.evaluation_plugin",
+        version="1",
+        downstream_protocol_version=1,
+        families=(
+            FamilyRequirement(EVALUATION_RECIPES.family),
+            FamilyRequirement(EVALUATION_BATCH_CONSUMERS.family),
+        ),
+    ),
+    register=_register,
+)
 """.strip(),
         encoding="utf-8",
     )
@@ -723,7 +863,7 @@ def register_feedbax_analysis_recipes():
         encoding="utf-8",
     )
     (dist_info / "entry_points.txt").write_text(
-        "[feedbax.plugins]\nevaluation-test = evaluation_plugin\n",
+        "[feedbax.plugins]\nevaluation-test = evaluation_plugin:PLUGIN_REGISTRATION\n",
         encoding="utf-8",
     )
     manifest_root = tmp_path / "shadow-roots" / "manifests"
@@ -808,7 +948,11 @@ def register_feedbax_analysis_recipes():
         )
         for leaf in ("trajectory", "velocity")
     )
-    request = _request(tmp_path, shadow_matrix).model_copy(
+    request = _request(
+        tmp_path,
+        shadow_matrix,
+        output_preflight=_output_preflight(expected_rows=8),
+    ).model_copy(
         update={
             "staged_roots": [item.custody for item in sealed],
             "evaluation_batch_plan": EvaluationMatrixBatchPlan(
@@ -878,14 +1022,12 @@ def register_feedbax_analysis_recipes():
     assert all(item["ordered_batch_ids"] for item in topology["processes"])
     assert sum(len(item["ordered_batch_ids"]) for item in topology["processes"]) == 8
     assert all(
-        [timing["batch_id"] for timing in item["batch_timings"]]
-        == item["ordered_batch_ids"]
+        [timing["batch_id"] for timing in item["batch_timings"]] == item["ordered_batch_ids"]
         for item in topology["processes"]
     )
     assert all(
         timing["completed_offset_ns"] >= timing["started_offset_ns"] >= 0
-        and timing["duration_ns"]
-        == timing["completed_offset_ns"] - timing["started_offset_ns"]
+        and timing["duration_ns"] == timing["completed_offset_ns"] - timing["started_offset_ns"]
         and not timing["reused_verified_fragments"]
         for item in topology["processes"]
         for timing in item["batch_timings"]
@@ -943,11 +1085,22 @@ def test_runpod_dry_run_keeps_the_same_public_matrix_executor(
         ),
         consumers=(consumer,),
     )
-    request = _request(tmp_path, matrix, driver="runpod", batch_plan=plan)
+    request = _request(
+        tmp_path,
+        matrix,
+        driver="runpod",
+        batch_plan=plan,
+        output_preflight=_output_preflight(expected_rows=2),
+    )
     bundle = _assemble(request, tmp_path)
     (tmp_path / "local").mkdir()
     local_bundle = _assemble(
-        _request(tmp_path / "local", matrix, batch_plan=plan),
+        _request(
+            tmp_path / "local",
+            matrix,
+            batch_plan=plan,
+            output_preflight=_output_preflight(expected_rows=2),
+        ),
         tmp_path / "local",
     )
 
@@ -969,9 +1122,7 @@ def test_runpod_dry_run_keeps_the_same_public_matrix_executor(
         "projection": "velocity"
     }
     assert (
-        bundle.rows[0].launch.metadata["batch_plan"]["consumers"][0][
-            "terminal_analysis_type"
-        ]
+        bundle.rows[0].launch.metadata["batch_plan"]["consumers"][0]["terminal_analysis_type"]
         == "tests.velocity.analysis"
     )
     assert bundle.rows[0].launch.collect == local_bundle.rows[0].launch.collect

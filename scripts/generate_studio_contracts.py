@@ -8,7 +8,7 @@ import json
 import sys
 import types
 from pathlib import Path
-from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 
@@ -20,6 +20,7 @@ from feedbax.contracts.component import (
     ComponentDefinition,
     ComponentIdentity,
     ComponentMigrationInfo,
+    DynamicPortPolicy,
     PortType,
     PortTypeSpec,
 )
@@ -113,6 +114,11 @@ from feedbax.contracts.graph import (
     ValidationResult,
     ValidationWarning,
     WireSpec,
+)
+from feedbax.contracts.array_values import (
+    ConstantArrayValueSpec,
+    SparseCooArrayValueSpec,
+    SparseCooEntrySpec,
 )
 from feedbax.contracts.studio_api import (
     AnalysisBundleDryRunPayload,
@@ -212,6 +218,12 @@ from feedbax.web.api.training import (
     ValidateLossResponse,
     ValidationErrorResponse,
 )
+from feedbax.web.api.execution import (
+    SampledTaskTrial,
+    TaskTimelineCue,
+    TaskTrialSampleRequest,
+    TaskTrialSampleResponse,
+)
 from feedbax.web.api.runs import (
     CreateEvalRunRequest,
     EvalRunInfo,
@@ -257,6 +269,9 @@ OUTPUT = REPO_ROOT / "web" / "src" / "generated" / "studioContracts.ts"
 NONE_TYPE = type(None)
 
 MODEL_TYPES: list[type[BaseModel]] = [
+    SparseCooEntrySpec,
+    SparseCooArrayValueSpec,
+    ConstantArrayValueSpec,
     ParamSchema,
     ComponentSpec,
     AcausalConnectionSpec,
@@ -323,6 +338,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     PortTypeSpec,
     ComponentIdentity,
     ComponentMigrationInfo,
+    DynamicPortPolicy,
     RepresentationParamPathBinding,
     RepresentationStateAnchorSelectorBinding,
     RepresentationTrialSpecPathBinding,
@@ -367,6 +383,10 @@ MODEL_TYPES: list[type[BaseModel]] = [
     TrainingSpec,
     TaskSpec,
     TrainingConfig,
+    TaskTimelineCue,
+    SampledTaskTrial,
+    TaskTrialSampleRequest,
+    TaskTrialSampleResponse,
     ParentRef,
     TopKByMetricPerGroup,
     ManifestPredicate,
@@ -525,6 +545,8 @@ CONTRACT_MODEL_NAMES = [
     "InspectionStatusResponse",
     "ProbeResponse",
     "ValidateLossResponse",
+    "TaskTrialSampleRequest",
+    "TaskTrialSampleResponse",
     "TrainingWebSocketEvent",
 ]
 
@@ -547,9 +569,16 @@ def _literal_value(value: Any) -> str:
     return json.dumps(value)
 
 
+def _unwrap_annotated(annotation: Any) -> Any:
+    while get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    return annotation
+
+
 def ts_type(annotation: Any) -> str:
     """Return a TypeScript type expression for a Python annotation."""
 
+    annotation = _unwrap_annotated(annotation)
     if annotation is Any:
         return "unknown"
     if annotation is NONE_TYPE:
@@ -589,6 +618,7 @@ def ts_type(annotation: Any) -> str:
 def zod_schema(annotation: Any) -> str:
     """Return a zod expression for a Python annotation."""
 
+    annotation = _unwrap_annotated(annotation)
     if annotation is Any:
         return "z.unknown()"
     if annotation is NONE_TYPE:

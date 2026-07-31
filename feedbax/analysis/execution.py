@@ -54,7 +54,7 @@ from feedbax.config.hyperparams import (
 )
 from feedbax.contracts.manifest import AnalysisRunSpec, evaluation_states_cache_path
 from feedbax.training.support import log_version_info
-from feedbax.plugins import EXPERIMENT_REGISTRY
+from feedbax.plugins.registry import ExperimentRegistry
 from feedbax.config.tree import _hash_pytree, tree_level_labels
 from feedbax.analysis.types import AnalysisInputData
 from feedbax.config.namespace import TreeNamespace, namespace_to_dict
@@ -343,6 +343,7 @@ def setup_eval_for_module(
     hps: TreeNamespace,
     db_session: Session,
     version_info: dict[str, str],
+    registry: ExperimentRegistry,
 ):
     """Given the analysis module, set up the evaluation(s).
 
@@ -352,7 +353,7 @@ def setup_eval_for_module(
     from feedbax.persistence.database import add_evaluation, fill_hps_with_train_params
 
     # Load analysis module from registered packages
-    analysis_module: ModuleType = EXPERIMENT_REGISTRY.get_analysis_module(module_key)
+    analysis_module: ModuleType = registry.get_analysis_module(module_key)
 
     model_load_config = _required_model_load_config(module_key, analysis_module)
     training_module_name = model_load_config.resolve_training_module_name(module_key)
@@ -363,7 +364,7 @@ def setup_eval_for_module(
             training_module_name,
             hps,
             db_session,
-            EXPERIMENT_REGISTRY,
+            registry,
         )
     )
 
@@ -664,19 +665,18 @@ def run_analyses_with_context(
 def check_records_for_analysis(
     module_key: str,
     module_config: dict,
+    registry: ExperimentRegistry,
 ):
     from feedbax.persistence.database import db_session, get_model_record
 
     hps = config_to_hps(module_config, config_type="analysis")
-    analysis_module: ModuleType = EXPERIMENT_REGISTRY.get_analysis_module(module_key)
+    analysis_module: ModuleType = registry.get_analysis_module(module_key)
     model_load_config = _required_model_load_config(module_key, analysis_module)
     training_module_name = model_load_config.resolve_training_module_name(module_key)
 
     with db_session(autocommit=False) as db:
         for sweep_value in model_load_config.sweep_values(hps):
-            params_query = model_load_config.params_query(
-                hps, sweep_value, training_module_name
-            )
+            params_query = model_load_config.params_query(hps, sweep_value, training_module_name)
             model_info = get_model_record(
                 db,
                 postprocessed=True,
@@ -947,6 +947,7 @@ def run_analysis_module(
     eval_only: bool = False,
     memory_warn_gb: float = 24.0,
     requested_outputs: Optional[set[str]] = None,
+    registry: ExperimentRegistry,
     key,
 ):
     """Run a single analysis module using provided hyperparameters.
@@ -1014,6 +1015,7 @@ def run_analysis_module(
         provisional_hps_common,
         db_session,
         version_info,
+        registry,
     )
 
     # Phase 1: Evaluation — compute state trajectories

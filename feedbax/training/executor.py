@@ -30,6 +30,9 @@ from feedbax.contracts.manifest import (
     ManifestStatus,
     ParentRef,
     Provenance,
+    TRAINING_RUN_CERTIFICATION_SCHEMA_ID,
+    TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION,
+    TrainingRunCertification,
     TrainingRunManifest,
     TrainingManifestMetadataProjectionCustody,
     TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY,
@@ -61,7 +64,6 @@ from feedbax.contracts.nan_attribution import (
     SlotNonFiniteSummary,
 )
 from feedbax.contracts.training import (
-    DEFAULT_TRAINING_METHOD_REGISTRY,
     GraphTopologySourceSpec,
     OptimizerSpec,
     ResolvedTrainingMethod,
@@ -560,7 +562,7 @@ def execute_training_run_spec(
     manifest_root: Path | str | None = None,
     checkpoint_root: Path | str | None = None,
     checkpoint_source_root: Path | str | None = None,
-    registry: TrainingMethodRegistry | None = None,
+    registry: TrainingMethodRegistry,
     loss_service: LossService | None = None,
     environment: WorkerExecutabilityEnvironment | None = None,
     training_spec_payload: Mapping[str, Any] | None = None,
@@ -660,16 +662,14 @@ def execute_training_run_spec(
         run_spec=run_spec,
         execution_context=producer_context,
     )
-    method_registry = registry or DEFAULT_TRAINING_METHOD_REGISTRY
-    resolved_method = (
-        run_spec.resolved_method
-        if method_registry is DEFAULT_TRAINING_METHOD_REGISTRY
-        else method_registry.resolve_execution(
+    try:
+        resolved_method = registry.resolve_execution(
             run_spec.method_ref,
             run_spec.method_payload,
             worker_execution=run_spec.worker_execution,
         )
-    )
+    except ValueError as exc:
+        raise TrainingRunExecutorError(str(exc)) from exc
     embedded_training_spec_payload = (
         dict(training_spec_payload)
         if training_spec_payload is not None
@@ -703,7 +703,7 @@ def execute_training_run_spec(
     )
     projection_custody = prepare_training_manifest_metadata_projection(
         manifest_metadata_projection,
-        registry=method_registry,
+        registry=registry,
         run_spec=run_spec,
         training_spec_payload=embedded_training_spec_payload,
         training_spec_payload_kind=training_spec_payload_kind,
@@ -997,6 +997,7 @@ def execute_training_run_spec(
                 expected_slots=slots,
                 resume_slot_transform=resume_slot_transform,
                 resolved_method=resolved_method,
+                registry=registry,
                 slot_axis_bindings=slot_axis_bindings,
                 schedule_lineage=CheckpointSegmentLineage(
                     parent_transaction_id=(
@@ -2111,6 +2112,7 @@ def _executor_nan_guard(
     expected_slots: Mapping[str, Any],
     resume_slot_transform: ResumeSlotTransform | None,
     resolved_method: ResolvedTrainingMethod[Any],
+    registry: TrainingMethodRegistry,
     slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
     schedule_lineage: CheckpointSegmentLineage,
 ) -> Callable[[Mapping[str, Any], ProgressCoordinate, Mapping[str, Any]], StepGuardResult | None]:
@@ -2123,6 +2125,7 @@ def _executor_nan_guard(
             run_spec=run_spec,
             run_id=run_id,
             resolved_method=resolved_method,
+            registry=registry,
             schedule_lineage=schedule_lineage,
             slots=slots,
             coordinate=coordinate,
@@ -2265,6 +2268,7 @@ def _nan_attribution_detection(
     run_spec: TrainingRunSpec,
     run_id: str,
     resolved_method: ResolvedTrainingMethod[Any],
+    registry: TrainingMethodRegistry,
     schedule_lineage: CheckpointSegmentLineage,
     slots: Mapping[str, Any],
     coordinate: ProgressCoordinate,
@@ -2349,10 +2353,7 @@ def _nan_attribution_detection(
         else schedule_lineage.start_batch
     )
     try:
-        schedule_descriptor = (
-            resolved_method.descriptor
-            or DEFAULT_TRAINING_METHOD_REGISTRY.descriptor(run_spec.method_ref)
-        )
+        schedule_descriptor = resolved_method.descriptor or registry.descriptor(run_spec.method_ref)
         schedule_method = (
             resolved_method
             if resolved_method.descriptor is not None
@@ -3374,6 +3375,20 @@ def _build_manifest(
         task_spec=payloads.task_spec,
         task_binding_spec=payloads.task_binding_spec,
         checkpoint_custody=checkpoint_refs,
+        terminal_certification=TrainingRunCertification(
+            schema_id=TRAINING_RUN_CERTIFICATION_SCHEMA_ID,
+            schema_version=TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION,
+            termination_reason=(
+                "cancelled"
+                if status == "cancelled"
+                else "diverged"
+                if status == "failed" and failure_kind == "nan_guard"
+                else "crashed"
+                if status == "failed"
+                else "completed"
+            ),
+            certified_artifacts=checkpoint_refs,
+        ),
         completed_batches=completed_batches,
         stopped=stopped,
         stop_reason=stop_reason,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Literal, Mapping, Sequence, cast
 
 import jax.numpy as jnp
@@ -37,6 +38,7 @@ from feedbax.control.affine import AffineFeedbackController
 from feedbax.runtime.filters import FirstOrderFilter
 from feedbax.runtime.graph import Component, Graph, Wire
 from feedbax.contracts.graphs.templates import recurrent_controller_template_graph
+from feedbax.contracts.component import DynamicPortPolicyError, validate_dynamic_port_layout
 from feedbax.intervene.intervene import (
     AddNoise,
     ConstantInput,
@@ -64,7 +66,14 @@ from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 from feedbax.models.networks import LeakyRNNCell, SimpleStagedNetwork, VanillaRNN
 from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
 from feedbax.components.penzai import PenzaiSubgraph
-from feedbax.tasks import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
+from feedbax.tasks import (
+    DelayedReaches,
+    SimpleReaches,
+    Stabilization,
+    TaskComponent,
+    apply_delayed_reaches_preset,
+)
+from feedbax.tasks.presets import delayed_reaches_n_steps_from_params
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
@@ -72,11 +81,23 @@ from feedbax.contracts.graph import (
     require_causal_subgraph,
     validate_subgraph_domain,
 )
+from feedbax.contracts.array_values import (
+    ArrayValueSpec,
+    _parse_array_value_payload,
+    materialize_array_value,
+)
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.contracts.migrations import migrate_graph_spec
 from feedbax.component_registry import format_missing_interior_message, required_interior_domain
-from feedbax.runtime.parameter_constraints import apply_parameter_constraints, normalize_parameter_constraints
-from feedbax.contracts.graphs.builders import build_component, nonlinearity_name
+from feedbax.runtime.parameter_constraints import (
+    apply_parameter_constraints,
+    normalize_parameter_constraints,
+)
+from feedbax.contracts.graphs.builders import (
+    _unsupported_component_message,
+    build_component,
+    nonlinearity_name,
+)
 from feedbax.contracts.graphs.domain_compilers import get_domain_compiler
 from feedbax.contracts.graphs.prototypes import (
     normalize_derived_dimensions,
@@ -106,8 +127,8 @@ def _merge_params(
             f"{node_type} node {node_name!r} is missing required parameter(s): "
             + ", ".join(repr(name) for name in missing_required)
         )
-    merged = dict(defaults)
-    merged.update(params)
+    merged = deepcopy(dict(defaults))
+    merged.update(deepcopy(dict(params)))
     return merged
 
 
@@ -170,6 +191,70 @@ def _lookup_required_params(component_registry: Any, name: str) -> set[str]:
             if getattr(meta, "name", None) == name:
                 return _from_meta(meta)
     return set()
+
+
+def _materialize_component_param_value(
+    value: Any,
+    *,
+    declarations: dict[tuple[str, ...], ArrayValueSpec],
+    path: tuple[str, ...],
+) -> Any:
+    declaration = _parse_array_value_payload(value)
+    if declaration is not None:
+        declarations[path] = declaration
+        return materialize_array_value(declaration)
+    if isinstance(value, Mapping):
+        return {
+            key: _materialize_component_param_value(
+                item,
+                declarations=declarations,
+                path=(*path, str(key)),
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _materialize_component_param_value(
+                item,
+                declarations=declarations,
+                path=(*path, str(index)),
+            )
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            _materialize_component_param_value(
+                item,
+                declarations=declarations,
+                path=(*path, str(index)),
+            )
+            for index, item in enumerate(value)
+        )
+    return value
+
+
+def _materialize_graph_component_params(
+    spec: GraphSpec,
+) -> tuple[GraphSpec, dict[str, dict[tuple[str, ...], ArrayValueSpec]]]:
+    nodes: dict[str, ComponentSpec] = {}
+    declarations_by_node: dict[str, dict[tuple[str, ...], ArrayValueSpec]] = {}
+    for node_id, node in spec.nodes.items():
+        declarations: dict[tuple[str, ...], ArrayValueSpec] = {}
+        nodes[node_id] = node.model_copy(
+            update={
+                "params": {
+                    key: _materialize_component_param_value(
+                        value,
+                        declarations=declarations,
+                        path=(key,),
+                    )
+                    for key, value in node.params.items()
+                }
+            }
+        )
+        if declarations:
+            declarations_by_node[node_id] = declarations
+    return spec.model_copy(update={"nodes": nodes}), declarations_by_node
 
 
 def graph_to_spec(graph: Any) -> GraphSpec:
@@ -297,9 +382,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 }
             )
             expanded_parameter_constraints.extend(
-                constraint.model_copy(
-                    update={"node": _prefixed_node(name, constraint.node)}
-                )
+                constraint.model_copy(update={"node": _prefixed_node(name, constraint.node)})
                 for constraint in template.parameter_constraints
             )
             continue
@@ -594,21 +677,11 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             continue
 
         if isinstance(component, StructuralLinearStateSpace):
-            if component.initial_delta_A_entries is None:
-                delta_A_param = [
-                    list(row) for row in component.initial_delta_A
-                ]
-            else:
-                delta_A_param = {
-                    "shape": [
-                        len(component.initial_delta_A),
-                        len(component.initial_delta_A),
-                    ],
-                    "entries": [
-                        {"row": row, "column": column, "value": value}
-                        for row, column, value in component.initial_delta_A_entries
-                    ],
-                }
+            delta_A_param = (
+                component.initial_delta_A_value_spec.model_dump(mode="json")
+                if component.initial_delta_A_value_spec is not None
+                else [list(row) for row in component.initial_delta_A]
+            )
             params = {
                 "A": component.A.tolist(),
                 "B": component.B.tolist(),
@@ -1027,18 +1100,15 @@ def graph_to_spec(graph: Any) -> GraphSpec:
 
 def spec_to_graph(
     spec: GraphSpec,
-    component_registry: Any | None = None,
+    component_registry: Any,
     input_prototypes: Mapping[tuple[str, str], Any] | None = None,
 ) -> Graph:
     """Instantiate a Graph-like object from GraphSpec."""
-    from feedbax.component_registry import get_component_registry
-
-    execution_registry = (
-        component_registry if hasattr(component_registry, "names") else get_component_registry()
-    )
-    metadata_registry = component_registry if component_registry is not None else execution_registry
+    execution_registry = component_registry
+    metadata_registry = component_registry
     migration = migrate_graph_spec(spec)
     spec = GraphSpec.model_validate(migration.payload)
+    spec, authored_array_values = _materialize_graph_component_params(spec)
     spec = materialize_additive_channel_adapters(spec)
     spec = normalize_derived_dimensions(
         spec,
@@ -1080,6 +1150,17 @@ def spec_to_graph(
         required_domain = required_interior_domain(node_type, metadata_registry)
         if required_domain is None and metadata_registry is not execution_registry:
             required_domain = required_interior_domain(node_type, execution_registry)
+        if required_domain is None:
+            unsupported_message = _unsupported_component_message(
+                node_name,
+                node_type,
+                execution_registry,
+            )
+            if unsupported_message is not None:
+                raise NotImplementedError(unsupported_message)
+        if node_type == "DelayedReaches":
+            node_params = apply_delayed_reaches_preset(node_params)
+            node_params.setdefault("n_steps", delayed_reaches_n_steps_from_params(node_params))
         defaults = _lookup_defaults(metadata_registry, node_type)
         required_params = _lookup_required_params(metadata_registry, node_type)
         params = _merge_params(
@@ -1093,12 +1174,13 @@ def spec_to_graph(
             node_name=node_name,
             node_type=node_type,
         )
-        _validate_dynamic_component_ports(
+        declared_input_ports, declared_output_ports = _validate_dynamic_component_ports(
             node_name,
             node_type,
             params,
             node_spec.input_ports,
             node_spec.output_ports,
+            component_registry=metadata_registry,
         )
 
         if required_domain is not None:
@@ -1166,12 +1248,29 @@ def spec_to_graph(
             )
             nodes[node_name] = spec_to_graph(causal_subgraph, metadata_registry)
             continue
-        nodes[node_name] = build_component(
+        delta_A_declaration = authored_array_values.get(node_name, {}).get(("delta_A",))
+        if node_type == "StructuralLinearStateSpace" and delta_A_declaration is not None:
+            params = {**params, "_authored_delta_A_value_spec": delta_A_declaration}
+        component = build_component(
             node_name,
             node_type,
             params,
             component_registry=execution_registry,
         )
+        if (
+            tuple(component.input_ports) != declared_input_ports
+            or tuple(component.output_ports) != declared_output_ports
+        ):
+            meta = metadata_registry.get(node_type)
+            if meta is not None and meta.dynamic_port_policy is not None:
+                raise DynamicPortPolicyError(
+                    f"{node_type} node {node_name!r} runtime ports do not match its "
+                    "policy-materialized GraphSpec namespace: "
+                    f"runtime inputs={tuple(component.input_ports)!r}, "
+                    f"outputs={tuple(component.output_ports)!r}; "
+                    f"spec inputs={declared_input_ports!r}, outputs={declared_output_ports!r}"
+                )
+        nodes[node_name] = component
 
     wires = tuple(
         Wire(
@@ -1210,28 +1309,27 @@ def _validate_dynamic_component_ports(
     params: Mapping[str, Any],
     input_ports: Sequence[str],
     output_ports: Sequence[str],
-) -> None:
-    if node_type == "Mux":
-        n_inputs = int(params.get("n_inputs", 2))
-        expected_inputs = [f"in_{index}" for index in range(n_inputs)]
-        if list(input_ports) != expected_inputs:
-            raise ValueError(
-                f"Mux node {node_name!r} declares input_ports {list(input_ports)!r} "
-                f"but n_inputs={n_inputs} requires {expected_inputs!r}"
-            )
-        if list(output_ports) != ["output"]:
-            raise ValueError(
-                f"Mux node {node_name!r} declares output_ports {list(output_ports)!r} "
-                "but requires ['output']"
-            )
-    elif node_type == "Demux":
-        sizes = params.get("sizes")
-        if not isinstance(sizes, (list, tuple)):
-            return
-        expected_outputs = [f"out_{index}" for index in range(len(sizes))]
-        if list(input_ports) != ["input"] or list(output_ports) != expected_outputs:
-            raise ValueError(
-                f"Demux node {node_name!r} declares input_ports {list(input_ports)!r} "
-                f"and output_ports {list(output_ports)!r}, but sizes={list(sizes)!r} "
-                f"requires input_ports ['input'] and output_ports {expected_outputs!r}"
-            )
+    *,
+    component_registry: Any,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    meta = component_registry.get(node_type)
+    if meta is None or meta.dynamic_port_policy is None:
+        return tuple(input_ports), tuple(output_ports)
+    layout = component_registry.dynamic_port_layout(node_type, params)
+    assert layout is not None
+    declared_inputs = tuple(input_ports) or layout.input_ports
+    declared_outputs = tuple(output_ports) or layout.output_ports
+    try:
+        validate_dynamic_port_layout(
+            meta.dynamic_port_policy,
+            params,
+            input_ports=declared_inputs,
+            output_ports=declared_outputs,
+        )
+    except DynamicPortPolicyError as exc:
+        value = params.get(meta.dynamic_port_policy.count_param, "<missing>")
+        raise DynamicPortPolicyError(
+            f"{node_type} node {node_name!r} has invalid dynamic ports for "
+            f"{meta.dynamic_port_policy.count_param}={value!r}: {exc}"
+        ) from exc
+    return declared_inputs, declared_outputs

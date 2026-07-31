@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 
 from feedbax.analysis import feedbax_graph_controller, graph_controller
+from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.runtime.graph import Component, Graph, GraphTraceRequest, Wire
 
@@ -192,7 +193,15 @@ def test_graph_controller_accepts_recurrent_graph_spec():
         output_bindings={"output": ("sum", "output")},
     )
 
-    controller = graph_controller(spec, key=jax.random.PRNGKey(0), dtype=jnp.float32)
+    with pytest.raises(ValueError, match="component_registry is required"):
+        graph_controller(spec, key=jax.random.PRNGKey(0), dtype=jnp.float32)
+
+    controller = graph_controller(
+        spec,
+        key=jax.random.PRNGKey(0),
+        component_registry=ComponentRegistry(load_user_components=False),
+        dtype=jnp.float32,
+    )
     h1, output1 = controller.step(
         controller.initial_state(),
         jnp.array([3.0], dtype=jnp.float32),

@@ -1,24 +1,18 @@
 import logging
 import os
-import shlex
-from copy import deepcopy
-from cProfile import label
-from dataclasses import dataclass
-from functools import reduce
 from importlib import resources
-from itertools import product
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, TextIO, TypeVar
-from unittest.mock import DEFAULT
+from typing import TYPE_CHECKING, Any, Literal, Optional, TypeVar
 
 import jax.tree as jt
-from ruamel.yaml import YAML
 
-from feedbax.config.yaml import get_yaml_loader
-from feedbax.config.utils import deep_merge
-from feedbax.plugins.registry import ExperimentRegistry
 from feedbax.config.namespace import TreeNamespace, dict_to_namespace
+from feedbax.config.utils import deep_merge
+from feedbax.config.yaml import get_yaml_loader
+
+if TYPE_CHECKING:
+    from feedbax.plugins.registry import ExperimentRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +96,7 @@ def load_config(
     name: str,
     config_type: Optional[Literal["training", "analysis"]] = None,
     *,
-    registry: Optional[ExperimentRegistry] = None,
+    registry: Optional["ExperimentRegistry"] = None,
 ) -> dict[str, Any]:
     """
     Load a YAML config as a dict.
@@ -240,7 +234,7 @@ def load_config_as_ns(
     name: str,
     config_type: Optional[Literal["training", "analysis"]] = None,
     to_type: type[T] = TreeNamespace,
-    registry: Optional[ExperimentRegistry] = None,
+    registry: Optional["ExperimentRegistry"] = None,
 ) -> T:
     """Load the contents of a project YAML config file resource as a namespace."""
     return dict_to_namespace(load_config(name, config_type, registry=registry), to_type=to_type)

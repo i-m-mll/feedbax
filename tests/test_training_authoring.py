@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from functools import partial
 import json
@@ -13,7 +14,6 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-import feedbax.contracts.training as training_contracts
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.run_matrix import (
     AuthoredTrainingRow,
@@ -51,10 +51,19 @@ from feedbax.training.authoring import (
     compile_training_method_authoring,
     training_method_authoring_implementation_sha256,
 )
-from feedbax.plugins.discovery import load_training_method_plugins
-from feedbax.training.preparation import ExecutionPreparationProviderRegistry
+from feedbax.plugins import (
+    ROW_LOWERERS,
+    TRAINING_METHODS,
+    BootstrapError,
+    BootstrapErrorCode,
+    FamilyRequirement,
+    PluginDeclaration,
+    PluginRegistration,
+    bootstrap_application,
+    new_registration_context,
+)
+from feedbax.training.authoring import training_method_row_lowerer_registration
 from feedbax.training.row_lowering import (
-    TrainingRowLowererRegistry,
     training_row_lowerer_implementation_sha256,
 )
 from feedbax.training.run_matrix import materialize_adapted_run_matrix
@@ -186,7 +195,7 @@ def _projectors(calls: dict[str, int] | None = None) -> dict[str, object]:
 
 
 @pytest.fixture
-def authoring_registry(monkeypatch: pytest.MonkeyPatch):
+def authoring_registry():
     registry = TrainingMethodRegistry()
     default_result = object()
     holder: dict[str, Any] = {
@@ -236,7 +245,6 @@ def authoring_registry(monkeypatch: pytest.MonkeyPatch):
             package="example",
         )
     )
-    monkeypatch.setattr(training_contracts, "DEFAULT_TRAINING_METHOD_REGISTRY", registry)
     envelope = MethodPayloadEnvelope(
         schema_id=PAYLOAD_SCHEMA_ID,
         schema_version=PAYLOAD_SCHEMA_VERSION,
@@ -302,6 +310,7 @@ def test_compile_authoring_projects_once_and_returns_canonical_contracts(
     compiled = compile_training_method_authoring(
         row,
         method_ref=METHOD_REF,
+        registry=_registry,
     )
 
     assert holder["projector_calls"] == {
@@ -353,6 +362,7 @@ def test_compile_authoring_carries_one_mapping_level_without_row_compiler(
     compiled = compile_training_method_authoring(
         _authored_row(),
         method_ref=METHOD_REF,
+        registry=_registry,
     )
 
     assert compiled.worker_execution.mapping_levels == mapping_levels
@@ -373,6 +383,7 @@ def test_compile_authoring_preserves_empty_mapping_as_scalar(authoring_registry)
     compiled = compile_training_method_authoring(
         _authored_row(),
         method_ref=METHOD_REF,
+        registry=_registry,
     )
 
     assert compiled.worker_execution.mapping_levels == []
@@ -395,6 +406,7 @@ def test_compile_authoring_leaves_mapping_validation_to_worker_contract(
     compiled = compile_training_method_authoring(
         _authored_row(),
         method_ref=METHOD_REF,
+        registry=_registry,
     )
 
     with pytest.raises(WorkerContractValidationError, match="exactly one mapping level"):
@@ -403,9 +415,11 @@ def test_compile_authoring_leaves_mapping_validation_to_worker_contract(
 
 
 def test_compile_authoring_owns_scientific_policies_only(authoring_registry) -> None:
+    registry, _holder = authoring_registry
     defaulted = compile_training_method_authoring(
         _authored_row(),
         method_ref=METHOD_REF,
+        registry=registry,
     )
 
     assert "execution" not in TrainingRunSpec.model_fields
@@ -421,6 +435,7 @@ def test_compile_authoring_owns_scientific_policies_only(authoring_registry) -> 
         method_ref=METHOD_REF,
         artifacts=artifacts,
         risk_aggregation=risk,
+        registry=registry,
     )
 
     assert explicit.run_spec.artifacts == artifacts
@@ -432,6 +447,7 @@ def test_compiler_result_is_consumed_as_an_ordinary_row_lowerer(
     authoring_registry,
     tmp_path,
 ) -> None:
+    registry, _holder = authoring_registry
     matrix = TrainingRunMatrixSpec.model_validate(
         {
             "name": "typed authoring",
@@ -445,6 +461,7 @@ def test_compiler_result_is_consumed_as_an_ordinary_row_lowerer(
     lowerer = partial(
         compile_training_method_authoring,
         method_ref=METHOD_REF,
+        registry=registry,
     )
 
     materialized = materialize_adapted_run_matrix(
@@ -460,9 +477,7 @@ def test_compiler_result_is_consumed_as_an_ordinary_row_lowerer(
     assert row.provenance.lowerer_identities[0] == TRAINING_METHOD_AUTHORING_LOWERER_IDENTITY
 
 
-def test_authoring_rejects_missing_schema_low_level_and_missing_hook(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_authoring_rejects_missing_schema_low_level_and_missing_hook() -> None:
     low_level = TrainingMethodRegistry()
     low_level.register(
         TrainingMethodRegistration(
@@ -474,11 +489,11 @@ def test_authoring_rejects_missing_schema_low_level_and_missing_hook(
             update_kernels_factory=standard_supervised_update_kernels,
         )
     )
-    monkeypatch.setattr(training_contracts, "DEFAULT_TRAINING_METHOD_REGISTRY", low_level)
     with pytest.raises(TrainingMethodAuthoringError, match="low-level-only"):
         compile_training_method_authoring(
             _authored_row(),
             method_ref=METHOD_REF,
+            registry=low_level,
         )
 
     row_compiler_only = TrainingMethodRegistry()
@@ -505,28 +520,23 @@ def test_authoring_rejects_missing_schema_low_level_and_missing_hook(
             row_compiler=low_level_row_compiler,
         )
     )
-    monkeypatch.setattr(
-        training_contracts,
-        "DEFAULT_TRAINING_METHOD_REGISTRY",
-        row_compiler_only,
-    )
     with pytest.raises(TrainingMethodAuthoringError, match="has no authoring_hook"):
         compile_training_method_authoring(
             _authored_row(),
             method_ref=METHOD_REF,
+            registry=row_compiler_only,
         )
     assert row_compiler_calls == 0
 
 
 def test_authoring_rejects_projector_and_reserved_domain_errors(
     authoring_registry,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry, _holder = authoring_registry
     descriptor = registry.descriptor(METHOD_REF)
     assert descriptor is not None and descriptor.authoring_hook is not None
 
-    def install(**updates: object) -> None:
+    def install(**updates: object) -> TrainingMethodRegistry:
         candidate = TrainingMethodRegistry()
         candidate.register_descriptor(
             replace(
@@ -534,32 +544,35 @@ def test_authoring_rejects_projector_and_reserved_domain_errors(
                 authoring_hook=replace(descriptor.authoring_hook, **updates),
             )
         )
-        monkeypatch.setattr(training_contracts, "DEFAULT_TRAINING_METHOD_REGISTRY", candidate)
+        return candidate
 
-    install(domain=lambda _payload: {"method_ref": "collision"})
+    candidate = install(domain=lambda _payload: {"method_ref": "collision"})
     with pytest.raises(TrainingMethodAuthoringError, match="reserved metadata"):
         compile_training_method_authoring(
             _authored_row(),
             method_ref=METHOD_REF,
+            registry=candidate,
         )
 
-    install(graph=lambda _payload: {"inline": {"nodes": "invalid"}})
+    candidate = install(graph=lambda _payload: {"inline": {"nodes": "invalid"}})
     with pytest.raises(TrainingMethodAuthoringError, match="graph projector returned invalid"):
         compile_training_method_authoring(
             _authored_row(),
             method_ref=METHOD_REF,
+            registry=candidate,
         )
 
 
 def test_authoring_rejects_hook_mutation_and_untyped_contribution(
     authoring_registry,
 ) -> None:
-    _registry, holder = authoring_registry
+    registry, holder = authoring_registry
     holder["mutate_payload"] = True
     with pytest.raises(TrainingMethodAuthoringError, match="mutated"):
         compile_training_method_authoring(
             _authored_row(),
             method_ref=METHOD_REF,
+            registry=registry,
         )
     assert holder["authoring_calls"] == 1
     assert holder["row_compiler_calls"] == 0
@@ -573,6 +586,7 @@ def test_authoring_rejects_hook_mutation_and_untyped_contribution(
         compile_training_method_authoring(
             _authored_row(),
             method_ref=METHOD_REF,
+            registry=registry,
         )
     assert holder["authoring_calls"] == 2
     assert holder["row_compiler_calls"] == 0
@@ -582,7 +596,7 @@ def test_invalid_contribution_fails_before_matrix_materialization_writes(
     authoring_registry,
     tmp_path,
 ) -> None:
-    _registry, holder = authoring_registry
+    registry, holder = authoring_registry
     holder["return_value"] = {"training_config": {}}
     matrix = TrainingRunMatrixSpec.model_validate(
         {
@@ -597,6 +611,7 @@ def test_invalid_contribution_fails_before_matrix_materialization_writes(
     lowerer = partial(
         compile_training_method_authoring,
         method_ref=METHOD_REF,
+        registry=registry,
     )
 
     with pytest.raises(TrainingMethodAuthoringError, match="exact.*Contribution"):
@@ -611,53 +626,55 @@ def test_invalid_contribution_fails_before_matrix_materialization_writes(
 
 
 def test_authoring_rejects_invalid_method_payload_before_projectors(authoring_registry) -> None:
-    _registry, holder = authoring_registry
+    registry, holder = authoring_registry
     with pytest.raises(TrainingMethodAuthoringError, match="method payload schema"):
         compile_training_method_authoring(
             _authored_row({"gain": "3", "task_name": "reach"}),
             method_ref=METHOD_REF,
+            registry=registry,
         )
 
     assert holder["projector_calls"] == {}
 
 
 def test_authoring_rejects_continuation_batch_drift(authoring_registry) -> None:
+    registry, _holder = authoring_registry
     with pytest.raises(TrainingMethodAuthoringError, match="additional_batches"):
         compile_training_method_authoring(
             _authored_row(),
             method_ref=METHOD_REF,
             continuation={"source_completed_batches": 4, "additional_batches": 3},
+            registry=registry,
         )
 
 
 def test_authoring_accepts_matching_continuation(authoring_registry) -> None:
+    registry, _holder = authoring_registry
     compiled = compile_training_method_authoring(
         _authored_row(),
         method_ref=METHOD_REF,
         continuation={"source_completed_batches": 6, "additional_batches": 4},
+        registry=registry,
     )
 
     assert compiled.run_spec.checkpoint_progress.continuation is not None
-    assert (
-        compiled.run_spec.checkpoint_progress.continuation.source_completed_batches
-        == 6
-    )
+    assert compiled.run_spec.checkpoint_progress.continuation.source_completed_batches == 6
     assert compiled.run_spec.checkpoint_progress.continuation.additional_batches == 4
 
 
 def test_authoring_rejects_noncanonical_authored_payload_hash(authoring_registry) -> None:
+    registry, _holder = authoring_registry
     row = _authored_row().model_copy(update={"payload_hash": "0" * 64})
 
     with pytest.raises(TrainingMethodAuthoringError, match="payload_hash"):
         compile_training_method_authoring(
             row,
             method_ref=METHOD_REF,
+            registry=registry,
         )
 
 
-def test_authoring_rejects_reserved_duplicate_hook_identity_before_callback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_authoring_rejects_reserved_duplicate_hook_identity_before_callback() -> None:
     calls = 0
 
     def author(_payload: TypedPayload) -> TrainingMethodAuthoringContribution:
@@ -684,8 +701,6 @@ def test_authoring_rejects_reserved_duplicate_hook_identity_before_callback(
             package="example",
         )
     )
-    monkeypatch.setattr(training_contracts, "DEFAULT_TRAINING_METHOD_REGISTRY", registry)
-
     with pytest.raises(
         TrainingMethodAuthoringError,
         match="duplicates the reserved authoring compiler identity",
@@ -693,6 +708,7 @@ def test_authoring_rejects_reserved_duplicate_hook_identity_before_callback(
         compile_training_method_authoring(
             _authored_row(),
             method_ref=METHOD_REF,
+            registry=registry,
         )
     assert calls == 0
 
@@ -724,13 +740,16 @@ def test_authoring_hook_rejects_empty_identity(field: str) -> None:
 def test_authoring_identity_and_canonical_payload_are_deterministic(
     authoring_registry,
 ) -> None:
+    registry, _holder = authoring_registry
     first = compile_training_method_authoring(
         _authored_row(),
         method_ref=METHOD_REF,
+        registry=registry,
     )
     second = compile_training_method_authoring(
         _authored_row(),
         method_ref={"package": "example", "name": "typed", "version": "v1"},
+        registry=registry,
     )
 
     assert first.lowering_result == second.lowering_result
@@ -739,9 +758,37 @@ def test_authoring_identity_and_canonical_payload_are_deterministic(
     )
 
 
-def _descriptor_plugin(descriptor: TrainingMethodDescriptor[Any]) -> SimpleNamespace:
-    return SimpleNamespace(
-        register_feedbax_training_methods=lambda registry: registry.register_descriptor(descriptor)
+def _descriptor_registration(
+    plugin_id: str, *descriptors: TrainingMethodDescriptor[Any]
+) -> PluginRegistration:
+    def register(context) -> None:
+        methods = context.registry(TRAINING_METHODS)
+        lowerers = context.registry(ROW_LOWERERS)
+        for descriptor in descriptors:
+            methods.register_descriptor(descriptor)
+            if descriptor.authoring_hook is not None:
+                lowerers.register(training_method_row_lowerer_registration(descriptor, methods))
+
+    return PluginRegistration(
+        PluginDeclaration(
+            plugin_id,
+            "1",
+            1,
+            families=(
+                FamilyRequirement("training_methods"),
+                FamilyRequirement("row_lowerers"),
+            ),
+        ),
+        register,
+    )
+
+
+def _bootstrap_descriptors(*registrations: PluginRegistration):
+    return asyncio.run(
+        bootstrap_application(
+            new_registration_context(local_component_source=None),
+            registrations=registrations,
+        )
     )
 
 
@@ -755,26 +802,16 @@ def _derived_authority(
     ).model_dump(mode="json")
 
 
-def test_plugin_derives_authoring_lowerer_and_replay_is_idempotent(
+def test_plugin_registers_authoring_lowerer_and_isolated_replay_is_deterministic(
     authoring_registry,
 ) -> None:
     source_registry, _holder = authoring_registry
     descriptor = source_registry.descriptor(METHOD_REF)
     assert descriptor is not None
-    lowerers = TrainingRowLowererRegistry()
-    plugin = _descriptor_plugin(descriptor)
-    entry_point = SimpleNamespace(name="typed", load=lambda: plugin)
+    first = _bootstrap_descriptors(_descriptor_registration("tests.typed.first", descriptor))
+    second = _bootstrap_descriptors(_descriptor_registration("tests.typed.second", descriptor))
 
-    for _ in range(2):
-        load_training_method_plugins(
-            registry=TrainingMethodRegistry(),
-            preparation_registry=ExecutionPreparationProviderRegistry(),
-            row_lowerer_registry=lowerers,
-            entry_points=[entry_point],
-            fail_on_load_error=True,
-        )
-
-    assert lowerers.available_keys() == (
+    expected = (
         (
             PAYLOAD_SCHEMA_ID,
             PAYLOAD_SCHEMA_VERSION,
@@ -782,58 +819,33 @@ def test_plugin_derives_authoring_lowerer_and_replay_is_idempotent(
             "example.typed_method.authoring.v1",
         ),
     )
+    assert first.bundle.row_lowerers.available_keys() == expected
+    assert second.bundle.row_lowerers.available_keys() == expected
 
 
 def test_plugin_skips_descriptor_without_authoring_hook(authoring_registry) -> None:
     source_registry, _holder = authoring_registry
     descriptor = source_registry.descriptor(METHOD_REF)
     assert descriptor is not None
-    lowerers = TrainingRowLowererRegistry()
-
-    load_training_method_plugins(
-        registry=TrainingMethodRegistry(),
-        preparation_registry=ExecutionPreparationProviderRegistry(),
-        row_lowerer_registry=lowerers,
-        entry_points=[
-            SimpleNamespace(
-                name="typed",
-                load=lambda: _descriptor_plugin(replace(descriptor, authoring_hook=None)),
-            )
-        ],
-        fail_on_load_error=True,
+    state = _bootstrap_descriptors(
+        _descriptor_registration(
+            "tests.typed.no_authoring", replace(descriptor, authoring_hook=None)
+        )
     )
 
-    assert lowerers.available_keys() == ()
+    assert state.bundle.row_lowerers.available_keys() == ()
 
 
 def test_plugin_derivation_preserves_explicit_conflicts(authoring_registry) -> None:
     source_registry, _holder = authoring_registry
     descriptor = source_registry.descriptor(METHOD_REF)
     assert descriptor is not None
-    lowerers = TrainingRowLowererRegistry()
-    plugin = _descriptor_plugin(descriptor)
-    entry_point = SimpleNamespace(name="typed", load=lambda: plugin)
-    load_training_method_plugins(
-        registry=TrainingMethodRegistry(),
-        preparation_registry=ExecutionPreparationProviderRegistry(),
-        row_lowerer_registry=lowerers,
-        entry_points=[entry_point],
-        fail_on_load_error=True,
-    )
-
-    with pytest.raises(RuntimeError, match="ambiguous.*owners"):
-        load_training_method_plugins(
-            registry=TrainingMethodRegistry(),
-            preparation_registry=ExecutionPreparationProviderRegistry(),
-            row_lowerer_registry=lowerers,
-            entry_points=[
-                SimpleNamespace(
-                    name="other",
-                    load=lambda: _descriptor_plugin(replace(descriptor, owner="other")),
-                )
-            ],
-            fail_on_load_error=True,
+    with pytest.raises(BootstrapError) as excinfo:
+        _bootstrap_descriptors(
+            _descriptor_registration("tests.typed", descriptor),
+            _descriptor_registration("tests.other", replace(descriptor, owner="other")),
         )
+    assert excinfo.value.code is BootstrapErrorCode.NAMESPACE_COLLISION
 
 
 def test_descriptor_authoring_digest_binds_projector_implementation(
@@ -853,9 +865,7 @@ def test_descriptor_authoring_digest_binds_projector_implementation(
 
 
 def test_composite_digest_binds_same_module_callable_identity_and_order() -> None:
-    original = training_row_lowerer_implementation_sha256(
-        (_minimal_graph, _method_contract)
-    )
+    original = training_row_lowerer_implementation_sha256((_minimal_graph, _method_contract))
 
     assert original != training_row_lowerer_implementation_sha256(
         (_minimal_graph, _mapped_method_contract)
@@ -873,53 +883,21 @@ def test_distinct_methods_cannot_alias_one_derived_lowerer_authority(
     assert descriptor is not None
     other = replace(descriptor, method_ref="example/other/v1")
 
-    with pytest.raises(RuntimeError, match="ambiguous.*implementation sha256"):
-        load_training_method_plugins(
-            registry=TrainingMethodRegistry(),
-            preparation_registry=ExecutionPreparationProviderRegistry(),
-            row_lowerer_registry=TrainingRowLowererRegistry(),
-            entry_points=[
-                SimpleNamespace(
-                    name="colliding-methods",
-                    load=lambda: SimpleNamespace(
-                        register_feedbax_training_methods=lambda registry: (
-                            registry.register_descriptor(descriptor),
-                            registry.register_descriptor(other),
-                        )
-                    ),
-                )
-            ],
-            fail_on_load_error=True,
+    with pytest.raises(BootstrapError) as excinfo:
+        _bootstrap_descriptors(
+            _descriptor_registration("tests.colliding_methods", descriptor, other)
         )
+    assert excinfo.value.code is BootstrapErrorCode.NAMESPACE_COLLISION
 
 
 def test_default_matrix_compiler_reaches_descriptor_authoring(
     authoring_registry,
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
     source_registry, _holder = authoring_registry
     descriptor = source_registry.descriptor(METHOD_REF)
     assert descriptor is not None
-    methods = TrainingMethodRegistry()
-    lowerers = TrainingRowLowererRegistry()
-    load_training_method_plugins(
-        registry=methods,
-        preparation_registry=ExecutionPreparationProviderRegistry(),
-        row_lowerer_registry=lowerers,
-        entry_points=[
-            SimpleNamespace(
-                name="typed",
-                load=lambda: _descriptor_plugin(descriptor),
-            )
-        ],
-        fail_on_load_error=True,
-    )
-    monkeypatch.setattr(training_contracts, "DEFAULT_TRAINING_METHOD_REGISTRY", methods)
-    monkeypatch.setattr(
-        "feedbax.training.row_lowering.DEFAULT_TRAINING_ROW_LOWERER_REGISTRY",
-        lowerers,
-    )
+    state = _bootstrap_descriptors(_descriptor_registration("tests.typed", descriptor))
     payload = {
         "schema_id": PAYLOAD_SCHEMA_ID,
         "schema_version": PAYLOAD_SCHEMA_VERSION,
@@ -935,7 +913,12 @@ def test_default_matrix_compiler_reaches_descriptor_authoring(
         }
     )
 
-    compiled = TrainingRunMatrixCompiler(allow_inline_base=True).compile(
+    compiled = TrainingRunMatrixCompiler(
+        method_registry=state.bundle.training_methods,
+        allow_inline_base=True,
+        row_validator=lambda payload, _row_id: TrainingRunSpec.model_validate(payload),
+        row_lowerer=state.bundle.row_lowerers.lower,
+    ).compile(
         authored=matrix,
         run_set_id="descriptor-authored",
         context=SimpleNamespace(
@@ -957,12 +940,9 @@ def test_default_matrix_compiler_reaches_descriptor_authoring(
         "schema_version",
         TRAINING_ROW_LOWERER_REF_FIELD,
     }.isdisjoint(execution_method_payload)
-    assert compiled.rows[0].provenance.authored_payload_hash == training_spec_sha256(
-        payload
-    )
-    assert (
-        compiled.rows[0].provenance.lowered_execution_payload_hash
-        == training_spec_sha256(compiled.rows[0].payload)
+    assert compiled.rows[0].provenance.authored_payload_hash == training_spec_sha256(payload)
+    assert compiled.rows[0].provenance.lowered_execution_payload_hash == training_spec_sha256(
+        compiled.rows[0].payload
     )
     assert compiled.rows[0].provenance.lowerer_identities == [
         RowLowererIdentity(
@@ -1003,6 +983,7 @@ def test_descriptor_authoring_rejects_dispatch_schema_mismatch(
         compile_training_method_authoring(
             _authored_row(payload),
             method_ref=METHOD_REF,
+            registry=registry,
         )
 
 
@@ -1020,6 +1001,8 @@ from feedbax.contracts.training import (
     standard_supervised_method_contract,
     standard_supervised_update_kernels,
 )
+from feedbax.plugins import FamilyRequirement, PluginDeclaration, PluginRegistration, ROW_LOWERERS, TRAINING_METHODS
+from feedbax.training.authoring import training_method_row_lowerer_registration
 
 
 class Payload(BaseModel):
@@ -1029,8 +1012,7 @@ class Payload(BaseModel):
     value: int
 
 
-def register_feedbax_training_methods(registry):
-    registry.register_descriptor(TrainingMethodDescriptor(
+DESCRIPTOR = TrainingMethodDescriptor(
         method_ref="tests/fresh/v1",
         payload_schema_id="tests.spec.fresh_method",
         payload_schema_version="tests.spec.fresh_method.v1",
@@ -1050,29 +1032,48 @@ def register_feedbax_training_methods(registry):
         ),
         owner="tests.fresh",
         package="tests",
-    ))
+    )
+
+def register(context):
+    methods = context.registry(TRAINING_METHODS)
+    methods.register_descriptor(DESCRIPTOR)
+    context.registry(ROW_LOWERERS).register(
+        training_method_row_lowerer_registration(DESCRIPTOR, methods)
+    )
+
+PLUGIN_REGISTRATION = PluginRegistration(
+    PluginDeclaration(
+        "tests.fresh",
+        "1",
+        1,
+        families=(FamilyRequirement("training_methods"), FamilyRequirement("row_lowerers")),
+    ),
+    register,
+)
 """.lstrip(),
         encoding="utf-8",
     )
     dist_info = tmp_path / "descriptor_authoring_plugin-1.0.dist-info"
     dist_info.mkdir()
     (dist_info / "entry_points.txt").write_text(
-        "[tests.feedbax.plugins]\ndescriptor-authoring = descriptor_authoring_plugin\n",
+        "[tests.feedbax.plugins]\ndescriptor-authoring = descriptor_authoring_plugin:PLUGIN_REGISTRATION\n",
         encoding="utf-8",
     )
     script = """
 import json
-from feedbax.contracts.training import DEFAULT_TRAINING_METHOD_REGISTRY
-from feedbax.plugins.discovery import load_training_method_plugins
-from feedbax.training.row_lowering import DEFAULT_TRAINING_ROW_LOWERER_REGISTRY
+import asyncio
+from feedbax.plugins import bootstrap_application, discover_plugin_registrations, new_registration_context
 
-load_training_method_plugins(
+sources = discover_plugin_registrations(
     entry_point_group="tests.feedbax.plugins",
-    fail_on_load_error=True,
 )
+state = asyncio.run(bootstrap_application(
+    new_registration_context(local_component_source=None),
+    registrations=sources,
+))
 print(json.dumps({
-    "methods": DEFAULT_TRAINING_METHOD_REGISTRY.descriptor_keys(),
-    "lowerers": DEFAULT_TRAINING_ROW_LOWERER_REGISTRY.available_keys(),
+    "methods": state.bundle.training_methods.descriptor_keys(),
+    "lowerers": state.bundle.row_lowerers.available_keys(),
 }, sort_keys=True))
 """
     environment = dict(os.environ)

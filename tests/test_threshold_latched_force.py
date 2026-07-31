@@ -297,7 +297,7 @@ def test_target_relative_variants_are_batched_and_jitted() -> None:
 
 
 def test_graphspec_round_trip_preserves_trigger_latch_ramp_and_selector_identity() -> None:
-    graph = spec_to_graph(_graph_spec())
+    graph = spec_to_graph(_graph_spec(), ComponentRegistry(load_user_components=False))
     component = graph.nodes["load"]
 
     assert isinstance(component, ThresholdLatchedForce)
@@ -325,7 +325,9 @@ def test_graphspec_round_trip_preserves_trigger_latch_ramp_and_selector_identity
 
 
 def test_target_relative_graphspec_round_trip_preserves_frame_selectors() -> None:
-    graph = spec_to_graph(_target_relative_graph_spec())
+    graph = spec_to_graph(
+        _target_relative_graph_spec(), ComponentRegistry(load_user_components=False)
+    )
     component = graph.nodes["load"]
 
     assert component.state_selector == PlanarTargetRelativeSelector(
@@ -343,7 +345,9 @@ def test_target_relative_graphspec_round_trip_preserves_frame_selectors() -> Non
 
 
 def test_native_graph_materialization_runs_target_relative_frame() -> None:
-    graph = spec_to_graph(_target_relative_graph_spec())
+    graph = spec_to_graph(
+        _target_relative_graph_spec(), ComponentRegistry(load_user_components=False)
+    )
     target = jnp.array([0.0, 1.0])
     positions = jnp.array([[0.0, 0.0], [0.0, 0.5], [0.0, 0.75]])
 
@@ -365,7 +369,7 @@ def test_native_graph_materialization_runs_target_relative_frame() -> None:
 
 
 def test_native_graph_materialization_runs_runtime_state_trigger() -> None:
-    graph = spec_to_graph(_graph_spec())
+    graph = spec_to_graph(_graph_spec(), ComponentRegistry(load_user_components=False))
     component = graph.nodes["load"]
     forces = eqx.filter_jit(_run)(component, jnp.array([-0.2, 0.0, 0.2, 0.4]))
 
@@ -383,7 +387,7 @@ def test_native_graph_materialization_runs_runtime_state_trigger() -> None:
 
 
 def test_task_authored_trial_variant_initializes_native_component_state() -> None:
-    graph = spec_to_graph(_graph_spec())
+    graph = spec_to_graph(_graph_spec(), ComponentRegistry(load_user_components=False))
     binding_spec = StudioTaskBindingSpec.model_validate(
         {
             "exposed_data": [
@@ -445,7 +449,7 @@ def test_v1_fixed_selector_migrates_to_v2() -> None:
     spec.input_ports.remove("target")
     del spec.input_bindings["target"]
 
-    graph = spec_to_graph(spec)
+    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
 
     assert graph.nodes["load"].state_selector == StateSelector(("pos", 0))
     migrated = graph_to_spec(graph).nodes["load"]
@@ -455,7 +459,7 @@ def test_v1_fixed_selector_migrates_to_v2() -> None:
 
 
 def test_unknown_parameter_schema_version_is_rejected_without_a_migration() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
 
     with pytest.raises(UnsupportedComponentMigration, match="No component migration registered"):
         spec_to_graph(

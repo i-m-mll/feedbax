@@ -30,7 +30,7 @@ pytestmark = [pytest.mark.usefixtures("enable_jax_x64"), pytest.mark.feedbax_con
 
 
 def _registry() -> ComponentRegistry:
-    return ComponentRegistry(load_user_components=False, discover_plugins=False)
+    return ComponentRegistry(load_user_components=False)
 
 
 def _rollout(system: AcausalSystem, inputs: dict[str, jax.Array], steps: int = 8) -> jax.Array:
@@ -214,11 +214,15 @@ def test_mechanics_domain_registry_entries_compile_or_template_build() -> None:
             solver={"solver_type": "euler", "dt": 0.001},
         )
         report = registry.template_builder_issues(
-            type("Template", (), {
-                "name": definition.name,
-                "template_id": None,
-                "template_graph": graph,
-            })()
+            type(
+                "Template",
+                (),
+                {
+                    "name": definition.name,
+                    "template_id": None,
+                    "template_graph": graph,
+                },
+            )()
         )
         assert not any("unknown element type" in issue.reason for issue in report)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from feedbax.integrations.provider import (
@@ -65,9 +65,14 @@ async def get_provider_manifest() -> ProviderManifest:
 
 
 @router.get("/registries/{kind}", response_model=RegistrySnapshot)
-async def get_registry_snapshot(kind: str) -> RegistrySnapshot:
+async def get_registry_snapshot(kind: str, request: Request) -> RegistrySnapshot:
     try:
-        return registry_snapshot(kind)
+        return registry_snapshot(
+            kind,
+            component_registry=request.app.state.bootstrap_state.bundle.components,
+            experiment_registry=request.app.state.bootstrap_state.bundle.experiment_packages,
+            analysis_registry=request.app.state.bootstrap_state.bundle.analysis_recipes,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -76,9 +81,17 @@ async def get_registry_snapshot(kind: str) -> RegistrySnapshot:
 async def validate_provider_spec(
     kind: str,
     payload: ValidateSpecRequest,
+    request: Request,
 ) -> ProviderValidationResult:
     try:
-        return validate_spec(kind, payload.spec, graph_spec=payload.graph_spec)
+        return validate_spec(
+            kind,
+            payload.spec,
+            graph_spec=payload.graph_spec,
+            component_registry=request.app.state.bootstrap_state.bundle.components,
+            training_method_registry=request.app.state.bootstrap_state.bundle.training_methods,
+            analysis_registry=request.app.state.bootstrap_state.bundle.analysis_recipes,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -94,9 +107,13 @@ async def prepare_provider_execution_plan(payload: ExecutionSpec) -> ExecutionPl
 )
 async def prepare_studio_training_plan(
     payload: StudioTrainingExecutionRequest,
+    request: Request,
 ) -> StudioTrainingExecutionPreparation:
     try:
-        return prepare_studio_training_execution(payload)
+        return prepare_studio_training_execution(
+            payload,
+            registry_bundle=request.app.state.bootstrap_state.bundle,
+        )
     except StudioExecutionPreparationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -107,9 +124,13 @@ async def prepare_studio_training_plan(
 )
 async def run_studio_training_local(
     payload: StudioTrainingLocalRunRequest,
+    request: Request,
 ) -> StudioTrainingLocalRunResult:
     try:
-        return run_studio_training_local_execution(payload)
+        return run_studio_training_local_execution(
+            payload,
+            registry_bundle=request.app.state.bootstrap_state.bundle,
+        )
     except StudioExecutionPreparationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -146,9 +167,13 @@ async def stage_studio_evaluation(
 )
 async def run_studio_evaluation_local(
     payload: StudioEvaluationLocalRunRequest,
+    request: Request,
 ) -> StudioEvaluationLocalRunResult:
     try:
-        return run_studio_evaluation_local_execution(payload)
+        return run_studio_evaluation_local_execution(
+            payload,
+            registry_bundle=request.app.state.bootstrap_state.bundle,
+        )
     except StudioExecutionPreparationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -159,9 +184,13 @@ async def run_studio_evaluation_local(
 )
 async def materialize_studio_pipeline_stages(
     payload: StudioPipelineMaterializationRequest,
+    request: Request,
 ) -> StudioPipelineMaterializationResult:
     try:
-        return materialize_studio_pipeline(payload)
+        return materialize_studio_pipeline(
+            payload,
+            registry_bundle=request.app.state.bootstrap_state.bundle,
+        )
     except StudioExecutionPreparationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -172,9 +201,11 @@ async def materialize_studio_pipeline_stages(
 )
 async def enumerate_studio_schemas(
     payload: StudioSchemaEnumerationRequest,
+    request: Request,
 ) -> StudioSchemaRegistry:
     return enumerate_studio_schema_registry(
         payload.workspace,
         payload.scenario_id,
         runtime_introspection=payload.runtime_introspection,
+        component_registry=request.app.state.bootstrap_state.bundle.components,
     )

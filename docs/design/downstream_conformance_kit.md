@@ -44,3 +44,68 @@ ratchet, closing the same-cardinality replacement hole in the reference JSON
 writer. Generic TOML baselines are read-only because rewriting TOML without a
 format-preserving editor would destroy downstream comments; downstream code
 edits the list explicitly after inspecting the ratchet diff.
+
+## Clean-installed external fixture
+
+`external/feedbax_conformance_fixture` is the repo-owned downstream-author
+example and vertical extension of this kit. It is separately packaged and
+keeps fixture-specific builders private to that package. The fixture reuses
+`check_material_dependency_contract` rather than copying its admission
+canaries, and exercises public ordered registration, component migration,
+value identity, component-param array declarations, material dependencies, and
+exact-parent migration.
+
+`uv run --no-sync python scripts/run_external_conformance.py` builds Feedbax
+and the fixture as wheels, installs both non-editably into a fresh environment,
+and executes away from this checkout with `PYTHONPATH` removed. The installed
+fixture rejects private Feedbax imports, verifies all loaded Feedbax modules
+come from the wheel, uses unique runtime cache and custody roots, and denies
+runner-process outbound TCP connects before importing the Feedbax execution
+stack. This is not a general DNS, UDP, or child-process sandbox; the bounded
+lifecycle child is separately fixed and asserted as a print-only Python
+command.
+
+The versioned machine result is
+`feedbax.external_conformance.result.v9`. V2 remains the frozen exact six-case
+foundation and rejects because it contains neither current projection nor
+component-param array-value or unified-bootstrap evidence. V1 can be deterministically
+normalized to v2 by adding separate unbound `current` and `minimum` protocol
+role slots, then rejects for the same missing evidence. Intervening unshipped
+v3-v6 results reject explicitly; they are not reinterpreted as proof of the
+narrowed v7 resolver contract. Shipped v7 also rejects for missing array-value
+evidence. Shipped v8 rejects for missing `unified_plugin_bootstrap` evidence.
+Only the protected v2 and current v9 case sets are maintained. The role slots
+remain None-only until the owner-ratified policy exists.
+
+The v9 `unified_plugin_bootstrap` case discovers two typed registrations from
+the non-editable fixture wheel through the sole `feedbax.plugins` entry-point
+group. A fixture-owned `RegistryKey` extends the application bundle without a
+loader edit. Reversed discovery inputs still execute in declared dependency
+order; provenance attributes each registered key to the installed distribution;
+fresh contexts remain isolated after the entry-point module is cached; published
+registries are sealed; and partial failure, namespace collision, missing
+dependency, and registrar-only legacy values reject with typed errors without
+publishing state. Importing Feedbax or the fixture does not load the entry-point
+module; discovery remains an explicit bootstrap action.
+
+The evaluation-row case uses only public clean-wheel imports. It resolves
+durable states through `resolve_analysis_inputs`, receives an exact
+`ResolvedEvaluationStateHandle` with a private issuance sentinel and canonical
+immutable source/authority facts, derives manifest, run-spec, metadata, and
+producer provenance from authenticated raw bytes, and invokes one downstream
+cross-field callback. A cross-authority splice rejects with a stable error
+code. The handle records provenance and materialization at resolver issuance;
+it does not claim durable content authentication for cache or recompute state
+bytes, nor protection from hostile same-process mutation after resolution.
+Coverage, duplicate handling, conditioning, geometry, replicate policy, and
+mixed-authority scientific verdicts remain downstream.
+
+The production lifecycle case uses the installed-wheel
+`StageEngine`/`LocalOrchestrationDriver` path with one deterministic local row.
+It persists through PREFLIGHT, reconstructs the engine over the same
+`RunSetStateStore`, and completes LAUNCH and the remaining local lifecycle.
+Assertions prove that ASSEMBLE and PREFLIGHT were consumed from persisted
+state rather than rerun, and that the exact revision gate observed the
+authenticated wheel commit. The fixture-owned compiler and builders remain
+incubated here; lifecycle sequencing, state recovery, subprocess execution,
+and revision enforcement are all Feedbax production implementations.

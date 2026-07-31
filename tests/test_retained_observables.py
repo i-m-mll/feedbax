@@ -661,7 +661,9 @@ def test_loss_supports_l2_huber_and_sum_modes() -> None:
     assert float(total) == pytest.approx(10.8125)
 
 
-def test_provider_validation_uses_retention_lowering_for_loss_selectors() -> None:
+def test_provider_validation_uses_retention_lowering_for_loss_selectors(
+    application_registry_bundle,
+) -> None:
     graph = _provider_graph()
     training = _training(
         LossTermSpec(
@@ -672,7 +674,11 @@ def test_provider_validation_uses_retention_lowering_for_loss_selectors() -> Non
         )
     )
 
-    result = validate_training_spec(training, graph_spec=graph)
+    result = validate_training_spec(
+        training,
+        graph_spec=graph,
+        component_registry=application_registry_bundle.components,
+    )
 
     assert result.valid is False
     assert result.errors[0].type == "loss_graph_mismatch"
@@ -680,11 +686,16 @@ def test_provider_validation_uses_retention_lowering_for_loss_selectors() -> Non
     assert result.errors[0].location["selector"] == "graph_output:missing"
 
 
-def test_provider_validation_accepts_retained_observables_and_exposes_artifact_roles() -> None:
+def test_provider_validation_accepts_retained_observables_and_exposes_artifact_roles(
+    application_registry_bundle,
+) -> None:
     graph = _provider_graph()
     graph.retained_observables = [RetainedObservableSpec(selector="graph_output:output")]
 
-    result = validate_graph_spec(graph)
+    result = validate_graph_spec(
+        graph,
+        component_registry=application_registry_bundle.components,
+    )
     manifest = provider_manifest()
 
     assert result.valid is True

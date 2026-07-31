@@ -80,6 +80,7 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_VERSION_V2,
     GRAPH_SPEC_SCHEMA_VERSION_V3,
+    GRAPH_SPEC_SCHEMA_VERSION_V4,
     LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     STUDIO_BIOMECHANICS_SCHEMA_ID,
@@ -88,7 +89,10 @@ from feedbax.contracts.graph import (
     STUDIO_SCENARIO_SCHEMA_VERSION_V1,
     StudioScenarioSpec,
 )
-from feedbax.contracts.component import COMPONENT_DEFINITION_SCHEMA_VERSION_V1
+from feedbax.contracts.component import (
+    COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
+    COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
+)
 from feedbax.contracts.expressions import (
     PATH_EXPRESSION_SCHEMA_ID,
     PATH_EXPRESSION_SCHEMA_VERSION,
@@ -107,12 +111,16 @@ from feedbax.contracts.figures import (
     FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION,
     FIGURE_RUNTIME_BINDING_SCHEMA_ID,
     FIGURE_RUNTIME_BINDING_SCHEMA_VERSION,
+    FIGURE_RUNTIME_BINDING_SCHEMA_VERSION_V1,
 )
 from feedbax.contracts.evaluation_preflight import (
     EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID,
     EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
     EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID,
     EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION,
+    EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,
+    EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V2,
+    EvaluationOutputPreflightPolicy,
 )
 from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
@@ -169,6 +177,7 @@ from feedbax.training.diagnostics import (
 from feedbax.orchestration.bundle import (
     DEPLOYMENT_POLICY_SCHEMA_ID,
     DEPLOYMENT_POLICY_SCHEMA_VERSION,
+    DEPLOYMENT_POLICY_SCHEMA_VERSION_V1,
     DeploymentPolicy,
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION,
@@ -184,6 +193,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V8,
     RUN_BUNDLE_SCHEMA_VERSION_V9,
     RUN_BUNDLE_SCHEMA_VERSION_V10,
+    RUN_BUNDLE_SCHEMA_VERSION_V11,
 )
 from feedbax.orchestration.staged_root_custody import (
     STAGED_ROOT_CUSTODY_SCHEMA_ID,
@@ -380,7 +390,7 @@ def test_shadow_launch_evidence_registry_explicitly_rejects_v0() -> None:
         (
             "RunAssemblyRequest",
             "feedbax.spec.run_assembly_request",
-            "feedbax.spec.run_assembly_request.v5",
+            "feedbax.spec.run_assembly_request.v6",
         ),
         (
             "DeploymentPolicy",
@@ -444,7 +454,7 @@ def test_default_registry_registers_assemble_contract_families(
         if kind
         in {
             "RunAssemblyRequest",
-            "EvaluationOutputPreflightPolicy",
+            "DeploymentPolicy",
             "EvaluationOutputPreflightEvidence",
         }
         else "reject"
@@ -492,6 +502,34 @@ def test_default_registry_registers_assemble_contract_families(
                 {
                     "schema_id": schema_id,
                     "schema_version": previous_terminal_identity_versions[kind],
+                },
+            )
+
+
+def test_evaluation_output_policy_v3_requires_reauthoring_v1_and_v2() -> None:
+    policy = EvaluationOutputPreflightPolicy(
+        expected_resolved_row_count=2,
+        retained_bytes_per_resolved_row=100,
+        retained_bytes_per_resolved_row_source="measured fixture",
+        planned_repetitions=1,
+        storage_mode="retain_all",
+        required_free_space_reserve_bytes=0,
+    )
+
+    assert policy.schema_version == EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION
+    for old_version in (
+        EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,
+        EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V2,
+    ):
+        with pytest.raises(
+            UnsupportedSpecVersion,
+            match="migration_intentionally_absent=yes",
+        ):
+            default_spec_registry.migrate(
+                "EvaluationOutputPreflightPolicy",
+                {
+                    "schema_id": EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID,
+                    "schema_version": old_version,
                 },
             )
 
@@ -715,7 +753,9 @@ def test_run_bundle_old_versions_require_reassembly(old_version: str) -> None:
     family = default_spec_registry.resolve("RunBundle")
     assert family.current_version == RUN_BUNDLE_SCHEMA_VERSION
     assert family.policy is not None
-    assert family.policy.stance == "reject"
+    assert family.policy.stance == "migrate"
+    assert family.policy.supported_old_versions == (RUN_BUNDLE_SCHEMA_VERSION_V11,)
+    assert old_version in family.policy.rejected_old_versions
 
     with pytest.raises(UnsupportedSpecVersion) as excinfo:
         default_spec_registry.migrate("RunBundle", {"schema_version": old_version})
@@ -790,7 +830,7 @@ def test_run_assembly_request_v4_migrates_without_evaluation_output_policy() -> 
         },
     )
 
-    assert migrated.payload["schema_version"] == "feedbax.spec.run_assembly_request.v5"
+    assert migrated.payload["schema_version"] == "feedbax.spec.run_assembly_request.v6"
     assert migrated.payload["evaluation_output_preflight"] is None
 
 
@@ -800,6 +840,50 @@ def test_deployment_policy_v0_is_explicitly_rejected() -> None:
             "DeploymentPolicy",
             {"schema_version": "feedbax.spec.deployment_policy.v0"},
         )
+
+
+def test_driver_registry_schema_migrations_preserve_policy_intent() -> None:
+    policy = {
+        "schema_id": DEPLOYMENT_POLICY_SCHEMA_ID,
+        "schema_version": DEPLOYMENT_POLICY_SCHEMA_VERSION_V1,
+        "driver": "fixture:driver",
+        "venue": "remote",
+        "cloud_authorized": False,
+        "review_required": True,
+        "review_authorized": False,
+        "resources": {"gpu_id": None, "regions": []},
+    }
+
+    migrated_policy = default_spec_registry.migrate("DeploymentPolicy", policy)
+    migrated_request = default_spec_registry.migrate(
+        "RunAssemblyRequest",
+        {
+            "schema_id": "feedbax.spec.run_assembly_request",
+            "schema_version": "feedbax.spec.run_assembly_request.v5",
+            "deployment_policy": policy,
+        },
+    )
+    migrated_bundle = default_spec_registry.migrate(
+        "RunBundle",
+        {
+            "schema_id": "feedbax.orchestration.run_bundle",
+            "schema_version": RUN_BUNDLE_SCHEMA_VERSION_V11,
+            "deployment_policy": policy,
+        },
+    )
+
+    assert migrated_policy.payload["schema_version"] == DEPLOYMENT_POLICY_SCHEMA_VERSION
+    assert migrated_policy.payload["driver"] == "fixture:driver"
+    assert migrated_request.payload["schema_version"].endswith(".v6")
+    assert (
+        migrated_request.payload["deployment_policy"]["schema_version"]
+        == DEPLOYMENT_POLICY_SCHEMA_VERSION
+    )
+    assert migrated_bundle.payload["schema_version"] == RUN_BUNDLE_SCHEMA_VERSION
+    assert (
+        migrated_bundle.payload["deployment_policy"]["schema_version"]
+        == DEPLOYMENT_POLICY_SCHEMA_VERSION
+    )
 
 
 def test_deployment_policy_preserves_pending_review_state() -> None:
@@ -913,13 +997,26 @@ def test_default_registry_registers_figure_data_product_payload_family() -> None
         )
 
 
-def test_default_registry_rejects_old_figure_runtime_binding_version() -> None:
+def test_default_registry_migrates_figure_runtime_binding_v1_and_rejects_v0() -> None:
     family = default_spec_registry.resolve("FigureRuntimeBindingSpec")
 
     assert family.identity == FIGURE_RUNTIME_BINDING_SCHEMA_ID
     assert family.current_version == FIGURE_RUNTIME_BINDING_SCHEMA_VERSION
     assert family.policy is not None
-    assert family.policy.stance == "reject"
+    assert family.policy.stance == "migrate"
+    migrated = default_spec_registry.migrate(
+        "FigureRuntimeBindingSpec",
+        {
+            "schema_id": FIGURE_RUNTIME_BINDING_SCHEMA_ID,
+            "schema_version": FIGURE_RUNTIME_BINDING_SCHEMA_VERSION_V1,
+            "authored_figure_spec_sha256": "a" * 64,
+        },
+    ).payload
+    assert migrated["authored_figure_source_sha256"] is None
+    assert migrated["authored_identity_unavailable_reason"] == (
+        "v1_recorded_resolved_hash_only"
+    )
+    assert migrated["resolved_figure_spec_sha256"] == "a" * 64
     with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
         default_spec_registry.migrate(
             "FigureRuntimeBindingSpec",
@@ -985,7 +1082,7 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
         == "feedbax.spec.training_method.standard_supervised_payload"
     )
     assert families["AnalysisBundleSpec"].identity == "feedbax.spec.analysis_bundle"
-    assert families["AnalysisBundleSpec"].current_version == "feedbax.spec.analysis_bundle.v5"
+    assert families["AnalysisBundleSpec"].current_version == "feedbax.spec.analysis_bundle.v6"
     assert families["PathExpression"].identity == PATH_EXPRESSION_SCHEMA_ID
     assert families["PathExpression"].current_version == PATH_EXPRESSION_SCHEMA_VERSION
     assert families["ExtractionProductSpec"].identity == EXTRACTION_PRODUCT_SPEC_SCHEMA_ID
@@ -1124,7 +1221,7 @@ def test_analysis_bundle_old_version_chain_stamps_recompute_policy(
         },
     )
 
-    assert result.target_version == "feedbax.spec.analysis_bundle.v5"
+    assert result.target_version == "feedbax.spec.analysis_bundle.v6"
     assert result.payload["templates"][0]["evaluation_states_policy"] == "recompute"
     assert result.payload["stages"][0]["evaluation_states_policy"] == "recompute"
 
@@ -1614,6 +1711,8 @@ def test_default_policy_matrix_exercises_accept_migrate_or_reject_behavior() -> 
                     payload.update({"mode": "constant", "value": 1, "metadata": {}})
                 if family.kind == "TrainingRunMatrixSpec":
                     payload["base"] = {"inline": {}}
+                if family.kind == "FigureRuntimeBindingSpec":
+                    payload["authored_figure_spec_sha256"] = "a" * 64
                 migrated = default_spec_registry.migrate(
                     family.kind,
                     payload,
@@ -1635,6 +1734,17 @@ def test_default_policy_matrix_exercises_accept_migrate_or_reject_behavior() -> 
             assert f"source_version='{old_version}'" in message
             assert f"current_version='{family.current_version}'" in message
             assert "migration_intentionally_absent=yes" in message
+
+
+def test_component_definition_policy_supports_v1_and_v2() -> None:
+    policy = default_spec_registry.resolve("ComponentDefinition").policy
+
+    assert policy is not None
+    assert policy.stance == "migrate"
+    assert policy.supported_old_versions == (
+        COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
+        COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
+    )
 
 
 def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> None:
@@ -1661,11 +1771,13 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
         LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
         GRAPH_SPEC_SCHEMA_VERSION_V2,
         GRAPH_SPEC_SCHEMA_VERSION_V3,
+        GRAPH_SPEC_SCHEMA_VERSION_V4,
     )
     assert component_definition_policy is not None
     assert component_definition_policy.stance == "migrate"
     assert component_definition_policy.supported_old_versions == (
         COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
+        COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
     )
     assert task_binding_policy is not None
     assert task_binding_policy.stance == "migrate"

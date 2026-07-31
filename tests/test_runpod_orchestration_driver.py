@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shlex
@@ -29,6 +30,7 @@ from feedbax.contracts.studio_training import (
     StudioTrainingAssemblySpec,
     StudioTrainingIdentityAdapter,
 )
+from feedbax.contracts.training import default_training_method_registry
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
@@ -70,6 +72,11 @@ from feedbax.orchestration.drivers.runpod import (
     rank_datacenters_for_gpu,
     runpod_row_workdir,
     validate_runpod_repo_realization_plan,
+)
+from feedbax.orchestration.drivers.capabilities import (
+    AcquisitionSemantics,
+    DriverCapabilityEnvelope,
+    DriverHook,
 )
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
 from feedbax.orchestration.drivers.base import (
@@ -570,11 +577,49 @@ def _owned_state(bundle: RunBundle, pod_id: str = "pod-123") -> RunSetState:
     )
 
 
+def _owned_driver(
+    *,
+    transport: FakeRunPodTransport,
+    pod_id: str = "pod-123",
+    config: RunPodDriverConfig | None = None,
+    sleep: Any = time.sleep,
+    monotonic: Any = time.monotonic,
+) -> RunPodOrchestrationDriver:
+    """Build the engine-acquired fixture variant and adopt its exact pod."""
+    driver = RunPodOrchestrationDriver(
+        config=config or RunPodDriverConfig(),
+        transport=transport,
+        sleep=sleep,
+        monotonic=monotonic,
+    )
+    driver.adopt_owned_pod(pod_id)
+    return driver
+
+
 class GovernedProvisionDriver:
     """Fake one-attempt RunPod driver for stage retry policy tests."""
 
-    govern_provisioning_retries = True
-    provision_retry_delay_seconds = 1.0
+    realized_capabilities = DriverCapabilityEnvelope.single(
+        "runpod",
+        replace(
+            RunPodOrchestrationDriver.capability_envelope.variants["engine-acquired"],
+            variant_id="governed-fixture",
+            acquisition=AcquisitionSemantics.EXTERNALLY_PROVIDED,
+            optional_hooks=frozenset(
+                {
+                    DriverHook.GOVERN_PROVISIONING_RETRIES,
+                    DriverHook.PROVISION_RETRY_DELAY,
+                }
+            ),
+        ),
+    ).realize("governed-fixture")
+    poll_interval_seconds = 0.05
+
+    def govern_provisioning_retries(self) -> bool:
+        return True
+
+    def provision_retry_delay(self) -> float:
+        return 1.0
 
     def __init__(self, outcomes: list[object]) -> None:
         self.outcomes = list(outcomes)
@@ -744,9 +789,7 @@ def _create_failure_corpus() -> list[dict[str, Any]]:
     return json.loads(CREATE_FAILURE_CORPUS_PATH.read_text(encoding="utf-8"))
 
 
-@pytest.mark.parametrize(
-    "entry", _create_failure_corpus(), ids=lambda entry: entry["name"]
-)
+@pytest.mark.parametrize("entry", _create_failure_corpus(), ids=lambda entry: entry["name"])
 def test_create_failure_corpus_classification(entry: dict[str, Any]) -> None:
     """Every curated payload must keep its human-adjudicated classification."""
     result = CommandResult(entry["returncode"], entry["stdout"], entry["stderr"])
@@ -792,11 +835,7 @@ def test_create_failure_corpus_definitive_rejects_region_and_continues(
 
 @pytest.mark.parametrize(
     "entry",
-    [
-        entry
-        for entry in _create_failure_corpus()
-        if entry["expected_behavior"] == "halt-ambiguous"
-    ],
+    [entry for entry in _create_failure_corpus() if entry["expected_behavior"] == "halt-ambiguous"],
     ids=lambda entry: entry["name"],
 )
 def test_create_failure_corpus_ambiguous_halts_acquisition(
@@ -2294,7 +2333,7 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
     assert "uv pip install extra" in joined
     assert "jax.__version__" in joined
     assert "jax[cuda12]" in joined
-    assert "entry_point.load()" in joined
+    assert "compose_application()" in joined
     assert "lockfile digest mismatch" in joined
 
 
@@ -3324,9 +3363,11 @@ def test_stage_preflight_composes_core_and_runpod_static_failures_before_provide
         "runpod-python-version-declared",
     ]
     message = str(raised.value)
-    assert message.index("environment-declaration") < message.index(
-        "runpod-image-immutable"
-    ) < message.index("runpod-python-version-declared")
+    assert (
+        message.index("environment-declaration")
+        < message.index("runpod-image-immutable")
+        < message.index("runpod-python-version-declared")
+    )
     provider_check = next(check for check in checks if check.name == "runpod-credentials")
     assert provider_check.observed["outcome"] == "skipped-due-to-dependency"
     assert provider_check.observed["dependencies"] == [
@@ -3340,9 +3381,7 @@ def test_runpod_preflight_queries_credentials_despite_independent_declaration_fa
 ) -> None:
     bundle = _bundle(tmp_path, deadman_enabled=True)
     bundle = bundle.model_copy(
-        update={
-            "environment": bundle.environment.model_copy(update={"python_version": None})
-        }
+        update={"environment": bundle.environment.model_copy(update={"python_version": None})}
     )
     transport = FakeRunPodTransport()
     transport.queue_runpodctl(
@@ -3697,9 +3736,7 @@ def test_stage_smoke_records_evidence_for_every_non_opted_out_row(tmp_path: Path
         transport=RemoteSmokeTransport(probe_status="completed"),
     )
 
-    _state_after, outputs = StageEngine(bundle=bundle, driver=driver)._stage_smoke(
-        _state(bundle)
-    )
+    _state_after, outputs = StageEngine(bundle=bundle, driver=driver)._stage_smoke(_state(bundle))
     evidence = RemoteSmokeEvidence.model_validate(outputs)
 
     assert [row.row_id for row in evidence.rows] == ["warm", "cool", "hot"]
@@ -3804,6 +3841,7 @@ def test_declared_continuation_without_source_custody_fails_before_transport(
             local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
+        training_method_registry=default_training_method_registry(),
     )
 
     checks = driver.preflight_checks(bundle)
@@ -4032,12 +4070,8 @@ def test_layout_failure_short_circuits_before_all_provider_queries(tmp_path: Pat
         "outcome": "skipped-due-to-dependency",
         "dependencies": ["repo-realization-plan-sealing"],
     }
-    assert named["runpod-image-tag-exists"].observed["outcome"] == (
-        "skipped-due-to-dependency"
-    )
-    assert named["runpod-credentials"].observed["dependencies"] == [
-        "runpod-remote-layout-vs-lock"
-    ]
+    assert named["runpod-image-tag-exists"].observed["outcome"] == ("skipped-due-to-dependency")
+    assert named["runpod-credentials"].observed["dependencies"] == ["runpod-remote-layout-vs-lock"]
     assert transport.image_exists_calls == []
     assert transport.runpodctl_calls == []
     assert transport.operations == []
@@ -4187,6 +4221,7 @@ def test_fresh_runpod_driver_restores_completed_preflight_before_provision(tmp_p
     )
     first_driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
+            pod_id="pod-restored",
             gpu_id="NVIDIA GeForce RTX 4090",
             datacenters=tuple(bundle.deployment_policy.resources.regions),
             image=bundle.environment.image_id or "",
@@ -4199,9 +4234,6 @@ def test_fresh_runpod_driver_restores_completed_preflight_before_provision(tmp_p
     class RestoredDriver(RunPodOrchestrationDriver):
         provision_calls = 0
 
-        def engine_acquisition_required(self) -> bool:
-            return False
-
         def provision(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
             del bundle, state
             assert self._preflight_passed is True
@@ -4213,12 +4245,16 @@ def test_fresh_runpod_driver_restores_completed_preflight_before_provision(tmp_p
         bundle=bundle,
         driver=RestoredDriver(
             config=RunPodDriverConfig(
+                pod_id="pod-restored",
                 gpu_id="NVIDIA GeForce RTX 4090",
                 datacenters=tuple(bundle.deployment_policy.resources.regions),
                 image=bundle.environment.image_id or "",
                 local_repos={"feedbax": tmp_path},
             ),
             transport=resume_transport,
+            realized_capabilities=RunPodOrchestrationDriver.capability_envelope.realize(
+                "externally-managed"
+            ),
         ),
         store=store,
     ).run(stop_after_stage="PROVISION")
@@ -4498,41 +4534,21 @@ def test_separate_process_existing_run_rejects_legacy_preflight(tmp_path: Path) 
     store.save(state)
 
     script = r"""
-import json
+import asyncio
 import sys
-from pathlib import Path
 
 from feedbax.bin import orchestrate
-from feedbax.orchestration.drivers.runpod import RunPodDriverConfig, RunPodOrchestrationDriver
+from feedbax.plugins.composition import compose_application
 
-class NoProviderTransport:
-    def __getattr__(self, name):
-        raise AssertionError(f"provider transport accessed: {name}")
-
-class ProviderFreeDriver(RunPodOrchestrationDriver):
-    def provision(self, bundle, state):
-        assert self._preflight_passed is True
-        return {"driver": "provider-free-subprocess", "acquired": False}
-
-def driver_for_bundle(bundle, bindings=()):
-    return ProviderFreeDriver(
-        config=RunPodDriverConfig(
-            gpu_id=bundle.deployment_policy.resources.gpu_id,
-            datacenters=tuple(bundle.deployment_policy.resources.regions),
-            image=bundle.environment.image_id or "",
-            local_repos={"feedbax": Path(bundle.run_set_dir).parent},
-        ),
-        transport=NoProviderTransport(),
-        input_provider_bindings=bindings,
-    )
-
-orchestrate._driver_for_bundle = driver_for_bundle
-result = orchestrate._run_existing(sys.argv[1], stop_after_stage="PROVISION")
-print(json.dumps({
-    "abort_reason": result.abort_reason,
-    "provisioning_stop_reason": result.provisioning_stop_reason,
-    "provision_status": result.stage("PROVISION").status,
-}))
+bootstrap = asyncio.run(compose_application(local_component_source=None))
+orchestrate._run_existing(
+    sys.argv[1],
+    stop_after_stage="PROVISION",
+    conformance_registry=bootstrap.bundle.conformance_checks,
+    training_method_registry=bootstrap.bundle.training_methods,
+    driver_registry=bootstrap.bundle.drivers,
+    plugin_provenance=bootstrap.provenance,
+)
 """
     env = {**os.environ, "FEEDBAX_ORCHESTRATION_ROOT": str(tmp_path)}
     result = subprocess.run(
@@ -4896,11 +4912,7 @@ def test_local_and_runpod_collect_directory_contents_at_declared_target(
         }
     )
     stale_nested = (
-        runpod_bundle.run_set_dir
-        / "collected"
-        / "warm"
-        / directory_name
-        / directory_name
+        runpod_bundle.run_set_dir / "collected" / "warm" / directory_name / directory_name
     )
     stale_nested.mkdir(parents=True)
     (stale_nested / "stale.json").write_text('{"source":"stale"}\n')
@@ -5291,10 +5303,7 @@ def test_teardown_remove_failure_stops_then_removes_owned_pod(tmp_path: Path) ->
         CommandResult(1, "", "pod not found"),
     )
     transport.queue_empty_global_inventory()
-    driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(pod_id="pod-123"),
-        transport=transport,
-    )
+    driver = _owned_driver(transport=transport)
 
     result = driver.teardown(bundle, _owned_state(bundle))
 
@@ -5343,10 +5352,7 @@ def test_teardown_accepts_supported_empty_provider_inventory_shapes(
         CommandResult(1, "", "pod not found"),
     )
     transport.queue_empty_global_inventory(inventory_payload)
-    driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(pod_id="pod-123"),
-        transport=transport,
-    )
+    driver = _owned_driver(transport=transport)
 
     result = driver.teardown(bundle, _owned_state(bundle))
 
@@ -5393,10 +5399,7 @@ def test_teardown_records_sanitized_unverified_provider_inventory(
         ("pod", "list", "--output", "json"),
         inventory_result,
     )
-    driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(pod_id="pod-123"),
-        transport=transport,
-    )
+    driver = _owned_driver(transport=transport)
 
     result = driver.teardown(bundle, _owned_state(bundle))
 
@@ -5434,10 +5437,7 @@ def test_unverified_global_inventory_survives_teardown_and_blocks_register(
         ("pod", "list", "--output", "json"),
         inventory_result,
     )
-    driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(pod_id="pod-123"),
-        transport=transport,
-    )
+    driver = _owned_driver(transport=transport)
     engine = StageEngine(
         bundle=bundle,
         driver=driver,
@@ -5454,7 +5454,7 @@ def test_unverified_global_inventory_survives_teardown_and_blocks_register(
     assert inventory["outcome"] == expected_outcome
     with pytest.raises(
         OrchestrationStageError,
-        match="globally empty RunPod provider inventory",
+        match="globally empty provider resource inventory",
     ):
         engine._stage_register(state)
 
@@ -5464,10 +5464,7 @@ def test_teardown_fails_closed_when_remove_after_stop_fails(tmp_path: Path) -> N
     transport = FakeRunPodTransport()
     transport.queue_runpodctl(("remove", "pod", "pod-123"), CommandResult(1, "", "busy"))
     transport.queue_runpodctl(("remove", "pod", "pod-123"), CommandResult(1, "", "still busy"))
-    driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(pod_id="pod-123"),
-        transport=transport,
-    )
+    driver = _owned_driver(transport=transport)
 
     with pytest.raises(RunPodDriverError, match="remove pod after stop failed"):
         driver.teardown(bundle, _owned_state(bundle))
@@ -5493,10 +5490,7 @@ def test_teardown_confirms_absence_when_remove_reports_pod_not_found(
         CommandResult(1, "", "pod not found"),
     )
     transport.queue_empty_global_inventory()
-    driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(pod_id="pod-123"),
-        transport=transport,
-    )
+    driver = _owned_driver(transport=transport)
 
     result = driver.teardown(bundle, _owned_state(bundle))
 
@@ -5514,9 +5508,8 @@ def test_teardown_polls_until_exact_owned_pod_is_absent(tmp_path: Path) -> None:
     transport.queue_runpodctl(query, CommandResult(1, "", "pod does not exist"))
     transport.queue_empty_global_inventory()
     clock = FakeClock()
-    driver = RunPodOrchestrationDriver(
+    driver = _owned_driver(
         config=RunPodDriverConfig(
-            pod_id="pod-123",
             poll_seconds=2,
             teardown_absence_timeout_seconds=10,
         ),
@@ -5539,9 +5532,8 @@ def test_teardown_fails_when_exact_owned_pod_remains_present(tmp_path: Path) -> 
     for _ in range(2):
         transport.queue_runpodctl(query, CommandResult(0, '{"id":"pod-123"}'))
     clock = FakeClock()
-    driver = RunPodOrchestrationDriver(
+    driver = _owned_driver(
         config=RunPodDriverConfig(
-            pod_id="pod-123",
             poll_seconds=2,
             teardown_absence_timeout_seconds=4,
         ),
@@ -5572,10 +5564,7 @@ def test_teardown_fails_closed_on_ambiguous_absence_query(
         ("pod", "get", "pod-123", "--output", "json"),
         result,
     )
-    driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(pod_id="pod-123"),
-        transport=transport,
-    )
+    driver = _owned_driver(transport=transport)
 
     with pytest.raises(RunPodDriverError, match="ambiguous absence query"):
         driver.teardown(bundle, _owned_state(bundle))
@@ -5584,10 +5573,7 @@ def test_teardown_fails_closed_on_ambiguous_absence_query(
 def test_teardown_keep_alive_skips_owned_pod_query(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path, keep_alive=True)
     transport = FakeRunPodTransport()
-    driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(pod_id="pod-123"),
-        transport=transport,
-    )
+    driver = _owned_driver(transport=transport)
 
     result = driver.teardown(bundle, _owned_state(bundle))
 
@@ -5617,26 +5603,26 @@ def test_teardown_never_removes_supplied_pod_id(tmp_path: Path) -> None:
     result = driver.teardown(bundle, state)
 
     assert result["teardown"] == "skipped"
-    assert result["skip_reason"] == "provided_pod"
-    assert result["ownership"]["owned_by_run"] is False
+    assert result["skip_reason"] == "realized-capability-preserves-resources"
+    assert result["capability_variant"] == "externally-managed"
     assert transport.runpodctl_calls == []
 
 
-def test_auto_teardown_disabled_keeps_owned_pod_with_ownership_evidence(
+def test_auto_teardown_disabled_preserves_owned_pod_by_realized_capability(
     tmp_path: Path,
 ) -> None:
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
-    driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(pod_id="pod-123", auto_teardown=False),
+    driver = _owned_driver(
+        config=RunPodDriverConfig(auto_teardown=False),
         transport=transport,
     )
 
     result = driver.teardown(bundle, _owned_state(bundle))
 
     assert result["teardown"] == "skipped"
-    assert result["skip_reason"] == "auto_teardown_disabled"
-    assert result["ownership"]["owned_by_run"] is True
+    assert result["skip_reason"] == "realized-capability-preserves-resources"
+    assert result["capability_variant"] == "engine-acquired-preserved"
     assert transport.runpodctl_calls == []
 
 
@@ -5649,10 +5635,7 @@ def test_teardown_failure_persists_unresolved_owned_pod_and_primary_error(
     transport.queue_runpodctl(
         ("stop", "pod", "pod-123"), CommandResult(1, "", "provider unavailable")
     )
-    driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(pod_id="pod-123"),
-        transport=transport,
-    )
+    driver = _owned_driver(transport=transport)
     engine = StageEngine(bundle=bundle, driver=driver)
     primary = RuntimeError("training failed first")
 
@@ -5689,11 +5672,8 @@ def test_teardown_cleanup_uses_one_hard_deadline(tmp_path: Path) -> None:
 
     transport = DeadlineConsumingTransport()
     transport.queue_runpodctl(("remove", "pod", "pod-123"), CommandResult(1, "", "busy"))
-    driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(
-            pod_id="pod-123",
-            teardown_absence_timeout_seconds=4,
-        ),
+    driver = _owned_driver(
+        config=RunPodDriverConfig(teardown_absence_timeout_seconds=4),
         transport=transport,
         sleep=clock.sleep,
         monotonic=clock.monotonic,
@@ -5770,11 +5750,8 @@ def test_abort_teardown_pulls_failure_logs_before_pod_removal(tmp_path: Path) ->
         CommandResult(1, "", "pod not found"),
     )
     transport.queue_empty_global_inventory()
-    driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(
-            pod_id="pod-123",
-            failure_log_pull_timeout_seconds=17,
-        ),
+    driver = _owned_driver(
+        config=RunPodDriverConfig(failure_log_pull_timeout_seconds=17),
         transport=transport,
     )
     engine = StageEngine(bundle=bundle, driver=driver)

@@ -37,7 +37,7 @@ from feedbax.orchestration.staged_root_custody import (
     verify_staged_root_snapshot,
 )
 from feedbax.orchestration.state import RowState, RunSetState
-from feedbax.orchestration.conformance import build_default_check_registry
+from feedbax.orchestration.conformance import build_core_check_registry
 from feedbax.orchestration.stages import StageEngine
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from tests.test_evaluation_lifecycle import (
@@ -120,14 +120,10 @@ def _terminal_evaluation_state(bundle: RunBundle) -> RunSetState:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text("{}\n", encoding="utf-8")
     plan = row.launch.metadata["batch_plan"]
-    ordered_row_ids = [
-        row_id for batch in plan["batches"] for row_id in batch["ordered_row_ids"]
-    ]
+    ordered_row_ids = [row_id for batch in plan["batches"] for row_id in batch["ordered_row_ids"]]
     union = {
         "schema_id": "feedbax.orchestration.evaluation_matrix_ordered_union_evidence",
-        "schema_version": (
-            "feedbax.orchestration.evaluation_matrix_ordered_union_evidence.v1"
-        ),
+        "schema_version": ("feedbax.orchestration.evaluation_matrix_ordered_union_evidence.v1"),
         "matrix_intent_hash": plan["matrix_intent_hash"],
         "ordered_row_ids_sha256": row.launch.metadata["matrix_ordered_row_ids_sha256"],
         "ordered_batch_ids": [batch["batch_id"] for batch in plan["batches"]],
@@ -160,9 +156,7 @@ def _terminal_evaluation_state(bundle: RunBundle) -> RunSetState:
                 "outputs": {
                     "overall": "pass",
                     "certificate_ref": str(certificate_path),
-                    "certificate_sha256": hashlib.sha256(
-                        certificate_path.read_bytes()
-                    ).hexdigest(),
+                    "certificate_sha256": hashlib.sha256(certificate_path.read_bytes()).hexdigest(),
                 },
             },
         },
@@ -527,7 +521,9 @@ def test_provider_free_sequential_lifecycles_bound_staged_root_peak(
     plugin = tmp_path / "evaluation_reclamation_plugin.py"
     plugin.write_text(
         """
-from feedbax.analysis.evaluation import EvaluationRecipeResult, register_evaluation_recipe
+from feedbax.analysis.evaluation import EvaluationRecipeResult
+from feedbax.plugins.application import EVALUATION_RECIPES
+from feedbax.plugins.bootstrap import FamilyRequirement, PluginDeclaration, PluginRegistration
 
 def recipe(_spec, _root, _states_path, _context):
     return EvaluationRecipeResult(summary_metrics={"ok": 1.0})
@@ -536,20 +532,28 @@ def batch(items, _context):
     return [EvaluationRecipeResult(summary_metrics={"gain": item.spec.params["gain"]})
             for item in items]
 
-register_evaluation_recipe(
-    "feedbax.test.staged_root_reclamation",
-    recipe,
-    batch_recipe=batch,
-    replace=True,
+def register(context):
+    context.registry(EVALUATION_RECIPES).register(
+        "feedbax.test.staged_root_reclamation",
+        recipe,
+        batch_recipe=batch,
+    )
+
+PLUGIN_REGISTRATION = PluginRegistration(
+    PluginDeclaration(
+        "feedbax.test.staged_root_reclamation",
+        "1",
+        1,
+        families=(FamilyRequirement(EVALUATION_RECIPES.family),),
+    ),
+    register,
 )
 """.strip(),
         encoding="utf-8",
     )
     authority, bindings = _sealed_bundle(tmp_path / "authority")
     expected_bytes = sum(
-        record.size_bytes
-        for custody in authority.staged_roots
-        for record in custody.files
+        record.size_bytes for custody in authority.staged_roots for record in custody.files
     )
     bundles = [
         _production_evaluation_bundle(
@@ -585,14 +589,14 @@ register_evaluation_recipe(
         terminal = StageEngine(
             bundle=bundle,
             driver=driver,
-            conformance_registry=build_default_check_registry(include_plugins=False),
+            conformance_registry=build_core_check_registry(),
             poll_interval_seconds=0.001,
         ).run()
         terminal_states.append(terminal)
         assert terminal.stage("REGISTER").status == "completed"
-        assert terminal.stage("TEARDOWN").outputs["staged_root_reclamation"][
-            "status"
-        ] == "reclaimed"
+        assert (
+            terminal.stage("TEARDOWN").outputs["staged_root_reclamation"]["status"] == "reclaimed"
+        )
         assert not (bundle.run_set_dir / "inputs" / "staged-roots").exists()
         assert (bundle.run_set_dir / "inputs" / ".staged-roots-reclaimed.json").is_file()
         assert (bundle.run_set_dir / "conformance.json").is_file()
@@ -607,7 +611,7 @@ register_evaluation_recipe(
                 freeze_lines=[],
                 staged_root_bindings=bindings,
             ),
-            conformance_registry=build_default_check_registry(include_plugins=False),
+            conformance_registry=build_core_check_registry(),
             poll_interval_seconds=0.001,
         ).run()
         assert resumed.stage("TEARDOWN").outputs == terminal.stage("TEARDOWN").outputs
@@ -618,14 +622,14 @@ register_evaluation_recipe(
         bundles[0].rows[0].launch.metadata["matrix_intent_hash"]
         != bundles[1].rows[0].launch.metadata["matrix_intent_hash"]
     )
-    assert all(
-        state.stage("CERTIFY").outputs["overall"] == "pass"
-        for state in terminal_states
+    assert all(state.stage("CERTIFY").outputs["overall"] == "pass" for state in terminal_states)
+    assert (
+        sum(
+            (bundle.run_set_dir / "inputs" / ".staged-roots-reclaimed.json").stat().st_size
+            for bundle in bundles
+        )
+        < 32 * 1024
     )
-    assert sum(
-        (bundle.run_set_dir / "inputs" / ".staged-roots-reclaimed.json").stat().st_size
-        for bundle in bundles
-    ) < 32 * 1024
 
 
 def test_staged_root_reclamation_resumes_after_atomic_isolation(
@@ -704,9 +708,7 @@ def test_staged_root_reclamation_promotes_marker_after_completed_removal(
         staged_root_bindings=bindings,
     )
     inputs_root = bundle.run_set_dir / "inputs"
-    original_publish = (
-        input_materialization._publish_staged_root_reclamation_receipt
-    )
+    original_publish = input_materialization._publish_staged_root_reclamation_receipt
 
     def interrupt_receipt(_marker: Path, _receipt: Path) -> None:
         raise OSError("injected receipt interruption")

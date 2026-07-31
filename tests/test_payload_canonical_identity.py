@@ -35,7 +35,10 @@ from tests.test_training_run_executor import _run_spec
 
 
 def _checks_by_name(bundle) -> dict:
-    return {check.name: check for check in run_preflight_checks(bundle)}
+    return {
+        check.name: check
+        for check in run_preflight_checks(bundle, FakeDriver.realized_capabilities)
+    }
 
 
 def _contains_null(value) -> bool:
@@ -74,16 +77,10 @@ def test_single_source_projection_matches_executor_smoke_computation() -> None:
 def test_single_source_is_shared_by_every_call_site() -> None:
     """Payload staging, PREFLIGHT, and the executor import the one canonical source."""
     assert (
-        authoring.canonical_training_run_spec_projection
-        is canonical_training_run_spec_projection
+        authoring.canonical_training_run_spec_projection is canonical_training_run_spec_projection
     )
-    assert (
-        executor.canonical_training_run_spec_projection
-        is canonical_training_run_spec_projection
-    )
-    assert (
-        preparation.canonical_training_run_spec_sha256 is canonical_training_run_spec_sha256
-    )
+    assert executor.canonical_training_run_spec_projection is canonical_training_run_spec_projection
+    assert preparation.canonical_training_run_spec_sha256 is canonical_training_run_spec_sha256
     # stages.py consumes the bytes helper for the PREFLIGHT canonical-identity check.
     import feedbax.orchestration.stages as stages
 
@@ -155,12 +152,17 @@ def _preflight_completed_state(bundle, digests: dict[str, str]) -> RunSetState:
 def test_smoke_rejects_payload_restaged_after_preflight(tmp_path) -> None:
     """SMOKE fails closed if a row payload digest changed since PREFLIGHT validated it."""
     spec = _run_spec()
-    bundle = _bundle(tmp_path, rows=[_compiled_row("row-a", run_spec=canonical_training_run_spec_projection(spec))])
+    bundle = _bundle(
+        tmp_path,
+        rows=[_compiled_row("row-a", run_spec=canonical_training_run_spec_projection(spec))],
+    )
     engine = StageEngine(bundle=bundle, driver=FakeDriver())
     recorded = bundle.rows[0].execution.payload.sha256
 
     # Matching digest carried forward is accepted.
-    engine._assert_preflight_payload_handoff(_preflight_completed_state(bundle, {"row-a": recorded}))
+    engine._assert_preflight_payload_handoff(
+        _preflight_completed_state(bundle, {"row-a": recorded})
+    )
 
     # A digest that no longer matches the staged payload means it was restaged.
     with pytest.raises(OrchestrationStageError) as raised:
@@ -171,6 +173,4 @@ def test_smoke_rejects_payload_restaged_after_preflight(tmp_path) -> None:
     assert "row-a" in str(raised.value)
 
     # Legacy state without recorded digests does not spuriously fail.
-    engine._assert_preflight_payload_handoff(
-        RunSetState(run_set_id=bundle.run_set_id)
-    )
+    engine._assert_preflight_payload_handoff(RunSetState(run_set_id=bundle.run_set_id))

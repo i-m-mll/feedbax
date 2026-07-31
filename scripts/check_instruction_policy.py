@@ -6,6 +6,8 @@ import difflib
 import sys
 from pathlib import Path
 
+from check_downstream_interface_policy import check_policy as check_downstream_policy
+
 
 ROOT = Path(__file__).resolve().parents[1]
 START = "<!-- feedbax-test-policy:start -->"
@@ -31,7 +33,9 @@ def main() -> int:
     agents = blocks["AGENTS.md"]
     claude = blocks["CLAUDE.md"]
     if agents == claude:
+        check_downstream_policy()
         print("Feedbax instruction test-policy blocks match.")
+        print("Feedbax downstream-stability instruction blocks match policy constants.")
         return 0
 
     diff = difflib.unified_diff(

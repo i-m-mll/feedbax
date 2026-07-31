@@ -34,6 +34,21 @@ jobs:
       - name: Check lockfile
         run: uv lock --check
 
+      - name: Check downstream interface policy
+        run: uv run --no-sync python scripts/check_downstream_interface_policy.py
+
+      - name: Run clean-wheel external conformance foundation
+        run: >
+          uv run --no-sync python scripts/run_external_conformance.py
+          --result-out artifacts/downstream-conformance.json
+
+      - name: Upload downstream conformance result
+        uses: actions/upload-artifact@v4
+        with:
+          name: downstream-conformance-result
+          path: artifacts/downstream-conformance.json
+          if-no-files-found: error
+
       - name: Check generated Studio contracts
         run: |
           uv run python scripts/generate_studio_contracts.py

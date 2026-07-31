@@ -15,7 +15,18 @@ from feedbax.contracts.training import (
     standard_supervised_update_kernels,
 )
 from feedbax.contracts.worker import MetricGuardSpec, PhaseTransitionSpec
-from feedbax.training.preparation import ExecutionPreparationResult
+from feedbax.plugins import (
+    EXECUTION_PREPARATIONS,
+    TRAINING_METHODS,
+    FamilyRequirement,
+    PluginDeclaration,
+    PluginRegistration,
+    RegistrationContext,
+)
+from feedbax.training.preparation import (
+    ExecutionPreparationRegistration,
+    ExecutionPreparationResult,
+)
 
 
 METHOD_REF = "feedbax.validation/native_smoke/v1"
@@ -42,8 +53,11 @@ def method_contract(payload: StandardSupervisedMethodPayload):
     return contract.model_copy(update={"method_ref": METHOD_REF, "phase_program": program})
 
 
-def register_feedbax_training_methods(registry: Any) -> None:
-    """Register the smoke method through the normal executor plugin hook."""
+def _register_plugin(context: RegistrationContext) -> None:
+    """Register the smoke method through the unified plugin protocol."""
+    registry = context.registry(TRAINING_METHODS)
+    preparation_registry = context.registry(EXECUTION_PREPARATIONS)
+
     def continue_training(
         slots: Mapping[str, Any], coordinate: Any, context: Mapping[str, Any]
     ) -> bool:
@@ -74,3 +88,24 @@ def register_feedbax_training_methods(registry: Any) -> None:
             package="feedbax",
         )
     )
+    preparation_registry.register(
+        ExecutionPreparationRegistration(
+            method_ref=METHOD_REF,
+            provider=prepare,
+            owner="feedbax.validation.native_smoke",
+        )
+    )
+
+
+PLUGIN_REGISTRATION = PluginRegistration(
+    PluginDeclaration(
+        "feedbax.validation.native_smoke",
+        "1",
+        1,
+        families=(
+            FamilyRequirement("training_methods"),
+            FamilyRequirement("execution_preparations"),
+        ),
+    ),
+    _register_plugin,
+)

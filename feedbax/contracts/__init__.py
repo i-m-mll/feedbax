@@ -5,7 +5,17 @@ provider, worker, and web layers. Transport-specific API models should remain
 under their transport package.
 """
 
-from feedbax.contracts.component import ComponentDefinition, PortType, PortTypeSpec
+from feedbax.contracts.component import (
+    ComponentDefinition,
+    DynamicPortLayout as DynamicPortLayout,
+    DynamicPortPolicy as DynamicPortPolicy,
+    DynamicPortPolicyError as DynamicPortPolicyError,
+    PortType,
+    PortTypeSpec,
+    derive_dynamic_port_count as derive_dynamic_port_count,
+    derive_dynamic_port_layout as derive_dynamic_port_layout,
+    validate_dynamic_port_layout as validate_dynamic_port_layout,
+)
 from feedbax.contracts.staged_execution import (
     STAGED_CHECKPOINT_CUSTODY_BACKEND,
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
@@ -14,7 +24,7 @@ from feedbax.contracts.staged_execution import (
     StagedExecutionDescriptor,
     validate_staged_binding_name,
 )
-from feedbax.contracts.acausal import (
+from feedbax.contracts.acausal import (  # noqa: F401
     ACAUSAL_GRAPH_SCHEMA_ID,
     ACAUSAL_GRAPH_SCHEMA_VERSION,
     AcausalConnectionSpec,
@@ -132,6 +142,15 @@ from feedbax.contracts.graph import (
     ValidationResult,
     ValidationWarning,
     WireSpec,
+)
+from feedbax.contracts.array_values import (
+    ARRAY_VALUE_SCHEMA_ID,
+    ARRAY_VALUE_SCHEMA_VERSION,
+    ArrayValueSpec,
+    ConstantArrayValueSpec,
+    SparseCooArrayValueSpec,
+    SparseCooEntrySpec,
+    materialize_array_value,
 )
 from feedbax.contracts.descriptors import (
     COMPONENT_DESCRIPTOR_SCHEMA_ID,
@@ -338,7 +357,6 @@ from feedbax.contracts.selection import (
 from feedbax.contracts.training import (
     ArtifactPolicySpec,
     CheckpointProgressPolicySpec,
-    DEFAULT_TRAINING_METHOD_REGISTRY,
     EarlyStoppingSpec,
     ExecutionPolicySpec,
     GraphTopologySourceSpec,
@@ -440,6 +458,38 @@ from feedbax.contracts.worker import (
     toy_adaptive_curriculum_method_contract,
     toy_minimax_method_contract,
 )
+from feedbax.contracts.value_identity import (
+    VALUE_IDENTITY_SCHEMA_ID,
+    VALUE_IDENTITY_SCHEMA_VERSION,
+    ValueIdentityRecord,
+    authored_value_sha256,
+    realization_value_sha256,
+    semantic_value_sha256,
+    value_identity_record,
+)
+from feedbax.contracts.material_dependencies import (
+    ADMISSION_WAIVER_SCHEMA_ID,
+    ADMISSION_WAIVER_SCHEMA_VERSION,
+    MATERIAL_DEPENDENCIES_SCHEMA_ID,
+    MATERIAL_DEPENDENCIES_SCHEMA_VERSION,
+    AdmissionWaiver,
+    IncidentalAdmissionFailure,
+    MaterialDependency,
+    MaterialDependencyAdmission,
+    MaterialDependencyObservation,
+    MaterialDependencySet,
+    MaterialDependencyValue,
+    dependency_value_sha256,
+    material_dependency_identity_sha256,
+    validate_material_dependency_admission,
+)
+from feedbax.contracts.manifest import (
+    TRAINING_RUN_CERTIFICATION_SCHEMA_ID,
+    TRAINING_RUN_CERTIFICATION_MIGRATION_TABLE,
+    TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION,
+    TrainingRunCertification,
+    training_run_certification,
+)
 from feedbax.contracts.workspace_replay import (
     WORKSPACE_REPLAY_SCHEMA_ID,
     WORKSPACE_REPLAY_SCHEMA_VERSION,
@@ -475,6 +525,23 @@ from feedbax.contracts.studio_api import (
 )
 
 __all__ = [
+    "ARRAY_VALUE_SCHEMA_ID",
+    "ARRAY_VALUE_SCHEMA_VERSION",
+    "ADMISSION_WAIVER_SCHEMA_ID",
+    "ADMISSION_WAIVER_SCHEMA_VERSION",
+    "AdmissionWaiver",
+    "IncidentalAdmissionFailure",
+    "MATERIAL_DEPENDENCIES_SCHEMA_ID",
+    "MATERIAL_DEPENDENCIES_SCHEMA_VERSION",
+    "MaterialDependency",
+    "MaterialDependencyAdmission",
+    "MaterialDependencyObservation",
+    "MaterialDependencySet",
+    "MaterialDependencyValue",
+    "TRAINING_RUN_CERTIFICATION_SCHEMA_ID",
+    "TRAINING_RUN_CERTIFICATION_MIGRATION_TABLE",
+    "TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION",
+    "TrainingRunCertification",
     "ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID",
     "ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION",
     "ANALYSIS_DATA_PRODUCT_SCHEMA_ID",
@@ -486,6 +553,7 @@ __all__ = [
     "AnalysisInputRequirement",
     "AnalysisJobStatusResponse",
     "AnalysisPackagesResponse",
+    "ArrayValueSpec",
     "AllOf",
     "AnyOf",
     "ArtifactPolicySpec",
@@ -507,6 +575,7 @@ __all__ = [
     "ComponentSelectorSyntax",
     "ComponentSlice",
     "ComponentSpec",
+    "ConstantArrayValueSpec",
     "Compare",
     "ContextItem",
     "Coerce",
@@ -537,7 +606,6 @@ __all__ = [
     "ConsistencyPredicateRule",
     "ConsistencyPredicateSpec",
     "ContentIntegrityDigest",
-    "DEFAULT_TRAINING_METHOD_REGISTRY",
     "DataProductParentRef",
     "EvaluationManifestProvenanceEnvelope",
     "DataProductDrift",
@@ -794,6 +862,8 @@ __all__ = [
     "SCHEDULE_PROJECTION_SCHEMA_VERSION",
     "ScheduleProjection",
     "ScheduleProjectionSample",
+    "SparseCooArrayValueSpec",
+    "SparseCooEntrySpec",
     "TRAINING_MANIFEST_METADATA_PROJECTION_SCHEMA_ID",
     "TRAINING_MANIFEST_METADATA_PROJECTION_SCHEMA_VERSION",
     "TrainingRunSpec",
@@ -810,6 +880,9 @@ __all__ = [
     "ValidationError",
     "ValidationResult",
     "ValidationWarning",
+    "VALUE_IDENTITY_SCHEMA_ID",
+    "VALUE_IDENTITY_SCHEMA_VERSION",
+    "ValueIdentityRecord",
     "ValueExpr",
     "ValueQuery",
     "VARIABLE_DESCRIPTOR_SCHEMA_ID",
@@ -850,6 +923,7 @@ __all__ = [
     "expression_hash",
     "freeze_selection_spec",
     "manifest_index_rows_from_records",
+    "materialize_array_value",
     "imported_npz_workspace_replay_product",
     "materialize_extraction_product",
     "migrate_selection_spec_payload",
@@ -893,10 +967,18 @@ __all__ = [
     "verify_extraction_product",
     "verify_evaluation_manifest_provenance",
     "workspace_replay_metadata",
+    "authored_value_sha256",
+    "realization_value_sha256",
+    "semantic_value_sha256",
+    "value_identity_record",
     "STAGED_CHECKPOINT_CUSTODY_BACKEND",
     "STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID",
     "STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION",
     "StagedCheckpointCustodySpec",
     "StagedExecutionDescriptor",
     "validate_staged_binding_name",
+    "dependency_value_sha256",
+    "material_dependency_identity_sha256",
+    "training_run_certification",
+    "validate_material_dependency_admission",
 ]
