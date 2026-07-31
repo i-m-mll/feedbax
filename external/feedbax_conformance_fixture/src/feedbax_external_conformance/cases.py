@@ -160,9 +160,12 @@ from feedbax.plugins import (
     PluginDependency,
     PluginRegistration,
     RegistrationContext,
+    RegistryFamilyRegistration,
     bootstrap_application,
     discover_plugin_registrations,
+    new_registration_context,
 )
+from feedbax.plugins.composition import compose_application
 from feedbax.orchestration.drivers import (
     DriverConstructionContext,
     ResourceSemantics,
@@ -174,7 +177,6 @@ from .family import (
     EXTERNAL_DYNAMIC_COMPONENT,
     FIXTURE_RECORDS,
     FixtureRecordRegistry,
-    new_fixture_registration_context,
 )
 
 
@@ -227,6 +229,7 @@ def _fixture_plugin(
     register,
     *,
     dependencies: tuple[PluginDependency, ...] = (),
+    registry_families: tuple[RegistryFamilyRegistration[object], ...] = (),
 ) -> PluginRegistration:
     return PluginRegistration(
         declaration=PluginDeclaration(
@@ -237,28 +240,39 @@ def _fixture_plugin(
             families=(FamilyRequirement(FIXTURE_RECORDS.family),),
         ),
         register=register,
+        registry_families=registry_families,
     )
+
+
+class _RegistrationEntryPoint:
+    dist = None
+
+    def __init__(self, registration: PluginRegistration) -> None:
+        self.name = registration.declaration.plugin_id
+        self.value = f"{self.name}:PLUGIN_REGISTRATION"
+        self._registration = registration
+
+    def load(self) -> PluginRegistration:
+        return self._registration
 
 
 def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = None) -> bool:
     """Prove installed typed discovery and the transactional generic-family contract."""
 
-    sources = discover_plugin_registrations(entry_points=entry_points)
     expected_plugins = (
         "feedbax_external_conformance.foundation",
         "feedbax_external_conformance.dependent",
     )
-    if tuple(sorted(source.registration.declaration.plugin_id for source in sources)) != tuple(
+    state = asyncio.run(
+        compose_application(
+            entry_points=entry_points,
+            local_component_source=None,
+        )
+    )
+    if tuple(sorted(item.plugin_id for item in state.provenance)) != tuple(
         sorted(expected_plugins)
     ):
         raise AssertionError("installed feedbax.plugins discovery inventory drifted")
-
-    state = asyncio.run(
-        bootstrap_application(
-            new_fixture_registration_context(),
-            registrations=sources if entry_points is not None else None,
-        )
-    )
     temporary_parent = "/private/tmp" if Path("/private/tmp").is_dir() else None
     with TemporaryDirectory(dir=temporary_parent) as temporary:
         root = Path(temporary)
@@ -725,16 +739,31 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
 
     retained: list[FixtureRecordRegistry] = []
 
+    def retained_factory() -> FixtureRecordRegistry:
+        registry = FixtureRecordRegistry()
+        retained.append(registry)
+        return registry
+
     def fail_after_partial(context: RegistrationContext) -> None:
         context.registry(FIXTURE_RECORDS).register("partial")
         raise RuntimeError("fixture failure")
 
-    failure_context = new_fixture_registration_context(registry_sink=retained)
+    failure = _fixture_plugin(
+        "fixture.failure",
+        fail_after_partial,
+        registry_families=(
+            RegistryFamilyRegistration(
+                FIXTURE_RECORDS,
+                retained_factory,
+                lambda registry: registry.seal(),
+            ),
+        ),
+    )
     try:
         asyncio.run(
-            bootstrap_application(
-                failure_context,
-                registrations=(_fixture_plugin("fixture.failure", fail_after_partial),),
+            compose_application(
+                entry_points=(_RegistrationEntryPoint(failure),),
+                local_component_source=None,
             )
         )
     except BootstrapError as exc:
@@ -751,13 +780,36 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
             raise
     else:
         raise AssertionError("failed bootstrap leaked a mutable retained registry")
-    empty = asyncio.run(bootstrap_application(new_fixture_registration_context(), registrations=()))
+    empty_provider = _fixture_plugin(
+        "fixture.empty",
+        lambda _context: None,
+        registry_families=(
+            RegistryFamilyRegistration(
+                FIXTURE_RECORDS,
+                FixtureRecordRegistry,
+                lambda registry: registry.seal(),
+            ),
+        ),
+    )
+    empty = asyncio.run(
+        compose_application(
+            entry_points=(_RegistrationEntryPoint(empty_provider),),
+            local_component_source=None,
+        )
+    )
     if empty.registry(FIXTURE_RECORDS).keys():
         raise AssertionError("failed registration contaminated an isolated context")
 
     first = _fixture_plugin(
         "fixture.conflict.first",
         lambda context: context.registry(FIXTURE_RECORDS).register("collision"),
+        registry_families=(
+            RegistryFamilyRegistration(
+                FIXTURE_RECORDS,
+                FixtureRecordRegistry,
+                lambda registry: registry.seal(),
+            ),
+        ),
     )
     second = _fixture_plugin(
         "fixture.conflict.second",
@@ -766,7 +818,13 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
     )
     try:
         asyncio.run(
-            bootstrap_application(new_fixture_registration_context(), registrations=(second, first))
+            compose_application(
+                entry_points=(
+                    _RegistrationEntryPoint(second),
+                    _RegistrationEntryPoint(first),
+                ),
+                local_component_source=None,
+            )
         )
     except BootstrapError as exc:
         if exc.code is not BootstrapErrorCode.NAMESPACE_COLLISION or exc.plugin_id != (
@@ -780,10 +838,20 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
         "fixture.missing",
         lambda _context: None,
         dependencies=(PluginDependency("fixture.absent", "1"),),
+        registry_families=(
+            RegistryFamilyRegistration(
+                FIXTURE_RECORDS,
+                FixtureRecordRegistry,
+                lambda registry: registry.seal(),
+            ),
+        ),
     )
     try:
         asyncio.run(
-            bootstrap_application(new_fixture_registration_context(), registrations=(missing,))
+            compose_application(
+                entry_points=(_RegistrationEntryPoint(missing),),
+                local_component_source=None,
+            )
         )
     except BootstrapError as exc:
         if exc.code is not BootstrapErrorCode.MISSING_DEPENDENCY or exc.plugin_id != (
@@ -815,15 +883,10 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
 def check_dynamic_component_ports(*, entry_points: Iterable[object] | None = None) -> bool:
     """Prove an external dynamic component across bootstrap, schema, build, and runtime."""
 
-    registrations = (
-        discover_plugin_registrations(entry_points=entry_points)
-        if entry_points is not None
-        else None
-    )
     state = asyncio.run(
-        bootstrap_application(
-            new_fixture_registration_context(),
-            registrations=registrations,
+        compose_application(
+            entry_points=entry_points,
+            local_component_source=None,
         )
     )
     registry = state.registry(COMPONENTS)
@@ -898,7 +961,7 @@ def check_dynamic_component_ports(*, entry_points: Iterable[object] | None = Non
 
 def check_external_driver_plugin() -> bool:
     """Construct an installed external driver through unified plugin bootstrap."""
-    state = asyncio.run(bootstrap_application(new_fixture_registration_context()))
+    state = asyncio.run(compose_application(local_component_source=None))
     driver = state.registry(DRIVERS).construct(
         "fixture:driver",
         DriverConstructionContext(configuration={"nested": {"source": "external-wheel"}}),
@@ -1297,7 +1360,9 @@ def check_resolved_evaluation_row_projection() -> bool:
     with TemporaryDirectory() as directory:
         root = Path(directory)
         bootstrap_state = asyncio.run(
-            bootstrap_application(new_fixture_registration_context(), registrations=())
+            bootstrap_application(
+                new_registration_context(local_component_source=None), registrations=()
+            )
         )
         manifest_inputs = [_projection_input(root, target) for target in (0, 1)]
         inputs = resolve_analysis_inputs(
@@ -1343,6 +1408,20 @@ def check_figure_composition_public_contract() -> bool:
             sha256=sha256_bytes(canonical_json_bytes(payload)),
         )
 
+    def run_figure_cli(figure_cli: Path, *arguments: str) -> str:
+        try:
+            return subprocess.run(
+                [str(figure_cli), *arguments],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+        except subprocess.CalledProcessError as exc:
+            raise AssertionError(
+                "installed feedbax-figure failed: "
+                f"returncode={exc.returncode}, stderr={exc.stderr!r}"
+            ) from exc
+
     with TemporaryDirectory() as directory:
         root = Path(directory).resolve()
         base = FigureSpec(name="base", assembler="feedbax.grid_figure")
@@ -1382,16 +1461,12 @@ def check_figure_composition_public_contract() -> bool:
             raise AssertionError("composition provenance is missing")
         documents = resolved.composition.documents
         if [
-            (record.order, record.role, record.ref, record.payload_path)
-            for record in documents
+            (record.order, record.role, record.ref, record.payload_path) for record in documents
         ] != [
             (0, "root_figure", "base.json", None),
             (1, "composition_envelope", "middle.json", None),
             (2, "authored_leaf", "<inline>", None),
-        ] or not all(
-            isinstance(record, FigureCompositionSourceRecord)
-            for record in documents
-        ):
+        ] or not all(isinstance(record, FigureCompositionSourceRecord) for record in documents):
             raise AssertionError("full-chain source custody drifted")
         qualified = [
             layer_id
@@ -1408,30 +1483,22 @@ def check_figure_composition_public_contract() -> bool:
         figure_cli = Path(sys.executable).with_name("feedbax-figure")
         if not figure_cli.is_file():
             raise AssertionError("installed feedbax-figure console entrypoint is unavailable")
-        displayed_spec = subprocess.run(
-            [str(figure_cli), "resolve", str(leaf_path), "--repo-root", str(root)],
-            check=True,
-            capture_output=True,
-            text=True,
+        displayed_spec = run_figure_cli(
+            figure_cli, "resolve", str(leaf_path), "--repo-root", str(root)
         )
-        if json.loads(displayed_spec.stdout) != resolved.figure_spec.model_dump(
+        if json.loads(displayed_spec) != resolved.figure_spec.model_dump(
             mode="json", exclude_none=True
         ):
             raise AssertionError("CLI display differs from public resolver semantics")
         displayed = json.loads(
-            subprocess.run(
-                [
-                    str(figure_cli),
-                    "resolve",
-                    str(leaf_path),
-                    "--repo-root",
-                    str(root),
-                    "--with-lineage",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout
+            run_figure_cli(
+                figure_cli,
+                "resolve",
+                str(leaf_path),
+                "--repo-root",
+                str(root),
+                "--with-lineage",
+            )
         )
         if displayed["resolved_identity_sha256"] != resolved.resolved_identity_sha256:
             raise AssertionError("CLI lineage identity differs from resolver identity")
@@ -1482,7 +1549,9 @@ def check_figure_composition_public_contract() -> bool:
         stage = BundleStageSpec(name="figure", kind="figure", figure=leaf)
         bundle = AnalysisBundleSpec(name="figure-bundle", stages=[stage])
         registries = asyncio.run(
-            bootstrap_application(new_fixture_registration_context(), registrations=())
+            bootstrap_application(
+                new_registration_context(local_component_source=None), registrations=()
+            )
         ).bundle
         execution_root = root / "bundle-execution"
         execution = execute_staged_analysis_bundle(

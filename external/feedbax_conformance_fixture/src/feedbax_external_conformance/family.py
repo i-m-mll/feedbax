@@ -2,16 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import MutableSequence
-from dataclasses import dataclass
-
-from feedbax.plugins import (
-    APPLICATION_REGISTRY_KEYS,
-    ApplicationRegistryBundle,
-    RegistrationContext,
-    RegistryKey,
-)
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.plugins import RegistryKey
 
 EXTERNAL_DYNAMIC_COMPONENT = "feedbax_external_conformance.VariableFanIn"
 
@@ -37,17 +28,6 @@ class FixtureRecordRegistry:
         self._sealed = True
 
 
-@dataclass(frozen=True)
-class FixtureApplicationRegistryBundle(ApplicationRegistryBundle):
-    """Application bundle extended externally without changing Feedbax's loader."""
-
-    fixture_records: FixtureRecordRegistry
-
-    def seal(self) -> None:
-        super().seal()
-        self.fixture_records.seal()
-
-
 FIXTURE_RECORDS = RegistryKey(
     family="feedbax_external_conformance.fixture_records",
     attribute="fixture_records",
@@ -56,28 +36,8 @@ FIXTURE_RECORDS = RegistryKey(
 )
 
 
-def new_fixture_registration_context(
-    *, registry_sink: MutableSequence[FixtureRecordRegistry] | None = None
-) -> RegistrationContext:
-    """Build one fresh application context containing the external family."""
-
-    def factory() -> FixtureApplicationRegistryBundle:
-        base = new_application_registry_bundle(local_component_source=None)
-        registry = FixtureRecordRegistry()
-        if registry_sink is not None:
-            registry_sink.append(registry)
-        return FixtureApplicationRegistryBundle(
-            **base.__dict__,
-            fixture_records=registry,
-        )
-
-    return RegistrationContext(factory, (*APPLICATION_REGISTRY_KEYS, FIXTURE_RECORDS))
-
-
 __all__ = [
     "FIXTURE_RECORDS",
     "EXTERNAL_DYNAMIC_COMPONENT",
-    "FixtureApplicationRegistryBundle",
     "FixtureRecordRegistry",
-    "new_fixture_registration_context",
 ]

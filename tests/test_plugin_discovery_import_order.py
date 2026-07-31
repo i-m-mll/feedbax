@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import importlib
 
+import pytest
+
 from feedbax.plugins import (
     PluginDeclaration,
     PluginRegistration,
@@ -52,6 +54,27 @@ def test_typed_compose_discovers_once_after_import(monkeypatch) -> None:
 
     assert calls == ["load", "register"]
     assert state.provenance[0].plugin_id == "tests.import_order"
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    (
+        "feedbax.__main__",
+        "feedbax.bin.analysis",
+        "feedbax.bin.figure",
+        "feedbax.bin.orchestrate",
+        "feedbax.bin.provider",
+        "feedbax.bin.run",
+        "feedbax.bin.studio_pipeline",
+        "feedbax.web.api.components",
+        "feedbax.web.app",
+        "feedbax.web.worker.app",
+    ),
+)
+def test_public_composition_roots_use_the_shared_composer(module_name: str) -> None:
+    module = importlib.import_module(module_name)
+
+    assert module.compose_application is compose_application
 
 
 def test_config_globals_are_populated_without_plugin_side_effects() -> None:

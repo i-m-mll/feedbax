@@ -34,6 +34,7 @@
               "PluginRegistration",
               "RegistrationContext",
               "RegistryKey",
+              "RegistryFamilyRegistration",
               "bootstrap_application",
               "discover_plugin_registrations",
               "new_registration_context",

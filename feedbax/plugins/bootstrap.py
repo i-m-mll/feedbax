@@ -8,7 +8,7 @@ import importlib
 import importlib.metadata
 import inspect
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from contextvars import ContextVar
 from enum import StrEnum
 from types import MappingProxyType, ModuleType
@@ -110,6 +110,26 @@ class RegistryKey(Generic[T]):
 
 
 @dataclass(frozen=True)
+class RegistryFamilyRegistration(Generic[T]):
+    """Runtime-only provider for one caller-owned registry family."""
+
+    key: RegistryKey[T]
+    factory: Callable[[], T]
+    seal: Callable[[T], None]
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.key, RegistryKey)
+            or not callable(self.factory)
+            or not callable(self.seal)
+        ):
+            raise BootstrapError(
+                BootstrapErrorCode.INVALID_REGISTRATION,
+                "invalid registry family registration",
+            )
+
+
+@dataclass(frozen=True)
 class PluginDependency:
     plugin_id: str
     version: str | None = None
@@ -170,9 +190,17 @@ RegistrationCallable = Callable[["RegistrationContext"], object | Awaitable[obje
 class PluginRegistration:
     declaration: PluginDeclaration
     register: RegistrationCallable
+    registry_families: tuple[RegistryFamilyRegistration[Any], ...] = ()
 
     def __post_init__(self) -> None:
-        if not isinstance(self.declaration, PluginDeclaration) or not callable(self.register):
+        if (
+            not isinstance(self.declaration, PluginDeclaration)
+            or not callable(self.register)
+            or not isinstance(self.registry_families, tuple)
+            or not all(
+                isinstance(item, RegistryFamilyRegistration) for item in self.registry_families
+            )
+        ):
             raise BootstrapError(
                 BootstrapErrorCode.INVALID_REGISTRATION, "invalid plugin registration"
             )
@@ -210,8 +238,29 @@ class BootstrapState:
     bundle: ApplicationRegistryBundle
     provenance: tuple[PluginProvenance, ...]
     context_version: str = BOOTSTRAP_CONTEXT_VERSION
+    _family_keys: Mapping[str, RegistryKey[Any]] = field(
+        default_factory=dict, repr=False, compare=False
+    )
+    _extension_registries: Mapping[str, object] = field(
+        default_factory=dict, repr=False, compare=False
+    )
 
     def registry(self, key: RegistryKey[T]) -> T:
+        if self._family_keys:
+            configured = self._family_keys.get(key.family)
+            if configured is not key or configured.protocol_version != key.protocol_version:
+                raise BootstrapError(
+                    BootstrapErrorCode.MISSING_FAMILY,
+                    f"family {key.family!r} with protocol {key.protocol_version!r} is unavailable",
+                )
+            if key.family in self._extension_registries:
+                value = self._extension_registries[key.family]
+                if not isinstance(value, key.expected_type):
+                    raise BootstrapError(
+                        BootstrapErrorCode.MISSING_FAMILY,
+                        f"extension family {key.family!r} is not {key.expected_type.__name__}",
+                    )
+                return cast(T, value)
         return _registry_from_bundle(self.bundle, key)
 
 
@@ -234,17 +283,45 @@ class RegistrationContext:
         bundle_factory: Callable[[], ApplicationRegistryBundle],
         registry_keys: Iterable[RegistryKey[Any]],
         *,
+        registry_families: Iterable[RegistryFamilyRegistration[Any]] = (),
         context_version: str = BOOTSTRAP_CONTEXT_VERSION,
     ) -> None:
         keys = tuple(registry_keys)
-        if len({key.family for key in keys}) != len(keys):
+        family_registrations = tuple(registry_families)
+        all_keys = (*keys, *(item.key for item in family_registrations))
+        if len({key.family for key in all_keys}) != len(all_keys):
             raise ValueError("registry family names must be unique")
         bundle = bundle_factory()
         for key in keys:
             _registry_from_bundle(bundle, key)
+        extension_registries: dict[str, object] = {}
+        extension_sealers: dict[str, Callable[[Any], None]] = {}
+        try:
+            for registration in family_registrations:
+                value = registration.factory()
+                extension_registries[registration.key.family] = value
+                extension_sealers[registration.key.family] = registration.seal
+                if not isinstance(value, registration.key.expected_type):
+                    raise BootstrapError(
+                        BootstrapErrorCode.INVALID_REGISTRATION,
+                        f"extension family {registration.key.family!r} factory returned "
+                        f"{type(value).__name__}, expected "
+                        f"{registration.key.expected_type.__name__}",
+                    )
+        except BaseException:
+            for family, value in extension_registries.items():
+                try:
+                    extension_sealers[family](value)
+                except BaseException:
+                    pass
+            bundle.seal()
+            raise
         self._bundle = bundle
         self.context_version = context_version
-        self._keys = MappingProxyType({key.family: key for key in keys})
+        self._keys = MappingProxyType({key.family: key for key in all_keys})
+        self._extension_registries = extension_registries
+        self._extension_sealers = extension_sealers
+        self._registries_sealed = False
         self._task: asyncio.Task[BootstrapState] | None = None
         self._owner: asyncio.Task[Any] | None = None
         self._active_plugin: str | None = None
@@ -277,6 +354,8 @@ class RegistrationContext:
                 f"plugin {self._active_plugin!r} did not declare family {key.family!r}",
                 plugin_id=self._active_plugin,
             )
+        if key.family in self._extension_registries:
+            return cast(T, self._extension_registries[key.family])
         return _registry_from_bundle(self._bundle, key)
 
 
@@ -451,10 +530,40 @@ def _keys(context: RegistrationContext) -> dict[str, tuple[str, ...]]:
     assert context._bundle is not None
     return {
         family: tuple(
-            sorted(map(str, key.registered_keys(_registry_from_bundle(context._bundle, key))))
+            sorted(
+                map(
+                    str,
+                    key.registered_keys(
+                        cast(T, context._extension_registries[family])
+                        if family in context._extension_registries
+                        else _registry_from_bundle(context._bundle, key)
+                    ),
+                )
+            )
         )
         for family, key in context.families.items()
     }
+
+
+def _seal_context_registries(context: RegistrationContext) -> None:
+    """Seal every owned registry, attempting all extension families even on failure."""
+    if context._registries_sealed:
+        return
+    failure: BaseException | None = None
+    if context._bundle is not None:
+        try:
+            context._bundle.seal()
+        except BaseException as exc:
+            failure = exc
+    for family, value in context._extension_registries.items():
+        try:
+            context._extension_sealers[family](value)
+        except BaseException as exc:
+            if failure is None:
+                failure = exc
+    context._registries_sealed = True
+    if failure is not None:
+        raise failure
 
 
 async def _execute(
@@ -528,13 +637,21 @@ async def _execute(
                 )
             )
         assert context._bundle is not None
-        context._bundle.seal()
-        return BootstrapState(context._bundle, tuple(provenance), context.context_version)
+        _seal_context_registries(context)
+        return BootstrapState(
+            context._bundle,
+            tuple(provenance),
+            context.context_version,
+            context._keys,
+            MappingProxyType(dict(context._extension_registries)),
+        )
     except BaseException:
         failed_bundle = context._bundle
-        context._bundle = None
         if failed_bundle is not None:
-            failed_bundle.seal()
+            try:
+                _seal_context_registries(context)
+            finally:
+                context._bundle = None
         raise
     finally:
         context._active_plugin = None

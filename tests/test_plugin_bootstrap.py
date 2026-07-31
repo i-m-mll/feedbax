@@ -30,10 +30,12 @@ from feedbax.plugins.bootstrap import (
     PluginDependency,
     PluginRegistration,
     RegistrationContext,
+    RegistryFamilyRegistration,
     RegistryKey,
     bootstrap_application,
     discover_plugin_registrations,
 )
+from feedbax.plugins.composition import compose_application
 from feedbax.training.row_lowering import TrainingRowLowererRegistration
 
 
@@ -81,6 +83,7 @@ def _plugin(
     *,
     dependencies: tuple[PluginDependency, ...] = (),
     family_version: str = "1",
+    registry_families: tuple[RegistryFamilyRegistration[NamesRegistry], ...] = (),
 ) -> PluginRegistration:
     return PluginRegistration(
         PluginDeclaration(
@@ -91,7 +94,210 @@ def _plugin(
             families=(FamilyRequirement(NAMES.family, family_version),),
         ),
         register,
+        registry_families,
     )
+
+
+def _provider(
+    *,
+    key: RegistryKey = NAMES,
+    factory=NamesRegistry,
+) -> RegistryFamilyRegistration:
+    return RegistryFamilyRegistration(key, factory, lambda registry: registry.seal())
+
+
+class _EntryPoint:
+    dist = None
+
+    def __init__(self, registration: PluginRegistration, loads: list[str] | None = None) -> None:
+        self.name = registration.declaration.plugin_id
+        self.value = f"{self.name}:PLUGIN_REGISTRATION"
+        self._registration = registration
+        self._loads = loads
+
+    def load(self) -> PluginRegistration:
+        if self._loads is not None:
+            self._loads.append(self.name)
+        return self._registration
+
+
+def test_composer_discovers_provider_and_consumer_once_with_exact_state_lookup() -> None:
+    loads: list[str] = []
+    provider = _plugin(
+        "pkg.provider",
+        lambda context: context.registry(NAMES).register("provider"),
+        registry_families=(_provider(),),
+    )
+    consumer = _plugin(
+        "pkg.consumer",
+        lambda context: context.registry(NAMES).register("consumer"),
+        dependencies=(PluginDependency("pkg.provider"),),
+    )
+
+    state = asyncio.run(
+        compose_application(
+            entry_points=(_EntryPoint(consumer, loads), _EntryPoint(provider, loads)),
+            local_component_source=None,
+        )
+    )
+
+    assert loads == ["pkg.consumer", "pkg.provider"]
+    assert state.registry(NAMES).values == ["provider", "consumer"]
+    assert [item.plugin_id for item in state.provenance] == ["pkg.provider", "pkg.consumer"]
+    wrong_key = RegistryKey(
+        NAMES.family,
+        NAMES.attribute,
+        NamesRegistry,
+        registered_keys=lambda registry: registry.values,
+    )
+    with pytest.raises(BootstrapError, match="is unavailable"):
+        state.registry(wrong_key)
+
+
+@pytest.mark.parametrize("mismatch", ["duplicate", "key", "protocol", "type"])
+def test_composer_rejects_conflicting_extension_family_providers_before_callbacks(
+    mismatch: str,
+) -> None:
+    calls: list[str] = []
+    first = _plugin(
+        "pkg.first_provider",
+        lambda _context: calls.append("first"),
+        registry_families=(_provider(),),
+    )
+    if mismatch == "duplicate":
+        key = NAMES
+        family_version = "1"
+        factory = NamesRegistry
+    elif mismatch == "key":
+        key = RegistryKey(NAMES.family, "other_names", NamesRegistry)
+        family_version = "1"
+        factory = NamesRegistry
+    elif mismatch == "protocol":
+        key = RegistryKey(NAMES.family, NAMES.attribute, NamesRegistry, protocol_version="2")
+        family_version = "2"
+        factory = NamesRegistry
+    else:
+        key = RegistryKey(NAMES.family, NAMES.attribute, dict)
+        family_version = "1"
+        factory = dict
+    second = _plugin(
+        "pkg.second_provider",
+        lambda _context: calls.append("second"),
+        family_version=family_version,
+        registry_families=(_provider(key=key, factory=factory),),
+    )
+
+    with pytest.raises(BootstrapError) as caught:
+        asyncio.run(
+            compose_application(
+                entry_points=(_EntryPoint(first), _EntryPoint(second)),
+                local_component_source=None,
+            )
+        )
+
+    expected_code = (
+        BootstrapErrorCode.UNSUPPORTED_PROTOCOL
+        if mismatch == "protocol"
+        else BootstrapErrorCode.INVALID_REGISTRATION
+    )
+    assert caught.value.code is expected_code
+    assert calls == []
+
+
+def test_composer_rejects_extension_factory_type_mismatch_and_seals_value() -> None:
+    retained: list[dict] = []
+    sealed: list[dict] = []
+
+    def factory() -> dict:
+        value: dict = {}
+        retained.append(value)
+        return value
+
+    provider = _plugin(
+        "pkg.wrong_factory",
+        lambda _context: None,
+        registry_families=(
+            RegistryFamilyRegistration(NAMES, factory, lambda value: sealed.append(value)),
+        ),
+    )
+
+    with pytest.raises(BootstrapError) as caught:
+        asyncio.run(
+            compose_application(
+                entry_points=(_EntryPoint(provider),),
+                local_component_source=None,
+            )
+        )
+
+    assert caught.value.code is BootstrapErrorCode.INVALID_REGISTRATION
+    assert sealed == retained
+
+
+def test_composer_extension_provider_cannot_access_undeclared_core_family() -> None:
+    provider = _plugin(
+        "pkg.undeclared_access",
+        lambda context: context.registry(COMPONENTS),
+        registry_families=(_provider(),),
+    )
+
+    with pytest.raises(BootstrapError) as caught:
+        asyncio.run(
+            compose_application(
+                entry_points=(_EntryPoint(provider),),
+                local_component_source=None,
+            )
+        )
+
+    assert caught.value.code is BootstrapErrorCode.MISSING_FAMILY
+
+
+def test_composer_extension_failure_rolls_back_seals_and_isolates_later_state() -> None:
+    retained: list[NamesRegistry] = []
+
+    def factory() -> NamesRegistry:
+        registry = NamesRegistry()
+        retained.append(registry)
+        return registry
+
+    def fail(context: RegistrationContext) -> None:
+        context.registry(NAMES).register("partial")
+        raise RuntimeError("boom")
+
+    failing = _plugin(
+        "pkg.failing_provider",
+        fail,
+        registry_families=(_provider(factory=factory),),
+    )
+    with pytest.raises(BootstrapError):
+        asyncio.run(
+            compose_application(
+                entry_points=(_EntryPoint(failing),),
+                local_component_source=None,
+            )
+        )
+    assert retained[0].sealed
+    with pytest.raises(RuntimeError, match="sealed"):
+        retained[0].register("escaped")
+
+    succeeding = _plugin(
+        "pkg.succeeding_provider",
+        lambda context: context.registry(NAMES).register("fresh"),
+        registry_families=(_provider(),),
+    )
+    first = asyncio.run(
+        compose_application(
+            entry_points=(_EntryPoint(succeeding),),
+            local_component_source=None,
+        )
+    )
+    second = asyncio.run(
+        compose_application(
+            entry_points=(_EntryPoint(succeeding),),
+            local_component_source=None,
+        )
+    )
+    assert first.registry(NAMES) is not second.registry(NAMES)
+    assert first.registry(NAMES).values == second.registry(NAMES).values == ["fresh"]
 
 
 def test_bootstrap_sorts_dependencies_and_records_provenance() -> None:

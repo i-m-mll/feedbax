@@ -550,6 +550,7 @@ def test_figure_composition_case_uses_public_installed_contract(fixture_package)
 
 def test_unified_bootstrap_case_uses_typed_plugin_registrations(
     fixture_package,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cases = importlib.import_module(f"{fixture_package.__name__}.cases")
     plugin = importlib.import_module(f"{fixture_package.__name__}.plugin")
@@ -582,8 +583,15 @@ def test_unified_bootstrap_case_uses_typed_plugin_registrations(
         ),
     )
 
-    assert cases.check_unified_plugin_bootstrap(entry_points=points)
-    assert cases.check_dynamic_component_ports(entry_points=points)
+    bootstrap_module = importlib.import_module("feedbax.plugins.bootstrap")
+    monkeypatch.setattr(
+        bootstrap_module.importlib.metadata,
+        "entry_points",
+        lambda **_kwargs: points,
+    )
+
+    assert cases.check_unified_plugin_bootstrap()
+    assert cases.check_dynamic_component_ports()
 
 
 def test_fixture_declares_only_the_unified_plugin_entry_point_group() -> None:

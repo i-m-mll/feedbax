@@ -25,6 +25,7 @@ from feedbax.plugins import (
     PluginDependency,
     PluginRegistration,
     RegistrationContext,
+    RegistryFamilyRegistration,
     ROW_LOWERERS,
     TRAINING_METHODS,
     EvaluationBatchFragment,
@@ -65,7 +66,7 @@ from feedbax.orchestration.drivers import (
     TeardownSemantics,
 )
 
-from .family import EXTERNAL_DYNAMIC_COMPONENT, FIXTURE_RECORDS
+from .family import EXTERNAL_DYNAMIC_COMPONENT, FIXTURE_RECORDS, FixtureRecordRegistry
 
 
 _FOUNDATION_PLUGIN_ID = "feedbax_external_conformance.foundation"
@@ -431,6 +432,13 @@ FOUNDATION_PLUGIN_REGISTRATION = PluginRegistration(
         ),
     ),
     register=_register_foundation,
+    registry_families=(
+        RegistryFamilyRegistration(
+            key=FIXTURE_RECORDS,
+            factory=FixtureRecordRegistry,
+            seal=lambda registry: registry.seal(),
+        ),
+    ),
 )
 
 DEPENDENT_PLUGIN_REGISTRATION = PluginRegistration(
