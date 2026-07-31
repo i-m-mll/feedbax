@@ -13,6 +13,8 @@ from feedbax.plugins import (
 )
 from feedbax.plugins.application import new_application_registry_bundle
 
+EXTERNAL_DYNAMIC_COMPONENT = "feedbax_external_conformance.VariableFanIn"
+
 
 class FixtureRecordRegistry:
     """Small external family with the same mutation/sealing shape as Feedbax registries."""
@@ -74,6 +76,7 @@ def new_fixture_registration_context(
 
 __all__ = [
     "FIXTURE_RECORDS",
+    "EXTERNAL_DYNAMIC_COMPONENT",
     "FixtureApplicationRegistryBundle",
     "FixtureRecordRegistry",
     "new_fixture_registration_context",

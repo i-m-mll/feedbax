@@ -1111,7 +1111,10 @@ def validate_graph_spec(
         migrated = migrate_graph_spec(payload)
         migration_records = migrated.migration_records
         parsed = GraphSpec.model_validate(migrated.payload)
-        spec = normalize_graph_for_studio_authoring(materialize_additive_channel_adapters(parsed))
+        spec = normalize_graph_for_studio_authoring(
+            materialize_additive_channel_adapters(parsed),
+            component_registry=component_registry,
+        )
     except UnsupportedSpecVersion as exc:
         return ProviderValidationResult(
             valid=False,

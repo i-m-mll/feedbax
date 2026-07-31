@@ -66,17 +66,26 @@ class GraphService:
         self._storage_dir = storage_dir
         ensure_dirs()
 
-    def list_graphs(self) -> List[dict]:
+    def list_graphs(self, *, component_registry: object | None = None) -> List[dict]:
         ensure_dirs()
         results: List[dict] = []
         for path in self._storage_dir.glob("*.json"):
-            project = self._load_project(path)
+            project = self._load_project(path, component_registry=component_registry)
             results.append({"id": path.stem, "metadata": project.metadata})
         return results
 
-    def create_graph(self, graph: GraphSpec, ui_state: Optional[GraphUIState]) -> GraphRecord:
+    def create_graph(
+        self,
+        graph: GraphSpec,
+        ui_state: Optional[GraphUIState],
+        *,
+        component_registry: object | None = None,
+    ) -> GraphRecord:
         ensure_dirs()
-        graph = normalize_graph_for_studio_authoring(graph)
+        graph = normalize_graph_for_studio_authoring(
+            graph,
+            component_registry=component_registry,
+        )
         graph_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         metadata = graph.metadata or GraphMetadata(
@@ -102,8 +111,16 @@ class GraphService:
         self._save_project(self._path_for(graph_id), project)
         return GraphRecord(graph_id=graph_id, project=project)
 
-    def get_graph(self, graph_id: str) -> GraphRecord:
-        project = self._load_project(self._path_for(graph_id))
+    def get_graph(
+        self,
+        graph_id: str,
+        *,
+        component_registry: object | None = None,
+    ) -> GraphRecord:
+        project = self._load_project(
+            self._path_for(graph_id),
+            component_registry=component_registry,
+        )
         return GraphRecord(graph_id=graph_id, project=project)
 
     def update_graph(
@@ -116,8 +133,9 @@ class GraphService:
         workspace: Optional[StudioWorkspaceSpec] = None,
         expected_save_revision: Optional[int] = None,
         require_save_revision: bool = False,
+        component_registry: object | None = None,
     ) -> GraphRecord:
-        record = self.get_graph(graph_id)
+        record = self.get_graph(graph_id, component_registry=component_registry)
         project = record.project
         current_revision = project.metadata.save_revision
         if require_save_revision and expected_save_revision is None:
@@ -133,7 +151,10 @@ class GraphService:
                 expected_revision=expected_save_revision,
             )
         if graph is not None:
-            project.graph = normalize_graph_for_studio_authoring(graph)
+            project.graph = normalize_graph_for_studio_authoring(
+                graph,
+                component_registry=component_registry,
+            )
         if ui_state is not None:
             project.ui_state = ui_state
         if analysis_pages is not None:
@@ -141,7 +162,10 @@ class GraphService:
         if active_analysis_page_id is not None:
             project.active_analysis_page_id = active_analysis_page_id
         if workspace is not None:
-            project.workspace = normalize_workspace_for_studio_authoring(workspace)
+            project.workspace = normalize_workspace_for_studio_authoring(
+                workspace,
+                component_registry=component_registry,
+            )
         updated_at = datetime.now(timezone.utc).isoformat()
         next_revision = current_revision + 1
         project.metadata.updated_at = updated_at
@@ -149,7 +173,7 @@ class GraphService:
         if project.graph.metadata is not None:
             project.graph.metadata.updated_at = updated_at
             project.graph.metadata.save_revision = next_revision
-        self._ensure_workspace(project)
+        self._ensure_workspace(project, component_registry=component_registry)
         self._save_project(self._path_for(graph_id), project)
         return GraphRecord(graph_id=graph_id, project=project)
 
@@ -282,12 +306,20 @@ class GraphService:
     def _path_for(self, graph_id: str) -> Path:
         return self._storage_dir / f"{graph_id}.json"
 
-    def _load_project(self, path: Path) -> GraphProject:
+    def _load_project(
+        self,
+        path: Path,
+        *,
+        component_registry: object | None = None,
+    ) -> GraphProject:
         with open(path, "r", encoding="utf-8") as file:
             data = json.load(file)
         data = migrate_graph_project_payload(data)
-        project = normalize_project_for_studio_authoring(GraphProject.model_validate(data))
-        self._ensure_workspace(project)
+        project = normalize_project_for_studio_authoring(
+            GraphProject.model_validate(data),
+            component_registry=component_registry,
+        )
+        self._ensure_workspace(project, component_registry=component_registry)
         return project
 
     def _save_project(self, path: Path, project: GraphProject) -> None:
@@ -295,9 +327,20 @@ class GraphService:
         with open(path, "w", encoding="utf-8") as file:
             json.dump(project.model_dump(), file, indent=2)
 
-    def _ensure_workspace(self, project: GraphProject) -> None:
-        project.graph = normalize_graph_for_studio_authoring(project.graph)
-        project.workspace = normalize_workspace_for_studio_authoring(project.workspace)
+    def _ensure_workspace(
+        self,
+        project: GraphProject,
+        *,
+        component_registry: object | None = None,
+    ) -> None:
+        project.graph = normalize_graph_for_studio_authoring(
+            project.graph,
+            component_registry=component_registry,
+        )
+        project.workspace = normalize_workspace_for_studio_authoring(
+            project.workspace,
+            component_registry=component_registry,
+        )
         if project.workspace is not None:
             return
         project.workspace = build_default_studio_workspace(

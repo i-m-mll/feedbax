@@ -13,8 +13,10 @@ from feedbax.contracts.component import (
     ComponentIdentity,
     ComponentMigrationInfo,
     DynamicPortPolicy,
+    DynamicPortLayout,
     PortType,
     PortTypeSpec,
+    derive_dynamic_port_layout,
 )
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
@@ -358,6 +360,20 @@ class ComponentRegistry:
     def get(self, name: str) -> Optional[ComponentMeta]:
         meta = self._components.get(name)
         return deepcopy(meta) if meta is not None else None
+
+    def dynamic_port_layout(
+        self,
+        name: str,
+        params: Mapping[str, Any],
+    ) -> DynamicPortLayout | None:
+        """Derive a component's dynamic ports from an isolated parameter snapshot."""
+
+        meta = self._components.get(name)
+        if meta is None or meta.dynamic_port_policy is None:
+            return None
+        effective_params = deepcopy(meta.default_params)
+        effective_params.update(deepcopy(dict(params)))
+        return derive_dynamic_port_layout(meta.dynamic_port_policy, effective_params)
 
     def names(self) -> List[str]:
         return sorted(self._components)

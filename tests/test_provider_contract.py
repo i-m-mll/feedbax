@@ -1752,6 +1752,97 @@ def test_studio_schema_enumeration_reports_dynamic_demux_output_mismatch(
     assert not any(port.id == "port:split.out_2:output" for port in registry.ports)
 
 
+def test_studio_schema_materializes_external_dynamic_policy_without_type_branching(
+    application_registry_bundle,
+) -> None:
+    components = application_registry_bundle.components
+    components.register_component_type(
+        "example.DynamicOutputs",
+        lambda params: params,
+        param_schema=[{"name": "items", "type": "array", "default": [1]}],
+        input_ports=["input"],
+        output_ports=["result_0"],
+        dynamic_port_policy={
+            "count_param": "items",
+            "count_mode": "sequence_length",
+            "direction": "output",
+            "fixed_input_ports": ["input"],
+            "generated_name_template": "result_{index}",
+            "dynamic_port_type": {"dtype": "vector"},
+        },
+    )
+    graph = GraphSpec(
+        nodes={
+            "external": ComponentSpec(
+                type="example.DynamicOutputs",
+                params={"items": [2, 1, 3]},
+            )
+        },
+        input_ports=["input"],
+        output_ports=["tail"],
+        input_bindings={"input": ("external", "input")},
+        output_bindings={"tail": ("external", "result_2")},
+    )
+    workspace = build_default_studio_workspace(label="External dynamic", graph=graph)
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+
+    schema = enumerate_studio_schema_registry(
+        workspace,
+        train_stage.scenario_id,
+        component_registry=components,
+    )
+
+    assert not any(issue.severity == "error" for issue in schema.issues)
+    dynamic_outputs = [
+        port
+        for port in schema.ports
+        if port.node_id == "external" and port.direction == "output"
+    ]
+    assert [port.port for port in dynamic_outputs] == ["result_0", "result_1", "result_2"]
+    assert [port.value_schema.dtype for port in dynamic_outputs] == ["vector"] * 3
+
+
+def test_studio_schema_reports_invalid_dynamic_policy_parameter_as_typed_issue(
+    application_registry_bundle,
+) -> None:
+    graph = GraphSpec(
+        nodes={
+            "mux": ComponentSpec(type="Mux", params={"n_inputs": True}),
+        }
+    )
+    workspace = build_default_studio_workspace(label="Invalid dynamic", graph=graph)
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+
+    schema = enumerate_studio_schema_registry(
+        workspace,
+        train_stage.scenario_id,
+        component_registry=application_registry_bundle.components,
+    )
+
+    issue = next(issue for issue in schema.issues if issue.type == "dynamic_port_policy_invalid")
+    assert "must be an integer" in issue.message
+
+
+def test_provider_validation_materializes_omitted_dynamic_ports(
+    application_registry_bundle,
+) -> None:
+    graph = GraphSpec(
+        nodes={"mux": ComponentSpec(type="Mux", params={"n_inputs": 2})},
+        input_ports=["left", "right"],
+        output_ports=["output"],
+        input_bindings={"left": ("mux", "in_0"), "right": ("mux", "in_1")},
+        output_bindings={"output": ("mux", "output")},
+    )
+
+    result = validate_graph_spec(
+        graph,
+        component_registry=application_registry_bundle.components,
+    )
+
+    assert result.valid
+    assert not result.errors
+
+
 def test_studio_schema_task_data_trajectory_bindings_use_sample_view(
     application_registry_bundle,
 ) -> None:

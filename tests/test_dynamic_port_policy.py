@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 import feedbax.contracts as contracts
-from feedbax.component_registry import ComponentRegistry, register_component_type
+from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.component import (
     COMPONENT_DEFINITION_DYNAMIC_PORT_POLICY_MIGRATION_ID,
     COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID,
@@ -27,7 +27,7 @@ from feedbax.contracts.migrations import default_spec_registry
 
 
 def test_builtin_mux_and_demux_policies_preserve_dynamic_port_layouts() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     mux = registry.get("Mux")
     demux = registry.get("Demux")
 
@@ -101,7 +101,7 @@ def test_dynamic_port_layout_validation_fails_closed() -> None:
 
 
 def test_registry_exports_external_dynamic_port_policy_in_v3_definition() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     registry.register_component_type(
         "example.VariableFanIn",
         lambda params: params,
@@ -328,9 +328,8 @@ def test_public_contract_exports_dynamic_port_policy_helpers() -> None:
     assert contracts.DynamicPortLayout.__name__ == "DynamicPortLayout"
 
 
-def test_process_global_registration_facade_does_not_expose_policy_plumbing() -> None:
+def test_policy_plumbing_is_instance_scoped() -> None:
     assert (
         "dynamic_port_policy"
         in inspect.signature(ComponentRegistry.register_component_type).parameters
     )
-    assert "dynamic_port_policy" not in inspect.signature(register_component_type).parameters
