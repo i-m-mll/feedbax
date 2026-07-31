@@ -30,6 +30,8 @@ from feedbax.orchestration.drivers.capabilities import (
     TeardownSemantics,
 )
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
+from feedbax.orchestration.drivers.runpod import RunPodDriverConfig
+from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.web.services.worker_driver import WorkerHttpDriver
 
 
@@ -290,6 +292,52 @@ def test_worker_http_has_one_truthful_external_service_variant() -> None:
     assert realized.facts.acquisition is AcquisitionSemantics.EXTERNALLY_PROVIDED
     assert realized.facts.teardown is TeardownSemantics.EXTERNAL_RESOURCES_PRESERVED
     assert realized.facts.optional_hooks == frozenset()
+
+
+def test_builtin_registry_realizes_runpod_ownership_from_construction_context() -> None:
+    registry = new_application_registry_bundle(local_component_source=None).drivers
+
+    external = registry.construct(
+        "runpod",
+        DriverConstructionContext(
+            configuration={
+                "driver_config": RunPodDriverConfig(
+                    pod_id="supplied-pod",
+                    ssh_host="127.0.0.1",
+                    ssh_port=2222,
+                )
+            }
+        ),
+    )
+    acquired = registry.construct(
+        "runpod",
+        DriverConstructionContext(configuration={"driver_config": RunPodDriverConfig()}),
+    )
+
+    assert external.realized_capabilities.variant_id == "externally-managed"
+    assert external.realized_capabilities.facts.resources is ResourceSemantics.EXTERNALLY_MANAGED
+    assert (
+        external.realized_capabilities.facts.teardown
+        is TeardownSemantics.EXTERNAL_RESOURCES_PRESERVED
+    )
+    assert external.realized_capabilities.facts.spend is SpendSemantics.EXTERNALLY_MANAGED
+    assert acquired.realized_capabilities.variant_id == "engine-acquired"
+    assert acquired.realized_capabilities.facts.resources is ResourceSemantics.DRIVER_OWNED
+    assert acquired.realized_capabilities.facts.spend is SpendSemantics.DRIVER_OBSERVED
+    assert acquired.realized_capabilities.facts.recovery is RecoverySemantics.DURABLE_REMOTE
+    assert acquired.realized_capabilities.facts.supports(DriverHook.ENGINE_ACQUISITION)
+    assert acquired.realized_capabilities.facts.supports(DriverHook.GLOBAL_RESOURCE_INVENTORY)
+
+
+def test_application_driver_registry_is_fresh_and_sealed_with_builtins() -> None:
+    first = new_application_registry_bundle(local_component_source=None)
+    second = new_application_registry_bundle(local_component_source=None)
+
+    assert first.drivers is not second.drivers
+    assert first.drivers.registered_names() == ("local", "runpod", "worker-http")
+    first.seal()
+    with pytest.raises(RuntimeError, match="registry is sealed"):
+        first.drivers.register(second.drivers.resolve("local"))
 
 
 @dataclass

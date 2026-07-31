@@ -38,7 +38,9 @@ from feedbax.orchestration.drivers.capabilities import (
     CustodySemantics,
     DriverCapabilityEnvelope,
     DriverCapabilityFacts,
+    DriverConstructionContext,
     DriverHook,
+    DriverRegistration,
     DriverVenue,
     EnvironmentSemantics,
     MonitoringSemantics,
@@ -163,7 +165,6 @@ class LocalOrchestrationDriver:
                 observed=observed or "no-resolved-inputs",
             )
         ]
-
     def provision(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         run_set_dir = bundle.run_set_dir
         for dirname in ("events", "sentinels", "rows", "collected"):
@@ -1115,3 +1116,46 @@ def _pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def local_driver_registration() -> DriverRegistration:
+    """Return the built-in context-aware local driver registration."""
+
+    def resolve(context: DriverConstructionContext):
+        del context
+        return LocalOrchestrationDriver.realized_capabilities
+
+    def factory(context: DriverConstructionContext, realized):
+        runtime = context.runtime_bindings
+        driver = LocalOrchestrationDriver(
+            cwd=runtime.get("cwd"),
+            python_executable=_optional_runtime_string(runtime, "python_executable"),
+            freeze_lines=runtime.get("freeze_lines"),
+            input_provider_bindings=runtime.get("input_provider_bindings", ()),
+            staged_root_bindings=runtime.get("staged_root_bindings", ()),
+            update_budget=_optional_runtime_int(runtime, "native_update_budget"),
+        )
+        if driver.realized_capabilities != realized:
+            raise ValueError("local driver factory received inconsistent realized capabilities")
+        return driver
+
+    return DriverRegistration(
+        name="local",
+        supported_capabilities=LocalOrchestrationDriver.capability_envelope,
+        resolve_capabilities=resolve,
+        factory=factory,
+    )
+
+
+def _optional_runtime_string(runtime: Mapping[str, object], key: str) -> str | None:
+    value = runtime.get(key)
+    if value is not None and not isinstance(value, str):
+        raise TypeError(f"local driver runtime binding {key!r} must be a string")
+    return value
+
+
+def _optional_runtime_int(runtime: Mapping[str, object], key: str) -> int | None:
+    value = runtime.get(key)
+    if value is not None and not isinstance(value, int):
+        raise TypeError(f"local driver runtime binding {key!r} must be an integer")
+    return value

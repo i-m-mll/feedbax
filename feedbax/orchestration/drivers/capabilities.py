@@ -58,6 +58,8 @@ class DriverHook(StrEnum):
     TEARDOWN_OWNERSHIP = "teardown_ownership"
     BATCH_PROBE = "batch_probe"
     CHECKPOINT_STOP = "checkpoint_stop"
+    GLOBAL_RESOURCE_INVENTORY = "global_resource_inventory"
+    DRY_RUN_LAUNCH = "dry_run_launch"
 
 
 class DriverVenue(StrEnum):
@@ -433,17 +435,24 @@ class DriverRegistry:
     """Injected registry for context-aware capability realization and construction."""
 
     def __init__(self, registrations: tuple[DriverRegistration, ...] = ()) -> None:
+        self._sealed = False
         self._registrations: dict[str, DriverRegistration] = {}
         for registration in registrations:
             self.register(registration)
 
     def register(self, registration: DriverRegistration) -> None:
         """Register one exact driver identity, rejecting duplicates."""
+        if self._sealed:
+            raise RuntimeError("orchestration driver registry is sealed")
         if not isinstance(registration, DriverRegistration):
             raise TypeError("driver registration must be a DriverRegistration")
         if registration.name in self._registrations:
             raise ValueError(f"orchestration driver already registered: {registration.name!r}")
         self._registrations[registration.name] = registration
+
+    def seal(self) -> None:
+        """Prevent registration after application bootstrap publication."""
+        self._sealed = True
 
     def registered_names(self) -> tuple[str, ...]:
         """Return registered driver names in deterministic order."""
