@@ -119,15 +119,17 @@ def _enumerated_knot_traces(prefix: str = "knot") -> list[TraceBinding]:
     ]
 
 
-def _rendered(spec: FigureSpec, root: Path) -> tuple[Any, list[tuple[str, str | None, str]]]:
-    manifest, _path = execute_figure_spec(spec, root=root)
-    records = [
-        (record.name, record.panel, record.status) for record in manifest.binding_records
-    ]
+def _rendered(
+    spec: FigureSpec, root: Path, *, figure_registry
+) -> tuple[Any, list[tuple[str, str | None, str]]]:
+    manifest, _path = execute_figure_spec(spec, root=root, registry=figure_registry)
+    records = [(record.name, record.panel, record.status) for record in manifest.binding_records]
     return figure_manifest_plotly_json(manifest), records
 
 
-def test_family_expansion_equals_hand_enumerated_spec(tmp_path: Path) -> None:
+def test_family_expansion_equals_hand_enumerated_spec(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     analysis = _analysis_input(tmp_path)
     panels = [{"name": "main", "title": "Knots"}]
     family_spec = FigureSpec(
@@ -145,8 +147,12 @@ def test_family_expansion_equals_hand_enumerated_spec(tmp_path: Path) -> None:
         traces=_enumerated_knot_traces(),
     )
 
-    family_render, family_records = _rendered(family_spec, tmp_path)
-    enumerated_render, enumerated_records = _rendered(enumerated_spec, tmp_path)
+    family_render, family_records = _rendered(
+        family_spec, tmp_path, figure_registry=application_registry_bundle.figures
+    )
+    enumerated_render, enumerated_records = _rendered(
+        enumerated_spec, tmp_path, figure_registry=application_registry_bundle.figures
+    )
 
     assert family_render is not None
     assert canonical_json_bytes(family_render) == canonical_json_bytes(enumerated_render)
@@ -178,7 +184,9 @@ def test_family_expansion_reports_deterministic_index_color_pairs() -> None:
     assert expansion.family.name == "knots"
 
 
-def test_family_expansion_orders_declared_traces_before_families(tmp_path: Path) -> None:
+def test_family_expansion_orders_declared_traces_before_families(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     analysis = _analysis_input(tmp_path)
     spec = FigureSpec(
         name="mixed-order",
@@ -196,7 +204,9 @@ def test_family_expansion_orders_declared_traces_before_families(tmp_path: Path)
         trace_families=[_knot_family()],
     )
 
-    _render, records = _rendered(spec, tmp_path)
+    _render, records = _rendered(
+        spec, tmp_path, figure_registry=application_registry_bundle.figures
+    )
 
     assert [name for name, _panel, _status in records] == [
         "baseline",
@@ -206,7 +216,9 @@ def test_family_expansion_orders_declared_traces_before_families(tmp_path: Path)
     ]
 
 
-def test_family_index_values_form_supports_named_indices(tmp_path: Path) -> None:
+def test_family_index_values_form_supports_named_indices(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     manifest = AnalysisRunManifest(
         id="feedbax-analysis-run:named-indices",
         status="completed",
@@ -240,7 +252,9 @@ def test_family_index_values_form_supports_named_indices(tmp_path: Path) -> None
         ],
     )
 
-    _render, records = _rendered(spec, tmp_path)
+    _render, records = _rendered(
+        spec, tmp_path, figure_registry=application_registry_bundle.figures
+    )
 
     assert [name for name, _panel, _status in records] == ["slow", "fast"]
 
@@ -264,7 +278,9 @@ def test_per_trace_specs_keep_their_figure_manifest_identity() -> None:
     assert figure_manifest_id(spec) == "feedbax-figure:01720643a02b69c259ff863ce129fde3"
 
 
-def test_family_required_indexed_path_fails_closed(tmp_path: Path) -> None:
+def test_family_required_indexed_path_fails_closed(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     analysis = _analysis_input(tmp_path)
     spec = FigureSpec(
         name="unresolvable-index",
@@ -276,7 +292,7 @@ def test_family_required_indexed_path_fails_closed(tmp_path: Path) -> None:
     )
 
     with pytest.raises(FigureSpecExecutionError) as exc_info:
-        execute_figure_spec(spec, root=tmp_path)
+        execute_figure_spec(spec, root=tmp_path, registry=application_registry_bundle.figures)
 
     assert exc_info.value.manifest.status == "failed"
     assert exc_info.value.manifest.failure["type"] == "ExpressionPathMissing"
@@ -415,8 +431,9 @@ def test_declared_values_position_member_colors_by_value() -> None:
     assert [member.color for member in expansion.members] == SWEEP_COLORS
     # The pinned colors are exactly the scale sampled at each value's fraction
     # of the swept range, which is what a hand-authored sweep computes.
-    positions = [(value - SWEEP_VALUES[0]) / (SWEEP_VALUES[-1] - SWEEP_VALUES[0])
-                 for value in SWEEP_VALUES]
+    positions = [
+        (value - SWEEP_VALUES[0]) / (SWEEP_VALUES[-1] - SWEEP_VALUES[0]) for value in SWEEP_VALUES
+    ]
     assert SWEEP_COLORS == list(sample_colorscale_at(COLORSCALE, positions, colortype="rgb"))
 
 
@@ -437,9 +454,7 @@ def test_uniformly_spaced_values_reproduce_index_spaced_colors() -> None:
     plain = _family_expansion(_knot_family())
     valued = _family_expansion(_knot_family(values=[0.0, 0.5, 1.0]))
 
-    assert [member.color for member in valued.members] == [
-        member.color for member in plain.members
-    ]
+    assert [member.color for member in valued.members] == [member.color for member in plain.members]
 
 
 def test_positioned_sampling_matches_the_unique_sampler_on_cyclical_scales() -> None:
@@ -479,7 +494,9 @@ def test_value_token_without_a_format_spec_renders_the_bare_value() -> None:
     assert expansion.members[0].binding.name == "0: 0.2"
 
 
-def test_legend_index_gives_exactly_one_member_the_legend_entry(tmp_path: Path) -> None:
+def test_legend_index_gives_exactly_one_member_the_legend_entry(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     spec = FigureSpec(
         name="legend-representative",
         assembler="feedbax.grid_figure",
@@ -489,7 +506,9 @@ def test_legend_index_gives_exactly_one_member_the_legend_entry(tmp_path: Path) 
     )
 
     (expansion,) = expand_trace_families(spec)
-    rendered, _records = _rendered(spec, tmp_path)
+    rendered, _records = _rendered(
+        spec, tmp_path, figure_registry=application_registry_bundle.figures
+    )
 
     assert [member.binding.params["showlegend"] for member in expansion.members] == [
         False,
@@ -501,9 +520,9 @@ def test_legend_index_gives_exactly_one_member_the_legend_entry(tmp_path: Path) 
         sample_colorscale_unique(COLORSCALE, KNOT_COUNT, colortype="rgb")
     )
     assert rendered is not None
-    assert [
-        trace["name"] for trace in rendered["data"] if trace.get("showlegend") is True
-    ] == ["knot 1"]
+    assert [trace["name"] for trace in rendered["data"] if trace.get("showlegend") is True] == [
+        "knot 1"
+    ]
 
 
 def _trajectory_family(**overrides: Any) -> TraceFamily:
@@ -526,7 +545,9 @@ def _trajectory_family(**overrides: Any) -> TraceFamily:
     return TraceFamily(**{**declaration, **overrides})
 
 
-def test_trajectory_family_showlegend_false_suppresses_all_entries(tmp_path: Path) -> None:
+def test_trajectory_family_showlegend_false_suppresses_all_entries(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     family = _trajectory_family(
         trace=TraceBinding(
             name="arm {index}",
@@ -548,13 +569,17 @@ def test_trajectory_family_showlegend_false_suppresses_all_entries(tmp_path: Pat
         trace_families=[family],
     )
 
-    rendered, _records = _rendered(spec, tmp_path)
+    rendered, _records = _rendered(
+        spec, tmp_path, figure_registry=application_registry_bundle.figures
+    )
 
     assert rendered is not None
     assert not any(trace.get("showlegend") is True for trace in rendered["data"])
 
 
-def test_trajectory_family_legend_index_selects_only_one_member(tmp_path: Path) -> None:
+def test_trajectory_family_legend_index_selects_only_one_member(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     spec = FigureSpec(
         name="trajectory-family-legend-representative",
         assembler="feedbax.grid_figure",
@@ -563,7 +588,9 @@ def test_trajectory_family_legend_index_selects_only_one_member(tmp_path: Path) 
     )
 
     (expansion,) = expand_trace_families(spec)
-    rendered, _records = _rendered(spec, tmp_path)
+    rendered, _records = _rendered(
+        spec, tmp_path, figure_registry=application_registry_bundle.figures
+    )
 
     assert [member.binding.params["showlegend"] for member in expansion.members] == [
         False,
@@ -571,9 +598,10 @@ def test_trajectory_family_legend_index_selects_only_one_member(tmp_path: Path) 
         False,
     ]
     assert rendered is not None
-    assert [
-        trace["name"] for trace in rendered["data"] if trace.get("showlegend") is True
-    ] == ["arm 1", "arm 1 mean"]
+    assert [trace["name"] for trace in rendered["data"] if trace.get("showlegend") is True] == [
+        "arm 1",
+        "arm 1 mean",
+    ]
 
 
 def test_legend_index_accepts_a_named_index() -> None:
@@ -600,7 +628,9 @@ def _interleaved_spec(analysis: ParentRef, group: str | None) -> FigureSpec:
     )
 
 
-def test_interleave_group_expands_families_position_by_position(tmp_path: Path) -> None:
+def test_interleave_group_expands_families_position_by_position(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     analysis = _analysis_input(tmp_path)
     knot_traces = _enumerated_knot_traces("knot")
     mark_traces = _enumerated_knot_traces("mark")
@@ -609,15 +639,17 @@ def test_interleave_group_expands_families_position_by_position(tmp_path: Path) 
         assembler="feedbax.grid_figure",
         inputs=[analysis],
         panels=[{"name": "main"}],
-        traces=[
-            trace for pair in zip(knot_traces, mark_traces, strict=True) for trace in pair
-        ],
+        traces=[trace for pair in zip(knot_traces, mark_traces, strict=True) for trace in pair],
     )
 
     interleaved_render, interleaved_records = _rendered(
-        _interleaved_spec(analysis, "position"), tmp_path
+        _interleaved_spec(analysis, "position"),
+        tmp_path,
+        figure_registry=application_registry_bundle.figures,
     )
-    enumerated_render, enumerated_records = _rendered(enumerated_spec, tmp_path)
+    enumerated_render, enumerated_records = _rendered(
+        enumerated_spec, tmp_path, figure_registry=application_registry_bundle.figures
+    )
 
     assert interleaved_records == enumerated_records
     assert [name for name, _panel, _status in interleaved_records] == [
@@ -632,10 +664,16 @@ def test_interleave_group_expands_families_position_by_position(tmp_path: Path) 
     assert canonical_json_bytes(interleaved_render) == canonical_json_bytes(enumerated_render)
 
 
-def test_families_without_an_interleave_group_stay_blocked(tmp_path: Path) -> None:
+def test_families_without_an_interleave_group_stay_blocked(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     analysis = _analysis_input(tmp_path)
 
-    _render, records = _rendered(_interleaved_spec(analysis, None), tmp_path)
+    _render, records = _rendered(
+        _interleaved_spec(analysis, None),
+        tmp_path,
+        figure_registry=application_registry_bundle.figures,
+    )
 
     assert [name for name, _panel, _status in records] == [
         "knot 0",
@@ -741,9 +779,7 @@ def test_unusable_value_format_spec_fails_closed() -> None:
         ),
     ],
 )
-def test_malformed_interleave_groups_fail_closed(
-    families: list[TraceFamily], match: str
-) -> None:
+def test_malformed_interleave_groups_fail_closed(families: list[TraceFamily], match: str) -> None:
     with pytest.raises(ValidationError, match=match):
         FigureSpec(
             name="bad-interleave",

@@ -3,7 +3,7 @@ import os
 import tempfile
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
@@ -57,9 +57,7 @@ async def get_worker_status() -> WorkerStatusEnvelope:
     connected = False
     if url is not None:
         connected = await training_service.worker_connected()
-    return WorkerStatusEnvelope(
-        data=WorkerStatusResponse(mode=mode, url=url, connected=connected)
-    )
+    return WorkerStatusEnvelope(data=WorkerStatusResponse(mode=mode, url=url, connected=connected))
 
 
 class TrainingRequest(BaseModel):
@@ -74,7 +72,7 @@ class TrainingRequest(BaseModel):
 
 
 @router.post("", response_model=TrainingStartResponse)
-async def start_training(payload: TrainingRequest) -> TrainingStartResponse:
+async def start_training(payload: TrainingRequest, request: Request) -> TrainingStartResponse:
     training_config = (
         payload.training_config.model_dump() if payload.training_config is not None else None
     )
@@ -85,6 +83,8 @@ async def start_training(payload: TrainingRequest) -> TrainingStartResponse:
         task_spec=payload.task_spec.model_dump(),
         task_binding_spec=payload.task_binding_spec,
         graph_spec=payload.graph_spec,
+        conformance_registry=request.app.state.bootstrap_state.bundle.conformance_checks,
+        plugin_provenance=request.app.state.bootstrap_state.provenance,
     )
     return TrainingStartResponse(data={"job_id": job_id})
 

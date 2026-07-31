@@ -220,6 +220,7 @@ def enumerate_studio_schema_registry(
     *,
     runtime_introspection: RuntimeIntrospectionOptions | bool | dict[str, Any] | None = None,
     runtime_introspector: Optional[RuntimeSchemaIntrospector] = None,
+    component_registry: Any,
 ) -> StudioSchemaRegistry:
     """Enumerate Studio schemas, optionally enriched by an explicit runtime hook.
 
@@ -322,15 +323,20 @@ def enumerate_studio_schema_registry(
             schema_graph,
             task_binding_spec,
         )
-        registry.ports = _enumerate_graph_ports(schema_graph, task_binding_spec)
+        registry.ports = _enumerate_graph_ports(
+            schema_graph, task_binding_spec, component_registry=component_registry
+        )
         registry.selector_targets.extend(_port_selector_targets(registry.ports))
-        registry.selector_targets.extend(_graph_structural_selector_targets(schema_graph))
+        registry.selector_targets.extend(
+            _graph_structural_selector_targets(schema_graph, component_registry=component_registry)
+        )
         registry.selector_targets.extend(_graph_probe_selector_targets(schema_graph))
         registry.issues.extend(
             validate_graph_connection_schema(
                 schema_graph,
                 f"/scenarios/{scenario.id}/graph",
                 task_binding_spec,
+                component_registry=component_registry,
             )
         )
 
@@ -351,6 +357,7 @@ def enumerate_studio_schema_registry(
                 task_binding_spec,
                 schema_graph,
                 f"/scenarios/{scenario.id}/task_binding_spec",
+                component_registry=component_registry,
             )
         )
         _mark_bound_ports(registry.ports, task_binding_spec)
@@ -381,10 +388,12 @@ def validate_graph_connection_schema(
     graph: GraphSpec,
     base_path: str = "",
     task_binding_spec: Optional[StudioTaskBindingSpec] = None,
+    *,
+    component_registry: Any,
 ) -> list[SchemaValidationIssue]:
     """Validate graph wires against provider-owned port schema records."""
 
-    ports = _enumerate_graph_ports(graph)
+    ports = _enumerate_graph_ports(graph, component_registry=component_registry)
     by_node_port_direction = {
         (port.node_id, port.port, port.direction): port
         for port in ports
@@ -395,7 +404,9 @@ def validate_graph_connection_schema(
     for binding in graph.input_bindings.values():
         occupied[(binding[0], binding[1])] = -1
 
-    issues: list[SchemaValidationIssue] = _missing_subgraph_issues(graph, base_path)
+    issues: list[SchemaValidationIssue] = _missing_subgraph_issues(
+        graph, base_path, component_registry=component_registry
+    )
     issues.extend(_dynamic_port_arity_issues(graph, task_binding_spec, base_path))
     for index, wire in enumerate(graph.wires):
         wire_path = f"{base_path}/wires/{index}"
@@ -511,10 +522,10 @@ def validate_graph_connection_schema(
     return issues
 
 
-def _missing_subgraph_issues(graph: GraphSpec, base_path: str) -> list[SchemaValidationIssue]:
-    from feedbax.component_registry import ComponentRegistry
-
-    registry = ComponentRegistry()
+def _missing_subgraph_issues(
+    graph: GraphSpec, base_path: str, *, component_registry: Any
+) -> list[SchemaValidationIssue]:
+    registry = component_registry
     subgraphs = graph.subgraphs or {}
     issues: list[SchemaValidationIssue] = []
     for node_id, node in graph.nodes.items():
@@ -617,10 +628,7 @@ def _mux_connected_input_issues(
     }
     wired_ports = {(wire.target_node, wire.target_port) for wire in graph.wires}
     task_bound_ports = (
-        {
-            (binding.target_node_id, binding.target_port)
-            for binding in task_binding_spec.bindings
-        }
+        {(binding.target_node_id, binding.target_port) for binding in task_binding_spec.bindings}
         if task_binding_spec is not None
         else set()
     )
@@ -629,11 +637,7 @@ def _mux_connected_input_issues(
     for node_id, node in graph.nodes.items():
         if node.type != "Mux":
             continue
-        connected_inputs = {
-            port
-            for port in node.input_ports
-            if (node_id, port) in occupied_ports
-        }
+        connected_inputs = {port for port in node.input_ports if (node_id, port) in occupied_ports}
         if len(connected_inputs) >= 2:
             continue
         issues.append(
@@ -826,9 +830,7 @@ def _dynamic_port_arity_issues(
     base_path: str,
 ) -> list[SchemaValidationIssue]:
     issues: list[SchemaValidationIssue] = []
-    graph_input_targets = {
-        tuple(binding) for binding in graph.input_bindings.values()
-    }
+    graph_input_targets = {tuple(binding) for binding in graph.input_bindings.values()}
     for node_id, node in graph.nodes.items():
         if node.type == "Mux":
             n_inputs = node.params.get("n_inputs", 2)
@@ -847,9 +849,7 @@ def _dynamic_port_arity_issues(
                     )
                 )
             referenced = {
-                port
-                for target_node, port in graph_input_targets
-                if target_node == node_id
+                port for target_node, port in graph_input_targets if target_node == node_id
             }
             referenced.update(
                 wire.target_port for wire in graph.wires if wire.target_node == node_id
@@ -877,7 +877,10 @@ def _dynamic_port_arity_issues(
             sizes = node.params.get("sizes")
             if not (
                 isinstance(sizes, list)
-                and all(isinstance(size, int) and not isinstance(size, bool) and size > 0 for size in sizes)
+                and all(
+                    isinstance(size, int) and not isinstance(size, bool) and size > 0
+                    for size in sizes
+                )
             ):
                 continue
             expected_outputs = [f"out_{index}" for index in range(len(sizes))]
@@ -936,10 +939,10 @@ def _normalize_dynamic_graph_ports(
 def _enumerate_graph_ports(
     graph: GraphSpec,
     task_binding_spec: Optional[StudioTaskBindingSpec] = None,
+    *,
+    component_registry: Any,
 ) -> list[PortSchema]:
-    from feedbax.component_registry import ComponentRegistry
-
-    registry = ComponentRegistry()
+    registry = component_registry
     ports: list[PortSchema] = []
     for node_id, node in graph.nodes.items():
         meta = registry.get(node.type)
@@ -957,6 +960,7 @@ def _enumerate_graph_ports(
                     direction="input",
                     port_type=port_type,
                     subgraph=subgraph,
+                    component_registry=component_registry,
                 )
             )
         for port_name in output_ports:
@@ -970,6 +974,7 @@ def _enumerate_graph_ports(
                     direction="output",
                     port_type=port_type,
                     subgraph=subgraph,
+                    component_registry=component_registry,
                 )
             )
     for port_name in graph.input_ports:
@@ -1031,9 +1036,9 @@ def _value_schema_for_graph_port(
     node_id: str,
     port: str,
     direction: Literal["input", "output"],
+    *,
+    component_registry: Any,
 ) -> ValueSchema:
-    from feedbax.component_registry import ComponentRegistry
-
     node = graph.nodes.get(node_id)
     if node is None:
         return ValueSchema(
@@ -1042,7 +1047,7 @@ def _value_schema_for_graph_port(
             kind="unknown",
             origin="unknown",
         )
-    registry = ComponentRegistry()
+    registry = component_registry
     meta = registry.get(node.type)
     subgraph = graph.subgraphs.get(node_id) if graph.subgraphs else None
     port_type = (
@@ -1058,6 +1063,7 @@ def _value_schema_for_graph_port(
         direction=direction,
         port_type=port_type,
         subgraph=subgraph,
+        component_registry=component_registry,
     ).value_schema
 
 
@@ -1070,6 +1076,7 @@ def _port_schema(
     direction: Literal["input", "output"],
     port_type: Optional[PortType],
     subgraph: Optional[GraphSpec] = None,
+    component_registry: Any,
 ) -> PortSchema:
     port_id = f"port:{node_id}.{port}:{direction}"
     dtype = port_type.dtype if port_type is not None else None
@@ -1088,7 +1095,9 @@ def _port_schema(
         rank = len(inferred["shape"])
         origin = "inferred_static"
         metadata.update(inferred["metadata"])
-    boundary = _subgraph_boundary_value_schema(subgraph, port, direction)
+    boundary = _subgraph_boundary_value_schema(
+        subgraph, port, direction, component_registry=component_registry
+    )
     if shape is None and boundary is not None and boundary.shape is not None:
         shape = boundary.shape
         rank = boundary.rank if boundary.rank is not None else len(boundary.shape)
@@ -1215,6 +1224,8 @@ def _subgraph_boundary_value_schema(
     subgraph: Any,
     port: str,
     direction: Literal["input", "output"],
+    *,
+    component_registry: Any,
 ) -> Optional[ValueSchema]:
     if subgraph is None:
         return None
@@ -1237,7 +1248,7 @@ def _subgraph_boundary_value_schema(
     if binding is None:
         return None
     node_id, bound_port = binding
-    for schema in _enumerate_graph_ports(subgraph):
+    for schema in _enumerate_graph_ports(subgraph, component_registry=component_registry):
         if (
             schema.node_id == node_id
             and schema.port == bound_port
@@ -1446,6 +1457,8 @@ def validate_task_binding_schema(
     task_binding_spec: StudioTaskBindingSpec,
     graph: Optional[GraphSpec],
     base_path: str,
+    *,
+    component_registry: Any,
 ) -> list[SchemaValidationIssue]:
     """Validate task-data bindings against task-data and graph port schemas."""
 
@@ -1484,7 +1497,9 @@ def validate_task_binding_schema(
     }
     port_schemas = {
         (port.node_id, port.port): port
-        for port in _enumerate_graph_ports(graph, task_binding_spec)
+        for port in _enumerate_graph_ports(
+            graph, task_binding_spec, component_registry=component_registry
+        )
         if port.direction == "input" and port.node_id is not None
     }
     binding_targets: set[tuple[str, str]] = set()
@@ -1642,8 +1657,10 @@ def _task_data_role_issues(
                 location={"path": f"{data_path}/bindable"},
             )
         )
-    if role != COMPONENT_PARAMETER_ROLE and data.bindable and (
-        data.kind in PROTOCOL_TASK_DATA_KINDS or task_data_uses_protocol_path(data)
+    if (
+        role != COMPONENT_PARAMETER_ROLE
+        and data.bindable
+        and (data.kind in PROTOCOL_TASK_DATA_KINDS or task_data_uses_protocol_path(data))
     ):
         issues.append(
             SchemaValidationIssue(
@@ -2136,12 +2153,16 @@ def _port_selector_targets(ports: list[PortSchema]) -> list[SelectorTargetSchema
     return targets
 
 
-def _graph_structural_selector_targets(graph: GraphSpec) -> list[SelectorTargetSchema]:
+def _graph_structural_selector_targets(
+    graph: GraphSpec, *, component_registry: Any
+) -> list[SelectorTargetSchema]:
     targets: list[SelectorTargetSchema] = []
     for output_name, binding in graph.output_bindings.items():
         node_id, port = binding
         selector = f"graph_output:{output_name}"
-        port_schema = _value_schema_for_graph_port(graph, node_id, port, "output")
+        port_schema = _value_schema_for_graph_port(
+            graph, node_id, port, "output", component_registry=component_registry
+        )
         targets.append(
             SelectorTargetSchema(
                 id=f"selector:{selector}",
@@ -2164,14 +2185,14 @@ def _graph_structural_selector_targets(graph: GraphSpec) -> list[SelectorTargetS
         )
     for index, wire in enumerate(graph.wires):
         edge_selector = (
-            f"edge:{wire.source_node}.{wire.source_port}->"
-            f"{wire.target_node}.{wire.target_port}"
+            f"edge:{wire.source_node}.{wire.source_port}->{wire.target_node}.{wire.target_port}"
         )
         source_schema = _value_schema_for_graph_port(
             graph,
             wire.source_node,
             wire.source_port,
             "output",
+            component_registry=component_registry,
         )
         kind: Literal["edge", "recurrent_carry"] = (
             "recurrent_carry" if wire.temporality == "recurrent" else "edge"
@@ -2427,7 +2448,9 @@ def _selector_target_from_retained_observable(
     retention = observable.get("retention") if isinstance(observable.get("retention"), dict) else {}
     label = str(observable.get("label") or selector)
     target_kind = str(target.get("kind") or "")
-    selector_kind: Literal["probe", "port", "edge", "graph_output", "recurrent_carry", "state_path", "task_data"]
+    selector_kind: Literal[
+        "probe", "port", "edge", "graph_output", "recurrent_carry", "state_path", "task_data"
+    ]
     if target_kind in {
         "port",
         "edge",

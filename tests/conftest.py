@@ -8,11 +8,39 @@ import subprocess
 import jax
 import pytest
 
+from feedbax.analysis.evaluation import EvaluationRecipeRegistry
+from feedbax.analysis.reports import ReportRecipeRegistry
+from feedbax.analysis.specs import AnalysisRecipeRegistry
 from feedbax.orchestration.repo_snapshot import REPO_SNAPSHOT_CACHE_DIR_ENV
+from feedbax.plugins.application import (
+    ApplicationRegistryBundle,
+    new_application_registry_bundle,
+)
 
 
 _CACHE_SOURCE_PATHS = ("feedbax", "tests", "pyproject.toml", "uv.lock")
 _CACHE_NAMESPACE_VERSION = b"source-fingerprint-v1"
+
+
+@pytest.fixture
+def application_registry_bundle() -> ApplicationRegistryBundle:
+    """Return fresh caller-owned registries for explicit lifecycle tests."""
+    return new_application_registry_bundle(local_component_source=None)
+
+
+@pytest.fixture
+def evaluation_registry() -> EvaluationRecipeRegistry:
+    return EvaluationRecipeRegistry()
+
+
+@pytest.fixture
+def analysis_registry() -> AnalysisRecipeRegistry:
+    return AnalysisRecipeRegistry()
+
+
+@pytest.fixture
+def report_registry() -> ReportRecipeRegistry:
+    return ReportRecipeRegistry()
 
 
 def _git_output(repo_root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:

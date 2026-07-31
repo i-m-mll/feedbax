@@ -16,9 +16,7 @@ from feedbax.analysis import (
     STAGED_EXACT_PARENTS_SCHEMA_VERSION,
     authenticated_manifest_ref,
     execute_staged_analysis_bundle,
-    register_evaluation_recipe,
     resolve_manifest_input,
-    unregister_evaluation_recipe,
     StagedArtifactProviderRootBinding,
 )
 from feedbax.analysis.evaluation import EvaluationRecipeResult, execute_evaluation_run_spec
@@ -143,7 +141,9 @@ def _bundle(entries: list[StagedExactParentEntry], refs: list[ParentRef]) -> Ana
     )
 
 
-def test_two_of_six_prerequisites_are_selective_and_preserve_topology(tmp_path: Path) -> None:
+def test_two_of_six_prerequisites_are_selective_and_preserve_topology(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     entries = [_training_parent(tmp_path, index) for index in range(6)]
     refs = [_prerequisite(tmp_path, index) for index in range(2)]
     calls: list[EvaluationRunSpec] = []
@@ -156,15 +156,13 @@ def test_two_of_six_prerequisites_are_selective_and_preserve_topology(tmp_path: 
             assert resolved.manifest.status == "completed"
         return EvaluationRecipeResult(summary_metrics={"ok": 1})
 
-    register_evaluation_recipe(EVALUATION_TYPE, recipe, replace=True)
-    try:
-        execution = execute_staged_analysis_bundle(
-            _bundle(entries, refs),
-            root=tmp_path,
-            exact_parents=_exact(entries),
-        )
-    finally:
-        unregister_evaluation_recipe(EVALUATION_TYPE)
+    application_registry_bundle.evaluation_recipes.register(EVALUATION_TYPE, recipe)
+    execution = execute_staged_analysis_bundle(
+        _bundle(entries, refs),
+        root=tmp_path,
+        exact_parents=_exact(entries),
+        registries=application_registry_bundle,
+    )
 
     assert len(calls) == 6
     assert all(len(call.inputs) == 1 for call in calls)
@@ -185,6 +183,7 @@ def test_two_of_six_prerequisites_are_selective_and_preserve_topology(tmp_path: 
 def test_provider_backed_prerequisite_round_trips_through_provider_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    application_registry_bundle,
 ) -> None:
     entries = [_training_parent(tmp_path, index) for index in range(2)]
     refs = [_prerequisite(tmp_path, index) for index in range(2)]
@@ -213,24 +212,20 @@ def test_provider_backed_prerequisite_round_trips_through_provider_authority(
             seen.append(execution_context.resolve_manifest_input(prerequisite.parent).manifest.id)
         return EvaluationRecipeResult()
 
-    register_evaluation_recipe(EVALUATION_TYPE, recipe, replace=True)
-    try:
-        execute_staged_analysis_bundle(
-            bundle,
-            root=tmp_path,
-            exact_parents=_exact(entries),
-            execution_descriptor=StagedExecutionDescriptor(
-                schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
-                schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
-                artifact_providers={"external": ImmutableArtifactBlobProviderSpec()},
-                checkpoint_custody={},
-            ),
-            artifact_provider_bindings=[
-                StagedArtifactProviderRootBinding("external", provider_root)
-            ],
-        )
-    finally:
-        unregister_evaluation_recipe(EVALUATION_TYPE)
+    application_registry_bundle.evaluation_recipes.register(EVALUATION_TYPE, recipe)
+    execute_staged_analysis_bundle(
+        bundle,
+        root=tmp_path,
+        exact_parents=_exact(entries),
+        execution_descriptor=StagedExecutionDescriptor(
+            schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+            schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+            artifact_providers={"external": ImmutableArtifactBlobProviderSpec()},
+            checkpoint_custody={},
+        ),
+        artifact_provider_bindings=[StagedArtifactProviderRootBinding("external", provider_root)],
+        registries=application_registry_bundle,
+    )
     assert seen == [ref.id for ref in refs]
     digest = refs[0].metadata["manifest_sha256"]
     blob_path = provider_root / "artifacts" / "sha256" / digest[:2] / digest
@@ -269,6 +264,7 @@ def test_public_params_base_composes_required_recipe_fields() -> None:
 
 def test_direct_execution_accepts_serialized_params_base_without_prerequisites(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     parent = _training_parent(tmp_path, 0).parent
     params = EvaluationParamsBase().model_dump(mode="json")
@@ -283,11 +279,10 @@ def test_direct_execution_accepts_serialized_params_base_without_prerequisites(
         assert run_spec.params == {"staged_prerequisites": None}
         return EvaluationRecipeResult()
 
-    register_evaluation_recipe(EVALUATION_TYPE, recipe, replace=True)
-    try:
-        manifest, _path = execute_evaluation_run_spec(spec, root=tmp_path)
-    finally:
-        unregister_evaluation_recipe(EVALUATION_TYPE)
+    application_registry_bundle.evaluation_recipes.register(EVALUATION_TYPE, recipe)
+    manifest, _path = execute_evaluation_run_spec(
+        spec, root=tmp_path, registry=application_registry_bundle.evaluation_recipes
+    )
 
     assert params == {"staged_prerequisites": None}
     assert spec.params == params
@@ -300,6 +295,7 @@ def test_direct_execution_accepts_serialized_params_base_without_prerequisites(
 def test_direct_execution_rejects_falsey_non_mapping_prerequisites(
     tmp_path: Path,
     malformed: object,
+    application_registry_bundle,
 ) -> None:
     spec = EvaluationRunSpec(
         evaluation_type=EVALUATION_TYPE,
@@ -312,12 +308,11 @@ def test_direct_execution_rejects_falsey_non_mapping_prerequisites(
         calls += 1
         return EvaluationRecipeResult()
 
-    register_evaluation_recipe(EVALUATION_TYPE, recipe, replace=True)
-    try:
-        with pytest.raises(TypeError, match="staged_prerequisites must be a mapping or null"):
-            execute_evaluation_run_spec(spec, root=tmp_path)
-    finally:
-        unregister_evaluation_recipe(EVALUATION_TYPE)
+    application_registry_bundle.evaluation_recipes.register(EVALUATION_TYPE, recipe)
+    with pytest.raises(TypeError, match="staged_prerequisites must be a mapping or null"):
+        execute_evaluation_run_spec(
+            spec, root=tmp_path, registry=application_registry_bundle.evaluation_recipes
+        )
     assert calls == 0
 
 
@@ -356,7 +351,9 @@ def test_cli_dry_run_round_trips_selective_prerequisites_and_expands_24_eval_nod
 
     from feedbax.bin import analysis as analysis_cli
 
-    monkeypatch.setattr(analysis_cli, "load_analysis_bundle", lambda *_args, **_kwargs: round_tripped)
+    monkeypatch.setattr(
+        analysis_cli, "load_analysis_bundle", lambda *_args, **_kwargs: round_tripped
+    )
     analysis_cli.main(
         [
             "--bundle",
@@ -395,6 +392,7 @@ def test_prerequisite_preflight_rejects_profile_and_identity_drift(
     tmp_path: Path,
     change: dict[str, str],
     message: str,
+    application_registry_bundle,
 ) -> None:
     entries = [_training_parent(tmp_path, index) for index in range(2)]
     refs = [_prerequisite(tmp_path, index) for index in range(2)]
@@ -410,19 +408,33 @@ def test_prerequisite_preflight_rejects_profile_and_identity_drift(
     else:
         ref.metadata.update(change)
     with pytest.raises(ValueError, match=message):
-        execute_staged_analysis_bundle(_bundle(entries, refs), root=tmp_path, exact_parents=_exact(entries))
+        execute_staged_analysis_bundle(
+            _bundle(entries, refs),
+            root=tmp_path,
+            exact_parents=_exact(entries),
+            registries=application_registry_bundle,
+        )
 
 
-def test_reserved_params_collision_fails_before_recipe(tmp_path: Path) -> None:
+def test_reserved_params_collision_fails_before_recipe(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     entries = [_training_parent(tmp_path, index) for index in range(2)]
     refs = [_prerequisite(tmp_path, index) for index in range(2)]
     bundle = _bundle(entries, refs)
     bundle.stages[0].local_params = {"staged_prerequisites": {}}
     with pytest.raises(ValueError, match="reserved staged_prerequisites"):
-        execute_staged_analysis_bundle(bundle, root=tmp_path, exact_parents=_exact(entries))
+        execute_staged_analysis_bundle(
+            bundle,
+            root=tmp_path,
+            exact_parents=_exact(entries),
+            registries=application_registry_bundle,
+        )
 
 
-def test_absent_bindings_preserve_legacy_evaluation_identity(tmp_path: Path) -> None:
+def test_absent_bindings_preserve_legacy_evaluation_identity(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     entry = _training_parent(tmp_path, 0)
     stage = BundleStageSpec(
         name="legacy",
@@ -450,16 +462,19 @@ def test_absent_bindings_preserve_legacy_evaluation_identity(tmp_path: Path) -> 
         calls.append(run_spec)
         return EvaluationRecipeResult()
 
-    register_evaluation_recipe(EVALUATION_TYPE, recipe, replace=True)
-    try:
-        execute_staged_analysis_bundle(bundle, root=tmp_path, exact_parents=_exact([entry]))
-        execute_staged_analysis_bundle(bundle, root=tmp_path, exact_parents=_exact([entry]))
-    finally:
-        unregister_evaluation_recipe(EVALUATION_TYPE)
+    application_registry_bundle.evaluation_recipes.register(EVALUATION_TYPE, recipe)
+    execute_staged_analysis_bundle(
+        bundle, root=tmp_path, exact_parents=_exact([entry]), registries=application_registry_bundle
+    )
+    execute_staged_analysis_bundle(
+        bundle, root=tmp_path, exact_parents=_exact([entry]), registries=application_registry_bundle
+    )
     assert calls == [expected]
 
 
-def test_prerequisite_preflight_rejects_unknown_input_before_recipe(tmp_path: Path) -> None:
+def test_prerequisite_preflight_rejects_unknown_input_before_recipe(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     entries = [_training_parent(tmp_path, index) for index in range(2)]
     ref = _prerequisite(tmp_path, 0)
     bundle = _bundle(entries, [ref, ref])
@@ -470,28 +485,30 @@ def test_prerequisite_preflight_rejects_unknown_input_before_recipe(tmp_path: Pa
         calls.append(run_spec)
         return EvaluationRecipeResult()
 
-    register_evaluation_recipe(EVALUATION_TYPE, recipe, replace=True)
-    try:
-        with pytest.raises(ValueError, match="not a selected bundle input"):
-            execute_staged_analysis_bundle(
-                bundle,
-                root=tmp_path,
-                    exact_parents=_exact(entries),
-            )
-    finally:
-        unregister_evaluation_recipe(EVALUATION_TYPE)
+    application_registry_bundle.evaluation_recipes.register(EVALUATION_TYPE, recipe)
+    with pytest.raises(ValueError, match="not a selected bundle input"):
+        execute_staged_analysis_bundle(
+            bundle,
+            root=tmp_path,
+            exact_parents=_exact(entries),
+            registries=application_registry_bundle,
+        )
     assert calls == []
 
 
-@pytest.mark.parametrize("mutation, message", [
-    ("hash", "SHA-256 mismatch"),
-    ("size", "size mismatch"),
-    ("status", "must be completed"),
-])
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        ("hash", "SHA-256 mismatch"),
+        ("size", "size mismatch"),
+        ("status", "must be completed"),
+    ],
+)
 def test_prerequisite_preflight_rejects_tamper(
     tmp_path: Path,
     mutation: str,
     message: str,
+    application_registry_bundle,
 ) -> None:
     entries = [_training_parent(tmp_path, 0), _training_parent(tmp_path, 1)]
     ref = _prerequisite(tmp_path, 0, status="failed" if mutation == "status" else "completed")
@@ -505,6 +522,7 @@ def test_prerequisite_preflight_rejects_tamper(
             bundle,
             root=tmp_path,
             exact_parents=_exact(entries),
+            registries=application_registry_bundle,
         )
 
 
@@ -534,40 +552,47 @@ def test_prerequisite_contract_rejects_duplicate_and_unsupported_stage(tmp_path:
         )
 
 
-def test_prerequisite_preflight_requires_declared_provider_binding(tmp_path: Path) -> None:
+def test_prerequisite_preflight_requires_declared_provider_binding(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     entries = [_training_parent(tmp_path, index) for index in range(2)]
     refs = [_prerequisite(tmp_path, index) for index in range(2)]
     bundle = _bundle(entries, refs)
     bundle.stages[0].prerequisite_bindings[0].artifact_provider = "missing"
     with pytest.raises(ValueError, match="artifact provider binding is unavailable"):
-        execute_staged_analysis_bundle(bundle, root=tmp_path, exact_parents=_exact(entries))
+        execute_staged_analysis_bundle(
+            bundle,
+            root=tmp_path,
+            exact_parents=_exact(entries),
+            registries=application_registry_bundle,
+        )
 
 
-def test_completed_cache_rejects_prerequisite_provenance_drift(tmp_path: Path) -> None:
+def test_completed_cache_rejects_prerequisite_provenance_drift(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     entries = [_training_parent(tmp_path, index) for index in range(2)]
     refs = [_prerequisite(tmp_path, index) for index in range(2)]
 
     def recipe(_run_spec, _root, _states_path, _execution_context):
         return EvaluationRecipeResult()
 
-    register_evaluation_recipe(EVALUATION_TYPE, recipe, replace=True)
-    try:
-        execution = execute_staged_analysis_bundle(
-            _bundle(entries, refs), root=tmp_path, exact_parents=_exact(entries)
+    application_registry_bundle.evaluation_recipes.register(EVALUATION_TYPE, recipe)
+    execution = execute_staged_analysis_bundle(
+        _bundle(entries, refs),
+        root=tmp_path,
+        exact_parents=_exact(entries),
+        registries=application_registry_bundle,
+    )
+    first = execution.stages[0].manifest_refs[0]
+    path = tmp_path / "manifests" / "evaluation_runs" / f"{safe_manifest_key(first.id)}.json"
+    manifest = EvaluationRunManifest.model_validate_json(path.read_text())
+    manifest.provenance.parents = list(manifest.input_training_runs)
+    path.write_text(manifest.model_dump_json(indent=2))
+    with pytest.raises(ValueError, match="provenance parents"):
+        execute_staged_analysis_bundle(
+            _bundle(entries, refs),
+            root=tmp_path,
+            exact_parents=_exact(entries),
+            registries=application_registry_bundle,
         )
-        first = execution.stages[0].manifest_refs[0]
-        path = (
-            tmp_path
-            / "manifests"
-            / "evaluation_runs"
-            / f"{safe_manifest_key(first.id)}.json"
-        )
-        manifest = EvaluationRunManifest.model_validate_json(path.read_text())
-        manifest.provenance.parents = list(manifest.input_training_runs)
-        path.write_text(manifest.model_dump_json(indent=2))
-        with pytest.raises(ValueError, match="provenance parents"):
-            execute_staged_analysis_bundle(
-                _bundle(entries, refs), root=tmp_path, exact_parents=_exact(entries)
-            )
-    finally:
-        unregister_evaluation_recipe(EVALUATION_TYPE)

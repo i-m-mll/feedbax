@@ -17,14 +17,10 @@ from feedbax.analysis.manifest_inputs import (
 )
 from feedbax.analysis.reports import (
     execute_report_spec,
-    register_report_recipe,
-    unregister_report_recipe,
 )
 from feedbax.analysis.specs import (
     AnalysisRecipeExecutionError,
     execute_analysis_run_spec,
-    register_analysis_recipe,
-    unregister_analysis_recipe,
 )
 from feedbax.contracts.figures import FigureSpec
 from feedbax.contracts.manifest import (
@@ -260,6 +256,7 @@ def test_legacy_manifest_ref_makes_no_authenticated_claim(tmp_path: Path) -> Non
 
 def test_analysis_integrity_failure_precedes_recipe_and_cache_effects(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     _manifest_obj, _path, ref = _analysis_manifest(tmp_path)
     bad_ref = ref.model_copy(
@@ -275,13 +272,16 @@ def test_analysis_integrity_failure_precedes_recipe_and_cache_effects(
         calls.append((run_spec, root, inputs, execution_context))
         raise AssertionError("analysis recipe must not run")
 
-    register_analysis_recipe(spec.analysis_type, recipe, replace=True)
+    application_registry_bundle.analysis_recipes.register(spec.analysis_type, recipe)
     before = _file_snapshot(tmp_path)
-    try:
-        with pytest.raises(AnalysisRecipeExecutionError) as excinfo:
-            execute_analysis_run_spec(spec, root=tmp_path)
-    finally:
-        unregister_analysis_recipe(spec.analysis_type)
+    with pytest.raises(AnalysisRecipeExecutionError) as excinfo:
+        execute_analysis_run_spec(
+            spec,
+            root=tmp_path,
+            registry=application_registry_bundle.analysis_recipes,
+            evaluation_registry=application_registry_bundle.evaluation_recipes,
+            experiment_registry=application_registry_bundle.experiment_packages,
+        )
     assert isinstance(excinfo.value.__cause__, ValueError)
     assert "size mismatch" in str(excinfo.value.__cause__)
     assert calls == []
@@ -306,6 +306,7 @@ def test_analysis_integrity_failure_precedes_recipe_and_cache_effects(
 def test_figure_integrity_failure_precedes_render_and_filesystem_effects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    application_registry_bundle,
 ) -> None:
     _manifest_obj, _path, ref = _analysis_manifest(tmp_path)
     bad_ref = ref.model_copy(update={"metadata": {**ref.metadata, "manifest_sha256": "0" * 64}})
@@ -325,6 +326,7 @@ def test_figure_integrity_failure_precedes_render_and_filesystem_effects(
                 inputs=[bad_ref],
             ),
             root=tmp_path,
+            registry=application_registry_bundle.figures,
         )
     assert calls == []
     assert _file_snapshot(tmp_path) == before
@@ -332,6 +334,7 @@ def test_figure_integrity_failure_precedes_render_and_filesystem_effects(
 
 def test_report_integrity_failure_precedes_recipe_and_filesystem_effects(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     _manifest_obj, _path, ref = _analysis_manifest(tmp_path)
     metadata = dict(ref.metadata)
@@ -347,12 +350,13 @@ def test_report_integrity_failure_precedes_recipe_and_filesystem_effects(
         calls.append((report_spec, root, inputs))
         raise AssertionError("report recipe must not run")
 
-    register_report_recipe(spec.report_type, recipe, replace=True)
+    application_registry_bundle.report_recipes.register(spec.report_type, recipe)
     before = _file_snapshot(tmp_path)
-    try:
-        with pytest.raises(ValueError, match="incomplete"):
-            execute_report_spec(spec, root=tmp_path)
-    finally:
-        unregister_report_recipe(spec.report_type)
+    with pytest.raises(ValueError, match="incomplete"):
+        execute_report_spec(
+            spec,
+            root=tmp_path,
+            registry=application_registry_bundle.report_recipes,
+        )
     assert calls == []
     assert _file_snapshot(tmp_path) == before

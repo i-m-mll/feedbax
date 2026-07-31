@@ -1,21 +1,61 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-import feedbax.plugins
 import feedbax.training.run_matrix as run_matrix
 from feedbax import __main__ as feedbax_main
 from feedbax.analysis import evaluation
 from feedbax.analysis import harness
 from feedbax.analysis.evaluation import EvaluationRecipeResult
 from feedbax.contracts.manifest import canonical_json_bytes, load_manifest, sha256_bytes
-from feedbax.contracts.training import default_training_method_registry
-from feedbax.plugins.discovery import load_training_method_plugins
-from feedbax.training.preparation import ExecutionPreparationProviderRegistry
+from feedbax.plugins import (
+    EVALUATION_RECIPES,
+    BootstrapError,
+    BootstrapErrorCode,
+    FamilyRequirement,
+    PluginDeclaration,
+    PluginRegistration,
+    bootstrap_application,
+    new_registration_context,
+)
+
+
+def _bootstrap_state(
+    evaluation_type: str | None = None,
+    recipe=None,
+    *,
+    batch_recipe=None,
+):
+    registrations = ()
+    if evaluation_type is not None:
+
+        def register(context) -> None:
+            context.registry(EVALUATION_RECIPES).register(
+                evaluation_type,
+                recipe or (lambda *_args: EvaluationRecipeResult()),
+                batch_recipe=batch_recipe,
+            )
+
+        registrations = (
+            PluginRegistration(
+                PluginDeclaration(
+                    f"tests.run_matrix.{evaluation_type}",
+                    "1",
+                    families=(FamilyRequirement("evaluation_recipes"),),
+                ),
+                register,
+            ),
+        )
+    return asyncio.run(
+        bootstrap_application(
+            new_registration_context(local_component_source=None),
+            registrations=registrations,
+        )
+    )
 
 
 def _evaluation_matrix_payload(*row_ids: str) -> dict[str, object]:
@@ -27,17 +67,13 @@ def _evaluation_matrix_payload(*row_ids: str) -> dict[str, object]:
     }
 
 
-def test_plugin_analysis_recipe_hook_is_loaded_fail_closed() -> None:
-    called: list[str] = []
-    plugin = SimpleNamespace(register_feedbax_analysis_recipes=lambda: called.append("recipes"))
-
-    load_training_method_plugins(
-        registry=default_training_method_registry(),
-        preparation_registry=ExecutionPreparationProviderRegistry(),
-        entry_points=[SimpleNamespace(name="recipes", load=lambda: plugin)],
-    )
-
-    assert called == ["recipes"]
+def test_legacy_analysis_recipe_hook_is_rejected_fail_closed() -> None:
+    with pytest.raises(BootstrapError) as excinfo:
+        PluginRegistration(
+            PluginDeclaration("tests.legacy_recipe", "1"),
+            object(),
+        )
+    assert excinfo.value.code is BootstrapErrorCode.INVALID_REGISTRATION
 
 
 def test_materialize_cli_loads_repeated_plugins_before_spec(
@@ -46,11 +82,13 @@ def test_materialize_cli_loads_repeated_plugins_before_spec(
 ) -> None:
     events: list[object] = []
 
-    monkeypatch.setattr(
-        feedbax.plugins,
-        "load_training_method_plugins",
-        lambda *, modules: events.append(("plugins", modules)),
-    )
+    state = _bootstrap_state()
+
+    async def compose_application(*, modules=(), **_kwargs):
+        events.append(("plugins", list(modules)))
+        return state
+
+    monkeypatch.setattr("feedbax.plugins.composition.compose_application", compose_application)
     monkeypatch.setattr(
         run_matrix,
         "_load_spec",
@@ -59,7 +97,9 @@ def test_materialize_cli_loads_repeated_plugins_before_spec(
     monkeypatch.setattr(
         run_matrix,
         "materialize_run_matrix",
-        lambda spec, *, repo_root: events.append(("materialize", repo_root)) or object(),
+        lambda spec, *, repo_root, method_registry, row_lowerer: (
+            events.append(("materialize", repo_root, method_registry, row_lowerer)) or object()
+        ),
     )
     monkeypatch.setattr(
         run_matrix,
@@ -91,7 +131,16 @@ def test_materialize_cli_loads_repeated_plugins_before_spec(
 
 def test_top_level_harness_cli_forwards_plugins_lazily(monkeypatch, tmp_path: Path) -> None:
     calls: list[list[str]] = []
-    monkeypatch.setattr(harness, "main", lambda argv: calls.append(argv) or 0)
+    state = _bootstrap_state()
+    captured_modules: list[tuple[str, ...]] = []
+
+    async def capture_compose_application(*, modules=(), **_kwargs):
+        plugin_modules = tuple(modules)
+        captured_modules.append(plugin_modules)
+        return state
+
+    monkeypatch.setattr(feedbax_main, "compose_application", capture_compose_application)
+    monkeypatch.setattr(harness, "main", lambda argv, **_kwargs: calls.append(argv) or 0)
 
     result = feedbax_main.main(
         [
@@ -105,6 +154,7 @@ def test_top_level_harness_cli_forwards_plugins_lazily(monkeypatch, tmp_path: Pa
     )
 
     assert result == 0
+    assert captured_modules == [("downstream.recipes",)]
     assert calls == [
         [
             str(tmp_path / "matrix.json"),
@@ -121,7 +171,7 @@ def test_top_level_harness_cli_forwards_batch_and_gate_options(
     tmp_path: Path,
 ) -> None:
     calls: list[list[str]] = []
-    monkeypatch.setattr(harness, "main", lambda argv: calls.append(argv) or 0)
+    monkeypatch.setattr(harness, "main", lambda argv, **_kwargs: calls.append(argv) or 0)
     spec = tmp_path / "matrix.json"
     locked_spec = tmp_path / "locked.json"
     policy = tmp_path / "policy.json"
@@ -170,14 +220,7 @@ def test_matrix_harness_gate_options_have_public_help(capsys) -> None:
         assert "decision is recorded" in help_text
 
 
-def test_top_level_matrix_harness_executes_v3_axis_matrix(
-    monkeypatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(
-        feedbax.plugins,
-        "load_training_method_plugins",
-        lambda *, modules: None,
-    )
+def test_top_level_matrix_harness_executes_v3_axis_matrix(monkeypatch, tmp_path: Path) -> None:
     base = {"evaluation_type": "example.cli_axis", "params": {"gain": 0}}
     (tmp_path / "base.json").write_text(json.dumps(base), encoding="utf-8")
     payload = {
@@ -187,30 +230,28 @@ def test_top_level_matrix_harness_executes_v3_axis_matrix(
         "axes": [
             {
                 "id": "gain",
-                "values": [
-                    {"id": "one", "deltas": [{"path": "params.gain", "value": 1}]}
-                ],
+                "values": [{"id": "one", "deltas": [{"path": "params.gain", "value": 1}]}],
             }
         ],
     }
     spec = tmp_path / "matrix.json"
     spec.write_text(json.dumps(payload), encoding="utf-8")
-    evaluation.register_evaluation_recipe(
-        "example.cli_axis", lambda *_args: EvaluationRecipeResult()
+    state = _bootstrap_state("example.cli_axis")
+
+    async def compose_application(**_kwargs):
+        return state
+
+    monkeypatch.setattr(feedbax_main, "compose_application", compose_application)
+    result = feedbax_main.main(
+        [
+            "matrix-harness",
+            str(spec),
+            "--manifest-root",
+            str(tmp_path / "runs"),
+            "--repo-root",
+            str(tmp_path),
+        ]
     )
-    try:
-        result = feedbax_main.main(
-            [
-                "matrix-harness",
-                str(spec),
-                "--manifest-root",
-                str(tmp_path / "runs"),
-                "--repo-root",
-                str(tmp_path),
-            ]
-        )
-    finally:
-        evaluation.unregister_evaluation_recipe("example.cli_axis")
 
     assert result == 0
     manifest_path = next(
@@ -227,7 +268,7 @@ def test_top_level_harness_cli_forwards_explicit_staged_runtime_bindings(
     tmp_path: Path,
 ) -> None:
     calls: list[list[str]] = []
-    monkeypatch.setattr(harness, "main", lambda argv: calls.append(argv) or 0)
+    monkeypatch.setattr(harness, "main", lambda argv, **_kwargs: calls.append(argv) or 0)
     spec = tmp_path / "matrix.json"
     manifest_root = tmp_path / "manifests"
     parent_root = tmp_path / "parents"
@@ -275,11 +316,6 @@ def test_top_level_harness_cli_forwards_explicit_staged_runtime_bindings(
 def test_harness_cli_parses_staged_runtime_bindings(monkeypatch, tmp_path: Path) -> None:
     captured: list[tuple[dict[str, object], dict[str, object]]] = []
     monkeypatch.setattr(
-        feedbax.plugins,
-        "load_training_method_plugins",
-        lambda *, modules: None,
-    )
-    monkeypatch.setattr(
         evaluation,
         "execute_evaluation_run_matrix",
         lambda payload, **kwargs: captured.append((payload, kwargs)),
@@ -321,11 +357,6 @@ def test_harness_cli_parses_staged_runtime_bindings(monkeypatch, tmp_path: Path)
 def test_harness_cli_passes_batch_execution(monkeypatch, tmp_path: Path) -> None:
     captured: list[dict[str, object]] = []
     monkeypatch.setattr(
-        feedbax.plugins,
-        "load_training_method_plugins",
-        lambda *, modules: None,
-    )
-    monkeypatch.setattr(
         evaluation,
         "execute_evaluation_run_matrix",
         lambda _payload, **kwargs: captured.append(kwargs),
@@ -333,9 +364,7 @@ def test_harness_cli_passes_batch_execution(monkeypatch, tmp_path: Path) -> None
     spec = tmp_path / "matrix.json"
     spec.write_text(json.dumps(_evaluation_matrix_payload("one")), encoding="utf-8")
 
-    result = harness.main(
-        [str(spec), "--manifest-root", str(tmp_path / "rows"), "--batch"]
-    )
+    result = harness.main([str(spec), "--manifest-root", str(tmp_path / "rows"), "--batch"])
 
     assert result == 0
     assert isinstance(captured[0]["batch"], evaluation.EvaluationBatchExecution)
@@ -347,11 +376,6 @@ def test_harness_cli_locked_spec_requires_exact_row_id_sequence(
     capsys,
 ) -> None:
     executions: list[dict[str, object]] = []
-    monkeypatch.setattr(
-        feedbax.plugins,
-        "load_training_method_plugins",
-        lambda *, modules: None,
-    )
     monkeypatch.setattr(
         evaluation,
         "execute_evaluation_run_matrix",
@@ -403,11 +427,6 @@ def test_harness_cli_policy_blocks_large_per_row_execution(
 ) -> None:
     executions: list[dict[str, object]] = []
     monkeypatch.setattr(
-        feedbax.plugins,
-        "load_training_method_plugins",
-        lambda *, modules: None,
-    )
-    monkeypatch.setattr(
         evaluation,
         "execute_evaluation_run_matrix",
         lambda payload, **_kwargs: executions.append(payload),
@@ -452,11 +471,6 @@ def test_harness_cli_rejects_unsupported_authored_override_before_outputs(
     tmp_path: Path,
     capsys,
 ) -> None:
-    monkeypatch.setattr(
-        feedbax.plugins,
-        "load_training_method_plugins",
-        lambda *, modules: None,
-    )
     monkeypatch.setattr(
         evaluation,
         "execute_evaluation_run_matrix",
@@ -503,11 +517,6 @@ def test_harness_cli_policy_allows_batch_or_explicit_override(
     bypass: list[str],
 ) -> None:
     executions: list[dict[str, object]] = []
-    monkeypatch.setattr(
-        feedbax.plugins,
-        "load_training_method_plugins",
-        lambda *, modules: None,
-    )
     monkeypatch.setattr(
         evaluation,
         "execute_evaluation_run_matrix",
@@ -580,25 +589,21 @@ def test_harness_cli_persists_execution_policy_evidence(
         }
     ).encode()
     policy.write_bytes(policy_content)
-    evaluation.register_evaluation_recipe(
+    state = _bootstrap_state(
         "example.cli_gate",
-        lambda *_args: EvaluationRecipeResult(),
         batch_recipe=lambda items, _context: [EvaluationRecipeResult() for _item in items],
-        replace=True,
     )
-    try:
-        result = harness.main(
-            [
-                str(spec),
-                "--manifest-root",
-                str(manifest_root),
-                "--execution-policy",
-                str(policy),
-                *bypass,
-            ]
-        )
-    finally:
-        evaluation.unregister_evaluation_recipe("example.cli_gate")
+    result = harness.main(
+        [
+            str(spec),
+            "--manifest-root",
+            str(manifest_root),
+            "--execution-policy",
+            str(policy),
+            *bypass,
+        ],
+        bootstrap_state=state,
+    )
 
     assert result == 0
     store_root = manifest_root if execution_mode == "batch" else manifest_root / "one"
@@ -621,15 +626,10 @@ def test_harness_cli_without_policy_omits_policy_evidence(tmp_path: Path) -> Non
     spec = tmp_path / "matrix.json"
     manifest_root = tmp_path / "rows"
     spec.write_text(json.dumps(_evaluation_matrix_payload("one")), encoding="utf-8")
-    evaluation.register_evaluation_recipe(
-        "example.cli_gate",
-        lambda *_args: EvaluationRecipeResult(),
-        replace=True,
+    result = harness.main(
+        [str(spec), "--manifest-root", str(manifest_root)],
+        bootstrap_state=_bootstrap_state("example.cli_gate"),
     )
-    try:
-        result = harness.main([str(spec), "--manifest-root", str(manifest_root)])
-    finally:
-        evaluation.unregister_evaluation_recipe("example.cli_gate")
 
     assert result == 0
     manifest_path = next((manifest_root / "one" / "manifests" / "evaluation_runs").glob("*.json"))
@@ -652,11 +652,6 @@ def test_harness_cli_rejects_malformed_execution_policy(
     tmp_path: Path,
     policy_payload: dict[str, object],
 ) -> None:
-    monkeypatch.setattr(
-        feedbax.plugins,
-        "load_training_method_plugins",
-        lambda *, modules: None,
-    )
     monkeypatch.setattr(
         evaluation,
         "execute_evaluation_run_matrix",

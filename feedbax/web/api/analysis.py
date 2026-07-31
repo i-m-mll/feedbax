@@ -14,7 +14,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+
+from feedbax.plugins.application import ApplicationRegistryBundle
 
 from feedbax.contracts.studio_api import (
     AnalysisJobStatusResponse,
@@ -134,12 +136,17 @@ def _figure_spec_for_request(payload: GenerateAnalysisRequest) -> FigureSpec:
     return spec
 
 
-def _run_analysis_sync(spec: AnalysisRunSpec) -> AnalysisJobResult:
+def _run_analysis_sync(
+    spec: AnalysisRunSpec, registries: ApplicationRegistryBundle
+) -> AnalysisJobResult:
     """Run the executable analysis spec synchronously inside the executor."""
     from feedbax.analysis.specs import execute_analysis_run_spec
 
     manifest, path = execute_analysis_run_spec(
         spec,
+        registry=registries.analysis_recipes,
+        evaluation_registry=registries.evaluation_recipes,
+        experiment_registry=registries.experiment_packages,
         fig_dump_formats=("json",),
     )
     return AnalysisJobResult(
@@ -159,7 +166,9 @@ def _run_analysis_sync(spec: AnalysisRunSpec) -> AnalysisJobResult:
     )
 
 
-async def _run_analysis_background(request_id: str, spec: AnalysisRunSpec) -> None:
+async def _run_analysis_background(
+    request_id: str, spec: AnalysisRunSpec, registries: ApplicationRegistryBundle
+) -> None:
     """Wrapper that updates the job tracker around the synchronous pipeline."""
     await job_tracker.update_status(request_id, JobStatus.RUNNING)
     try:
@@ -168,6 +177,7 @@ async def _run_analysis_background(request_id: str, spec: AnalysisRunSpec) -> No
             _executor,
             _run_analysis_sync,
             spec,
+            registries,
         )
         await job_tracker.update_status(
             request_id,
@@ -182,15 +192,17 @@ async def _run_analysis_background(request_id: str, spec: AnalysisRunSpec) -> No
         tb = traceback.format_exc()
         logger.error("Analysis job %s failed:\n%s", request_id, tb)
         await job_tracker.update_status(
-            request_id, JobStatus.ERROR, error=str(tb),
+            request_id,
+            JobStatus.ERROR,
+            error=str(tb),
         )
 
 
-def _run_figure_sync(spec: FigureSpec) -> AnalysisJobResult:
+def _run_figure_sync(spec: FigureSpec, registries: ApplicationRegistryBundle) -> AnalysisJobResult:
     """Run a declarative figure spec synchronously inside the executor."""
     from feedbax.analysis.figures import FIGURE_RENDER_ROLE, execute_figure_spec
 
-    manifest, path = execute_figure_spec(spec)
+    manifest, path = execute_figure_spec(spec, registry=registries.figures)
     return AnalysisJobResult(
         manifest_id=manifest.id,
         manifest_path=str(path),
@@ -208,12 +220,14 @@ def _run_figure_sync(spec: FigureSpec) -> AnalysisJobResult:
     )
 
 
-async def _run_figure_background(request_id: str, spec: FigureSpec) -> None:
+async def _run_figure_background(
+    request_id: str, spec: FigureSpec, registries: ApplicationRegistryBundle
+) -> None:
     """Wrapper that updates the job tracker around declarative figure execution."""
     await job_tracker.update_status(request_id, JobStatus.RUNNING)
     try:
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(_executor, _run_figure_sync, spec)
+        result = await loop.run_in_executor(_executor, _run_figure_sync, spec, registries)
         await job_tracker.update_status(
             request_id,
             JobStatus.COMPLETE,
@@ -235,7 +249,9 @@ async def _run_figure_background(request_id: str, spec: FigureSpec) -> None:
 
 
 @router.post("", response_model=GenerateAnalysisResponse)
-async def generate_figure(payload: GenerateAnalysisRequest) -> GenerateAnalysisResponse:
+async def generate_figure(
+    payload: GenerateAnalysisRequest, request: Request
+) -> GenerateAnalysisResponse:
     """Trigger demand-driven figure generation for an analysis node.
 
     The computation runs in a background thread; this endpoint returns
@@ -255,7 +271,11 @@ async def generate_figure(payload: GenerateAnalysisRequest) -> GenerateAnalysisR
             manifest_id,
         )
         request_id = await job_tracker.create_job(payload.node_id, manifest_id=manifest_id)
-        asyncio.create_task(_run_figure_background(request_id, figure_spec))
+        asyncio.create_task(
+            _run_figure_background(
+                request_id, figure_spec, request.app.state.bootstrap_state.bundle
+            )
+        )
         return GenerateAnalysisResponse(
             data={
                 "request_id": request_id,
@@ -274,7 +294,7 @@ async def generate_figure(payload: GenerateAnalysisRequest) -> GenerateAnalysisR
     )
     request_id = await job_tracker.create_job(payload.node_id, manifest_id=manifest_id)
     asyncio.create_task(
-        _run_analysis_background(request_id, spec),
+        _run_analysis_background(request_id, spec, request.app.state.bootstrap_state.bundle),
     )
     return GenerateAnalysisResponse(
         data={

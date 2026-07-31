@@ -136,9 +136,74 @@ STATES_SCHEMA_METADATA_KEY = "states_schema"
 EVALUATION_STATES_CACHE_SCHEMA_VERSION = "feedbax.analysis.evaluation-states-cache.v1"
 _MAX_FAILURE_DIAGNOSTICS_BYTES = 16 * 1024
 
-_EVALUATION_RECIPES: dict[str, EvaluationRecipe] = {}
-_EVALUATION_BATCH_RECIPES: dict[str, EvaluationBatchRecipe] = {}
-_EVALUATION_AUTHORING_SCHEMAS: dict[str, "EvaluationAuthoringSchema"] = {}
+
+class EvaluationRecipeRegistry:
+    """Isolated evaluation, batch, and authoring-schema registry."""
+
+    def __init__(self) -> None:
+        self._sealed = False
+        self._recipes: dict[str, EvaluationRecipe] = {}
+        self._batch_recipes: dict[str, EvaluationBatchRecipe] = {}
+        self._schemas: dict[str, EvaluationAuthoringSchema] = {}
+
+    def register(
+        self,
+        evaluation_type: str,
+        recipe: EvaluationRecipe,
+        *,
+        batch_recipe: EvaluationBatchRecipe | None = None,
+    ) -> None:
+        if self._sealed:
+            raise RuntimeError("evaluation recipe registry is sealed")
+        evaluation_type = validate_namespaced_type_key(evaluation_type, field="evaluation_type")
+        if evaluation_type in self._recipes:
+            raise ValueError(f"Evaluation recipe {evaluation_type!r} is already registered")
+        self._recipes[evaluation_type] = validate_evaluation_recipe(evaluation_type, recipe)
+        if batch_recipe is not None:
+            self._batch_recipes[evaluation_type] = validate_evaluation_batch_recipe(
+                evaluation_type, batch_recipe
+            )
+
+    def register_authoring_schema(
+        self, evaluation_type: str, schema: EvaluationAuthoringSchema
+    ) -> None:
+        if self._sealed:
+            raise RuntimeError("evaluation recipe registry is sealed")
+        evaluation_type = validate_namespaced_type_key(evaluation_type, field="evaluation_type")
+        if not isinstance(schema, EvaluationAuthoringSchema):
+            raise TypeError("schema must be an EvaluationAuthoringSchema")
+        if evaluation_type in self._schemas:
+            raise ValueError(
+                f"Evaluation authoring schema {evaluation_type!r} is already registered"
+            )
+        self._schemas[evaluation_type] = copy.deepcopy(schema)
+
+    def keys(self) -> tuple[str, ...]:
+        return tuple(sorted(self._recipes))
+
+    def get(self, evaluation_type: str) -> EvaluationRecipe:
+        try:
+            return self._recipes[evaluation_type]
+        except KeyError as exc:
+            raise ValueError(
+                f"Evaluation recipe {evaluation_type!r} is not registered; "
+                f"available={list(self.keys())!r}"
+            ) from exc
+
+    def batch(self, evaluation_type: str) -> EvaluationBatchRecipe:
+        try:
+            return self._batch_recipes[evaluation_type]
+        except KeyError as exc:
+            raise ValueError(
+                f"Evaluation recipe {evaluation_type!r} has no registered batch recipe"
+            ) from exc
+
+    def authoring_schema(self, evaluation_type: str) -> EvaluationAuthoringSchema | None:
+        schema = self._schemas.get(evaluation_type)
+        return copy.deepcopy(schema) if schema is not None else None
+
+    def seal(self) -> None:
+        self._sealed = True
 
 
 @dataclass(frozen=True)
@@ -271,6 +336,7 @@ class EvaluationRunMatrixSpec(StrictModel):
 def compile_evaluation_run_matrix(
     spec: "EvaluationRunMatrixSpec | EvaluationRunMatrixDeltaSpec | Mapping[str, Any]",
     *,
+    registry: EvaluationRecipeRegistry,
     repo_root: Path | str | None = None,
 ) -> RowMatrixSpec[EvaluationRunSpec]:
     """Compile durable evaluation authoring to the explicit shared row contract."""
@@ -301,7 +367,7 @@ def compile_evaluation_run_matrix(
         sources=matrix.sources,
         derivations=matrix.derivations,
     )
-    _validate_evaluation_authoring(matrix, compiled, repo_root=repo_root)
+    _validate_evaluation_authoring(matrix, compiled, registry=registry, repo_root=repo_root)
     return compiled
 
 
@@ -309,10 +375,11 @@ def _validate_evaluation_authoring(
     matrix: EvaluationRunMatrixSpec,
     compiled: RowMatrixSpec[EvaluationRunSpec],
     *,
+    registry: EvaluationRecipeRegistry,
     repo_root: Path | str | None,
 ) -> None:
     evaluation_type = compiled.base.evaluation_type
-    schema = _EVALUATION_AUTHORING_SCHEMAS.get(evaluation_type)
+    schema = registry.authoring_schema(evaluation_type)
     if schema is None:
         return
     actual_axes = {
@@ -385,11 +452,12 @@ def _coerce_evaluation_run_matrix_spec(
 def materialize_evaluation_run_matrix(
     spec: "EvaluationRunMatrixSpec | EvaluationRunMatrixDeltaSpec | Mapping[str, Any]",
     *,
+    registry: EvaluationRecipeRegistry,
     repo_root: Path | str | None = None,
 ) -> list[MaterializedMatrixRow[EvaluationRunSpec]]:
     """Resolve an evaluation matrix into executable evaluation requests."""
     matrix = _coerce_evaluation_run_matrix_spec(spec, repo_root=repo_root)
-    compiled = compile_evaluation_run_matrix(matrix, repo_root=repo_root)
+    compiled = compile_evaluation_run_matrix(matrix, registry=registry, repo_root=repo_root)
     rows = materialize_matrix_rows(compiled, repo_root=repo_root)
     _validate_matrix_staged_parent_references(matrix, rows)
     return rows
@@ -401,6 +469,7 @@ def execute_evaluation_run_matrix(
         "| Mapping[str, Any]"
     ),
     *,
+    registry: EvaluationRecipeRegistry,
     root: Path | str,
     repo_root: Path | str | None = None,
     escape_hatch_reason: str | None = None,
@@ -448,7 +517,7 @@ def execute_evaluation_run_matrix(
         flattened_spec = matrix.model_dump(mode="json", exclude_none=True)
         # Delta-authored runs replay the authored envelope, not its flattened result.
         executable_spec = flattened_spec if composition is None else composition.authored
-        compiled = compile_evaluation_run_matrix(matrix, repo_root=repo_root)
+        compiled = compile_evaluation_run_matrix(matrix, registry=registry, repo_root=repo_root)
         materialized_rows = materialize_matrix_rows(compiled, repo_root=repo_root)
         _validate_matrix_staged_parent_references(matrix, materialized_rows)
         rows = [(row.row_id, row.payload.model_dump(mode="python")) for row in materialized_rows]
@@ -555,6 +624,7 @@ def execute_evaluation_run_matrix(
                 batch_ids.append(batch_id)
                 result = _execute_evaluation_batch_rows(
                     [(row_id, available[row_id]) for row_id in batch_row_ids],
+                    registry=registry,
                     root=Path(root) / batch_id,
                     execution_context=execution_context,
                     matrix_metadata=matrix_metadata,
@@ -583,6 +653,7 @@ def execute_evaluation_run_matrix(
             rows = [(row_id, available[row_id]) for row_id in batch.ordered_row_ids]
         return _execute_evaluation_batch_rows(
             rows,
+            registry=registry,
             root=Path(root),
             execution_context=execution_context,
             matrix_metadata=matrix_metadata,
@@ -602,6 +673,7 @@ def execute_evaluation_run_matrix(
     def execute(row_id: str, resolved: Mapping[str, Any], row_root: Path):
         manifest, path = execute_evaluation_run_spec(
             EvaluationRunSpec.model_validate(resolved),
+            registry=registry,
             root=row_root,
             metadata={
                 "matrix_harness": {
@@ -628,6 +700,7 @@ def execute_evaluation_run_matrix(
 def _execute_evaluation_batch_rows(
     rows: Sequence[tuple[str, Mapping[str, Any]]],
     *,
+    registry: EvaluationRecipeRegistry,
     root: Path,
     execution_context: StagedExecutionContext,
     matrix_metadata: Mapping[str, Any],
@@ -643,12 +716,7 @@ def _execute_evaluation_batch_rows(
     if len(evaluation_types) != 1:
         raise ValueError("batched evaluation rows must share one evaluation_type")
     evaluation_type = next(iter(evaluation_types))
-    try:
-        batch_recipe = _EVALUATION_BATCH_RECIPES[evaluation_type]
-    except KeyError as exc:
-        raise ValueError(
-            f"Evaluation recipe {evaluation_type!r} has no registered batch recipe"
-        ) from exc
+    batch_recipe = registry.batch(evaluation_type)
 
     root.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{root.name}.batch-", dir=root.parent))
@@ -1077,87 +1145,6 @@ def write_evaluation_states_cache(path: Path, *, manifest_id: str, states: Any) 
         )
 
 
-def register_evaluation_recipe(
-    evaluation_type: str,
-    recipe: EvaluationRecipe,
-    *,
-    batch_recipe: EvaluationBatchRecipe | None = None,
-    replace: bool = False,
-) -> None:
-    """Register an executable evaluation recipe by stable type key."""
-    evaluation_type = validate_namespaced_type_key(
-        evaluation_type,
-        field="evaluation_type",
-    )
-    if evaluation_type in _EVALUATION_RECIPES and not replace:
-        raise ValueError(f"Evaluation recipe {evaluation_type!r} is already registered")
-    if batch_recipe is not None:
-        batch_recipe = validate_evaluation_batch_recipe(evaluation_type, batch_recipe)
-    _EVALUATION_RECIPES[evaluation_type] = validate_evaluation_recipe(evaluation_type, recipe)
-    if replace:
-        _EVALUATION_BATCH_RECIPES.pop(evaluation_type, None)
-    if batch_recipe is not None:
-        _EVALUATION_BATCH_RECIPES[evaluation_type] = batch_recipe
-
-
-def register_evaluation_authoring_schema(
-    evaluation_type: str,
-    schema: EvaluationAuthoringSchema,
-) -> None:
-    """Idempotently register an experiment-owned compile-time schema."""
-    evaluation_type = validate_namespaced_type_key(evaluation_type, field="evaluation_type")
-    if type(schema) is not EvaluationAuthoringSchema:
-        raise TypeError("schema must be an exact EvaluationAuthoringSchema instance")
-    registered = _EVALUATION_AUTHORING_SCHEMAS.get(evaluation_type)
-    same_profiles = registered is not None and {
-        tuple(sorted((name, tuple(values)) for name, values in profile.items()))
-        for profile in registered.axis_profiles
-    } == {
-        tuple(sorted((name, tuple(values)) for name, values in profile.items()))
-        for profile in schema.axis_profiles
-    }
-    if registered is not None:
-        if (
-            registered.schema_id == schema.schema_id
-            and registered.schema_version == schema.schema_version
-            and registered.params_model is schema.params_model
-            and same_profiles
-        ):
-            return
-        raise ValueError(
-            f"Evaluation authoring schema {evaluation_type!r} conflicts with registered schema"
-        )
-    _EVALUATION_AUTHORING_SCHEMAS[evaluation_type] = schema
-
-
-def unregister_evaluation_authoring_schema(evaluation_type: str) -> None:
-    """Remove a runtime-only evaluation authoring schema."""
-    _EVALUATION_AUTHORING_SCHEMAS.pop(evaluation_type, None)
-
-
-def unregister_evaluation_recipe(evaluation_type: str) -> None:
-    """Remove a previously registered evaluation recipe."""
-    _EVALUATION_RECIPES.pop(evaluation_type, None)
-    _EVALUATION_BATCH_RECIPES.pop(evaluation_type, None)
-
-
-def registered_evaluation_recipes() -> tuple[str, ...]:
-    """Return registered computation recipe keys in deterministic order."""
-    return tuple(sorted(_EVALUATION_RECIPES))
-
-
-def get_evaluation_recipe(evaluation_type: str) -> EvaluationRecipe:
-    """Return a registered recipe or raise a clear unsupported-execution error."""
-    try:
-        return _EVALUATION_RECIPES[evaluation_type]
-    except KeyError as exc:
-        available = ", ".join(sorted(_EVALUATION_RECIPES)) or "none"
-        raise ValueError(
-            f"Evaluation recipe {evaluation_type!r} is not registered. "
-            f"Registered evaluation recipes: {available}."
-        ) from exc
-
-
 def coerce_evaluation_run_spec(
     value: EvaluationRunSpec | Mapping[str, Any] | Path | str,
 ) -> EvaluationRunSpec:
@@ -1173,6 +1160,7 @@ def coerce_evaluation_run_spec(
 def execute_evaluation_run_spec(
     spec: EvaluationRunSpec | Mapping[str, Any] | Path | str,
     *,
+    registry: EvaluationRecipeRegistry,
     root: Path | str | None = None,
     repo_root: Path | str | None = None,
     provenance: Provenance | None = None,
@@ -1189,7 +1177,7 @@ def execute_evaluation_run_spec(
     manifest identifier, not by a Studio database hash.
     """
     run_spec = coerce_evaluation_run_spec(spec)
-    recipe = get_evaluation_recipe(run_spec.evaluation_type)
+    recipe = registry.get(run_spec.evaluation_type)
     root_path = Path(root) if root is not None else default_manifest_root()
     execution_context = with_staged_repo_root(execution_context, repo_root)
     manifest_id = evaluation_run_manifest_id(run_spec)

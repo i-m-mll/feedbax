@@ -13,11 +13,12 @@ Exit codes: 0 success; 2 preflight or conformance failure; 3 row failure;
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.shadow_launch import ShadowLaunchEvidence, ShadowLaunchRowEvidence
@@ -27,6 +28,7 @@ from feedbax.contracts.evaluation_lifecycle import (
     EvaluationWorkerTopologyEvidence,
 )
 from feedbax.contracts.staged_execution import validate_staged_binding_name
+from feedbax.contracts.training import TrainingMethodRegistry
 from feedbax.orchestration import (
     STAGE_ORDER,
     LocalOrchestrationDriver,
@@ -52,7 +54,7 @@ from feedbax.orchestration.bundle import (
 )
 from feedbax.orchestration.collection_recovery import CollectionRecoveryBinding
 from feedbax.orchestration.staged_root_custody import StagedRootSnapshotBinding
-from feedbax.orchestration.conformance import build_default_check_registry
+from feedbax.orchestration.conformance import CheckRegistry
 from feedbax.orchestration.drivers.runpod import (
     RunPodDriverConfig,
     RunPodOrchestrationDriver,
@@ -73,7 +75,7 @@ from feedbax.orchestration.stages import (
     PreflightFailed,
     StageEngine,
 )
-from feedbax.plugins import load_training_method_plugins
+from feedbax.plugins.composition import compose_application
 from feedbax.training.interruption import CancellationDecision, RunInterruptionController
 
 
@@ -91,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        args.bootstrap_state = asyncio.run(compose_application())
         return int(args.func(args))
     except StateLockError as exc:
         _print_error(exc)
@@ -240,7 +243,6 @@ def cmd_preflight(args: argparse.Namespace) -> int:
             raise ValueError("--bundle is supported only with --authority-only")
         if args.bundle_sha256:
             raise ValueError("--bundle-sha256 is supported only with --authority-only")
-        load_training_method_plugins(fail_on_load_error=True)
     if args.authority_only:
         if not args.run_set_id:
             raise ValueError("--authority-only requires --run-set-id")
@@ -258,7 +260,7 @@ def cmd_preflight(args: argparse.Namespace) -> int:
                 request,
                 run_set_id=args.run_set_id,
                 context=AssemblyContext(custody_root=root / "custody", repo_root=Path.cwd()),
-                registry=build_default_assembly_registry(),
+                registry=_assembly_registry(args.bootstrap_state.bundle),
             )
         checks = (
             run_authority_preflight_checks(bundle) if args.bundle else run_preflight_checks(bundle)
@@ -287,6 +289,9 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         run_set_id=args.run_set_id,
         input_provider_bindings=_input_provider_bindings(args.input_provider),
         staged_root_bindings=_staged_root_bindings(args.staged_root),
+        conformance_registry=args.bootstrap_state.bundle.conformance_checks,
+        plugin_provenance=args.bootstrap_state.provenance,
+        registry_bundle=args.bootstrap_state.bundle,
     )
     try:
         state = engine.run(stop_after_stage="PREFLIGHT")
@@ -300,7 +305,6 @@ def cmd_preflight(args: argparse.Namespace) -> int:
 
 
 def cmd_launch(args: argparse.Namespace) -> int:
-    load_training_method_plugins(fail_on_load_error=True)
     request_path = Path(args.assembly_request)
     request = _load_assembly_request(request_path)
     if args.driver:
@@ -334,7 +338,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
             request,
             run_set_id=mint_run_set_id(),
             context=AssemblyContext(custody_root=root / "custody", repo_root=Path.cwd()),
-            registry=build_default_assembly_registry(),
+            registry=_assembly_registry(args.bootstrap_state.bundle),
         )
         commands = dry_run_launch_bundle(
             bundle,
@@ -353,6 +357,9 @@ def cmd_launch(args: argparse.Namespace) -> int:
             interruption_probe=interruption.poll,
             input_provider_bindings=input_provider_bindings,
             staged_root_bindings=staged_root_bindings,
+            conformance_registry=args.bootstrap_state.bundle.conformance_checks,
+            plugin_provenance=args.bootstrap_state.provenance,
+            registry_bundle=args.bootstrap_state.bundle,
         )
         state = engine.run()
     return _state_exit_code(state)
@@ -360,7 +367,6 @@ def cmd_launch(args: argparse.Namespace) -> int:
 
 def cmd_shadow_launch(args: argparse.Namespace) -> int:
     """Run the one local governed scenario without entering provider readiness stages."""
-    load_training_method_plugins(fail_on_load_error=True)
     request_path = Path(args.assembly_request)
     request = _load_assembly_request(request_path)
     _require_provider_free_shadow_request(request)
@@ -370,6 +376,9 @@ def cmd_shadow_launch(args: argparse.Namespace) -> int:
         input_provider_bindings=_input_provider_bindings(args.input_provider),
         staged_root_bindings=_staged_root_bindings(args.staged_root),
         native_update_budget=1,
+        conformance_registry=args.bootstrap_state.bundle.conformance_checks,
+        plugin_provenance=args.bootstrap_state.provenance,
+        registry_bundle=args.bootstrap_state.bundle,
     )
     state = engine.run(stop_after_stage="COLLECT")
     if engine.bundle is None:
@@ -538,12 +547,14 @@ def cmd_collect(args: argparse.Namespace) -> int:
         args.run_set,
         stop_after_stage="COLLECT",
         collection_recovery_bindings=_collection_recovery_bindings(args.recover_collected_root),
+        conformance_registry=args.bootstrap_state.bundle.conformance_checks,
+        training_method_registry=args.bootstrap_state.bundle.training_methods,
+        plugin_provenance=args.bootstrap_state.provenance,
     )
     return _state_exit_code(state)
 
 
 def cmd_certify(args: argparse.Namespace) -> int:
-    load_training_method_plugins(fail_on_load_error=True)
     run_options: dict[str, Any] = {
         "stop_after_stage": "CERTIFY",
         "retry_failed_certification": True,
@@ -551,25 +562,40 @@ def cmd_certify(args: argparse.Namespace) -> int:
     input_bindings = _input_provider_bindings(args.input_provider)
     if input_bindings:
         run_options["input_provider_bindings"] = input_bindings
-    state = _run_existing(args.run_set, **run_options)
+    state = _run_existing(
+        args.run_set,
+        conformance_registry=args.bootstrap_state.bundle.conformance_checks,
+        training_method_registry=args.bootstrap_state.bundle.training_methods,
+        plugin_provenance=args.bootstrap_state.provenance,
+        **run_options,
+    )
     if state.stage("CERTIFY").outputs.get("overall") == "fail":
         return EXIT_PREFLIGHT
     return _state_exit_code(state)
 
 
 def cmd_teardown(args: argparse.Namespace) -> int:
-    state = _run_existing(args.run_set, stop_after_stage="TEARDOWN", break_stale_lock=args.force)
+    state = _run_existing(
+        args.run_set,
+        stop_after_stage="TEARDOWN",
+        break_stale_lock=args.force,
+        conformance_registry=args.bootstrap_state.bundle.conformance_checks,
+        training_method_registry=args.bootstrap_state.bundle.training_methods,
+        plugin_provenance=args.bootstrap_state.provenance,
+    )
     return _state_exit_code(state)
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
-    load_training_method_plugins(fail_on_load_error=True)
     with RunInterruptionController() as interruption:
         state = _run_existing(
             args.run_set,
             interruption_probe=interruption.poll,
             input_provider_bindings=_input_provider_bindings(args.input_provider),
             collection_recovery_bindings=_collection_recovery_bindings(args.recover_collected_root),
+            conformance_registry=args.bootstrap_state.bundle.conformance_checks,
+            training_method_registry=args.bootstrap_state.bundle.training_methods,
+            plugin_provenance=args.bootstrap_state.provenance,
         )
     return _state_exit_code(state)
 
@@ -613,6 +639,9 @@ def _run_engine(
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
     collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
     staged_root_bindings: tuple[StagedRootSnapshotBinding, ...] = (),
+    conformance_registry: CheckRegistry,
+    training_method_registry: TrainingMethodRegistry,
+    plugin_provenance: Sequence[Any],
 ) -> RunSetState:
     if collection_recovery_bindings:
         driver = _driver_for_bundle(
@@ -620,6 +649,7 @@ def _run_engine(
             input_provider_bindings,
             collection_recovery_bindings=collection_recovery_bindings,
             staged_root_bindings=staged_root_bindings,
+            training_method_registry=training_method_registry,
         )
     else:
         driver = (
@@ -627,14 +657,20 @@ def _run_engine(
                 bundle,
                 input_provider_bindings,
                 staged_root_bindings=staged_root_bindings,
+                training_method_registry=training_method_registry,
             )
             if staged_root_bindings
-            else _driver_for_bundle(bundle, input_provider_bindings)
+            else _driver_for_bundle(
+                bundle,
+                input_provider_bindings,
+                training_method_registry=training_method_registry,
+            )
         )
     state = StageEngine(
         bundle=bundle,
         driver=driver,
-        conformance_registry=build_default_check_registry(),
+        conformance_registry=conformance_registry,
+        plugin_provenance=plugin_provenance,
         interruption_probe=interruption_probe,
     ).run(
         break_stale_lock=break_stale_lock,
@@ -653,6 +689,9 @@ def _run_existing(
     break_stale_lock: bool = False,
     retry_failed_certification: bool = False,
     interruption_probe: Callable[[], CancellationDecision | None] | None = None,
+    conformance_registry: CheckRegistry,
+    training_method_registry: TrainingMethodRegistry,
+    plugin_provenance: Sequence[Any],
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
     collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
 ) -> RunSetState:
@@ -663,6 +702,9 @@ def _run_existing(
         break_stale_lock=break_stale_lock,
         retry_failed_certification=retry_failed_certification,
         interruption_probe=interruption_probe,
+        conformance_registry=conformance_registry,
+        training_method_registry=training_method_registry,
+        plugin_provenance=plugin_provenance,
         input_provider_bindings=input_provider_bindings,
         collection_recovery_bindings=collection_recovery_bindings,
     )
@@ -674,6 +716,8 @@ def _driver_for_bundle(
     collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
     native_update_budget: int | None = None,
     staged_root_bindings: tuple[StagedRootSnapshotBinding, ...] = (),
+    *,
+    training_method_registry: TrainingMethodRegistry,
 ) -> LocalOrchestrationDriver | RunPodOrchestrationDriver:
     driver_name = bundle.deployment_policy.driver
     if driver_name == "local":
@@ -692,6 +736,7 @@ def _driver_for_bundle(
             input_provider_bindings=bindings,
             collection_recovery_bindings=collection_recovery_bindings,
             staged_root_bindings=staged_root_bindings,
+            training_method_registry=training_method_registry,
         )
     raise RuntimeError(f"Unsupported orchestration driver: {driver_name!r}")
 
@@ -717,6 +762,9 @@ def _request_engine(
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
     native_update_budget: int | None = None,
     staged_root_bindings: tuple[StagedRootSnapshotBinding, ...] = (),
+    conformance_registry: CheckRegistry,
+    plugin_provenance: Sequence[Any],
+    registry_bundle: Any,
 ) -> StageEngine:
     root = (
         Path(request.orchestration_root).expanduser()
@@ -730,24 +778,35 @@ def _request_engine(
     return StageEngine.from_request(
         request,
         context=context,
-        registry=build_default_assembly_registry(),
+        registry=_assembly_registry(registry_bundle),
         driver_factory=lambda bundle: (
             _driver_for_bundle(
                 bundle,
                 input_provider_bindings,
                 native_update_budget=native_update_budget,
                 staged_root_bindings=staged_root_bindings,
+                training_method_registry=registry_bundle.training_methods,
             )
             if staged_root_bindings
             else _driver_for_bundle(
                 bundle,
                 input_provider_bindings,
                 native_update_budget=native_update_budget,
+                training_method_registry=registry_bundle.training_methods,
             )
         ),
         run_set_id=run_set_id,
-        conformance_registry=build_default_check_registry(),
+        conformance_registry=conformance_registry,
+        plugin_provenance=plugin_provenance,
         interruption_probe=interruption_probe,
+    )
+
+
+def _assembly_registry(bundle: Any) -> Any:
+    return build_default_assembly_registry(
+        method_registry=bundle.training_methods,
+        row_lowerer_registry=bundle.row_lowerers,
+        evaluation_registry=bundle.evaluation_recipes,
     )
 
 

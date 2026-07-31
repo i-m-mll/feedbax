@@ -67,7 +67,6 @@ from .checkpoint_custody import (
     write_checkpoint_transaction,
 )
 from .preparation import (
-    DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY,
     ExecutionPreparationError,
     ExecutionPreparationPlan,
     ExecutionPreparationProvider,
@@ -144,7 +143,6 @@ try:
         materialize_adapted_run_matrix,
     )
     from .row_lowering import (
-        DEFAULT_TRAINING_ROW_LOWERER_REGISTRY,
         TrainingRowLowererRegistration,
         TrainingRowLowererRegistry,
         TrainingRowLowererRegistryError,
@@ -158,6 +156,7 @@ try:
         TrainingMethodAuthoringCompilation,
         TrainingMethodAuthoringError,
         compile_training_method_authoring,
+        training_method_row_lowerer_registration,
         training_method_authoring_implementation_sha256,
     )
 except ImportError:
@@ -219,7 +218,6 @@ __all__ = [
     "TrainingRowLowererRegistry",
     "TrainingRowLowererRegistryError",
     "TrainingRowLoweringContext",
-    "DEFAULT_TRAINING_ROW_LOWERER_REGISTRY",
     "TrainingRowLoweringResult",
     "TrainingRowParentProvenance",
     "TrainingRowPlanningProvenance",
@@ -234,7 +232,6 @@ __all__ = [
     "TRAINING_METHOD_AUTHORING_LOWERER_IDENTITY",
     "TRAINING_METHOD_AUTHORING_LOWERER_VERSION",
     "AuthenticatedCheckpointTransaction",
-    "DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY",
     "ExecutionPreparationError",
     "ExecutionPreparationPlan",
     "ExecutionPreparationProvider",
@@ -267,6 +264,7 @@ __all__ = [
     "checkpoint_slot_names",
     "checkpoint_slot_specs",
     "compile_training_method_authoring",
+    "training_method_row_lowerer_registration",
     "training_method_authoring_implementation_sha256",
     "execute_training_run_spec",
     "emit_training_run_spec_storage",

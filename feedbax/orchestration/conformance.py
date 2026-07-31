@@ -115,9 +115,7 @@ class RealizedDeploymentRecord(StrictModel):
     row_started_at: datetime | None = None
     row_completed_at: datetime | None = None
     observed_at: datetime
-    wall_time_seconds: float | None = Field(
-        default=None, ge=0.0, strict=True, allow_inf_nan=False
-    )
+    wall_time_seconds: float | None = Field(default=None, ge=0.0, strict=True, allow_inf_nan=False)
     hourly_rate: float | None = Field(default=None, ge=0.0, strict=True, allow_inf_nan=False)
     accrued_cost: float | None = Field(default=None, ge=0.0, strict=True, allow_inf_nan=False)
     currency: str | None = None
@@ -208,9 +206,7 @@ class RealizedDeploymentRecord(StrictModel):
         ):
             elapsed_hours = (self.observed_at - self.billing_started_at).total_seconds() / 3600.0
             expected_cost = self.hourly_rate * elapsed_hours
-            if not math.isclose(
-                self.accrued_cost, expected_cost, rel_tol=1e-9, abs_tol=1e-9
-            ):
+            if not math.isclose(self.accrued_cost, expected_cost, rel_tol=1e-9, abs_tol=1e-9):
                 raise ValueError(
                     "accrued_cost does not match hourly_rate and observed billing duration"
                 )
@@ -318,12 +314,15 @@ class CheckRegistry:
     """Deterministic registry of conformance checks."""
 
     def __init__(self, checks: Mapping[str, CheckCallable] | None = None) -> None:
+        self._sealed = False
         self._checks: dict[str, CheckCallable] = {}
         for check_id, check in (checks or {}).items():
             self.register(check_id, check)
 
     def register(self, check_id: str, check: CheckCallable) -> None:
         """Register one check callable."""
+        if self._sealed:
+            raise RuntimeError("conformance check registry is sealed")
         if not check_id:
             raise ValueError("check_id must be non-empty")
         if check_id in self._checks:
@@ -341,6 +340,9 @@ class CheckRegistry:
 
     def __len__(self) -> int:
         return len(self._checks)
+
+    def seal(self) -> None:
+        self._sealed = True
 
 
 def pass_check(check_id: str, *, expected: Any = None, observed: Any = None) -> CheckEntry:
@@ -418,9 +420,11 @@ def assemble_certificate(
     rows = {}
     for row_id, checks in sorted(row_checks.items()):
         raw = artifacts.get(row_id)
-        evidence = dict(raw.realized_deployment_evidence) if (
-            raw is not None and raw.realized_deployment_evidence is not None
-        ) else {"unavailable_evidence": "realized_deployment_evidence was not supplied"}
+        evidence = (
+            dict(raw.realized_deployment_evidence)
+            if (raw is not None and raw.realized_deployment_evidence is not None)
+            else {"unavailable_evidence": "realized_deployment_evidence was not supplied"}
+        )
         evidence_check = next(
             (check for check in checks if check.check_id == "realized_deployment"), None
         )
@@ -575,8 +579,7 @@ def check_evaluation_lifecycle(row: ConformanceRowArtifacts) -> CheckEntry:
         observed={
             "ordered_row_ids": list(evidence.ordered_row_ids),
             "diagnostic_schema_ids": {
-                item.row_id: list(item.diagnostic_schema_ids)
-                for item in evidence.outcomes
+                item.row_id: list(item.diagnostic_schema_ids) for item in evidence.outcomes
             },
         },
     )
@@ -623,7 +626,12 @@ def check_realized_deployment(row: ConformanceRowArtifacts) -> CheckEntry:
             problems.append("local evidence must identify provider=local")
         if any(
             value is not None
-            for value in (record.gpu_model, record.gpu_count, record.region, record.immutable_image_id)
+            for value in (
+                record.gpu_model,
+                record.gpu_count,
+                record.region,
+                record.immutable_image_id,
+            )
         ):
             problems.append("local GPU, image, and region must use explicit not-applicable facts")
         if (record.hourly_rate, record.accrued_cost, record.currency, record.cost_basis) != (
@@ -677,7 +685,9 @@ def check_realized_deployment(row: ConformanceRowArtifacts) -> CheckEntry:
 
     observed = record.model_dump(mode="json")
     if problems:
-        return fail_check(check_id, expected=expected, observed=observed, detail="; ".join(problems))
+        return fail_check(
+            check_id, expected=expected, observed=observed, detail="; ".join(problems)
+        )
     return pass_check(check_id, expected=expected, observed=observed)
 
 
@@ -812,15 +822,11 @@ def _validate_training_matrix_delta_parent_chain(
     artifact_path = Path(ref.uri).expanduser().resolve()
     root = Path(repo_root).expanduser().resolve()
     if not artifact_path.is_relative_to(root):
-        raise ValueError(
-            "training matrix delta authored artifact is outside authored_repo_root"
-        )
+        raise ValueError("training matrix delta authored artifact is outside authored_repo_root")
     try:
         flatten_training_run_matrix_delta(spec, repo_root=root)
     except (OSError, TypeError, ValueError) as exc:
-        raise ValueError(
-            f"training matrix delta parent chain cannot be validated: {exc}"
-        ) from exc
+        raise ValueError(f"training matrix delta parent chain cannot be validated: {exc}") from exc
 
 
 def _builtin_identity_adapter(schema_id: str) -> Any:
@@ -914,16 +920,6 @@ def _raw_manifest_payload(row: ConformanceRowArtifacts) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         raise TypeError("final manifest payload must be an object")
     return dict(payload)
-
-
-def build_default_check_registry(*, include_plugins: bool = True) -> CheckRegistry:
-    """Return core checks plus optional checks discovered from Feedbax plugins."""
-    registry = build_core_check_registry()
-    if include_plugins:
-        from feedbax.plugins.discovery import load_conformance_check_plugins
-
-        load_conformance_check_plugins(registry=registry)
-    return registry
 
 
 def assert_certificate_allows_completed_registration(
@@ -1137,7 +1133,21 @@ def check_manifest_valid(row: ConformanceRowArtifacts) -> CheckEntry:
     expected_spec = dict(row.preflight_normalized_payload)
     if observed_spec is _MISSING:
         return missing_input_check(check_id, "manifest.training_spec.inline")
-    if _canonical(json.loads(json.dumps(observed_spec), object_pairs_hook=lambda pairs: {key: value for key, value in pairs if value is not None})) == _canonical(json.loads(json.dumps(expected_spec), object_pairs_hook=lambda pairs: {key: value for key, value in pairs if value is not None})):
+    if _canonical(
+        json.loads(
+            json.dumps(observed_spec),
+            object_pairs_hook=lambda pairs: {
+                key: value for key, value in pairs if value is not None
+            },
+        )
+    ) == _canonical(
+        json.loads(
+            json.dumps(expected_spec),
+            object_pairs_hook=lambda pairs: {
+                key: value for key, value in pairs if value is not None
+            },
+        )
+    ):
         return pass_check(check_id, expected=expected_spec, observed=observed_spec)
     return fail_check(check_id, expected=expected_spec, observed=observed_spec)
 
@@ -1383,9 +1393,7 @@ def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
                 )
                 for step in samples
             }
-            observed[coordinates] = {
-                step: float(coordinate_trace[step]) for step in samples
-            }
+            observed[coordinates] = {step: float(coordinate_trace[step]) for step in samples}
     except Exception as exc:
         return fail_check(
             check_id,
@@ -1486,9 +1494,7 @@ def _normalize_lr_trace_steps(
             for step in steps
         ]
         if not any(batch_frame_membership) and event_log is not None:
-            completed_batches_by_program_step = _event_completed_batches_by_program_step(
-                event_log
-            )
+            completed_batches_by_program_step = _event_completed_batches_by_program_step(event_log)
             missing = sorted(set(steps) - completed_batches_by_program_step.keys())
             if missing:
                 raise ValueError(
@@ -1514,16 +1520,14 @@ def _normalize_lr_trace_steps(
                     "completed-batch coordinates"
                 )
             if not all(
-                resume_origin < step <= cumulative_completed
-                for step in ordered_completed_batches
+                resume_origin < step <= cumulative_completed for step in ordered_completed_batches
             ):
                 raise ValueError(
                     "lr_trace program-step frame maps outside the cumulative continuation range"
                 )
             return {
                 coordinates: {
-                    translated[program_step]: value
-                    for program_step, value in samples.items()
+                    translated[program_step]: value for program_step, value in samples.items()
                 }
                 for coordinates, samples in trace.items()
             }
@@ -1712,8 +1716,7 @@ def _lr_trace(
         if raw_coordinates is _MISSING or raw_coordinates is None:
             raw_coordinates = ()
         coordinates = tuple(
-            (str(coordinate["axis"]), int(coordinate["index"]))
-            for coordinate in raw_coordinates
+            (str(coordinate["axis"]), int(coordinate["index"])) for coordinate in raw_coordinates
         )
         coordinate_trace = trace.setdefault(coordinates, {})
         if int(step) in coordinate_trace:

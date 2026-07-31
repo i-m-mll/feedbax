@@ -5,7 +5,9 @@ from __future__ import annotations
 import dataclasses
 import logging
 from typing import Any
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+
+from feedbax.plugins.registry import ExperimentRegistry
 
 from feedbax.analysis.bundles import AnalysisBundleSpec, dry_run_staged_analysis_bundle
 from feedbax.contracts.studio_api import (
@@ -111,23 +113,17 @@ def _introspect_analysis(
     )
 
 
-def _discover_packages() -> list[AnalysisPackageInfo]:
+def _discover_packages(registry: ExperimentRegistry) -> list[AnalysisPackageInfo]:
     """Walk the experiment registry and introspect all analysis classes.
 
     Returns an empty list if no packages are installed or if introspection
     fails.  The frontend falls back to hardcoded stub data in that case.
     """
-    try:
-        from feedbax.plugins import EXPERIMENT_REGISTRY
-    except Exception:
-        logger.warning("Could not import EXPERIMENT_REGISTRY", exc_info=True)
-        return []
-
     packages: list[AnalysisPackageInfo] = []
 
-    for package_name in EXPERIMENT_REGISTRY.get_package_names():
+    for package_name in registry.get_package_names():
         try:
-            metadata = EXPERIMENT_REGISTRY.get_package_metadata(package_name)
+            metadata = registry.get_package_metadata(package_name)
         except ValueError:
             continue
 
@@ -137,11 +133,12 @@ def _discover_packages() -> list[AnalysisPackageInfo]:
         for part in metadata.parts:
             module_key = part
             try:
-                analysis_module = EXPERIMENT_REGISTRY.get_analysis_module(module_key)
+                analysis_module = registry.get_analysis_module(module_key)
             except (ValueError, ImportError):
                 logger.debug(
                     "Could not load analysis module '%s' from package '%s'",
-                    module_key, package_name,
+                    module_key,
+                    package_name,
                 )
                 continue
 
@@ -163,7 +160,9 @@ def _discover_packages() -> list[AnalysisPackageInfo]:
                 except Exception:
                     logger.warning(
                         "Failed to introspect analysis '%s' in %s/%s",
-                        name, package_name, part,
+                        name,
+                        package_name,
+                        part,
                         exc_info=True,
                     )
 
@@ -185,7 +184,7 @@ def _discover_packages() -> list[AnalysisPackageInfo]:
 
 
 @router.get("/packages", response_model=AnalysisPackagesResponse)
-async def list_analysis_packages() -> AnalysisPackagesResponse:
+async def list_analysis_packages(request: Request) -> AnalysisPackagesResponse:
     """List all available analysis packages with their analysis classes.
 
     Introspects the experiment registry to discover installed packages,
@@ -194,7 +193,7 @@ async def list_analysis_packages() -> AnalysisPackagesResponse:
     analysis class so the frontend palette can be populated from live
     data instead of hardcoded stubs.
     """
-    packages = _discover_packages()
+    packages = _discover_packages(request.app.state.bootstrap_state.bundle.experiment_packages)
     return AnalysisPackagesResponse(data={"packages": packages})
 
 

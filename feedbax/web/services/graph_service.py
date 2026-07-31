@@ -6,7 +6,6 @@ from typing import List, Optional
 import json
 import uuid
 
-from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.domain import DomainCompileReport
 from feedbax.contracts.graphs.acausal_compiler import compile_acausal_authoring_report
@@ -223,13 +222,13 @@ class GraphService:
         *,
         node_path: list[str],
         interior: AcausalGraphSpec,
+        component_registry: object,
     ) -> DomainCompileReport:
         record = self.get_graph(graph_id)
-        registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
         report = compile_acausal_authoring_report(
             interior,
             node_path=node_path,
-            component_registry=registry,
+            component_registry=component_registry,
         )
         key = "/".join(node_path)
         record.project.compile_reports = {

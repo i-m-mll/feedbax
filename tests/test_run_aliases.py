@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -12,9 +13,7 @@ from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
 from feedbax.analysis.specs import (
     AnalysisRecipeExecutionError,
     AnalysisRecipeResult,
-    register_analysis_recipe,
     resolve_analysis_run_authoring,
-    unregister_analysis_recipe,
 )
 from feedbax.bin import analysis as analysis_cli
 from feedbax.contracts.analysis_composition import (
@@ -38,6 +37,14 @@ from feedbax.contracts.run_aliases import (
     RunAliasCatalog,
     resolve_run_aliases,
 )
+from feedbax.plugins import (
+    ANALYSIS_RECIPES,
+    FamilyRequirement,
+    PluginDeclaration,
+    PluginRegistration,
+    bootstrap_application,
+    new_registration_context,
+)
 from tests.analysis_fixtures import (
     ToyAnalysis,
     build_toy_analysis_data,
@@ -45,6 +52,27 @@ from tests.analysis_fixtures import (
 )
 
 pytestmark = [pytest.mark.feedbax_contract]
+
+
+def _analysis_state(analysis_type: str, recipe):
+    def register(context) -> None:
+        context.registry(ANALYSIS_RECIPES).register(analysis_type, recipe)
+
+    return asyncio.run(
+        bootstrap_application(
+            new_registration_context(local_component_source=None),
+            registrations=(
+                PluginRegistration(
+                    PluginDeclaration(
+                        "tests.run_aliases",
+                        "1",
+                        families=(FamilyRequirement("analysis_recipes"),),
+                    ),
+                    register,
+                ),
+            ),
+        )
+    )
 
 
 def _authenticated_parent(*, digest: str = "a" * 64) -> ParentRef:
@@ -141,8 +169,10 @@ def test_alias_resolution_fails_closed(
     catalogs: list[dict[str, object]],
     message: str,
 ) -> None:
-    alias = "missing" if "not declared" in message else (
-        "a" if "cycle" in message else "same" if "ambiguous" in message else "missing-pin"
+    alias = (
+        "missing"
+        if "not declared" in message
+        else ("a" if "cycle" in message else "same" if "ambiguous" in message else "missing-pin")
     )
     with pytest.raises(ValueError, match=message):
         resolve_run_aliases({"input": _alias_ref(alias)}, catalogs)
@@ -247,7 +277,6 @@ def test_delta_compilation_resolves_alias_before_final_identity_and_provenance(
 def test_analysis_cli_expands_alias_to_durable_pin(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     analysis_type = "feedbax.test.run_alias_cli"
     evaluation, evaluation_path = execute_toy_evaluation(tmp_path)
@@ -284,21 +313,17 @@ def test_analysis_cli_expands_alias_to_durable_pin(
             data=build_toy_analysis_data(value=int(spec.params["value"])),
         )
 
-    register_analysis_recipe(analysis_type, recipe, replace=True)
-    monkeypatch.setattr("feedbax.plugins.load_training_method_plugins", lambda: None)
-    try:
-        analysis_cli.main(
-            [
-                "run",
-                str(spec_path),
-                "--run-aliases",
-                str(catalog_path),
-                "--root",
-                str(tmp_path),
-            ]
-        )
-    finally:
-        unregister_analysis_recipe(analysis_type)
+    analysis_cli.main(
+        [
+            "run",
+            str(spec_path),
+            "--run-aliases",
+            str(catalog_path),
+            "--root",
+            str(tmp_path),
+        ],
+        bootstrap_state=_analysis_state(analysis_type, recipe),
+    )
 
     result = json.loads(capsys.readouterr().out)
     manifest = load_manifest(result["manifest_path"])
@@ -312,7 +337,6 @@ def test_analysis_cli_expands_alias_to_durable_pin(
 
 def test_analysis_cli_rejects_alias_target_whose_manifest_bytes_drifted(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     evaluation, evaluation_path = execute_toy_evaluation(tmp_path)
     parent = authenticated_manifest_ref(evaluation, evaluation_path, "evaluation_run")
@@ -331,7 +355,7 @@ def test_analysis_cli_rejects_alias_target_whose_manifest_bytes_drifted(
             {
                 "schema_id": "feedbax.spec.analysis_run",
                 "schema_version": "feedbax.spec.analysis_run.v2",
-                "analysis_type": "feedbax.test.alias-drift",
+                "analysis_type": "feedbax.test.alias_drift",
                 "inputs": [_alias_ref("source-run")],
             }
         ),
@@ -348,8 +372,6 @@ def test_analysis_cli_rejects_alias_target_whose_manifest_bytes_drifted(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr("feedbax.plugins.load_training_method_plugins", lambda: None)
-
     with pytest.raises(AnalysisRecipeExecutionError) as excinfo:
         analysis_cli.main(
             [
@@ -359,6 +381,10 @@ def test_analysis_cli_rejects_alias_target_whose_manifest_bytes_drifted(
                 str(catalog_path),
                 "--root",
                 str(tmp_path),
-            ]
+            ],
+            bootstrap_state=_analysis_state(
+                "feedbax.test.alias_drift",
+                lambda *_args: AnalysisRecipeResult(),
+            ),
         )
     assert "SHA-256 mismatch" in str(excinfo.value.__cause__)

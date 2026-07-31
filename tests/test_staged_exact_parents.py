@@ -15,8 +15,6 @@ from feedbax.analysis.bundles import (
 )
 from feedbax.analysis.evaluation import (
     EvaluationRecipeResult,
-    register_evaluation_recipe,
-    unregister_evaluation_recipe,
 )
 from feedbax.analysis.evaluation_inputs import (
     EvaluationInputAmbiguityError,
@@ -71,6 +69,7 @@ from tests.test_checkpoint_custody import (
     _write_resolver_checkpoint,
 )
 from feedbax.persistence.artifact_custody import open_immutable_artifact_blob_provider
+from feedbax.plugins.bootstrap import BootstrapState
 
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.analysis_recipe_contract]
@@ -78,9 +77,15 @@ pytestmark = [pytest.mark.feedbax_contract, pytest.mark.analysis_recipe_contract
 EXACT_EVALUATION_TYPE = "feedbax.test.staged_exact_parent_eval"
 
 
+class EvaluationCalls(list[EvaluationRunSpec]):
+    def __init__(self, registries):
+        super().__init__()
+        self.registries = registries
+
+
 @pytest.fixture
-def exact_evaluation_calls():
-    calls: list[EvaluationRunSpec] = []
+def exact_evaluation_calls(application_registry_bundle):
+    calls = EvaluationCalls(application_registry_bundle)
 
     def recipe(
         run_spec: EvaluationRunSpec,
@@ -100,11 +105,8 @@ def exact_evaluation_calls():
             summary_metrics={"parent_count": len(run_spec.inputs)},
         )
 
-    register_evaluation_recipe(EXACT_EVALUATION_TYPE, recipe, replace=True)
-    try:
-        yield calls
-    finally:
-        unregister_evaluation_recipe(EXACT_EVALUATION_TYPE)
+    application_registry_bundle.evaluation_recipes.register(EXACT_EVALUATION_TYPE, recipe)
+    return calls
 
 
 def _bundle(
@@ -409,6 +411,7 @@ def test_four_exact_parents_remain_per_run_until_grouped_downstream(
         _bundle(include_report=True),
         root=tmp_path,
         exact_parents=exact,
+        registries=exact_evaluation_calls.registries,
     )
 
     assert execution.matched_run_ids == [entry.parent.id for entry in entries]
@@ -456,6 +459,7 @@ def test_diverged_run_admits_certified_checkpoint_and_scopes_evaluation_identity
         root=first_root,
         exact_parents=_exact_document(first),
         **_material_dependency_execution_kwargs(first_root),
+        registries=exact_evaluation_calls.registries,
     )
     second_execution = execute_staged_analysis_bundle(
         _bundle(),
@@ -465,6 +469,7 @@ def test_diverged_run_admits_certified_checkpoint_and_scopes_evaluation_identity
             second_root,
             checkpoint_root=first_root / "checkpoint-custody",
         ),
+        registries=exact_evaluation_calls.registries,
     )
 
     first_ref = first_execution.stages[0].manifest_refs[0]
@@ -472,12 +477,8 @@ def test_diverged_run_admits_certified_checkpoint_and_scopes_evaluation_identity
     assert first_ref.id == second_ref.id
     assert first.parent.metadata["manifest_sha256"] != second.parent.metadata["manifest_sha256"]
     assert (
-        exact_evaluation_calls[0].inputs[0].metadata[
-            "material_dependency_identity_sha256"
-        ]
-        == exact_evaluation_calls[1].inputs[0].metadata[
-            "material_dependency_identity_sha256"
-        ]
+        exact_evaluation_calls[0].inputs[0].metadata["material_dependency_identity_sha256"]
+        == exact_evaluation_calls[1].inputs[0].metadata["material_dependency_identity_sha256"]
     )
 
 
@@ -571,6 +572,7 @@ def test_material_dependency_admission_rejects_before_outputs(
                 root=tmp_path,
                 exact_parents=_exact_document(entry),
                 **_material_dependency_execution_kwargs(tmp_path),
+                registries=exact_evaluation_calls.registries,
             )
 
     assert exact_evaluation_calls == []
@@ -683,6 +685,7 @@ def test_exact_parent_preflight_rejects_before_recipe_or_outputs(
             _bundle(),
             root=tmp_path,
             exact_parents=exact,
+            registries=exact_evaluation_calls.registries,
         )
 
     assert exact_evaluation_calls == []
@@ -722,6 +725,7 @@ def test_exact_parent_rejects_available_governed_manifest_fact_conflicts(
             _bundle(),
             root=tmp_path,
             exact_parents=_exact_document(entry),
+            registries=exact_evaluation_calls.registries,
         )
 
     assert exact_evaluation_calls == []
@@ -772,6 +776,7 @@ def test_exact_parent_preflight_rejects_duplicate_membership(
             _bundle(),
             root=tmp_path,
             exact_parents=_exact_document(first, second),
+            registries=exact_evaluation_calls.registries,
         )
 
     assert exact_evaluation_calls == []
@@ -797,6 +802,7 @@ def test_exact_parent_preflight_rejects_symlink(
             _bundle(),
             root=tmp_path,
             exact_parents=_exact_document(entry),
+            registries=exact_evaluation_calls.registries,
         )
 
     assert exact_evaluation_calls == []
@@ -831,6 +837,7 @@ def test_exact_parent_predicate_cannot_change_membership(
             _bundle(predicate=predicate),
             root=tmp_path,
             exact_parents=_exact_document(*entries),
+            registries=exact_evaluation_calls.registries,
         )
 
     assert exact_evaluation_calls == []
@@ -860,6 +867,7 @@ def test_exact_parent_predicate_rejects_top_k_and_nonmatching_terms(
             _bundle(predicate=top_k),
             root=tmp_path,
             exact_parents=exact,
+            registries=exact_evaluation_calls.registries,
         )
 
     mismatch = ManifestPredicate(
@@ -871,6 +879,7 @@ def test_exact_parent_predicate_rejects_top_k_and_nonmatching_terms(
             _bundle(predicate=mismatch),
             root=tmp_path,
             exact_parents=exact,
+            registries=exact_evaluation_calls.registries,
         )
     assert exact_evaluation_calls == []
 
@@ -894,6 +903,7 @@ def test_exact_parent_root_evaluation_cannot_group_parents(
             bundle,
             root=tmp_path,
             exact_parents=_exact_document(entry),
+            registries=exact_evaluation_calls.registries,
         )
 
     assert exact_evaluation_calls == []
@@ -902,7 +912,7 @@ def test_exact_parent_root_evaluation_cannot_group_parents(
 
 
 def test_exact_parents_require_explicit_root_and_exclude_run_ids(
-    tmp_path: Path,
+    tmp_path: Path, application_registry_bundle
 ) -> None:
     entry = _write_exact_parent(
         tmp_path,
@@ -912,13 +922,18 @@ def test_exact_parents_require_explicit_root_and_exclude_run_ids(
     exact = _exact_document(entry)
 
     with pytest.raises(ValueError, match="explicit manifest root"):
-        execute_staged_analysis_bundle(_bundle(), exact_parents=exact)
+        execute_staged_analysis_bundle(
+            _bundle(),
+            exact_parents=exact,
+            registries=application_registry_bundle,
+        )
     with pytest.raises(ValueError, match="mutually exclusive"):
         execute_staged_analysis_bundle(
             _bundle(),
             root=tmp_path,
             run_ids=[entry.parent.id],
             exact_parents=exact,
+            registries=application_registry_bundle,
         )
 
 
@@ -967,6 +982,7 @@ def test_executor_revalidates_mutated_exact_parent_schema(
             _bundle(),
             root=tmp_path,
             exact_parents=exact,
+            registries=exact_evaluation_calls.registries,
         )
 
     assert exact_evaluation_calls == []
@@ -1013,6 +1029,7 @@ def test_exact_mode_uses_explicit_location_without_ambient_same_id_discovery(
         _bundle(),
         root=tmp_path,
         exact_parents=_exact_document(entry),
+        registries=exact_evaluation_calls.registries,
     )
     assert execution.matched_run_ids == [entry.parent.id]
     assert exact_evaluation_calls[0].inputs == [entry.parent]
@@ -1039,6 +1056,11 @@ def test_staged_cli_exact_parent_round_trip(
         "load_analysis_bundle",
         lambda *_args, **_kwargs: _bundle(),
     )
+
+    async def compose_application(**_kwargs):
+        return BootstrapState(exact_evaluation_calls.registries, ())
+
+    monkeypatch.setattr(analysis_cli, "compose_application", compose_application)
 
     analysis_cli.main(
         [
@@ -1147,6 +1169,7 @@ def test_legacy_root_and_run_ids_remain_dynamic(
         _bundle(),
         root=tmp_path,
         run_ids=[training.id],
+        registries=exact_evaluation_calls.registries,
     )
 
     assert execution.matched_run_ids == [training.id]

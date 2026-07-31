@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -16,11 +17,21 @@ from feedbax.contracts.run_composition import (
     flatten_composition,
 )
 from feedbax.persistence.manifest_index import rebuild_manifest_index
-from feedbax.integrations.provider import health, provider_manifest, registry_snapshot, validate_spec
+from feedbax.integrations.provider import (
+    health,
+    provider_manifest,
+    registry_snapshot,
+    validate_spec,
+)
 from feedbax.execution.backends import write_modal_app
 from feedbax.execution.models import ExecutionSpec
-from feedbax.execution.planning import load_execution_spec, prepare_execution_plan, write_execution_plan
+from feedbax.execution.planning import (
+    load_execution_spec,
+    prepare_execution_plan,
+    write_execution_plan,
+)
 from feedbax.execution.local import run_local_execution
+from feedbax.plugins.composition import compose_application
 
 
 def _read_json(path: str) -> dict[str, Any]:
@@ -94,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
+    registries = asyncio.run(compose_application()).bundle
 
     if args.command == "health":
         _write_json(health())
@@ -102,11 +114,25 @@ def main(argv: list[str] | None = None) -> int:
         _write_json(provider_manifest())
         return 0
     if args.command == "registry":
-        _write_json(registry_snapshot(args.kind))
+        _write_json(
+            registry_snapshot(
+                args.kind,
+                component_registry=registries.components,
+                experiment_registry=registries.experiment_packages,
+                analysis_registry=registries.analysis_recipes,
+            )
+        )
         return 0
     if args.command == "validate":
         graph_spec = _read_json(args.graph) if args.graph else None
-        result = validate_spec(args.kind, _read_json(args.path), graph_spec=graph_spec)
+        result = validate_spec(
+            args.kind,
+            _read_json(args.path),
+            graph_spec=graph_spec,
+            component_registry=registries.components,
+            training_method_registry=registries.training_methods,
+            analysis_registry=registries.analysis_recipes,
+        )
         _write_json(result)
         return 0 if result.valid else 1
     if args.command == "rebuild-index":

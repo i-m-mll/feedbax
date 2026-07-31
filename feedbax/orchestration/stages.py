@@ -335,6 +335,7 @@ class StageEngine:
         monotonic: Callable[[], float] = time.monotonic,
         wall_time: Callable[[], float] = time.time,
         interruption_probe: Callable[[], CancellationDecision | None] | None = None,
+        plugin_provenance: Sequence[Any] = (),
     ) -> None:
         if (bundle is None) == (request is None):
             raise ValueError("StageEngine requires exactly one of bundle or request")
@@ -377,6 +378,7 @@ class StageEngine:
         self._monotonic = monotonic
         self._wall_time = wall_time
         self._interruption_probe = interruption_probe
+        self.plugin_provenance = tuple(plugin_provenance)
         self._signal_supervisor: _ScopedSignalSupervisor | None = None
         self._prepared_request: _PreparedRunAssembly | None = None
 
@@ -1751,7 +1753,7 @@ class StageEngine:
         assert_science_repo_revision_pin(
             primary_repo=plan.primary_repo,
             realized_revision=primary_entry.snapshot.commit,
-            imported_revisions=resolve_science_repo_import_revisions(),
+            imported_revisions=resolve_science_repo_import_revisions(self.plugin_provenance),
         )
 
     def _stage_certify(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:

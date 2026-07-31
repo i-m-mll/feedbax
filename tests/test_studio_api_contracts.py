@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import get_args, get_origin
 
 import pytest
@@ -36,6 +37,7 @@ from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_re
 from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION
 from feedbax.web.app import create_app
 from feedbax.web.api import components as components_api
+from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.contracts.training import LrScheduleSpec, OptimizerSpec
 from scripts.generate_studio_contracts import (
     CONTRACT_MODEL_NAMES,
@@ -84,6 +86,14 @@ def test_studio_api_openapi_uses_plural_analysis_jobs_route() -> None:
     assert "/api/analysis/generate" not in paths
 
 
+def test_figure_registry_api_lists_bootstrapped_constructors() -> None:
+    with TestClient(create_app()) as client:
+        response = client.get("/api/figures/constructors")
+
+    assert response.status_code == 200
+    assert any(item["key"] == "feedbax.grid_figure" for item in response.json())
+
+
 def test_generate_analysis_request_defaults_and_preserves_states_policy() -> None:
     defaulted = GenerateAnalysisRequest(node_id="analysis", eval_run_id="evaluation")
     authored = GenerateAnalysisRequest(
@@ -98,9 +108,7 @@ def test_generate_analysis_request_defaults_and_preserves_states_policy() -> Non
 
 def test_studio_api_envelopes_are_data_wrapped() -> None:
     graph_list = GraphListResponse(data=GraphListPayload(graphs=[])).model_dump()
-    training_start = TrainingStartResponse(
-        data=TrainingStartPayload(job_id="job-1")
-    ).model_dump()
+    training_start = TrainingStartResponse(data=TrainingStartPayload(job_id="job-1")).model_dump()
     analysis_packages = AnalysisPackagesResponse(
         data=AnalysisPackagesPayload(packages=[])
     ).model_dump()
@@ -236,8 +244,8 @@ def test_training_error_and_resync_events_have_stable_coordinates() -> None:
     assert resync.missed_events == 3
 
 
-def test_component_api_serves_representation_contract(monkeypatch: pytest.MonkeyPatch) -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+def test_component_api_serves_representation_contract() -> None:
+    registry = ComponentRegistry(load_user_components=False)
     registry.register_component_type(
         "ApiRepresentedGain",
         lambda params: None,
@@ -265,10 +273,14 @@ def test_component_api_serves_representation_contract(monkeypatch: pytest.Monkey
             ],
         },
     )
-    monkeypatch.setattr(components_api, "registry", registry)
-
-    client = TestClient(create_app())
-    response = client.get("/api/components")
+    app = create_app()
+    with TestClient(app) as client:
+        registry.seal()
+        current = app.state.bootstrap_state
+        app.state.bootstrap_state = BootstrapState(
+            replace(current.bundle, components=registry), current.provenance
+        )
+        response = client.get("/api/components")
 
     assert response.status_code == 200
     contract = ComponentListResponse.model_validate(response.json())
@@ -278,6 +290,47 @@ def test_component_api_serves_representation_contract(monkeypatch: pytest.Monkey
     assert represented.representation is not None
     assert represented.representation.schema_version == REPRESENTATION_SCHEMA_VERSION
     assert represented.representation.elements[0].archetype == "marker"
+
+
+def test_component_refresh_atomically_swaps_whole_bootstrap_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app()
+    with TestClient(app) as client:
+        original = app.state.bootstrap_state
+        replacement_registry = ComponentRegistry(load_user_components=False)
+        replacement_registry.register_component_type("RefreshOnlyComponent", lambda _params: None)
+        replacement_registry.seal()
+        replacement = BootstrapState(
+            replace(original.bundle, components=replacement_registry), original.provenance
+        )
+
+        async def rebootstrap(**_kwargs):
+            return replacement
+
+        monkeypatch.setattr(components_api, "compose_application", rebootstrap)
+        response = client.post("/api/components/refresh")
+
+        assert response.status_code == 200
+        assert app.state.bootstrap_state is replacement
+        assert original.bundle.components.get("RefreshOnlyComponent") is None
+
+
+def test_component_refresh_failure_preserves_published_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app()
+    with TestClient(app, raise_server_exceptions=False) as client:
+        original = app.state.bootstrap_state
+
+        async def fail_rebootstrap(**_kwargs):
+            raise RuntimeError("refresh failed")
+
+        monkeypatch.setattr(components_api, "compose_application", fail_rebootstrap)
+        response = client.post("/api/components/refresh")
+
+        assert response.status_code == 500
+        assert app.state.bootstrap_state is original
 
 
 def test_studio_api_transport_models_declare_identity_and_reject_old_or_extra() -> None:

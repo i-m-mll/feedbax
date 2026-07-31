@@ -11,6 +11,7 @@ script's own argparse logic, so existing flags continue to work.
 """
 
 import argparse
+import asyncio
 import importlib
 import os
 import runpy
@@ -20,11 +21,13 @@ from types import ModuleType
 from typing import Optional, Sequence
 
 from ._setup import setup
+from feedbax.plugins.bootstrap import BootstrapState
+from feedbax.plugins.composition import compose_application
 
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
 
-def _call_module_main(mod: ModuleType, argv: Sequence[str]) -> int:
+def _call_module_main(mod: ModuleType, argv: Sequence[str], bootstrap_state: BootstrapState) -> int:
     """
     Try to call mod.main() if present; otherwise run it as __main__
     with sys.argv patched to the sub-argv.
@@ -36,7 +39,14 @@ def _call_module_main(mod: ModuleType, argv: Sequence[str]) -> int:
         old_argv = sys.argv
         try:
             sys.argv = [sys.argv[0]] + list(argv)
-            _ = main_fn()  # ? Could just pass `list(argv)`, assuming it accepts optional argv
+            if mod.__name__ == "feedbax.bin.analysis":
+                _ = main_fn(
+                    list(argv),
+                    bootstrap_state=bootstrap_state,
+                    application_setup=False,
+                )
+            else:
+                _ = main_fn()
             return int(0)
         finally:
             sys.argv = old_argv
@@ -52,11 +62,11 @@ def _call_module_main(mod: ModuleType, argv: Sequence[str]) -> int:
         sys.argv = old_argv
 
 
-def _dispatch(cmd: str, sub_argv: Sequence[str]) -> int:
+def _dispatch(cmd: str, sub_argv: Sequence[str], bootstrap_state: BootstrapState) -> int:
     # Try candidates in order until one imports successfully.
     mod = importlib.import_module("." + cmd, package="feedbax.bin")
     if mod is not None:
-        return _call_module_main(mod, sub_argv)
+        return _call_module_main(mod, sub_argv, bootstrap_state)
     raise SystemExit(f"Could not locate a module for subcommand '{cmd}'. ")
 
 
@@ -78,6 +88,7 @@ def parse_args(argv: Sequence[str] | None = None) -> tuple[str, list[str]]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     cmd, sub_argv = parse_args(argv)
+    bootstrap_state = asyncio.run(compose_application())
     if cmd not in ("analysis", "train"):
         raise SystemExit(f"Unknown command '{cmd}'; expected 'train' or 'analysis'.")
     # Switch to slightly different naming conventions for subpackages (versus CLI commands)
@@ -86,9 +97,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         domain = "analysis"
     # Set up logging, warnings, and globals config for the chosen domain
-    setup(argv=sub_argv, domain=domain, queue_mode="flush")
+    setup(
+        argv=sub_argv,
+        domain=domain,
+        queue_mode="flush",
+        registry=bootstrap_state.bundle.experiment_packages,
+    )
     # Import and run the chosen script
-    return _dispatch(cmd, sub_argv)
+    return _dispatch(cmd, sub_argv, bootstrap_state)
 
 
 if __name__ == "__main__":
