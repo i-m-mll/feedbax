@@ -46,6 +46,7 @@ class EvaluationRowProjectionErrorReason(StrEnum):
     INPUT_MANIFEST_MISSING = "input_manifest_missing"
     INPUT_STATES_MISSING = "input_states_missing"
     MANIFEST_AUTHORITY_MISMATCH = "manifest_authority_mismatch"
+    MANIFEST_RECEIPT_AUTHORITY_MISMATCH = "manifest_receipt_authority_mismatch"
     STATE_SOURCE_MISSING = "state_source_missing"
     STATE_RECEIPT_MISSING = "state_receipt_missing"
     STATE_RECEIPT_CAPABILITY_INVALID = "state_receipt_capability_invalid"
@@ -497,6 +498,15 @@ def _verify_row_facts(
             source_kind=source.source_kind,
         )
     portable_ref = ref.model_copy(update={"uri": None})
+    if not receipt._matches_evaluation_manifest_authority(portable_ref):
+        raise EvaluationRowProjectionError(
+            EvaluationRowProjectionErrorCategory.MANIFEST_AUTHORITY,
+            EvaluationRowProjectionErrorReason.MANIFEST_RECEIPT_AUTHORITY_MISMATCH,
+            f"evaluation row {manifest.id!r} manifest authority differs from its receipt",
+            row_index=row_index,
+            manifest_id=manifest.id,
+            source_kind=source.source_kind,
+        )
     return VerifiedEvaluationRowFacts(
         manifest_authority=portable_ref,
         manifest=manifest,

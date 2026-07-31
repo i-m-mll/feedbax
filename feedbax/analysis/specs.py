@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+import jax
 import jax.tree_util as jtu
 import numpy as np
 from pydantic import ValidationError
@@ -28,6 +29,7 @@ from feedbax.contracts.evaluation_states import (
     EvaluationStatesHashMismatch,
     EvaluationStatesProvenanceMismatch,
     EvaluationStatesSchemaMismatch,
+    _array_digest,
     _treedef_structure_fingerprint,
     load_authenticated_evaluation_states_artifact,
 )
@@ -141,6 +143,8 @@ class EvaluationStateMaterializationReceipt:
     ]
     state_value_identity: str
     source_value_identity: str
+    evaluation_manifest_authority: ParentRef
+    evaluation_manifest_authority_identity: str
     _states: Any = field(repr=False, compare=False)
     _capability: object = field(repr=False, compare=False)
 
@@ -160,6 +164,15 @@ class EvaluationStateMaterializationReceipt:
             raise TypeError(
                 "EvaluationStateMaterializationReceipt is issued by resolve_analysis_inputs"
             )
+        authority = source.evaluation_manifest_authority
+        if authority is None:
+            raise ValueError("resolver-issued state receipt requires evaluation manifest authority")
+        portable_authority = ParentRef.model_validate(
+            {
+                **authority.model_dump(mode="json"),
+                "uri": None,
+            }
+        )
         object.__setattr__(self, "source", source)
         object.__setattr__(self, "proof_kind", proof_kind)
         object.__setattr__(
@@ -171,6 +184,16 @@ class EvaluationStateMaterializationReceipt:
             self,
             "source_value_identity",
             _evaluation_state_source_value_identity(source),
+        )
+        object.__setattr__(
+            self,
+            "evaluation_manifest_authority",
+            portable_authority,
+        )
+        object.__setattr__(
+            self,
+            "evaluation_manifest_authority_identity",
+            _evaluation_manifest_authority_value_identity(portable_authority),
         )
         object.__setattr__(self, "_states", states)
         object.__setattr__(self, "_capability", _token)
@@ -190,6 +213,12 @@ class EvaluationStateMaterializationReceipt:
     def _matches_source_value(self, source: AnalysisEvaluationStateSource) -> bool:
         return self.source_value_identity == _evaluation_state_source_value_identity(source)
 
+    def _matches_evaluation_manifest_authority(self, authority: ParentRef) -> bool:
+        portable_authority = authority.model_copy(update={"uri": None})
+        return self.evaluation_manifest_authority_identity == (
+            _evaluation_manifest_authority_value_identity(portable_authority)
+        )
+
 
 def _evaluation_state_value_identity(states: Any) -> str:
     """Compose existing canonical value identities across one state PyTree."""
@@ -199,12 +228,25 @@ def _evaluation_state_value_identity(states: Any) -> str:
         raise ValueError("evaluation state value identity requires a non-empty PyTree")
     leaves: list[dict[str, str]] = []
     for path, leaf in path_leaves:
-        array = np.asarray(leaf)
-        dtype = str(array.dtype)
-        try:
-            identity = semantic_value_sha256(array, dtype=dtype)
-            identity_kind = "semantic"
-        except (TypeError, ValueError):
+        if isinstance(leaf, (jax.Array, np.ndarray)):
+            array = np.asarray(leaf)
+            dtype = str(array.dtype)
+            try:
+                identity = semantic_value_sha256(array, dtype=dtype)
+                identity_kind = "semantic"
+            except (TypeError, ValueError):
+                identity = authored_value_sha256(
+                    encoding_kind="evaluation_state_array_content",
+                    encoding_schema_id=_EVALUATION_STATE_IDENTITY_SCHEMA_ID,
+                    encoding_schema_version=_EVALUATION_STATE_IDENTITY_SCHEMA_VERSION,
+                    arguments={
+                        "dtype": dtype,
+                        "shape": [int(dimension) for dimension in array.shape],
+                    },
+                    content_pins={"array_sha256": _array_digest(array)},
+                )
+                identity_kind = "authored_array_content"
+        else:
             identity = authored_value_sha256(
                 encoding_kind="json_metadata_leaf",
                 encoding_schema_id=_EVALUATION_STATE_IDENTITY_SCHEMA_ID,
@@ -240,6 +282,17 @@ def _evaluation_state_source_value_identity(
         encoding_schema_id=_EVALUATION_SOURCE_IDENTITY_SCHEMA_ID,
         encoding_schema_version=_EVALUATION_SOURCE_IDENTITY_SCHEMA_VERSION,
         arguments=source.model_dump(mode="json"),
+    )
+
+
+def _evaluation_manifest_authority_value_identity(authority: ParentRef) -> str:
+    """Hash one portable requested evaluation-manifest authority."""
+
+    return authored_value_sha256(
+        encoding_kind="requested_evaluation_manifest_authority",
+        encoding_schema_id=_EVALUATION_SOURCE_IDENTITY_SCHEMA_ID,
+        encoding_schema_version=_EVALUATION_SOURCE_IDENTITY_SCHEMA_VERSION,
+        arguments=authority.model_dump(mode="json"),
     )
 
 

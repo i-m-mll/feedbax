@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -437,6 +437,21 @@ def check_typed_evaluation_row_projection() -> bool:
         )
         if keys != expected or tuple(row.state for row in projected) != (0, 1):
             raise AssertionError("typed evaluation row projection drifted")
+        spliced = replace(
+            inputs[0],
+            ref=inputs[1].ref,
+            manifest_input=inputs[1].manifest_input,
+        )
+        try:
+            project_verified_evaluation_rows([spliced], project=project)
+        except EvaluationRowProjectionError as exc:
+            if (
+                exc.reason
+                is not EvaluationRowProjectionErrorReason.MANIFEST_RECEIPT_AUTHORITY_MISMATCH
+            ):
+                raise AssertionError("row projection returned the wrong splice reason") from exc
+        else:
+            raise AssertionError("row projection accepted a cross-authority splice")
         inputs[0].manifest.evaluation_spec.inline["params"]["target"] = 99
         inputs[0].manifest.metadata["states_schema"] = "mutated"
         authority_row = project_verified_evaluation_rows([inputs[0]], project=project)[0]

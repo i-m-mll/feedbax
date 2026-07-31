@@ -128,9 +128,28 @@ def test_result_v4_rejects_alias_only_receipt_evidence(fixture_package) -> None:
         fixture_package.load_result(payload)
 
 
+def test_result_v5_rejects_unbound_manifest_authority_evidence(fixture_package) -> None:
+    payload = fixture_package.ConformanceResult(
+        status="pass",
+        feedbax_version="0.1.2",
+        feedbax_install_root="/installed/feedbax",
+        fixture_install_root="/installed/fixture",
+        protocol_roles=_protocol_roles(),
+        cases=_required_cases(fixture_package),
+        lifecycle={"status": "pass"},
+    ).model_dump(mode="json")
+    payload["schema_version"] = "feedbax.external_conformance.result.v5"
+
+    with pytest.raises(
+        ValueError,
+        match="v5 cannot migrate to v6.*requested evaluation-manifest authority",
+    ):
+        fixture_package.load_result(payload)
+
+
 @pytest.mark.parametrize(
     "version",
-    [None, "feedbax.external_conformance.result.v0", "feedbax.external_conformance.result.v6"],
+    [None, "feedbax.external_conformance.result.v0", "feedbax.external_conformance.result.v7"],
 )
 def test_result_rejects_unsupported_versions(fixture_package, version: str | None) -> None:
     payload = {
@@ -197,7 +216,7 @@ def test_result_rejects_inconsistent_outcomes(
         )
 
 
-def test_result_v5_case_contract_and_all_historical_sets_are_frozen(
+def test_result_v6_case_contract_and_all_historical_sets_are_frozen(
     fixture_package,
 ) -> None:
     assert fixture_package.V2_REQUIRED_CASE_IDS == (
@@ -220,6 +239,7 @@ def test_result_v5_case_contract_and_all_historical_sets_are_frozen(
     assert fixture_package.V3_REQUIRED_CASE_IDS == seven_case_contract
     assert fixture_package.V4_REQUIRED_CASE_IDS == seven_case_contract
     assert fixture_package.V5_REQUIRED_CASE_IDS == seven_case_contract
+    assert fixture_package.V6_REQUIRED_CASE_IDS == seven_case_contract
     assert fixture_package.REQUIRED_CASE_IDS == seven_case_contract
     assert fixture_package.V2_REQUIRED_CASE_ID_SET == frozenset(
         fixture_package.V2_REQUIRED_CASE_IDS
@@ -227,6 +247,7 @@ def test_result_v5_case_contract_and_all_historical_sets_are_frozen(
     assert fixture_package.V3_REQUIRED_CASE_ID_SET == frozenset(seven_case_contract)
     assert fixture_package.V4_REQUIRED_CASE_ID_SET == frozenset(seven_case_contract)
     assert fixture_package.V5_REQUIRED_CASE_ID_SET == frozenset(seven_case_contract)
+    assert fixture_package.V6_REQUIRED_CASE_ID_SET == frozenset(seven_case_contract)
     assert fixture_package.REQUIRED_CASE_ID_SET == frozenset(seven_case_contract)
     valid = {
         "status": "pass",
@@ -245,7 +266,7 @@ def test_result_v5_case_contract_and_all_historical_sets_are_frozen(
             fixture_package.ConformanceResult.model_validate({**valid, "cases": cases})
 
 
-def test_result_v5_case_values_are_strict_booleans(fixture_package) -> None:
+def test_result_v6_case_values_are_strict_booleans(fixture_package) -> None:
     cases = _required_cases(fixture_package)
     cases["public_lifecycle_recovery"] = "yes"
 
@@ -262,7 +283,7 @@ def test_result_v5_case_values_are_strict_booleans(fixture_package) -> None:
 
 
 @pytest.mark.parametrize("slot", ["current", "minimum"])
-def test_result_v5_protocol_roles_remain_unbound(fixture_package, slot: str) -> None:
+def test_result_v6_protocol_roles_remain_unbound(fixture_package, slot: str) -> None:
     roles: dict[str, object] = _protocol_roles()
     roles[slot] = "unratified"
     with pytest.raises(ValidationError):
@@ -282,13 +303,13 @@ def test_result_v5_protocol_roles_remain_unbound(fixture_package, slot: str) -> 
     [None, {}, {"current": None}, {"minimum": None}],
     ids=["absent", "empty", "missing-minimum", "missing-current"],
 )
-def test_result_v5_requires_explicit_protocol_role_slots(
+def test_result_v6_requires_explicit_protocol_role_slots(
     fixture_package,
     protocol_roles: dict[str, None] | None,
 ) -> None:
     payload = {
         "schema_id": "feedbax.external_conformance.result",
-        "schema_version": "feedbax.external_conformance.result.v5",
+        "schema_version": "feedbax.external_conformance.result.v6",
         "status": "pass",
         "feedbax_version": "0.1.2",
         "feedbax_install_root": "/installed/feedbax",
@@ -480,7 +501,7 @@ def test_clean_wheel_wrapper_rejects_malformed_result(
     result_path.write_text(
         """{
   "schema_id": "feedbax.external_conformance.result",
-  "schema_version": "feedbax.external_conformance.result.v5",
+  "schema_version": "feedbax.external_conformance.result.v6",
   "status": "pass",
   "feedbax_version": "0.1.2",
   "feedbax_install_root": "/isolated/feedbax",

@@ -7,6 +7,7 @@ from typing import Any, get_type_hints
 
 import numpy as np
 import pytest
+import jax.numpy as jnp
 from pydantic import BaseModel, ConfigDict
 
 from feedbax.analysis import (
@@ -80,6 +81,7 @@ def _manifest_and_input(
     *,
     target: int,
     durable: bool,
+    states: Any | None = None,
 ) -> tuple[EvaluationRunManifest, ResolvedManifestInput]:
     training_bytes = b"training"
     training = _authenticated_ref(
@@ -99,7 +101,11 @@ def _manifest_and_input(
             "gain": 2.0,
         },
     )
-    states = {"sample": np.asarray(target), "velocity": np.asarray(target + 0.5)}
+    states = (
+        {"sample": np.asarray(target), "velocity": np.asarray(target + 0.5)}
+        if states is None
+        else states
+    )
     artifacts = (
         [store_evaluation_states_artifact(states, root=tmp_path, manifest_id=manifest_id)]
         if durable
@@ -150,14 +156,20 @@ def _resolved_input(
     *,
     source_kind: str = "evaluation_cache",
     target: int = 0,
+    states: Any | None = None,
 ) -> ResolvedAnalysisInput:
     durable = source_kind == "durable"
     manifest, manifest_input = _manifest_and_input(
         tmp_path,
         target=target,
         durable=durable,
+        states=states,
     )
-    states = {"sample": np.asarray(target), "velocity": np.asarray(target + 0.5)}
+    states = (
+        {"sample": np.asarray(target), "velocity": np.asarray(target + 0.5)}
+        if states is None
+        else states
+    )
     cache_path = evaluation_states_cache_path(manifest.id, root=tmp_path)
     if source_kind == "evaluation_cache":
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -236,6 +248,62 @@ def test_projects_all_resolver_source_kinds_with_truthful_receipts(
     assert row.facts.state_source.source_kind == source_kind
     assert row.facts.state_receipt.proof_kind == proof_kind
     assert row.facts.provenance.producer_identity == "fixture.row_projection"
+
+
+@pytest.mark.parametrize(
+    ("dtype_name", "signal", "source_kind"),
+    [
+        ("complex64", np.asarray([1 + 2j], dtype=np.complex64), "durable"),
+        ("bfloat16", jnp.asarray([1.0], dtype=jnp.bfloat16), "evaluation_cache"),
+    ],
+)
+def test_receipt_identity_preserves_existing_state_container_dtype_domain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dtype_name: str,
+    signal: Any,
+    source_kind: str,
+) -> None:
+    item = _resolved_input(
+        tmp_path,
+        monkeypatch,
+        source_kind=source_kind,
+        states={"signal": signal},
+    )
+
+    row = project_verified_evaluation_rows(
+        [item],
+        project=lambda facts: EvaluationRowProjection(
+            row_key=facts.run_spec.params["target"],
+            state=facts.states["signal"],
+            parameters=facts.parameters,
+            metadata=facts.metadata,
+        ),
+    )[0]
+
+    assert str(np.asarray(row.state).dtype) == dtype_name
+    assert len(row.facts.state_receipt.state_value_identity) == 64
+
+
+def test_two_genuine_rows_cannot_splice_manifest_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target_zero = _resolved_input(tmp_path, monkeypatch, target=0)
+    target_one = _resolved_input(tmp_path, monkeypatch, target=1)
+    spliced = replace(
+        target_zero,
+        ref=target_one.ref,
+        manifest_input=target_one.manifest_input,
+    )
+
+    with pytest.raises(EvaluationRowProjectionError) as caught:
+        project_verified_evaluation_rows([spliced], project=_velocity_projection)
+
+    assert caught.value.category is (EvaluationRowProjectionErrorCategory.MANIFEST_AUTHORITY)
+    assert caught.value.reason is (
+        EvaluationRowProjectionErrorReason.MANIFEST_RECEIPT_AUTHORITY_MISMATCH
+    )
 
 
 def test_one_projector_supports_two_materially_different_consumer_shapes(
