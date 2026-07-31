@@ -49,6 +49,13 @@ Additive changelog, 2026-07-28: ``FigureColorbar.placement`` accepts the
 versioned ``ColorbarPanelPlacement`` declaration. It sizes and positions a
 colorbar relative to one resolved grid panel. The field is an optional
 None-default, so existing colorbar and figure identity bytes are unchanged.
+
+Additive changelog, 2026-07-30: ``PanelSpec`` accepts ``panel_type``, ``z_axis``,
+``row_span``, and ``col_span``, and ``AxisLabels`` accepts ``z``. A panel typed
+``scene`` carries a 3D trajectory panel with a third axis and its own aspect
+mode; spans let one panel occupy a rectangle of grid cells. All five fields are
+optional None-defaults and an omitted ``panel_type`` is the Cartesian panel that
+already existed, so existing panel and figure identity bytes are unchanged.
 """
 
 from __future__ import annotations
@@ -166,10 +173,15 @@ class PerturbationTiming(StrictModel):
 
 
 class AxisLabels(StrictModel):
-    """Per-panel axis labels."""
+    """Per-panel axis labels.
+
+    ``z`` labels the third axis of a ``scene`` panel and has no meaning on a
+    Cartesian one, so declaring it elsewhere is rejected rather than dropped.
+    """
 
     x: str | None = None
     y: str | None = None
+    z: str | None = None
 
 
 class PanelAxis(StrictModel):
@@ -694,16 +706,33 @@ class FigureColorbar(StrictModel):
 
 
 class PanelSpec(StrictModel):
-    """One subplot cell-group."""
+    """One subplot cell-group.
+
+    ``panel_type`` names the kind of subplot the panel is. An omitted value is
+    the Cartesian panel that has always been assembled, so it is spelled as an
+    optional None rather than as a default of ``"xy"``. A ``scene`` panel is the
+    3D one: it carries ``scatter3d`` traces, a third axis, and an aspect mode
+    instead of a Cartesian axis scale anchor.
+
+    ``row_span`` and ``col_span`` let one panel occupy a rectangle of grid cells
+    starting at its own ``row``/``col``. They exist because a 3D panel needs
+    more room than a cell in a row of 2D panels: an ``aspectmode="data"`` scene
+    shrinks to its largest extent, so a cramped cell renders it small and clips
+    its axis titles.
+    """
 
     name: str
     title: str | ValueExpr | None = None
     axes_labels: AxisLabels | None = None
     x_axis: PanelAxis | None = None
     y_axis: PanelAxis | None = None
+    z_axis: PanelAxis | None = None
     equal_data_aspect: EqualDataAspect | None = None
     row: int | None = None
     col: int | None = None
+    panel_type: Literal["xy", "scene"] | None = None
+    row_span: int | None = Field(default=None, ge=1)
+    col_span: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _validate_equal_data_aspect(self) -> "PanelSpec":
@@ -711,13 +740,36 @@ class PanelSpec(StrictModel):
             return self
         nonlinear = [
             name
-            for name, axis in (("x_axis", self.x_axis), ("y_axis", self.y_axis))
+            for name, axis in (
+                ("x_axis", self.x_axis),
+                ("y_axis", self.y_axis),
+                ("z_axis", self.z_axis),
+            )
             if axis is not None and axis.type == "log"
         ]
         if nonlinear:
             raise ValueError(
                 "PanelSpec equal_data_aspect requires linear axes; "
                 f"nonlinear declarations: {nonlinear}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_third_axis_declarations(self) -> "PanelSpec":
+        if self.panel_type == "scene":
+            return self
+        third_axis = [
+            name
+            for name, declared in (
+                ("z_axis", self.z_axis is not None),
+                ("axes_labels.z", self.axes_labels is not None and self.axes_labels.z is not None),
+            )
+            if declared
+        ]
+        if third_axis:
+            raise ValueError(
+                f"PanelSpec {self.name!r} declares {third_axis}, which only a "
+                "panel_type='scene' panel has"
             )
         return self
 
