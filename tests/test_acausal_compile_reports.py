@@ -378,7 +378,12 @@ def test_graph_service_persists_report_and_derives_stale_status(tmp_path: Path) 
     record = service.create_graph(GraphSpec(), None)
     interior = _msd_interior()
 
-    report = service.compile_node(record.graph_id, node_path=["plant"], interior=interior)
+    report = service.compile_node(
+        record.graph_id,
+        node_path=["plant"],
+        interior=interior,
+        component_registry=_registry(),
+    )
     loaded = service.get_graph(record.graph_id).project
     cached = (loaded.compile_reports or {})["plant"]
 
@@ -427,22 +432,22 @@ def test_compile_endpoint_returns_report_and_malformed_body_422(
     record = service.create_graph(GraphSpec(), None)
     monkeypatch.setattr(graphs_api, "service", service)
 
-    client = TestClient(create_app())
-    response = client.post(
-        f"/api/graphs/{record.graph_id}/nodes/compile",
-        json={
-            "node_path": ["plant"],
-            "interior": _msd_interior().model_dump(mode="json"),
-        },
-    )
+    with TestClient(create_app()) as client:
+        response = client.post(
+            f"/api/graphs/{record.graph_id}/nodes/compile",
+            json={
+                "node_path": ["plant"],
+                "interior": _msd_interior().model_dump(mode="json"),
+            },
+        )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["status"] == "ok"
-    assert service.get_graph(record.graph_id).project.compile_reports is not None
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "ok"
+        assert service.get_graph(record.graph_id).project.compile_reports is not None
 
-    malformed = client.post(
-        f"/api/graphs/{record.graph_id}/nodes/compile",
-        json={"node_path": ["plant"]},
-    )
+        malformed = client.post(
+            f"/api/graphs/{record.graph_id}/nodes/compile",
+            json={"node_path": ["plant"]},
+        )
     assert malformed.status_code == 422

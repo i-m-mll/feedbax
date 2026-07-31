@@ -225,9 +225,17 @@ def test_run_analysis_sync_preserves_canonical_uri_and_legacy_path_shape(
         artifacts=[canonical, legacy],
     )
 
-    def execute_stub(_spec, *, registry, evaluation_registry, fig_dump_formats):
+    def execute_stub(
+        _spec,
+        *,
+        registry,
+        evaluation_registry,
+        experiment_registry,
+        fig_dump_formats,
+    ):
         assert registry is application_registry_bundle.analysis_recipes
         assert evaluation_registry is application_registry_bundle.evaluation_recipes
+        assert experiment_registry is application_registry_bundle.experiment_packages
         assert fig_dump_formats == ("json",)
         return manifest, tmp_path / "manifest.json"
 

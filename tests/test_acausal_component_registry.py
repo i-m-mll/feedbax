@@ -4,7 +4,6 @@ import inspect
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from feedbax.acausal.rotational import (
@@ -48,7 +47,7 @@ from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.contracts.graphs.builders import build_component
 from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
 from feedbax.contracts.migrations import default_spec_registry
-from feedbax.web.api import components as components_api
+from feedbax.web.app import create_app
 
 
 ELEMENT_TYPES = (
@@ -93,11 +92,8 @@ def _constructor_param_defaults(element_type: type[Any]) -> dict[str, Any]:
 
 
 def test_api_components_include_acausal_elements_and_boundary_adapters() -> None:
-    app = FastAPI()
-    app.include_router(components_api.router, prefix="/api/components")
-    client = TestClient(app)
-
-    response = client.get("/api/components")
+    with TestClient(create_app()) as client:
+        response = client.get("/api/components")
 
     assert response.status_code == 200
     definitions = {
