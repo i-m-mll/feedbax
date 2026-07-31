@@ -10,9 +10,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import numpy as np
+import jax
+import jax.numpy as jnp
 from pydantic import ValidationError
 
-from feedbax import LowererRegistration, OrderedLowererRegistry
+from feedbax import LowererRegistration, OrderedLowererRegistry, init_state_from_component
 from feedbax.analysis import (
     EvaluationRowProjectionError,
     EvaluationRowProjectionErrorCode,
@@ -53,6 +55,7 @@ from feedbax.contracts import (
     value_identity_record,
 )
 from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
+from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
 from feedbax.contracts.manifest import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
@@ -66,6 +69,7 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.evaluation_states import store_evaluation_states_artifact
 from feedbax.plugins import (
+    COMPONENTS,
     BootstrapError,
     BootstrapErrorCode,
     FamilyRequirement,
@@ -78,7 +82,12 @@ from feedbax.plugins import (
 )
 from feedbax.testing import check_material_dependency_contract
 
-from .family import FIXTURE_RECORDS, FixtureRecordRegistry, new_fixture_registration_context
+from .family import (
+    EXTERNAL_DYNAMIC_COMPONENT,
+    FIXTURE_RECORDS,
+    FixtureRecordRegistry,
+    new_fixture_registration_context,
+)
 
 
 _CUSTOM_COMPONENT = "fixture.CurrentScale"
@@ -178,16 +187,27 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
         if tuple(item.registration_order for item in provenance) != (0, 1):
             raise AssertionError("plugin provenance registration order drifted")
         if tuple(item.registered_keys for item in provenance) != (
-            {FIXTURE_RECORDS.family: ("foundation",)},
+            {
+                COMPONENTS.family: (EXTERNAL_DYNAMIC_COMPONENT,),
+                FIXTURE_RECORDS.family: ("foundation",),
+            },
             {FIXTURE_RECORDS.family: ("dependent",)},
         ):
             raise AssertionError("plugin provenance registered-key attribution drifted")
-        for item in provenance:
+        expected_family_protocols = (
+            {COMPONENTS.family: "1", FIXTURE_RECORDS.family: "1"},
+            {FIXTURE_RECORDS.family: "1"},
+        )
+        for item, family_protocols in zip(
+            provenance,
+            expected_family_protocols,
+            strict=True,
+        ):
             if (
                 item.distribution != "feedbax-external-conformance"
                 or item.distribution_version != "0.1.0"
                 or len(item.fingerprint) != 64
-                or item.family_protocols != {FIXTURE_RECORDS.family: "1"}
+                or item.family_protocols != family_protocols
             ):
                 raise AssertionError("installed plugin provenance is incomplete")
         try:
@@ -291,6 +311,90 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
             raise
     else:
         raise AssertionError("legacy registrar-only entry point was accepted")
+    return True
+
+
+def check_dynamic_component_ports(*, entry_points: Iterable[object] | None = None) -> bool:
+    """Prove an external dynamic component across bootstrap, schema, build, and runtime."""
+
+    registrations = (
+        discover_plugin_registrations(entry_points=entry_points)
+        if entry_points is not None
+        else None
+    )
+    state = asyncio.run(
+        bootstrap_application(
+            new_fixture_registration_context(),
+            registrations=registrations,
+        )
+    )
+    registry = state.registry(COMPONENTS)
+    meta = registry.get(EXTERNAL_DYNAMIC_COMPONENT)
+    if meta is None or meta.dynamic_port_policy is None:
+        raise AssertionError("external dynamic component policy was not bootstrapped")
+    definition = next(
+        item for item in registry.list_all() if item.name == EXTERNAL_DYNAMIC_COMPONENT
+    )
+    if definition.schema_version != "feedbax.spec.component_definition.v3":
+        raise AssertionError("external component definition did not retain v3 identity")
+
+    graph_spec = GraphSpec(
+        nodes={
+            "external": ComponentSpec(
+                type=EXTERNAL_DYNAMIC_COMPONENT,
+                params={"channels": ["left", "middle", "right"]},
+            )
+        },
+        input_ports=["left", "middle", "right"],
+        output_ports=["output"],
+        input_bindings={
+            "left": ("external", "source_0"),
+            "middle": ("external", "source_1"),
+            "right": ("external", "source_2"),
+        },
+        output_bindings={"output": ("external", "output")},
+    )
+    materialized = normalize_graph_for_studio_authoring(
+        graph_spec,
+        component_registry=registry,
+    )
+    node = materialized.nodes["external"]
+    if node.input_ports != ["source_0", "source_1", "source_2"]:
+        raise AssertionError("external dynamic inputs were not deterministically materialized")
+    if node.output_ports != ["output"]:
+        raise AssertionError("external fixed output was not materialized")
+
+    graph = spec_to_graph(graph_spec, component_registry=registry)
+    runtime_node = graph.nodes["external"]
+    if tuple(runtime_node.input_ports) != tuple(node.input_ports):
+        raise AssertionError("runtime dynamic port order drifted from the materialized schema")
+    component_state = init_state_from_component(graph)
+    outputs, _ = graph(
+        {
+            "left": jnp.array([1.0]),
+            "middle": jnp.array([2.0, 3.0]),
+            "right": jnp.array([4.0]),
+        },
+        component_state,
+        key=jax.random.PRNGKey(0),
+    )
+    if not np.array_equal(np.asarray(outputs["output"]), np.array([1.0, 2.0, 3.0, 4.0])):
+        raise AssertionError("external dynamic component runtime output drifted")
+
+    invalid = graph_spec.model_copy(
+        update={
+            "nodes": {
+                "external": node.model_copy(update={"input_ports": ["source_0"]}),
+            }
+        }
+    )
+    try:
+        spec_to_graph(invalid, component_registry=registry)
+    except ValueError as exc:
+        if "dynamic port layout mismatch" not in str(exc):
+            raise
+    else:
+        raise AssertionError("external dynamic namespace mismatch was accepted")
     return True
 
 

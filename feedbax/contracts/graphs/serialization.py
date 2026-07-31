@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Literal, Mapping, Sequence, cast
 
 import jax.numpy as jnp
@@ -37,6 +38,7 @@ from feedbax.control.affine import AffineFeedbackController
 from feedbax.runtime.filters import FirstOrderFilter
 from feedbax.runtime.graph import Component, Graph, Wire
 from feedbax.contracts.graphs.templates import recurrent_controller_template_graph
+from feedbax.contracts.component import DynamicPortPolicyError, validate_dynamic_port_layout
 from feedbax.intervene.intervene import (
     AddNoise,
     ConstantInput,
@@ -125,8 +127,8 @@ def _merge_params(
             f"{node_type} node {node_name!r} is missing required parameter(s): "
             + ", ".join(repr(name) for name in missing_required)
         )
-    merged = dict(defaults)
-    merged.update(params)
+    merged = deepcopy(dict(defaults))
+    merged.update(deepcopy(dict(params)))
     return merged
 
 
@@ -1172,12 +1174,13 @@ def spec_to_graph(
             node_name=node_name,
             node_type=node_type,
         )
-        _validate_dynamic_component_ports(
+        declared_input_ports, declared_output_ports = _validate_dynamic_component_ports(
             node_name,
             node_type,
             params,
             node_spec.input_ports,
             node_spec.output_ports,
+            component_registry=metadata_registry,
         )
 
         if required_domain is not None:
@@ -1248,12 +1251,26 @@ def spec_to_graph(
         delta_A_declaration = authored_array_values.get(node_name, {}).get(("delta_A",))
         if node_type == "StructuralLinearStateSpace" and delta_A_declaration is not None:
             params = {**params, "_authored_delta_A_value_spec": delta_A_declaration}
-        nodes[node_name] = build_component(
+        component = build_component(
             node_name,
             node_type,
             params,
             component_registry=execution_registry,
         )
+        if (
+            tuple(component.input_ports) != declared_input_ports
+            or tuple(component.output_ports) != declared_output_ports
+        ):
+            meta = metadata_registry.get(node_type)
+            if meta is not None and meta.dynamic_port_policy is not None:
+                raise DynamicPortPolicyError(
+                    f"{node_type} node {node_name!r} runtime ports do not match its "
+                    "policy-materialized GraphSpec namespace: "
+                    f"runtime inputs={tuple(component.input_ports)!r}, "
+                    f"outputs={tuple(component.output_ports)!r}; "
+                    f"spec inputs={declared_input_ports!r}, outputs={declared_output_ports!r}"
+                )
+        nodes[node_name] = component
 
     wires = tuple(
         Wire(
@@ -1292,28 +1309,27 @@ def _validate_dynamic_component_ports(
     params: Mapping[str, Any],
     input_ports: Sequence[str],
     output_ports: Sequence[str],
-) -> None:
-    if node_type == "Mux":
-        n_inputs = int(params.get("n_inputs", 2))
-        expected_inputs = [f"in_{index}" for index in range(n_inputs)]
-        if list(input_ports) != expected_inputs:
-            raise ValueError(
-                f"Mux node {node_name!r} declares input_ports {list(input_ports)!r} "
-                f"but n_inputs={n_inputs} requires {expected_inputs!r}"
-            )
-        if list(output_ports) != ["output"]:
-            raise ValueError(
-                f"Mux node {node_name!r} declares output_ports {list(output_ports)!r} "
-                "but requires ['output']"
-            )
-    elif node_type == "Demux":
-        sizes = params.get("sizes")
-        if not isinstance(sizes, (list, tuple)):
-            return
-        expected_outputs = [f"out_{index}" for index in range(len(sizes))]
-        if list(input_ports) != ["input"] or list(output_ports) != expected_outputs:
-            raise ValueError(
-                f"Demux node {node_name!r} declares input_ports {list(input_ports)!r} "
-                f"and output_ports {list(output_ports)!r}, but sizes={list(sizes)!r} "
-                f"requires input_ports ['input'] and output_ports {expected_outputs!r}"
-            )
+    *,
+    component_registry: Any,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    meta = component_registry.get(node_type)
+    if meta is None or meta.dynamic_port_policy is None:
+        return tuple(input_ports), tuple(output_ports)
+    layout = component_registry.dynamic_port_layout(node_type, params)
+    assert layout is not None
+    declared_inputs = tuple(input_ports) or layout.input_ports
+    declared_outputs = tuple(output_ports) or layout.output_ports
+    try:
+        validate_dynamic_port_layout(
+            meta.dynamic_port_policy,
+            params,
+            input_ports=declared_inputs,
+            output_ports=declared_outputs,
+        )
+    except DynamicPortPolicyError as exc:
+        value = params.get(meta.dynamic_port_policy.count_param, "<missing>")
+        raise DynamicPortPolicyError(
+            f"{node_type} node {node_name!r} has invalid dynamic ports for "
+            f"{meta.dynamic_port_policy.count_param}={value!r}: {exc}"
+        ) from exc
+    return declared_inputs, declared_outputs

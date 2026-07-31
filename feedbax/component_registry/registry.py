@@ -12,8 +12,11 @@ from feedbax.contracts.component import (
     ComponentDefinition,
     ComponentIdentity,
     ComponentMigrationInfo,
+    DynamicPortPolicy,
+    DynamicPortLayout,
     PortType,
     PortTypeSpec,
+    derive_dynamic_port_layout,
 )
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
@@ -145,6 +148,7 @@ class ComponentRegistry:
         output_ports: Iterable[str] = (),
         icon: str = "box",
         port_types: PortTypeSpec | dict[str, Any] | None = None,
+        dynamic_port_policy: DynamicPortPolicy | dict[str, Any] | None = None,
         domain: str = CAUSAL_DOMAIN_ID,
         interior_domain: str | None = None,
         is_composite: bool = False,
@@ -165,6 +169,10 @@ class ComponentRegistry:
             raise TypeError(f"Builder for component type {name!r} must be callable")
         if port_types is not None and not isinstance(port_types, PortTypeSpec):
             port_types = PortTypeSpec.model_validate(port_types)
+        if dynamic_port_policy is not None and not isinstance(
+            dynamic_port_policy, DynamicPortPolicy
+        ):
+            dynamic_port_policy = DynamicPortPolicy.model_validate(dynamic_port_policy)
         if representation is not None and not isinstance(representation, RepresentationSpec):
             representation = RepresentationSpec.model_validate(representation)
         meta = ComponentMeta(
@@ -179,6 +187,7 @@ class ComponentRegistry:
             output_ports=list(output_ports),
             icon=icon,
             port_types=port_types,
+            dynamic_port_policy=dynamic_port_policy,
             domain=domain,
             interior_domain=interior_domain,
             is_composite=is_composite,
@@ -351,6 +360,20 @@ class ComponentRegistry:
     def get(self, name: str) -> Optional[ComponentMeta]:
         meta = self._components.get(name)
         return deepcopy(meta) if meta is not None else None
+
+    def dynamic_port_layout(
+        self,
+        name: str,
+        params: Mapping[str, Any],
+    ) -> DynamicPortLayout | None:
+        """Derive a component's dynamic ports from an isolated parameter snapshot."""
+
+        meta = self._components.get(name)
+        if meta is None or meta.dynamic_port_policy is None:
+            return None
+        effective_params = deepcopy(meta.default_params)
+        effective_params.update(deepcopy(dict(params)))
+        return derive_dynamic_port_layout(meta.dynamic_port_policy, effective_params)
 
     def names(self) -> List[str]:
         return sorted(self._components)
@@ -527,6 +550,7 @@ class ComponentRegistry:
                         if isinstance(port_types, dict)
                         else port_types
                     ),
+                    dynamic_port_policy=meta.get("dynamic_port_policy"),
                     output_prototype_fn=meta.get("output_prototype_fn"),
                     provenance=f"file:{py_file}",
                     representation=meta.get("representation"),
@@ -551,6 +575,7 @@ class ComponentRegistry:
             icon=meta.icon,
             default_params=meta.default_params,
             port_types=meta.port_types,
+            dynamic_port_policy=meta.dynamic_port_policy,
             domain=meta.domain,
             interior_domain=meta.interior_domain,
             is_composite=meta.is_composite,

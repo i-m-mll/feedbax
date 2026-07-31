@@ -28,6 +28,11 @@ router = APIRouter()
 service = GraphService()
 
 
+def _component_registry(request: Request):
+    bootstrap_state = getattr(request.app.state, "bootstrap_state", None)
+    return bootstrap_state.bundle.components if bootstrap_state is not None else None
+
+
 class GraphCreateRequest(BaseModel):
     graph: GraphSpec
     ui_state: Optional[GraphUIState] = None
@@ -74,14 +79,25 @@ def _conflict_detail(exc: GraphSaveConflictError) -> dict[str, object]:
 
 
 @router.get("", response_model=GraphListResponse)
-async def list_graphs(response: Response) -> GraphListResponse:
+async def list_graphs(request: Request, response: Response) -> GraphListResponse:
     response.headers["Cache-Control"] = "no-store"
-    return GraphListResponse(data={"graphs": service.list_graphs()})
+    return GraphListResponse(
+        data={
+            "graphs": service.list_graphs(
+                component_registry=_component_registry(request),
+            )
+        }
+    )
 
 
 @router.post("", response_model=GraphCreateResponse)
-async def create_graph(payload: GraphCreateRequest) -> GraphCreateResponse:
-    record = service.create_graph(payload.graph, payload.ui_state)
+async def create_graph(payload: GraphCreateRequest, request: Request) -> GraphCreateResponse:
+    component_registry = _component_registry(request)
+    record = service.create_graph(
+        payload.graph,
+        payload.ui_state,
+        component_registry=component_registry,
+    )
     if payload.workspace is not None:
         record = service.update_graph(
             record.graph_id,
@@ -90,15 +106,19 @@ async def create_graph(payload: GraphCreateRequest) -> GraphCreateResponse:
             workspace=payload.workspace,
             expected_save_revision=record.project.metadata.save_revision,
             require_save_revision=True,
+            component_registry=component_registry,
         )
     return GraphCreateResponse(data={"id": record.graph_id, "metadata": record.project.metadata})
 
 
 @router.get("/{graph_id}", response_model=GraphDetailResponse)
-async def get_graph(graph_id: str, response: Response) -> GraphDetailResponse:
+async def get_graph(graph_id: str, request: Request, response: Response) -> GraphDetailResponse:
     response.headers["Cache-Control"] = "no-store"
     try:
-        record = service.get_graph(graph_id)
+        record = service.get_graph(
+            graph_id,
+            component_registry=_component_registry(request),
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Graph not found") from exc
     return GraphDetailResponse(
@@ -119,6 +139,7 @@ async def get_graph(graph_id: str, response: Response) -> GraphDetailResponse:
 async def update_graph(
     graph_id: str,
     payload: GraphUpdateRequest,
+    request: Request,
     if_match: Optional[str] = Header(default=None, alias="If-Match"),
 ) -> GraphUpdateResponse:
     expected_revision = _parse_if_match_revision(if_match)
@@ -134,6 +155,7 @@ async def update_graph(
             payload.workspace,
             expected_save_revision=expected_revision,
             require_save_revision=True,
+            component_registry=_component_registry(request),
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Graph not found") from exc
@@ -143,7 +165,11 @@ async def update_graph(
 
 
 @router.post("/{graph_id}/beacon")
-async def beacon_update_graph(graph_id: str, payload: GraphUpdateRequest):
+async def beacon_update_graph(
+    graph_id: str,
+    payload: GraphUpdateRequest,
+    request: Request,
+):
     """sendBeacon endpoint for pagehide saves; returns 204 No Content."""
     try:
         service.update_graph(
@@ -155,6 +181,7 @@ async def beacon_update_graph(graph_id: str, payload: GraphUpdateRequest):
             payload.workspace,
             expected_save_revision=payload.expected_save_revision,
             require_save_revision=True,
+            component_registry=_component_registry(request),
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Graph not found") from exc

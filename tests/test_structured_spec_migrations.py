@@ -80,6 +80,7 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_VERSION_V2,
     GRAPH_SPEC_SCHEMA_VERSION_V3,
+    GRAPH_SPEC_SCHEMA_VERSION_V4,
     LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     STUDIO_BIOMECHANICS_SCHEMA_ID,
@@ -88,7 +89,10 @@ from feedbax.contracts.graph import (
     STUDIO_SCENARIO_SCHEMA_VERSION_V1,
     StudioScenarioSpec,
 )
-from feedbax.contracts.component import COMPONENT_DEFINITION_SCHEMA_VERSION_V1
+from feedbax.contracts.component import (
+    COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
+    COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
+)
 from feedbax.contracts.expressions import (
     PATH_EXPRESSION_SCHEMA_ID,
     PATH_EXPRESSION_SCHEMA_VERSION,
@@ -1667,6 +1671,17 @@ def test_default_policy_matrix_exercises_accept_migrate_or_reject_behavior() -> 
             assert "migration_intentionally_absent=yes" in message
 
 
+def test_component_definition_policy_supports_v1_and_v2() -> None:
+    policy = default_spec_registry.resolve("ComponentDefinition").policy
+
+    assert policy is not None
+    assert policy.stance == "migrate"
+    assert policy.supported_old_versions == (
+        COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
+        COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
+    )
+
+
 def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> None:
     graph_policy = default_spec_registry.resolve("GraphSpec").policy
     task_binding_policy = default_spec_registry.resolve("StudioTaskBindingSpec").policy
@@ -1691,11 +1706,13 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
         LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
         GRAPH_SPEC_SCHEMA_VERSION_V2,
         GRAPH_SPEC_SCHEMA_VERSION_V3,
+        GRAPH_SPEC_SCHEMA_VERSION_V4,
     )
     assert component_definition_policy is not None
     assert component_definition_policy.stance == "migrate"
     assert component_definition_policy.supported_old_versions == (
         COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
+        COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
     )
     assert task_binding_policy is not None
     assert task_binding_policy.stance == "migrate"

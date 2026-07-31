@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from feedbax.contracts.acausal_interface import normalize_acausal_interfaces_for_graph
+from feedbax.contracts.component import DynamicPortPolicyError
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphProject,
@@ -23,7 +24,11 @@ def _authoring_component_type(component_type: str) -> str:
     return component_type
 
 
-def normalize_graph_for_studio_authoring(graph: GraphSpec) -> GraphSpec:
+def normalize_graph_for_studio_authoring(
+    graph: GraphSpec,
+    *,
+    component_registry: Any | None = None,
+) -> GraphSpec:
     """Normalize runtime/persisted component names to Studio authoring names."""
 
     graph = normalize_acausal_interfaces_for_graph(graph)
@@ -33,6 +38,18 @@ def normalize_graph_for_studio_authoring(graph: GraphSpec) -> GraphSpec:
         params = dict(node_spec.params)
         input_ports = list(node_spec.input_ports)
         output_ports = list(node_spec.output_ports)
+        if component_registry is not None:
+            derive_layout = getattr(component_registry, "dynamic_port_layout", None)
+            if callable(derive_layout):
+                try:
+                    layout = derive_layout(next_type, params)
+                except DynamicPortPolicyError:
+                    layout = None
+                if layout is not None:
+                    if not input_ports:
+                        input_ports = list(layout.input_ports)
+                    if not output_ports:
+                        output_ports = list(layout.output_ports)
         nodes[node_id] = node_spec.model_copy(
             update={
                 "type": next_type,
@@ -71,7 +88,10 @@ def normalize_graph_for_studio_authoring(graph: GraphSpec) -> GraphSpec:
         subgraphs = {}
         for node_id, subgraph in graph.subgraphs.items():
             if isinstance(subgraph, GraphSpec):
-                subgraphs[node_id] = normalize_graph_for_studio_authoring(subgraph)
+                subgraphs[node_id] = normalize_graph_for_studio_authoring(
+                    subgraph,
+                    component_registry=component_registry,
+                )
             else:
                 subgraphs[node_id] = subgraph
     return graph.model_copy(
@@ -113,6 +133,8 @@ def normalize_task_binding_spec_for_studio_authoring(
 
 def normalize_workspace_for_studio_authoring(
     workspace: Optional[StudioWorkspaceSpec],
+    *,
+    component_registry: Any | None = None,
 ) -> Optional[StudioWorkspaceSpec]:
     if workspace is None:
         return None
@@ -121,7 +143,10 @@ def normalize_workspace_for_studio_authoring(
     for scenario_id, scenario in workspace.scenarios.items():
         if scenario.graph is None:
             continue
-        graph = normalize_graph_for_studio_authoring(scenario.graph)
+        graph = normalize_graph_for_studio_authoring(
+            scenario.graph,
+            component_registry=component_registry,
+        )
         task_binding_spec = normalize_task_binding_spec_for_studio_authoring(
             scenario.task_binding_spec,
             graph,
@@ -135,9 +160,19 @@ def normalize_workspace_for_studio_authoring(
     return workspace.model_copy(update={"scenarios": scenarios}) if changed else workspace
 
 
-def normalize_project_for_studio_authoring(project: GraphProject) -> GraphProject:
-    graph = normalize_graph_for_studio_authoring(project.graph)
-    workspace = normalize_workspace_for_studio_authoring(project.workspace)
+def normalize_project_for_studio_authoring(
+    project: GraphProject,
+    *,
+    component_registry: Any | None = None,
+) -> GraphProject:
+    graph = normalize_graph_for_studio_authoring(
+        project.graph,
+        component_registry=component_registry,
+    )
+    workspace = normalize_workspace_for_studio_authoring(
+        project.workspace,
+        component_registry=component_registry,
+    )
     if graph is project.graph and workspace is project.workspace:
         return project
     return project.model_copy(update={"graph": graph, "workspace": workspace})

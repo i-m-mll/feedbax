@@ -40,11 +40,14 @@ from feedbax.contracts.checkpoints import (
     structural_abi_content_sha256,
 )
 from feedbax.contracts.component import (
+    COMPONENT_DEFINITION_DYNAMIC_PORT_POLICY_MIGRATION_ID,
     COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID,
     COMPONENT_DEFINITION_SCHEMA_ID,
     COMPONENT_DEFINITION_SCHEMA_VERSION,
     COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
-    migrate_component_definition_payload,
+    COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
+    migrate_component_definition_v1_to_v2_payload,
+    migrate_component_definition_v2_to_v3_payload,
 )
 from feedbax.contracts.descriptors import (
     COMPONENT_DESCRIPTOR_SCHEMA_ID,
@@ -2942,7 +2945,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             consumed_by=("Studio frontend", "component registry clients"),
             description="Discoverable component metadata and port typing contract.",
             stance="migrate",
-            supported_old_versions=(COMPONENT_DEFINITION_SCHEMA_VERSION_V1,),
+            supported_old_versions=(
+                COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
+                COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
+            ),
             rejected_old_versions=(),
             required_tests=("tests/test_component_registration.py",),
         ),
@@ -5746,10 +5752,20 @@ default_spec_registry.register_migration(
     "ComponentDefinition",
     SchemaMigration(
         source_version=COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
-        target_version=COMPONENT_DEFINITION_SCHEMA_VERSION,
+        target_version=COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
         migration_id=COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID,
-        migrate=migrate_component_definition_payload,
+        migrate=migrate_component_definition_v1_to_v2_payload,
         description="Default legacy component port metadata to explicit signal ports.",
+    ),
+)
+default_spec_registry.register_migration(
+    "ComponentDefinition",
+    SchemaMigration(
+        source_version=COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
+        target_version=COMPONENT_DEFINITION_SCHEMA_VERSION,
+        migration_id=COMPONENT_DEFINITION_DYNAMIC_PORT_POLICY_MIGRATION_ID,
+        migrate=migrate_component_definition_v2_to_v3_payload,
+        description="Add the optional declarative dynamic-port policy field.",
     ),
 )
 default_spec_registry.register_migration(
