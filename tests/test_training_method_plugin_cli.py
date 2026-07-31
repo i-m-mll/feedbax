@@ -379,15 +379,11 @@ def test_execute_cli_routes_resume_to_zero_level_plan(monkeypatch, tmp_path, cap
         rng_roots={"model": jax.random.key(0)},
         materialize_instance=lambda _request: ScalarInstancePreparationResult(mapped_slots={}),
     )
-    resolved = SimpleNamespace(
-        registration=SimpleNamespace(requires_execution_preparation=True),
-        payload=None,
-        contract=None,
-        effective_phase=None,
-    )
-    run_spec = SimpleNamespace(
-        method_ref=SimpleNamespace(key="tests/zero-level/v1"),
-        worker_execution=object(),
+    run_spec = TrainingRunSpec.model_validate(_standard_run_spec_payload())
+    resolved = default_training_method_registry().resolve_execution(
+        run_spec.method_ref,
+        run_spec.method_payload,
+        worker_execution=run_spec.worker_execution,
     )
     state = _bootstrap(
         PluginRegistration(
@@ -398,7 +394,7 @@ def test_execute_cli_routes_resume_to_zero_level_plan(monkeypatch, tmp_path, cap
             ),
             lambda context: context.registry(EXECUTION_PREPARATIONS).register(
                 ExecutionPreparationRegistration(
-                    method_ref="tests/zero-level/v1",
+                    method_ref=run_spec.method_ref.key,
                     provider=lambda _request: plan,
                     owner="tests.cli",
                 )
@@ -414,7 +410,6 @@ def test_execute_cli_routes_resume_to_zero_level_plan(monkeypatch, tmp_path, cap
     monkeypatch.setattr(cli_module, "_read_json", lambda _path: {})
     monkeypatch.setattr(cli_module, "validate_training_run_spec", lambda _payload: run_spec)
     monkeypatch.setattr(cli_module, "resolve_training_run_spec", lambda *_args: resolved)
-    monkeypatch.setattr(cli_module, "resolve_execution_mapping", lambda _worker: ((), {}))
     monkeypatch.setattr(cli_module, "require_execution_preparation_provider", lambda **_kw: None)
     monkeypatch.setattr(
         cli_module,
@@ -653,6 +648,7 @@ def test_descriptor_rejects_invalid_runtime_mapping_before_preparation(
     invalid_mapping: str,
 ) -> None:
     sentinel = tmp_path / "preparation-ran"
+    method_ref = "tests/invalid_runtime/v1"
 
     def prepare(_request: ExecutionPreparationRequest) -> ExecutionPreparationResult:
         sentinel.write_text("unexpected", encoding="utf-8")
@@ -662,11 +658,13 @@ def test_descriptor_rejects_invalid_runtime_mapping_before_preparation(
         method_registry = context.registry(TRAINING_METHODS)
         method_registry.register_descriptor(
             TrainingMethodDescriptor(
-                method_ref="feedbax/standard_supervised/v1",
+                method_ref=method_ref,
                 payload_schema_id=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
                 payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
                 payload_model=StandardSupervisedMethodPayload,
-                contract_compiler=lambda _payload: standard_supervised_method_contract(),
+                contract_compiler=lambda _payload: standard_supervised_method_contract().model_copy(
+                    update={"method_ref": method_ref}
+                ),
                 update_kernels_factory=(
                     (
                         lambda _payload: {
@@ -687,7 +685,7 @@ def test_descriptor_rejects_invalid_runtime_mapping_before_preparation(
             )
         )
 
-        descriptor = method_registry.descriptor("feedbax/standard_supervised/v1")
+        descriptor = method_registry.descriptor(method_ref)
         assert descriptor is not None and descriptor.preparation_provider is not None
         context.registry(EXECUTION_PREPARATIONS).register(
             ExecutionPreparationRegistration(
@@ -712,7 +710,17 @@ def test_descriptor_rejects_invalid_runtime_mapping_before_preparation(
     )
     method_registry = state.bundle.training_methods
     preparation_registry = state.bundle.execution_preparations
-    run_spec = TrainingRunSpec.model_validate(_standard_run_spec_payload())
+    run_spec_payload = _standard_run_spec_payload()
+    run_spec_payload["method_ref"] = {
+        "package": "tests",
+        "name": "invalid_runtime",
+        "version": "v1",
+    }
+    worker_execution = run_spec_payload["worker_execution"]
+    assert isinstance(worker_execution, dict)
+    worker_execution["method_contract"]["method_ref"] = method_ref
+    worker_execution["effective_phase"]["method_ref"] = method_ref
+    run_spec = TrainingRunSpec.model_validate(run_spec_payload)
 
     with pytest.raises(WorkerContractValidationError, match="must have signature"):
         resolved = method_registry.resolve_execution(
@@ -899,6 +907,12 @@ def test_checkpoint_fork_deduplicates_installed_and_explicit_plugin_module(
                 standard_supervised_method_contract,
                 standard_supervised_update_kernels,
             )
+            from feedbax.plugins import (
+                TRAINING_METHODS,
+                FamilyRequirement,
+                PluginDeclaration,
+                PluginRegistration,
+            )
 
 
             class DummyPayload(BaseModel):
@@ -908,7 +922,7 @@ def test_checkpoint_fork_deduplicates_installed_and_explicit_plugin_module(
             registration_count = 0
 
 
-            def register_feedbax_training_methods(registry):
+            def register(context):
                 global registration_count
                 registration_count += 1
                 if registration_count != 1:
@@ -919,7 +933,7 @@ def test_checkpoint_fork_deduplicates_installed_and_explicit_plugin_module(
                         "method_payload_schema_version": {DUMMY_SCHEMA_VERSION!r},
                     }}
                 )
-                registry.register(
+                context.registry(TRAINING_METHODS).register(
                     TrainingMethodRegistration(
                         method_ref={DUMMY_METHOD_REF!r},
                         payload_schema_id={DUMMY_SCHEMA_ID!r},
@@ -931,6 +945,16 @@ def test_checkpoint_fork_deduplicates_installed_and_explicit_plugin_module(
                         package="dummy",
                     )
                 )
+
+
+            PLUGIN_REGISTRATION = PluginRegistration(
+                PluginDeclaration(
+                    "tests.dummy_training",
+                    "1.0",
+                    families=(FamilyRequirement("training_methods"),),
+                ),
+                register,
+            )
             """
         ),
         encoding="utf-8",
@@ -938,7 +962,7 @@ def test_checkpoint_fork_deduplicates_installed_and_explicit_plugin_module(
     dist_info = tmp_path / "dummy_training_plugin-1.0.dist-info"
     dist_info.mkdir()
     (dist_info / "entry_points.txt").write_text(
-        "[feedbax.plugins]\ndummy-training = dummy_training_plugin\n",
+        "[feedbax.plugins]\ndummy-training = dummy_training_plugin:PLUGIN_REGISTRATION\n",
         encoding="utf-8",
     )
     env = os.environ.copy()
@@ -968,6 +992,7 @@ def test_checkpoint_fork_deduplicates_installed_and_explicit_plugin_module(
     )
 
     assert completed.returncode == 1
+    assert completed.stdout, completed.stderr
     output = json.loads(completed.stdout)
     error = output["targets"][0]["error"]
     assert "unknown method_ref" not in error
@@ -1026,7 +1051,15 @@ def test_execute_cli_descriptor_plugin_prepares_typed_runtime_objects(tmp_path: 
                 standard_supervised_method_contract,
                 standard_supervised_update_kernels,
             )
+            from feedbax.plugins import (
+                EXECUTION_PREPARATIONS,
+                TRAINING_METHODS,
+                FamilyRequirement,
+                PluginDeclaration,
+                PluginRegistration,
+            )
             from feedbax.training.preparation import (
+                ExecutionPreparationRegistration,
                 ExecutionPreparationResult,
             )
 
@@ -1064,7 +1097,7 @@ def test_execute_cli_descriptor_plugin_prepares_typed_runtime_objects(tmp_path: 
                 return {{"feedbax.training.standard_supervised.gradient_update": gradient_update}}
 
 
-            def register_feedbax_training_methods(registry):
+            def register(context):
                 def prepare(request):
                     assert request.run_id == "prepared-cli"
                     assert isinstance(request.method_payload, DummyPayload)
@@ -1081,8 +1114,7 @@ def test_execute_cli_descriptor_plugin_prepares_typed_runtime_objects(tmp_path: 
                         kernel_context={{"plugin_marker": MARKER}},
                     )
 
-                registry.register_descriptor(
-                    TrainingMethodDescriptor(
+                descriptor = TrainingMethodDescriptor(
                         method_ref={DUMMY_METHOD_REF!r},
                         payload_schema_id={DUMMY_SCHEMA_ID!r},
                         payload_schema_version={DUMMY_SCHEMA_VERSION!r},
@@ -1093,7 +1125,27 @@ def test_execute_cli_descriptor_plugin_prepares_typed_runtime_objects(tmp_path: 
                         owner="dummy_execution_plugin",
                         package="dummy",
                     )
+                context.registry(TRAINING_METHODS).register_descriptor(descriptor)
+                context.registry(EXECUTION_PREPARATIONS).register(
+                    ExecutionPreparationRegistration(
+                        method_ref=descriptor.method_ref,
+                        provider=descriptor.preparation_provider,
+                        owner=descriptor.owner,
+                    )
                 )
+
+
+            PLUGIN_REGISTRATION = PluginRegistration(
+                PluginDeclaration(
+                    "tests.dummy_execution",
+                    "1",
+                    families=(
+                        FamilyRequirement("training_methods"),
+                        FamilyRequirement("execution_preparations"),
+                    ),
+                ),
+                register,
+            )
             """
         ),
         encoding="utf-8",
@@ -1157,10 +1209,16 @@ def test_execute_cli_descriptor_plugin_prepares_typed_runtime_objects(tmp_path: 
             f"""
             from dummy_execution_plugin import DummyPayload, compile_contract, update_kernels
             from feedbax.contracts.training import TrainingMethodRegistration
+            from feedbax.plugins import (
+                TRAINING_METHODS,
+                FamilyRequirement,
+                PluginDeclaration,
+                PluginRegistration,
+            )
 
 
-            def register_feedbax_training_methods(registry):
-                registry.register(
+            def register(context):
+                context.registry(TRAINING_METHODS).register(
                     TrainingMethodRegistration(
                         method_ref={DUMMY_METHOD_REF!r},
                         payload_schema_id={DUMMY_SCHEMA_ID!r},
@@ -1174,6 +1232,16 @@ def test_execute_cli_descriptor_plugin_prepares_typed_runtime_objects(tmp_path: 
                         package="dummy",
                     )
                 )
+
+
+            PLUGIN_REGISTRATION = PluginRegistration(
+                PluginDeclaration(
+                    "tests.missing_preparation",
+                    "1",
+                    families=(FamilyRequirement("training_methods"),),
+                ),
+                register,
+            )
             """
         ),
         encoding="utf-8",
@@ -1264,6 +1332,12 @@ def test_native_cli_plugin_projects_governed_training_manifest_metadata(
             from feedbax.contracts.training import (
                 TrainingManifestMetadataProjectionRegistration,
             )
+            from feedbax.plugins import (
+                TRAINING_METHODS,
+                FamilyRequirement,
+                PluginDeclaration,
+                PluginRegistration,
+            )
 
 
             class ProjectionValues(BaseModel):
@@ -1272,8 +1346,8 @@ def test_native_cli_plugin_projects_governed_training_manifest_metadata(
                 gru_postrun_candidate: bool
 
 
-            def register_feedbax_training_methods(registry):
-                registry.register_manifest_metadata_projection(
+            def register(context):
+                context.registry(TRAINING_METHODS).register_manifest_metadata_projection(
                     TrainingManifestMetadataProjectionRegistration(
                         source_payload_kind="RLRMPRunSpec",
                         source_payload_schema_id="rlrmp.run_spec",
@@ -1285,6 +1359,16 @@ def test_native_cli_plugin_projects_governed_training_manifest_metadata(
                         package="rlrmp",
                     )
                 )
+
+
+            PLUGIN_REGISTRATION = PluginRegistration(
+                PluginDeclaration(
+                    "tests.projection",
+                    "1",
+                    families=(FamilyRequirement("training_methods"),),
+                ),
+                register,
+            )
             """
         ),
         encoding="utf-8",

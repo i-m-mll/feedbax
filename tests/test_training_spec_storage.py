@@ -822,7 +822,7 @@ def test_v3_graph_base_is_migrated_before_row_validation(tmp_path: Path) -> None
         repo_root=tmp_path,
         row_validator=lambda payload, _row_id: seen.append(payload) or None,
     )
-    assert seen[0]["graph"]["inline"]["schema_version"].endswith(".v4")
+    assert seen[0]["graph"]["inline"]["schema_version"].endswith(".v5")
 
 
 def test_intent_identity_excludes_symbolic_names_but_retains_pins() -> None:
