@@ -479,6 +479,13 @@ class LocalOrchestrationDriver:
         return collected
 
     def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
+        if self.realized_capabilities.facts.teardown is TeardownSemantics.RESOURCES_PRESERVED:
+            return {
+                "driver": "local",
+                "teardown": "skipped",
+                "skip_reason": "realized-capability-preserves-resources",
+                "stopped_rows": [],
+            }
         stopped: list[str] = []
         for row in bundle.rows:
             probe = self.probe(bundle, row, state)

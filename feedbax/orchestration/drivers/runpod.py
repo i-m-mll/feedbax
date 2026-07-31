@@ -2266,6 +2266,13 @@ class RunPodOrchestrationDriver:
 
     def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Boundedly remove a run-owned pod or record why it remains unresolved."""
+        if self.realized_capabilities.facts.teardown is TeardownSemantics.RESOURCES_PRESERVED:
+            return {
+                "driver": "runpod",
+                "teardown": "skipped",
+                "skip_reason": "realized-capability-preserves-resources",
+                "capability_variant": self.realized_capabilities.variant_id,
+            }
         ownership = self.teardown_ownership(state)
         if not ownership["owned_by_run"]:
             return {

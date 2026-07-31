@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -429,6 +430,43 @@ def test_keep_alive_context_realizes_preservation_for_local_and_owned_runpod() -
     assert runpod.realized_capabilities.facts.teardown is TeardownSemantics.RESOURCES_PRESERVED
 
 
+def test_preserved_runpod_realization_mechanically_prevents_provider_removal() -> None:
+    registry = new_application_registry_bundle(local_component_source=None).drivers
+    driver = registry.construct(
+        "runpod",
+        DriverConstructionContext(
+            configuration={
+                "driver_config": RunPodDriverConfig(auto_teardown=True),
+                "preserve_owned_resources": True,
+            },
+            runtime_bindings={"transport": _RemovalCanaryTransport()},
+        ),
+    )
+    driver.adopt_owned_pod("owned-pod")
+
+    outputs = driver.teardown(SimpleNamespace(keep_alive=False), object())
+
+    assert outputs["teardown"] == "skipped"
+    assert outputs["skip_reason"] == "realized-capability-preserves-resources"
+    assert driver.transport.calls == []
+
+
+def test_preserved_local_realization_mechanically_prevents_process_stop() -> None:
+    registry = new_application_registry_bundle(local_component_source=None).drivers
+    driver = registry.construct(
+        "local",
+        DriverConstructionContext(configuration={"preserve_owned_resources": True}),
+    )
+    stop_calls: list[str] = []
+    driver.stop_row = lambda *_args: stop_calls.append("stop")  # type: ignore[method-assign]
+
+    outputs = driver.teardown(SimpleNamespace(keep_alive=False), object())
+
+    assert outputs["teardown"] == "skipped"
+    assert outputs["skip_reason"] == "realized-capability-preserves-resources"
+    assert stop_calls == []
+
+
 def test_registry_rejects_missing_core_and_advertised_hook_members() -> None:
     core_envelope = DriverCapabilityEnvelope.single("fixture:core", _local_facts())
     missing_core = DriverRegistry(
@@ -528,3 +566,12 @@ class _FixtureDriver(_CoreDriverMethods):
 class _CoreOnlyFixtureDriver(_CoreOnlyDriverMethods):
     def __init__(self, realized: RealizedDriverCapabilities) -> None:
         self.realized_capabilities = realized
+
+
+class _RemovalCanaryTransport:
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, ...]] = []
+
+    def runpodctl(self, *args, **kwargs):
+        self.calls.append((*args, kwargs))
+        raise AssertionError("preserved realization attempted provider removal")
