@@ -2352,10 +2352,17 @@ class StageEngine:
     def _driver_facts(self) -> DriverCapabilityFacts:
         return self._realized_driver_capabilities().facts
 
+    def _teardown_preserves_resources(self) -> bool:
+        return (
+            self.bundle.keep_alive
+            or self._driver_facts().teardown is TeardownSemantics.RESOURCES_PRESERVED
+        )
+
     def _destructive_ephemeral_teardown(self) -> bool:
         facts = self._driver_facts()
         return (
-            facts.resources is ResourceSemantics.DRIVER_OWNED
+            not self._teardown_preserves_resources()
+            and facts.resources is ResourceSemantics.DRIVER_OWNED
             and facts.teardown is TeardownSemantics.VERIFIED_RESOURCE_ABSENCE
             and facts.custody is CustodySemantics.EPHEMERAL_REMOTE_RESOURCE
         )
@@ -2488,19 +2495,6 @@ class StageEngine:
         if stage.status == "completed":
             return state
         failure_log_collection: dict[str, Any] | None = None
-        if abort and facts.supports(DriverHook.COLLECT_FAILURE_LOGS):
-            collect_failure_logs = getattr(self.driver, "collect_failure_logs", None)
-            assert callable(collect_failure_logs)
-            try:
-                diagnostic_outputs = dict(collect_failure_logs(self.bundle, state))
-                failure_log_collection = {
-                    "status": "completed",
-                    "outputs": diagnostic_outputs,
-                }
-            except Exception as exc:
-                # Failure diagnostics are best-effort and must never mask
-                # the error that caused abort teardown.
-                failure_log_collection = {"status": "failed", "error": str(exc)}
         if self.bundle.keep_alive:
             ownership: dict[str, Any] = {}
             if facts.supports(DriverHook.TEARDOWN_OWNERSHIP):
@@ -2515,6 +2509,19 @@ class StageEngine:
             status = "completed"
             error = None
         else:
+            if abort and facts.supports(DriverHook.COLLECT_FAILURE_LOGS):
+                collect_failure_logs = getattr(self.driver, "collect_failure_logs", None)
+                assert callable(collect_failure_logs)
+                try:
+                    diagnostic_outputs = dict(collect_failure_logs(self.bundle, state))
+                    failure_log_collection = {
+                        "status": "completed",
+                        "outputs": diagnostic_outputs,
+                    }
+                except Exception as exc:
+                    # Failure diagnostics are best-effort and must never mask
+                    # the error that caused abort teardown.
+                    failure_log_collection = {"status": "failed", "error": str(exc)}
             try:
                 outputs = dict(self.driver.teardown(self.bundle, state))
                 status = "completed"

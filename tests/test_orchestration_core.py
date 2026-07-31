@@ -254,6 +254,7 @@ class CapabilityFakeDriver(FakeDriver):
         state: RunSetState,
     ) -> dict[str, Any]:
         del bundle, state
+        self._call("collect_failure_logs")
         return {"logs": "preserved"}
 
     def teardown(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
@@ -1628,6 +1629,46 @@ def test_preserved_capability_never_enters_destructive_teardown_after_enospc(
 
     assert state.stage(STAGE_TEARDOWN).outputs["teardown"] == "skipped"
     assert driver.delete_calls == 0
+
+
+def test_keep_alive_preserves_injected_destructive_variant_after_primary_enospc(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path, driver="runpod").model_copy(update={"keep_alive": True})
+    store = MonitorEnospcStore(bundle.run_set_dir / "state.json")
+    driver = CapabilityFakeDriver("engine-acquired")
+
+    with pytest.raises(PrimaryStatePersistenceError):
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            conformance_registry=_fixture_pass_registry(),
+        ).run()
+
+    emergency = store.load_emergency()
+    assert emergency.preservation_state == "preserved"
+    assert emergency.custody_complete is False
+    assert driver.delete_calls == 0
+    assert "collect_failure_logs" not in driver.calls
+    assert "teardown" not in driver.calls
+
+    store.preflight_and_reserve()
+    state = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        store=store,
+        conformance_registry=_fixture_pass_registry(),
+    )._run_teardown(store.load(), abort=True)
+
+    teardown = state.stage(STAGE_TEARDOWN)
+    assert teardown.status == "completed"
+    assert teardown.outputs["teardown"] == "skipped"
+    assert teardown.outputs["skip_reason"] == "keep_alive"
+    assert store.load_emergency().preservation_state == "preserved"
+    assert driver.delete_calls == 0
+    assert "collect_failure_logs" not in driver.calls
+    assert "teardown" not in driver.calls
 
 
 @pytest.mark.parametrize(
