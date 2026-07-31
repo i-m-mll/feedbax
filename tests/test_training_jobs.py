@@ -29,9 +29,14 @@ from feedbax.contracts.studio_training import (
 from feedbax.orchestration.events import RUN_EVENT_SCHEMA_ID, RunEvent
 from feedbax.orchestration.assembly import assemble_run_bundle
 from feedbax.orchestration.drivers.base import DriverRowProbe
+from feedbax.orchestration.drivers.capabilities import DriverRegistration, DriverRegistry
 from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore
 from feedbax.web.services.training_service import TrainingService
-from feedbax.web.services.worker_driver import _worker_start_body, load_worker_execution_payload
+from feedbax.web.services.worker_driver import (
+    WorkerHttpDriver,
+    _worker_start_body,
+    load_worker_execution_payload,
+)
 from feedbax.web.worker.app import WorkerStatus
 
 
@@ -294,6 +299,9 @@ def test_training_service_starts_state_backed_worker_run(
     starts: list[dict[str, Any]] = []
 
     class FakeWorkerDriver:
+        realized_capabilities = WorkerHttpDriver.realized_capabilities
+        poll_interval_seconds = WorkerHttpDriver.poll_interval_seconds
+
         def __init__(self, *, base_url: str, auth_token: str | None = None) -> None:
             assert base_url == "http://worker"
             assert auth_token is None
@@ -362,7 +370,20 @@ def test_training_service_starts_state_backed_worker_run(
 
     async def run() -> None:
         monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orch"))
-        monkeypatch.setattr(training_service_module, "WorkerHttpDriver", FakeWorkerDriver)
+        envelope = WorkerHttpDriver.capability_envelope
+        driver_registry = DriverRegistry(
+            (
+                DriverRegistration(
+                    name="worker-http",
+                    supported_capabilities=envelope,
+                    resolve_capabilities=lambda _context: envelope.realize("external-service"),
+                    factory=lambda context, _realized: FakeWorkerDriver(
+                        base_url=str(context.configuration["base_url"]),
+                        auth_token=context.credentials.get("worker_http_token"),
+                    ),
+                ),
+            )
+        )
 
         service = TrainingService()
         service.connect_remote("http://worker")
@@ -370,6 +391,7 @@ def test_training_service_starts_state_backed_worker_run(
         job_id = await service.start_training(
             3,
             conformance_registry=application_registry_bundle.conformance_checks,
+            driver_registry=driver_registry,
             plugin_provenance=(),
         )
         deadline = time.monotonic() + 2.0

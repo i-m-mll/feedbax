@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shlex
@@ -70,6 +71,11 @@ from feedbax.orchestration.drivers.runpod import (
     rank_datacenters_for_gpu,
     runpod_row_workdir,
     validate_runpod_repo_realization_plan,
+)
+from feedbax.orchestration.drivers.capabilities import (
+    AcquisitionSemantics,
+    DriverCapabilityEnvelope,
+    DriverHook,
 )
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
 from feedbax.orchestration.drivers.base import (
@@ -573,8 +579,27 @@ def _owned_state(bundle: RunBundle, pod_id: str = "pod-123") -> RunSetState:
 class GovernedProvisionDriver:
     """Fake one-attempt RunPod driver for stage retry policy tests."""
 
-    govern_provisioning_retries = True
-    provision_retry_delay_seconds = 1.0
+    realized_capabilities = DriverCapabilityEnvelope.single(
+        "runpod",
+        replace(
+            RunPodOrchestrationDriver.capability_envelope.variants["engine-acquired"],
+            variant_id="governed-fixture",
+            acquisition=AcquisitionSemantics.EXTERNALLY_PROVIDED,
+            optional_hooks=frozenset(
+                {
+                    DriverHook.GOVERN_PROVISIONING_RETRIES,
+                    DriverHook.PROVISION_RETRY_DELAY,
+                }
+            ),
+        ),
+    ).realize("governed-fixture")
+    poll_interval_seconds = 0.05
+
+    def govern_provisioning_retries(self) -> bool:
+        return True
+
+    def provision_retry_delay(self) -> float:
+        return 1.0
 
     def __init__(self, outcomes: list[object]) -> None:
         self.outcomes = list(outcomes)
@@ -744,9 +769,7 @@ def _create_failure_corpus() -> list[dict[str, Any]]:
     return json.loads(CREATE_FAILURE_CORPUS_PATH.read_text(encoding="utf-8"))
 
 
-@pytest.mark.parametrize(
-    "entry", _create_failure_corpus(), ids=lambda entry: entry["name"]
-)
+@pytest.mark.parametrize("entry", _create_failure_corpus(), ids=lambda entry: entry["name"])
 def test_create_failure_corpus_classification(entry: dict[str, Any]) -> None:
     """Every curated payload must keep its human-adjudicated classification."""
     result = CommandResult(entry["returncode"], entry["stdout"], entry["stderr"])
@@ -792,11 +815,7 @@ def test_create_failure_corpus_definitive_rejects_region_and_continues(
 
 @pytest.mark.parametrize(
     "entry",
-    [
-        entry
-        for entry in _create_failure_corpus()
-        if entry["expected_behavior"] == "halt-ambiguous"
-    ],
+    [entry for entry in _create_failure_corpus() if entry["expected_behavior"] == "halt-ambiguous"],
     ids=lambda entry: entry["name"],
 )
 def test_create_failure_corpus_ambiguous_halts_acquisition(
@@ -3324,9 +3343,11 @@ def test_stage_preflight_composes_core_and_runpod_static_failures_before_provide
         "runpod-python-version-declared",
     ]
     message = str(raised.value)
-    assert message.index("environment-declaration") < message.index(
-        "runpod-image-immutable"
-    ) < message.index("runpod-python-version-declared")
+    assert (
+        message.index("environment-declaration")
+        < message.index("runpod-image-immutable")
+        < message.index("runpod-python-version-declared")
+    )
     provider_check = next(check for check in checks if check.name == "runpod-credentials")
     assert provider_check.observed["outcome"] == "skipped-due-to-dependency"
     assert provider_check.observed["dependencies"] == [
@@ -3340,9 +3361,7 @@ def test_runpod_preflight_queries_credentials_despite_independent_declaration_fa
 ) -> None:
     bundle = _bundle(tmp_path, deadman_enabled=True)
     bundle = bundle.model_copy(
-        update={
-            "environment": bundle.environment.model_copy(update={"python_version": None})
-        }
+        update={"environment": bundle.environment.model_copy(update={"python_version": None})}
     )
     transport = FakeRunPodTransport()
     transport.queue_runpodctl(
@@ -3697,9 +3716,7 @@ def test_stage_smoke_records_evidence_for_every_non_opted_out_row(tmp_path: Path
         transport=RemoteSmokeTransport(probe_status="completed"),
     )
 
-    _state_after, outputs = StageEngine(bundle=bundle, driver=driver)._stage_smoke(
-        _state(bundle)
-    )
+    _state_after, outputs = StageEngine(bundle=bundle, driver=driver)._stage_smoke(_state(bundle))
     evidence = RemoteSmokeEvidence.model_validate(outputs)
 
     assert [row.row_id for row in evidence.rows] == ["warm", "cool", "hot"]
@@ -4032,12 +4049,8 @@ def test_layout_failure_short_circuits_before_all_provider_queries(tmp_path: Pat
         "outcome": "skipped-due-to-dependency",
         "dependencies": ["repo-realization-plan-sealing"],
     }
-    assert named["runpod-image-tag-exists"].observed["outcome"] == (
-        "skipped-due-to-dependency"
-    )
-    assert named["runpod-credentials"].observed["dependencies"] == [
-        "runpod-remote-layout-vs-lock"
-    ]
+    assert named["runpod-image-tag-exists"].observed["outcome"] == ("skipped-due-to-dependency")
+    assert named["runpod-credentials"].observed["dependencies"] == ["runpod-remote-layout-vs-lock"]
     assert transport.image_exists_calls == []
     assert transport.runpodctl_calls == []
     assert transport.operations == []
@@ -4896,11 +4909,7 @@ def test_local_and_runpod_collect_directory_contents_at_declared_target(
         }
     )
     stale_nested = (
-        runpod_bundle.run_set_dir
-        / "collected"
-        / "warm"
-        / directory_name
-        / directory_name
+        runpod_bundle.run_set_dir / "collected" / "warm" / directory_name / directory_name
     )
     stale_nested.mkdir(parents=True)
     (stale_nested / "stale.json").write_text('{"source":"stale"}\n')

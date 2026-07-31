@@ -42,6 +42,10 @@ from feedbax.orchestration.bundle import (
     SchemaArtifactRef,
 )
 from feedbax.orchestration.conformance import CheckRegistry
+from feedbax.orchestration.drivers.capabilities import (
+    DriverConstructionContext,
+    DriverRegistry,
+)
 from feedbax.orchestration.events import (
     RUN_EVENT_SCHEMA_ID,
     RUN_EVENT_TERMINAL_TYPES,
@@ -58,7 +62,7 @@ from feedbax.orchestration.stages import (
 )
 from feedbax.orchestration.state import RunSetState, RunSetStateStore, utc_now
 import feedbax.web.worker.client as worker_client
-from feedbax.web.services.worker_driver import WorkerHttpDriver, load_worker_execution_payload
+from feedbax.web.services.worker_driver import load_worker_execution_payload
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +264,7 @@ class TrainingService:
         total_batches: int,
         *,
         conformance_registry: CheckRegistry,
+        driver_registry: DriverRegistry,
         plugin_provenance: Sequence[Any],
         training_config: Optional[dict] = None,
         training_spec: Optional[dict] = None,
@@ -297,9 +302,12 @@ class TrainingService:
             request,
             context=context,
             registry=registry,
-            driver_factory=lambda _bundle: WorkerHttpDriver(
-                base_url=base_url,
-                auth_token=self._auth_token,
+            driver_registry=driver_registry,
+            driver_context=lambda _bundle: DriverConstructionContext(
+                configuration={"base_url": base_url},
+                credentials=(
+                    {"worker_http_token": self._auth_token} if self._auth_token is not None else {}
+                ),
             ),
             conformance_registry=conformance_registry,
             plugin_provenance=plugin_provenance,

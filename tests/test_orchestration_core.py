@@ -110,6 +110,25 @@ from feedbax.orchestration.conformance import (
     run_conformance_checks,
 )
 from feedbax.orchestration.drivers.base import DriverRowProbe
+from feedbax.orchestration.drivers.builtins import build_builtin_driver_registry
+from feedbax.orchestration.drivers.capabilities import (
+    AcquisitionSemantics,
+    AuthorizationSemantics,
+    CustodySemantics,
+    DriverCapabilityEnvelope,
+    DriverConstructionContext,
+    DriverHook,
+    DriverRegistration,
+    DriverRegistry,
+    DriverVenue,
+    EnvironmentSemantics,
+    MonitoringSemantics,
+    RecoverySemantics,
+    ResourceSemantics,
+    RetrySemantics,
+    SpendSemantics,
+    TeardownSemantics,
+)
 from feedbax.orchestration.drivers.local import (
     LocalDriverError,
     LocalOrchestrationDriver,
@@ -170,9 +189,37 @@ from feedbax.training.spec_storage import TrainingRunIdentityAdapter
 from feedbax.contracts.remote_smoke import RemoteSmokeEvidence
 
 
-class FakeDriver:
-    realized_capabilities = LocalOrchestrationDriver.realized_capabilities
+_FAKE_DRIVER_ENVELOPE = DriverCapabilityEnvelope.single(
+    "local",
+    replace(
+        LocalOrchestrationDriver.realized_capabilities.facts,
+        optional_hooks=frozenset(),
+    ),
+)
+_REMOTE_FAKE_DRIVER_ENVELOPE = DriverCapabilityEnvelope.single(
+    "runpod",
+    replace(
+        LocalOrchestrationDriver.realized_capabilities.facts,
+        variant_id="remote-fixture",
+        venue=DriverVenue.CLOUD_RESOURCE,
+        resources=ResourceSemantics.DRIVER_OWNED,
+        spend=SpendSemantics.DRIVER_OBSERVED,
+        authorization=AuthorizationSemantics.CLOUD_AND_SPEND_REQUIRED,
+        environment=EnvironmentSemantics.REMOTE_REALIZATION,
+        monitoring=MonitoringSemantics.ROW_POLL,
+        recovery=RecoverySemantics.NONE,
+        retry=RetrySemantics.NONE,
+        acquisition=AcquisitionSemantics.EXTERNALLY_PROVIDED,
+        teardown=TeardownSemantics.VERIFIED_RESOURCE_ABSENCE,
+        custody=CustodySemantics.EPHEMERAL_REMOTE_RESOURCE,
+        optional_hooks=frozenset(),
+    ),
+)
 
+
+class FakeDriver:
+    realized_capabilities = _FAKE_DRIVER_ENVELOPE.realize("local-stop")
+    poll_interval_seconds = 0.05
     def __init__(self, *, fail: dict[str, int] | None = None) -> None:
         self.calls: list[str] = []
         self.fail = dict(fail or {})
@@ -281,7 +328,40 @@ class MonitorEnospcStore(RunSetStateStore):
         return super()._save(state, crash_before_replace=crash_before_replace)
 
 
+def _registry_preflight(bundle: RunBundle):
+    registry = build_builtin_driver_registry()
+    driver = registry.construct(
+        bundle.deployment_policy.driver,
+        DriverConstructionContext(
+            configuration={"bundle": bundle, "base_url": "http://worker.invalid"}
+        ),
+    )
+    return run_preflight_checks(bundle, driver.realized_capabilities)
+
+
+def _fixture_driver_registry(driver: FakeDriver) -> DriverRegistry:
+    envelope = _FAKE_DRIVER_ENVELOPE
+    return DriverRegistry(
+        (
+            DriverRegistration(
+                name="local",
+                supported_capabilities=envelope,
+                resolve_capabilities=lambda _context: driver.realized_capabilities,
+                factory=lambda _context, _realized: driver,
+            ),
+        )
+    )
+
+
 class BillingFakeDriver(FakeDriver):
+    realized_capabilities = DriverCapabilityEnvelope.single(
+        "runpod",
+        replace(
+            _REMOTE_FAKE_DRIVER_ENVELOPE.realize("remote-fixture").facts,
+            optional_hooks=frozenset({DriverHook.GLOBAL_RESOURCE_INVENTORY}),
+        ),
+    ).realize("remote-fixture")
+
     def __init__(
         self,
         *,
@@ -327,6 +407,27 @@ class BillingFakeDriver(FakeDriver):
                 "pod_ids": [],
             },
         }
+
+    def observe_global_resource_inventory(self, **_kwargs: object) -> dict[str, Any]:
+        return {}
+
+
+def _as_remote_fake_driver(
+    driver: FakeDriver,
+    *,
+    global_inventory: bool = False,
+) -> FakeDriver:
+    facts = _REMOTE_FAKE_DRIVER_ENVELOPE.realize("remote-fixture").facts
+    if global_inventory:
+        facts = replace(
+            facts,
+            optional_hooks=frozenset({DriverHook.GLOBAL_RESOURCE_INVENTORY}),
+        )
+        driver.observe_global_resource_inventory = lambda **_kwargs: {}
+    driver.realized_capabilities = DriverCapabilityEnvelope.single("runpod", facts).realize(
+        "remote-fixture"
+    )
+    return driver
 
 
 def _remote_billing_record() -> dict[str, Any]:
@@ -747,13 +848,13 @@ def test_preflight_fails_closed_on_missing_or_mismatched_feedbax_revision(
     missing = bundle.model_copy(update={"feedbax_revision": ""})
     mismatch = bundle.model_copy(update={"feedbax_revision": "a" * 40})
 
-    missing_check = {entry.name: entry for entry in run_preflight_checks(missing)}[
+    missing_check = {entry.name: entry for entry in _registry_preflight(missing)}[
         "feedbax-revision-pin"
     ]
-    mismatch_check = {entry.name: entry for entry in run_preflight_checks(mismatch)}[
+    mismatch_check = {entry.name: entry for entry in _registry_preflight(mismatch)}[
         "feedbax-revision-pin"
     ]
-    matching_check = {entry.name: entry for entry in run_preflight_checks(bundle)}[
+    matching_check = {entry.name: entry for entry in _registry_preflight(bundle)}[
         "feedbax-revision-pin"
     ]
 
@@ -865,17 +966,26 @@ def test_v3_policy_migration_evidence_survives_without_authorizing_launch(tmp_pa
 @pytest.mark.parametrize(
     ("updates", "message"),
     [
-        ({"cloud_authorized": False}, "cloud_authorized=true"),
+        ({"cloud_authorized": False}, "cloud and spend authorization"),
         ({"venue": "local"}, "requires venue='remote'"),
     ],
 )
-def test_deployment_policy_validation_fails_closed(updates: dict[str, Any], message: str) -> None:
+def test_deployment_policy_validation_fails_closed_after_registry_resolution(
+    tmp_path: Path,
+    updates: dict[str, Any],
+    message: str,
+) -> None:
     payload = {
         **_deployment_policy("runpod").model_dump(mode="json"),
         **updates,
     }
-    with pytest.raises(ValueError, match=message):
-        DeploymentPolicy.model_validate(payload)
+    policy = DeploymentPolicy.model_validate(payload)
+    bundle = _bundle(tmp_path, driver="runpod").model_copy(update={"deployment_policy": policy})
+
+    check = {item.name: item for item in _registry_preflight(bundle)}["deployment-policy"]
+
+    assert check.status == "fail"
+    assert message in (check.detail or "")
 
 
 def test_pending_review_is_durable_but_blocks_provider_until_authorized(
@@ -905,7 +1015,7 @@ def test_pending_review_is_durable_but_blocks_provider_until_authorized(
         {**pending.model_dump(mode="json"), "review_authorized": True}
     )
     rebound = bundle.model_copy(update={"deployment_policy": authorized})
-    assert {check.name: check for check in run_preflight_checks(rebound)}[
+    assert {check.name: check for check in _registry_preflight(rebound)}[
         "deployment-policy"
     ].status == "pass"
 
@@ -1423,7 +1533,8 @@ def test_request_engine_adopts_constructed_driver_poll_interval(tmp_path: Path) 
         request,
         context=context,
         registry=registry,
-        driver_factory=lambda _bundle: driver,
+        driver_registry=_fixture_driver_registry(driver),
+        driver_context=lambda _bundle: DriverConstructionContext(),
     )
 
     engine.run(stop_after_stage="ASSEMBLE")
@@ -1444,7 +1555,8 @@ def test_stage_engine_resumes_from_every_stage_boundary(
         request,
         context=context,
         registry=registry,
-        driver_factory=lambda _bundle: first_driver,
+        driver_registry=_fixture_driver_registry(first_driver),
+        driver_context=lambda _bundle: DriverConstructionContext(),
         run_set_id=run_set_id,
         store=store,
         conformance_registry=_fixture_pass_registry(),
@@ -1455,7 +1567,8 @@ def test_stage_engine_resumes_from_every_stage_boundary(
         request,
         context=context,
         registry=registry,
-        driver_factory=lambda _bundle: resumed_driver,
+        driver_registry=_fixture_driver_registry(resumed_driver),
+        driver_context=lambda _bundle: DriverConstructionContext(),
         run_set_id=run_set_id,
         store=store,
         conformance_registry=_fixture_pass_registry(),
@@ -1682,6 +1795,14 @@ def test_executor_failure_remains_primary_when_declared_collection_output_is_abs
     teardown_raises: bool,
 ) -> None:
     class FailedExecutorDriver(FakeDriver):
+        realized_capabilities = DriverCapabilityEnvelope.single(
+            "local",
+            replace(
+                FakeDriver.realized_capabilities.facts,
+                optional_hooks=frozenset({DriverHook.COLLECT_FAILURE_LOGS}),
+            ),
+        ).realize("local-stop")
+
         def probe(
             self,
             bundle: RunBundle,
@@ -1935,7 +2056,7 @@ def test_capped_remote_execution_requires_observed_billing_evidence(tmp_path: Pa
         max_spend_usd=1.0,
     )
     store = RunSetStateStore(bundle.run_set_dir / "state.json")
-    driver = FakeDriver()
+    driver = _as_remote_fake_driver(FakeDriver())
 
     with pytest.raises(
         OrchestrationStageError,
@@ -2235,7 +2356,8 @@ def test_request_assembly_certifies_all_core_checks_with_independent_identity(
             request,
             context=AssemblyContext(custody_root=root / "assembly-custody"),
             registry=registry,
-            driver_factory=lambda _bundle: driver,
+            driver_registry=_fixture_driver_registry(driver),
+            driver_context=lambda _bundle: DriverConstructionContext(),
             run_set_id=run_set_id,
             conformance_registry=build_core_check_registry(),
         )
@@ -2378,10 +2500,13 @@ def test_authority_preflight_aggregates_payload_and_environment_failures(
 
 def test_preflight_consumes_only_deployment_policy(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path, driver="runpod")
-    check = {entry.name: entry for entry in run_preflight_checks(bundle)}["deployment-policy"]
+    check = {entry.name: entry for entry in _registry_preflight(bundle)}["deployment-policy"]
 
     assert check.status == "pass"
-    assert check.observed == bundle.deployment_policy.model_dump(mode="json")
+    assert check.observed == {
+        **bundle.deployment_policy.model_dump(mode="json"),
+        "realized_driver_capability_variant": "engine-acquired",
+    }
 
 
 def test_preflight_rejects_registered_native_row_without_canonical_collection(
@@ -2412,7 +2537,7 @@ def test_preflight_rejects_registered_native_row_without_canonical_collection(
         }
     )
 
-    check = {entry.name: entry for entry in run_preflight_checks(bundle)}["native-output-custody"]
+    check = {entry.name: entry for entry in _registry_preflight(bundle)}["native-output-custody"]
 
     assert check.status == "fail"
     assert check.detail == "row-a: missing ['checkpoints', 'manifests']"
@@ -2427,7 +2552,7 @@ def test_preflight_rejects_registered_native_row_without_canonical_collection(
 @pytest.mark.parametrize(
     ("updates", "detail"),
     [
-        ({"cloud_authorized": False}, "cloud authorization"),
+        ({"cloud_authorized": False}, "cloud and spend authorization"),
         (
             {"review_required": True, "review_authorized": False},
             "review has not been explicitly authorized",
@@ -2445,7 +2570,7 @@ def test_stage_engine_rejects_invalid_deployment_policy_before_driver_calls(
         **{**bundle.deployment_policy.__dict__, **updates}
     )
     bundle = bundle.model_copy(update={"deployment_policy": invalid_policy})
-    driver = FakeDriver()
+    driver = _as_remote_fake_driver(FakeDriver())
     driver.preflight_checks = lambda _bundle: pytest.fail("driver preflight called")
 
     with pytest.raises(PreflightFailed, match="deployment-policy"):
@@ -2475,7 +2600,7 @@ def test_preflight_schedule_realization_uses_optimizer_builder(tmp_path: Path) -
             )
         ],
     )
-    checks = {check.name: check for check in run_preflight_checks(bundle)}
+    checks = {check.name: check for check in _registry_preflight(bundle)}
 
     assert checks["schedule-realization"].status == "pass"
     assert checks["schedule-realization"].observed == {
@@ -2492,7 +2617,7 @@ def test_preflight_schedule_realization_uses_optimizer_builder(tmp_path: Path) -
         ],
         run_set_id="invalid-optimizer",
     )
-    invalid_checks = {check.name: check for check in run_preflight_checks(invalid)}
+    invalid_checks = {check.name: check for check in _registry_preflight(invalid)}
     assert invalid_checks["schedule-realization"].status == "fail"
     assert "/params/learning_rate is required" in (
         invalid_checks["schedule-realization"].detail or ""
@@ -2518,7 +2643,7 @@ def test_preflight_schedule_realization_discovers_controller_optimizer_metadata_
         rows=[_compiled_row("row-a", run_spec=run_spec)],
     )
 
-    checks = {check.name: check for check in run_preflight_checks(bundle)}
+    checks = {check.name: check for check in _registry_preflight(bundle)}
 
     schedule_check = checks["schedule-realization"]
     assert schedule_check.status == "pass"
@@ -2542,7 +2667,7 @@ def test_preflight_discovers_nested_method_training_optimizer(tmp_path: Path) ->
         }
     }
     bundle = _bundle(tmp_path, rows=[_compiled_row("row-a", run_spec=run_spec)])
-    assert {check.name: check for check in run_preflight_checks(bundle)}[
+    assert {check.name: check for check in _registry_preflight(bundle)}[
         "schedule-realization"
     ].status == "pass"
 
@@ -2560,7 +2685,7 @@ def test_preflight_schedule_realization_requires_controller_optimizer_metadata_c
         ],
     )
 
-    checks = {check.name: check for check in run_preflight_checks(bundle)}
+    checks = {check.name: check for check in _registry_preflight(bundle)}
 
     schedule_check = checks["schedule-realization"]
     assert schedule_check.status == "fail"
@@ -2635,7 +2760,7 @@ def test_preflight_schedule_realization_passes_correct_resume_context(tmp_path: 
         ],
     )
 
-    checks = {check.name: check for check in run_preflight_checks(bundle)}
+    checks = {check.name: check for check in _registry_preflight(bundle)}
 
     schedule_check = checks["schedule-realization"]
     assert schedule_check.status == "pass"
@@ -2681,7 +2806,7 @@ def test_preflight_schedule_realization_certifies_post_terminal_hold_through_run
         ],
     )
 
-    checks = {check.name: check for check in run_preflight_checks(bundle)}
+    checks = {check.name: check for check in _registry_preflight(bundle)}
 
     schedule_check = checks["schedule-realization"]
     assert schedule_check.status == "pass"
@@ -2713,7 +2838,7 @@ def test_preflight_schedule_realization_fails_when_resume_context_is_dropped(
         ],
     )
 
-    checks = {check.name: check for check in run_preflight_checks(bundle)}
+    checks = {check.name: check for check in _registry_preflight(bundle)}
 
     assert checks["schedule-realization"].status == "fail"
     assert "resume_context missing" in (checks["schedule-realization"].detail or "")
@@ -3946,14 +4071,14 @@ def test_register_post_pass_recovery_requires_exact_failed_state_and_registratio
         },
     ],
 )
-def test_register_refuses_runpod_without_verified_globally_empty_inventory(
+def test_register_refuses_capable_driver_without_verified_globally_empty_inventory(
     tmp_path: Path,
     inventory: dict[str, Any] | None,
 ) -> None:
     bundle = _bundle(tmp_path, driver="runpod")
     engine = StageEngine(
         bundle=bundle,
-        driver=FakeDriver(),
+        driver=_as_remote_fake_driver(FakeDriver(), global_inventory=True),
         conformance_registry=_fixture_pass_registry(),
     )
     state = RunSetState(
@@ -3970,18 +4095,18 @@ def test_register_refuses_runpod_without_verified_globally_empty_inventory(
 
     with pytest.raises(
         OrchestrationStageError,
-        match="globally empty RunPod provider inventory",
+        match="globally empty provider resource inventory",
     ):
         engine._stage_register(state)
 
 
-def test_register_accepts_verified_globally_empty_runpod_inventory_gate(
+def test_register_accepts_verified_globally_empty_resource_inventory_gate(
     tmp_path: Path,
 ) -> None:
     bundle = _bundle(tmp_path, driver="runpod")
     engine = StageEngine(
         bundle=bundle,
-        driver=FakeDriver(),
+        driver=_as_remote_fake_driver(FakeDriver(), global_inventory=True),
         conformance_registry=_fixture_pass_registry(),
     )
     state = RunSetState(
@@ -4905,10 +5030,12 @@ import json
 import signal
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from feedbax.orchestration.bundle import RunBundle
 from feedbax.orchestration.drivers.base import DriverRowProbe
+from feedbax.orchestration.drivers.capabilities import DriverCapabilityEnvelope
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
 from feedbax.orchestration.stages import StageEngine
 
@@ -4925,8 +5052,14 @@ def prior_handler(received, _frame):
 signal.signal(signum, prior_handler)
 
 class Driver:
-    realized_capabilities = LocalOrchestrationDriver.realized_capabilities
-
+    realized_capabilities = DriverCapabilityEnvelope.single(
+        "local",
+        replace(
+            LocalOrchestrationDriver.realized_capabilities.facts,
+            optional_hooks=frozenset(),
+        ),
+    ).realize("local-stop")
+    poll_interval_seconds = 0.05
     def provision(self, bundle, state):
         return {"driver": "fixture", "pod_id": "pod-signal"}
     def realize_env(self, bundle, state):
@@ -5010,10 +5143,13 @@ import json
 import signal
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from feedbax.orchestration.bundle import RunBundle
 from feedbax.orchestration.drivers.base import DriverRowProbe
+from feedbax.orchestration.drivers.capabilities import DriverCapabilityEnvelope
+from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
 from feedbax.orchestration.stages import StageEngine
 
 bundle = RunBundle.model_validate_json(Path(sys.argv[1]).read_text())
@@ -5028,6 +5164,15 @@ def prior_handler(received, _frame):
 signal.signal(signal.SIGINT, prior_handler)
 
 class Driver:
+    realized_capabilities = DriverCapabilityEnvelope.single(
+        "local",
+        replace(
+            LocalOrchestrationDriver.realized_capabilities.facts,
+            optional_hooks=frozenset(),
+        ),
+    ).realize("local-stop")
+    poll_interval_seconds = 0.05
+
     def provision(self, bundle, state):
         return {"driver": "fixture", "pod_id": "pod-exception-signal"}
     def realize_env(self, bundle, state):

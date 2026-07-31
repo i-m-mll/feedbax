@@ -2854,6 +2854,24 @@ def _nan_registry(
     return runtime_registry, program
 
 
+def _nan_run_spec(registry: TrainingMethodRegistry) -> TrainingRunSpec:
+    """Bind the NaN test descriptor's compiled contract into its run spec."""
+    spec = _run_spec()
+    resolved = registry.resolve_execution(spec.method_ref, spec.method_payload)
+    return spec.model_copy(
+        update={
+            "worker_execution": WorkerExecutionSpec(
+                method_contract=resolved.contract,
+                effective_phase=validate_worker_contract(
+                    resolved.contract,
+                    update_kernels=resolved.update_kernels,
+                    guard_predicates=resolved.guard_predicates,
+                ),
+            )
+        }
+    )
+
+
 def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -4710,7 +4728,7 @@ def test_execute_training_run_spec_raises_on_nan_with_program_coordinate(
     try:
         with pytest.raises(FloatingPointError) as excinfo:
             execute_training_run_spec(
-                _run_spec(),
+                _nan_run_spec(registry),
                 run_id="nan-raise",
                 initial_slots=_initial_slots(arrays=True),
                 manifest_root=tmp_path / "runs",
@@ -4895,7 +4913,7 @@ def test_execute_training_run_spec_halts_and_restores_all_checkpoint_slots_on_na
     tmp_path: Path,
 ) -> None:
     registry, program = _nan_registry(nan_on_program_step=1)
-    spec = _run_spec().model_copy(update={"on_nan": "halt_restore_checkpoint"})
+    spec = _nan_run_spec(registry).model_copy(update={"on_nan": "halt_restore_checkpoint"})
     checkpoint_root = tmp_path / "checkpoints"
     events_path = tmp_path / "events.jsonl"
     emitter = RunEventEmitter(
@@ -4989,7 +5007,7 @@ def test_execute_training_run_spec_halts_and_restores_all_checkpoint_slots_on_na
 
 def test_nan_restore_failure_keeps_linked_detection_record(tmp_path: Path) -> None:
     registry, _program = _nan_registry(nan_on_program_step=0)
-    spec = _run_spec().model_copy(update={"on_nan": "halt_restore_checkpoint"})
+    spec = _nan_run_spec(registry).model_copy(update={"on_nan": "halt_restore_checkpoint"})
 
     result = execute_training_run_spec(
         spec,
@@ -5020,7 +5038,7 @@ def test_nan_schedule_projection_failure_still_finalizes_with_linked_records(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry, _program = _nan_registry(nan_on_program_step=1)
-    spec = _run_spec().model_copy(update={"on_nan": "halt_restore_checkpoint"})
+    spec = _nan_run_spec(registry).model_copy(update={"on_nan": "halt_restore_checkpoint"})
 
     def fail_schedule_projection(*args, **kwargs):
         raise ValueError("simulated incomplete schedule projector")
@@ -5066,7 +5084,7 @@ def test_nan_detection_persistence_failure_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry, _program = _nan_registry(nan_on_program_step=1)
-    spec = _run_spec().model_copy(update={"on_nan": "halt_restore_checkpoint"})
+    spec = _nan_run_spec(registry).model_copy(update={"on_nan": "halt_restore_checkpoint"})
     original_store = training_executor.store_json_artifact
 
     def fail_detection(value, **kwargs):
@@ -5103,7 +5121,7 @@ def test_nan_restoration_persistence_failure_keeps_detection_linked(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry, _program = _nan_registry(nan_on_program_step=1)
-    spec = _run_spec().model_copy(update={"on_nan": "halt_restore_checkpoint"})
+    spec = _nan_run_spec(registry).model_copy(update={"on_nan": "halt_restore_checkpoint"})
     original_store = training_executor.store_json_artifact
 
     def fail_restoration(value, **kwargs):
@@ -5133,7 +5151,7 @@ def test_nan_manifest_conflict_uses_linked_failure_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry, _program = _nan_registry(nan_on_program_step=1)
-    spec = _run_spec().model_copy(update={"on_nan": "halt_restore_checkpoint"})
+    spec = _nan_run_spec(registry).model_copy(update={"on_nan": "halt_restore_checkpoint"})
     original_preflight = training_executor._preflight_manifest_emission
     calls = 0
 

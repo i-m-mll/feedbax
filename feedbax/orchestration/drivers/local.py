@@ -112,24 +112,24 @@ class LocalOrchestrationDriver:
         driver_name="local",
         variants={
             "local-stop": DriverCapabilityFacts(
-            variant_id="local-stop",
-            venue=DriverVenue.LOCAL_PROCESS,
-            resources=ResourceSemantics.LOCAL_PROCESS,
-            spend=SpendSemantics.NONE,
-            authorization=AuthorizationSemantics.NONE,
-            environment=EnvironmentSemantics.LOCAL_INVENTORY,
-            monitoring=MonitoringSemantics.ROW_POLL,
-            recovery=RecoverySemantics.PROCESS_LOCAL,
-            retry=RetrySemantics.NONE,
-            acquisition=AcquisitionSemantics.NONE,
-            teardown=TeardownSemantics.LOCAL_PROCESS_STOP,
-            custody=CustodySemantics.LOCAL_RUN_SET,
-            optional_hooks=frozenset(
-                {
-                    DriverHook.PREFLIGHT_CHECKS,
-                    DriverHook.CHECKPOINT_STOP,
-                }
-            ),
+                variant_id="local-stop",
+                venue=DriverVenue.LOCAL_PROCESS,
+                resources=ResourceSemantics.LOCAL_PROCESS,
+                spend=SpendSemantics.NONE,
+                authorization=AuthorizationSemantics.NONE,
+                environment=EnvironmentSemantics.LOCAL_INVENTORY,
+                monitoring=MonitoringSemantics.ROW_POLL,
+                recovery=RecoverySemantics.PROCESS_LOCAL,
+                retry=RetrySemantics.NONE,
+                acquisition=AcquisitionSemantics.NONE,
+                teardown=TeardownSemantics.LOCAL_PROCESS_STOP,
+                custody=CustodySemantics.LOCAL_RUN_SET,
+                optional_hooks=frozenset(
+                    {
+                        DriverHook.PREFLIGHT_CHECKS,
+                        DriverHook.CHECKPOINT_STOP,
+                    }
+                ),
             ),
             "local-preserved": DriverCapabilityFacts(
                 variant_id="local-preserved",
@@ -187,6 +187,7 @@ class LocalOrchestrationDriver:
                 observed=observed or "no-resolved-inputs",
             )
         ]
+
     def provision(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         run_set_dir = bundle.run_set_dir
         for dirname in ("events", "sentinels", "rows", "collected"):
@@ -1154,11 +1155,7 @@ def local_driver_registration() -> DriverRegistration:
         preserve = context.configuration.get("preserve_owned_resources", False)
         if not isinstance(preserve, bool):
             raise TypeError("preserve_owned_resources must be a bool")
-        variant = (
-            "local-preserved"
-            if preserve
-            else "local-stop"
-        )
+        variant = "local-preserved" if preserve else "local-stop"
         return LocalOrchestrationDriver.capability_envelope.realize(variant)
 
     def factory(context: DriverConstructionContext, realized):

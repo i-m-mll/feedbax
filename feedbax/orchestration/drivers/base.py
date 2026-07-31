@@ -73,6 +73,7 @@ class OrchestrationDriver(Protocol):
     """Synchronous idempotent driver interface used by the stage engine."""
 
     realized_capabilities: RealizedDriverCapabilities
+    poll_interval_seconds: float
 
     def provision(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Provision driver resources."""

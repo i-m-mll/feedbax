@@ -347,18 +347,6 @@ def test_authority_only_cli_is_isolated_and_matches_real_runpod_evidence(
             "authority-only preflight read environment/config/keychain credentials"
         ),
     )
-    monkeypatch.setattr(
-        orchestrate,
-        "_runpod_config_for_bundle",
-        lambda _bundle: pytest.fail("authority-only preflight constructed provider config"),
-    )
-    monkeypatch.setattr(
-        orchestrate,
-        "RunPodOrchestrationDriver",
-        lambda *_args, **_kwargs: pytest.fail(
-            "authority-only preflight constructed provider driver"
-        ),
-    )
     real_run = subprocess.run
     git_calls = 0
 
@@ -444,16 +432,6 @@ def test_authority_only_cli_authenticates_content_pinned_custom_lowered_bundle(
         "load_runpod_api_key",
         lambda: pytest.fail("bundle authority read credentials"),
     )
-    monkeypatch.setattr(
-        orchestrate,
-        "_runpod_config_for_bundle",
-        lambda _bundle: pytest.fail("bundle authority constructed provider config"),
-    )
-    monkeypatch.setattr(
-        orchestrate,
-        "RunPodOrchestrationDriver",
-        lambda *_args, **_kwargs: pytest.fail("bundle authority constructed provider driver"),
-    )
 
     checks = {check.name: check for check in run_authority_preflight_checks(bundle)}
     assert set(checks) == {
@@ -461,7 +439,6 @@ def test_authority_only_cli_authenticates_content_pinned_custom_lowered_bundle(
         "feedbax-revision-pin",
         "row-identity",
         "budget-presence",
-        "driver-preconditions",
         "environment-declaration",
         "input-custody-authority",
         "native-output-custody",

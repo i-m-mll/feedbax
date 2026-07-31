@@ -1652,6 +1652,40 @@ def test_demux_graphspec_materializes_and_round_trips_dynamic_ports() -> None:
     assert roundtrip.output_bindings == spec.output_bindings
 
 
+def test_graphspec_build_materializes_omitted_dynamic_ports_from_policy() -> None:
+    spec = GraphSpec(
+        nodes={
+            "join": ComponentSpec(type="Mux", params={"n_inputs": 2}),
+            "split": ComponentSpec(type="Demux", params={"sizes": [2, 1]}),
+        },
+        wires=[
+            WireSpec(
+                source_node="join",
+                source_port="output",
+                target_node="split",
+                target_port="input",
+            )
+        ],
+        input_ports=["left", "right"],
+        output_ports=["left", "right"],
+        input_bindings={"left": ("join", "in_0"), "right": ("join", "in_1")},
+        output_bindings={"left": ("split", "out_0"), "right": ("split", "out_1")},
+    )
+
+    graph = spec_to_graph(spec, component_registry=_components())
+    state = init_state_from_component(graph)
+    outputs, _ = graph(
+        {"left": jnp.array([1.0, 2.0]), "right": jnp.array([3.0])},
+        state,
+        key=jax.random.PRNGKey(0),
+    )
+
+    assert tuple(graph.nodes["join"].input_ports) == ("in_0", "in_1")
+    assert tuple(graph.nodes["split"].output_ports) == ("out_0", "out_1")
+    assert jnp.allclose(outputs["left"], jnp.array([1.0, 2.0]))
+    assert jnp.allclose(outputs["right"], jnp.array([3.0]))
+
+
 def test_mux_graphspec_rejects_n_inputs_port_count_mismatch() -> None:
     with pytest.raises(ValueError, match="Mux node 'join'.*n_inputs=2"):
         spec_to_graph(

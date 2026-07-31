@@ -269,7 +269,8 @@ def _require_worker_specs(job: _Job, bootstrap_state: BootstrapState) -> None:
     _as_mapping("task_spec", job.task_spec)
     try:
         graph_spec = normalize_graph_for_studio_authoring(
-            GraphSpec.model_validate(_as_mapping("graph_spec", job.graph_spec))
+            GraphSpec.model_validate(_as_mapping("graph_spec", job.graph_spec)),
+            component_registry=bootstrap_state.bundle.components,
         )
     except PydanticValidationError as exc:
         raise GraphCompilationError(

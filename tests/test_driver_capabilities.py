@@ -117,7 +117,6 @@ class _CoreOnlyDriverMethods:
 
 
 class _CoreDriverMethods(_CoreOnlyDriverMethods):
-
     def acquisition_candidates(self, *_args):
         return (None,)
 
@@ -217,10 +216,7 @@ def test_registry_realizes_external_and_acquired_contexts_without_name_branching
     )
 
     assert external.realized_capabilities.facts.resources is ResourceSemantics.EXTERNALLY_MANAGED
-    assert (
-        external.realized_capabilities.facts.teardown
-        is TeardownSemantics.RESOURCES_PRESERVED
-    )
+    assert external.realized_capabilities.facts.teardown is TeardownSemantics.RESOURCES_PRESERVED
     assert acquired.realized_capabilities.facts.resources is ResourceSemantics.DRIVER_OWNED
     assert acquired.realized_capabilities.facts.acquisition is AcquisitionSemantics.ENGINE_GOVERNED
     assert (
@@ -376,10 +372,7 @@ def test_builtin_registry_realizes_runpod_ownership_from_construction_context() 
 
     assert external.realized_capabilities.variant_id == "externally-managed"
     assert external.realized_capabilities.facts.resources is ResourceSemantics.EXTERNALLY_MANAGED
-    assert (
-        external.realized_capabilities.facts.teardown
-        is TeardownSemantics.RESOURCES_PRESERVED
-    )
+    assert external.realized_capabilities.facts.teardown is TeardownSemantics.RESOURCES_PRESERVED
     assert external.realized_capabilities.facts.spend is SpendSemantics.EXTERNALLY_MANAGED
     assert acquired.realized_capabilities.variant_id == "engine-acquired"
     assert acquired.realized_capabilities.facts.resources is ResourceSemantics.DRIVER_OWNED
@@ -402,9 +395,7 @@ def test_runpod_auto_teardown_false_realizes_owned_resource_preservation() -> No
     assert driver.realized_capabilities.variant_id == "engine-acquired-preserved"
     assert driver.realized_capabilities.facts.resources is ResourceSemantics.DRIVER_OWNED
     assert driver.realized_capabilities.facts.teardown is TeardownSemantics.RESOURCES_PRESERVED
-    assert not driver.realized_capabilities.facts.supports(
-        DriverHook.GLOBAL_RESOURCE_INVENTORY
-    )
+    assert not driver.realized_capabilities.facts.supports(DriverHook.GLOBAL_RESOURCE_INVENTORY)
 
 
 def test_keep_alive_context_realizes_preservation_for_local_and_owned_runpod() -> None:
