@@ -10,10 +10,9 @@ import plotly.graph_objects as go
 from feedbax.analysis.analysis import AbstractAnalysis, AnalysisRef
 from feedbax.analysis.context import AnalysisArtifactFile, AnalysisRunContext
 from feedbax.analysis.evaluation import (
+    EvaluationRecipeRegistry,
     EvaluationRecipeResult,
     execute_evaluation_run_spec,
-    register_evaluation_recipe,
-    unregister_evaluation_recipe,
 )
 from feedbax.contracts.manifest import EvaluationRunManifest, EvaluationRunSpec, ParentRef
 from feedbax.analysis.types import AnalysisInputData
@@ -183,8 +182,6 @@ def execute_toy_evaluation(root: Path) -> tuple[EvaluationRunManifest, Path]:
             summary_metrics={"n_trials": run_spec.params["n_trials"]},
         )
 
-    register_evaluation_recipe(TOY_EVALUATION_TYPE, recipe, replace=True)
-    try:
-        return execute_evaluation_run_spec(spec, root=root, issues=["8f40e2d"])
-    finally:
-        unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+    registry = EvaluationRecipeRegistry()
+    registry.register(TOY_EVALUATION_TYPE, recipe)
+    return execute_evaluation_run_spec(spec, registry=registry, root=root, issues=["8f40e2d"])

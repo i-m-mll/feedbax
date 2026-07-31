@@ -88,7 +88,7 @@ def test_linear_state_space_graph_spec_round_trips() -> None:
         output_bindings={"state": ("mechanics", "state")},
     )
 
-    graph = spec_to_graph(spec, {})
+    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
     assert isinstance(graph.nodes["mechanics"], LinearStateSpace)
 
     state = init_state_from_component(graph)
@@ -187,7 +187,9 @@ def _delayed_feedback_graph_spec(*, target_relative: bool = False) -> GraphSpec:
 
 
 def test_state_feedback_selector_materializes_delayed_lss_state_slice() -> None:
-    graph = spec_to_graph(_delayed_feedback_graph_spec(), {})
+    graph = spec_to_graph(
+        _delayed_feedback_graph_spec(), ComponentRegistry(load_user_components=False)
+    )
 
     assert isinstance(graph.nodes["selector"], StateFeedbackSelector)
 
@@ -202,7 +204,10 @@ def test_state_feedback_selector_materializes_delayed_lss_state_slice() -> None:
 
 
 def test_state_feedback_selector_materializes_target_relative_lss_feedback() -> None:
-    graph = spec_to_graph(_delayed_feedback_graph_spec(target_relative=True), {})
+    graph = spec_to_graph(
+        _delayed_feedback_graph_spec(target_relative=True),
+        ComponentRegistry(load_user_components=False),
+    )
     state = init_state_from_component(graph)
 
     outputs, _ = graph(
@@ -235,13 +240,16 @@ def test_state_feedback_selector_prototype_feeds_stateful_materialization() -> N
     )
     spec.output_bindings = {"feedback": ("delay", "output")}
 
-    graph = spec_to_graph(spec, {})
+    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
 
     assert graph.nodes["delay"].input_proto.shape == (4,)
 
 
 def test_state_feedback_selector_graph_spec_round_trips() -> None:
-    graph = spec_to_graph(_delayed_feedback_graph_spec(target_relative=True), {})
+    graph = spec_to_graph(
+        _delayed_feedback_graph_spec(target_relative=True),
+        ComponentRegistry(load_user_components=False),
+    )
     restored = graph_to_spec(graph)
 
     selector = restored.nodes["selector"]

@@ -52,8 +52,8 @@ LEVELS = [round(0.2 * 1.2**step, 6) for step in range(LEVEL_COUNT)]
 COLORSCALE = "Viridis"
 
 
-def _trajectory_3d() -> Any:
-    return get_figure_constructor("feedbax.trajectory_3d", tier="trace")
+def _trajectory_3d(*, figure_registry) -> Any:
+    return get_figure_constructor("feedbax.trajectory_3d", tier="trace", registry=figure_registry)
 
 
 def _curve(direction_index: int, level_index: int) -> list[list[float]]:
@@ -87,8 +87,8 @@ def _pca_input(root: Path) -> ParentRef:
     )
 
 
-def test_trajectory_3d_carries_the_shared_trajectory_encodings() -> None:
-    constructor = _trajectory_3d()
+def test_trajectory_3d_carries_the_shared_trajectory_encodings(application_registry_bundle) -> None:
+    constructor = _trajectory_3d(figure_registry=application_registry_bundle.figures)
     traces = constructor.callable(
         {
             "trajectories": [
@@ -126,8 +126,10 @@ def test_trajectory_3d_carries_the_shared_trajectory_encodings() -> None:
     assert list(marker.z) == [0.0, 0.0, 0.0]
 
 
-def test_trajectory_3d_default_params_leave_style_and_markers_untouched() -> None:
-    constructor = _trajectory_3d()
+def test_trajectory_3d_default_params_leave_style_and_markers_untouched(
+    application_registry_bundle,
+) -> None:
+    constructor = _trajectory_3d(figure_registry=application_registry_bundle.figures)
     assert constructor.version == "v1"
     params = constructor.params()
     assert params.line_dash is None
@@ -143,15 +145,17 @@ def test_trajectory_3d_default_params_leave_style_and_markers_untouched() -> Non
     assert list(traces[-1].z) == [0.0, 1.5]
 
 
-def test_trajectory_3d_rejects_two_column_trajectories() -> None:
-    constructor = _trajectory_3d()
+def test_trajectory_3d_rejects_two_column_trajectories(application_registry_bundle) -> None:
+    constructor = _trajectory_3d(figure_registry=application_registry_bundle.figures)
 
     with pytest.raises(ValueError, match=r"shape \(\.\.\., time, 3\)"):
         constructor.callable({"trajectories": [[[0, 0], [1, 1]]]}, constructor.params())
 
 
-def test_trajectory_3d_rejects_perturbation_timing_rather_than_ignoring_it() -> None:
-    constructor = _trajectory_3d()
+def test_trajectory_3d_rejects_perturbation_timing_rather_than_ignoring_it(
+    application_registry_bundle,
+) -> None:
+    constructor = _trajectory_3d(figure_registry=application_registry_bundle.figures)
 
     with pytest.raises(ValueError, match="draws no perturbation underlay"):
         constructor.callable(
@@ -168,8 +172,10 @@ def test_trajectory_3d_rejects_perturbation_timing_rather_than_ignoring_it() -> 
         )
 
 
-def test_trajectory_3d_rejects_a_symbol_only_the_2d_vocabulary_has() -> None:
-    constructor = _trajectory_3d()
+def test_trajectory_3d_rejects_a_symbol_only_the_2d_vocabulary_has(
+    application_registry_bundle,
+) -> None:
+    constructor = _trajectory_3d(figure_registry=application_registry_bundle.figures)
 
     with pytest.raises(ValueError, match="symbol"):
         constructor.callable(
@@ -241,6 +247,7 @@ def test_panel_spec_rejects_a_third_axis_without_a_scene_panel() -> None:
 
 def test_scene_panel_renders_a_3d_trace_with_axis_titles_and_data_aspect(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     spec = FigureSpec(
         name="scene-panel",
@@ -273,7 +280,9 @@ def test_scene_panel_renders_a_3d_trace_with_axis_titles_and_data_aspect(
         ],
     )
 
-    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    manifest, _path = execute_figure_spec(
+        spec, root=tmp_path, registry=application_registry_bundle.figures
+    )
     rendered = figure_manifest_plotly_json(manifest)
 
     assert rendered is not None
@@ -316,14 +325,16 @@ def _scene_camera_spec(camera: Any | None) -> FigureSpec:
     )
 
 
-def _rendered_scene(spec: FigureSpec, root: Path) -> dict[str, Any]:
-    manifest, _path = execute_figure_spec(spec, root=root)
+def _rendered_scene(spec: FigureSpec, root: Path, *, figure_registry) -> dict[str, Any]:
+    manifest, _path = execute_figure_spec(spec, root=root, registry=figure_registry)
     rendered = figure_manifest_plotly_json(manifest)
     assert rendered is not None
     return rendered["layout"]["scene"]
 
 
-def test_omitting_the_camera_leaves_the_renderer_default_view(tmp_path: Path) -> None:
+def test_omitting_the_camera_leaves_the_renderer_default_view(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     """A scene that states no viewpoint carries no camera key anywhere.
 
     The authored identity projection is the exclude-none dump
@@ -334,13 +345,14 @@ def test_omitting_the_camera_leaves_the_renderer_default_view(tmp_path: Path) ->
     authored = spec.model_dump(mode="json", exclude_none=True)
 
     assert "camera" not in authored["panels"][0]
-    scene = _rendered_scene(spec, tmp_path)
+    scene = _rendered_scene(spec, tmp_path, figure_registry=application_registry_bundle.figures)
     assert "camera" not in scene
     assert scene["aspectmode"] == "data"
 
 
 def test_authored_camera_lowers_to_an_eye_and_composes_with_the_data_aspect(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     """The viewpoint reaches the scene without disturbing its aspect mode."""
     scene = _rendered_scene(
@@ -353,6 +365,7 @@ def test_authored_camera_lowers_to_an_eye_and_composes_with_the_data_aspect(
             }
         ),
         tmp_path,
+        figure_registry=application_registry_bundle.figures,
     )
 
     # Straight down the vertical axis: the degenerate case for an authored `up`.
@@ -364,16 +377,18 @@ def test_authored_camera_lowers_to_an_eye_and_composes_with_the_data_aspect(
     assert scene["zaxis"]["title"]["text"] == "PC3"
 
 
-def test_camera_omits_projection_when_it_is_not_authored(tmp_path: Path) -> None:
+def test_camera_omits_projection_when_it_is_not_authored(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     scene = _rendered_scene(
-        _scene_camera_spec({"azimuth": 135.0, "elevation": -20.0}), tmp_path
+        _scene_camera_spec({"azimuth": 135.0, "elevation": -20.0}),
+        tmp_path,
+        figure_registry=application_registry_bundle.figures,
     )
 
     assert "projection" not in scene["camera"]
     eye = scene["camera"]["eye"]
-    assert math.hypot(eye["x"], eye["y"], eye["z"]) == pytest.approx(
-        DEFAULT_SCENE_CAMERA_DISTANCE
-    )
+    assert math.hypot(eye["x"], eye["y"], eye["z"]) == pytest.approx(DEFAULT_SCENE_CAMERA_DISTANCE)
 
 
 def test_scene_camera_has_explicit_schema_identity() -> None:
@@ -446,7 +461,7 @@ def test_scene_camera_rejects_viewpoints_that_would_render_nothing() -> None:
         SceneCamera.from_eye(0.0, 0.0, 0.0)
 
 
-def test_scene_panel_refuses_a_cartesian_trace(tmp_path: Path) -> None:
+def test_scene_panel_refuses_a_cartesian_trace(tmp_path: Path, application_registry_bundle) -> None:
     spec = FigureSpec(
         name="scene-panel-mismatch",
         assembler="feedbax.grid_figure",
@@ -462,11 +477,13 @@ def test_scene_panel_refuses_a_cartesian_trace(tmp_path: Path) -> None:
     )
 
     with pytest.raises(FigureSpecExecutionError) as failure:
-        execute_figure_spec(spec, root=tmp_path)
+        execute_figure_spec(spec, root=tmp_path, registry=application_registry_bundle.figures)
     assert "not compatible with subplot type 'scene'" in str(failure.value.__cause__)
 
 
-def test_panel_grid_declarations_require_a_grid_panel_assembler(tmp_path: Path) -> None:
+def test_panel_grid_declarations_require_a_grid_panel_assembler(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     spec = FigureSpec(
         name="scene-without-grid-assembler",
         assembler="feedbax.trajectories_2d_row",
@@ -481,27 +498,23 @@ def test_panel_grid_declarations_require_a_grid_panel_assembler(tmp_path: Path) 
             )
         ],
     )
-    from feedbax.plot.constructors import (
-        register_figure_constructor,
-        unregister_figure_constructor,
-    )
+    from feedbax.plot.constructors import register_figure_constructor
 
     register_figure_constructor(
         "feedbax.test_panel_assembler",
         tier="panel",
         constructor=lambda _panels, _params: go.Figure(),
         description="panel assembler without grid composition",
-        replace=True,
+        registry=application_registry_bundle.figures,
     )
-    try:
-        with pytest.raises(FigureSpecExecutionError) as failure:
-            execute_figure_spec(spec, root=tmp_path)
-        assert "declares ['panel_type']" in str(failure.value.__cause__)
-    finally:
-        unregister_figure_constructor("feedbax.test_panel_assembler")
+    with pytest.raises(FigureSpecExecutionError) as failure:
+        execute_figure_spec(spec, root=tmp_path, registry=application_registry_bundle.figures)
+    assert "declares ['panel_type']" in str(failure.value.__cause__)
 
 
-def test_colorbar_is_placed_beside_a_scene_panel(tmp_path: Path) -> None:
+def test_colorbar_is_placed_beside_a_scene_panel(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     spec = FigureSpec(
         name="scene-colorbar",
         assembler="feedbax.grid_figure",
@@ -527,7 +540,9 @@ def test_colorbar_is_placed_beside_a_scene_panel(tmp_path: Path) -> None:
         ],
     )
 
-    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    manifest, _path = execute_figure_spec(
+        spec, root=tmp_path, registry=application_registry_bundle.figures
+    )
     rendered = figure_manifest_plotly_json(manifest)
 
     assert rendered is not None
@@ -564,7 +579,9 @@ def _direction_family(direction: str, dash: str) -> TraceFamily:
     )
 
 
-def test_first_consumer_figure_renders_end_to_end(tmp_path: Path) -> None:
+def test_first_consumer_figure_renders_end_to_end(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     """Two 2D panels above one full-width 3D panel, with the S4 encodings.
 
     Forty-four trajectories reach the scene panel as forty-four separate
@@ -615,7 +632,9 @@ def test_first_consumer_figure_renders_end_to_end(tmp_path: Path) -> None:
         ],
     )
 
-    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    manifest, _path = execute_figure_spec(
+        spec, root=tmp_path, registry=application_registry_bundle.figures
+    )
     rendered = figure_manifest_plotly_json(manifest)
 
     assert rendered is not None

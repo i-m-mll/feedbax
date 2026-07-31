@@ -29,7 +29,11 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
-from feedbax.contracts.training import TrainingRunSpec
+from feedbax.contracts.training import (
+    TrainingMethodRegistry,
+    TrainingRunSpec,
+    resolve_training_run_spec,
+)
 from feedbax.contracts.run_matrix import (
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
     RUNPOD_PREFLIGHT_BASE_EVIDENCE_SCHEMA_ID,
@@ -163,6 +167,7 @@ _RUNPOD_GO_UTC_PATTERN = re.compile(
     r"^(?P<instant>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?) \+0000 UTC$"
 )
 _REMOTE_ENVIRONMENT_PROBE = r"""
+import asyncio
 import hashlib
 import importlib.metadata
 import json
@@ -196,24 +201,21 @@ for relative_path, expected in declaration["lockfile_hashes"].items():
 import equinox
 import jax
 import jaxlib
+from feedbax.plugins.composition import compose_application
 
 devices = jax.devices()
 if not devices:
     raise RuntimeError("JAX reported no runtime devices")
-plugins = []
-for entry_point in importlib.metadata.entry_points(group="feedbax.plugins"):
-    entry_point.load()
-    distribution = entry_point.dist
-    plugins.append(
-        {
-            "distribution": distribution.name if distribution is not None else None,
-            "distribution_version": (
-                distribution.version if distribution is not None else None
-            ),
-            "name": entry_point.name,
-            "value": entry_point.value,
-        }
-    )
+bootstrap_state = asyncio.run(compose_application())
+plugins = [
+    {
+        "distribution": provenance.distribution,
+        "distribution_version": provenance.distribution_version,
+        "name": provenance.entry_point_name,
+        "value": provenance.entry_point_value,
+    }
+    for provenance in bootstrap_state.provenance
+]
 primary_device = devices[0]
 client = getattr(primary_device, "client", None)
 if getattr(primary_device, "platform", None) not in {"cuda", "gpu"}:
@@ -768,6 +770,7 @@ class RunPodOrchestrationDriver:
         input_provider_bindings: Sequence[InputProviderRootBinding] = (),
         staged_root_bindings: Sequence[StagedRootSnapshotBinding] = (),
         collection_recovery_bindings: Sequence[CollectionRecoveryBinding] = (),
+        training_method_registry: TrainingMethodRegistry | None = None,
     ) -> None:
         self.config = config or RunPodDriverConfig()
         self.transport = transport or SubprocessRunPodTransport(
@@ -779,6 +782,7 @@ class RunPodOrchestrationDriver:
         self.input_provider_bindings = tuple(input_provider_bindings)
         self.staged_root_bindings = tuple(staged_root_bindings)
         self.collection_recovery_bindings = tuple(collection_recovery_bindings)
+        self.training_method_registry = training_method_registry
         self._collection_recovery_evidence: dict[str, Mapping[str, object]] = {}
         self._repo_snapshots: SealedRepoSnapshots | None = None
         self._repo_realization_plan: RepoRealizationPlan | None = None
@@ -876,10 +880,8 @@ class RunPodOrchestrationDriver:
                 self.seal_repo_realization_plan(bundle)
             except RunPodDriverError as exc:
                 plan_error = ("runpod-remote-layout-vs-lock", str(exc))
-                checks_by_name["runpod-repo-snapshots"] = (
-                    _dependency_skipped_preflight_check(
-                        "runpod-repo-snapshots", "repo-realization-plan-sealing"
-                    )
+                checks_by_name["runpod-repo-snapshots"] = _dependency_skipped_preflight_check(
+                    "runpod-repo-snapshots", "repo-realization-plan-sealing"
                 )
             except (RepoSnapshotError, RepoRealizationError) as exc:
                 plan_error = ("runpod-repo-snapshots", str(exc))
@@ -939,6 +941,7 @@ class RunPodOrchestrationDriver:
         schedule_failures, schedule_observed = _preflight_continuation_schedule_consistency(
             bundle,
             self.input_provider_bindings,
+            training_method_registry=self.training_method_registry,
             input_bindings_valid=not failures,
         )
         if schedule_observed.get("outcome") == "skipped-due-to-dependency":
@@ -969,16 +972,12 @@ class RunPodOrchestrationDriver:
                 detail=plan_error[1],
             )
         elif plan_error is not None and plan_error[0] == "runpod-repo-snapshots":
-            checks_by_name["runpod-remote-layout-vs-lock"] = (
-                _dependency_skipped_preflight_check(
-                    "runpod-remote-layout-vs-lock", "runpod-repo-snapshots"
-                )
+            checks_by_name["runpod-remote-layout-vs-lock"] = _dependency_skipped_preflight_check(
+                "runpod-remote-layout-vs-lock", "runpod-repo-snapshots"
             )
         elif plan_error is not None:
-            checks_by_name["runpod-remote-layout-vs-lock"] = (
-                _dependency_skipped_preflight_check(
-                    "runpod-remote-layout-vs-lock", "runpod-lockfiles-declared"
-                )
+            checks_by_name["runpod-remote-layout-vs-lock"] = _dependency_skipped_preflight_check(
+                "runpod-remote-layout-vs-lock", "runpod-lockfiles-declared"
             )
         else:
             layout_error, layout_observed = validate_runpod_repo_realization_plan(
@@ -1130,10 +1129,8 @@ class RunPodOrchestrationDriver:
             checks_by_name["runpod-credentials"] = credentials_check
 
             if not credentials_ok:
-                checks_by_name["runpod-balance-floor"] = (
-                    _dependency_skipped_preflight_check(
-                        "runpod-balance-floor", "runpod-credentials"
-                    )
+                checks_by_name["runpod-balance-floor"] = _dependency_skipped_preflight_check(
+                    "runpod-balance-floor", "runpod-credentials"
                 )
             else:
                 balance_required = not self._provided_endpoint and not self._pod_id
@@ -1592,9 +1589,7 @@ class RunPodOrchestrationDriver:
             bundle_data = bundle.model_dump_json(exclude_none=True).encode("utf-8")
             bundle_target = attempt_inputs / "run-bundle.json"
             bundle_target.write_bytes(bundle_data)
-            payload_hashes.append(
-                (bundle_target.name, hashlib.sha256(bundle_data).hexdigest())
-            )
+            payload_hashes.append((bundle_target.name, hashlib.sha256(bundle_data).hexdigest()))
         for row in bundle.rows:
             if row.launch.payload_routing.get("kind") != "registered-execution-payload":
                 continue
@@ -1716,9 +1711,7 @@ class RunPodOrchestrationDriver:
             stop.set()
             thread.join()
             if body_error is None and failures:
-                raise RunPodDriverError(
-                    "stage-inputs host heartbeat failed"
-                ) from failures[0]
+                raise RunPodDriverError("stage-inputs host heartbeat failed") from failures[0]
 
     def launch_row(
         self,
@@ -2072,14 +2065,10 @@ class RunPodOrchestrationDriver:
                 remote_source = f"{remote_run_dir}/rows/{row.row_id}/{source}"
             else:
                 remote_source = f"{remote_run_dir}/{source}"
-            raw_evaluation_source = (
-                f"{remote_run_dir}/rows/{row.row_id}/evaluation"
-            )
+            raw_evaluation_source = f"{remote_run_dir}/rows/{row.row_id}/evaluation"
             if bundle.execution_family == "evaluation-matrix" and (
                 posixpath.normpath(source) == "evaluation"
-                or posixpath.normpath(remote_source) == posixpath.normpath(
-                    raw_evaluation_source
-                )
+                or posixpath.normpath(remote_source) == posixpath.normpath(raw_evaluation_source)
             ):
                 # Older bundles may declare the raw working store under
                 # row-relative, run-relative, or absolute spellings. Certified
@@ -2880,6 +2869,7 @@ def _preflight_continuation_schedule_consistency(
     bundle: RunBundle,
     input_provider_bindings: Sequence[InputProviderRootBinding],
     *,
+    training_method_registry: TrainingMethodRegistry | None,
     input_bindings_valid: bool = True,
 ) -> tuple[list[str], dict[str, Any]]:
     """Authenticate and compare continuation schedules without provider transport calls."""
@@ -2897,6 +2887,8 @@ def _preflight_continuation_schedule_consistency(
         continuation_rows.append((row, run_spec))
     if failures or not continuation_rows:
         return failures, observed
+    if training_method_registry is None:
+        return ["continuation schedule validation requires a training method registry"], observed
     if not input_bindings_valid:
         return [], {
             "outcome": "skipped-due-to-dependency",
@@ -2933,6 +2925,12 @@ def _preflight_continuation_schedule_consistency(
                     target_run_spec=target_run_spec,
                     source_manifest=manifest,
                     continuation=continuation,
+                    source_resolved_method=resolve_training_run_spec(
+                        source_run_spec, training_method_registry
+                    ),
+                    target_resolved_method=resolve_training_run_spec(
+                        target_run_spec, training_method_registry
+                    ),
                 )
             except Exception as exc:
                 failures.append(f"{row.row_id}: {exc}")
@@ -3635,9 +3633,7 @@ def build_launch_row_command(
         environment_fingerprint=env_fingerprint,
         update_budget=update_budget,
         native_context_injector=(
-            inject_native_execution_context
-            if row.execution_family == "native-training"
-            else None
+            inject_native_execution_context if row.execution_family == "native-training" else None
         ),
     )
     if row.launch.command:
@@ -3871,7 +3867,7 @@ def build_deadman_watchdog_command(
         'for path in "$edir"/*.jsonl "$sdir"/*; do [ -e "$path" ] || continue; '
         'mtime=$(stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null || echo 0); '
         '[ "$mtime" -gt "$newest" ] && newest=$mtime; done; '
-        'while IFS= read -r path; do '
+        "while IFS= read -r path; do "
         'mtime=$(stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null || echo 0); '
         '[ "$mtime" -gt "$newest" ] && newest=$mtime; '
         'done < <(find "$run_dir/.stage-attempts" -type f -print 2>/dev/null); '

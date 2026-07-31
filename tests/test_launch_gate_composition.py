@@ -57,8 +57,7 @@ from tests.test_training_run_executor import (
 def test_layout_validation_composes_two_exact_sealed_repo_roots(tmp_path: Path) -> None:
     """Resolve live adjacency once, then validate only the keyed sealed roots."""
     lock_text = (
-        'version = 1\n[[package]]\nname = "consumer"\n'
-        'source = { editable = "../provider" }\n'
+        'version = 1\n[[package]]\nname = "consumer"\nsource = { editable = "../provider" }\n'
     )
     consumer = tmp_path / "consumer"
     provider = tmp_path / "provider"
@@ -217,9 +216,7 @@ def test_provider_free_continuation_preflight_matches_two_realized_updates(
 
     @eqx.filter_jit
     def transition(model, optimizer_state, optimizer):
-        updates, next_state = optimizer.update(
-            jnp.full_like(model, 10.0), optimizer_state, model
-        )
+        updates, next_state = optimizer.update(jnp.full_like(model, 10.0), optimizer_state, model)
         learning_rate = optax.tree_utils.tree_get(
             next_state,
             "learning_rate",
@@ -275,18 +272,21 @@ def test_provider_free_continuation_preflight_matches_two_realized_updates(
     template_optimizer = _write_mapped_schedule_checkpoint(spec, checkpoint_root)
     source_manifest = load_checkpoint_custody_documents(checkpoint_root).manifest.document
     source_spec, _source_program = authenticated_run_contract_source_projection(source_manifest)
-    for run_spec in (source_spec, spec):
-        run_spec._resolved_method = registry.resolve_execution(
-            run_spec.method_ref,
-            run_spec.method_payload,
-            worker_execution=run_spec.worker_execution,
-        )
-        run_spec._resolved_method_cache_key = run_spec._method_resolution_cache_key()
     failures, evidence = compare_continuation_schedule_projections(
         source_run_spec=source_spec,
         target_run_spec=spec,
         source_manifest=source_manifest,
         continuation=continuation,
+        source_resolved_method=registry.resolve_execution(
+            source_spec.method_ref,
+            source_spec.method_payload,
+            worker_execution=source_spec.worker_execution,
+        ),
+        target_resolved_method=registry.resolve_execution(
+            spec.method_ref,
+            spec.method_payload,
+            worker_execution=spec.worker_execution,
+        ),
     )
 
     def bind(_slots, origin, current, count):

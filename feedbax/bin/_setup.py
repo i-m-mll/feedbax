@@ -5,6 +5,8 @@ import queue
 from dataclasses import dataclass
 from typing import Literal, Optional
 
+from feedbax.plugins.registry import ExperimentRegistry
+
 
 @dataclass
 class EarlyLogging:
@@ -41,6 +43,7 @@ def setup(
     domain: Literal["analysis", "training"],
     warn_dedup_default: bool = True,
     queue_mode: Literal["flush", "wire"] = "flush",
+    registry: ExperimentRegistry,
 ) -> Optional[str]:
     """Set up logging, warning de-dup, and globals config."""
     # Set up a queue handler to capture logs prior to full logging config.
@@ -54,23 +57,33 @@ def setup(
         enable_warning_dedup()
 
     from feedbax.config.logging import enable_logging_handlers
-    from feedbax.config import configure_globals_for_package
-    from feedbax.plugins import EXPERIMENT_REGISTRY
 
-    # Infer package that will be run from CLI args, and load its globals
-    args_ns = _early_parse(argv)
-    if args_ns.single:
-        pkg = EXPERIMENT_REGISTRY.resolve_package_for_module_key(args_ns.single, domain=domain)
-    if args_ns.batched:
-        pkg = EXPERIMENT_REGISTRY.resolve_package_for_batch_key(args_ns.batched, domain=domain)
-    pkg = EXPERIMENT_REGISTRY.single_package_name()
-
-    if pkg is not None:
-        configure_globals_for_package(pkg, EXPERIMENT_REGISTRY)
+    pkg = setup_application_package(argv, domain=domain, registry=registry)
 
     enable_logging_handlers(
         early_queue=early.queue,
         early_handler=early.handler,
         queue_mode=queue_mode,
     )
+    return pkg
+
+
+def setup_application_package(
+    argv: list[str],
+    *,
+    domain: Literal["analysis", "training"],
+    registry: ExperimentRegistry,
+) -> Optional[str]:
+    """Apply selected package configuration from an injected experiment registry."""
+    from feedbax.config import configure_globals_for_package
+
+    args_ns = _early_parse(argv)
+    if args_ns.single:
+        pkg = registry.resolve_package_for_module_key(args_ns.single, domain=domain)
+    elif args_ns.batched:
+        pkg = registry.resolve_package_for_batch_key(args_ns.batched, domain=domain)
+    else:
+        pkg = registry.single_package_name()
+    if pkg is not None:
+        configure_globals_for_package(pkg, registry)
     return pkg

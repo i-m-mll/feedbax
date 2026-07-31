@@ -17,11 +17,7 @@ from feedbax.analysis.evaluation import (
     execute_evaluation_run_matrix,
     execute_evaluation_run_spec,
     materialize_evaluation_run_matrix,
-    register_evaluation_authoring_schema,
-    register_evaluation_recipe,
     resolve_staged_evaluation_prerequisite,
-    unregister_evaluation_recipe,
-    unregister_evaluation_authoring_schema,
 )
 from feedbax.analysis.evaluation_inputs import resolve_evaluation_inputs
 from feedbax.analysis.execution_context import (
@@ -142,8 +138,8 @@ def _matrix() -> EvaluationRunMatrixSpec:
     )
 
 
-def test_evaluation_matrix_applies_deltas_before_per_row_derivation() -> None:
-    rows = materialize_evaluation_run_matrix(_matrix())
+def test_evaluation_matrix_applies_deltas_before_per_row_derivation(evaluation_registry) -> None:
+    rows = materialize_evaluation_run_matrix(_matrix(), registry=evaluation_registry)
 
     assert [row.row_id for row in rows] == ["control", "treatment"]
     assert rows[0].payload.params == {
@@ -257,12 +253,14 @@ def test_generic_spec_payload_transports_v1_and_axis_authored_v3(tmp_path: Path)
     assert transported.inline["axes"] == axis_v3["axes"]
 
 
-def test_public_materializer_migrates_serialized_v1_context_free_matrix() -> None:
+def test_public_materializer_migrates_serialized_v1_context_free_matrix(
+    evaluation_registry,
+) -> None:
     payload = _matrix().model_dump(mode="json")
     payload.pop("staged_parents")
     payload["schema_version"] = EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1
 
-    rows = materialize_evaluation_run_matrix(payload)
+    rows = materialize_evaluation_run_matrix(payload, registry=evaluation_registry)
 
     assert [row.row_id for row in rows] == ["control", "treatment"]
     assert rows[0].payload.params["gain"] == 2.0
@@ -275,18 +273,15 @@ def test_evaluation_matrix_schema_identity_is_pinned() -> None:
         EvaluationRunMatrixSpec.model_validate(payload)
 
 
-def test_evaluation_matrix_executes_through_harness(tmp_path: Path) -> None:
+def test_evaluation_matrix_executes_through_harness(tmp_path: Path, evaluation_registry) -> None:
     def recipe(spec, _root, _states_path, _execution_context):
         assert not _execution_context.parent_execution_locations
         return EvaluationRecipeResult(summary_metrics={"gain": spec.params["gain"]})
 
-    register_evaluation_recipe("example.evaluate", recipe)
-    try:
-        payload = _matrix().model_dump(mode="json")
-        payload["schema_version"] = EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1
-        result = execute_evaluation_run_matrix(payload, root=tmp_path)
-    finally:
-        unregister_evaluation_recipe("example.evaluate")
+    evaluation_registry.register("example.evaluate", recipe)
+    payload = _matrix().model_dump(mode="json")
+    payload["schema_version"] = EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1
+    result = execute_evaluation_run_matrix(payload, registry=evaluation_registry, root=tmp_path)
 
     assert [row.row_id for row in result.rows] == ["control", "treatment"]
     assert all(row.manifest_path is not None and row.manifest_path.exists() for row in result.rows)
@@ -342,16 +337,26 @@ def _generator_axis_matrix(tmp_path: Path, *, generated: bool) -> EvaluationRunM
     )
 
 
-def test_generator_axis_matches_hand_enumerated_axis_rows_and_hashes(tmp_path: Path) -> None:
+def test_generator_axis_matches_hand_enumerated_axis_rows_and_hashes(
+    tmp_path: Path, evaluation_registry
+) -> None:
     generated = _generator_axis_matrix(tmp_path, generated=True)
     enumerated = _generator_axis_matrix(tmp_path, generated=False)
 
-    generated_compiled = compile_evaluation_run_matrix(generated, repo_root=tmp_path)
-    enumerated_compiled = compile_evaluation_run_matrix(enumerated, repo_root=tmp_path)
+    generated_compiled = compile_evaluation_run_matrix(
+        generated, repo_root=tmp_path, registry=evaluation_registry
+    )
+    enumerated_compiled = compile_evaluation_run_matrix(
+        enumerated, repo_root=tmp_path, registry=evaluation_registry
+    )
     assert generated_compiled.model_dump(mode="json") == enumerated_compiled.model_dump(mode="json")
 
-    generated_rows = materialize_evaluation_run_matrix(generated, repo_root=tmp_path)
-    enumerated_rows = materialize_evaluation_run_matrix(enumerated, repo_root=tmp_path)
+    generated_rows = materialize_evaluation_run_matrix(
+        generated, repo_root=tmp_path, registry=evaluation_registry
+    )
+    enumerated_rows = materialize_evaluation_run_matrix(
+        enumerated, repo_root=tmp_path, registry=evaluation_registry
+    )
     assert [row.row_id for row in generated_rows] == [
         "target-000",
         "target-001",
@@ -421,18 +426,16 @@ def test_axis_rejects_both_or_neither_value_declaration() -> None:
 
 def test_generator_axis_manifest_records_generator_as_expansion_authority(
     tmp_path: Path,
+    evaluation_registry,
 ) -> None:
     def recipe(_spec, _root, _states_path, _execution_context):
         return EvaluationRecipeResult()
 
     matrix = _generator_axis_matrix(tmp_path, generated=True)
-    register_evaluation_recipe("example.evaluate", recipe)
-    try:
-        result = execute_evaluation_run_matrix(
-            matrix, root=tmp_path / "runs", repo_root=tmp_path
-        )
-    finally:
-        unregister_evaluation_recipe("example.evaluate")
+    evaluation_registry.register("example.evaluate", recipe)
+    result = execute_evaluation_run_matrix(
+        matrix, registry=evaluation_registry, root=tmp_path / "runs", repo_root=tmp_path
+    )
 
     for row in result.rows:
         provenance = load_manifest(row.manifest_path).metadata["matrix_harness"]["axis_expansion"]
@@ -454,9 +457,11 @@ def test_generator_axis_manifest_records_generator_as_expansion_authority(
         ]
 
 
-def test_axis_product_matches_equivalent_explicit_rows_and_hashes(tmp_path: Path) -> None:
+def test_axis_product_matches_equivalent_explicit_rows_and_hashes(
+    tmp_path: Path, evaluation_registry
+) -> None:
     axis_rows = materialize_evaluation_run_matrix(
-        _axis_matrix_payload(tmp_path), repo_root=tmp_path
+        _axis_matrix_payload(tmp_path), registry=evaluation_registry, repo_root=tmp_path
     )
     explicit = EvaluationRunMatrixSpec(
         base=EvaluationRunSpec(
@@ -476,7 +481,7 @@ def test_axis_product_matches_equivalent_explicit_rows_and_hashes(tmp_path: Path
             for mode_id in ("a", "b")
         ],
     )
-    explicit_rows = materialize_evaluation_run_matrix(explicit)
+    explicit_rows = materialize_evaluation_run_matrix(explicit, registry=evaluation_registry)
 
     assert [row.row_id for row in axis_rows] == [row.row_id for row in explicit_rows]
     assert [row.payload for row in axis_rows] == [row.payload for row in explicit_rows]
@@ -487,20 +492,21 @@ def test_axis_product_matches_equivalent_explicit_rows_and_hashes(tmp_path: Path
 
 def test_axis_product_manifest_records_canonical_expansion_provenance(
     tmp_path: Path,
+    evaluation_registry,
 ) -> None:
     def recipe(_spec, _root, _states_path, _execution_context):
         return EvaluationRecipeResult()
 
-    register_evaluation_recipe("example.evaluate", recipe)
-    try:
-        result = execute_evaluation_run_matrix(
-            _axis_matrix_payload(tmp_path),
-            root=tmp_path / "runs",
-            repo_root=tmp_path,
-        )
-        explicit_result = execute_evaluation_run_matrix(_matrix(), root=tmp_path / "explicit")
-    finally:
-        unregister_evaluation_recipe("example.evaluate")
+    evaluation_registry.register("example.evaluate", recipe)
+    result = execute_evaluation_run_matrix(
+        _axis_matrix_payload(tmp_path),
+        registry=evaluation_registry,
+        root=tmp_path / "runs",
+        repo_root=tmp_path,
+    )
+    explicit_result = execute_evaluation_run_matrix(
+        _matrix(), registry=evaluation_registry, root=tmp_path / "explicit"
+    )
 
     expected_order = [
         "gain-low--mode-a",
@@ -628,9 +634,10 @@ def _schema_matrix(
 
 def test_runtime_authoring_schema_validates_taxonomy_grid_without_changing_hashes(
     tmp_path: Path,
+    evaluation_registry,
 ) -> None:
     matrix = _schema_matrix(tmp_path)
-    before = compile_evaluation_run_matrix(matrix, repo_root=tmp_path)
+    before = compile_evaluation_run_matrix(matrix, registry=evaluation_registry, repo_root=tmp_path)
     authored_bytes = canonical_json_bytes(matrix.model_dump(mode="json", exclude_none=True))
     compiled_bytes = canonical_json_bytes(before.model_dump(mode="json", exclude_none=True))
     schema = EvaluationAuthoringSchema(
@@ -642,32 +649,23 @@ def test_runtime_authoring_schema_validates_taxonomy_grid_without_changing_hashe
             {"arm": ("trained", "extlqg", "hinf"), "target": ("0", "1")},
         ),
     )
-    register_evaluation_authoring_schema("example.schema_validated", schema)
-    try:
-        after = compile_evaluation_run_matrix(matrix, repo_root=tmp_path)
-        assert (
-            canonical_json_bytes(matrix.model_dump(mode="json", exclude_none=True))
-            == authored_bytes
-        )
-        assert (
-            canonical_json_bytes(after.model_dump(mode="json", exclude_none=True)) == compiled_bytes
-        )
+    evaluation_registry.register_authoring_schema("example.schema_validated", schema)
+    after = compile_evaluation_run_matrix(matrix, registry=evaluation_registry, repo_root=tmp_path)
+    assert canonical_json_bytes(matrix.model_dump(mode="json", exclude_none=True)) == authored_bytes
+    assert canonical_json_bytes(after.model_dump(mode="json", exclude_none=True)) == compiled_bytes
 
-        invalid = _schema_matrix(tmp_path, command_dimension="wrong")
-        with pytest.raises(ValueError, match="do not match schema"):
-            compile_evaluation_run_matrix(invalid, repo_root=tmp_path)
+    invalid = _schema_matrix(tmp_path, command_dimension="wrong")
+    with pytest.raises(ValueError, match="do not match schema"):
+        compile_evaluation_run_matrix(invalid, registry=evaluation_registry, repo_root=tmp_path)
 
-        wrong_grid = matrix.model_copy(deep=True)
-        wrong_grid.axes[1].values.pop()
-        with pytest.raises(ValueError, match="do not match schema"):
-            compile_evaluation_run_matrix(wrong_grid, repo_root=tmp_path)
-    finally:
-        unregister_evaluation_authoring_schema("example.schema_validated")
+    wrong_grid = matrix.model_copy(deep=True)
+    wrong_grid.axes[1].values.pop()
+    with pytest.raises(ValueError, match="do not match schema"):
+        compile_evaluation_run_matrix(wrong_grid, registry=evaluation_registry, repo_root=tmp_path)
 
 
-@pytest.mark.parametrize("reverse_hooks", [False, True])
-def test_authoring_schema_registration_is_order_independent_and_rejects_conflicts(
-    tmp_path: Path, reverse_hooks: bool
+def test_authoring_schema_registration_rejects_duplicate_and_conflicting_claims(
+    tmp_path: Path, evaluation_registry
 ) -> None:
     profiles = (
         {"arm": ("extlqg", "hinf"), "target": ("0", "1")},
@@ -675,7 +673,7 @@ def test_authoring_schema_registration_is_order_independent_and_rejects_conflict
     )
 
     def register_hook(*, reverse_profiles: bool) -> None:
-        register_evaluation_authoring_schema(
+        evaluation_registry.register_authoring_schema(
             "example.schema_validated",
             EvaluationAuthoringSchema(
                 schema_id="example.spec.evaluation.schema_validated",
@@ -685,34 +683,27 @@ def test_authoring_schema_registration_is_order_independent_and_rejects_conflict
             ),
         )
 
-    try:
-        for hook in (False, True) if reverse_hooks else (True, False):
-            register_hook(reverse_profiles=hook)
-        assert (
-            len(compile_evaluation_run_matrix(_schema_matrix(tmp_path), repo_root=tmp_path).rows)
-            == 4
+    register_hook(reverse_profiles=False)
+    assert (
+        len(
+            compile_evaluation_run_matrix(
+                _schema_matrix(tmp_path), registry=evaluation_registry, repo_root=tmp_path
+            ).rows
         )
-        assert (
-            len(
-                compile_evaluation_run_matrix(
-                    _schema_matrix(tmp_path, arms=("trained", "extlqg", "hinf")),
-                    repo_root=tmp_path,
-                ).rows
-            )
-            == 6
+        == 4
+    )
+    assert (
+        len(
+            compile_evaluation_run_matrix(
+                _schema_matrix(tmp_path, arms=("trained", "extlqg", "hinf")),
+                registry=evaluation_registry,
+                repo_root=tmp_path,
+            ).rows
         )
-        with pytest.raises(ValueError, match="conflicts with registered schema"):
-            register_evaluation_authoring_schema(
-                "example.schema_validated",
-                EvaluationAuthoringSchema(
-                    schema_id="example.spec.evaluation.schema_validated",
-                    schema_version="example.spec.evaluation.schema_validated.v1",
-                    params_model=_ComparatorAuthoringParams,
-                    axis_profiles=({"arm": ("hinf",), "target": ("0", "1")},),
-                ),
-            )
-    finally:
-        unregister_evaluation_authoring_schema("example.schema_validated")
+        == 6
+    )
+    with pytest.raises(ValueError, match="already registered"):
+        register_hook(reverse_profiles=True)
 
 
 def test_axis_contract_rejects_collisions_deltas_and_non_json_values() -> None:
@@ -756,7 +747,11 @@ def test_axis_contract_rejects_collisions_deltas_and_non_json_values() -> None:
     ],
 )
 def test_axis_matrix_rejects_unavailable_or_untrusted_pinned_base(
-    tmp_path: Path, ref: str, digest: str, message: str
+    tmp_path: Path,
+    ref: str,
+    digest: str,
+    message: str,
+    evaluation_registry,
 ) -> None:
     (tmp_path / "base.json").write_text(
         json.dumps({"evaluation_type": "example.evaluate"}), encoding="utf-8"
@@ -765,20 +760,22 @@ def test_axis_matrix_rejects_unavailable_or_untrusted_pinned_base(
     payload["base"] = {"ref": ref, "sha256": digest}
 
     with pytest.raises(ValueError, match=message):
-        materialize_evaluation_run_matrix(payload, repo_root=tmp_path)
+        materialize_evaluation_run_matrix(payload, repo_root=tmp_path, registry=evaluation_registry)
 
 
-def test_axis_matrix_requires_explicit_repo_root(tmp_path: Path) -> None:
+def test_axis_matrix_requires_explicit_repo_root(tmp_path: Path, evaluation_registry) -> None:
     with pytest.raises(ValueError, match="content-pinned JSON base requires repo_root"):
-        materialize_evaluation_run_matrix(_axis_matrix_payload(tmp_path))
+        materialize_evaluation_run_matrix(
+            _axis_matrix_payload(tmp_path), registry=evaluation_registry
+        )
 
 
-def test_axis_matrix_rejects_delta_to_missing_path(tmp_path: Path) -> None:
+def test_axis_matrix_rejects_delta_to_missing_path(tmp_path: Path, evaluation_registry) -> None:
     payload = _axis_matrix_payload(tmp_path)
     payload["axes"][0]["values"][0]["deltas"][0]["path"] = "params.missing"
 
     with pytest.raises(ValueError, match="replace delta path is missing"):
-        materialize_evaluation_run_matrix(payload, repo_root=tmp_path)
+        materialize_evaluation_run_matrix(payload, repo_root=tmp_path, registry=evaluation_registry)
 
 
 def test_training_cross_group_delegates_to_matrix_core_and_matches_axis_order(
@@ -813,21 +810,19 @@ def test_training_cross_group_delegates_to_matrix_core_and_matches_axis_order(
     assert training == evaluation
 
 
-def test_direct_single_run_keeps_empty_staged_context(tmp_path: Path) -> None:
+def test_direct_single_run_keeps_empty_staged_context(tmp_path: Path, evaluation_registry) -> None:
     observed = []
 
     def recipe(_spec, _root, _states_path, execution_context):
         observed.append(execution_context)
         return EvaluationRecipeResult(summary_metrics={"direct": True})
 
-    register_evaluation_recipe("example.direct", recipe)
-    try:
-        manifest, path = execute_evaluation_run_spec(
-            EvaluationRunSpec(evaluation_type="example.direct"),
-            root=tmp_path,
-        )
-    finally:
-        unregister_evaluation_recipe("example.direct")
+    evaluation_registry.register("example.direct", recipe)
+    manifest, path = execute_evaluation_run_spec(
+        EvaluationRunSpec(evaluation_type="example.direct"),
+        registry=evaluation_registry,
+        root=tmp_path,
+    )
 
     assert observed == [EMPTY_STAGED_EXECUTION_CONTEXT]
     assert manifest.status == "completed"
@@ -897,6 +892,7 @@ def _staged_matrix(
 def _run_staged_matrix(
     matrix: EvaluationRunMatrixSpec,
     *,
+    evaluation_registry,
     output_root: Path,
     **kwargs,
 ):
@@ -915,16 +911,16 @@ def _run_staged_matrix(
         observed.append((root, training.id, states["pair"].tolist()))
         return EvaluationRecipeResult(summary_metrics={"pair_count": len(states["pair"])})
 
-    register_evaluation_recipe("example.staged_matrix", recipe)
-    try:
-        result = execute_evaluation_run_matrix(matrix, root=output_root, **kwargs)
-    finally:
-        unregister_evaluation_recipe("example.staged_matrix")
+    evaluation_registry.register("example.staged_matrix", recipe)
+    result = execute_evaluation_run_matrix(
+        matrix, registry=evaluation_registry, root=output_root, **kwargs
+    )
     return result, observed
 
 
 def test_matrix_resolves_shared_local_parents_before_distinct_row_roots(
     tmp_path: Path,
+    evaluation_registry,
 ) -> None:
     parent_root = tmp_path / "parents"
     parent_root.mkdir()
@@ -962,6 +958,7 @@ def test_matrix_resolves_shared_local_parents_before_distinct_row_roots(
 
     result, observed = _run_staged_matrix(
         matrix,
+        evaluation_registry=evaluation_registry,
         output_root=tmp_path / "rows",
         parent_manifest_root=parent_root,
         repo_root=tmp_path,
@@ -1015,6 +1012,7 @@ def test_matrix_resolves_shared_provider_parents_and_validates_durable_bank(
     tmp_path: Path,
     metadata_update: dict[str, str],
     error_type: type[ValueError] | None,
+    evaluation_registry,
 ) -> None:
     provider_root = tmp_path / "provider"
     provider_root.mkdir()
@@ -1066,6 +1064,7 @@ def test_matrix_resolves_shared_provider_parents_and_validates_durable_bank(
     )
 
     kwargs = {
+        "evaluation_registry": evaluation_registry,
         "output_root": tmp_path / "rows",
         "execution_descriptor": descriptor,
         "artifact_provider_bindings": [StagedArtifactProviderRootBinding("shared", provider_root)],
@@ -1088,6 +1087,7 @@ def test_matrix_resolves_shared_provider_parents_and_validates_durable_bank(
 
 def test_matrix_staged_parent_contract_fails_closed_before_row_creation(
     tmp_path: Path,
+    evaluation_registry,
 ) -> None:
     parent = ParentRef(kind="TrainingRunManifest", id="unauthenticated", role="training_run")
     with pytest.raises(ValidationError, match="authenticated ParentRef"):
@@ -1104,7 +1104,7 @@ def test_matrix_staged_parent_contract_fails_closed_before_row_creation(
         staged_parents={"training": StagedEvaluationPrerequisite(parent=exact)},
     )
     with pytest.raises(ValueError, match="does not reference staged parent"):
-        materialize_evaluation_run_matrix(unreferenced)
+        materialize_evaluation_run_matrix(unreferenced, registry=evaluation_registry)
 
     wrong_size = exact.model_copy(
         update={"metadata": {**exact.metadata, "size_bytes": exact.metadata["size_bytes"] + 1}}
@@ -1117,16 +1117,18 @@ def test_matrix_staged_parent_contract_fails_closed_before_row_creation(
     with pytest.raises(ValueError, match="byte size"):
         execute_evaluation_run_matrix(
             matrix,
+            registry=evaluation_registry,
             root=tmp_path / "rows",
             parent_manifest_root=parent_root,
         )
     assert not (tmp_path / "rows").exists()
 
     with pytest.raises(StagedExecutionContextError, match="parent_manifest_root"):
-        execute_evaluation_run_matrix(matrix, root=tmp_path / "rows")
+        execute_evaluation_run_matrix(matrix, root=tmp_path / "rows", registry=evaluation_registry)
     with pytest.raises(StagedExecutionContextError, match="must be absolute"):
         execute_evaluation_run_matrix(
             matrix,
+            registry=evaluation_registry,
             root=tmp_path / "rows",
             parent_manifest_root="relative/parents",
         )

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
 
 from feedbax.analysis.figures import execute_figure_spec
 from feedbax.config.yaml import get_yaml_loader
+from feedbax.plugins.composition import compose_application
 from feedbax.plot.constructors import (
     constructor_catalog,
     registered_figure_pieces,
@@ -38,8 +40,11 @@ def main(argv: list[str] | None = None) -> int:
     list_parser.add_argument("kind", choices=("constructors", "templates", "pieces"))
 
     args = parser.parse_args(argv)
+    registry = asyncio.run(compose_application()).bundle.figures
     if args.command == "run":
-        manifest, path = execute_figure_spec(_load_spec(args.spec), root=args.root)
+        manifest, path = execute_figure_spec(
+            _load_spec(args.spec), root=args.root, registry=registry
+        )
         _print_json(
             {
                 "manifest_id": manifest.id,
@@ -53,19 +58,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.kind == "constructors":
-        _print_json(constructor_catalog())
+        _print_json(constructor_catalog(registry=registry))
     elif args.kind == "templates":
         _print_json(
             [
                 item.model_dump(mode="json", exclude_none=True)
-                for item in registered_figure_templates()
+                for item in registered_figure_templates(registry=registry)
             ]
         )
     else:
         _print_json(
             [
                 item.model_dump(mode="json", exclude_none=True)
-                for item in registered_figure_pieces()
+                for item in registered_figure_pieces(registry=registry)
             ]
         )
     return 0

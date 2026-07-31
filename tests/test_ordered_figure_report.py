@@ -33,7 +33,6 @@ from feedbax.contracts.selection import ManifestPredicate
 from feedbax.analysis.reports import (
     ReportRecipeExecutionError,
     execute_report_spec,
-    registered_report_types,
 )
 from feedbax.contracts.manifest import (
     AnalysisDataProduct,
@@ -201,9 +200,7 @@ def _provider_descriptor(*names: str) -> StagedExecutionDescriptor:
     return StagedExecutionDescriptor(
         schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
         schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
-        artifact_providers={
-            name: ImmutableArtifactBlobProviderSpec() for name in names
-        },
+        artifact_providers={name: ImmutableArtifactBlobProviderSpec() for name in names},
         checkpoint_custody={},
     )
 
@@ -236,10 +233,12 @@ def _write_exact_manifest_parent(
     )
 
 
-def test_ordered_figure_report_is_public_registered_and_serialisable() -> None:
+def test_ordered_figure_report_is_public_registered_and_serialisable(
+    application_registry_bundle,
+) -> None:
     params = OrderedFigureReportParams.model_validate(_params())
 
-    assert ORDERED_FIGURE_REPORT_TYPE in registered_report_types()
+    assert ORDERED_FIGURE_REPORT_TYPE in application_registry_bundle.report_recipes.keys()
     assert OrderedFigureReportParams.model_validate_json(params.model_dump_json()) == params
     assert params.model_dump(mode="json")["sections"][0]["tables"][0]["rows"] == [
         ["alpha|beta", True, None],
@@ -415,9 +414,7 @@ def test_authored_report_cli_executes_exact_parents_without_reauthoring(
                         },
                         {
                             "input_role": "terminal_figure",
-                            "figure_spec_sha256": _figure_spec_sha256(
-                                "terminal-extension"
-                            ),
+                            "figure_spec_sha256": _figure_spec_sha256("terminal-extension"),
                             "caption": "Terminal exact figure",
                         },
                     ],
@@ -445,9 +442,7 @@ def test_authored_report_cli_executes_exact_parents_without_reauthoring(
         schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
         artifact_providers={"evidence": ImmutableArtifactBlobProviderSpec()},
         checkpoint_custody={
-            "capture": StagedCheckpointCustodySpec(
-                backend="feedbax-checkpoint-transaction-tree"
-            )
+            "capture": StagedCheckpointCustodySpec(backend="feedbax-checkpoint-transaction-tree")
         },
     )
     descriptor_path = tmp_path / "execution.json"
@@ -493,6 +488,7 @@ def test_ordered_figure_report_projects_authenticated_product_scalar(
     tmp_path: Path,
     output_name: str,
     expected_render: str,
+    application_registry_bundle,
 ) -> None:
     provider_root = tmp_path / "retained"
     provider = ImmutableArtifactBlobProvider(provider_root)
@@ -572,17 +568,16 @@ def test_ordered_figure_report_projects_authenticated_product_scalar(
         spec,
         root=tmp_path / "output",
         execution_descriptor=_provider_descriptor("evidence"),
-        artifact_provider_bindings=[
-            StagedArtifactProviderRootBinding("evidence", provider_root)
-        ],
+        artifact_provider_bindings=[StagedArtifactProviderRootBinding("evidence", provider_root)],
+        registry=application_registry_bundle.report_recipes,
     )
 
     rendered = Path(manifest.artifacts[0].uri or "").read_text(encoding="utf-8")
     assert expected_render in rendered
     assert manifest.regeneration_specs == [artifact]
-    assert manifest.metadata["ordered_figure_report"][
-        "scalar_projection_artifact_ids"
-    ] == [artifact.artifact_id]
+    assert manifest.metadata["ordered_figure_report"]["scalar_projection_artifact_ids"] == [
+        artifact.artifact_id
+    ]
 
 
 def _composite_scalar_report(
@@ -662,6 +657,7 @@ def _composite_scalar_report(
 
 def test_ordered_figure_report_composes_formatted_authenticated_scalars(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     spec, provider_root, artifact_ids = _composite_scalar_report(tmp_path)
 
@@ -670,6 +666,7 @@ def test_ordered_figure_report_composes_formatted_authenticated_scalars(
         root=tmp_path / "output",
         execution_descriptor=_provider_descriptor("evidence"),
         artifact_provider_bindings=[StagedArtifactProviderRootBinding("evidence", provider_root)],
+        registry=application_registry_bundle.report_recipes,
     )
 
     rendered = Path(manifest.artifacts[0].uri or "").read_text(encoding="utf-8")
@@ -683,6 +680,7 @@ def test_ordered_figure_report_composes_formatted_authenticated_scalars(
 
 def test_composite_projection_mapping_order_is_manifest_invariant(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     spec, provider_root, _ = _composite_scalar_report(tmp_path)
     reversed_params = json.loads(json.dumps(spec.params))
@@ -698,11 +696,14 @@ def test_composite_projection_mapping_order_is_manifest_invariant(
         ],
     }
 
-    first, _ = execute_report_spec(spec, root=tmp_path / "first", **kwargs)
+    first, _ = execute_report_spec(
+        spec, root=tmp_path / "first", **kwargs, registry=application_registry_bundle.report_recipes
+    )
     second, _ = execute_report_spec(
         reversed_spec,
         root=tmp_path / "second",
         **kwargs,
+        registry=application_registry_bundle.report_recipes,
     )
 
     assert first.id == second.id
@@ -723,6 +724,7 @@ def test_ordered_figure_report_composite_scalar_fails_closed(
     missing_role: str | None,
     standard_deviation: object,
     expected: str,
+    application_registry_bundle,
 ) -> None:
     spec, provider_root, _ = _composite_scalar_report(
         tmp_path,
@@ -741,6 +743,7 @@ def test_ordered_figure_report_composite_scalar_fails_closed(
             artifact_provider_bindings=[
                 StagedArtifactProviderRootBinding("evidence", provider_root)
             ],
+            registry=application_registry_bundle.report_recipes,
         )
 
     assert expected in str(excinfo.value.__cause__)
@@ -748,7 +751,9 @@ def test_ordered_figure_report_composite_scalar_fails_closed(
     assert excinfo.value.manifest.artifacts == []
 
 
-def test_ordered_figure_report_single_value_cell_absence_parity(tmp_path: Path) -> None:
+def test_ordered_figure_report_single_value_cell_absence_parity(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     spec, provider_root, _ = _composite_scalar_report(tmp_path)
     single_projection = next(
         cell
@@ -781,6 +786,7 @@ def test_ordered_figure_report_single_value_cell_absence_parity(tmp_path: Path) 
         root=tmp_path / "output",
         execution_descriptor=_provider_descriptor("evidence"),
         artifact_provider_bindings=[StagedArtifactProviderRootBinding("evidence", provider_root)],
+        registry=application_registry_bundle.report_recipes,
     )
 
     rendered = Path(manifest.artifacts[0].uri or "").read_text(encoding="utf-8")
@@ -795,6 +801,7 @@ def test_ordered_figure_report_single_value_cell_absence_parity(tmp_path: Path) 
 
 def test_report_inputs_resolve_once_across_distinct_retained_roots(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     refs: list[ParentRef] = []
     bindings: list[StagedArtifactProviderRootBinding] = []
@@ -828,6 +835,7 @@ def test_report_inputs_resolve_once_across_distinct_retained_roots(
         root=tmp_path / "output",
         execution_descriptor=_provider_descriptor("first", "second"),
         artifact_provider_bindings=bindings,
+        registry=application_registry_bundle.report_recipes,
     )
 
     assert manifest.status == "completed"
@@ -894,9 +902,7 @@ def test_staged_bundle_cli_preserves_report_projection_authority(
                     "sections": [
                         {
                             "title": "Table",
-                            "tables": [
-                                {"columns": ["value"], "rows": [[projection]]}
-                            ],
+                            "tables": [{"columns": ["value"], "rows": [[projection]]}],
                         }
                     ],
                 },
@@ -934,6 +940,7 @@ def test_staged_bundle_cli_preserves_report_projection_authority(
 
 def test_report_input_duplicated_across_retained_roots_fails_before_outputs(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     roots = [tmp_path / "first", tmp_path / "second"]
     providers = [ImmutableArtifactBlobProvider(root) for root in roots]
@@ -972,9 +979,7 @@ def test_report_input_duplicated_across_retained_roots_fails_before_outputs(
                             "figures": [
                                 {
                                     "input_role": "first",
-                                    "figure_spec_sha256": _figure_spec_sha256(
-                                        "duplicated"
-                                    ),
+                                    "figure_spec_sha256": _figure_spec_sha256("duplicated"),
                                     "caption": "First",
                                 }
                             ],
@@ -988,6 +993,7 @@ def test_report_input_duplicated_across_retained_roots_fails_before_outputs(
                 StagedArtifactProviderRootBinding(name, root)
                 for name, root in zip(("first", "second"), roots, strict=True)
             ],
+            registry=application_registry_bundle.report_recipes,
         )
     assert not (output / "manifests" / "reports").exists()
     assert not (output / "artifacts").exists()
@@ -1008,6 +1014,7 @@ def test_scalar_projection_path_never_substitutes_missing_or_structured_values(
     artifact_role: str,
     duplicate_artifact: bool,
     message: str,
+    application_registry_bundle,
 ) -> None:
     provider_root = tmp_path / "retained"
     provider = ImmutableArtifactBlobProvider(provider_root)
@@ -1085,6 +1092,7 @@ def test_scalar_projection_path_never_substitutes_missing_or_structured_values(
             artifact_provider_bindings=[
                 StagedArtifactProviderRootBinding("evidence", provider_root)
             ],
+            registry=application_registry_bundle.report_recipes,
         )
     assert message in str(excinfo.value.__cause__)
     assert not (output / "artifacts").exists()
@@ -1092,6 +1100,7 @@ def test_scalar_projection_path_never_substitutes_missing_or_structured_values(
 
 def test_ordered_figure_report_renders_authored_order_roles_and_scalar_tables(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     second = _write_figure_manifest(tmp_path, name="second", media_type="text/html")
     first = _write_figure_manifest(tmp_path, name="first")
@@ -1101,7 +1110,9 @@ def test_ordered_figure_report_renders_authored_order_roles_and_scalar_tables(
         params=_params(),
     )
 
-    manifest, path = execute_report_spec(spec, root=tmp_path)
+    manifest, path = execute_report_spec(
+        spec, root=tmp_path, registry=application_registry_bundle.report_recipes
+    )
 
     assert load_manifest(path) == manifest
     assert manifest.status == "completed"
@@ -1136,6 +1147,7 @@ def test_ordered_figure_report_renders_authored_order_roles_and_scalar_tables(
 
 def test_ordered_figure_report_accepts_exact_embedded_figure_spec_pin(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     provider_root = tmp_path / "provider"
     provider = ImmutableArtifactBlobProvider(provider_root)
@@ -1184,9 +1196,8 @@ def test_ordered_figure_report_accepts_exact_embedded_figure_spec_pin(
         ),
         root=output,
         execution_descriptor=_provider_descriptor("evidence"),
-        artifact_provider_bindings=[
-            StagedArtifactProviderRootBinding("evidence", provider_root)
-        ],
+        artifact_provider_bindings=[StagedArtifactProviderRootBinding("evidence", provider_root)],
+        registry=application_registry_bundle.report_recipes,
     )
 
     assert manifest.status == "completed"
@@ -1197,6 +1208,7 @@ def test_ordered_figure_report_accepts_exact_embedded_figure_spec_pin(
 def test_ordered_figure_report_rejects_unpinned_embedded_figure_spec_without_output(
     tmp_path: Path,
     failure: str,
+    application_registry_bundle,
 ) -> None:
     provider_root = tmp_path / "provider"
     provider = ImmutableArtifactBlobProvider(provider_root)
@@ -1256,6 +1268,7 @@ def test_ordered_figure_report_rejects_unpinned_embedded_figure_spec_without_out
             artifact_provider_bindings=[
                 StagedArtifactProviderRootBinding("evidence", provider_root)
             ],
+            registry=application_registry_bundle.report_recipes,
         )
 
     cause = str(excinfo.value.__cause__)
@@ -1272,6 +1285,7 @@ def test_ordered_figure_report_rejects_unpinned_embedded_figure_spec_without_out
 
 def test_ordered_figure_report_html_is_self_contained_interactive_and_deterministic(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     second = _write_figure_manifest(
         tmp_path,
@@ -1291,8 +1305,12 @@ def test_ordered_figure_report_html_is_self_contained_interactive_and_determinis
         params=params,
     )
 
-    first_manifest, _ = execute_report_spec(spec, root=tmp_path)
-    second_manifest, _ = execute_report_spec(spec, root=tmp_path)
+    first_manifest, _ = execute_report_spec(
+        spec, root=tmp_path, registry=application_registry_bundle.report_recipes
+    )
+    second_manifest, _ = execute_report_spec(
+        spec, root=tmp_path, registry=application_registry_bundle.report_recipes
+    )
 
     render = first_manifest.artifacts[0]
     report_html = Path(render.uri or "").read_text(encoding="utf-8")
@@ -1334,6 +1352,7 @@ def test_ordered_figure_report_html_is_self_contained_interactive_and_determinis
 
 def test_ordered_figure_report_html_requires_retained_plotly_json(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     first = _write_figure_manifest(tmp_path, name="first")
     second = _write_figure_manifest(tmp_path, name="second")
@@ -1346,17 +1365,18 @@ def test_ordered_figure_report_html_requires_retained_plotly_json(
     )
 
     with pytest.raises(ReportRecipeExecutionError) as excinfo:
-        execute_report_spec(spec, root=tmp_path)
+        execute_report_spec(
+            spec, root=tmp_path, registry=application_registry_bundle.report_recipes
+        )
 
     assert isinstance(excinfo.value.__cause__, ValueError)
-    assert "input role 'first' has no materialized plotly-json" in str(
-        excinfo.value.__cause__
-    )
+    assert "input role 'first' has no materialized plotly-json" in str(excinfo.value.__cause__)
     assert excinfo.value.manifest.status == "failed"
 
 
 def test_ordered_figure_report_html_verifies_plotly_json_digest(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     first = _write_figure_manifest(
         tmp_path,
@@ -1386,6 +1406,7 @@ def test_ordered_figure_report_html_verifies_plotly_json_digest(
                 params=params,
             ),
             root=tmp_path,
+            registry=application_registry_bundle.report_recipes,
         )
 
     assert isinstance(excinfo.value.__cause__, ValueError)
@@ -1394,6 +1415,7 @@ def test_ordered_figure_report_html_verifies_plotly_json_digest(
 
 def test_ordered_figure_report_missing_required_role_fails_closed(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     first = _write_figure_manifest(tmp_path, name="first")
     spec = ReportSpec(
@@ -1403,7 +1425,9 @@ def test_ordered_figure_report_missing_required_role_fails_closed(
     )
 
     with pytest.raises(ReportRecipeExecutionError) as excinfo:
-        execute_report_spec(spec, root=tmp_path)
+        execute_report_spec(
+            spec, root=tmp_path, registry=application_registry_bundle.report_recipes
+        )
 
     assert isinstance(excinfo.value.__cause__, ValueError)
     assert "missing required input roles: 'second'" in str(excinfo.value.__cause__)
@@ -1413,6 +1437,7 @@ def test_ordered_figure_report_missing_required_role_fails_closed(
 
 def test_ordered_figure_report_explicit_not_applicable_requires_no_input(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     spec = ReportSpec(
         report_type=ORDERED_FIGURE_REPORT_TYPE,
@@ -1435,7 +1460,9 @@ def test_ordered_figure_report_explicit_not_applicable_requires_no_input(
         },
     )
 
-    manifest, _ = execute_report_spec(spec, root=tmp_path)
+    manifest, _ = execute_report_spec(
+        spec, root=tmp_path, registry=application_registry_bundle.report_recipes
+    )
 
     markdown = Path(manifest.artifacts[0].uri or "").read_text(encoding="utf-8")
     assert manifest.status == "completed"

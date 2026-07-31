@@ -102,35 +102,51 @@ class EvaluationBatchConsumer:
     finalize: Callable[[EvaluationBatchFinalizeInput], EvaluationBatchFragment]
 
 
-_CONSUMERS: dict[tuple[str, str], EvaluationBatchConsumer] = {}
+class EvaluationBatchConsumerRegistry:
+    """Isolated evaluation compaction consumer registry."""
 
+    def __init__(self) -> None:
+        self._sealed = False
+        self._consumers: dict[tuple[str, str], EvaluationBatchConsumer] = {}
 
-def register_evaluation_batch_consumer(
-    consumer_id: str,
-    consumer_version: str,
-    *,
-    compact: Callable[[EvaluationBatchConsumerInput], EvaluationBatchFragment],
-    merge: Callable[[EvaluationBatchMergeInput], EvaluationBatchMergeState],
-    finalize: Callable[[EvaluationBatchFinalizeInput], EvaluationBatchFragment],
-    replace: bool = False,
-) -> None:
-    """Register a downstream compact leaf through the public plugin surface."""
-    key = (consumer_id, consumer_version)
-    if not consumer_id or not consumer_version:
-        raise ValueError("evaluation batch consumer identity and version must be non-empty")
-    if key in _CONSUMERS and not replace:
-        raise ValueError(f"evaluation batch consumer {key!r} is already registered")
-    _CONSUMERS[key] = EvaluationBatchConsumer(
-        compact=compact,
-        merge=merge,
-        finalize=finalize,
-    )
+    def register(
+        self,
+        consumer_id: str,
+        consumer_version: str,
+        *,
+        compact: Callable[[EvaluationBatchConsumerInput], EvaluationBatchFragment],
+        merge: Callable[[EvaluationBatchMergeInput], EvaluationBatchMergeState],
+        finalize: Callable[[EvaluationBatchFinalizeInput], EvaluationBatchFragment],
+    ) -> None:
+        if self._sealed:
+            raise RuntimeError("evaluation batch consumer registry is sealed")
+        key = (consumer_id, consumer_version)
+        if not consumer_id or not consumer_version:
+            raise ValueError("evaluation batch consumer identity and version must be non-empty")
+        if key in self._consumers:
+            raise ValueError(f"evaluation batch consumer {key!r} is already registered")
+        self._consumers[key] = EvaluationBatchConsumer(compact, merge, finalize)
+
+    def keys(self) -> tuple[str, ...]:
+        return tuple(f"{key}@{version}" for key, version in sorted(self._consumers))
+
+    def get(self, consumer_id: str, consumer_version: str) -> EvaluationBatchConsumer:
+        try:
+            return self._consumers[(consumer_id, consumer_version)]
+        except KeyError as exc:
+            raise ValueError(
+                f"no registered evaluation batch consumer for {consumer_id!r}@{consumer_version!r}"
+            ) from exc
+
+    def seal(self) -> None:
+        self._sealed = True
 
 
 def compact_evaluation_batch(
     declaration: EvaluationBatchConsumerDeclaration,
     consumer_input: EvaluationBatchConsumerInput,
     *,
+    registry: EvaluationBatchConsumerRegistry,
     custody_root: Path,
 ) -> ArtifactRef:
     """Run one compact callback and verify its content-addressed fragment."""
@@ -141,7 +157,7 @@ def compact_evaluation_batch(
     unexpected = observed_schemas - set(declaration.accepted_evaluation_state_schema_ids)
     if unexpected or any(not outcome.diagnostic_schema_ids for outcome in consumer_input.outcomes):
         raise ValueError(f"consumer leaf {declaration.leaf_id!r} rejected evaluation-state schemas")
-    consumer = _resolve_consumer(declaration)
+    consumer = _resolve_consumer(declaration, registry)
     fragment = consumer.compact(consumer_input)
     if (
         fragment.schema_id != declaration.compact_product_schema_id
@@ -176,6 +192,7 @@ def compact_evaluation_batch(
 def merge_evaluation_batch_fragment(
     declaration: EvaluationBatchConsumerDeclaration,
     *,
+    registry: EvaluationBatchConsumerRegistry,
     matrix_intent_hash: str,
     batch: EvaluationMatrixBatchUnit,
     parent_authorities: Sequence[ParentRef],
@@ -194,8 +211,7 @@ def merge_evaluation_batch_fragment(
         or fragment.metadata.get("leaf_id") != declaration.leaf_id
         or fragment.metadata.get("batch_id") != batch.batch_id
         or fragment.metadata.get("matrix_intent_hash") != matrix_intent_hash
-        or fragment.metadata.get("terminal_analysis_type")
-        != declaration.terminal_analysis_type
+        or fragment.metadata.get("terminal_analysis_type") != declaration.terminal_analysis_type
         or canonical_json_bytes(fragment.metadata.get("parent_authorities"))
         != _parent_authorities_bytes(parent_authorities)
         or fragment.metadata.get("consumer_parameters") != declaration.parameters
@@ -244,12 +260,10 @@ def merge_evaluation_batch_fragment(
             or acknowledgement.leaf_id != declaration.leaf_id
             or acknowledgement.consumer_id != declaration.consumer_id
             or acknowledgement.consumer_version != declaration.consumer_version
-            or acknowledgement.terminal_analysis_type
-            != declaration.terminal_analysis_type
+            or acknowledgement.terminal_analysis_type != declaration.terminal_analysis_type
             or canonical_json_bytes(acknowledgement.parameters)
             != canonical_json_bytes(declaration.parameters)
-            or acknowledgement.compact_product_schema_id
-            != declaration.compact_product_schema_id
+            or acknowledgement.compact_product_schema_id != declaration.compact_product_schema_id
             or acknowledgement.compact_product_schema_version
             != declaration.compact_product_schema_version
             or acknowledgement.compact_product_role != declaration.compact_product_role
@@ -275,7 +289,7 @@ def merge_evaluation_batch_fragment(
     prior_payload = (
         json.loads(provider.get_bytes(prior_merge_state)) if prior_merge_state is not None else None
     )
-    consumer = _resolve_consumer(declaration)
+    consumer = _resolve_consumer(declaration, registry)
     next_state = consumer.merge(
         EvaluationBatchMergeInput(
             matrix_intent_hash=matrix_intent_hash,
@@ -349,6 +363,7 @@ def merge_evaluation_batch_fragment(
 def reclaim_evaluation_batch_caches(
     batch: EvaluationMatrixBatchUnit,
     *,
+    registry: EvaluationBatchConsumerRegistry,
     matrix_intent_hash: str,
     batch_index: int,
     outcomes: Sequence[EvaluationLifecycleRowOutcome],
@@ -523,6 +538,7 @@ def publish_evaluation_compaction_products(
     terminal_states: Mapping[str, ArtifactRef],
     outcomes: Sequence[EvaluationLifecycleRowOutcome],
     *,
+    registry: EvaluationBatchConsumerRegistry,
     custody_root: Path,
     execution_context: StagedExecutionContext,
 ) -> tuple[ArtifactRef, ...]:
@@ -552,7 +568,7 @@ def publish_evaluation_compaction_products(
         state_parents = _parent_authorities_from_state(state_ref)
         _validate_publication_parent_authorities(state_parents, outcomes)
         terminal_merge_state = json.loads(provider.get_bytes(state_ref))
-        consumer = _resolve_consumer(declaration)
+        consumer = _resolve_consumer(declaration, registry)
         finalized.append(
             (
                 declaration,
@@ -652,10 +668,9 @@ def publish_evaluation_compaction_products(
                 artifacts=list(context.artifacts),
                 produced_data=list(context.produced_data),
             )
-            if (
-                not isinstance(manifest, AnalysisRunManifest)
-                or canonical_json_bytes(manifest) != canonical_json_bytes(expected_manifest)
-            ):
+            if not isinstance(manifest, AnalysisRunManifest) or canonical_json_bytes(
+                manifest
+            ) != canonical_json_bytes(expected_manifest):
                 raise ValueError(
                     f"consumer leaf {declaration.leaf_id!r} terminal manifest identity drifted"
                 )
@@ -682,14 +697,9 @@ def publish_evaluation_compaction_products(
 
 def _resolve_consumer(
     declaration: EvaluationBatchConsumerDeclaration,
+    registry: EvaluationBatchConsumerRegistry,
 ) -> EvaluationBatchConsumer:
-    try:
-        return _CONSUMERS[(declaration.consumer_id, declaration.consumer_version)]
-    except KeyError as exc:
-        raise ValueError(
-            "no registered evaluation batch consumer for "
-            f"{declaration.consumer_id!r}@{declaration.consumer_version!r}"
-        ) from exc
+    return registry.get(declaration.consumer_id, declaration.consumer_version)
 
 
 def _callback_parameters(
@@ -737,8 +747,7 @@ def _validate_merge_state_ref(
         or value.metadata.get("leaf_id") != declaration.leaf_id
         or value.metadata.get("matrix_intent_hash") != matrix_intent_hash
         or value.metadata.get("terminal_analysis_type") != declaration.terminal_analysis_type
-        or value.metadata.get("compact_product_schema_id")
-        != declaration.compact_product_schema_id
+        or value.metadata.get("compact_product_schema_id") != declaration.compact_product_schema_id
         or value.metadata.get("compact_product_schema_version")
         != declaration.compact_product_schema_version
         or value.metadata.get("compact_product_role") != declaration.compact_product_role
@@ -814,8 +823,7 @@ def _validate_parent_authorities(parents: Sequence[ParentRef]) -> None:
         if (
             parent.kind != "EvaluationRunManifest"
             or parent.role != "evaluation_run"
-            or parent.metadata.get("ref_schema_id")
-            != AUTHENTICATED_MANIFEST_REF_SCHEMA_ID
+            or parent.metadata.get("ref_schema_id") != AUTHENTICATED_MANIFEST_REF_SCHEMA_ID
             or parent.metadata.get("ref_schema_version")
             != AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION
             or not isinstance(manifest_sha256, str)
@@ -896,10 +904,9 @@ def _validate_publication_parent_authorities(
         if not path.is_file():
             raise ValueError("terminal consumer parent manifest is unavailable")
         manifest_bytes = path.read_bytes()
-        if (
-            parent.metadata["manifest_sha256"] != sha256_bytes(manifest_bytes)
-            or parent.metadata["size_bytes"] != len(manifest_bytes)
-        ):
+        if parent.metadata["manifest_sha256"] != sha256_bytes(manifest_bytes) or parent.metadata[
+            "size_bytes"
+        ] != len(manifest_bytes):
             raise ValueError("terminal consumer parent authority identity drifted")
 
 
@@ -913,8 +920,7 @@ def _acknowledgement_matches_declaration(
         and acknowledgement.terminal_analysis_type == declaration.terminal_analysis_type
         and canonical_json_bytes(acknowledgement.parameters)
         == canonical_json_bytes(declaration.parameters)
-        and acknowledgement.compact_product_schema_id
-        == declaration.compact_product_schema_id
+        and acknowledgement.compact_product_schema_id == declaration.compact_product_schema_id
         and acknowledgement.compact_product_schema_version
         == declaration.compact_product_schema_version
         and acknowledgement.compact_product_role == declaration.compact_product_role
@@ -951,9 +957,9 @@ __all__ = [
     "EvaluationBatchFinalizeInput",
     "EvaluationBatchMergeInput",
     "EvaluationBatchMergeState",
+    "EvaluationBatchConsumerRegistry",
     "compact_evaluation_batch",
     "merge_evaluation_batch_fragment",
     "publish_evaluation_compaction_products",
     "reclaim_evaluation_batch_caches",
-    "register_evaluation_batch_consumer",
 ]

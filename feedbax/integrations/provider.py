@@ -109,7 +109,9 @@ from feedbax.contracts.training import (
     LrScheduleSpec,
     TaskSpec,
     TrainingRunSpec,
+    TrainingMethodRegistry,
     TrainingSpec,
+    validate_training_run_spec_semantics,
 )
 from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
@@ -667,7 +669,9 @@ def provider_manifest() -> ProviderManifest:
             requires_review=True,
             description="Run a Feedbax evaluation spec and emit a durable evaluation manifest.",
             action="execute",
-            compatibility_predicates=["evaluation spec validates and input manifests are resolvable"],
+            compatibility_predicates=[
+                "evaluation spec validates and input manifests are resolvable"
+            ],
             mutates_state=True,
             may_launch_compute=True,
             artifact_roles=["trajectory_dataset", "evaluation_result", "manifest"],
@@ -914,10 +918,7 @@ def provider_manifest() -> ProviderManifest:
     )
 
 
-def component_registry_snapshot() -> RegistrySnapshot:
-    from feedbax.component_registry import ComponentRegistry
-
-    registry = ComponentRegistry()
+def component_registry_snapshot(registry: Any) -> RegistrySnapshot:
     entries: list[RegistryEntry] = []
     for definition in registry.list_all():
         entries.append(
@@ -930,9 +931,7 @@ def component_registry_snapshot() -> RegistrySnapshot:
                 package=definition.identity.package if definition.identity is not None else None,
                 provenance=definition.provenance,
                 provenance_kind=(
-                    definition.identity.provenance_kind
-                    if definition.identity is not None
-                    else None
+                    definition.identity.provenance_kind if definition.identity is not None else None
                 ),
                 component_type_id=definition.name,
                 param_schema_version=definition.param_schema_version,
@@ -1004,9 +1003,7 @@ def loss_registry_snapshot() -> RegistrySnapshot:
     )
 
 
-def analysis_registry_snapshot() -> RegistrySnapshot:
-    from feedbax.analysis.specs import registered_analysis_types
-
+def analysis_registry_snapshot(registry: Any) -> RegistrySnapshot:
     entries: list[RegistryEntry] = []
     entries.extend(
         RegistryEntry(
@@ -1015,7 +1012,7 @@ def analysis_registry_snapshot() -> RegistrySnapshot:
             category="Executable analysis recipe",
             description="Registered executable AnalysisRunSpec recipe.",
         )
-        for analysis_type in registered_analysis_types()
+        for analysis_type in registry.keys()
     )
     for module_info in pkgutil.iter_modules(analysis_pkg.__path__):
         if module_info.name.startswith("_"):
@@ -1032,12 +1029,10 @@ def analysis_registry_snapshot() -> RegistrySnapshot:
     return RegistrySnapshot(kind="analyses", entries=entries)
 
 
-def protocol_registry_snapshot() -> RegistrySnapshot:
-    from feedbax.plugins import EXPERIMENT_REGISTRY
-
+def protocol_registry_snapshot(experiment_registry: Any) -> RegistrySnapshot:
     entries: list[RegistryEntry] = []
-    for package_name in EXPERIMENT_REGISTRY.get_package_names():
-        metadata = EXPERIMENT_REGISTRY.get_package_metadata(package_name)
+    for package_name in experiment_registry.get_package_names():
+        metadata = experiment_registry.get_package_metadata(package_name)
         entries.extend(
             [
                 RegistryEntry(
@@ -1061,17 +1056,19 @@ def protocol_registry_snapshot() -> RegistrySnapshot:
     return RegistrySnapshot(kind="protocols", entries=entries)
 
 
-def registry_snapshot(kind: str) -> RegistrySnapshot:
+def registry_snapshot(
+    kind: str, *, component_registry: Any, experiment_registry: Any, analysis_registry: Any
+) -> RegistrySnapshot:
     if kind == "components":
-        return component_registry_snapshot()
+        return component_registry_snapshot(component_registry)
     if kind == "tasks":
         return task_registry_snapshot()
     if kind == "losses":
         return loss_registry_snapshot()
     if kind == "analyses":
-        return analysis_registry_snapshot()
+        return analysis_registry_snapshot(analysis_registry)
     if kind == "protocols":
-        return protocol_registry_snapshot()
+        return protocol_registry_snapshot(experiment_registry)
     raise ValueError(f"Unknown registry kind: {kind!r}")
 
 
@@ -1104,9 +1101,10 @@ def _schema_issues_to_provider(
     return errors, warnings
 
 
-def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidationResult:
+def validate_graph_spec(
+    payload: dict[str, Any] | GraphSpec, *, component_registry: Any
+) -> ProviderValidationResult:
     from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
-    from feedbax.component_registry import ComponentRegistry
 
     migration_records: list[ArtifactMigrationRecord] = []
     try:
@@ -1148,7 +1146,7 @@ def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidati
             migration_records=migration_records,
         )
 
-    registry = ComponentRegistry()
+    registry = component_registry
     errors: list[ValidationIssue] = []
     warnings: list[ValidationIssue] = []
 
@@ -1209,7 +1207,7 @@ def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidati
                     )
 
         graph_errors, graph_warnings = _schema_issues_to_provider(
-            validate_graph_connection_schema(graph, prefix)
+            validate_graph_connection_schema(graph, prefix, component_registry=component_registry)
         )
         errors.extend(graph_errors)
         warnings.extend(graph_warnings)
@@ -1255,6 +1253,8 @@ def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidati
 
 def validate_graph_spec_manifest(
     manifest: GraphSpecManifest | ModelArtifactManifest | dict[str, Any],
+    *,
+    component_registry: Any,
 ) -> ProviderValidationResult:
     if isinstance(manifest, dict):
         kind = manifest.get("kind")
@@ -1311,7 +1311,7 @@ def validate_graph_spec_manifest(
             migration_status="rejected",
         )
 
-    result = validate_graph_spec(load_result.payload)
+    result = validate_graph_spec(load_result.payload, component_registry=component_registry)
     if load_result.applied_migration_records:
         migration_status = "feedbax_migrated"
     elif load_result.downstream_migration_records:
@@ -1325,6 +1325,7 @@ def validate_graph_spec_manifest(
             "downstream_migration_records": load_result.downstream_migration_records,
         }
     )
+
 
 def _validate_loss_term(term: LossTermSpec, path: str) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
@@ -1366,6 +1367,7 @@ def validate_training_spec(
     *,
     graph_spec: Optional[dict[str, Any] | GraphSpec] = None,
     task_spec: Optional[dict[str, Any] | TaskSpec] = None,
+    component_registry: Any,
 ) -> ProviderValidationResult:
     try:
         spec = (
@@ -1404,7 +1406,7 @@ def validate_training_spec(
         )
     errors.extend(_validate_loss_term(spec.loss, "/loss"))
     if graph_spec is not None:
-        graph_result = validate_graph_spec(graph_spec)
+        graph_result = validate_graph_spec(graph_spec, component_registry=component_registry)
         errors.extend(graph_result.errors)
         warnings.extend(graph_result.warnings)
         if graph_result.valid:
@@ -1431,10 +1433,19 @@ def validate_training_spec(
     return ProviderValidationResult(valid=not errors, errors=errors, warnings=warnings)
 
 
-def validate_training_run_spec(payload: dict[str, Any] | TrainingRunSpec) -> ProviderValidationResult:
+def validate_training_run_spec(
+    payload: dict[str, Any] | TrainingRunSpec,
+    *,
+    method_registry: TrainingMethodRegistry,
+) -> ProviderValidationResult:
     """Validate the public governed training-run request contract."""
     try:
-        payload if isinstance(payload, TrainingRunSpec) else TrainingRunSpec.model_validate(payload)
+        spec = (
+            payload
+            if isinstance(payload, TrainingRunSpec)
+            else TrainingRunSpec.model_validate(payload)
+        )
+        validate_training_run_spec_semantics(spec, method_registry)
     except PydanticValidationError as exc:
         return ProviderValidationResult(valid=False, errors=_pydantic_errors(exc))
     except ValueError as exc:
@@ -1595,8 +1606,7 @@ def _validate_delayed_reaches_task_params(params: dict[str, Any]) -> list[Valida
                 ValidationIssue(
                     type="invalid_epoch_names",
                     message=(
-                        "DelayedReaches epoch_names length must equal "
-                        "len(epoch_len_ranges) + 1"
+                        "DelayedReaches epoch_names length must equal len(epoch_len_ranges) + 1"
                     ),
                     location={"path": "/params/epoch_names"},
                 )
@@ -1949,7 +1959,10 @@ def _analysis_data_product_mismatch(
             "wrong-checkpoint",
             "resolved analysis data product has the wrong checkpoint policy",
         )
-    if requirement.rollout_policy is not None and product.rollout_policy != requirement.rollout_policy:
+    if (
+        requirement.rollout_policy is not None
+        and product.rollout_policy != requirement.rollout_policy
+    ):
         return ("wrong-rollout", "resolved analysis data product has the wrong rollout policy")
     for key, expected in requirement.parameters.items():
         if product.parameters.get(key) != expected:
@@ -2067,6 +2080,8 @@ def validate_analysis_spec(
     *,
     graph_spec: Optional[dict[str, Any] | GraphSpec] = None,
     resolved_manifests: Optional[list[dict[str, Any] | AnalysisRunManifest]] = None,
+    component_registry: Any,
+    analysis_registry: Any,
 ) -> ProviderValidationResult:
     try:
         spec = (
@@ -2097,8 +2112,9 @@ def validate_analysis_spec(
                 location={"path": "/analysis_type"},
             )
         )
-    known = {entry.type_id for entry in analysis_registry_snapshot().entries} | {
-        entry.name for entry in analysis_registry_snapshot().entries
+    snapshot = analysis_registry_snapshot(analysis_registry)
+    known = {entry.type_id for entry in snapshot.entries} | {
+        entry.name for entry in snapshot.entries
     }
     if spec.analysis_type not in known:
         warnings.append(
@@ -2120,7 +2136,7 @@ def validate_analysis_spec(
             )
         )
     if graph_spec is not None:
-        graph_result = validate_graph_spec(graph_spec)
+        graph_result = validate_graph_spec(graph_spec, component_registry=component_registry)
         errors.extend(graph_result.errors)
         warnings.extend(graph_result.warnings)
         if graph_result.valid:
@@ -2272,21 +2288,33 @@ def validate_spec(
     payload: dict[str, Any],
     *,
     graph_spec: Optional[dict[str, Any]] = None,
+    component_registry: Any,
+    training_method_registry: TrainingMethodRegistry,
+    analysis_registry: Any,
 ) -> ProviderValidationResult:
     if kind == "graph":
-        return validate_graph_spec(payload)
+        return validate_graph_spec(payload, component_registry=component_registry)
     if kind in {"graph_manifest", "model_artifact_manifest"}:
-        return validate_graph_spec_manifest(payload)
+        return validate_graph_spec_manifest(payload, component_registry=component_registry)
     if kind == "training":
-        return validate_training_spec(payload, graph_spec=graph_spec)
+        return validate_training_spec(
+            payload,
+            graph_spec=graph_spec,
+            component_registry=component_registry,
+        )
     if kind == "training_run":
-        return validate_training_run_spec(payload)
+        return validate_training_run_spec(payload, method_registry=training_method_registry)
     if kind == "task":
         return validate_task_spec(payload)
     if kind == "evaluation":
         return validate_evaluation_spec(payload)
     if kind == "analysis":
-        return validate_analysis_spec(payload)
+        return validate_analysis_spec(
+            payload,
+            graph_spec=graph_spec,
+            component_registry=component_registry,
+            analysis_registry=analysis_registry,
+        )
     if kind == "report":
         return validate_report_spec(payload)
     if kind == "objective":

@@ -143,6 +143,7 @@ def _write_plugin(path: Path) -> None:
         from pydantic import BaseModel
         from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowLoweringResult
         from feedbax.contracts.training import ScheduleProjection, TrainingMethodDescriptor, TrainingMethodScheduleProjector, standard_supervised_method_contract, standard_supervised_update_kernels
+        from feedbax.plugins import FamilyRequirement, PluginDeclaration, PluginRegistration, ROW_LOWERERS, TRAINING_METHODS
         from feedbax.training.preparation import ExecutionPreparationResult
         from feedbax.training.row_lowering import TrainingRowLowererRegistration, training_row_lowerer_implementation_sha256
 
@@ -171,11 +172,18 @@ def _write_plugin(path: Path) -> None:
 
         LOWER_SHA256 = training_row_lowerer_implementation_sha256(lower)
 
-        def register_feedbax_training_methods(registry):
-            registry.register_descriptor(TrainingMethodDescriptor(method_ref={METHOD_REF!r}, payload_schema_id={METHOD_SCHEMA!r}, payload_schema_version={METHOD_VERSION!r}, payload_model=Payload, contract_compiler=compile_contract, update_kernels_factory=kernels, preparation_provider=prepare, schedule_projector=TrainingMethodScheduleProjector(projector_id="tests.golden.schedule_projection", projector_version="tests.golden.schedule_projection.v1", projector=project_schedules), optimizer_spec_projector=lambda payload: payload.optimizer, owner="golden", package="tests.golden"))
+        def register(context):
+            context.registry(TRAINING_METHODS).register_descriptor(TrainingMethodDescriptor(method_ref={METHOD_REF!r}, payload_schema_id={METHOD_SCHEMA!r}, payload_schema_version={METHOD_VERSION!r}, payload_model=Payload, contract_compiler=compile_contract, update_kernels_factory=kernels, preparation_provider=prepare, schedule_projector=TrainingMethodScheduleProjector(projector_id="tests.golden.schedule_projection", projector_version="tests.golden.schedule_projection.v1", projector=project_schedules), optimizer_spec_projector=lambda payload: payload.optimizer, owner="golden", package="tests.golden"))
+            context.registry(ROW_LOWERERS).register(TrainingRowLowererRegistration(authored_schema_id={AUTHORED_SCHEMA!r}, authored_schema_version={AUTHORED_VERSION!r}, lowerer_id={LOWERER_ID!r}, lowerer_version={LOWERER_VERSION!r}, implementation_sha256=LOWER_SHA256, lower=lower, owner="golden"))
 
-        def register_feedbax_training_row_lowerers(registry):
-            registry.register(TrainingRowLowererRegistration(authored_schema_id={AUTHORED_SCHEMA!r}, authored_schema_version={AUTHORED_VERSION!r}, lowerer_id={LOWERER_ID!r}, lowerer_version={LOWERER_VERSION!r}, implementation_sha256=LOWER_SHA256, lower=lower, owner="golden"))
+        PLUGIN_REGISTRATION = PluginRegistration(
+            PluginDeclaration(
+                "tests.golden",
+                "1.0",
+                families=(FamilyRequirement("training_methods"), FamilyRequirement("row_lowerers")),
+            ),
+            register,
+        )
     """).lstrip(),
         encoding="utf-8",
     )
@@ -212,9 +220,7 @@ def _canonical_run_spec(
             "-c",
             (
                 "import json, sys; "
-                "from feedbax.plugins import load_training_method_plugins; "
                 "from feedbax.contracts.training import TrainingRunSpec; "
-                "load_training_method_plugins(modules=['golden_plugin']); "
                 "print(TrainingRunSpec.model_validate(json.load(sys.stdin))"
                 ".model_dump_json(exclude_none=True))"
             ),
@@ -238,7 +244,7 @@ def test_golden_governed_path_restores_one_authenticated_continuation_batch(tmp_
         encoding="utf-8",
     )
     (tmp_path / "golden_plugin-1.0.dist-info" / "entry_points.txt").write_text(
-        "[feedbax.plugins]\ngolden = golden_plugin\n", encoding="utf-8"
+        "[feedbax.plugins]\ngolden = golden_plugin:PLUGIN_REGISTRATION\n", encoding="utf-8"
     )
     env = {
         **os.environ,
@@ -441,11 +447,11 @@ def test_golden_governed_path_restores_one_authenticated_continuation_batch(tmp_
     diagnostics = json.loads((row_dir / "training-diagnostics.json").read_text(encoding="utf-8"))
     assert diagnostics["segment_completed_batches"] == 1
     assert diagnostics["cumulative_completed_batches"] == 2
-    child_latest = json.loads(
-        (row_dir / "checkpoints" / "latest.json").read_text(encoding="utf-8")
-    )
+    child_latest = json.loads((row_dir / "checkpoints" / "latest.json").read_text(encoding="utf-8"))
     child_manifest = json.loads(
-        (row_dir / "checkpoints" / child_latest["manifest_relative_path"]).read_text(encoding="utf-8")
+        (row_dir / "checkpoints" / child_latest["manifest_relative_path"]).read_text(
+            encoding="utf-8"
+        )
     )
     assert child_manifest["parent_lineage"][0]["transaction_id"] == latest["transaction_id"]
 

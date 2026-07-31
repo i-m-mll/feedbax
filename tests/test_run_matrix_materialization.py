@@ -127,7 +127,8 @@ def test_apply_override_patches_append_via_numeric_index() -> None:
     base = {"items": [0, 1]}
 
     patched = apply_override_patches(
-        base, [{"path": "items.2", "op": "add", "value": 2}]  # type: ignore[list-item]
+        base,
+        [{"path": "items.2", "op": "add", "value": 2}],  # type: ignore[list-item]
     )
 
     assert patched == {"items": [0, 1, 2]}
@@ -138,7 +139,8 @@ def test_apply_override_patches_append_via_dash_token() -> None:
     base = {"items": [0, 1]}
 
     patched = apply_override_patches(
-        base, [{"path": "items.-", "op": "add", "value": 2}]  # type: ignore[list-item]
+        base,
+        [{"path": "items.-", "op": "add", "value": 2}],  # type: ignore[list-item]
     )
 
     assert patched == {"items": [0, 1, 2]}
@@ -177,7 +179,8 @@ def test_apply_override_patches_beyond_range_index_still_rejected() -> None:
 
     with pytest.raises(ValueError, match="items.5"):
         apply_override_patches(
-            base, [{"path": "items.5", "op": "add", "value": 2}]  # type: ignore[list-item]
+            base,
+            [{"path": "items.5", "op": "add", "value": 2}],  # type: ignore[list-item]
         )
 
 
@@ -185,7 +188,8 @@ def test_apply_override_patches_replace_and_remove_semantics_unchanged() -> None
     base = {"items": [0, 1, 2]}
 
     replaced = apply_override_patches(
-        base, [{"path": "items.1", "op": "replace", "value": 9}]  # type: ignore[list-item]
+        base,
+        [{"path": "items.1", "op": "replace", "value": 9}],  # type: ignore[list-item]
     )
     assert replaced == {"items": [0, 9, 2]}
 
@@ -263,9 +267,20 @@ def test_continuation_matrix_authoring_contract_worked_example() -> None:
 
 def test_materialize_explicit_rows_plans_stable_ids_and_writes_deterministic_bytes(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
-    materialized = materialize_run_matrix(_matrix(_training_run_payload()), repo_root=tmp_path)
-    second = materialize_run_matrix(_matrix(_training_run_payload()), repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        _matrix(_training_run_payload()),
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
+    second = materialize_run_matrix(
+        _matrix(_training_run_payload()),
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
 
     assert [row.row_id for row in materialized.rows] == ["lr_hi", "lr_lo"]
     assert materialized.rows[0].payload["training_config"]["learning_rate"] == 0.02
@@ -290,22 +305,28 @@ def test_materialize_explicit_rows_plans_stable_ids_and_writes_deterministic_byt
 
 def test_materialize_explicit_row_override_failure_names_row_and_violation(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     matrix = _matrix(_training_run_payload())
     broken_row = matrix.rows[0].model_copy(
         update={
-            "overrides": [
-                {"path": "training_config.missing_field", "op": "replace", "value": 1}
-            ]
+            "overrides": [{"path": "training_config.missing_field", "op": "replace", "value": 1}]
         }
     )
     matrix = matrix.model_copy(update={"rows": [broken_row, matrix.rows[1]]})
 
     with pytest.raises(RunMatrixError, match=r"/rows/lr_hi/overrides.*missing key/index"):
-        materialize_run_matrix(matrix, repo_root=tmp_path)
+        materialize_run_matrix(
+            matrix,
+            repo_root=tmp_path,
+            method_registry=application_registry_bundle.training_methods,
+            row_lowerer=application_registry_bundle.row_lowerers.lower,
+        )
 
 
-def test_materialize_sweep_mode_uses_shared_axes_and_coordinates(tmp_path: Path) -> None:
+def test_materialize_sweep_mode_uses_shared_axes_and_coordinates(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     payload = {
         "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
         "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
@@ -328,7 +349,12 @@ def test_materialize_sweep_mode_uses_shared_axes_and_coordinates(tmp_path: Path)
         "combination": {"mode": "zip"},
     }
 
-    materialized = materialize_run_matrix(payload, repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        payload,
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
 
     assert [row.payload["training_config"]["learning_rate"] for row in materialized.rows] == [
         0.1,
@@ -342,7 +368,9 @@ def test_materialize_sweep_mode_uses_shared_axes_and_coordinates(tmp_path: Path)
     assert materialized.run_set_manifest.axes.runs[1].values == {"lr": 0.01, "seed": 2}
 
 
-def test_derivations_and_base_ref_sha_pin_are_fail_closed(tmp_path: Path) -> None:
+def test_derivations_and_base_ref_sha_pin_are_fail_closed(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     source = tmp_path / "source.json"
     source.write_text(json.dumps({"lr": 0.03}), encoding="utf-8")
     base = tmp_path / "base.json"
@@ -369,16 +397,27 @@ def test_derivations_and_base_ref_sha_pin_are_fail_closed(tmp_path: Path) -> Non
         "rows": [{"row_id": "derived", "overrides": []}],
     }
 
-    materialized = materialize_run_matrix(payload, repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        payload,
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
     assert materialized.rows[0].payload["metadata"]["derived_learning_rate"] == 0.04
 
     payload["base"]["content_hash"] = "0" * 64
     with pytest.raises(RunMatrixError, match="canonical content hash mismatch"):
-        materialize_run_matrix(payload, repo_root=tmp_path)
+        materialize_run_matrix(
+            payload,
+            repo_root=tmp_path,
+            method_registry=application_registry_bundle.training_methods,
+            row_lowerer=application_registry_bundle.row_lowerers.lower,
+        )
 
 
 def test_derivations_use_each_delta_applied_row_and_preserve_authored_fields(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     payload = {
         "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
@@ -413,7 +452,12 @@ def test_derivations_use_each_delta_applied_row_and_preserve_authored_fields(
         ],
     }
 
-    materialized = materialize_run_matrix(payload, repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        payload,
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
 
     assert [row.payload["metadata"]["derived_learning_rate"] for row in materialized.rows] == [
         0.02,
@@ -423,15 +467,27 @@ def test_derivations_use_each_delta_applied_row_and_preserve_authored_fields(
 
     payload["base"]["inline"]["metadata"]["derived_learning_rate"] = 0.01
     with pytest.raises(RunMatrixError, match="cannot change authored non-null field"):
-        materialize_run_matrix(payload, repo_root=tmp_path)
+        materialize_run_matrix(
+            payload,
+            repo_root=tmp_path,
+            method_registry=application_registry_bundle.training_methods,
+            row_lowerer=application_registry_bundle.row_lowerers.lower,
+        )
 
     payload["base"]["inline"]["metadata"]["derived_learning_rate"] = None
     payload["derivations"][0]["query"] = {"item": "row", "path": "training_config.missing"}
     with pytest.raises(RunMatrixError, match="derivation failed"):
-        materialize_run_matrix(payload, repo_root=tmp_path)
+        materialize_run_matrix(
+            payload,
+            repo_root=tmp_path,
+            method_registry=application_registry_bundle.training_methods,
+            row_lowerer=application_registry_bundle.row_lowerers.lower,
+        )
 
 
-def test_v1_pretty_json_ref_verifies_legacy_raw_pin_then_materializes(tmp_path: Path) -> None:
+def test_v1_pretty_json_ref_verifies_legacy_raw_pin_then_materializes(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     base_payload = _training_run_payload()
     pretty_bytes = (json.dumps(base_payload, indent=2, sort_keys=False) + "\n").encode()
     (tmp_path / "pretty-base.json").write_bytes(pretty_bytes)
@@ -446,23 +502,39 @@ def test_v1_pretty_json_ref_verifies_legacy_raw_pin_then_materializes(tmp_path: 
         "rows": [{"row_id": "row", "overrides": []}],
     }
 
-    materialized = materialize_run_matrix(legacy, repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        legacy,
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
 
     assert materialized.rows[0].payload["training_config"]["n_batches"] == 2
 
 
-def test_spec_lock_render_includes_legacy_lr_phrase(tmp_path: Path) -> None:
+def test_spec_lock_render_includes_legacy_lr_phrase(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     matrix = _matrix(_training_run_payload())
-    materialized = materialize_run_matrix(matrix, repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        matrix,
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
 
-    rendered = render_spec_lock_table(matrix, materialized)
+    rendered = render_spec_lock_table(
+        matrix, materialized, method_registry=application_registry_bundle.training_methods
+    )
 
     assert "LR continuation schedule: continue" in rendered
     assert "training_config.learning_rate" in rendered
     assert "lr_hi" in rendered
 
 
-def test_spec_lock_renders_resolved_windows_for_every_active_schedule(tmp_path: Path) -> None:
+def test_spec_lock_renders_resolved_windows_for_every_active_schedule(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     payload = _training_run_payload()
     payload["method_payload"]["payload"]["optimizer"]["lr_schedule"] = {
         "kind": "warmup_cosine",
@@ -472,7 +544,12 @@ def test_spec_lock_renders_resolved_windows_for_every_active_schedule(tmp_path: 
         "origin": {"kind": "segment_start"},
     }
     matrix = _matrix(payload)
-    materialized = materialize_run_matrix(matrix, repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        matrix,
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
     lineages = {
         row.row_id: CheckpointSegmentLineage(
             start_batch=12_000,
@@ -482,7 +559,12 @@ def test_spec_lock_renders_resolved_windows_for_every_active_schedule(tmp_path: 
         for row in materialized.rows
     }
 
-    rendered = render_spec_lock_table(matrix, materialized, segment_lineages=lineages)
+    rendered = render_spec_lock_table(
+        matrix,
+        materialized,
+        segment_lineages=lineages,
+        method_registry=application_registry_bundle.training_methods,
+    )
 
     assert "lr_hi LR schedule: batches 12,000 -> 13,000" in rendered
     assert "lr_lo LR schedule: batches 12,000 -> 13,000" in rendered

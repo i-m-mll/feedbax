@@ -6,6 +6,7 @@ import importlib
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import plotly.graph_objects as go
@@ -13,7 +14,6 @@ import plotly.io as pio
 import pytest
 from pydantic import ValidationError
 
-import feedbax.plugins
 from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.figures import (
     FIGURE_RENDER_MEDIA_TYPES,
@@ -53,6 +53,7 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.plot.constructors import (
+    FigureRegistry,
     PanelContent,
     constructor_catalog,
     get_figure_constructor,
@@ -64,11 +65,23 @@ from feedbax.plot.constructors import (
     register_figure_constructor,
     register_figure_template,
     registered_figure_constructors,
+    register_default_figure_constructors,
 )
 from feedbax.plugins.registry import ExperimentRegistry
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
 pytestmark = [pytest.mark.feedbax_contract]
+
+
+def _figure_registry() -> FigureRegistry:
+    registry = FigureRegistry()
+    register_default_figure_constructors(registry)
+    return registry
+
+
+@pytest.fixture
+def figure_registry() -> FigureRegistry:
+    return _figure_registry()
 
 
 def _plotly_array_values(value: object) -> list[float]:
@@ -222,26 +235,31 @@ def test_perturbation_timing_schema_identity_rejects_old_versions() -> None:
 
 
 def test_constructor_registry_validates_tiers_and_duplicates() -> None:
-    keys = {item.key for item in registered_figure_constructors()}
+    registry = _figure_registry()
+    keys = {item.key for item in registered_figure_constructors(registry=registry)}
     assert "feedbax.profile_band" in keys
-    assert get_figure_constructor("feedbax.profile_band", tier="trace").tier == "trace"
+    assert (
+        get_figure_constructor("feedbax.profile_band", tier="trace", registry=registry).tier
+        == "trace"
+    )
 
     with pytest.raises(ValueError, match="expected 'panel'"):
-        get_figure_constructor("feedbax.profile_band", tier="panel")
+        get_figure_constructor("feedbax.profile_band", tier="panel", registry=registry)
 
     def trace(_data, _params):
         return []
 
     register_figure_constructor(
         "feedbax.test_trace",
+        registry=registry,
         tier="trace",
         constructor=trace,
         description="test trace",
-        replace=True,
     )
     with pytest.raises(ValueError, match="already registered"):
         register_figure_constructor(
             "feedbax.test_trace",
+            registry=registry,
             tier="trace",
             constructor=trace,
             description="test trace",
@@ -255,7 +273,10 @@ def test_constructor_versions_are_reported_in_catalog_and_manifest(tmp_path: Pat
         "feedbax.comparison_grid": "v5",
         "feedbax.grid_figure": "v5",
     }
-    catalog_versions = {item["key"]: item["version"] for item in constructor_catalog()}
+    registry = _figure_registry()
+    catalog_versions = {
+        item["key"]: item["version"] for item in constructor_catalog(registry=registry)
+    }
     assert {key: catalog_versions[key] for key in expected} == expected
 
     spec = FigureSpec(
@@ -274,8 +295,25 @@ def test_constructor_versions_are_reported_in_catalog_and_manifest(tmp_path: Pat
             ),
         ],
     )
-    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=registry)
     assert manifest.constructor_versions == expected
+
+
+def test_figure_cli_lists_bootstrapped_constructors(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from feedbax.bin import figure as figure_cli
+
+    registry = _figure_registry()
+
+    async def compose_application(**_kwargs):
+        return SimpleNamespace(bundle=SimpleNamespace(figures=registry))
+
+    monkeypatch.setattr(figure_cli, "compose_application", compose_application)
+    assert figure_cli.main(["list", "constructors"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert any(item["key"] == "feedbax.grid_figure" for item in payload)
 
 
 @pytest.mark.parametrize(
@@ -287,21 +325,29 @@ def test_constructor_versions_are_reported_in_catalog_and_manifest(tmp_path: Pat
         ("show_band", False),
     ],
 )
-def test_profile_band_only_params_are_scoped_to_profile_band(key: str, value: object) -> None:
-    band = get_figure_constructor("feedbax.profile_band", tier="trace")
-    curves = get_figure_constructor("feedbax.profile_curves", tier="trace")
+def test_profile_band_only_params_are_scoped_to_profile_band(
+    key: str, value: object, figure_registry
+) -> None:
+    band = get_figure_constructor("feedbax.profile_band", tier="trace", registry=figure_registry)
+    curves = get_figure_constructor(
+        "feedbax.profile_curves", tier="trace", registry=figure_registry
+    )
 
     assert getattr(band.params({key: value}), key) == value
     with pytest.raises(ValidationError, match=key):
         curves.params({key: value})
 
 
-def test_profile_band_uses_supplied_statistics_without_touching_raw_samples() -> None:
+def test_profile_band_uses_supplied_statistics_without_touching_raw_samples(
+    figure_registry,
+) -> None:
     class ExplosiveRawSamples:
         def __array__(self, *_args, **_kwargs):
             raise AssertionError("raw samples were evaluated")
 
-    constructor = get_figure_constructor("feedbax.profile_band", tier="trace")
+    constructor = get_figure_constructor(
+        "feedbax.profile_band", tier="trace", registry=figure_registry
+    )
     params = constructor.params({"error_bars_alpha": 0.6, "n_std_plot": 2.0})
     derived = {"mean": [2.0, 4.0, 6.0], "std": [0.5, 1.0, 1.5]}
 
@@ -314,8 +360,10 @@ def test_profile_band_uses_supplied_statistics_without_touching_raw_samples() ->
         assert traces[2].fillcolor == "rgba(31,119,180, 0.6)"
 
 
-def test_profile_band_raw_samples_preserve_statistics_and_alpha_scaling() -> None:
-    constructor = get_figure_constructor("feedbax.profile_band", tier="trace")
+def test_profile_band_raw_samples_preserve_statistics_and_alpha_scaling(figure_registry) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.profile_band", tier="trace", registry=figure_registry
+    )
     params = constructor.params({"error_bars_alpha": 0.8, "n_std_plot": 2.0})
     samples = np.array(
         [
@@ -341,7 +389,9 @@ def test_profile_band_raw_samples_preserve_statistics_and_alpha_scaling() -> Non
     assert single_traces[2].fillcolor == "rgba(31,119,180, 0.8)"
 
 
-def test_profile_band_applies_mean_style_and_can_suppress_band(tmp_path: Path) -> None:
+def test_profile_band_applies_mean_style_and_can_suppress_band(
+    tmp_path: Path, figure_registry
+) -> None:
     spec = FigureSpec(
         name="styled-mean-only-profile",
         assembler="feedbax.grid_figure",
@@ -360,7 +410,7 @@ def test_profile_band_applies_mean_style_and_can_suppress_band(tmp_path: Path) -
         ],
     )
 
-    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
     rendered = figure_manifest_plotly_json(manifest)
 
     assert rendered is not None
@@ -377,22 +427,28 @@ def test_profile_band_applies_mean_style_and_can_suppress_band(tmp_path: Path) -
         {"std": [0.1, 0.2]},
     ],
 )
-def test_profile_band_rejects_partial_derived_statistics(data) -> None:
-    constructor = get_figure_constructor("feedbax.profile_band", tier="trace")
+def test_profile_band_rejects_partial_derived_statistics(data, figure_registry) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.profile_band", tier="trace", registry=figure_registry
+    )
 
     with pytest.raises(ValueError, match="requires both 'mean' and 'std'"):
         constructor.callable(data, constructor.params())
 
 
-def test_profile_band_rejects_missing_statistics_and_samples() -> None:
-    constructor = get_figure_constructor("feedbax.profile_band", tier="trace")
+def test_profile_band_rejects_missing_statistics_and_samples(figure_registry) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.profile_band", tier="trace", registry=figure_registry
+    )
 
     with pytest.raises(ValueError, match="or raw 'y'/'values' samples"):
         constructor.callable({}, constructor.params())
 
 
-def test_profile_band_rejects_invalid_plotly_dash() -> None:
-    constructor = get_figure_constructor("feedbax.profile_band", tier="trace")
+def test_profile_band_rejects_invalid_plotly_dash(figure_registry) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.profile_band", tier="trace", registry=figure_registry
+    )
 
     with pytest.raises(ValueError, match="dash"):
         constructor.callable(
@@ -429,7 +485,7 @@ def test_execute_figure_spec_records_optional_omission_and_custody(tmp_path: Pat
         ],
     )
 
-    figure_manifest, path = execute_figure_spec(spec, root=tmp_path)
+    figure_manifest, path = execute_figure_spec(spec, root=tmp_path, registry=_figure_registry())
     loaded = load_manifest(path)
     assert loaded == figure_manifest
     assert figure_manifest.kind == "FigureManifest"
@@ -457,6 +513,7 @@ def test_execute_figure_spec_labels_render_artifact_with_written_media_type(
     monkeypatch: pytest.MonkeyPatch,
     render_format: str,
     expected_media_type: str,
+    figure_registry,
 ) -> None:
     """The stored render artifact carries the media type of the format actually written."""
 
@@ -485,12 +542,11 @@ def test_execute_figure_spec_labels_render_artifact_with_written_media_type(
         figure_routing={"render_format": render_format},
     )
 
-    figure_manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    figure_manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
     renders = [
         artifact
         for artifact in figure_manifest.artifacts
-        if artifact.role == FIGURE_RENDER_ROLE
-        and artifact.metadata.get("format") == render_format
+        if artifact.role == FIGURE_RENDER_ROLE and artifact.metadata.get("format") == render_format
     ]
 
     assert len(renders) == 1
@@ -499,7 +555,9 @@ def test_execute_figure_spec_labels_render_artifact_with_written_media_type(
     assert figure_manifest_plotly_json(figure_manifest) is not None
 
 
-def test_execute_figure_spec_routes_panel_and_figure_assembler_params(tmp_path: Path) -> None:
+def test_execute_figure_spec_routes_panel_and_figure_assembler_params(
+    tmp_path: Path, figure_registry
+) -> None:
     spec = FigureSpec(
         name="routed-assembler-params",
         assembler="feedbax.grid_figure",
@@ -531,7 +589,7 @@ def test_execute_figure_spec_routes_panel_and_figure_assembler_params(tmp_path: 
         ],
     )
 
-    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
     rendered = figure_manifest_plotly_json(manifest)
 
     assert rendered is not None
@@ -545,7 +603,9 @@ def test_execute_figure_spec_routes_panel_and_figure_assembler_params(tmp_path: 
     assert "matches" not in layout["yaxis2"]
 
 
-def test_execute_figure_spec_emits_panel_axes_and_figure_chrome(tmp_path: Path) -> None:
+def test_execute_figure_spec_emits_panel_axes_and_figure_chrome(
+    tmp_path: Path, figure_registry
+) -> None:
     spec = FigureSpec(
         name="panel-axes-and-figure-chrome",
         assembler="feedbax.grid_figure",
@@ -578,7 +638,7 @@ def test_execute_figure_spec_emits_panel_axes_and_figure_chrome(tmp_path: Path) 
         ],
     )
 
-    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
     rendered = figure_manifest_plotly_json(manifest)
 
     assert rendered is not None
@@ -613,17 +673,25 @@ def test_execute_figure_spec_emits_panel_axes_and_figure_chrome(tmp_path: Path) 
         ({"margin": {"top": 10}}, "margin.top"),
     ],
 )
-def test_grid_figure_rejects_invalid_typed_chrome(params, match: str) -> None:
-    constructor = get_figure_constructor("feedbax.grid_figure", tier="figure")
+def test_grid_figure_rejects_invalid_typed_chrome(params, match: str, figure_registry) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.grid_figure", tier="figure", registry=figure_registry
+    )
 
     with pytest.raises(ValidationError, match=match):
         constructor.params(params)
 
 
 @pytest.mark.parametrize(("params", "present"), [({}, False), ({"hovermode": False}, True)])
-def test_grid_figure_distinguishes_omitted_and_false_hovermode(params, present: bool) -> None:
-    panel_constructor = get_figure_constructor("feedbax.comparison_grid", tier="panel")
-    figure_constructor = get_figure_constructor("feedbax.grid_figure", tier="figure")
+def test_grid_figure_distinguishes_omitted_and_false_hovermode(
+    params, present: bool, figure_registry
+) -> None:
+    panel_constructor = get_figure_constructor(
+        "feedbax.comparison_grid", tier="panel", registry=figure_registry
+    )
+    figure_constructor = get_figure_constructor(
+        "feedbax.grid_figure", tier="figure", registry=figure_registry
+    )
     fig = panel_constructor.callable([], panel_constructor.params())
 
     rendered = figure_constructor.callable(
@@ -669,8 +737,7 @@ def test_equal_data_aspect_has_explicit_schema_identity() -> None:
     assert aspect.schema_version == EQUAL_DATA_ASPECT_SCHEMA_VERSION
     assert aspect.ratio == 1
     assert (
-        default_spec_registry.current_version("EqualDataAspect")
-        == EQUAL_DATA_ASPECT_SCHEMA_VERSION
+        default_spec_registry.current_version("EqualDataAspect") == EQUAL_DATA_ASPECT_SCHEMA_VERSION
     )
 
     with pytest.raises(ValidationError, match="unsupported EqualDataAspect schema_version"):
@@ -689,7 +756,9 @@ def test_equal_data_aspect_has_explicit_schema_identity() -> None:
         )
 
 
-def test_equal_data_aspect_renders_exactly_in_placed_grid_panel(tmp_path: Path) -> None:
+def test_equal_data_aspect_renders_exactly_in_placed_grid_panel(
+    tmp_path: Path, figure_registry
+) -> None:
     spec = FigureSpec(
         name="placed-equal-data-aspect",
         assembler="feedbax.grid_figure",
@@ -705,7 +774,7 @@ def test_equal_data_aspect_renders_exactly_in_placed_grid_panel(tmp_path: Path) 
         ],
     )
 
-    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
     rendered = figure_manifest_plotly_json(manifest)
 
     assert rendered is not None
@@ -741,6 +810,7 @@ def test_equal_data_aspect_rejects_inconsistent_axis_declaration() -> None:
 def test_equal_data_aspect_rejects_shared_y_axis(
     tmp_path: Path,
     aspect_col: int,
+    figure_registry,
 ) -> None:
     spec = FigureSpec(
         name="shared-y-equal-data-aspect",
@@ -757,7 +827,7 @@ def test_equal_data_aspect_rejects_shared_y_axis(
     )
 
     with pytest.raises(FigureSpecExecutionError) as exc_info:
-        execute_figure_spec(spec, root=tmp_path)
+        execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
 
     assert "cannot constrain shared axes" in exc_info.value.manifest.failure["message"]
     assert exc_info.value.manifest.artifacts == []
@@ -768,6 +838,7 @@ def test_equal_data_aspect_rejects_shared_y_axis(
 def test_equal_data_aspect_rejects_shared_x_axis(
     tmp_path: Path,
     aspect_row: int,
+    figure_registry,
 ) -> None:
     spec = FigureSpec(
         name="shared-x-equal-data-aspect",
@@ -785,7 +856,7 @@ def test_equal_data_aspect_rejects_shared_x_axis(
     )
 
     with pytest.raises(FigureSpecExecutionError) as exc_info:
-        execute_figure_spec(spec, root=tmp_path)
+        execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
 
     assert "cannot constrain shared axes" in exc_info.value.manifest.failure["message"]
     assert "['x']" in exc_info.value.manifest.failure["message"]
@@ -793,13 +864,13 @@ def test_equal_data_aspect_rejects_shared_x_axis(
     assert not (tmp_path / "figures").exists()
 
 
-def test_equal_data_aspect_rejects_unsupported_assembler(tmp_path: Path) -> None:
+def test_equal_data_aspect_rejects_unsupported_assembler(tmp_path: Path, figure_registry) -> None:
     register_figure_constructor(
         "feedbax.test_custom_figure_without_panel_aspect",
         tier="custom_figure",
         constructor=lambda _items, _params: go.Figure(),
         description="Custom figure without panel aspect support.",
-        replace=True,
+        registry=figure_registry,
     )
     spec = FigureSpec(
         name="unsupported-equal-data-aspect",
@@ -808,14 +879,16 @@ def test_equal_data_aspect_rejects_unsupported_assembler(tmp_path: Path) -> None
     )
 
     with pytest.raises(FigureSpecExecutionError) as exc_info:
-        execute_figure_spec(spec, root=tmp_path)
+        execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
 
     assert "requires a registered panel assembler" in exc_info.value.manifest.failure["message"]
     assert exc_info.value.manifest.artifacts == []
     assert not (tmp_path / "figures").exists()
 
 
-def test_panel_only_assembler_params_preserve_constructor_payload(tmp_path: Path) -> None:
+def test_panel_only_assembler_params_preserve_constructor_payload(
+    tmp_path: Path, figure_registry
+) -> None:
     spec = FigureSpec(
         name="panel-only-assembler-params",
         assembler="feedbax.grid_figure",
@@ -826,15 +899,19 @@ def test_panel_only_assembler_params_preserve_constructor_payload(tmp_path: Path
         ],
     )
 
-    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
     rendered = figure_manifest_plotly_json(manifest)
 
     panel_contents = [
         PanelContent(name="left", row=1, col=1),
         PanelContent(name="right", row=1, col=2),
     ]
-    panel_registration = get_figure_constructor("feedbax.comparison_grid", tier="panel")
-    figure_registration = get_figure_constructor("feedbax.grid_figure", tier="figure")
+    panel_registration = get_figure_constructor(
+        "feedbax.comparison_grid", tier="panel", registry=figure_registry
+    )
+    figure_registration = get_figure_constructor(
+        "feedbax.grid_figure", tier="figure", registry=figure_registry
+    )
     expected = panel_registration.callable(
         panel_contents,
         panel_registration.params(spec.assembler_params),
@@ -851,6 +928,7 @@ def test_panel_only_assembler_params_preserve_constructor_payload(tmp_path: Path
 
 def test_execute_figure_spec_rejects_unowned_assembler_param_without_render(
     tmp_path: Path,
+    figure_registry,
 ) -> None:
     spec = FigureSpec(
         name="unknown-assembler-param",
@@ -859,7 +937,7 @@ def test_execute_figure_spec_rejects_unowned_assembler_param_without_render(
     )
 
     with pytest.raises(FigureSpecExecutionError) as exc_info:
-        execute_figure_spec(spec, root=tmp_path)
+        execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
 
     assert exc_info.value.manifest.status == "failed"
     assert exc_info.value.manifest.artifacts == []
@@ -869,6 +947,7 @@ def test_execute_figure_spec_rejects_unowned_assembler_param_without_render(
 
 def test_execute_figure_spec_rejects_assembler_param_owned_by_both_models(
     tmp_path: Path,
+    figure_registry,
 ) -> None:
     class AmbiguousPanelParams(StrictModel):
         shared_setting: str | None = None
@@ -877,15 +956,17 @@ def test_execute_figure_spec_rejects_assembler_param_owned_by_both_models(
         panel_constructor: str = "feedbax.test_ambiguous_panel"
         shared_setting: str | None = None
 
-    panel = get_figure_constructor("feedbax.comparison_grid", tier="panel")
-    figure = get_figure_constructor("feedbax.grid_figure", tier="figure")
+    panel = get_figure_constructor(
+        "feedbax.comparison_grid", tier="panel", registry=figure_registry
+    )
+    figure = get_figure_constructor("feedbax.grid_figure", tier="figure", registry=figure_registry)
     register_figure_constructor(
         "feedbax.test_ambiguous_panel",
         tier="panel",
         constructor=panel.callable,
         params_model=AmbiguousPanelParams,
         description="Panel constructor with an intentionally ambiguous parameter.",
-        replace=True,
+        registry=figure_registry,
     )
     register_figure_constructor(
         "feedbax.test_ambiguous_figure",
@@ -893,7 +974,7 @@ def test_execute_figure_spec_rejects_assembler_param_owned_by_both_models(
         constructor=figure.callable,
         params_model=AmbiguousFigureParams,
         description="Figure constructor with an intentionally ambiguous parameter.",
-        replace=True,
+        registry=figure_registry,
     )
     spec = FigureSpec(
         name="ambiguous-assembler-param",
@@ -905,7 +986,7 @@ def test_execute_figure_spec_rejects_assembler_param_owned_by_both_models(
     )
 
     with pytest.raises(FigureSpecExecutionError) as exc_info:
-        execute_figure_spec(spec, root=tmp_path)
+        execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
 
     assert exc_info.value.manifest.status == "failed"
     assert exc_info.value.manifest.artifacts == []
@@ -917,6 +998,7 @@ def test_execute_figure_spec_rejects_assembler_param_owned_by_both_models(
 def test_existing_panel_only_spec_preserves_rendered_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    figure_registry,
 ) -> None:
     monkeypatch.setattr(pio.templates, "default", "plotly_white")
     spec = FigureSpec(
@@ -931,7 +1013,7 @@ def test_existing_panel_only_spec_preserves_rendered_payload(
         ],
     )
 
-    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
     rendered = figure_manifest_plotly_json(manifest)
 
     assert rendered is not None
@@ -940,7 +1022,9 @@ def test_existing_panel_only_spec_preserves_rendered_payload(
     )
 
 
-def test_execute_figure_spec_required_absence_fails_with_manifest(tmp_path: Path) -> None:
+def test_execute_figure_spec_required_absence_fails_with_manifest(
+    tmp_path: Path, figure_registry
+) -> None:
     manifest = _analysis_manifest(tmp_path)
     spec = FigureSpec(
         name="profile-required-missing",
@@ -956,12 +1040,14 @@ def test_execute_figure_spec_required_absence_fails_with_manifest(tmp_path: Path
         ],
     )
     with pytest.raises(FigureSpecExecutionError) as exc_info:
-        execute_figure_spec(spec, root=tmp_path)
+        execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
     assert exc_info.value.manifest.status == "failed"
     assert exc_info.value.manifest.failure["type"] == "ExpressionPathMissing"
 
 
-def test_execute_figure_spec_fans_per_facet_binding_out_to_panels(tmp_path: Path) -> None:
+def test_execute_figure_spec_fans_per_facet_binding_out_to_panels(
+    tmp_path: Path, figure_registry
+) -> None:
     manifest = _analysis_manifest(tmp_path)
     register_figure_template(
         FigureTemplate(
@@ -978,7 +1064,7 @@ def test_execute_figure_spec_fans_per_facet_binding_out_to_panels(tmp_path: Path
             facet_by=["condition"],
             facet_target="panels",
         ),
-        replace=True,
+        registry=figure_registry,
     )
     spec = FigureSpec(
         name="faceted-panels",
@@ -1006,7 +1092,7 @@ def test_execute_figure_spec_fans_per_facet_binding_out_to_panels(tmp_path: Path
         },
     )
 
-    figure_manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    figure_manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
     rendered = figure_manifest_plotly_json(figure_manifest)
 
     assert rendered is not None
@@ -1032,7 +1118,9 @@ def test_execute_figure_spec_fans_per_facet_binding_out_to_panels(tmp_path: Path
     ]
 
 
-def test_execute_figure_spec_fans_facets_out_to_separate_renders(tmp_path: Path) -> None:
+def test_execute_figure_spec_fans_facets_out_to_separate_renders(
+    tmp_path: Path, figure_registry
+) -> None:
     manifest = _analysis_manifest(tmp_path)
     register_figure_template(
         FigureTemplate(
@@ -1049,7 +1137,7 @@ def test_execute_figure_spec_fans_facets_out_to_separate_renders(tmp_path: Path)
             facet_by=["condition"],
             facet_target="figures",
         ),
-        replace=True,
+        registry=figure_registry,
     )
     spec = FigureSpec(
         name="faceted-figures",
@@ -1065,7 +1153,7 @@ def test_execute_figure_spec_fans_facets_out_to_separate_renders(tmp_path: Path)
         facet_bindings={"condition": {"item": "analysis", "path": "metadata.x"}},
     )
 
-    figure_manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    figure_manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
     plotly_artifacts = [
         artifact
         for artifact in figure_manifest.artifacts
@@ -1079,7 +1167,7 @@ def test_execute_figure_spec_fans_facets_out_to_separate_renders(tmp_path: Path)
     ]
 
 
-def test_artifact_backed_piece_supplies_trace_data(tmp_path: Path) -> None:
+def test_artifact_backed_piece_supplies_trace_data(tmp_path: Path, figure_registry) -> None:
     piece_payload = tmp_path / "piece.json"
     piece_payload.write_text(
         json.dumps({"payload": {"x": [0, 1, 2], "y": [[1, 2, 3], [2, 3, 4]]}}),
@@ -1100,14 +1188,14 @@ def test_artifact_backed_piece_supplies_trace_data(tmp_path: Path) -> None:
             constructor="feedbax.profile_band",
             style={"color": "rgb(31,119,180)"},
         ),
-        replace=True,
+        registry=figure_registry,
     )
     spec = FigureSpec(
         name="piece-demo",
         assembler="feedbax.grid_figure",
         pieces=["feedbax.test_piece"],
     )
-    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
     rendered = figure_manifest_plotly_json(manifest)
 
     assert manifest.status == "completed"
@@ -1118,7 +1206,9 @@ def test_artifact_backed_piece_supplies_trace_data(tmp_path: Path) -> None:
     assert _plotly_array_values(rendered["data"][0]["y"]) == [1.5, 2.5, 3.5]
 
 
-def test_canonical_artifact_backed_piece_supplies_exact_trace_data(tmp_path: Path) -> None:
+def test_canonical_artifact_backed_piece_supplies_exact_trace_data(
+    tmp_path: Path, figure_registry
+) -> None:
     payload = {"payload": {"x": [10, 20, 30], "y": [[4, 5, 6], [7, 8, 9]]}}
     expected_bytes = json.dumps(payload, indent=2, sort_keys=True).encode() + b"\n"
     context = AnalysisRunContext(
@@ -1140,7 +1230,7 @@ def test_canonical_artifact_backed_piece_supplies_exact_trace_data(tmp_path: Pat
             label="Canonical piece",
             constructor="feedbax.profile_band",
         ),
-        replace=True,
+        registry=figure_registry,
     )
     spec = FigureSpec(
         name="canonical-piece-demo",
@@ -1148,7 +1238,7 @@ def test_canonical_artifact_backed_piece_supplies_exact_trace_data(tmp_path: Pat
         pieces=["feedbax.test_canonical_piece"],
     )
 
-    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
     rendered = figure_manifest_plotly_json(manifest)
 
     assert artifact.uri == artifact.artifact_id
@@ -1159,8 +1249,10 @@ def test_canonical_artifact_backed_piece_supplies_exact_trace_data(tmp_path: Pat
     assert _plotly_array_values(rendered["data"][0]["y"]) == [5.5, 6.5, 7.5]
 
 
-def test_endpoint_markers_derive_curved_reach_guides_from_trajectory() -> None:
-    endpoint_constructor = get_figure_constructor("feedbax.endpoint_markers", tier="trace")
+def test_endpoint_markers_derive_curved_reach_guides_from_trajectory(figure_registry) -> None:
+    endpoint_constructor = get_figure_constructor(
+        "feedbax.endpoint_markers", tier="trace", registry=figure_registry
+    )
     assert endpoint_constructor.version == "v3"
     curved = [[[2, 3], [3, 7], [5, 8]]]
     endpoint_traces = endpoint_constructor.callable(
@@ -1173,8 +1265,10 @@ def test_endpoint_markers_derive_curved_reach_guides_from_trajectory() -> None:
     assert list(endpoint_traces[1].y) == [3, 8]
 
 
-def test_scalar_scatter_draws_markers_only_with_symmetric_error_bars() -> None:
-    constructor = get_figure_constructor("feedbax.scalar_scatter", tier="trace")
+def test_scalar_scatter_draws_markers_only_with_symmetric_error_bars(figure_registry) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.scalar_scatter", tier="trace", registry=figure_registry
+    )
     traces = constructor.callable(
         {"x": [0.0, 0.25, 0.5], "y": [1.0, 2.0, 1.5], "y_err": [0.1, 0.2, 0.15]},
         constructor.params({"marker_symbol": "square", "marker_size": 10.0, "color": "red"}),
@@ -1194,8 +1288,10 @@ def test_scalar_scatter_draws_markers_only_with_symmetric_error_bars() -> None:
     assert trace.error_y.color == "red"
 
 
-def test_scalar_scatter_omits_error_bars_when_no_y_err() -> None:
-    constructor = get_figure_constructor("feedbax.scalar_scatter", tier="trace")
+def test_scalar_scatter_omits_error_bars_when_no_y_err(figure_registry) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.scalar_scatter", tier="trace", registry=figure_registry
+    )
     traces = constructor.callable({"x": [0, 1], "y": [3.0, 4.0]}, constructor.params())
     assert traces[0].error_y.array is None
     assert traces[0].mode == "markers"
@@ -1209,13 +1305,17 @@ def test_scalar_scatter_omits_error_bars_when_no_y_err() -> None:
         ({"y": [1.0, 2.0]}, "requires both 'x' and 'y'"),
     ],
 )
-def test_scalar_scatter_fails_closed_on_mismatched_lengths(data, match: str) -> None:
-    constructor = get_figure_constructor("feedbax.scalar_scatter", tier="trace")
+def test_scalar_scatter_fails_closed_on_mismatched_lengths(
+    data, match: str, figure_registry
+) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.scalar_scatter", tier="trace", registry=figure_registry
+    )
     with pytest.raises(ValueError, match=match):
         constructor.callable(data, constructor.params())
 
 
-def test_scalar_scatter_renders_through_figure_spec(tmp_path: Path) -> None:
+def test_scalar_scatter_renders_through_figure_spec(tmp_path: Path, figure_registry) -> None:
     spec = FigureSpec(
         name="scalar-scatter-demo",
         assembler="feedbax.grid_figure",
@@ -1227,7 +1327,7 @@ def test_scalar_scatter_renders_through_figure_spec(tmp_path: Path) -> None:
             )
         ],
     )
-    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
     rendered = figure_manifest_plotly_json(manifest)
     assert rendered is not None
     assert rendered["data"][0]["mode"] == "markers"
@@ -1235,17 +1335,19 @@ def test_scalar_scatter_renders_through_figure_spec(tmp_path: Path) -> None:
     assert _plotly_array_values(rendered["data"][0]["error_y"]["array"]) == [0.1, 0.2, 0.15]
 
 
-def test_hline_and_vrect_emit_plotly_shapes() -> None:
-    hline = get_figure_constructor("feedbax.hline", tier="trace")
+def test_hline_and_vrect_emit_plotly_shapes(figure_registry) -> None:
+    hline = get_figure_constructor("feedbax.hline", tier="trace", registry=figure_registry)
     hline_shapes = hline.callable({"y": 2.5}, hline.params())
     assert hline_shapes[0].type == "line"
     assert hline_shapes[0].y0 == hline_shapes[0].y1 == 2.5
 
-    vrect = get_figure_constructor("feedbax.vrect", tier="trace")
+    vrect = get_figure_constructor("feedbax.vrect", tier="trace", registry=figure_registry)
     vrect_shapes = vrect.callable({"x0": 4, "x1": 7}, vrect.params())
     assert vrect_shapes[0].type == "rect"
     assert (vrect_shapes[0].x0, vrect_shapes[0].x1) == (4, 7)
-    panel = get_figure_constructor("feedbax.comparison_grid", tier="panel")
+    panel = get_figure_constructor(
+        "feedbax.comparison_grid", tier="panel", registry=figure_registry
+    )
     annotated = panel.callable(
         [PanelContent(name="annotations", traces=(*hline_shapes, *vrect_shapes))],
         panel.params(),
@@ -1285,8 +1387,9 @@ def test_vrect_derives_perturbation_marker_from_authored_timing(
     expected_type: str,
     expected_x0: float,
     expected_x1: float,
+    figure_registry,
 ) -> None:
-    constructor = get_figure_constructor("feedbax.vrect", tier="trace")
+    constructor = get_figure_constructor("feedbax.vrect", tier="trace", registry=figure_registry)
     shapes = constructor.callable(
         {"x": [0.0, 0.1, 0.2, 0.3], "perturbation_timing": timing},
         constructor.params(
@@ -1305,8 +1408,8 @@ def test_vrect_derives_perturbation_marker_from_authored_timing(
 
 
 @pytest.mark.parametrize("applicability", ["nominal", "full_trial"])
-def test_vrect_explicit_no_marker_perturbation_timing(applicability: str) -> None:
-    constructor = get_figure_constructor("feedbax.vrect", tier="trace")
+def test_vrect_explicit_no_marker_perturbation_timing(applicability: str, figure_registry) -> None:
+    constructor = get_figure_constructor("feedbax.vrect", tier="trace", registry=figure_registry)
     shapes = constructor.callable(
         {
             "x": [0.0, 0.1, 0.2],
@@ -1351,8 +1454,8 @@ def test_vrect_explicit_no_marker_perturbation_timing(applicability: str) -> Non
         ),
     ],
 )
-def test_vrect_perturbation_timing_fails_closed(data, match: str) -> None:
-    constructor = get_figure_constructor("feedbax.vrect", tier="trace")
+def test_vrect_perturbation_timing_fails_closed(data, match: str, figure_registry) -> None:
+    constructor = get_figure_constructor("feedbax.vrect", tier="trace", registry=figure_registry)
 
     with pytest.raises(ValueError, match=match):
         constructor.callable(data, constructor.params())
@@ -1375,8 +1478,10 @@ def test_perturbation_timing_rejects_inapplicable_or_out_of_range_fields() -> No
         )
 
 
-def test_trajectory_2d_resolves_colorscale_key() -> None:
-    trajectory = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+def test_trajectory_2d_resolves_colorscale_key(figure_registry) -> None:
+    trajectory = get_figure_constructor(
+        "feedbax.trajectory_2d", tier="trace", registry=figure_registry
+    )
     trajectory_traces = trajectory.callable(
         {
             "trajectories": [
@@ -1390,8 +1495,10 @@ def test_trajectory_2d_resolves_colorscale_key() -> None:
     assert trajectory_traces[0].line.color != trajectory_traces[1].line.color
 
 
-def test_trajectory_2d_default_params_leave_style_and_markers_untouched() -> None:
-    constructor = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+def test_trajectory_2d_default_params_leave_style_and_markers_untouched(figure_registry) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.trajectory_2d", tier="trace", registry=figure_registry
+    )
     assert constructor.version == "v5"
     params = constructor.params()
     assert params.line_dash is None
@@ -1406,7 +1513,9 @@ def test_trajectory_2d_default_params_leave_style_and_markers_untouched() -> Non
     assert [trace.line.dash for trace in traces] == [None, None, None]
 
 
-def test_trajectory_2d_line_dash_reaches_scientific_and_mean_lines(tmp_path: Path) -> None:
+def test_trajectory_2d_line_dash_reaches_scientific_and_mean_lines(
+    tmp_path: Path, figure_registry
+) -> None:
     spec = FigureSpec(
         name="dashed-trajectories",
         assembler="feedbax.grid_figure",
@@ -1420,15 +1529,17 @@ def test_trajectory_2d_line_dash_reaches_scientific_and_mean_lines(tmp_path: Pat
         ],
     )
 
-    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
     rendered = figure_manifest_plotly_json(manifest)
 
     assert rendered is not None
     assert [trace["line"]["dash"] for trace in rendered["data"]] == ["dashdot"] * 3
 
 
-def test_trajectory_2d_rejects_invalid_plotly_dash() -> None:
-    constructor = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+def test_trajectory_2d_rejects_invalid_plotly_dash(figure_registry) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.trajectory_2d", tier="trace", registry=figure_registry
+    )
 
     with pytest.raises(ValueError, match="dash"):
         constructor.callable(
@@ -1437,8 +1548,10 @@ def test_trajectory_2d_rejects_invalid_plotly_dash() -> None:
         )
 
 
-def test_trajectory_2d_start_marker_inherits_trajectory_colorscale_colors() -> None:
-    constructor = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+def test_trajectory_2d_start_marker_inherits_trajectory_colorscale_colors(figure_registry) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.trajectory_2d", tier="trace", registry=figure_registry
+    )
     traces = constructor.callable(
         {
             "trajectories": [
@@ -1470,8 +1583,10 @@ def test_trajectory_2d_start_marker_inherits_trajectory_colorscale_colors() -> N
     assert marker_trace.name == "Trajectory start"
 
 
-def test_trajectory_2d_start_marker_accepts_flat_color_override() -> None:
-    constructor = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+def test_trajectory_2d_start_marker_accepts_flat_color_override(figure_registry) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.trajectory_2d", tier="trace", registry=figure_registry
+    )
     traces = constructor.callable(
         {
             "trajectories": [[[0, 0], [1, 1]], [[0, 0], [2, 2]]],
@@ -1489,8 +1604,10 @@ def test_trajectory_2d_start_marker_accepts_flat_color_override() -> None:
     assert traces[-1].marker.color == "rgb(0, 0, 0)"
 
 
-def test_trajectory_2d_start_marker_legend_visibility_is_authored() -> None:
-    constructor = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+def test_trajectory_2d_start_marker_legend_visibility_is_authored(figure_registry) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.trajectory_2d", tier="trace", registry=figure_registry
+    )
     data = {"trajectories": [[[0, 0], [1, 1]], [[0, 0], [2, 2]], [[0, 0], [3, 3]]]}
 
     hidden = constructor.callable(
@@ -1511,8 +1628,10 @@ def test_trajectory_2d_start_marker_legend_visibility_is_authored() -> None:
     assert shown[-1].showlegend is None
 
 
-def test_endpoint_markers_legend_visibility_is_authored() -> None:
-    constructor = get_figure_constructor("feedbax.endpoint_markers", tier="trace")
+def test_endpoint_markers_legend_visibility_is_authored(figure_registry) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.endpoint_markers", tier="trace", registry=figure_registry
+    )
     data = {"trajectories": [[[0, 0], [1, 1]]]}
 
     default_traces = constructor.callable(data, constructor.params())
@@ -1525,6 +1644,7 @@ def test_endpoint_markers_legend_visibility_is_authored() -> None:
 
 def test_trajectory_2d_expresses_dashed_directions_with_conditioned_start_markers(
     tmp_path: Path,
+    figure_registry,
 ) -> None:
     """Four dashed reach directions by eleven conditioning levels in one panel.
 
@@ -1567,7 +1687,7 @@ def test_trajectory_2d_expresses_dashed_directions_with_conditioned_start_marker
         traces=bindings,
     )
 
-    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
     rendered = figure_manifest_plotly_json(manifest)
 
     assert rendered is not None
@@ -1590,17 +1710,19 @@ def test_trajectory_2d_expresses_dashed_directions_with_conditioned_start_marker
         assert block[-1]["marker"]["size"] == 10.0
 
 
-def test_trajectory_2d_inserts_affected_underlay_before_every_scientific_trace() -> None:
-    constructor = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+def test_trajectory_2d_inserts_affected_underlay_before_every_scientific_trace(
+    figure_registry,
+) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.trajectory_2d", tier="trace", registry=figure_registry
+    )
     traces = constructor.callable(
         {
             "trajectories": [
                 [[0, 0], [1, 1], [2, 1], [3, 0]],
                 [[0, 0], [1, 2], [2, 2], [3, 0]],
             ],
-            "perturbation_timing": _perturbation_timing(
-                "bounded", 4, start_index=1, duration=2
-            ),
+            "perturbation_timing": _perturbation_timing("bounded", 4, start_index=1, duration=2),
         },
         constructor.params(
             {
@@ -1626,14 +1748,14 @@ def test_trajectory_2d_inserts_affected_underlay_before_every_scientific_trace()
         assert list(underlay.y) == list(scientific.y)[1:3]
 
 
-def test_trajectory_2d_renders_single_sample_as_authored_marker() -> None:
-    constructor = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+def test_trajectory_2d_renders_single_sample_as_authored_marker(figure_registry) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.trajectory_2d", tier="trace", registry=figure_registry
+    )
     traces = constructor.callable(
         {
             "trajectories": [[[0, 0], [1, 1], [2, 0]]],
-            "perturbation_timing": _perturbation_timing(
-                "bounded", 3, start_index=1, duration=1
-            ),
+            "perturbation_timing": _perturbation_timing("bounded", 3, start_index=1, duration=1),
         },
         constructor.params(
             {
@@ -1652,8 +1774,10 @@ def test_trajectory_2d_renders_single_sample_as_authored_marker() -> None:
 
 
 @pytest.mark.parametrize("applicability", ["nominal", "full_trial"])
-def test_trajectory_2d_explicit_no_underlay_timing(applicability: str) -> None:
-    constructor = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+def test_trajectory_2d_explicit_no_underlay_timing(applicability: str, figure_registry) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.trajectory_2d", tier="trace", registry=figure_registry
+    )
     traces = constructor.callable(
         {
             "trajectories": [[[0, 0], [1, 1], [2, 0]]],
@@ -1666,8 +1790,10 @@ def test_trajectory_2d_explicit_no_underlay_timing(applicability: str) -> None:
     assert traces[0].name == "Trajectory"
 
 
-def test_trajectory_2d_rejects_perturbation_sample_count_mismatch() -> None:
-    constructor = get_figure_constructor("feedbax.trajectory_2d", tier="trace")
+def test_trajectory_2d_rejects_perturbation_sample_count_mismatch(figure_registry) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.trajectory_2d", tier="trace", registry=figure_registry
+    )
 
     with pytest.raises(ValueError, match="does not match every plotted trajectory length"):
         constructor.callable(
@@ -1681,6 +1807,7 @@ def test_trajectory_2d_rejects_perturbation_sample_count_mismatch() -> None:
 
 def test_figure_spec_renders_mixed_explicit_perturbation_applicability(
     tmp_path: Path,
+    figure_registry,
 ) -> None:
     spec = FigureSpec(
         name="mixed-perturbation-timing",
@@ -1747,7 +1874,7 @@ def test_figure_spec_renders_mixed_explicit_perturbation_applicability(
         ],
     )
 
-    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
     rendered = figure_manifest_plotly_json(manifest)
 
     assert rendered is not None
@@ -1763,15 +1890,14 @@ def test_figure_spec_renders_mixed_explicit_perturbation_applicability(
     )
     assert spec_artifact.uri is not None
     custodied = json.loads(Path(spec_artifact.uri).read_bytes())
-    custodied_timing = custodied["figure_spec"]["traces"][0]["data"][
-        "perturbation_timing"
-    ]
+    custodied_timing = custodied["figure_spec"]["traces"][0]["data"]["perturbation_timing"]
     assert custodied_timing["schema_id"] == PERTURBATION_TIMING_SCHEMA_ID
     assert custodied_timing["schema_version"] == PERTURBATION_TIMING_SCHEMA_VERSION
 
 
 def test_figure_spec_fails_before_output_on_perturbation_length_mismatch(
     tmp_path: Path,
+    figure_registry,
 ) -> None:
     spec = FigureSpec(
         name="mismatched-perturbation-timing",
@@ -1791,7 +1917,7 @@ def test_figure_spec_fails_before_output_on_perturbation_length_mismatch(
     )
 
     with pytest.raises(FigureSpecExecutionError) as exc_info:
-        execute_figure_spec(spec, root=tmp_path)
+        execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
 
     assert "does not match every plotted trajectory length" in str(exc_info.value.__cause__)
     assert exc_info.value.manifest.status == "failed"
@@ -1867,9 +1993,13 @@ constructor: feedbax.profile_band
     assert piece.artifact_ref is not None
     assert piece.artifact_ref.uri == str(piece_payload)
 
-    monkeypatch.setattr(feedbax.plugins, "_EXPERIMENT_REGISTRY", registry)
-    assert get_figure_template("toy.profiles").name == "toy.profiles"
-    assert get_figure_piece("toy.baseline").name == "toy.baseline"
+    figure_registry = FigureRegistry()
+    figure_registry.register_template(template)
+    figure_registry.register_piece(piece)
+    assert get_figure_template("toy.profiles", registry=figure_registry).name == "toy.profiles"
+    assert get_figure_piece("toy.baseline", registry=figure_registry).name == "toy.baseline"
+    with pytest.raises(TypeError, match="registry"):
+        load_figure_template("toy/profiles")
 
 
 def test_bundle_figure_topology_and_default_render_role() -> None:

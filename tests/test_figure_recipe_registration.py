@@ -2,29 +2,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from feedbax.analysis.evaluation import (
+    EvaluationRecipeRegistry,
     EvaluationRecipeResult,
-    register_evaluation_recipe,
-    registered_evaluation_recipes,
-    unregister_evaluation_recipe,
 )
 from feedbax.contracts.figures import FigurePiece, FigureTemplate
 from feedbax.contracts.manifest import ArtifactRef, EvaluationRunSpec
 from feedbax.plot.constructors import (
-    get_figure_piece,
-    get_figure_template,
-    register_figure_piece,
-    register_figure_template,
-    registered_figure_pieces,
-    registered_figure_templates,
-    unregister_figure_piece,
-    unregister_figure_template,
+    FigureRegistry,
 )
 
 
-def test_downstream_figure_recipes_are_listed_and_can_be_unregistered() -> None:
+def test_downstream_figure_recipes_are_isolated_and_queryable() -> None:
+    registry = FigureRegistry()
     template = FigureTemplate(
         name="downstream.condition_comparison",
         description="Compare resolved condition rows.",
@@ -43,25 +33,22 @@ def test_downstream_figure_recipes_are_listed_and_can_be_unregistered() -> None:
         label="Metric",
         constructor="feedbax.profile_band",
     )
-    try:
-        register_figure_template(template)
-        register_figure_piece(piece)
+    registry.register_template(template)
+    registry.register_piece(piece)
 
-        assert template in registered_figure_templates()
-        assert piece in registered_figure_pieces()
-        assert get_figure_template(template.name) is template
-        assert get_figure_piece(piece.name) is piece
-    finally:
-        unregister_figure_template(template.name)
-        unregister_figure_piece(piece.name)
+    assert template in registry.templates()
+    assert piece in registry.pieces()
+    assert registry.template(template.name) == template
+    assert registry.piece(piece.name) == piece
 
-    with pytest.raises(ValueError, match="Registered templates:"):
-        get_figure_template(template.name)
-    with pytest.raises(ValueError, match="Registered pieces:"):
-        get_figure_piece(piece.name)
+    isolated = FigureRegistry()
+    assert isolated.template(template.name) is None
+    assert isolated.piece(piece.name) is None
 
 
 def test_downstream_computation_recipes_are_listed() -> None:
+    registry = EvaluationRecipeRegistry()
+
     def recipe(
         run_spec: EvaluationRunSpec,
         root: Path,
@@ -71,8 +58,5 @@ def test_downstream_computation_recipes_are_listed() -> None:
         del run_spec, root, states_path, execution_context
         return EvaluationRecipeResult(summary_metrics={"value": 1.0})
 
-    try:
-        register_evaluation_recipe("downstream.checkpoint_metric", recipe)
-        assert "downstream.checkpoint_metric" in registered_evaluation_recipes()
-    finally:
-        unregister_evaluation_recipe("downstream.checkpoint_metric")
+    registry.register("downstream.checkpoint_metric", recipe)
+    assert "downstream.checkpoint_metric" in registry.keys()

@@ -2,6 +2,7 @@
 
 import importlib
 import logging
+from copy import deepcopy
 from collections.abc import Sequence
 from importlib import resources
 from importlib.util import find_spec
@@ -37,6 +38,7 @@ class ExperimentRegistry:
     """Registry for managing experiment packages and their components."""
 
     def __init__(self):
+        self._sealed = False
         self._packages: dict[str, PackageMetadata] = {}
         self._module_cache: dict[str, ModuleType] = {}
 
@@ -129,6 +131,10 @@ class ExperimentRegistry:
                 Template variables ``{experiment}`` and ``{topic}`` are substituted
                 by ``feedbax.plot.save_figure`` at save time.
         """
+        if self._sealed:
+            raise RuntimeError("experiment registry is sealed")
+        if name in self._packages:
+            raise ValueError(f"experiment package already registered: {name!r}")
         metadata = PackageMetadata(
             name=name,
             package_module=package_module,
@@ -136,10 +142,13 @@ class ExperimentRegistry:
             analysis_module_root=analysis_module_root,
             training_module_root=training_module_root,
             config_resource_root=config_resource_root,
-            figure_routing=figure_routing,
+            figure_routing=deepcopy(figure_routing),
         )
         self._packages[name] = metadata
         logger.info(f"Registered experiment package '{name}' with parts: {parts}")
+
+    def seal(self) -> None:
+        self._sealed = True
 
     def get_figure_routing(self, package_name: str) -> Optional[dict]:
         """Return the figure-routing config for *package_name*, or ``None`` if not set.
@@ -160,11 +169,25 @@ class ExperimentRegistry:
         """Get metadata for a registered package."""
         if package_name not in self._packages:
             raise ValueError(f"Package '{package_name}' not registered")
-        return self._packages[package_name]
+        return self._snapshot_metadata(self._packages[package_name])
 
     def iter_package_metadata(self) -> list[tuple[str, PackageMetadata]]:
         """Return registered package metadata keyed by package name."""
-        return list(self._packages.items())
+        return [
+            (name, self._snapshot_metadata(metadata)) for name, metadata in self._packages.items()
+        ]
+
+    @staticmethod
+    def _snapshot_metadata(metadata: PackageMetadata) -> PackageMetadata:
+        return PackageMetadata(
+            name=metadata.name,
+            package_module=metadata.package_module,
+            parts=tuple(metadata.parts),
+            analysis_module_root=metadata.analysis_module_root,
+            training_module_root=metadata.training_module_root,
+            config_resource_root=metadata.config_resource_root,
+            figure_routing=deepcopy(metadata.figure_routing),
+        )
 
     def single_package_name(self) -> str | None:
         pkgs = list(self._packages.keys())
@@ -361,15 +384,3 @@ class ExperimentRegistry:
         pkg = matches[0]
         md = self._packages[pkg]
         return pkg, f"{md.package_module.__name__}.{md.config_resource_root}"
-
-
-# Global registry instance
-_default_registry: Optional[ExperimentRegistry] = None
-
-
-def get_default_registry() -> ExperimentRegistry:
-    """Get the default experiment registry instance."""
-    global _default_registry
-    if _default_registry is None:
-        _default_registry = ExperimentRegistry()
-    return _default_registry

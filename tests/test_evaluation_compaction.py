@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from feedbax.analysis import evaluation_compaction as compaction_module
 from feedbax.analysis.evaluation_compaction import (
     EvaluationBatchConsumerInput,
+    EvaluationBatchConsumerRegistry,
     EvaluationBatchFragment,
     EvaluationBatchMergeInput,
     EvaluationBatchMergeState,
@@ -16,7 +17,6 @@ from feedbax.analysis.evaluation_compaction import (
     merge_evaluation_batch_fragment,
     publish_evaluation_compaction_products,
     reclaim_evaluation_batch_caches,
-    register_evaluation_batch_consumer,
 )
 from feedbax.analysis.execution_context import EMPTY_STAGED_EXECUTION_CONTEXT
 from feedbax.analysis.execution_context import (
@@ -64,7 +64,11 @@ def _declaration(leaf_id: str) -> EvaluationBatchConsumerDeclaration:
     )
 
 
-def _register(declaration: EvaluationBatchConsumerDeclaration, calls: list[str]) -> None:
+def _register(
+    declaration: EvaluationBatchConsumerDeclaration,
+    calls: list[str],
+    registry: EvaluationBatchConsumerRegistry,
+) -> None:
     def compact(value: EvaluationBatchConsumerInput) -> EvaluationBatchFragment:
         calls.append(f"compact:{declaration.leaf_id}:{value.batch.batch_id}")
         return EvaluationBatchFragment(
@@ -83,7 +87,7 @@ def _register(declaration: EvaluationBatchConsumerDeclaration, calls: list[str])
             schema_version=declaration.merge_state_schema_version,
         )
 
-    register_evaluation_batch_consumer(
+    registry.register(
         declaration.consumer_id,
         declaration.consumer_version,
         compact=compact,
@@ -94,7 +98,6 @@ def _register(declaration: EvaluationBatchConsumerDeclaration, calls: list[str])
             schema_version=declaration.compact_product_schema_version,
             role=declaration.compact_product_role,
         ),
-        replace=True,
     )
 
 
@@ -450,8 +453,9 @@ def test_consumer_callback_resolves_exact_authenticated_checkpoint_binding(
 def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path: Path) -> None:
     declarations = (_declaration("trajectory"), _declaration("velocity"))
     calls: list[str] = []
+    registry = EvaluationBatchConsumerRegistry()
     for declaration in declarations:
-        _register(declaration, calls)
+        _register(declaration, calls, registry)
     batches = (
         EvaluationMatrixBatchUnit(
             batch_id="0000",
@@ -488,6 +492,7 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
                     parameters=declaration.parameters,
                     execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
                 ),
+                registry=registry,
                 custody_root=tmp_path / "custody",
             )
             for declaration in applicable_declarations
@@ -495,6 +500,7 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
         acknowledgements = [
             merge_evaluation_batch_fragment(
                 declaration,
+                registry=registry,
                 matrix_intent_hash="a" * 64,
                 batch=batch,
                 parent_authorities=_parent_authorities(outcomes),
@@ -517,6 +523,7 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
         with pytest.raises(ValueError, match="every declared leaf"):
             reclaim_evaluation_batch_caches(
                 batch,
+                registry=registry,
                 matrix_intent_hash="a" * 64,
                 batch_index=batch_index,
                 outcomes=outcomes,
@@ -531,6 +538,7 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
             with pytest.raises(ValueError, match="identity drifted"):
                 reclaim_evaluation_batch_caches(
                     batch,
+                    registry=registry,
                     matrix_intent_hash="a" * 64,
                     batch_index=batch_index,
                     outcomes=outcomes,
@@ -542,6 +550,7 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
             assert cache_path.exists()
         reclaim_evaluation_batch_caches(
             batch,
+            registry=registry,
             matrix_intent_hash="a" * 64,
             batch_index=batch_index,
             outcomes=outcomes,
@@ -566,6 +575,7 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
             )
             legacy_resume = reclaim_evaluation_batch_caches(
                 batch,
+                registry=registry,
                 matrix_intent_hash="a" * 64,
                 batch_index=batch_index,
                 outcomes=outcomes,
@@ -582,6 +592,7 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
             intent_path.write_text(json.dumps(intent), encoding="utf-8")
             resumed_reclamation = reclaim_evaluation_batch_caches(
                 batch,
+                registry=registry,
                 matrix_intent_hash="a" * 64,
                 batch_index=batch_index,
                 outcomes=outcomes,
@@ -600,6 +611,7 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
             (drifted_analysis,),
             prior,
             all_outcomes,
+            registry=registry,
             custody_root=tmp_path / "custody",
             execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
         )
@@ -613,6 +625,7 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
             declarations,
             prior,
             all_outcomes,
+            registry=registry,
             custody_root=tmp_path / "custody",
             execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
         )
@@ -623,6 +636,7 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
         declarations,
         prior,
         all_outcomes,
+        registry=registry,
         custody_root=tmp_path / "custody",
         execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
     )
@@ -666,6 +680,7 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
         declarations,
         prior,
         all_outcomes,
+        registry=registry,
         custody_root=tmp_path / "custody",
         execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
     )
@@ -688,6 +703,7 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
             declarations,
             prior,
             all_outcomes,
+            registry=registry,
             custody_root=tmp_path / "custody",
             execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
         )

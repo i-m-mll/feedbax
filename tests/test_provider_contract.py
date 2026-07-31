@@ -53,6 +53,7 @@ from feedbax.studio.schema import (
 )
 from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
 from feedbax.web.app import create_app
+from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_ID,
     GRAPH_SPEC_SCHEMA_VERSION,
@@ -85,6 +86,26 @@ from feedbax.web.worker.app import (
 )
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.provider_contract]
+
+
+@pytest.fixture
+def validation_registries(application_registry_bundle):
+    return {
+        "component_registry": application_registry_bundle.components,
+        "training_method_registry": application_registry_bundle.training_methods,
+        "analysis_registry": application_registry_bundle.analysis_recipes,
+    }
+
+
+@pytest.fixture
+def provider_client(application_registry_bundle, monkeypatch):
+    async def compose(*, modules=()):
+        assert modules == ()
+        return BootstrapState(application_registry_bundle, ())
+
+    monkeypatch.setattr("feedbax.web.app.compose_application", compose)
+    with TestClient(create_app()) as client:
+        yield client
 
 
 def _minimal_graph_spec() -> dict:
@@ -345,15 +366,11 @@ def test_provider_manifest_exports_governed_execution_artifact_refs() -> None:
     plan_schema = manifest.schemas["ExecutionPlan"]
     result_schema = manifest.schemas["LocalExecutionResult"]
 
-    assert (
-        plan_schema["properties"]["artifact_routes"]["items"]["$ref"]
-        == "#/$defs/ArtifactRef"
-    )
+    assert plan_schema["properties"]["artifact_routes"]["items"]["$ref"] == "#/$defs/ArtifactRef"
     for field in ("stdout", "stderr", "manifest", "execution_plan"):
         assert result_schema["properties"][field]["$ref"] == "#/$defs/ArtifactRef"
     assert (
-        result_schema["properties"]["produced_artifacts"]["items"]["$ref"]
-        == "#/$defs/ArtifactRef"
+        result_schema["properties"]["produced_artifacts"]["items"]["$ref"] == "#/$defs/ArtifactRef"
     )
 
     prepare_roles = set(manifest.capabilities["prepare_execution_plan"].artifact_roles)
@@ -446,8 +463,12 @@ def test_provider_manifest_graph_spec_schema_exposes_registered_identity() -> No
     assert properties["schema_version"]["default"] == GRAPH_SPEC_SCHEMA_VERSION
 
 
-def test_provider_validation_exposes_objective_and_studio_migration_entrypoints() -> None:
-    objective = validate_spec("objective", {"schema_version": "feedbax.objective.v0"})
+def test_provider_validation_exposes_objective_and_studio_migration_entrypoints(
+    validation_registries,
+) -> None:
+    objective = validate_spec(
+        "objective", {"schema_version": "feedbax.objective.v0"}, **validation_registries
+    )
     assert not objective.valid
     assert objective.errors[0].type == "invalid_objective_spec"
     assert "feedbax.objective.v0" in objective.errors[0].message
@@ -460,6 +481,7 @@ def test_provider_validation_exposes_objective_and_studio_migration_entrypoints(
             "bindings": [],
             "metadata": {},
         },
+        **validation_registries,
     )
     assert task_binding.valid
 
@@ -468,7 +490,7 @@ def test_provider_validation_exposes_objective_and_studio_migration_entrypoints(
         "schema_version": "feedbax.studio.task_bindings.v0",
         "metadata": {},
     }
-    workspace = validate_spec("studio_workspace", workspace_payload)
+    workspace = validate_spec("studio_workspace", workspace_payload, **validation_registries)
     assert not workspace.valid
     assert workspace.errors[0].type == "invalid_studio_workspace_spec"
     assert "task_bindings.v0" in workspace.errors[0].message
@@ -530,10 +552,7 @@ def test_provider_manifest_exposes_mandible_manifest_mapping_contract() -> None:
     analysis = mappings["AnalysisRunManifest"]
     assert "evaluation_state_sources[]" in analysis.spec_fields
     assert "evaluation_state_resolution_diagnostics[]" in analysis.spec_fields
-    assert (
-        "evaluation_state_sources[].evaluation_manifest_authority"
-        in analysis.parent_ref_fields
-    )
+    assert "evaluation_state_sources[].evaluation_manifest_authority" in analysis.parent_ref_fields
     assert (
         "evaluation_state_sources[].resulting_evaluation_manifest_authority"
         in analysis.parent_ref_fields
@@ -657,6 +676,7 @@ def test_model_artifact_manifest_mandible_mapping_fixture_includes_role_stores()
 
 def test_eval_analysis_report_manifests_preserve_optional_handoff_artifact_ids(
     tmp_path: Path,
+    validation_registries,
 ) -> None:
     training_parent = ParentRef(
         kind="TrainingRunManifest",
@@ -767,8 +787,13 @@ def test_eval_analysis_report_manifests_preserve_optional_handoff_artifact_ids(
     assert validate_spec(
         "evaluation",
         evaluation_spec.model_dump(mode="json", exclude_none=True),
+        **validation_registries,
     ).valid
-    assert validate_spec("analysis", analysis_spec.model_dump(mode="json", exclude_none=True)).valid
+    assert validate_spec(
+        "analysis",
+        analysis_spec.model_dump(mode="json", exclude_none=True),
+        **validation_registries,
+    ).valid
     assert validate_report_spec(report_spec).valid
 
     index_path = rebuild_manifest_index(tmp_path)
@@ -791,8 +816,8 @@ def test_eval_analysis_report_manifests_preserve_optional_handoff_artifact_ids(
     ]
 
 
-def test_component_registry_snapshot_wraps_existing_registry() -> None:
-    snapshot = component_registry_snapshot()
+def test_component_registry_snapshot_wraps_existing_registry(application_registry_bundle) -> None:
+    snapshot = component_registry_snapshot(application_registry_bundle.components)
     type_ids = {entry.type_id for entry in snapshot.entries}
 
     assert snapshot.kind == "components"
@@ -813,12 +838,18 @@ def test_component_registry_snapshot_wraps_existing_registry() -> None:
     assert gain.migrations == []
 
 
-def test_validation_functions_accept_small_vertical_slice_specs() -> None:
+def test_validation_functions_accept_small_vertical_slice_specs(
+    application_registry_bundle,
+) -> None:
     graph = _minimal_graph_spec()
     training = _minimal_training_spec()
 
-    assert validate_graph_spec(graph).valid
-    assert validate_training_spec(training, graph_spec=graph).valid
+    assert validate_graph_spec(
+        graph, component_registry=application_registry_bundle.components
+    ).valid
+    assert validate_training_spec(
+        training, graph_spec=graph, component_registry=application_registry_bundle.components
+    ).valid
     assert validate_task_spec({"type": "SimpleReaches", "params": {}}).valid
     assert validate_evaluation_spec(
         {"evaluation_type": "default", "training_run_ids": ["feedbax-training-run:test"]}
@@ -837,11 +868,15 @@ def test_validation_functions_accept_small_vertical_slice_specs() -> None:
                     },
                 }
             ],
-        }
+        },
+        component_registry=application_registry_bundle.components,
+        analysis_registry=application_registry_bundle.analysis_recipes,
     ).valid
 
 
-def test_analysis_validation_rejects_unknown_input_selector_with_graph_context() -> None:
+def test_analysis_validation_rejects_unknown_input_selector_with_graph_context(
+    application_registry_bundle,
+) -> None:
     result = validate_analysis_spec(
         {
             "analysis_type": "feedbax.analysis.plot",
@@ -854,6 +889,8 @@ def test_analysis_validation_rejects_unknown_input_selector_with_graph_context()
             ],
         },
         graph_spec=_minimal_graph_spec(),
+        component_registry=application_registry_bundle.components,
+        analysis_registry=application_registry_bundle.analysis_recipes,
     )
 
     assert result.valid is False
@@ -864,7 +901,9 @@ def test_analysis_validation_rejects_unknown_input_selector_with_graph_context()
     }
 
 
-def test_analysis_validation_does_not_require_explicit_retained_observable() -> None:
+def test_analysis_validation_does_not_require_explicit_retained_observable(
+    application_registry_bundle,
+) -> None:
     result = validate_analysis_spec(
         {
             "analysis_type": "feedbax.analysis.plot",
@@ -877,6 +916,8 @@ def test_analysis_validation_does_not_require_explicit_retained_observable() -> 
             ],
         },
         graph_spec=_minimal_graph_spec(),
+        component_registry=application_registry_bundle.components,
+        analysis_registry=application_registry_bundle.analysis_recipes,
     )
 
     assert result.valid is True
@@ -988,7 +1029,7 @@ def test_delayed_reaches_validation_rejects_invalid_metadata_policy() -> None:
     assert {error.type for error in result.errors} == {"invalid_catch_metadata_policy"}
 
 
-def test_graph_validation_reports_unknown_components() -> None:
+def test_graph_validation_reports_unknown_components(application_registry_bundle) -> None:
     graph = _minimal_graph_spec()
     graph["nodes"]["bad"] = {
         "type": "MissingComponent",
@@ -997,20 +1038,24 @@ def test_graph_validation_reports_unknown_components() -> None:
         "output_ports": [],
     }
 
-    result = validate_graph_spec(graph)
+    result = validate_graph_spec(graph, component_registry=application_registry_bundle.components)
 
     assert not result.valid
     assert result.errors[0].type == "unknown_component_type"
 
 
-def test_graph_validation_rejects_runtime_network_authoring_payloads() -> None:
-    result = validate_graph_spec(_runtime_network_graph_spec())
+def test_graph_validation_rejects_runtime_network_authoring_payloads(
+    application_registry_bundle,
+) -> None:
+    result = validate_graph_spec(
+        _runtime_network_graph_spec(), component_registry=application_registry_bundle.components
+    )
 
     assert not result.valid
     assert "unknown_component_type" in {error.type for error in result.errors}
 
 
-def test_graph_validation_rejects_task_nodes() -> None:
+def test_graph_validation_rejects_task_nodes(application_registry_bundle) -> None:
     graph = _minimal_graph_spec()
     graph["nodes"]["task"] = {
         "type": "SimpleReaches",
@@ -1019,13 +1064,13 @@ def test_graph_validation_rejects_task_nodes() -> None:
         "output_ports": ["inputs", "targets", "inits", "intervene"],
     }
 
-    result = validate_graph_spec(graph)
+    result = validate_graph_spec(graph, component_registry=application_registry_bundle.components)
 
     assert not result.valid
     assert result.errors[0].type == "task_node_not_allowed"
 
 
-def test_graph_validation_rejects_degenerate_single_input_mux() -> None:
+def test_graph_validation_rejects_degenerate_single_input_mux(application_registry_bundle) -> None:
     graph = GraphSpec(
         nodes={
             "source": {
@@ -1053,7 +1098,7 @@ def test_graph_validation_rejects_degenerate_single_input_mux() -> None:
         output_bindings={"output": ("mux", "output")},
     )
 
-    result = validate_graph_spec(graph)
+    result = validate_graph_spec(graph, component_registry=application_registry_bundle.components)
 
     assert not result.valid
     mux_error = next(
@@ -1062,7 +1107,9 @@ def test_graph_validation_rejects_degenerate_single_input_mux() -> None:
     assert mux_error.message == "Mux 'mux' needs at least two connected inputs"
 
 
-def test_graph_validation_uses_schema_for_direction_occupied_and_dtype_mismatch() -> None:
+def test_graph_validation_uses_schema_for_direction_occupied_and_dtype_mismatch(
+    application_registry_bundle,
+) -> None:
     graph = {
         "nodes": {
             "linear": {
@@ -1098,7 +1145,7 @@ def test_graph_validation_uses_schema_for_direction_occupied_and_dtype_mismatch(
         "output_bindings": {},
     }
 
-    result = validate_graph_spec(graph)
+    result = validate_graph_spec(graph, component_registry=application_registry_bundle.components)
     issue_types = {issue.type for issue in result.errors}
 
     assert not result.valid
@@ -1107,7 +1154,9 @@ def test_graph_validation_uses_schema_for_direction_occupied_and_dtype_mismatch(
     assert "graph_input_occupied" in issue_types
 
 
-def test_graph_validation_reports_network_missing_subgraph_before_build() -> None:
+def test_graph_validation_reports_network_missing_subgraph_before_build(
+    application_registry_bundle,
+) -> None:
     graph = GraphSpec(
         nodes={
             "network": ComponentSpec(
@@ -1123,7 +1172,7 @@ def test_graph_validation_reports_network_missing_subgraph_before_build() -> Non
         output_bindings={"output": ("network", "output")},
     )
 
-    result = validate_graph_spec(graph)
+    result = validate_graph_spec(graph, component_registry=application_registry_bundle.components)
     issue_types = {issue.type for issue in result.errors}
 
     assert not result.valid
@@ -1272,8 +1321,8 @@ def test_training_manifest_writes_artifacts_and_rebuildable_index(tmp_path: Path
     assert artifact_count == 2
 
 
-def test_provider_http_endpoints() -> None:
-    client = TestClient(create_app())
+def test_provider_http_endpoints(provider_client) -> None:
+    client = provider_client
 
     health = client.get("/api/provider/health")
     assert health.status_code == 200
@@ -1322,8 +1371,14 @@ def test_provider_http_endpoints() -> None:
     )
 
 
-def test_studio_schema_enumeration_returns_ports_task_data_targets_and_issues() -> None:
-    registry = enumerate_studio_schema_registry(_schema_workspace(), "scenario:train")
+def test_studio_schema_enumeration_returns_ports_task_data_targets_and_issues(
+    application_registry_bundle,
+) -> None:
+    registry = enumerate_studio_schema_registry(
+        _schema_workspace(),
+        "scenario:train",
+        component_registry=application_registry_bundle.components,
+    )
 
     assert registry.workspace_id is not None
     assert registry.scenario_id == "scenario:train"
@@ -1341,21 +1396,27 @@ def test_studio_schema_enumeration_returns_ports_task_data_targets_and_issues() 
     assert registry.metadata["runtime_introspection"]["status"] == "not_requested"
 
 
-def test_studio_schema_enumeration_reports_workspace_migration_rejection() -> None:
+def test_studio_schema_enumeration_reports_workspace_migration_rejection(
+    application_registry_bundle,
+) -> None:
     workspace = _schema_workspace().model_dump(mode="json", exclude_none=True)
     workspace["scenarios"]["scenario:train"]["task_binding_spec"] = {
         "schema_version": "feedbax.studio.task_bindings.v0",
         "metadata": {},
     }
 
-    registry = enumerate_studio_schema_registry(workspace, "scenario:train")
+    registry = enumerate_studio_schema_registry(
+        workspace, "scenario:train", component_registry=application_registry_bundle.components
+    )
 
     assert registry.ports == []
     assert registry.issues[0].type == "workspace_schema_version_error"
     assert "task_bindings.v0" in registry.issues[0].message
 
 
-def test_studio_schema_enumeration_does_not_wrap_runtime_network_ports() -> None:
+def test_studio_schema_enumeration_does_not_wrap_runtime_network_ports(
+    application_registry_bundle,
+) -> None:
     workspace = build_default_studio_workspace(
         label="Runtime network",
         graph=GraphSpec.model_validate(_runtime_network_graph_spec()),
@@ -1389,7 +1450,11 @@ def test_studio_schema_enumeration_does_not_wrap_runtime_network_ports() -> None
         }
     )
 
-    registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
+    registry = enumerate_studio_schema_registry(
+        workspace,
+        train_stage.scenario_id,
+        component_registry=application_registry_bundle.components,
+    )
 
     assert not any(port.id == "port:network.input:input" for port in registry.ports)
     assert any(issue.type == "task_binding_unknown_schema" for issue in registry.issues)
@@ -1533,7 +1598,9 @@ def test_runtime_wrapper_normalization_does_not_mark_feedback_cut_recurrent() ->
     assert recurrent_wire.recurrent_initializer is None
 
 
-def test_graph_connection_schema_rejects_instant_cycles_and_accepts_recurrent_cut() -> None:
+def test_graph_connection_schema_rejects_instant_cycles_and_accepts_recurrent_cut(
+    application_registry_bundle,
+) -> None:
     graph = GraphSpec(
         nodes={
             "a": {
@@ -1565,7 +1632,9 @@ def test_graph_connection_schema_rejects_instant_cycles_and_accepts_recurrent_cu
         ],
     )
 
-    issues = validate_graph_connection_schema(graph)
+    issues = validate_graph_connection_schema(
+        graph, component_registry=application_registry_bundle.components
+    )
     assert "instant_cycle" in {issue.type for issue in issues}
 
     recurrent_graph = graph.model_copy(
@@ -1585,12 +1654,16 @@ def test_graph_connection_schema_rejects_instant_cycles_and_accepts_recurrent_cu
             ]
         }
     )
-    recurrent_issues = validate_graph_connection_schema(recurrent_graph)
+    recurrent_issues = validate_graph_connection_schema(
+        recurrent_graph, component_registry=application_registry_bundle.components
+    )
     assert "instant_cycle" not in {issue.type for issue in recurrent_issues}
     assert "recurrent_initializer_missing" not in {issue.type for issue in recurrent_issues}
 
 
-def test_studio_schema_enumeration_reports_dynamic_mux_input_mismatch() -> None:
+def test_studio_schema_enumeration_reports_dynamic_mux_input_mismatch(
+    application_registry_bundle,
+) -> None:
     graph = GraphSpec(
         nodes={
             "mux": {
@@ -1636,7 +1709,11 @@ def test_studio_schema_enumeration_reports_dynamic_mux_input_mismatch() -> None:
         }
     )
 
-    registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
+    registry = enumerate_studio_schema_registry(
+        workspace,
+        train_stage.scenario_id,
+        component_registry=application_registry_bundle.components,
+    )
     issue_types = {issue.type for issue in registry.issues}
 
     assert "dynamic_port_arity_mismatch" in issue_types
@@ -1644,7 +1721,9 @@ def test_studio_schema_enumeration_reports_dynamic_mux_input_mismatch() -> None:
     assert not any(port.id == "port:mux.in_2:input" for port in registry.ports)
 
 
-def test_studio_schema_enumeration_reports_dynamic_demux_output_mismatch() -> None:
+def test_studio_schema_enumeration_reports_dynamic_demux_output_mismatch(
+    application_registry_bundle,
+) -> None:
     graph = GraphSpec(
         nodes={
             "split": {
@@ -1662,14 +1741,20 @@ def test_studio_schema_enumeration_reports_dynamic_demux_output_mismatch() -> No
     workspace = build_default_studio_workspace(label="Demux schema", graph=graph)
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
 
-    registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
+    registry = enumerate_studio_schema_registry(
+        workspace,
+        train_stage.scenario_id,
+        component_registry=application_registry_bundle.components,
+    )
     issue = next(issue for issue in registry.issues if issue.type == "dynamic_port_arity_mismatch")
 
     assert "Demux node 'split'" in issue.message
     assert not any(port.id == "port:split.out_2:output" for port in registry.ports)
 
 
-def test_studio_schema_task_data_trajectory_bindings_use_sample_view() -> None:
+def test_studio_schema_task_data_trajectory_bindings_use_sample_view(
+    application_registry_bundle,
+) -> None:
     graph = GraphSpec(
         nodes={
             "network": {
@@ -1713,7 +1798,11 @@ def test_studio_schema_task_data_trajectory_bindings_use_sample_view() -> None:
         }
     )
 
-    registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
+    registry = enumerate_studio_schema_registry(
+        workspace,
+        train_stage.scenario_id,
+        component_registry=application_registry_bundle.components,
+    )
     task_data = next(item for item in registry.task_data if item.id == "task_data:target_position")
     network_input = next(port for port in registry.ports if port.id == "port:network.input:input")
 
@@ -1727,7 +1816,9 @@ def test_studio_schema_task_data_trajectory_bindings_use_sample_view() -> None:
     assert "task_binding_dtype_mismatch" not in issue_types
 
 
-def test_studio_schema_enumeration_infers_mux_output_width_from_sample_shapes() -> None:
+def test_studio_schema_enumeration_infers_mux_output_width_from_sample_shapes(
+    application_registry_bundle,
+) -> None:
     graph = GraphSpec(
         nodes={
             "mux": {
@@ -1792,7 +1883,11 @@ def test_studio_schema_enumeration_infers_mux_output_width_from_sample_shapes() 
         }
     )
 
-    registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
+    registry = enumerate_studio_schema_registry(
+        workspace,
+        train_stage.scenario_id,
+        component_registry=application_registry_bundle.components,
+    )
     mux_output = next(port for port in registry.ports if port.id == "port:mux.output:output")
 
     assert mux_output.value_schema.shape == [3]
@@ -1801,7 +1896,7 @@ def test_studio_schema_enumeration_infers_mux_output_width_from_sample_shapes() 
     assert "mux_needs_two_connected_inputs" not in {issue.type for issue in registry.issues}
 
 
-def test_studio_schema_reports_derived_dimension_conflict() -> None:
+def test_studio_schema_reports_derived_dimension_conflict(application_registry_bundle) -> None:
     graph = GraphSpec(
         nodes={
             "mux": {
@@ -1886,15 +1981,23 @@ def test_studio_schema_reports_derived_dimension_conflict() -> None:
         }
     )
 
-    registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
-    conflict = next(issue for issue in registry.issues if issue.type == "derived_dimension_conflict")
+    registry = enumerate_studio_schema_registry(
+        workspace,
+        train_stage.scenario_id,
+        component_registry=application_registry_bundle.components,
+    )
+    conflict = next(
+        issue for issue in registry.issues if issue.type == "derived_dimension_conflict"
+    )
 
     assert "declared 7" in conflict.message
     assert "derived 3" in conflict.message
     assert conflict.location["path"].endswith("/graph/derived_dimensions/0")
 
 
-def test_studio_schema_uses_subgraph_boundary_shapes_for_parent_ports() -> None:
+def test_studio_schema_uses_subgraph_boundary_shapes_for_parent_ports(
+    application_registry_bundle,
+) -> None:
     child_graph = GraphSpec(
         nodes={
             "cell": {
@@ -2011,7 +2114,11 @@ def test_studio_schema_uses_subgraph_boundary_shapes_for_parent_ports() -> None:
         }
     )
 
-    registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
+    registry = enumerate_studio_schema_registry(
+        workspace,
+        train_stage.scenario_id,
+        component_registry=application_registry_bundle.components,
+    )
     mux_output = next(port for port in registry.ports if port.id == "port:task_mux.output:output")
     feedback_input = next(port for port in registry.ports if port.id == "port:network.input:input")
     hidden_inputs = [port for port in registry.ports if port.id == "port:network.hidden:input"]
@@ -2022,7 +2129,9 @@ def test_studio_schema_uses_subgraph_boundary_shapes_for_parent_ports() -> None:
     assert hidden_inputs[0].value_schema.dtype == "vector"
 
 
-def test_studio_schema_enumeration_runtime_introspection_hook_adds_sample_leaf_targets() -> None:
+def test_studio_schema_enumeration_runtime_introspection_hook_adds_sample_leaf_targets(
+    application_registry_bundle,
+) -> None:
     def introspector(workspace, scenario_id, options):
         assert workspace.id
         assert scenario_id == "scenario:train"
@@ -2050,6 +2159,7 @@ def test_studio_schema_enumeration_runtime_introspection_hook_adds_sample_leaf_t
         "scenario:train",
         runtime_introspection={"enabled": True, "max_targets": 1},
         runtime_introspector=introspector,
+        component_registry=application_registry_bundle.components,
     )
 
     runtime_targets = [
@@ -2067,7 +2177,9 @@ def test_studio_schema_enumeration_runtime_introspection_hook_adds_sample_leaf_t
     assert registry.metadata["runtime_introspection"]["truncated"] is True
 
 
-def test_studio_schema_enumeration_runtime_introspection_failure_is_warning() -> None:
+def test_studio_schema_enumeration_runtime_introspection_failure_is_warning(
+    application_registry_bundle,
+) -> None:
     def introspector(_workspace, _scenario_id, _options):
         raise RuntimeError("sample unavailable")
 
@@ -2076,6 +2188,7 @@ def test_studio_schema_enumeration_runtime_introspection_failure_is_warning() ->
         "scenario:train",
         runtime_introspection=True,
         runtime_introspector=introspector,
+        component_registry=application_registry_bundle.components,
     )
 
     issue = next(issue for issue in registry.issues if issue.type == "runtime_introspection_failed")
@@ -2084,35 +2197,49 @@ def test_studio_schema_enumeration_runtime_introspection_failure_is_warning() ->
     assert registry.metadata["runtime_introspection"]["status"] == "failed"
 
 
-def test_studio_schema_enumeration_reports_missing_scenario_graph_and_binding() -> None:
-    missing = enumerate_studio_schema_registry(_schema_workspace(), "scenario:missing")
+def test_studio_schema_enumeration_reports_missing_scenario_graph_and_binding(
+    application_registry_bundle,
+) -> None:
+    missing = enumerate_studio_schema_registry(
+        _schema_workspace(),
+        "scenario:missing",
+        component_registry=application_registry_bundle.components,
+    )
     assert any(issue.type == "missing_scenario" for issue in missing.issues)
 
     workspace = _schema_workspace()
     scenario = workspace.scenarios["scenario:train"]
     scenario.graph = None
     scenario.task_binding_spec = None
-    registry = enumerate_studio_schema_registry(workspace, "scenario:train")
+    registry = enumerate_studio_schema_registry(
+        workspace, "scenario:train", component_registry=application_registry_bundle.components
+    )
 
     issue_types = {issue.type for issue in registry.issues}
     assert "missing_graph" in issue_types
     assert "missing_task_binding_spec" in issue_types
 
 
-def test_studio_schema_enumeration_validates_task_binding_schema_mismatch() -> None:
+def test_studio_schema_enumeration_validates_task_binding_schema_mismatch(
+    application_registry_bundle,
+) -> None:
     workspace = _schema_workspace()
     scenario = next(iter(workspace.scenarios.values()))
     scenario.graph.nodes["network"].type = "Linear"
     assert scenario.task_binding_spec is not None
     scenario.task_binding_spec.exposed_data[0].dtype = "scalar"
 
-    registry = enumerate_studio_schema_registry(workspace, scenario.id)
+    registry = enumerate_studio_schema_registry(
+        workspace, scenario.id, component_registry=application_registry_bundle.components
+    )
     issue_types = {issue.type for issue in registry.issues}
 
     assert "task_binding_dtype_mismatch" in issue_types
 
 
-def test_studio_schema_enumeration_validates_task_binding_identity() -> None:
+def test_studio_schema_enumeration_validates_task_binding_identity(
+    application_registry_bundle,
+) -> None:
     workspace = _schema_workspace()
     scenario = next(iter(workspace.scenarios.values()))
     assert scenario.task_binding_spec is not None
@@ -2123,14 +2250,18 @@ def test_studio_schema_enumeration_validates_task_binding_identity() -> None:
         binding.model_copy(),
     ]
 
-    registry = enumerate_studio_schema_registry(workspace, scenario.id)
+    registry = enumerate_studio_schema_registry(
+        workspace, scenario.id, component_registry=application_registry_bundle.components
+    )
     issue_types = {issue.type for issue in registry.issues}
 
     assert "task_binding_id_mismatch" in issue_types
     assert "duplicate_task_binding" in issue_types
 
 
-def test_studio_schema_enumerates_task_data_roles_and_rejects_protocol_bindings() -> None:
+def test_studio_schema_enumerates_task_data_roles_and_rejects_protocol_bindings(
+    application_registry_bundle,
+) -> None:
     workspace = _schema_workspace()
     scenario = workspace.scenarios["scenario:train"]
     assert scenario.task_binding_spec is not None
@@ -2138,7 +2269,9 @@ def test_studio_schema_enumerates_task_data_roles_and_rejects_protocol_bindings(
     scenario.task_binding_spec.exposed_data[1].role = "target"
     scenario.task_binding_spec.bindings[0].source_data_id = "targets"
 
-    registry = enumerate_studio_schema_registry(workspace, scenario.id)
+    registry = enumerate_studio_schema_registry(
+        workspace, scenario.id, component_registry=application_registry_bundle.components
+    )
     task_data = {item.path: item for item in registry.task_data}
     issue_types = {issue.type for issue in registry.issues}
 
@@ -2152,7 +2285,9 @@ def test_studio_schema_enumerates_task_data_roles_and_rejects_protocol_bindings(
     assert "task_data_not_bindable" in issue_types
 
 
-def test_studio_schema_accepts_component_parameter_bindings_with_declared_label() -> None:
+def test_studio_schema_accepts_component_parameter_bindings_with_declared_label(
+    application_registry_bundle,
+) -> None:
     graph = GraphSpec(
         nodes={
             "field": {
@@ -2206,11 +2341,21 @@ def test_studio_schema_accepts_component_parameter_bindings_with_declared_label(
         }
     )
 
-    issues = validate_task_binding_schema(task_binding, graph, "/task_binding_spec")
+    issues = validate_task_binding_schema(
+        task_binding,
+        graph,
+        "/task_binding_spec",
+        component_registry=application_registry_bundle.components,
+    )
     assert not [issue for issue in issues if issue.severity == "error"]
 
     task_binding.bindings[0].metadata["task_parameter_label"] = "missing"
-    issues = validate_task_binding_schema(task_binding, graph, "/task_binding_spec")
+    issues = validate_task_binding_schema(
+        task_binding,
+        graph,
+        "/task_binding_spec",
+        component_registry=application_registry_bundle.components,
+    )
     assert {issue.type for issue in issues} >= {"component_parameter_label_unknown"}
 
     occupied_payload = graph.model_dump(mode="json", exclude_none=True)
@@ -2237,11 +2382,18 @@ def test_studio_schema_accepts_component_parameter_bindings_with_declared_label(
     )
     occupied_graph = GraphSpec.model_validate(occupied_payload)
     task_binding.bindings[0].metadata["task_parameter_label"] = "perturb"
-    issues = validate_task_binding_schema(task_binding, occupied_graph, "/task_binding_spec")
+    issues = validate_task_binding_schema(
+        task_binding,
+        occupied_graph,
+        "/task_binding_spec",
+        component_registry=application_registry_bundle.components,
+    )
     assert {issue.type for issue in issues} >= {"task_binding_target_occupied"}
 
 
-def test_studio_schema_enumeration_validates_intervention_targets() -> None:
+def test_studio_schema_enumeration_validates_intervention_targets(
+    application_registry_bundle,
+) -> None:
     workspace = _schema_workspace()
     scenario = workspace.scenarios["scenario:train"]
     assert scenario.graph is not None
@@ -2292,7 +2444,9 @@ def test_studio_schema_enumeration_validates_intervention_targets() -> None:
         ]
     ]
 
-    registry = enumerate_studio_schema_registry(workspace, "scenario:train")
+    registry = enumerate_studio_schema_registry(
+        workspace, "scenario:train", component_registry=application_registry_bundle.components
+    )
     issue_types = {issue.type for issue in registry.issues}
 
     assert "intervention_missing_value" in issue_types
@@ -2366,7 +2520,9 @@ def _worker_contract_job(
     )
 
 
-def test_worker_spec_contract_accepts_scenario_owned_task_binding_v2() -> None:
+def test_worker_spec_contract_accepts_scenario_owned_task_binding_v2(
+    application_registry_bundle,
+) -> None:
     _require_worker_specs(
         _worker_contract_job(
             task_binding_spec={
@@ -2393,11 +2549,12 @@ def test_worker_spec_contract_accepts_scenario_owned_task_binding_v2() -> None:
                 ],
                 "metadata": {},
             }
-        )
+        ),
+        bootstrap_state=BootstrapState(application_registry_bundle, ()),
     )
 
 
-def test_worker_spec_contract_migrates_legacy_task_binding_v1() -> None:
+def test_worker_spec_contract_migrates_legacy_task_binding_v1(application_registry_bundle) -> None:
     job = _worker_contract_job(
         task_binding_spec={
             "schema_version": "feedbax.studio.task_bindings.v1",
@@ -2425,7 +2582,7 @@ def test_worker_spec_contract_migrates_legacy_task_binding_v1() -> None:
         }
     )
 
-    _require_worker_specs(job)
+    _require_worker_specs(job, bootstrap_state=BootstrapState(application_registry_bundle, ()))
 
     assert job.task_binding_spec["schema_version"] == "feedbax.spec.studio.task_bindings.v2"
     assert job.task_binding_spec["exposed_data"][0]["id"] == "inputs"
@@ -2434,7 +2591,7 @@ def test_worker_spec_contract_migrates_legacy_task_binding_v1() -> None:
     assert "source_output_id" not in job.task_binding_spec["bindings"][0]
 
 
-def test_worker_spec_contract_rejects_runtime_network_payloads() -> None:
+def test_worker_spec_contract_rejects_runtime_network_payloads(application_registry_bundle) -> None:
     job = _worker_contract_job(
         graph_spec=_runtime_network_graph_spec(),
         task_binding_spec={
@@ -2464,10 +2621,12 @@ def test_worker_spec_contract_rejects_runtime_network_payloads() -> None:
     )
 
     with pytest.raises(ValueError, match="task_binding_unknown_schema"):
-        _require_worker_specs(job)
+        _require_worker_specs(job, bootstrap_state=BootstrapState(application_registry_bundle, ()))
 
 
-def test_worker_spec_contract_rejects_graph_incompatible_task_bindings() -> None:
+def test_worker_spec_contract_rejects_graph_incompatible_task_bindings(
+    application_registry_bundle,
+) -> None:
     with pytest.raises(ValueError, match="unknown_task_binding_target_port"):
         _require_worker_specs(
             _worker_contract_job(
@@ -2495,7 +2654,8 @@ def test_worker_spec_contract_rejects_graph_incompatible_task_bindings() -> None
                     ],
                     "metadata": {},
                 }
-            )
+            ),
+            bootstrap_state=BootstrapState(application_registry_bundle, ()),
         )
 
 
@@ -2538,6 +2698,7 @@ def test_worker_spec_contract_rejects_graph_incompatible_task_bindings() -> None
 def test_worker_spec_contract_rejects_legacy_or_inferred_task_bindings(
     task_binding_spec: dict | None,
     message: str,
+    application_registry_bundle,
 ) -> None:
     graph_with_task_node = _minimal_graph_spec()
     graph_with_task_node["nodes"]["task"] = {
@@ -2551,7 +2712,8 @@ def test_worker_spec_contract_rejects_legacy_or_inferred_task_bindings(
             _worker_contract_job(
                 task_binding_spec=task_binding_spec,
                 graph_spec=graph_with_task_node,
-            )
+            ),
+            bootstrap_state=BootstrapState(application_registry_bundle, ()),
         )
 
 
@@ -2584,7 +2746,9 @@ def test_worker_training_cfg_parses_grad_clip_absent_null_and_float() -> None:
     assert float_cfg.grad_clip == 2.5
 
 
-def test_worker_training_errors_instead_of_stub_on_missing_task_binding() -> None:
+def test_worker_training_errors_instead_of_stub_on_missing_task_binding(
+    application_registry_bundle,
+) -> None:
     event_queue: queue.Queue = queue.Queue()
     job = _Job(
         job_id="invalid-job",
@@ -2599,7 +2763,7 @@ def test_worker_training_errors_instead_of_stub_on_missing_task_binding() -> Non
         status=WorkerStatus.RUNNING,
     )
 
-    _run_training(job)
+    _run_training(job, bootstrap_state=BootstrapState(application_registry_bundle, ()))
 
     assert job.status == WorkerStatus.ERROR
     events = []

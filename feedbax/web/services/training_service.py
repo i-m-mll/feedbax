@@ -12,7 +12,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional, Sequence
 
 import httpx
 
@@ -41,7 +41,7 @@ from feedbax.orchestration.bundle import (
     RunBundle,
     SchemaArtifactRef,
 )
-from feedbax.orchestration.conformance import build_default_check_registry
+from feedbax.orchestration.conformance import CheckRegistry
 from feedbax.orchestration.events import (
     RUN_EVENT_SCHEMA_ID,
     RUN_EVENT_TERMINAL_TYPES,
@@ -258,6 +258,9 @@ class TrainingService:
     async def start_training(
         self,
         total_batches: int,
+        *,
+        conformance_registry: CheckRegistry,
+        plugin_provenance: Sequence[Any],
         training_config: Optional[dict] = None,
         training_spec: Optional[dict] = None,
         task_spec: Optional[dict] = None,
@@ -298,7 +301,8 @@ class TrainingService:
                 base_url=base_url,
                 auth_token=self._auth_token,
             ),
-            conformance_registry=build_default_check_registry(),
+            conformance_registry=conformance_registry,
+            plugin_provenance=plugin_provenance,
         )
         engine.run(stop_after_stage="ASSEMBLE")
         bundle = engine.bundle
@@ -780,7 +784,9 @@ class TrainingService:
         events = (
             self._read_job_events(bundle, job_id)
             if bundle is not None
-            else RunEventReader(ref.state_path.parent / "events" / f"{job_id}.events.jsonl").read_all()
+            else RunEventReader(
+                ref.state_path.parent / "events" / f"{job_id}.events.jsonl"
+            ).read_all()
         )
         latest = events[-1] if events else None
         payload = dict(latest.payload) if latest is not None else {}
@@ -792,9 +798,7 @@ class TrainingService:
         return {
             "status": status,
             "batch": int(payload.get("batch", 0) or 0),
-            "total_batches": int(
-                payload.get("total_batches", total_batches) or 0
-            ),
+            "total_batches": int(payload.get("total_batches", total_batches) or 0),
             "last_loss": float(payload.get("loss", 0.0) or 0.0),
             "job_id": job_id,
             "run_set_id": ref.run_set_id,

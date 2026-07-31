@@ -87,6 +87,7 @@ class ExecutionPreparationRequest:
 
 RestoredScheduleContextBinder = Callable[[Mapping[str, Any], int, int, int], Mapping[str, Any]]
 
+
 @dataclass(frozen=True)
 class ExecutionPreparationResult:
     """Narrow set of runtime-only values a provider may supply to the executor."""
@@ -98,7 +99,9 @@ class ExecutionPreparationResult:
     restored_schedule_context_binder: RestoredScheduleContextBinder | None = None
 
     def __post_init__(self) -> None:
-        if self.restored_schedule_context_binder is not None and not callable(self.restored_schedule_context_binder):
+        if self.restored_schedule_context_binder is not None and not callable(
+            self.restored_schedule_context_binder
+        ):
             raise TypeError("restored_schedule_context_binder must be callable when provided")
 
 
@@ -179,7 +182,9 @@ class ExecutionPreparationPlan:
             raise TypeError("loss_service must be a LossService when provided")
         if self.resume_slot_transform is not None and not callable(self.resume_slot_transform):
             raise TypeError("resume_slot_transform must be callable when provided")
-        if self.restored_schedule_context_binder is not None and not callable(self.restored_schedule_context_binder):
+        if self.restored_schedule_context_binder is not None and not callable(
+            self.restored_schedule_context_binder
+        ):
             raise TypeError("restored_schedule_context_binder must be callable when provided")
         object.__setattr__(
             self,
@@ -517,7 +522,9 @@ def validate_materialized_execution_preparation(
         raise ExecutionPreparationError("materialized preparation mapping structure is stale")
     if dict(preparation_bindings) != bindings:
         raise ExecutionPreparationError("materialized preparation mapping structure is stale")
-    if preparation.restored_schedule_context_binder is not None and not callable(preparation.restored_schedule_context_binder):
+    if preparation.restored_schedule_context_binder is not None and not callable(
+        preparation.restored_schedule_context_binder
+    ):
         raise ExecutionPreparationError("restored_schedule_context_binder must be callable")
     initial_slots = getattr(preparation, "initial_slots", None)
     if not isinstance(initial_slots, Mapping):
@@ -784,10 +791,13 @@ class ExecutionPreparationProviderRegistry:
     """Registry containing at most one runtime provider per training method ref."""
 
     def __init__(self) -> None:
+        self._sealed = False
         self._registrations: dict[str, ExecutionPreparationRegistration] = {}
 
     def register(self, registration: ExecutionPreparationRegistration) -> None:
         """Register one provider, rejecting ambiguous duplicate ownership."""
+        if self._sealed:
+            raise RuntimeError("execution preparation registry is sealed")
         if not registration.method_ref:
             raise ValueError("execution preparation method_ref must not be empty")
         if not callable(registration.provider):
@@ -801,6 +811,9 @@ class ExecutionPreparationProviderRegistry:
                 f"{registration.method_ref!r} by {existing.owner!r}"
             )
         self._registrations[registration.method_ref] = registration
+
+    def seal(self) -> None:
+        self._sealed = True
 
     def available_keys(self) -> tuple[str, ...]:
         """Return method refs with registered preparation providers."""
@@ -972,9 +985,6 @@ def lower_zero_level_preparation_plan(
         resume_slot_transform=plan.resume_slot_transform,
         restored_schedule_context_binder=plan.restored_schedule_context_binder,
     )
-
-
-DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY = ExecutionPreparationProviderRegistry()
 
 
 def require_execution_preparation_provider(

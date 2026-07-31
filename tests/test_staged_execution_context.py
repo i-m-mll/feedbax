@@ -18,9 +18,8 @@ from feedbax.analysis.bundles import (
 from feedbax.analysis.evaluation import (
     EvaluationRecipeResult,
     execute_evaluation_run_spec,
-    register_evaluation_recipe,
-    unregister_evaluation_recipe,
 )
+from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
     StagedArtifactProviderRootBinding,
@@ -935,6 +934,7 @@ def test_exact_immutable_completed_parent_preserves_valid_execution_hash(
 
 def test_staged_python_and_dry_run_receive_validated_context_without_extra_effects(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     roots, artifact_bindings, checkpoint_bindings = _bindings(tmp_path)
     _write_training(tmp_path)
@@ -964,36 +964,36 @@ def test_staged_python_and_dry_run_receive_validated_context_without_extra_effec
         )
         return EvaluationRecipeResult(summary_metrics={"inputs": len(run_spec.inputs)})
 
-    register_evaluation_recipe(_EVALUATION_TYPE, recipe, replace=True)
-    try:
-        dry_root = tmp_path / "dry"
-        dry_root.mkdir()
-        _write_training(dry_root, "feedbax-training-run:dry")
-        dry_result = dry_run_staged_analysis_bundle(
-            _bundle(),
-            root=dry_root,
-            execution_descriptor=_descriptor(),
-            artifact_provider_bindings=artifact_bindings,
-            checkpoint_custody_bindings=checkpoint_bindings,
-        )
-        assert dry_result.stages[0].status == "would_run"
-        assert calls == []
-        assert not (dry_root / "manifests" / "evaluation_runs").exists()
+    application_registry_bundle.evaluation_recipes.register(_EVALUATION_TYPE, recipe)
+    dry_root = tmp_path / "dry"
+    dry_root.mkdir()
+    _write_training(dry_root, "feedbax-training-run:dry")
+    dry_result = dry_run_staged_analysis_bundle(
+        _bundle(),
+        root=dry_root,
+        execution_descriptor=_descriptor(),
+        artifact_provider_bindings=artifact_bindings,
+        checkpoint_custody_bindings=checkpoint_bindings,
+    )
+    assert dry_result.stages[0].status == "would_run"
+    assert calls == []
+    assert not (dry_root / "manifests" / "evaluation_runs").exists()
 
-        execution = execute_staged_analysis_bundle(
-            _bundle(),
-            root=tmp_path,
-            execution_descriptor=_descriptor(),
-            artifact_provider_bindings=artifact_bindings,
-            checkpoint_custody_bindings=checkpoint_bindings,
-        )
-        assert execution.stages[0].manifest_refs
-        assert len(calls) == 1
-    finally:
-        unregister_evaluation_recipe(_EVALUATION_TYPE)
+    execution = execute_staged_analysis_bundle(
+        _bundle(),
+        root=tmp_path,
+        execution_descriptor=_descriptor(),
+        artifact_provider_bindings=artifact_bindings,
+        checkpoint_custody_bindings=checkpoint_bindings,
+        registries=application_registry_bundle,
+    )
+    assert execution.stages[0].manifest_refs
+    assert len(calls) == 1
 
 
-def test_invalid_context_precedes_recipe_cache_and_output_effects(tmp_path: Path) -> None:
+def test_invalid_context_precedes_recipe_cache_and_output_effects(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     _write_training(tmp_path)
     calls = []
 
@@ -1001,38 +1001,36 @@ def test_invalid_context_precedes_recipe_cache_and_output_effects(tmp_path: Path
         calls.append(True)
         return EvaluationRecipeResult()
 
-    register_evaluation_recipe(_EVALUATION_TYPE, recipe, replace=True)
+    application_registry_bundle.evaluation_recipes.register(_EVALUATION_TYPE, recipe)
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*.json")}
-    try:
-        with pytest.raises(StagedExecutionContextError, match="exactly match"):
-            execute_staged_analysis_bundle(
-                _bundle(),
-                root=tmp_path,
-                execution_descriptor=_descriptor(),
-            )
-    finally:
-        unregister_evaluation_recipe(_EVALUATION_TYPE)
+    with pytest.raises(StagedExecutionContextError, match="exactly match"):
+        execute_staged_analysis_bundle(
+            _bundle(),
+            root=tmp_path,
+            execution_descriptor=_descriptor(),
+            registries=application_registry_bundle,
+        )
     after = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*.json")}
     assert calls == []
     assert after == before
     assert not (tmp_path / "manifests" / "evaluation_runs").exists()
 
 
-def test_provider_free_direct_execution_receives_empty_singleton(tmp_path: Path) -> None:
+def test_provider_free_direct_execution_receives_empty_singleton(
+    tmp_path: Path, evaluation_registry
+) -> None:
     seen = []
 
     def recipe(_run_spec, _root, _states_path, execution_context):
         seen.append(execution_context)
         return EvaluationRecipeResult()
 
-    register_evaluation_recipe(_EVALUATION_TYPE, recipe, replace=True)
-    try:
-        execute_evaluation_run_spec(
-            EvaluationRunSpec(evaluation_type=_EVALUATION_TYPE),
-            root=tmp_path,
-        )
-    finally:
-        unregister_evaluation_recipe(_EVALUATION_TYPE)
+    evaluation_registry.register(_EVALUATION_TYPE, recipe)
+    execute_evaluation_run_spec(
+        EvaluationRunSpec(evaluation_type=_EVALUATION_TYPE),
+        registry=evaluation_registry,
+        root=tmp_path,
+    )
     assert seen == [EMPTY_STAGED_EXECUTION_CONTEXT]
 
 
@@ -1040,6 +1038,7 @@ def test_cli_threads_named_bindings_into_staged_recipe(
     tmp_path: Path,
     monkeypatch,
     capsys,
+    application_registry_bundle,
 ) -> None:
     roots, _artifact_bindings, _checkpoint_bindings = _bindings(tmp_path)
     manifest_root = tmp_path / "cli-manifests"
@@ -1053,31 +1052,33 @@ def test_cli_threads_named_bindings_into_staged_recipe(
         seen.append(execution_context)
         return EvaluationRecipeResult()
 
-    register_evaluation_recipe(_EVALUATION_TYPE, recipe, replace=True)
+    application_registry_bundle.evaluation_recipes.register(_EVALUATION_TYPE, recipe)
     monkeypatch.setattr(
         "feedbax.bin.analysis.load_analysis_bundle", lambda *_args, **_kwargs: _bundle()
     )
-    try:
-        analysis_main(
-            [
-                "--bundle",
-                "test/staged-context",
-                "--manifest-root",
-                str(manifest_root),
-                "--fig-dump-dir",
-                str(tmp_path / "figures"),
-                "--execution-descriptor",
-                str(descriptor_path),
-                "--artifact-provider",
-                f"primary={roots['primary']}",
-                "--artifact-provider",
-                f"evidence.backup={roots['evidence.backup']}",
-                "--checkpoint-custody",
-                f"training-checkpoints={roots['training-checkpoints']}",
-            ]
-        )
-    finally:
-        unregister_evaluation_recipe(_EVALUATION_TYPE)
+
+    async def compose_application(**_kwargs):
+        return BootstrapState(application_registry_bundle, ())
+
+    monkeypatch.setattr("feedbax.bin.analysis.compose_application", compose_application)
+    analysis_main(
+        [
+            "--bundle",
+            "test/staged-context",
+            "--manifest-root",
+            str(manifest_root),
+            "--fig-dump-dir",
+            str(tmp_path / "figures"),
+            "--execution-descriptor",
+            str(descriptor_path),
+            "--artifact-provider",
+            f"primary={roots['primary']}",
+            "--artifact-provider",
+            f"evidence.backup={roots['evidence.backup']}",
+            "--checkpoint-custody",
+            f"training-checkpoints={roots['training-checkpoints']}",
+        ]
+    )
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["stages"][0]["manifest_refs"]

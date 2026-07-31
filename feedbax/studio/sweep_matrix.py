@@ -28,6 +28,8 @@ from feedbax.training.run_matrix import (
     materialize_run_matrix,
     variation_values,
 )
+from feedbax.contracts.training import TrainingMethodRegistry
+from feedbax.training.row_lowering import TrainingRowLowererRegistry
 
 
 class SweepMatrixError(ValueError):
@@ -96,6 +98,8 @@ def expand_sweep_matrix(
     task_spec: dict[str, Any],
     task_binding_spec: dict[str, Any] | None,
     default_name: str,
+    method_registry: TrainingMethodRegistry,
+    row_lowerer_registry: TrainingRowLowererRegistry,
 ) -> ExpandedSweepMatrix:
     """Adapt the shared materializer result to the legacy Studio return shape."""
     materialized = materialize_sweep_matrix(
@@ -105,6 +109,8 @@ def expand_sweep_matrix(
         task_spec=task_spec,
         task_binding_spec=task_binding_spec,
         default_name=default_name,
+        method_registry=method_registry,
+        row_lowerer_registry=row_lowerer_registry,
     )
     runs: list[ExpandedSweepRun] = []
     for row in materialized.rows:
@@ -142,6 +148,8 @@ def materialize_sweep_matrix(
     task_spec: dict[str, Any],
     task_binding_spec: dict[str, Any] | None,
     default_name: str,
+    method_registry: TrainingMethodRegistry,
+    row_lowerer_registry: TrainingRowLowererRegistry,
     repo_root: Path | None = None,
 ) -> MaterializedRunMatrix:
     """Route governed and legacy Studio matrix documents through one materializer."""
@@ -151,6 +159,8 @@ def materialize_sweep_matrix(
             return materialize_run_matrix(
                 governed,
                 repo_root=Path.cwd() if repo_root is None else repo_root,
+                method_registry=method_registry,
+                row_lowerer=row_lowerer_registry.lower,
             )
         except ValueError as exc:
             raise SweepMatrixError(str(exc)) from exc
@@ -170,7 +180,7 @@ def materialize_sweep_matrix(
                     "training_spec": training_spec,
                     "task_spec": task_spec,
                     "task_binding_spec": task_binding_spec,
-                }
+                },
             },
             "axes": [axis.model_dump(mode="json", exclude_none=True) for axis in axes],
             "combination": combination.model_dump(mode="json", exclude_none=True),
@@ -184,6 +194,7 @@ def materialize_sweep_matrix(
         return materialize_adapted_run_matrix(
             governed,
             repo_root=Path.cwd() if repo_root is None else repo_root,
+            row_lowerer=row_lowerer_registry.lower,
             row_validator=_validate_studio_row_payload,
         )
     except ValueError as exc:
@@ -243,9 +254,7 @@ def _parse_axes(matrix_spec: Mapping[str, Any]) -> list[TrainingSweepAxis]:
             else:
                 variation_keys = {"kind", "min", "max", "n", "sampler", "seed", "params"}
                 variation = {
-                    key: axis_data.pop(key)
-                    for key in list(axis_data)
-                    if key in variation_keys
+                    key: axis_data.pop(key) for key in list(axis_data) if key in variation_keys
                 }
                 if variation:
                     axis_data["variation"] = variation
@@ -281,21 +290,16 @@ def _validate_group_axes(
     for group in combination.groups:
         unknown = [axis_id for axis_id in group.axes if axis_id not in axis_ids]
         if unknown:
-            raise SweepMatrixError(
-                f"sweep group {group.id!r} references unknown axes {unknown!r}"
-            )
+            raise SweepMatrixError(f"sweep group {group.id!r} references unknown axes {unknown!r}")
         overlap = used.intersection(group.axes)
         if overlap:
-            raise SweepMatrixError(
-                f"sweep axes {sorted(overlap)!r} appear in more than one group"
-            )
+            raise SweepMatrixError(f"sweep axes {sorted(overlap)!r} appear in more than one group")
         used.update(group.axes)
     if combination.groups:
         missing = sorted(axis_ids - used)
         if missing:
             raise SweepMatrixError(
-                "sweep matrix groups must cover every declared axis; "
-                f"missing axes {missing!r}"
+                f"sweep matrix groups must cover every declared axis; missing axes {missing!r}"
             )
 
 

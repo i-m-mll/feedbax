@@ -67,7 +67,6 @@ from .checkpoint_custody import (
     write_checkpoint_transaction,
 )
 from .preparation import (
-    DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY,
     ExecutionPreparationError,
     ExecutionPreparationPlan,
     ExecutionPreparationProvider,
@@ -144,7 +143,6 @@ try:
         materialize_adapted_run_matrix,
     )
     from .row_lowering import (
-        DEFAULT_TRAINING_ROW_LOWERER_REGISTRY,
         TrainingRowLowererRegistration,
         TrainingRowLowererRegistry,
         TrainingRowLowererRegistryError,
@@ -219,7 +217,6 @@ __all__ = [
     "TrainingRowLowererRegistry",
     "TrainingRowLowererRegistryError",
     "TrainingRowLoweringContext",
-    "DEFAULT_TRAINING_ROW_LOWERER_REGISTRY",
     "TrainingRowLoweringResult",
     "TrainingRowParentProvenance",
     "TrainingRowPlanningProvenance",
@@ -234,7 +231,6 @@ __all__ = [
     "TRAINING_METHOD_AUTHORING_LOWERER_IDENTITY",
     "TRAINING_METHOD_AUTHORING_LOWERER_VERSION",
     "AuthenticatedCheckpointTransaction",
-    "DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY",
     "ExecutionPreparationError",
     "ExecutionPreparationPlan",
     "ExecutionPreparationProvider",
