@@ -169,6 +169,13 @@ behavior.
   override with
   `FEEDBAX_JAX_COMPILATION_CACHE_DIR` or disable with
   `FEEDBAX_DISABLE_JAX_COMPILATION_CACHE=1`.
+- The sealed repo-snapshot cache follows the same precedent: it defaults to
+  `<git-common-dir>/feedbax_repo_snapshots` for the running checkout and is
+  overridden with `FEEDBAX_REPO_SNAPSHOT_CACHE_DIR`. Tests are pinned to a
+  per-worker directory so they never share sealed bytes with production runs.
+  Never point it back at a machine-global temporary directory: entries are
+  durable and read-only, and an operating-system temporary-file reaper will
+  empty them in place and poison later runs.
 - New tests must be safe under `pytest-xdist`: write only to `tmp_path` or a
   unique per-test directory, avoid shared checkpoint/custody/cache locations
   unless the path includes a test-unique segment, and restore any process-global

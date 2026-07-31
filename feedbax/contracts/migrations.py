@@ -203,6 +203,8 @@ from feedbax.contracts.figures import (
     FIGURE_TEMPLATE_SCHEMA_VERSION,
     PERTURBATION_TIMING_SCHEMA_ID,
     PERTURBATION_TIMING_SCHEMA_VERSION,
+    SCENE_CAMERA_SCHEMA_ID,
+    SCENE_CAMERA_SCHEMA_VERSION,
 )
 from feedbax.contracts.graph import (
     ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
@@ -2800,6 +2802,17 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Exact 1:1 linear data-unit scaling for one figure panel.",
             rejected_old_versions=("feedbax.spec.equal_data_aspect.v0",),
             required_tests=("tests/test_declarative_figures.py",),
+        ),
+        _family(
+            "SceneCamera",
+            SCENE_CAMERA_SCHEMA_ID,
+            SCENE_CAMERA_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("FigureSpec.panels.camera",),
+            consumed_by=("feedbax.plot.constructors._comparison_grid",),
+            description="Authored viewpoint for one 3D scene figure panel.",
+            rejected_old_versions=("feedbax.spec.scene_camera.v0",),
+            required_tests=("tests/test_figure_3d_panels.py",),
         ),
         _family(
             "PerturbationTiming",

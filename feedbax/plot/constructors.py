@@ -12,7 +12,12 @@ import numpy as np
 import plotly.graph_objs as go
 from plotly.subplots import make_subplots
 
-from feedbax.contracts.figures import ColorscaleSpec, FigureColorbar, PerturbationTiming
+from feedbax.contracts.figures import (
+    ColorscaleSpec,
+    FigureColorbar,
+    PerturbationTiming,
+    SceneCamera,
+)
 from feedbax.contracts.manifest import StrictModel
 from feedbax.plot.colors import color_add_alpha, sample_colorscale_unique
 
@@ -210,6 +215,11 @@ class PanelContent:
 
     ``panel_type`` of ``None`` is the Cartesian panel, which is what every panel
     was before scene panels existed; ``"scene"`` is the 3D one.
+
+    ``camera`` is carried as the authored declaration rather than as a dumped
+    mapping, because the assembler needs its derived eye and up directions and
+    not its authored fields; ``GridFigureParams.colorbar`` carries a contract
+    model through this layer for the same reason.
     """
 
     name: str
@@ -225,6 +235,7 @@ class PanelContent:
     panel_type: str | None = None
     row_span: int | None = None
     col_span: int | None = None
+    camera: SceneCamera | None = None
 
 
 TraceConstructor = Callable[[Mapping[str, Any], StrictModel], Sequence[Any]]
@@ -1204,6 +1215,22 @@ def _subplot_specs(
     return grid
 
 
+def _scene_camera_layout(camera: SceneCamera) -> dict[str, Any]:
+    """Lower one authored viewpoint to Plotly's ``scene.camera`` keys.
+
+    The eye is stated in scene-box coordinates, which Plotly normalizes from the
+    aspect mode before positioning the camera, so this sets no aspect key and
+    cannot override ``aspectmode``.
+    """
+    layout: dict[str, Any] = {
+        "eye": dict(zip("xyz", camera.eye_vector(), strict=True)),
+        "up": dict(zip("xyz", camera.up_vector(), strict=True)),
+    }
+    if camera.projection is not None:
+        layout["projection"] = {"type": camera.projection}
+    return layout
+
+
 def _update_scene_panel(fig: go.Figure, panel: PanelContent, *, row: int, col: int) -> None:
     """Apply one scene panel's labels, axis settings, and aspect mode.
 
@@ -1227,6 +1254,10 @@ def _update_scene_panel(fig: go.Figure, panel: PanelContent, *, row: int, col: i
     if panel.equal_data_aspect:
         # A scene has no per-axis scale anchor; equal data units are its aspect mode.
         scene["aspectmode"] = "data"
+    if panel.camera is not None:
+        # Independent of the aspect mode: the aspect mode is the shape of the box,
+        # the camera is where it is looked at from.
+        scene["camera"] = _scene_camera_layout(panel.camera)
     if scene:
         fig.update_scenes(**scene, row=row, col=col)
 
@@ -1548,7 +1579,7 @@ def register_default_figure_constructors() -> None:
         "feedbax.endpoint_markers": "v3",
         "feedbax.hline": "v2",
         "feedbax.vrect": "v3",
-        "feedbax.comparison_grid": "v4",
+        "feedbax.comparison_grid": "v5",
         "feedbax.grid_figure": "v5",
     }
     for key, tier, constructor, params_model, description in defaults:

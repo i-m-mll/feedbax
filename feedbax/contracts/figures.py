@@ -56,6 +56,13 @@ Additive changelog, 2026-07-30: ``PanelSpec`` accepts ``panel_type``, ``z_axis``
 mode; spans let one panel occupy a rectangle of grid cells. All five fields are
 optional None-defaults and an omitted ``panel_type`` is the Cartesian panel that
 already existed, so existing panel and figure identity bytes are unchanged.
+
+Additive changelog, 2026-07-30: ``PanelSpec.camera`` accepts the versioned
+``SceneCamera`` declaration. It states the viewpoint a ``scene`` panel is drawn
+from, so a figure destined for a static page fixes its own orientation instead
+of inheriting the renderer's default. The field is an optional None-default and
+an omitted camera leaves the renderer's default in place, so existing panel and
+figure identity bytes are unchanged.
 """
 
 from __future__ import annotations
@@ -95,6 +102,8 @@ PERTURBATION_TIMING_SCHEMA_ID = "feedbax.spec.perturbation_timing"
 PERTURBATION_TIMING_SCHEMA_VERSION = "feedbax.spec.perturbation_timing.v1"
 EQUAL_DATA_ASPECT_SCHEMA_ID = "feedbax.spec.equal_data_aspect"
 EQUAL_DATA_ASPECT_SCHEMA_VERSION = "feedbax.spec.equal_data_aspect.v1"
+SCENE_CAMERA_SCHEMA_ID = "feedbax.spec.scene_camera"
+SCENE_CAMERA_SCHEMA_VERSION = "feedbax.spec.scene_camera.v1"
 FIGURE_RUNTIME_BINDING_SCHEMA_ID = "feedbax.spec.figure_runtime_binding"
 FIGURE_RUNTIME_BINDING_SCHEMA_VERSION = "feedbax.spec.figure_runtime_binding.v1"
 FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID = "feedbax.spec.figure_data_product_payload"
@@ -210,6 +219,126 @@ class EqualDataAspect(StrictModel):
                 f"{self.schema_version!r}"
             )
         return self
+
+
+#: Plotly's default scene eye sits at ``(1.25, 1.25, 1.25)``. Its distance from
+#: the scene centre is the framing every scene panel has been drawn at, so a
+#: camera that states only an orientation keeps that framing and changes nothing
+#: but the direction it is viewed from.
+DEFAULT_SCENE_CAMERA_DISTANCE = math.sqrt(3.0) * 1.25
+
+
+class SceneCamera(StrictModel):
+    """The viewpoint one ``scene`` panel is drawn from.
+
+    A camera is authored as a position on the sphere around the scene centre —
+    the vocabulary MATLAB's ``view`` and matplotlib's ``view_init`` use — rather
+    than as a renderer's Cartesian eye vector, for the same reason
+    ``EqualDataAspect`` states 1:1 data units instead of a Plotly
+    ``scaleanchor``. The authored intent is "look at the cube from here"; which
+    layout key carries it is the assembler's business.
+
+    ``azimuth`` is degrees about the vertical axis, measured from ``+x`` toward
+    ``+y``, and wraps, so any finite value is accepted and stored as written.
+    ``elevation`` is degrees above the horizontal plane, from ``-90`` (directly
+    below) to ``+90`` (directly above). ``distance`` is how far the eye sits
+    from the scene centre in scene-box units, where
+    ``DEFAULT_SCENE_CAMERA_DISTANCE`` reproduces today's framing and a smaller
+    value zooms in. The scene box is normalized by the panel's aspect mode
+    before the camera is applied, so a distance means the same framing whatever
+    the data's units and extents are, and the camera composes with
+    ``equal_data_aspect`` rather than competing with it.
+
+    Screen-up is derived, not authored: it is the vertical axis projected onto
+    the view plane, which is what a renderer's default ``up`` of ``(0, 0, 1)``
+    already resolves to and what every scientific 3D plot wants. Deriving it
+    makes the degenerate case — an up direction parallel to the view direction,
+    which renders nothing — unstatable rather than merely rejected: at
+    ``elevation`` of exactly ±90 the derived up follows the azimuth
+    continuously. The cost is that a rolled camera and an off-centre look-at
+    point cannot be expressed. No consumer has asked for either, and both would
+    be additive fields on this same declaration if one does.
+    """
+
+    schema_id: str = SCENE_CAMERA_SCHEMA_ID
+    schema_version: str = SCENE_CAMERA_SCHEMA_VERSION
+    azimuth: float
+    elevation: float = Field(ge=-90.0, le=90.0)
+    distance: float = Field(default=DEFAULT_SCENE_CAMERA_DISTANCE, gt=0.0)
+    projection: Literal["perspective", "orthographic"] | None = None
+
+    @model_validator(mode="after")
+    def _validate_camera(self) -> "SceneCamera":
+        if self.schema_id != SCENE_CAMERA_SCHEMA_ID:
+            raise ValueError(f"unsupported SceneCamera schema_id: {self.schema_id!r}")
+        if self.schema_version != SCENE_CAMERA_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported SceneCamera schema_version: {self.schema_version!r}"
+            )
+        nonfinite = [
+            name
+            for name, value in (("azimuth", self.azimuth), ("distance", self.distance))
+            if not math.isfinite(value)
+        ]
+        if nonfinite:
+            raise ValueError(f"SceneCamera {nonfinite} must be finite")
+        return self
+
+    def eye_vector(self) -> tuple[float, float, float]:
+        """Return the eye position in scene-box coordinates."""
+        azimuth = math.radians(self.azimuth)
+        elevation = math.radians(self.elevation)
+        horizontal = self.distance * math.cos(elevation)
+        return (
+            horizontal * math.cos(azimuth),
+            horizontal * math.sin(azimuth),
+            self.distance * math.sin(elevation),
+        )
+
+    def up_vector(self) -> tuple[float, float, float]:
+        """Return the unit screen-up direction for this viewpoint.
+
+        This is the vertical axis projected onto the view plane and normalized,
+        so it is perpendicular to the view direction by construction and never
+        degenerate.
+        """
+        azimuth = math.radians(self.azimuth)
+        elevation = math.radians(self.elevation)
+        vertical = math.sin(elevation)
+        return (
+            -vertical * math.cos(azimuth),
+            -vertical * math.sin(azimuth),
+            math.cos(elevation),
+        )
+
+    @classmethod
+    def from_eye(
+        cls,
+        x: float,
+        y: float,
+        z: float,
+        *,
+        projection: Literal["perspective", "orthographic"] | None = None,
+    ) -> "SceneCamera":
+        """Return the camera for an eye position read off an interactive figure.
+
+        Rotating a rendered scene until it looks right and copying the reported
+        eye vector is how a publication orientation is usually chosen, so the
+        inverse of :meth:`eye_vector` is offered rather than left as trigonometry
+        for every author to redo.
+        """
+        distance = math.sqrt(x * x + y * y + z * z)
+        if not distance > 0.0 or not math.isfinite(distance):
+            raise ValueError(
+                f"SceneCamera eye ({x}, {y}, {z}) has no finite nonzero distance from the "
+                "scene centre, so it names no viewpoint"
+            )
+        return cls(
+            azimuth=math.degrees(math.atan2(y, x)),
+            elevation=math.degrees(math.atan2(z, math.hypot(x, y))),
+            distance=distance,
+            projection=projection,
+        )
 
 
 class TraceBinding(StrictModel):
@@ -719,6 +848,12 @@ class PanelSpec(StrictModel):
     more room than a cell in a row of 2D panels: an ``aspectmode="data"`` scene
     shrinks to its largest extent, so a cramped cell renders it small and clips
     its axis titles.
+
+    ``camera`` states the viewpoint a scene is drawn from. It is per-panel and
+    has no figure-level default, exactly like every other panel rendering
+    property here, because one figure can hold several scenes that want
+    different views. A panel that omits it is drawn from the renderer's default
+    viewpoint, which is what every scene has been drawn from so far.
     """
 
     name: str
@@ -733,6 +868,7 @@ class PanelSpec(StrictModel):
     panel_type: Literal["xy", "scene"] | None = None
     row_span: int | None = Field(default=None, ge=1)
     col_span: int | None = Field(default=None, ge=1)
+    camera: SceneCamera | None = None
 
     @model_validator(mode="after")
     def _validate_equal_data_aspect(self) -> "PanelSpec":
@@ -755,20 +891,27 @@ class PanelSpec(StrictModel):
         return self
 
     @model_validator(mode="after")
-    def _validate_third_axis_declarations(self) -> "PanelSpec":
+    def _validate_scene_only_declarations(self) -> "PanelSpec":
+        """Reject declarations a Cartesian panel has no counterpart for.
+
+        A third axis and a viewpoint are properties of a 3D cube. Accepting
+        either on a flat panel would drop it silently, so this is the one place
+        that names what only a scene has.
+        """
         if self.panel_type == "scene":
             return self
-        third_axis = [
+        scene_only = [
             name
             for name, declared in (
                 ("z_axis", self.z_axis is not None),
                 ("axes_labels.z", self.axes_labels is not None and self.axes_labels.z is not None),
+                ("camera", self.camera is not None),
             )
             if declared
         ]
-        if third_axis:
+        if scene_only:
             raise ValueError(
-                f"PanelSpec {self.name!r} declares {third_axis}, which only a "
+                f"PanelSpec {self.name!r} declares {scene_only}, which only a "
                 "panel_type='scene' panel has"
             )
         return self
