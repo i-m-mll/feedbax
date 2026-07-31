@@ -16,8 +16,11 @@ from feedbax.analysis.figures import (
     figure_manifest_plotly_json,
 )
 from feedbax.contracts.figures import (
+    DEFAULT_SCENE_CAMERA_DISTANCE,
+    SCENE_CAMERA_SCHEMA_ID,
     FigureSpec,
     PanelSpec,
+    SceneCamera,
     TraceBinding,
     TraceFamily,
     TraceFamilyIndex,
@@ -224,6 +227,9 @@ def test_panel_spec_rejects_a_third_axis_without_a_scene_panel() -> None:
     with pytest.raises(ValidationError, match="only a panel_type='scene' panel has"):
         PanelSpec(name="plane", axes_labels={"x": "PC1", "y": "PC2", "z": "PC3"})
 
+    with pytest.raises(ValidationError, match="only a panel_type='scene' panel has"):
+        PanelSpec(name="plane", camera={"azimuth": 45.0, "elevation": 20.0})
+
     scene = PanelSpec(
         name="cube",
         panel_type="scene",
@@ -281,6 +287,163 @@ def test_scene_panel_renders_a_3d_trace_with_axis_titles_and_data_aspect(
     # The spanning scene owns the whole second row of the paper.
     assert tuple(scene["domain"]["x"]) == (0.0, 1.0)
     assert manifest.constructor_versions["feedbax.trajectory_3d"] == "v1"
+
+
+def _scene_camera_spec(camera: Any | None) -> FigureSpec:
+    """One data-aspect scene panel, with or without an authored viewpoint."""
+    panel: dict[str, Any] = {
+        "name": "cube",
+        "row": 1,
+        "col": 1,
+        "panel_type": "scene",
+        "axes_labels": {"x": "PC1", "y": "PC2", "z": "PC3"},
+        "equal_data_aspect": {},
+    }
+    if camera is not None:
+        panel["camera"] = camera
+    return FigureSpec(
+        name="scene-camera",
+        assembler="feedbax.grid_figure",
+        panels=[PanelSpec(**panel)],
+        traces=[
+            TraceBinding(
+                name="cube-reach",
+                constructor="feedbax.trajectory_3d",
+                panel="cube",
+                data={"trajectories": [[[0.0, 0.0, 0.0], [1.0, 2.0, 0.5]]]},
+            )
+        ],
+    )
+
+
+def _rendered_scene(spec: FigureSpec, root: Path) -> dict[str, Any]:
+    manifest, _path = execute_figure_spec(spec, root=root)
+    rendered = figure_manifest_plotly_json(manifest)
+    assert rendered is not None
+    return rendered["layout"]["scene"]
+
+
+def test_omitting_the_camera_leaves_the_renderer_default_view(tmp_path: Path) -> None:
+    """A scene that states no viewpoint carries no camera key anywhere.
+
+    The authored identity projection is the exclude-none dump
+    ``execute_figure_spec`` hashes, so an undeclared camera contributes no
+    identity bytes and no rendered layout key.
+    """
+    spec = _scene_camera_spec(None)
+    authored = spec.model_dump(mode="json", exclude_none=True)
+
+    assert "camera" not in authored["panels"][0]
+    scene = _rendered_scene(spec, tmp_path)
+    assert "camera" not in scene
+    assert scene["aspectmode"] == "data"
+
+
+def test_authored_camera_lowers_to_an_eye_and_composes_with_the_data_aspect(
+    tmp_path: Path,
+) -> None:
+    """The viewpoint reaches the scene without disturbing its aspect mode."""
+    scene = _rendered_scene(
+        _scene_camera_spec(
+            {
+                "azimuth": 0.0,
+                "elevation": 90.0,
+                "distance": 2.0,
+                "projection": "orthographic",
+            }
+        ),
+        tmp_path,
+    )
+
+    # Straight down the vertical axis: the degenerate case for an authored `up`.
+    assert scene["camera"]["eye"] == pytest.approx({"x": 0.0, "y": 0.0, "z": 2.0}, abs=1e-12)
+    assert scene["camera"]["up"] == pytest.approx({"x": -1.0, "y": 0.0, "z": 0.0}, abs=1e-12)
+    assert scene["camera"]["projection"] == {"type": "orthographic"}
+    # The aspect mode is the shape of the box and survives the camera untouched.
+    assert scene["aspectmode"] == "data"
+    assert scene["zaxis"]["title"]["text"] == "PC3"
+
+
+def test_camera_omits_projection_when_it_is_not_authored(tmp_path: Path) -> None:
+    scene = _rendered_scene(
+        _scene_camera_spec({"azimuth": 135.0, "elevation": -20.0}), tmp_path
+    )
+
+    assert "projection" not in scene["camera"]
+    eye = scene["camera"]["eye"]
+    assert math.hypot(eye["x"], eye["y"], eye["z"]) == pytest.approx(
+        DEFAULT_SCENE_CAMERA_DISTANCE
+    )
+
+
+def test_scene_camera_has_explicit_schema_identity() -> None:
+    camera = SceneCamera(azimuth=45.0, elevation=35.0)
+    assert camera.schema_id == SCENE_CAMERA_SCHEMA_ID
+    assert camera.schema_version == "feedbax.spec.scene_camera.v1"
+
+    with pytest.raises(ValidationError, match="unsupported SceneCamera schema_version"):
+        SceneCamera(
+            azimuth=45.0,
+            elevation=35.0,
+            schema_version="feedbax.spec.scene_camera.v0",
+        )
+
+
+def test_scene_camera_up_is_perpendicular_to_every_view_direction() -> None:
+    """The blank-render case — up parallel to the view — cannot be stated."""
+    for azimuth in (-180.0, -37.5, 0.0, 90.0, 359.0):
+        for elevation in (-90.0, -45.0, 0.0, 12.5, 90.0):
+            camera = SceneCamera(azimuth=azimuth, elevation=elevation)
+            eye = camera.eye_vector()
+            up = camera.up_vector()
+            assert sum(a * b for a, b in zip(eye, up, strict=True)) == pytest.approx(0.0, abs=1e-12)
+            assert math.hypot(*up) == pytest.approx(1.0)
+
+
+def test_scene_camera_default_distance_reproduces_the_renderer_default_view() -> None:
+    """Authoring the default view explicitly gives back the default eye."""
+    default = SceneCamera.from_eye(1.25, 1.25, 1.25)
+
+    assert default.azimuth == pytest.approx(45.0)
+    assert default.elevation == pytest.approx(math.degrees(math.asin(1 / math.sqrt(3))))
+    assert default.distance == pytest.approx(DEFAULT_SCENE_CAMERA_DISTANCE)
+    assert default.eye_vector() == pytest.approx((1.25, 1.25, 1.25))
+
+    # Plotly's default `up` of (0, 0, 1) resolves to its own projection onto the
+    # view plane, which is exactly the derived up direction.
+    eye = default.eye_vector()
+    norm = math.hypot(*eye)
+    unit_eye = tuple(component / norm for component in eye)
+    projected = tuple(
+        vertical - unit_eye[2] * component
+        for vertical, component in zip((0.0, 0.0, 1.0), unit_eye, strict=True)
+    )
+    projected_norm = math.hypot(*projected)
+    assert default.up_vector() == pytest.approx(
+        tuple(component / projected_norm for component in projected)
+    )
+
+
+def test_scene_camera_round_trips_an_eye_read_off_a_rendered_figure() -> None:
+    for eye in ((1.6, -0.9, 0.4), (-2.0, 0.0, 2.0), (0.0, 0.0, 1.5)):
+        assert SceneCamera.from_eye(*eye).eye_vector() == pytest.approx(eye, abs=1e-12)
+
+
+def test_scene_camera_rejects_viewpoints_that_would_render_nothing() -> None:
+    with pytest.raises(ValidationError, match="greater than 0"):
+        SceneCamera(azimuth=0.0, elevation=0.0, distance=0.0)
+
+    with pytest.raises(ValidationError, match="less than or equal to 90"):
+        SceneCamera(azimuth=0.0, elevation=91.0)
+
+    with pytest.raises(ValidationError, match=r"\['azimuth'\] must be finite"):
+        SceneCamera(azimuth=math.inf, elevation=0.0)
+
+    with pytest.raises(ValidationError, match=r"\['distance'\] must be finite"):
+        SceneCamera(azimuth=0.0, elevation=0.0, distance=math.inf)
+
+    with pytest.raises(ValueError, match="names no viewpoint"):
+        SceneCamera.from_eye(0.0, 0.0, 0.0)
 
 
 def test_scene_panel_refuses_a_cartesian_trace(tmp_path: Path) -> None:

@@ -1164,6 +1164,7 @@ def _panel_contents(
                 panel_type=panel.panel_type if panel else None,
                 row_span=panel.row_span if panel else None,
                 col_span=panel.col_span if panel else None,
+                camera=panel.camera if panel else None,
             )
         )
     return contents
@@ -1235,6 +1236,7 @@ def _facet_panel_contents(
                 panel_type=base_panel.panel_type if base_panel is not None else None,
                 row_span=base_panel.row_span if base_panel is not None else None,
                 col_span=base_panel.col_span if base_panel is not None else None,
+                camera=base_panel.camera if base_panel is not None else None,
             )
         )
     return contents
