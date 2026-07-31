@@ -30,6 +30,7 @@ from feedbax.contracts.studio_training import (
     StudioTrainingAssemblySpec,
     StudioTrainingIdentityAdapter,
 )
+from feedbax.contracts.training import default_training_method_registry
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
@@ -3840,6 +3841,7 @@ def test_declared_continuation_without_source_custody_fails_before_transport(
             local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
+        training_method_registry=default_training_method_registry(),
     )
 
     checks = driver.preflight_checks(bundle)
@@ -4532,41 +4534,21 @@ def test_separate_process_existing_run_rejects_legacy_preflight(tmp_path: Path) 
     store.save(state)
 
     script = r"""
-import json
+import asyncio
 import sys
-from pathlib import Path
 
 from feedbax.bin import orchestrate
-from feedbax.orchestration.drivers.runpod import RunPodDriverConfig, RunPodOrchestrationDriver
+from feedbax.plugins.composition import compose_application
 
-class NoProviderTransport:
-    def __getattr__(self, name):
-        raise AssertionError(f"provider transport accessed: {name}")
-
-class ProviderFreeDriver(RunPodOrchestrationDriver):
-    def provision(self, bundle, state):
-        assert self._preflight_passed is True
-        return {"driver": "provider-free-subprocess", "acquired": False}
-
-def driver_for_bundle(bundle, bindings=()):
-    return ProviderFreeDriver(
-        config=RunPodDriverConfig(
-            gpu_id=bundle.deployment_policy.resources.gpu_id,
-            datacenters=tuple(bundle.deployment_policy.resources.regions),
-            image=bundle.environment.image_id or "",
-            local_repos={"feedbax": Path(bundle.run_set_dir).parent},
-        ),
-        transport=NoProviderTransport(),
-        input_provider_bindings=bindings,
-    )
-
-orchestrate._driver_for_bundle = driver_for_bundle
-result = orchestrate._run_existing(sys.argv[1], stop_after_stage="PROVISION")
-print(json.dumps({
-    "abort_reason": result.abort_reason,
-    "provisioning_stop_reason": result.provisioning_stop_reason,
-    "provision_status": result.stage("PROVISION").status,
-}))
+bootstrap = asyncio.run(compose_application(local_component_source=None))
+orchestrate._run_existing(
+    sys.argv[1],
+    stop_after_stage="PROVISION",
+    conformance_registry=bootstrap.bundle.conformance_checks,
+    training_method_registry=bootstrap.bundle.training_methods,
+    driver_registry=bootstrap.bundle.drivers,
+    plugin_provenance=bootstrap.provenance,
+)
 """
     env = {**os.environ, "FEEDBAX_ORCHESTRATION_ROOT": str(tmp_path)}
     result = subprocess.run(
