@@ -2,9 +2,12 @@ import type {
   AcausalGraphSpec,
   BarnacleSpec,
   ComponentSpec,
+  ConstantArrayValueSpec,
   EdgeRouting,
   GraphSpec,
   ParamValue,
+  SparseCooArrayValueSpec,
+  SparseCooEntrySpec,
   TapSpec,
 } from '@/generated/studioContracts';
 
@@ -20,6 +23,7 @@ export type {
   AssemblyViewUIState,
   BarnacleSpec,
   ComponentSpec,
+  ConstantArrayValueSpec,
   DerivedDimensionRuleSpec,
   DomainDiagnostic,
   EdgeRouting,
@@ -32,6 +36,8 @@ export type {
   NodeUIState,
   ParamSchema,
   ParamValue,
+  SparseCooArrayValueSpec,
+  SparseCooEntrySpec,
   ParameterConstraintSpec,
   RetainedObservableSpec,
   RetainedObservableTargetSpec,
@@ -64,6 +70,8 @@ export type {
   ValidationWarning,
   WireSpec,
 } from '@/generated/studioContracts';
+
+export type ArrayValueSpec = SparseCooArrayValueSpec | ConstantArrayValueSpec;
 
 export type GraphSubgraphSpec = NonNullable<GraphSpec['subgraphs']>[string];
 

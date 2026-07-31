@@ -47,7 +47,7 @@ Lifecycle abbreviations:
 | `E3` | `feedbax/contracts/training.py:TaskSpec`, `feedbax/contracts/graphs/builders.py:_build_task_component`, `feedbax/integrations/provider.py:task_registry_snapshot`, `feedbax/analysis/rollout.py:compiled_trial_rollout`, `feedbax/web/api/execution.py:sample_task_trials`, `web/src/components/panels/TaskScenarioPanel.tsx:TASK_CATALOG` | `tests/test_analysis_compiled_rollout.py:test_compiled_rollout_is_bit_identical_to_python_loop`, `tests/test_execution_task_sampling_api.py:test_sample_task_trials_rejects_unsupported_task_type` | Built-in tasks are authorable, compilable, executable, and previewable, but construction, provider validation, and the Studio catalog remain closed sets. |
 | `E4` | `feedbax/analysis/specs.py:register_analysis_recipe`, `feedbax/analysis/validation.py:AnalysisRecipeProtocol`, `feedbax/analysis/specs.py:execute_analysis_run_spec` | `tests/test_analysis_registration_validation.py:test_valid_analysis_recipe_registers`, `tests/test_analysis_run_cli.py:test_run_subcommand_loads_installed_plugin_before_recipe_execution` | External analysis recipes can register, validate their callable contract, resolve authenticated inputs, execute, and emit manifests. Recipe params remain an untyped mapping. |
 | `E5` | `feedbax/plot/constructors.py:register_figure_constructor`, `feedbax/contracts/figures.py:FigureSpec`, `feedbax/analysis/figures.py:execute_figure_spec`, `feedbax/bin/figure.py:main` | `tests/test_declarative_figures.py:test_constructor_registry_validates_tiers_and_duplicates`, `tests/test_declarative_figures.py:test_execute_figure_spec_records_optional_omission_and_custody` | Figure constructors/specs are open in-process and execution is governed, but the figure CLI consumes registries without loading installed plugins. |
-| `E6` | `feedbax/contracts/graph.py:ParamValue`, `feedbax/contracts/graph.py:ComponentSpec`, `feedbax/contracts/graph.py:StudioValueSpec` | `tests/test_studio_value_spec_contract.py:test_component_params_normalize_typed_value_specs`, `tests/test_graphspec_schema_migrations.py:test_graph_spec_v2_migration_adds_derived_dimensions_field` | Literal values and existing value specs validate and migrate. Array-valued component params still lack the planned sparse, constant/broadcast, and content-pinned encodings and their identity contract. |
+| `E6` | `feedbax/contracts/array_values.py:ArrayValueSpec`, `feedbax/contracts/array_values.py:materialize_array_value`, `feedbax/contracts/graph.py:ComponentSpec`, `feedbax/contracts/graphs/serialization.py:spec_to_graph` | `tests/test_array_value_specs.py:test_dense_sparse_and_dense_constant_share_semantic_identity`, `tests/test_structural_linear_state_space.py:test_nested_v4_sparse_migration_materializes_losslessly_and_preserves_envelope`, `external/feedbax_conformance_fixture/src/feedbax_external_conformance/cases.py:check_component_param_array_values` | Raw dense component params remain unchanged. Versioned sparse COO and constant declarations validate, migrate, preserve authored envelopes through read-only round trips, and materialize before component migration/build. Other spec surfaces and content-pinned references remain outside this seam. |
 | `E7` | `feedbax/orchestration/bundle.py:ExecutionFamily`, `feedbax/orchestration/assembly.py:AssemblyCompilerRegistry`, `feedbax/orchestration/assembly.py:build_default_assembly_registry`, `feedbax/orchestration/executor_family.py:executor_family_adapter` | `tests/test_evaluation_orchestration.py:test_provider_free_cli_shadow_reaches_terminal_collection_in_fresh_process`, `tests/test_orchestration_core.py:test_stage_engine_resumes_from_every_stage_boundary` | Native training and evaluation matrices traverse the governed lifecycle. Compiler construction and lifecycle dispatch still enumerate the two core families. |
 | `E8` | `feedbax/orchestration/drivers/base.py:OrchestrationDriver`, `feedbax/orchestration/bundle.py:DeploymentPolicy`, `feedbax/bin/orchestrate.py:_driver_for_bundle` | `tests/test_orchestration_cli.py:test_two_row_local_driver_demo_through_cli`, `tests/test_runpod_orchestration_driver.py:test_stage_engine_governs_runpod_provisioning` | Local and RunPod drivers implement the lifecycle, but policy, CLI choices, construction, and extra hooks are closed or duck-typed. |
 | `E9` | `feedbax/contracts/artifact_custody.py:ImmutableArtifactBlobProviderSpec`, `feedbax/persistence/artifact_custody.py:ImmutableArtifactBlobProvider`, `feedbax/persistence/artifact_custody.py:open_immutable_artifact_blob_provider`, `feedbax/orchestration/staged_root_custody.py:StagedRootKind` | `tests/test_artifact_custody.py:test_portable_provider_spec_has_exact_root_free_json_and_round_trips`, `tests/test_artifact_custody.py:test_custody_survives_source_directory_deletion_and_materializes_copy` | The built-in immutable provider has portable schema, validation, storage, and recovery, but provider kinds and factories are fixed. |
@@ -71,7 +71,7 @@ Lifecycle abbreviations:
 | Task | `C D-TASK` | `P E3 / D-TASK` | `O E10` | `C D-TASK` | `P E3 / D-TASK` | `C D-TASK` |
 | Analysis recipe | `P E2 / 301dce2` | `O E4` | `O E10` | `P E4 / 301dce2` | `P E4 / 46aeab1` | `O E4` |
 | Figure | `C 301dce2` | `O E5` | `O E10` | `P E5 / 301dce2` | `O E5` | `O E5` |
-| Value encoding | `—` | `P E6 / 9757814` | `P E6, E17 / 9757814` | `C c50193e` | `P E6 / 9757814` | `P E6 / 9757814` |
+| Value encoding | `—` | `O E6` | `O E6, E17` | `C c50193e` | `O E6` | `O E6` |
 | Run kind | `C D-RUN` | `P E7 / D-RUN` | `P E7 / D-RUN` | `C D-RUN` | `C D-RUN` | `P E7 / D-RUN` |
 | Driver | `C 301dce2, 69034e6` | `P E8 / 69034e6` | `P E8 / 69034e6` | `C 69034e6` | `C 69034e6` | `C 69034e6` |
 | Custody provider | `C D-CUSTODY` | `P E9 / D-CUSTODY` | `O E9` | `C D-CUSTODY` | `O E9` | `P E9 / D-CUSTODY` |
@@ -87,7 +87,7 @@ Lifecycle abbreviations:
 | Task | `P E3 / D-TASK` | `—` | `P E3 / D-TASK` | `—` | `—` |
 | Analysis recipe | `O E4` | `O E16, E18` | `O E4` | `—` | `O E4` |
 | Figure | `O E5` | `O E16` | `P E5 / 301dce2` | `—` | `O E5` |
-| Value encoding | `P E6 / 9757814` | `P E17, E18 / 9757814` | `P E6 / 9757814` | `—` | `P E6 / 9757814` |
+| Value encoding | `O E6` | `O E17` | `O E6` | `—` | `O E6` |
 | Run kind | `P E7 / D-RUN` | `P E7 / D-RUN` | `P E7 / D-RUN` | `P E15 / D-RUN` | `P E7 / D-RUN` |
 | Driver | `P E8 / 69034e6` | `P E8 / 69034e6` | `P E8 / 69034e6` | `P E15 / 69034e6` | `P E8 / 69034e6` |
 | Custody provider | `P E9 / D-CUSTODY` | `P E9 / D-CUSTODY` | `P E9 / D-CUSTODY` | `—` | `O E9` |
@@ -103,7 +103,7 @@ Lifecycle abbreviations:
 | Task | `—` | `—` | `P E3 / D-TASK` | `C D-TASK` |
 | Analysis recipe | `—` | `O E4` | `P E13 / 301dce2` | `P E14, E16 / f4476ae` |
 | Figure | `—` | `O E5` | `P E13 / 301dce2` | `P E14 / f4476ae, 380f897` |
-| Value encoding | `—` | `—` | `P E6 / 9757814` | `C f4476ae, 380f897` |
+| Value encoding | `—` | `—` | `O E6` | `O E6, E14` |
 | Run kind | `P E15 / D-RUN` | `P E7 / D-RUN` | `C D-RUN` | `C D-RUN` |
 | Driver | `P E15 / 69034e6` | `P E15 / 69034e6` | `C 69034e6` | `C 69034e6, 380f897` |
 | Custody provider | `O E9` | `O E9` | `—` | `C D-CUSTODY` |

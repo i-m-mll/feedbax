@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID, AcausalGraphSpec
+from feedbax.contracts.array_values import _parse_array_value_payload
 from feedbax.contracts.domain import DomainCompileReport
 from feedbax.contracts.value_schema import ValueSchema
 
@@ -15,7 +16,8 @@ from feedbax.contracts.value_schema import ValueSchema
 GRAPH_SPEC_SCHEMA_ID = "feedbax.spec.graph"
 GRAPH_SPEC_SCHEMA_VERSION_V2 = "feedbax.spec.graph.v2"
 GRAPH_SPEC_SCHEMA_VERSION_V3 = "feedbax.spec.graph.v3"
-GRAPH_SPEC_SCHEMA_VERSION = "feedbax.spec.graph.v4"
+GRAPH_SPEC_SCHEMA_VERSION_V4 = "feedbax.spec.graph.v4"
+GRAPH_SPEC_SCHEMA_VERSION = "feedbax.spec.graph.v5"
 LEGACY_GRAPH_SPEC_SCHEMA_VERSION = "1.0.0"
 ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID = (
     "feedbax.spec.analysis_data_product_requirement"
@@ -50,6 +52,9 @@ def _is_value_spec_like_payload(value: Any) -> bool:
 
 
 def _validate_nested_value_specs(value: Any) -> Any:
+    array_value = _parse_array_value_payload(value)
+    if array_value is not None:
+        return array_value.model_dump(mode="json")
     if _is_value_spec_like_payload(value):
         return StudioValueSpec.model_validate(value).model_dump(mode="json", exclude_none=True)
     if isinstance(value, list):
@@ -95,7 +100,7 @@ class ComponentSpec(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def validate_value_spec_params(cls, data: Any) -> Any:
-        """Normalize Studio-authored ValueSpec params instead of passing dicts through."""
+        """Normalize typed parameter declarations instead of passing dicts through."""
         if isinstance(data, dict) and isinstance(data.get("params"), dict):
             return {
                 **data,

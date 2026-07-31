@@ -72,6 +72,11 @@ from feedbax.contracts.graph import (
     require_causal_subgraph,
     validate_subgraph_domain,
 )
+from feedbax.contracts.array_values import (
+    ArrayValueSpec,
+    _parse_array_value_payload,
+    materialize_array_value,
+)
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.contracts.migrations import migrate_graph_spec
 from feedbax.component_registry import format_missing_interior_message, required_interior_domain
@@ -170,6 +175,70 @@ def _lookup_required_params(component_registry: Any, name: str) -> set[str]:
             if getattr(meta, "name", None) == name:
                 return _from_meta(meta)
     return set()
+
+
+def _materialize_component_param_value(
+    value: Any,
+    *,
+    declarations: dict[tuple[str, ...], ArrayValueSpec],
+    path: tuple[str, ...],
+) -> Any:
+    declaration = _parse_array_value_payload(value)
+    if declaration is not None:
+        declarations[path] = declaration
+        return materialize_array_value(declaration)
+    if isinstance(value, Mapping):
+        return {
+            key: _materialize_component_param_value(
+                item,
+                declarations=declarations,
+                path=(*path, str(key)),
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _materialize_component_param_value(
+                item,
+                declarations=declarations,
+                path=(*path, str(index)),
+            )
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            _materialize_component_param_value(
+                item,
+                declarations=declarations,
+                path=(*path, str(index)),
+            )
+            for index, item in enumerate(value)
+        )
+    return value
+
+
+def _materialize_graph_component_params(
+    spec: GraphSpec,
+) -> tuple[GraphSpec, dict[str, dict[tuple[str, ...], ArrayValueSpec]]]:
+    nodes: dict[str, ComponentSpec] = {}
+    declarations_by_node: dict[str, dict[tuple[str, ...], ArrayValueSpec]] = {}
+    for node_id, node in spec.nodes.items():
+        declarations: dict[tuple[str, ...], ArrayValueSpec] = {}
+        nodes[node_id] = node.model_copy(
+            update={
+                "params": {
+                    key: _materialize_component_param_value(
+                        value,
+                        declarations=declarations,
+                        path=(key,),
+                    )
+                    for key, value in node.params.items()
+                }
+            }
+        )
+        if declarations:
+            declarations_by_node[node_id] = declarations
+    return spec.model_copy(update={"nodes": nodes}), declarations_by_node
 
 
 def graph_to_spec(graph: Any) -> GraphSpec:
@@ -594,21 +663,11 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             continue
 
         if isinstance(component, StructuralLinearStateSpace):
-            if component.initial_delta_A_entries is None:
-                delta_A_param = [
-                    list(row) for row in component.initial_delta_A
-                ]
-            else:
-                delta_A_param = {
-                    "shape": [
-                        len(component.initial_delta_A),
-                        len(component.initial_delta_A),
-                    ],
-                    "entries": [
-                        {"row": row, "column": column, "value": value}
-                        for row, column, value in component.initial_delta_A_entries
-                    ],
-                }
+            delta_A_param = (
+                component.initial_delta_A_value_spec.model_dump(mode="json")
+                if component.initial_delta_A_value_spec is not None
+                else [list(row) for row in component.initial_delta_A]
+            )
             params = {
                 "A": component.A.tolist(),
                 "B": component.B.tolist(),
@@ -1039,6 +1098,7 @@ def spec_to_graph(
     metadata_registry = component_registry if component_registry is not None else execution_registry
     migration = migrate_graph_spec(spec)
     spec = GraphSpec.model_validate(migration.payload)
+    spec, authored_array_values = _materialize_graph_component_params(spec)
     spec = materialize_additive_channel_adapters(spec)
     spec = normalize_derived_dimensions(
         spec,
@@ -1166,6 +1226,9 @@ def spec_to_graph(
             )
             nodes[node_name] = spec_to_graph(causal_subgraph, metadata_registry)
             continue
+        delta_A_declaration = authored_array_values.get(node_name, {}).get(("delta_A",))
+        if node_type == "StructuralLinearStateSpace" and delta_A_declaration is not None:
+            params = {**params, "_authored_delta_A_value_spec": delta_A_declaration}
         nodes[node_name] = build_component(
             node_name,
             node_type,

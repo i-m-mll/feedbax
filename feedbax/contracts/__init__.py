@@ -133,6 +133,15 @@ from feedbax.contracts.graph import (
     ValidationWarning,
     WireSpec,
 )
+from feedbax.contracts.array_values import (
+    ARRAY_VALUE_SCHEMA_ID,
+    ARRAY_VALUE_SCHEMA_VERSION,
+    ArrayValueSpec,
+    ConstantArrayValueSpec,
+    SparseCooArrayValueSpec,
+    SparseCooEntrySpec,
+    materialize_array_value,
+)
 from feedbax.contracts.descriptors import (
     COMPONENT_DESCRIPTOR_SCHEMA_ID,
     COMPONENT_DESCRIPTOR_SCHEMA_VERSION,
@@ -506,6 +515,8 @@ from feedbax.contracts.studio_api import (
 )
 
 __all__ = [
+    "ARRAY_VALUE_SCHEMA_ID",
+    "ARRAY_VALUE_SCHEMA_VERSION",
     "ADMISSION_WAIVER_SCHEMA_ID",
     "ADMISSION_WAIVER_SCHEMA_VERSION",
     "AdmissionWaiver",
@@ -531,6 +542,7 @@ __all__ = [
     "AnalysisInputRequirement",
     "AnalysisJobStatusResponse",
     "AnalysisPackagesResponse",
+    "ArrayValueSpec",
     "AllOf",
     "AnyOf",
     "ArtifactPolicySpec",
@@ -552,6 +564,7 @@ __all__ = [
     "ComponentSelectorSyntax",
     "ComponentSlice",
     "ComponentSpec",
+    "ConstantArrayValueSpec",
     "Compare",
     "ContextItem",
     "Coerce",
@@ -839,6 +852,8 @@ __all__ = [
     "SCHEDULE_PROJECTION_SCHEMA_VERSION",
     "ScheduleProjection",
     "ScheduleProjectionSample",
+    "SparseCooArrayValueSpec",
+    "SparseCooEntrySpec",
     "TRAINING_MANIFEST_METADATA_PROJECTION_SCHEMA_ID",
     "TRAINING_MANIFEST_METADATA_PROJECTION_SCHEMA_VERSION",
     "TrainingRunSpec",
@@ -898,6 +913,7 @@ __all__ = [
     "expression_hash",
     "freeze_selection_spec",
     "manifest_index_rows_from_records",
+    "materialize_array_value",
     "imported_npz_workspace_replay_product",
     "materialize_extraction_product",
     "migrate_selection_spec_payload",

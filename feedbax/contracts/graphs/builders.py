@@ -868,6 +868,7 @@ def _build_structural_linear_state_space(
         A=jnp.asarray(params["A"]),
         B=jnp.asarray(params["B"]),
         delta_A=params["delta_A"],
+        authored_delta_A_value_spec=params.get("_authored_delta_A_value_spec"),
         B_w=None if params.get("B_w") is None else jnp.asarray(params["B_w"]),
         dt=float(params.get("dt", 1.0)),
         initial_state=(

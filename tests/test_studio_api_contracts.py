@@ -9,6 +9,11 @@ from pydantic import BaseModel, ValidationError
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
+from feedbax.contracts.array_values import (
+    ConstantArrayValueSpec,
+    SparseCooArrayValueSpec,
+    SparseCooEntrySpec,
+)
 from feedbax.contracts.studio_api import (
     AnalysisBundleDryRunPayload,
     AnalysisBundleDryRunResponse,
@@ -37,6 +42,8 @@ from scripts.generate_studio_contracts import (
     MODEL_TYPES,
     OUTPUT,
     generate,
+    emit_interface,
+    emit_schema,
     model_dependencies,
 )
 
@@ -369,3 +376,43 @@ def test_generated_studio_contracts_include_nested_model_dependencies() -> None:
 
 def test_generated_studio_contracts_are_current() -> None:
     assert OUTPUT.read_text(encoding="utf-8") == generate()
+
+
+def test_generated_array_value_contracts_preserve_strict_scalar_and_index_types() -> None:
+    entry_interface = emit_interface(SparseCooEntrySpec)
+    sparse_interface = emit_interface(SparseCooArrayValueSpec)
+    constant_interface = emit_interface(ConstantArrayValueSpec)
+    entry_schema = emit_schema(SparseCooEntrySpec)
+    sparse_schema = emit_schema(SparseCooArrayValueSpec)
+    constant_schema = emit_schema(ConstantArrayValueSpec)
+    scalar_type = 'boolean | number | "nan" | "+inf" | "-inf"'
+    scalar_schema = (
+        "z.union([z.boolean(), z.number().int(), z.number(), "
+        'z.union([z.literal("nan"), z.literal("+inf"), z.literal("-inf")])])'
+    )
+
+    assert "coordinate: number[];" in entry_interface
+    assert "shape: number[];" in sparse_interface
+    assert "shape: number[];" in constant_interface
+    assert f"value: {scalar_type};" in entry_interface
+    assert f"fill: {scalar_type};" in sparse_interface
+    assert f"value: {scalar_type};" in constant_interface
+    assert '"coordinate": z.array(z.number().int())' in entry_schema
+    assert '"shape": z.array(z.number().int())' in sparse_schema
+    assert '"shape": z.array(z.number().int())' in constant_schema
+    assert f'"value": {scalar_schema}' in entry_schema
+    assert f'"fill": {scalar_schema}' in sparse_schema
+    assert f'"value": {scalar_schema}' in constant_schema
+    rendered = "\n".join(
+        (
+            entry_interface,
+            sparse_interface,
+            constant_interface,
+            entry_schema,
+            sparse_schema,
+            constant_schema,
+        )
+    )
+    assert "unknown[]" not in rendered
+    assert " unknown |" not in rendered
+    assert "z.unknown()" not in rendered
