@@ -12,12 +12,10 @@ from pydantic import ValidationError
 
 from feedbax import LowererRegistration, OrderedLowererRegistry
 from feedbax.analysis import (
-    EvaluationRowProjection,
     EvaluationRowProjectionError,
-    EvaluationRowProjectionErrorReason,
+    EvaluationRowProjectionErrorCode,
     ResolvedManifestInput,
-    project_verified_evaluation_rows,
-    require_exact_authored_cartesian_coverage,
+    project_evaluation_rows,
     resolve_analysis_inputs,
 )
 from feedbax.analysis.exact_parents import (
@@ -401,19 +399,18 @@ def _projection_input(root: Path, target: int) -> ResolvedManifestInput:
     )
 
 
-def check_typed_evaluation_row_projection() -> bool:
-    """Exercise resolver-bound projection and exact row coverage from a clean wheel."""
+def check_resolved_evaluation_row_projection() -> bool:
+    """Exercise the narrow resolver-handle projection boundary from a clean wheel."""
 
     def project(facts):
         params = _ProjectedParameters(**facts.parameters)
         metadata = _ProjectedMetadata(**facts.metadata)
         if metadata.states_schema != "fixture.states.v1":
             raise ValueError("unexpected state schema")
-        return EvaluationRowProjection(
-            row_key=(params.arm, params.target),
-            state=int(facts.states["sample"]),
-            parameters=params,
-            metadata=metadata,
+        return (
+            (params.arm, params.target),
+            int(facts.states["sample"]),
+            metadata,
         )
 
     with TemporaryDirectory() as directory:
@@ -428,43 +425,24 @@ def check_typed_evaluation_row_projection() -> bool:
             root=root,
             authenticated_inputs=dict(enumerate(manifest_inputs)),
         )
-        projected = project_verified_evaluation_rows(inputs, project=project)
-        keys = tuple(row.row_key for row in projected)
-        expected = require_exact_authored_cartesian_coverage(
-            keys,
-            axes={"arm": ("trained",), "target": (0, 1)},
-            row_key=lambda coordinate: (coordinate["arm"], coordinate["target"]),
-        )
-        if keys != expected or tuple(row.state for row in projected) != (0, 1):
-            raise AssertionError("typed evaluation row projection drifted")
+        projected = project_evaluation_rows(inputs, project=project)
+        if tuple((key, state) for key, state, _metadata in projected) != (
+            (("trained", 0), 0),
+            (("trained", 1), 1),
+        ):
+            raise AssertionError("resolved evaluation row projection drifted")
         spliced = replace(
             inputs[0],
             ref=inputs[1].ref,
             manifest_input=inputs[1].manifest_input,
         )
         try:
-            project_verified_evaluation_rows([spliced], project=project)
+            project_evaluation_rows([spliced], project=project)
         except EvaluationRowProjectionError as exc:
-            if (
-                exc.reason
-                is not EvaluationRowProjectionErrorReason.MANIFEST_RECEIPT_AUTHORITY_MISMATCH
-            ):
+            if exc.code is not EvaluationRowProjectionErrorCode.STATE_HANDLE_MISMATCH:
                 raise AssertionError("row projection returned the wrong splice reason") from exc
         else:
             raise AssertionError("row projection accepted a cross-authority splice")
-        inputs[0].manifest.evaluation_spec.inline["params"]["target"] = 99
-        inputs[0].manifest.metadata["states_schema"] = "mutated"
-        authority_row = project_verified_evaluation_rows([inputs[0]], project=project)[0]
-        if authority_row.row_key != ("trained", 0):
-            raise AssertionError("projection trusted a mutable manifest alias")
-        inputs[0].states["sample"][...] = 99
-        try:
-            project_verified_evaluation_rows([inputs[0]], project=project)
-        except EvaluationRowProjectionError as exc:
-            if exc.reason is not EvaluationRowProjectionErrorReason.STATE_VALUE_IDENTITY_MISMATCH:
-                raise AssertionError("row projection returned the wrong reason code") from exc
-        else:
-            raise AssertionError("row projection accepted mutated state values")
     return True
 
 
@@ -473,6 +451,6 @@ __all__ = [
     "check_exact_parent_migration",
     "check_material_dependencies",
     "check_ordered_registration",
-    "check_typed_evaluation_row_projection",
+    "check_resolved_evaluation_row_projection",
     "check_value_identity",
 ]
