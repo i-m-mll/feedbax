@@ -4,12 +4,21 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 
 RESULT_SCHEMA_ID = "feedbax.external_conformance.result"
 RESULT_SCHEMA_VERSION_V1 = f"{RESULT_SCHEMA_ID}.v1"
 RESULT_SCHEMA_VERSION = f"{RESULT_SCHEMA_ID}.v2"
+REQUIRED_CASE_IDS = (
+    "ordered_registration",
+    "component_registration_and_migration",
+    "value_identity",
+    "material_dependencies",
+    "staged_exact_parent_migration",
+    "public_lifecycle_recovery",
+)
+_REQUIRED_CASE_ID_SET = frozenset(REQUIRED_CASE_IDS)
 
 
 class ProtocolRoleSlots(BaseModel):
@@ -17,8 +26,8 @@ class ProtocolRoleSlots(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    current: str | None = None
-    minimum: str | None = None
+    current: Literal[None] = None
+    minimum: Literal[None] = None
 
 
 class LifecycleResult(BaseModel):
@@ -42,13 +51,20 @@ class ConformanceResult(BaseModel):
     feedbax_install_root: str = Field(min_length=1)
     fixture_install_root: str = Field(min_length=1)
     protocol_roles: ProtocolRoleSlots = Field(default_factory=ProtocolRoleSlots)
-    cases: dict[str, bool]
+    cases: dict[str, StrictBool]
     lifecycle: LifecycleResult
 
     @model_validator(mode="after")
     def _validate_outcome(self) -> "ConformanceResult":
-        if not self.cases or not all(self.cases.values()):
-            raise ValueError("external conformance cases must be nonempty and passing")
+        observed = frozenset(self.cases)
+        if observed != _REQUIRED_CASE_ID_SET:
+            raise ValueError(
+                "external conformance cases must exactly match the v2 contract: "
+                f"missing={sorted(_REQUIRED_CASE_ID_SET - observed)!r}, "
+                f"extra={sorted(observed - _REQUIRED_CASE_ID_SET)!r}"
+            )
+        if not all(self.cases.values()):
+            raise ValueError("every required external conformance case must pass")
         if self.status != self.lifecycle.status:
             raise ValueError("result and lifecycle status must match")
         if self.status == "blocked" and not self.lifecycle.reason_code:
@@ -69,6 +85,11 @@ def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResul
         )
     version = data.get("schema_version")
     if version == RESULT_SCHEMA_VERSION_V1:
+        if "protocol_roles" in data:
+            raise ValueError(
+                "external conformance result v1 did not define protocol_roles; "
+                "remove the ambiguous field before migration"
+            )
         data["schema_version"] = RESULT_SCHEMA_VERSION
         data["protocol_roles"] = {"current": None, "minimum": None}
     elif version != RESULT_SCHEMA_VERSION:
@@ -84,6 +105,7 @@ __all__ = [
     "RESULT_SCHEMA_ID",
     "RESULT_SCHEMA_VERSION",
     "RESULT_SCHEMA_VERSION_V1",
+    "REQUIRED_CASE_IDS",
     "ConformanceResult",
     "LifecycleResult",
     "ProtocolRoleSlots",

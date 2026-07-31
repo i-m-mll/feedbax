@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -20,13 +21,17 @@ def fixture_package(monkeypatch: pytest.MonkeyPatch):
     return importlib.import_module("feedbax_external_conformance")
 
 
+def _required_cases(fixture_package, *, value: object = True) -> dict[str, object]:
+    return dict.fromkeys(fixture_package.REQUIRED_CASE_IDS, value)
+
+
 def test_result_v1_migrates_with_unratified_role_slots(fixture_package) -> None:
     current = fixture_package.ConformanceResult(
         status="pass",
         feedbax_version="0.1.2",
         feedbax_install_root="/installed/feedbax",
         fixture_install_root="/installed/fixture",
-        cases={"foundation": True},
+        cases=_required_cases(fixture_package),
         lifecycle={"status": "pass"},
     )
     legacy = current.model_dump(mode="json")
@@ -38,6 +43,21 @@ def test_result_v1_migrates_with_unratified_role_slots(fixture_package) -> None:
     assert migrated.schema_version == "feedbax.external_conformance.result.v2"
     assert migrated.protocol_roles.current is None
     assert migrated.protocol_roles.minimum is None
+
+
+def test_result_v1_rejects_supplied_protocol_roles(fixture_package) -> None:
+    payload = fixture_package.ConformanceResult(
+        status="pass",
+        feedbax_version="0.1.2",
+        feedbax_install_root="/installed/feedbax",
+        fixture_install_root="/installed/fixture",
+        cases=_required_cases(fixture_package),
+        lifecycle={"status": "pass"},
+    ).model_dump(mode="json")
+    payload["schema_version"] = "feedbax.external_conformance.result.v1"
+
+    with pytest.raises(ValueError, match="v1 did not define protocol_roles"):
+        fixture_package.load_result(payload)
 
 
 @pytest.mark.parametrize(
@@ -52,7 +72,7 @@ def test_result_rejects_unsupported_versions(fixture_package, version: str | Non
         "feedbax_version": "0.1.2",
         "feedbax_install_root": "/installed/feedbax",
         "fixture_install_root": "/installed/fixture",
-        "cases": {"foundation": True},
+        "cases": _required_cases(fixture_package),
         "lifecycle": {
             "status": "blocked",
             "reason_code": "feedbax-7e7dac8-wheel-provenance-unavailable",
@@ -71,7 +91,7 @@ def test_result_model_rejects_extra_fields(fixture_package) -> None:
                 "feedbax_version": "0.1.2",
                 "feedbax_install_root": "/installed/feedbax",
                 "fixture_install_root": "/installed/fixture",
-                "cases": {"foundation": True},
+                "cases": _required_cases(fixture_package),
                 "lifecycle": {
                     "status": "blocked",
                     "reason_code": "feedbax-7e7dac8-wheel-provenance-unavailable",
@@ -82,18 +102,18 @@ def test_result_model_rejects_extra_fields(fixture_package) -> None:
 
 
 @pytest.mark.parametrize(
-    ("status", "cases", "lifecycle"),
+    ("status", "cases_pass", "lifecycle"),
     [
-        ("blocked", {"foundation": False}, {"status": "blocked", "reason_code": "gap"}),
-        ("pass", {"foundation": True}, {"status": "blocked", "reason_code": "gap"}),
-        ("blocked", {"foundation": True}, {"status": "blocked", "reason_code": None}),
-        ("pass", {"foundation": True}, {"status": "pass", "reason_code": "stale-gap"}),
+        ("blocked", False, {"status": "blocked", "reason_code": "gap"}),
+        ("pass", True, {"status": "blocked", "reason_code": "gap"}),
+        ("blocked", True, {"status": "blocked", "reason_code": None}),
+        ("pass", True, {"status": "pass", "reason_code": "stale-gap"}),
     ],
 )
 def test_result_rejects_inconsistent_outcomes(
     fixture_package,
     status: str,
-    cases: dict[str, bool],
+    cases_pass: bool,
     lifecycle: dict[str, str | None],
 ) -> None:
     with pytest.raises(ValidationError):
@@ -102,9 +122,91 @@ def test_result_rejects_inconsistent_outcomes(
             feedbax_version="0.1.2",
             feedbax_install_root="/installed/feedbax",
             fixture_install_root="/installed/fixture",
-            cases=cases,
+            cases=_required_cases(fixture_package, value=cases_pass),
             lifecycle=lifecycle,
         )
+
+
+def test_result_v2_case_contract_is_exact(fixture_package) -> None:
+    assert fixture_package.REQUIRED_CASE_IDS == (
+        "ordered_registration",
+        "component_registration_and_migration",
+        "value_identity",
+        "material_dependencies",
+        "staged_exact_parent_migration",
+        "public_lifecycle_recovery",
+    )
+    valid = {
+        "status": "pass",
+        "feedbax_version": "0.1.2",
+        "feedbax_install_root": "/installed/feedbax",
+        "fixture_install_root": "/installed/fixture",
+        "cases": _required_cases(fixture_package),
+        "lifecycle": {"status": "pass"},
+    }
+    for cases in (
+        {key: value for key, value in valid["cases"].items() if key != "public_lifecycle_recovery"},
+        {**valid["cases"], "unexpected_case": True},
+    ):
+        with pytest.raises(ValidationError, match="must exactly match"):
+            fixture_package.ConformanceResult.model_validate({**valid, "cases": cases})
+
+
+def test_result_v2_case_values_are_strict_booleans(fixture_package) -> None:
+    cases = _required_cases(fixture_package)
+    cases["public_lifecycle_recovery"] = "yes"
+
+    with pytest.raises(ValidationError, match="bool"):
+        fixture_package.ConformanceResult(
+            status="pass",
+            feedbax_version="0.1.2",
+            feedbax_install_root="/installed/feedbax",
+            fixture_install_root="/installed/fixture",
+            cases=cases,
+            lifecycle={"status": "pass"},
+        )
+
+
+@pytest.mark.parametrize("slot", ["current", "minimum"])
+def test_result_v2_protocol_roles_remain_unbound(fixture_package, slot: str) -> None:
+    with pytest.raises(ValidationError):
+        fixture_package.ConformanceResult(
+            status="pass",
+            feedbax_version="0.1.2",
+            feedbax_install_root="/installed/feedbax",
+            fixture_install_root="/installed/fixture",
+            protocol_roles={slot: "unratified"},
+            cases=_required_cases(fixture_package),
+            lifecycle={"status": "pass"},
+        )
+
+
+@pytest.mark.parametrize(
+    ("source", "qualified_name"),
+    [
+        ("from feedbax import _private\n", "feedbax._private"),
+        ("from feedbax.public import _private\n", "feedbax.public._private"),
+    ],
+)
+def test_private_feedbax_import_guard_rejects_imported_symbols(
+    tmp_path: Path,
+    source: str,
+    qualified_name: str,
+) -> None:
+    fixture_root = tmp_path / "fixture"
+    fixture_root.mkdir()
+    (fixture_root / "candidate.py").write_text(source, encoding="utf-8")
+    runner = importlib.import_module("feedbax_external_conformance.runner")
+
+    with pytest.raises(AssertionError, match=qualified_name):
+        runner._require_no_private_feedbax_imports(fixture_root)
+
+
+def test_network_denial_rejects_promised_runner_tcp_apis() -> None:
+    network = importlib.import_module("feedbax_external_conformance.network")
+
+    with network.network_denied():
+        network._assert_outbound_tcp_denied()
 
 
 def test_fixture_has_no_private_feedbax_imports() -> None:
@@ -115,7 +217,7 @@ def test_fixture_has_no_private_feedbax_imports() -> None:
             if isinstance(node, ast.Import):
                 names = [alias.name for alias in node.names]
             elif isinstance(node, ast.ImportFrom) and node.module is not None:
-                names = [node.module]
+                names = [f"{node.module}.{alias.name}" for alias in node.names]
             else:
                 continue
             violations.extend(
@@ -178,7 +280,7 @@ class ObservedRunnerLoader(importlib.abc.Loader):
                 feedbax_version="0.1.2",
                 feedbax_install_root="/isolated/feedbax",
                 fixture_install_root="/isolated/fixture",
-                cases={"import_order": True},
+                cases={case_id: True for case_id in fixture.REQUIRED_CASE_IDS},
                 lifecycle={"status": "pass"},
             )
 
@@ -207,6 +309,100 @@ assert not denial_active
         [sys.executable, "-c", script, str(FIXTURE_SRC), str(tmp_path / "result.json")],
         check=True,
     )
+
+
+def test_clean_wheel_runner_checks_installed_dependency_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = ROOT / "scripts" / "run_external_conformance.py"
+    spec = importlib.util.spec_from_file_location("external_conformance_runner", script_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    calls: list[tuple[list[str], Path, dict[str, str]]] = []
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda command, *, cwd, env: calls.append((command, cwd, env)),
+    )
+    python_executable = tmp_path / "venv" / "bin" / "python"
+    environment = {"UV_CACHE_DIR": str(tmp_path / "cache")}
+
+    module._check_installed_metadata(
+        python_executable,
+        cwd=tmp_path,
+        env=environment,
+    )
+
+    assert calls == [
+        (
+            ["uv", "pip", "check", "--python", str(python_executable)],
+            tmp_path,
+            environment,
+        )
+    ]
+
+
+def test_clean_wheel_wrapper_rejects_malformed_result(
+    tmp_path: Path,
+) -> None:
+    script_path = ROOT / "scripts" / "run_external_conformance.py"
+    spec = importlib.util.spec_from_file_location("external_conformance_runner", script_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    result_path = tmp_path / "result.json"
+    result_path.write_text(
+        """{
+  "schema_id": "feedbax.external_conformance.result",
+  "schema_version": "feedbax.external_conformance.result.v2",
+  "status": "pass",
+  "feedbax_version": "0.1.2",
+  "feedbax_install_root": "/isolated/feedbax",
+  "fixture_install_root": "/isolated/fixture",
+  "cases": {"ordered_registration": true},
+  "lifecycle": {"status": "pass"}
+}
+""",
+        encoding="utf-8",
+    )
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(FIXTURE_SRC)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        module._load_installed_result(
+            Path(sys.executable),
+            result_path,
+            cwd=tmp_path,
+            env=environment,
+        )
+
+
+def test_local_lifecycle_uses_clean_interpreter_distribution_inventory(tmp_path: Path) -> None:
+    lifecycle = importlib.import_module("feedbax_external_conformance.lifecycle")
+    driver = lifecycle._driver(tmp_path, None)
+
+    assert driver.python_executable == sys.executable
+    assert driver.freeze_lines is None
+
+
+def test_local_lifecycle_child_is_fixed_print_only() -> None:
+    lifecycle = importlib.import_module("feedbax_external_conformance.lifecycle")
+    compiled = lifecycle._LocalLifecycleCompiler().compile(
+        authored={
+            "schema_id": "feedbax.spec.studio.training_assembly",
+            "schema_version": "feedbax.spec.studio.training_assembly.v1",
+        },
+        run_set_id="fixture",
+        context=None,
+    )
+
+    assert compiled.rows[0].launch.command == [
+        sys.executable,
+        "-c",
+        "print('feedbax external conformance lifecycle')",
+    ]
 
 
 def test_ci_invokes_repository_clean_wheel_command() -> None:

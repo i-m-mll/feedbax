@@ -64,7 +64,7 @@ def _require_no_private_feedbax_imports(fixture_root: Path) -> None:
             if isinstance(node, ast.Import):
                 names.extend(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module is not None:
-                names.append(node.module)
+                names.extend(f"{node.module}.{alias.name}" for alias in node.names)
             for name in names:
                 if name == "feedbax" or not name.startswith("feedbax."):
                     continue
@@ -85,7 +85,7 @@ def _require_loaded_feedbax_modules_under(root: Path) -> None:
 
 
 def run_fixture(*, source_root: Path | None = None) -> ConformanceResult:
-    """Run bounded clean-installed foundation cases without network access."""
+    """Run bounded clean-installed cases with runner-process outbound TCP denied."""
     import feedbax_external_conformance
 
     resolved_source_root = source_root.resolve() if source_root is not None else None

@@ -41,6 +41,7 @@ from feedbax.orchestration.revision import resolve_feedbax_revision
 _COMPILER_ID = "feedbax-external-conformance.local-lifecycle"
 _COMPILER_VERSION = f"{_COMPILER_ID}.v1"
 _RUN_SET_ID = "external-conformance-local"
+_LOCAL_LIFECYCLE_SCRIPT = "print('feedbax external conformance lifecycle')"
 
 
 @dataclass(frozen=True)
@@ -66,7 +67,7 @@ class _LocalLifecycleCompiler:
                         command=[
                             sys.executable,
                             "-c",
-                            "print('feedbax external conformance lifecycle')",
+                            _LOCAL_LIFECYCLE_SCRIPT,
                         ],
                     ),
                 )
@@ -129,10 +130,6 @@ def _driver(root: Path, _bundle: RunBundle) -> LocalOrchestrationDriver:
     return LocalOrchestrationDriver(
         cwd=root,
         python_executable=sys.executable,
-        freeze_lines=(
-            "feedbax==0.1.2",
-            "feedbax-external-conformance==0.1.0",
-        ),
     )
 
 
@@ -150,7 +147,7 @@ def check_public_lifecycle_recovery() -> bool:
                 )
             }
         )
-        first = StageEngine.from_request(
+        initial_engine = StageEngine.from_request(
             request,
             context=context,
             registry=registry,
@@ -158,7 +155,14 @@ def check_public_lifecycle_recovery() -> bool:
             run_set_id=_RUN_SET_ID,
             store=store,
             conformance_registry=checks,
-        ).run(stop_after_stage="PREFLIGHT")
+        )
+        first = initial_engine.run(stop_after_stage="PREFLIGHT")
+        assert initial_engine.bundle is not None
+        expected_command = [sys.executable, "-c", _LOCAL_LIFECYCLE_SCRIPT]
+        if initial_engine.bundle.rows[0].launch.command != expected_command:
+            raise AssertionError(
+                "bounded lifecycle child command drifted from print-only execution"
+            )
         revision_check = next(
             check
             for check in first.stage("PREFLIGHT").checks

@@ -1,6 +1,7 @@
 """External clean-wheel conformance fixture for Feedbax."""
 
 from .result import (
+    REQUIRED_CASE_IDS,
     RESULT_SCHEMA_ID,
     RESULT_SCHEMA_VERSION,
     ConformanceResult,
@@ -22,6 +23,7 @@ def run_fixture(*, source_root: Path | None = None) -> ConformanceResult:
 __all__ = [
     "RESULT_SCHEMA_ID",
     "RESULT_SCHEMA_VERSION",
+    "REQUIRED_CASE_IDS",
     "ConformanceResult",
     "load_result",
     "run_fixture",

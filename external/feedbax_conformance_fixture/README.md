@@ -14,8 +14,11 @@ uv run --no-sync python scripts/run_external_conformance.py
 
 The command builds both Feedbax and this package as wheels, installs them
 non-editably into a fresh environment, changes away from the source checkout,
-removes `PYTHONPATH`, denies network access during execution, and verifies that
-all imported Feedbax modules come from the installed wheel.
+removes `PYTHONPATH`, denies runner-process outbound TCP connects before any
+Feedbax execution-stack import, and verifies that all imported Feedbax modules
+come from the installed wheel. This is not an OS-level DNS, UDP, or arbitrary
+child-process sandbox. The only lifecycle child is asserted to remain the
+fixed print-only Python command.
 
 The fixture runs the public production `StageEngine` with
 `LocalOrchestrationDriver` through a clean-wheel PREFLIGHT and LAUNCH. It stops
@@ -25,6 +28,9 @@ therefore authenticates installed-wheel provenance at both execution
 boundaries. The deployment policy is explicitly local and cloud-unauthorized;
 all custody, orchestration, and cache paths are unique temporary directories.
 
-The result schema is `feedbax.external_conformance.result.v2`. Version 1 results
-migrate by adding explicit, unbound `current` and `minimum` protocol role slots.
-Unknown, versionless, and future versions are rejected.
+The result schema is `feedbax.external_conformance.result.v2`. Its evidence map
+has exactly the six current case IDs with strict boolean values; changing that
+set requires a new schema version and explicit migration. The `current` and
+`minimum` protocol role slots are None-only until owner ratification. Version 1
+results migrate only when the later role field is absent, adding explicit null
+slots. Unknown, ambiguous, versionless, and future versions are rejected.

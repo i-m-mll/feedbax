@@ -255,10 +255,19 @@ def check_exact_parent_migration() -> bool:
         "metadata": {"fixture": True},
     }
     migrated = migrate_staged_exact_parents(legacy)
-    if (
-        migrated.schema_version != STAGED_EXACT_PARENTS_SCHEMA_VERSION
-        or migrated.parents[0].material_dependencies is not None
-    ):
+    expected_migrated = {
+        "schema_id": STAGED_EXACT_PARENTS_SCHEMA_ID,
+        "schema_version": STAGED_EXACT_PARENTS_SCHEMA_VERSION,
+        "parents": [
+            {
+                "parent": parent.model_dump(mode="json"),
+                "execution_uri": "run-a",
+                "material_dependencies": None,
+            }
+        ],
+        "metadata": {"fixture": True},
+    }
+    if migrated.model_dump(mode="json") != expected_migrated:
         raise AssertionError("StagedExactParents v1 migration drifted")
     current = StagedExactParents(
         schema_id=STAGED_EXACT_PARENTS_SCHEMA_ID,
