@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shutil
@@ -356,7 +357,13 @@ class RunSetStateStore:
         )
 
     def save_emergency(self, record: EmergencyRunSetRecord) -> Path:
-        """Consume independent reserve capacity and durably replace the recovery record."""
+        """Publish a recovery record using only the preallocated reserve inode.
+
+        A successful publish atomically renames the reserve over ``emergency_path`` and
+        therefore consumes the reserve name. Call :meth:`preflight_and_reserve` to
+        replenish it before a later update. If replenishment or replacement fails, an
+        already-published emergency record remains readable.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = record.model_copy(update={"recorded_at": utc_now()}).model_dump(mode="json")
         encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
@@ -365,14 +372,17 @@ class RunSetStateStore:
                 "emergency run-set record exceeds bounded channel: "
                 f"bytes={len(encoded)} maximum={MAX_EMERGENCY_RECORD_BYTES}"
             )
-        if not self.emergency_reserve_path.exists() and not self.emergency_path.exists():
+        if not self.emergency_reserve_path.exists():
             raise ControlFilesystemPreflightError(
-                "emergency channel has no reserved capacity; call preflight_and_reserve first"
+                "emergency channel has no reserved inode; call preflight_and_reserve "
+                "before the first record and before each replacement"
             )
 
-        self.emergency_reserve_path.unlink(missing_ok=True)
-        _fsync_directory(self.path.parent)
-        _atomic_write_bytes(self.emergency_path, encoded)
+        _publish_reserved_emergency(
+            reserve_path=self.emergency_reserve_path,
+            destination_path=self.emergency_path,
+            payload=encoded,
+        )
         return self.emergency_path
 
     def initialize(self, state: RunSetState) -> RunSetState:
@@ -478,6 +488,7 @@ def _reserve_file(path: Path, size: int) -> None:
                     written = os.write(fd, chunk[:remaining])
                     remaining -= written
         os.fsync(fd)
+        _require_reserved_capacity(os.fstat(fd), size)
         os.close(fd)
         fd = -1
         os.replace(tmp_path, path)
@@ -488,18 +499,73 @@ def _reserve_file(path: Path, size: int) -> None:
         tmp_path.unlink(missing_ok=True)
 
 
-def _atomic_write_bytes(path: Path, payload: bytes) -> None:
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    tmp_path = Path(tmp_name)
+def _publish_reserved_emergency(
+    *,
+    reserve_path: Path,
+    destination_path: Path,
+    payload: bytes,
+) -> None:
+    """Write a preallocated inode and atomically expose it without fresh allocation."""
     try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
-        _fsync_directory(path.parent)
+        descriptor = os.open(reserve_path, os.O_RDWR)
+    except FileNotFoundError as exc:
+        raise ControlFilesystemPreflightError(
+            "emergency reserve was consumed concurrently; an existing emergency record, "
+            "if any, remains authoritative"
+        ) from exc
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        descriptor_stat = os.fstat(descriptor)
+        try:
+            reserve_stat = reserve_path.stat()
+        except FileNotFoundError as exc:
+            raise ControlFilesystemPreflightError(
+                "emergency reserve was consumed concurrently; the published emergency "
+                "record remains authoritative"
+            ) from exc
+        if (descriptor_stat.st_dev, descriptor_stat.st_ino) != (
+            reserve_stat.st_dev,
+            reserve_stat.st_ino,
+        ):
+            raise ControlFilesystemPreflightError(
+                "emergency reserve changed concurrently; refusing to overwrite an "
+                "unverified inode"
+            )
+        _require_reserved_capacity(descriptor_stat, MAX_EMERGENCY_RECORD_BYTES)
+
+        _pwrite_all(descriptor, payload)
+        os.ftruncate(descriptor, len(payload))
+        os.fsync(descriptor)
+        os.replace(reserve_path, destination_path)
+        _fsync_directory(destination_path.parent)
     finally:
-        tmp_path.unlink(missing_ok=True)
+        os.close(descriptor)
+
+
+def _pwrite_all(descriptor: int, payload: bytes) -> None:
+    """Overwrite already-allocated bytes without changing the file offset."""
+    view = memoryview(payload)
+    offset = 0
+    while view:
+        written = os.pwrite(descriptor, view, offset)
+        if written <= 0:
+            raise OSError("failed to write emergency record into reserved inode")
+        offset += written
+        view = view[written:]
+
+
+def _require_reserved_capacity(stat: os.stat_result, required_bytes: int) -> None:
+    """Reject short or sparse files that cannot prove the requested capacity was reserved."""
+    allocated_blocks = getattr(stat, "st_blocks", None)
+    allocated_bytes = allocated_blocks * 512 if isinstance(allocated_blocks, int) else None
+    if stat.st_size < required_bytes or (
+        allocated_bytes is not None and allocated_bytes < required_bytes
+    ):
+        raise ControlFilesystemPreflightError(
+            "reserve file is not fully allocated: "
+            f"size_bytes={stat.st_size} allocated_bytes={allocated_bytes!r} "
+            f"required_bytes={required_bytes}; rerun preflight_and_reserve"
+        )
 
 
 def _fsync_directory(directory: Path) -> None:

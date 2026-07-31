@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -109,17 +110,30 @@ def test_primary_enospc_leaves_old_state_and_emergency_fallback_durable(
         emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
         state_update_bytes=4096,
     )
-    original_dump = json.dump
+    original_pwrite = os.pwrite
+    emergency_writes = 0
 
-    def fail_primary_dump(*args: object, **kwargs: object) -> None:
+    def fail_primary_write(*args: object, **kwargs: object) -> None:
         raise OSError(errno.ENOSPC, "No space left on device")
 
-    monkeypatch.setattr("feedbax.orchestration.state.json.dump", fail_primary_dump)
+    def fail_fresh_allocation(*args: object, **kwargs: object) -> tuple[int, str]:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    def recording_pwrite(descriptor: int, payload: bytes, offset: int) -> int:
+        nonlocal emergency_writes
+        emergency_writes += 1
+        return original_pwrite(descriptor, payload, offset)
+
+    monkeypatch.setattr("feedbax.orchestration.state.os.pwrite", recording_pwrite)
+    monkeypatch.setattr("feedbax.orchestration.state.json.dump", fail_primary_write)
     with pytest.raises(OSError, match="No space left on device"):
         store.save(RunSetState(run_set_id="monitor-failure"))
+    monkeypatch.setattr(
+        "feedbax.orchestration.state.tempfile.mkstemp",
+        fail_fresh_allocation,
+    )
     with pytest.raises(OSError, match="No space left on device"):
         store.save(RunSetState(run_set_id="abort-failure"))
-    monkeypatch.setattr("feedbax.orchestration.state.json.dump", original_dump)
 
     emergency_path = store.save_emergency(_emergency_record())
     loaded_emergency = store.load_emergency()
@@ -128,6 +142,8 @@ def test_primary_enospc_leaves_old_state_and_emergency_fallback_durable(
     assert emergency_path == store.emergency_path
     assert not store.emergency_reserve_path.exists()
     assert store.control_reserve_path.exists()
+    assert emergency_writes >= 1
+    assert not list(tmp_path.glob(".state.json.*.tmp"))
     assert loaded_emergency == _emergency_record().model_copy(
         update={"recorded_at": loaded_emergency.recorded_at}
     )
@@ -194,6 +210,8 @@ def test_emergency_record_replace_failure_preserves_previous_durable_record(
     )
     previous = store.load_emergency()
 
+    original_replace = os.replace
+
     def fail_replace(_source: object, _destination: object) -> None:
         raise OSError(errno.ENOSPC, "No space left on device")
 
@@ -204,4 +222,66 @@ def test_emergency_record_replace_failure_preserves_previous_durable_record(
         )
 
     assert store.load_emergency() == previous
+    assert store.emergency_reserve_path.exists()
+    with pytest.raises(ControlFilesystemPreflightError, match="not fully allocated"):
+        store.save_emergency(
+            original.model_copy(update={"next_recovery_action": "retry without replenish"})
+        )
     assert not list(tmp_path.glob(".state.json.emergency.json.*.tmp"))
+
+    monkeypatch.setattr("feedbax.orchestration.state.os.replace", original_replace)
+    store.preflight_and_reserve(
+        control_reserve_bytes=0,
+        emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
+        state_update_bytes=4096,
+    )
+    replacement = original.model_copy(
+        update={"next_recovery_action": "replacement after replenishment"}
+    )
+    store.save_emergency(replacement)
+    loaded = store.load_emergency()
+    assert loaded.next_recovery_action == "replacement after replenishment"
+
+
+def test_emergency_save_requires_reserved_capacity(tmp_path: Path) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+
+    with pytest.raises(ControlFilesystemPreflightError, match="no reserved inode"):
+        store.save_emergency(_emergency_record())
+
+    assert not store.emergency_path.exists()
+
+    descriptor = os.open(store.emergency_reserve_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.ftruncate(descriptor, MAX_EMERGENCY_RECORD_BYTES)
+    finally:
+        os.close(descriptor)
+    with pytest.raises(ControlFilesystemPreflightError, match="not fully allocated"):
+        store.save_emergency(_emergency_record())
+    assert not store.emergency_path.exists()
+
+
+def test_concurrent_first_emergency_publish_keeps_one_complete_record(tmp_path: Path) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    store.preflight_and_reserve(
+        control_reserve_bytes=0,
+        emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
+        state_update_bytes=4096,
+    )
+    records = [
+        _emergency_record().model_copy(update={"next_recovery_action": f"recovery-{index}"})
+        for index in range(2)
+    ]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(store.save_emergency, record) for record in records]
+        outcomes: list[Path | Exception] = []
+        for future in futures:
+            try:
+                outcomes.append(future.result())
+            except Exception as exc:
+                outcomes.append(exc)
+
+    assert sum(isinstance(outcome, Path) for outcome in outcomes) == 1
+    assert sum(isinstance(outcome, ControlFilesystemPreflightError) for outcome in outcomes) == 1
+    assert store.load_emergency().next_recovery_action in {"recovery-0", "recovery-1"}
