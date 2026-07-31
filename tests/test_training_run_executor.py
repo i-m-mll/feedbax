@@ -2819,6 +2819,8 @@ def _nan_registry(
 ) -> tuple[TrainingMethodRegistry, object]:
     registry, program = _chunked_registry(stop_after_program_step=stop_after_program_step)
     base_registration = registry.resolve(standard_supervised_method_ref(), path="/method_ref")
+    assert base_registration.contract_factory is not None
+    contract = base_registration.contract_factory()
     base_kernel = standard_supervised_update_kernels()[
         "feedbax.training.standard_supervised.gradient_update"
     ]
@@ -2837,13 +2839,10 @@ def _nan_registry(
         return updates
 
     runtime_registry = TrainingMethodRegistry()
-    runtime_registry.register(
-        TrainingMethodRegistration(
-            method_ref="feedbax/standard_supervised/v1",
-            payload_schema_id=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
-            payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
-            payload_model=StandardSupervisedMethodPayload,
-            contract_factory=base_registration.contract_factory,
+    runtime_registry.register_descriptor(
+        replace(
+            standard_supervised_method_descriptor(),
+            contract_compiler=lambda _payload: contract,
             update_kernels_factory=lambda _payload: {
                 "feedbax.training.standard_supervised.gradient_update": gradient_update
             },
@@ -4790,6 +4789,19 @@ def test_nan_detection_projects_schedules_at_observed_batch_authority(
         update={
             "method_payload": spec.method_payload.model_copy(
                 update={"payload": payload.model_dump(mode="json")}
+            )
+        }
+    )
+    resolved = registry.resolve_execution(spec.method_ref, spec.method_payload)
+    spec = spec.model_copy(
+        update={
+            "worker_execution": WorkerExecutionSpec(
+                method_contract=resolved.contract,
+                effective_phase=validate_worker_contract(
+                    resolved.contract,
+                    update_kernels=resolved.update_kernels,
+                    guard_predicates=resolved.guard_predicates,
+                ),
             )
         }
     )

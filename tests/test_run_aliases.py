@@ -355,7 +355,7 @@ def test_analysis_cli_rejects_alias_target_whose_manifest_bytes_drifted(
             {
                 "schema_id": "feedbax.spec.analysis_run",
                 "schema_version": "feedbax.spec.analysis_run.v2",
-                "analysis_type": "feedbax.test.alias-drift",
+                "analysis_type": "feedbax.test.alias_drift",
                 "inputs": [_alias_ref("source-run")],
             }
         ),
@@ -383,7 +383,7 @@ def test_analysis_cli_rejects_alias_target_whose_manifest_bytes_drifted(
                 str(tmp_path),
             ],
             bootstrap_state=_analysis_state(
-                "feedbax.test.alias-drift",
+                "feedbax.test.alias_drift",
                 lambda *_args: AnalysisRecipeResult(),
             ),
         )
