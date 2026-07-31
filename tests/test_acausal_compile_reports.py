@@ -24,7 +24,7 @@ pytestmark = pytest.mark.feedbax_contract
 
 
 def _registry() -> ComponentRegistry:
-    return ComponentRegistry(load_user_components=False, discover_plugins=False)
+    return ComponentRegistry(load_user_components=False)
 
 
 def _report(graph: AcausalGraphSpec) -> DomainCompileReport:
@@ -134,9 +134,7 @@ def test_planar_multibody_reports_unanchored_chain() -> None:
     graph = graph.model_copy(
         update={
             "nodes": {
-                key: value
-                for key, value in graph.nodes.items()
-                if key not in {"world", "anchor"}
+                key: value for key, value in graph.nodes.items() if key not in {"world", "anchor"}
             }
         }
     )
@@ -285,8 +283,12 @@ def test_planar_multibody_reports_missing_muscle_path_frame() -> None:
                 physical_domain="translational",
                 nodes={
                     "wall": ComponentSpec(type="Ground"),
-                    "force_a": ComponentSpec(type="ActuationInput", params={"source_kind": "force"}),
-                    "force_b": ComponentSpec(type="ActuationInput", params={"source_kind": "force"}),
+                    "force_a": ComponentSpec(
+                        type="ActuationInput", params={"source_kind": "force"}
+                    ),
+                    "force_b": ComponentSpec(
+                        type="ActuationInput", params={"source_kind": "force"}
+                    ),
                 },
                 connections=[
                     {"a": ("wall", "flange"), "b": ("force_a", "flange")},
@@ -389,10 +391,13 @@ def test_graph_service_persists_report_and_derives_stale_status(tmp_path: Path) 
         }
     )
     assert cached == report
-    assert derive_compile_status(
-        cached,
-        current_interior_hash=acausal_interior_content_hash(edited),
-    ) == "stale"
+    assert (
+        derive_compile_status(
+            cached,
+            current_interior_hash=acausal_interior_content_hash(edited),
+        )
+        == "stale"
+    )
 
 
 def test_internal_compile_exception_becomes_error_report(

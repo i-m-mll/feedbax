@@ -102,6 +102,7 @@ def compile_evaluation_run_matrix_for_orchestration(
     *,
     run_set_id: str,
     context: Any,
+    registry: Any,
 ) -> Any:
     """Compile one matrix row with an authenticated persistent-worker batch plan."""
     from feedbax.orchestration.assembly import CompiledExecutionRow, CompiledRunSet
@@ -115,6 +116,7 @@ def compile_evaluation_run_matrix_for_orchestration(
     )
     rows = materialize_evaluation_run_matrix(
         matrix,
+        registry=registry,
         repo_root=context.repo_root,
     )
     _validate_staged_root_applicability(matrix, context.staged_roots)
@@ -203,6 +205,9 @@ def compile_evaluation_run_matrix_for_orchestration(
 class EvaluationRunMatrixCompiler:
     """Registered compiler for direct and content-pinned evaluation authoring."""
 
+    def __init__(self, registry: Any) -> None:
+        self.registry = registry
+
     def compile(
         self,
         *,
@@ -214,6 +219,7 @@ class EvaluationRunMatrixCompiler:
             authored,
             run_set_id=run_set_id,
             context=context,
+            registry=self.registry,
         )
 
 
@@ -265,9 +271,9 @@ class EvaluationMatrixIdentityAdapter:
         )
 
 
-def register_evaluation_run_matrix_compiler(registry: Any) -> None:
+def register_evaluation_run_matrix_compiler(registry: Any, *, evaluation_registry: Any) -> None:
     """Register the two authored evaluation schemas against one closed compiler."""
-    compiler = EvaluationRunMatrixCompiler()
+    compiler = EvaluationRunMatrixCompiler(evaluation_registry)
     adapter = EvaluationMatrixIdentityAdapter()
     for schema_id in (
         EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,

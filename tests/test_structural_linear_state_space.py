@@ -143,14 +143,9 @@ def test_sparse_entries_construct_the_same_jittable_dense_transition() -> None:
 
 
 def test_structural_registry_advertises_sparse_delta_a_authoring() -> None:
-    meta = ComponentRegistry(
-        load_user_components=False,
-        discover_plugins=False,
-    ).get("StructuralLinearStateSpace")
+    meta = ComponentRegistry(load_user_components=False).get("StructuralLinearStateSpace")
     assert meta is not None
-    delta_A_schema = next(
-        schema for schema in meta.param_schema if schema.name == "delta_A"
-    )
+    delta_A_schema = next(schema for schema in meta.param_schema if schema.name == "delta_A")
 
     assert delta_A_schema.type == "object"
     assert delta_A_schema.default == {
@@ -198,7 +193,7 @@ def test_signed_and_nominal_structural_variants(
 
 
 def test_task_trial_selects_one_constant_structural_variant() -> None:
-    graph = spec_to_graph(_spec())
+    graph = spec_to_graph(_spec(), ComponentRegistry(load_user_components=False))
     component = graph.nodes["plant"]
     trial = TaskTrialSpec(
         inits=WhereDict(),
@@ -229,7 +224,8 @@ def test_task_trial_selects_one_constant_structural_variant() -> None:
 
 
 def test_graphspec_round_trip_preserves_structural_identity() -> None:
-    graph = spec_to_graph(_spec(active=True))
+    registry = ComponentRegistry(load_user_components=False)
+    graph = spec_to_graph(_spec(active=True), registry)
     round_tripped = graph_to_spec(graph)
     node = round_tripped.nodes["plant"]
 
@@ -238,13 +234,17 @@ def test_graphspec_round_trip_preserves_structural_identity() -> None:
     assert node.params["delta_A"] == [[0.0, 0.5], [0.0, 0.0]]
     assert node.params["label"] == "structural_field"
     assert node.params["active"] is True
-    assert spec_to_graph(
-        GraphSpec.model_validate_json(round_tripped.model_dump_json())
-    ).nodes["plant"].label == "structural_field"
+    assert (
+        spec_to_graph(GraphSpec.model_validate_json(round_tripped.model_dump_json()), registry)
+        .nodes["plant"]
+        .label
+        == "structural_field"
+    )
 
 
 def test_sparse_graphspec_round_trip_preserves_canonical_entry_identity() -> None:
-    graph = spec_to_graph(_sparse_spec())
+    registry = ComponentRegistry(load_user_components=False)
+    graph = spec_to_graph(_sparse_spec(), registry)
     component = graph.nodes["plant"]
     outputs, _ = component(
         {"force": jnp.zeros((1,)), "epsilon": jnp.zeros((1,))},
@@ -268,9 +268,7 @@ def test_sparse_graphspec_round_trip_preserves_canonical_entry_identity() -> Non
     }
     assert (
         graph_to_spec(
-            spec_to_graph(
-                GraphSpec.model_validate_json(round_tripped.model_dump_json())
-            )
+            spec_to_graph(GraphSpec.model_validate_json(round_tripped.model_dump_json()), registry)
         )
         .nodes["plant"]
         .params["delta_A"]
@@ -327,7 +325,10 @@ def test_nested_v4_sparse_migration_materializes_losslessly_and_preserves_envelo
     nested_delta = migration.payload["subgraphs"]["wrapper"]["nodes"]["plant"]["params"]["delta_A"]
     assert nested_delta["dtype"] == "float64"
     with jax.experimental.enable_x64():
-        graph = spec_to_graph(GraphSpec.model_validate(migration.payload))
+        graph = spec_to_graph(
+            GraphSpec.model_validate(migration.payload),
+            ComponentRegistry(load_user_components=False),
+        )
         component = graph.nodes["wrapper"].nodes["plant"]
 
     assert component.initial_delta_A[0][1] == high_precision
@@ -392,15 +393,13 @@ def test_sparse_graphspec_rejects_invalid_entries(
     invalid = spec.model_copy(
         update={
             "nodes": {
-                "plant": node.model_copy(
-                    update={"params": {**node.params, "delta_A": delta_A}}
-                )
+                "plant": node.model_copy(update={"params": {**node.params, "delta_A": delta_A}})
             }
         }
     )
 
     with pytest.raises(ValueError, match=match):
-        spec_to_graph(invalid)
+        spec_to_graph(invalid, ComponentRegistry(load_user_components=False))
 
 
 def test_structural_component_rejects_unknown_parameter_schema_version() -> None:
@@ -414,4 +413,4 @@ def test_structural_component_rejects_unknown_parameter_schema_version() -> None
         UnsupportedComponentMigration,
         match="No component migration registered",
     ):
-        spec_to_graph(incompatible)
+        spec_to_graph(incompatible, ComponentRegistry(load_user_components=False))

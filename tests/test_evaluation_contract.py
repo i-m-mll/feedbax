@@ -5,9 +5,8 @@ from pathlib import Path
 import pytest
 
 from feedbax.analysis.evaluation import (
+    EvaluationRecipeRegistry,
     EvaluationRecipeResult,
-    register_evaluation_recipe,
-    unregister_evaluation_recipe,
 )
 from feedbax.contracts.manifest import EvaluationRunSpec, ParentRef
 from feedbax.contracts.migrations import SpecSchemaFamily, SpecSchemaRegistry
@@ -53,6 +52,12 @@ def _registry_with_dummy_family() -> SpecSchemaRegistry:
     return registry
 
 
+def _evaluation_registry(recipe) -> EvaluationRecipeRegistry:
+    registry = EvaluationRecipeRegistry()
+    registry.register(EVALUATION_TYPE, recipe)
+    return registry
+
+
 def test_evaluation_contract_helper_passes_for_dummy_recipe(tmp_path: Path) -> None:
     calls: list[str] = []
 
@@ -69,16 +74,13 @@ def test_evaluation_contract_helper_passes_for_dummy_recipe(tmp_path: Path) -> N
             metadata={"states_schema": STATES_SCHEMA},
         )
 
-    register_evaluation_recipe(EVALUATION_TYPE, recipe, replace=True)
-    try:
-        report = check_evaluation_recipe(
-            EVALUATION_TYPE,
-            _spec,
-            root=tmp_path,
-            registry=_registry_with_dummy_family(),
-        )
-    finally:
-        unregister_evaluation_recipe(EVALUATION_TYPE)
+    report = check_evaluation_recipe(
+        EVALUATION_TYPE,
+        _spec,
+        evaluation_registry=_evaluation_registry(recipe),
+        root=tmp_path,
+        schema_registry=_registry_with_dummy_family(),
+    )
 
     assert report.evaluation_type == EVALUATION_TYPE
     assert report.params_schema_family == "testpkg.spec.evaluation.dummy_eval"
@@ -103,17 +105,14 @@ def test_evaluation_contract_helper_accepts_explicit_params_schema_waiver(
             metadata={"states_schema": STATES_SCHEMA},
         )
 
-    register_evaluation_recipe(EVALUATION_TYPE, recipe, replace=True)
-    try:
-        report = check_evaluation_recipe(
-            EVALUATION_TYPE,
-            _spec,
-            root=tmp_path,
-            registry=SpecSchemaRegistry(),
-            params_schema_waiver="params family lands in a later downstream change",
-        )
-    finally:
-        unregister_evaluation_recipe(EVALUATION_TYPE)
+    report = check_evaluation_recipe(
+        EVALUATION_TYPE,
+        _spec,
+        evaluation_registry=_evaluation_registry(recipe),
+        root=tmp_path,
+        schema_registry=SpecSchemaRegistry(),
+        params_schema_waiver="params family lands in a later downstream change",
+    )
 
     assert report.params_schema_waived
 
@@ -132,17 +131,14 @@ def test_evaluation_contract_helper_rejects_missing_params_family_without_waiver
             metadata={"states_schema": STATES_SCHEMA},
         )
 
-    register_evaluation_recipe(EVALUATION_TYPE, recipe, replace=True)
-    try:
-        with pytest.raises(AssertionError, match="params schema family is not registered"):
-            check_evaluation_recipe(
-                EVALUATION_TYPE,
-                _spec,
-                root=tmp_path,
-                registry=SpecSchemaRegistry(),
-            )
-    finally:
-        unregister_evaluation_recipe(EVALUATION_TYPE)
+    with pytest.raises(AssertionError, match="params schema family is not registered"):
+        check_evaluation_recipe(
+            EVALUATION_TYPE,
+            _spec,
+            evaluation_registry=_evaluation_registry(recipe),
+            root=tmp_path,
+            schema_registry=SpecSchemaRegistry(),
+        )
 
 
 def test_evaluation_contract_helper_rejects_missing_states_schema(
@@ -156,17 +152,14 @@ def test_evaluation_contract_helper_rejects_missing_states_schema(
     ) -> EvaluationRecipeResult:
         return EvaluationRecipeResult(states={"value": 1})
 
-    register_evaluation_recipe(EVALUATION_TYPE, recipe, replace=True)
-    try:
-        with pytest.raises(AssertionError, match="metadata\\['states_schema'\\]"):
-            check_evaluation_recipe(
-                EVALUATION_TYPE,
-                _spec,
-                root=tmp_path,
-                registry=_registry_with_dummy_family(),
-            )
-    finally:
-        unregister_evaluation_recipe(EVALUATION_TYPE)
+    with pytest.raises(AssertionError, match="metadata\\['states_schema'\\]"):
+        check_evaluation_recipe(
+            EVALUATION_TYPE,
+            _spec,
+            evaluation_registry=_evaluation_registry(recipe),
+            root=tmp_path,
+            schema_registry=_registry_with_dummy_family(),
+        )
 
 
 def test_evaluation_contract_helper_rejects_spec_type_mismatch(tmp_path: Path) -> None:
@@ -181,14 +174,11 @@ def test_evaluation_contract_helper_rejects_spec_type_mismatch(tmp_path: Path) -
             metadata={"states_schema": STATES_SCHEMA},
         )
 
-    register_evaluation_recipe(EVALUATION_TYPE, recipe, replace=True)
-    try:
-        with pytest.raises(AssertionError, match="expected 'testpkg.dummy_eval'"):
-            check_evaluation_recipe(
-                EVALUATION_TYPE,
-                lambda: _spec("testpkg.other_eval"),
-                root=tmp_path,
-                registry=_registry_with_dummy_family(),
-            )
-    finally:
-        unregister_evaluation_recipe(EVALUATION_TYPE)
+    with pytest.raises(AssertionError, match="expected 'testpkg.dummy_eval'"):
+        check_evaluation_recipe(
+            EVALUATION_TYPE,
+            lambda: _spec("testpkg.other_eval"),
+            evaluation_registry=_evaluation_registry(recipe),
+            root=tmp_path,
+            schema_registry=_registry_with_dummy_family(),
+        )

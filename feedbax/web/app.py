@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from feedbax.plugins.composition import compose_application
+
 from feedbax.web.api import (
     analysis,
     analyses,
@@ -32,9 +34,11 @@ STUDIO_DEV_ORIGINS = ["http://localhost:3008"]
 logger = logging.getLogger(__name__)
 
 
-def create_app() -> FastAPI:
+def create_app(*, bootstrap_modules: tuple[str, ...] = ()) -> FastAPI:
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
+        app.state.bootstrap_modules = bootstrap_modules
+        app.state.bootstrap_state = await compose_application(modules=bootstrap_modules)
         try:
             await orchestration_manager.reconcile_from_provider()
         except Exception:

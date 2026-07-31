@@ -64,7 +64,14 @@ from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 from feedbax.models.networks import LeakyRNNCell, SimpleStagedNetwork, VanillaRNN
 from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
 from feedbax.components.penzai import PenzaiSubgraph
-from feedbax.tasks import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
+from feedbax.tasks import (
+    DelayedReaches,
+    SimpleReaches,
+    Stabilization,
+    TaskComponent,
+    apply_delayed_reaches_preset,
+)
+from feedbax.tasks.presets import delayed_reaches_n_steps_from_params
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
@@ -80,7 +87,10 @@ from feedbax.contracts.array_values import (
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.contracts.migrations import migrate_graph_spec
 from feedbax.component_registry import format_missing_interior_message, required_interior_domain
-from feedbax.runtime.parameter_constraints import apply_parameter_constraints, normalize_parameter_constraints
+from feedbax.runtime.parameter_constraints import (
+    apply_parameter_constraints,
+    normalize_parameter_constraints,
+)
 from feedbax.contracts.graphs.builders import build_component, nonlinearity_name
 from feedbax.contracts.graphs.domain_compilers import get_domain_compiler
 from feedbax.contracts.graphs.prototypes import (
@@ -366,9 +376,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 }
             )
             expanded_parameter_constraints.extend(
-                constraint.model_copy(
-                    update={"node": _prefixed_node(name, constraint.node)}
-                )
+                constraint.model_copy(update={"node": _prefixed_node(name, constraint.node)})
                 for constraint in template.parameter_constraints
             )
             continue
@@ -1086,16 +1094,12 @@ def graph_to_spec(graph: Any) -> GraphSpec:
 
 def spec_to_graph(
     spec: GraphSpec,
-    component_registry: Any | None = None,
+    component_registry: Any,
     input_prototypes: Mapping[tuple[str, str], Any] | None = None,
 ) -> Graph:
     """Instantiate a Graph-like object from GraphSpec."""
-    from feedbax.component_registry import get_component_registry
-
-    execution_registry = (
-        component_registry if hasattr(component_registry, "names") else get_component_registry()
-    )
-    metadata_registry = component_registry if component_registry is not None else execution_registry
+    execution_registry = component_registry
+    metadata_registry = component_registry
     migration = migrate_graph_spec(spec)
     spec = GraphSpec.model_validate(migration.payload)
     spec, authored_array_values = _materialize_graph_component_params(spec)
@@ -1140,6 +1144,9 @@ def spec_to_graph(
         required_domain = required_interior_domain(node_type, metadata_registry)
         if required_domain is None and metadata_registry is not execution_registry:
             required_domain = required_interior_domain(node_type, execution_registry)
+        if node_type == "DelayedReaches":
+            node_params = apply_delayed_reaches_preset(node_params)
+            node_params.setdefault("n_steps", delayed_reaches_n_steps_from_params(node_params))
         defaults = _lookup_defaults(metadata_registry, node_type)
         required_params = _lookup_required_params(metadata_registry, node_type)
         params = _merge_params(

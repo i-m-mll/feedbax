@@ -1,12 +1,16 @@
+from __future__ import annotations
+
 from importlib import resources
 from itertools import product
-from typing import Any, Dict, List, Literal, Optional, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, cast
 
 from jax_cookbook.tree import expand_split_keys
 
 from feedbax.config.yaml import _YamlLiteral, get_yaml_loader
 from feedbax.config.utils import deep_merge
-from feedbax.plugins.registry import ExperimentRegistry
+
+if TYPE_CHECKING:
+    from feedbax.plugins.registry import ExperimentRegistry
 
 
 def _split_modules(selector: str) -> list[str]:
@@ -152,7 +156,7 @@ def _eval_node(node: Dict[str, Any], parent_ctx: Optional[str]) -> List[Dict[str
 def load_batch_config(
     domain: Literal["analysis", "training"],
     config_key: str,
-    registry: Optional[ExperimentRegistry] = None,
+    registry: ExperimentRegistry,
 ) -> dict[str, list[dict]]:
     """
     Load a batched config file and return { module_key: [run_params, ...] }.
@@ -168,14 +172,6 @@ def load_batch_config(
       - type=product: cartesian product over children (deep-merge)
       - type=cases:   union of children
     """
-    if registry is None:
-        # Imported lazily so this module does not trigger plugin discovery at
-        # import time (which would re-enter a partially initialized
-        # `feedbax.config`). See issue ccfe63a.
-        from feedbax.plugins import EXPERIMENT_REGISTRY
-
-        registry = EXPERIMENT_REGISTRY
-
     yaml = get_yaml_loader(typ="safe")
 
     # Resolve owning package for this batch key (supports "pkg/name" or "name")

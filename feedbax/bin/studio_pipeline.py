@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from pathlib import Path
 from typing import Any
 
 from feedbax.integrations.provider import validate_task_spec, validate_training_spec
+from feedbax.plugins.composition import compose_application
 
 
 def _read_json(path: str) -> dict[str, Any]:
@@ -24,13 +26,17 @@ def _write_json(path: str, payload: dict[str, Any]) -> None:
     )
 
 
-def _materialize_training(args: argparse.Namespace) -> int:
+def _materialize_training(args: argparse.Namespace, *, component_registry: Any) -> int:
     graph_spec = _read_json(args.graph)
     training_spec = _read_json(args.training)
     task_spec = _read_json(args.task)
     task_binding_spec = _read_json(args.task_binding) if args.task_binding else None
 
-    training_result = validate_training_spec(training_spec, graph_spec=graph_spec)
+    training_result = validate_training_spec(
+        training_spec,
+        graph_spec=graph_spec,
+        component_registry=component_registry,
+    )
     task_result = validate_task_spec(task_spec)
     errors = [
         *[issue.model_dump(mode="json", exclude_none=True) for issue in training_result.errors],
@@ -86,8 +92,9 @@ def main(argv: list[str] | None = None) -> int:
     training_parser.add_argument("--output", required=True, help="Output JSON artifact path")
 
     args = parser.parse_args(argv)
+    registries = asyncio.run(compose_application()).bundle
     if args.command == "materialize-training":
-        return _materialize_training(args)
+        return _materialize_training(args, component_registry=registries.components)
     parser.error(f"Unhandled command: {args.command}")
     return 2
 

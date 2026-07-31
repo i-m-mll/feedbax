@@ -252,6 +252,7 @@ def save_figure_with_spec(
 # Project-config-driven routing
 # ---------------------------------------------------------------------------
 
+
 def save_figure(
     fig: Any,
     spec: dict[str, Any],
@@ -259,19 +260,20 @@ def save_figure(
     package: str,
     experiment: str,
     topic: str,
+    registry: Any,
     extra_packages: Optional[list[str]] = None,
     close: bool = False,
 ) -> dict[str, Optional[Path]]:
     """Save a figure using project-defined routing from the package registry.
 
-    Looks up *package* in the ``EXPERIMENT_REGISTRY``, reads its
+    Looks up *package* in the injected experiment registry, reads its
     ``figure_routing`` config, resolves the spec and render directories from
     templates, writes the spec JSON, writes the rendered figure, and
     optionally creates a relative symlink from the spec directory to the
     render file.
 
     The package must be registered with a ``figure_routing`` config (passed to
-    ``register_package_from_module_info``).  An editable-install guard warns if
+    the plugin's ``EXPERIMENT_PACKAGES`` registration). An editable-install guard warns if
     the package's ``__file__`` is not inside a git checkout — in that case the
     repo-root-relative paths may be wrong.
 
@@ -305,16 +307,12 @@ def save_figure(
         ValueError: If the package is not editable-installed and no repo root
             can be found (see :func:`_find_repo_root`).
     """
-    # Late import to avoid circular dependency (plugins imports registry;
-    # plot should not import plugins at module level).
-    from feedbax.plugins import EXPERIMENT_REGISTRY  # noqa: PLC0415
-
     # Validate package and routing config
-    figure_routing = EXPERIMENT_REGISTRY.get_figure_routing(package)
+    figure_routing = registry.get_figure_routing(package)
     if figure_routing is None:
         raise ValueError(
             f"Package '{package}' is registered but has no figure_routing configured. "
-            "Pass figure_routing={{...}} to register_package_from_module_info."
+            "Declare figure_routing while registering the package through EXPERIMENT_PACKAGES."
         )
 
     _required_keys = {"spec_dir_template", "render_dir_template"}
@@ -326,7 +324,7 @@ def save_figure(
         )
 
     # Resolve package module and repo root
-    package_metadata = EXPERIMENT_REGISTRY.get_package_metadata(package)
+    package_metadata = registry.get_package_metadata(package)
     package_module = package_metadata.package_module
 
     _check_editable_install(package_module)
@@ -417,6 +415,7 @@ def _replace_symlink(link_path: Path, target: str) -> None:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _write_figure(
     fig: Any,
     dst_dir: Path,
@@ -427,12 +426,14 @@ def _write_figure(
     # Lazy import to avoid hard dependency at module level
     try:
         import plotly.graph_objs as go  # type: ignore[import]
+
         _plotly_figure = go.Figure
     except ImportError:
         _plotly_figure = None
 
     try:
         import matplotlib.figure as mpl_fig  # type: ignore[import]
+
         _mpl_figure = mpl_fig.Figure
     except ImportError:
         _mpl_figure = None

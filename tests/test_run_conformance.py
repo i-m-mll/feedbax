@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -61,7 +61,16 @@ from feedbax.orchestration.conformance import (
     write_conformance_certificate,
 )
 from feedbax.orchestration.state import RowState
-from feedbax.plugins.discovery import load_conformance_check_plugins
+from feedbax.plugins import (
+    CONFORMANCE_CHECKS,
+    BootstrapError,
+    BootstrapErrorCode,
+    FamilyRequirement,
+    PluginDeclaration,
+    PluginRegistration,
+    bootstrap_application,
+    new_registration_context,
+)
 
 
 pytestmark = pytest.mark.feedbax_contract
@@ -866,7 +875,10 @@ def test_execution_identity_rejects_artifact_digest_or_schema_failure(
 
 
 def test_manifest_valid_loads_manifest_and_compares_preflight_payload(tmp_path: Path) -> None:
-    training_payload = {"method_payload": {"payload": {"optimizer": {"type": "adamw"}}}, "metadata": {"optional": None}}
+    training_payload = {
+        "method_payload": {"payload": {"optimizer": {"type": "adamw"}}},
+        "metadata": {"optional": None},
+    }
     manifest = TrainingRunManifest(
         id="feedbax-training-run:row-a",
         training_spec=spec_payload("TrainingRunSpec", training_payload),
@@ -1142,9 +1154,7 @@ def test_lr_trace_conforms_each_declared_mapped_coordinate_and_rejects_missing()
         for index in range(2)
         for step, value in ((100, 0.01), (104, 0.1), (110, 0.02))
     ]
-    passing = check_lr_trace(
-        _row(bundle_row_spec=bundle, training_diagnostics={"lr_trace": trace})
-    )
+    passing = check_lr_trace(_row(bundle_row_spec=bundle, training_diagnostics={"lr_trace": trace}))
     assert passing.status == "pass"
 
     missing = check_lr_trace(
@@ -1471,11 +1481,13 @@ def test_lr_trace_resolves_legacy_program_steps_from_immutable_event_coordinates
     )
 
     assert result.status == "pass"
-    assert result.observed == pytest.approx({
-        17_000: 3e-5,
-        19_000: 3e-5,
-        21_000: 3e-5,
-    })
+    assert result.observed == pytest.approx(
+        {
+            17_000: 3e-5,
+            19_000: 3e-5,
+            21_000: 3e-5,
+        }
+    )
 
 
 def test_lr_trace_legacy_program_steps_require_complete_unambiguous_event_evidence() -> None:
@@ -1604,9 +1616,7 @@ def test_lr_trace_legacy_program_steps_require_complete_unambiguous_event_eviden
         )
     )
     assert contradictory_unsampled_event.status == "fail"
-    assert "strictly increasing in program_step order" in str(
-        contradictory_unsampled_event.detail
-    )
+    assert "strictly increasing in program_step order" in str(contradictory_unsampled_event.detail)
 
 
 @pytest.mark.parametrize(
@@ -1774,18 +1784,30 @@ def test_plugin_check_discovery_and_failure_propagation() -> None:
 
     class FakeEntryPoint:
         name = "fixture"
+        value = "fixture:PLUGIN_REGISTRATION"
 
         def load(self) -> object:
-            return SimpleNamespace(
-                feedbax_conformance_checks=lambda: [("project_check", plugin_check)]
+            return PluginRegistration(
+                PluginDeclaration(
+                    "tests.conformance",
+                    "1",
+                    families=(FamilyRequirement("conformance_checks"),),
+                ),
+                lambda context: context.registry(CONFORMANCE_CHECKS).register(
+                    "project_check", plugin_check
+                ),
             )
 
-    registry = CheckRegistry()
-    load_conformance_check_plugins(registry=registry, entry_points=[FakeEntryPoint()])
+    state = asyncio.run(
+        bootstrap_application(
+            new_registration_context(local_component_source=None),
+            entry_points=(FakeEntryPoint(),),
+        )
+    )
     certificate = run_conformance_checks(
         run_set_id="run-set-a",
         rows=[_row()],
-        registry=registry,
+        registry=state.bundle.conformance_checks,
         generated_at=GENERATED_AT,
     )
 
@@ -1794,20 +1816,25 @@ def test_plugin_check_discovery_and_failure_propagation() -> None:
     assert certificate.rows["row-a"].checks[0].status == "fail"
 
 
-def test_conformance_plugin_discovery_ignores_non_conformance_registrars() -> None:
+def test_conformance_plugin_discovery_rejects_legacy_registrars() -> None:
     def experiment_registrar(registry: object) -> None:
         raise AssertionError("non-conformance registrar should not be called")
 
     class FakeEntryPoint:
         name = "experiment"
+        value = "experiment:legacy"
 
         def load(self) -> object:
             return experiment_registrar
 
-    registry = CheckRegistry()
-    load_conformance_check_plugins(registry=registry, entry_points=[FakeEntryPoint()])
-
-    assert len(registry) == 0
+    with pytest.raises(BootstrapError) as excinfo:
+        asyncio.run(
+            bootstrap_application(
+                new_registration_context(local_component_source=None),
+                entry_points=(FakeEntryPoint(),),
+            )
+        )
+    assert excinfo.value.code is BootstrapErrorCode.INVALID_REGISTRATION
 
 
 def test_register_coupling_rejects_failing_certificate() -> None:

@@ -22,8 +22,9 @@ packages that create evaluation states for later analysis and reporting.
 ## Conformance
 
 Downstream CI can import `feedbax.testing.evaluation_contract` and call
-`check_evaluation_recipe(evaluation_type, spec_factory)` after registering the
-recipe. The helper validates the namespaced key and callable shape, runs a
+`check_evaluation_recipe(evaluation_type, spec_factory, evaluation_registry=registry)`
+with the caller-owned `EvaluationRecipeRegistry` containing the recipe. The helper
+validates the namespaced key and callable shape, runs a
 completed manifest through the executor cache, confirms `states_schema`, checks
 the params schema family or explicit waiver, and verifies that a recipe failure
 writes a failed manifest.

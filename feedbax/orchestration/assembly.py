@@ -301,17 +301,27 @@ class AssemblyCompilerRegistry:
             ) from exc
 
 
-def build_default_assembly_registry() -> AssemblyCompilerRegistry:
+def build_default_assembly_registry(
+    *, method_registry: Any, row_lowerer_registry: Any, evaluation_registry: Any
+) -> AssemblyCompilerRegistry:
     """Return Feedbax's built-in training-matrix and Studio compiler registry."""
     from feedbax.analysis.evaluation_orchestration import (
         register_evaluation_run_matrix_compiler,
     )
     from feedbax.contracts.studio_training import register_studio_training_compiler
+    from feedbax.training.run_matrix import _validate_training_payload
     from feedbax.training.spec_storage import register_training_run_matrix_compiler
 
     registry = AssemblyCompilerRegistry()
-    register_training_run_matrix_compiler(registry)
-    register_evaluation_run_matrix_compiler(registry)
+    register_training_run_matrix_compiler(
+        registry,
+        method_registry=method_registry,
+        row_validator=lambda payload, row_id: _validate_training_payload(
+            payload, row_id=row_id, method_registry=method_registry
+        ),
+        row_lowerer=row_lowerer_registry.lower,
+    )
+    register_evaluation_run_matrix_compiler(registry, evaluation_registry=evaluation_registry)
     register_studio_training_compiler(registry)
     return registry
 

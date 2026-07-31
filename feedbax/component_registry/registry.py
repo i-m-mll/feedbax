@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
-import importlib.metadata
 import importlib.util
-import inspect
 import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, cast
@@ -35,7 +34,6 @@ from .meta import ComponentBuilder, ComponentMeta, OutputPrototypeFn
 
 
 logger = logging.getLogger(__name__)
-_DEFAULT_REGISTRY: ComponentRegistry | None = None
 _REGISTRATION_PROVENANCE: list[str] = []
 _LEGACY_INTERIOR_DOMAINS = {
     "Network": CAUSAL_DOMAIN_ID,
@@ -62,10 +60,7 @@ class TemplateBuilderIssue:
     @property
     def summary(self) -> str:
         template_ref = self.template_id or self.template_type
-        return (
-            f"{template_ref}: {self.node_path} uses {self.node_type!r}, "
-            f"{self.reason}"
-        )
+        return f"{template_ref}: {self.node_path} uses {self.node_type!r}, {self.reason}"
 
 
 @contextmanager
@@ -89,17 +84,15 @@ class ComponentRegistry:
         self,
         *,
         load_user_components: bool = True,
-        discover_plugins: bool = True,
         template_packs: Iterable[Callable[[ComponentRegistry], None]] = (),
     ) -> None:
+        self._sealed = False
         self._components: Dict[str, ComponentMeta] = {}
         self._component_migrations: Dict[tuple[str, str | None], ComponentMigration] = {}
         self._migration_owners: Dict[str, set[str]] = {}
         self._register_builtins()
         for template_pack in template_packs:
             self.register_template_pack(template_pack)
-        if discover_plugins:
-            self.discover_entry_point_components()
         if load_user_components:
             self.load_user_components(Path.home() / ".feedbax" / "components")
 
@@ -117,16 +110,28 @@ class ComponentRegistry:
         provenance: str | None = None,
     ) -> None:
         """Register caller-selected composite templates."""
+        self._require_mutable()
         with _registration_provenance(provenance):
             template_pack(self)
 
     def register(self, meta: ComponentMeta) -> None:
+        self._require_mutable()
+        meta = deepcopy(meta)
         if meta.provenance is None:
             meta.provenance = _current_provenance()
         self._complete_identity(meta)
         meta.migrations = self._migration_infos_for_target(meta.name)
         self._validate_representation(meta)
+        if meta.name in self._components:
+            raise ValueError(f"component type already registered: {meta.name!r}")
         self._components[meta.name] = meta
+
+    def seal(self) -> None:
+        self._sealed = True
+
+    def _require_mutable(self) -> None:
+        if self._sealed:
+            raise RuntimeError("component registry is sealed")
 
     def register_component_type(
         self,
@@ -155,6 +160,7 @@ class ComponentRegistry:
         trainable_by_default: bool = False,
         representation: RepresentationSpec | dict[str, Any] | None = None,
     ) -> ComponentMeta:
+        self._require_mutable()
         if not callable(builder):
             raise TypeError(f"Builder for component type {name!r} must be callable")
         if port_types is not None and not isinstance(port_types, PortTypeSpec):
@@ -194,7 +200,9 @@ class ComponentRegistry:
             representation=representation,
         )
         self.register(meta)
-        return meta
+        registered = self.get(name)
+        assert registered is not None
+        return registered
 
     def register_builder(
         self,
@@ -204,6 +212,7 @@ class ComponentRegistry:
         provenance: str | None = None,
         owner: str | None = None,
     ) -> ComponentMeta:
+        self._require_mutable()
         if not callable(builder):
             raise TypeError(f"Builder for component type {name!r} must be callable")
         meta = self._components.get(name)
@@ -220,15 +229,24 @@ class ComponentRegistry:
                 owner=owner,
             )
         else:
+            if meta.builder is not None:
+                raise ValueError(f"component builder already registered: {name!r}")
             meta.builder = builder
             if meta.provenance is None:
                 meta.provenance = provenance or _current_provenance()
             if meta.owner is None:
                 meta.owner = owner
+            self._validate_representation(meta)
+            registered = self.get(name)
+            assert registered is not None
+            return registered
         self.register(meta)
-        return meta
+        registered = self.get(name)
+        assert registered is not None
+        return registered
 
     def register_migration(self, migration: ComponentMigration) -> None:
+        self._require_mutable()
         if not migration.owner:
             raise ValueError("Component migration owner must be non-empty")
         key = (migration.source_type, migration.source_param_schema_version)
@@ -245,6 +263,7 @@ class ComponentRegistry:
             target_meta.migrations = self._migration_infos_for_target(target_meta.name)
 
     def register_migration_pack(self, pack: ComponentMigrationPack) -> None:
+        self._require_mutable()
         if not pack.owner:
             raise ValueError("Component migration pack owner must be non-empty")
         for migration in pack.migrations:
@@ -268,7 +287,7 @@ class ComponentRegistry:
                 type_id=type_id,
                 params=dict(params),
                 param_schema_version=param_schema_version or meta.param_schema_version,
-                meta=meta,
+                meta=deepcopy(meta),
             )
 
         migration = self._component_migrations.get((type_id, param_schema_version))
@@ -311,7 +330,7 @@ class ComponentRegistry:
             type_id=migrated_type,
             params=migrated_params,
             param_schema_version=migrated_version or migrated_meta.param_schema_version,
-            meta=migrated_meta,
+            meta=deepcopy(migrated_meta),
             migrations=(self._migration_info(migration),),
         )
 
@@ -330,7 +349,8 @@ class ComponentRegistry:
         return "." in type_id
 
     def get(self, name: str) -> Optional[ComponentMeta]:
-        return self._components.get(name)
+        meta = self._components.get(name)
+        return deepcopy(meta) if meta is not None else None
 
     def names(self) -> List[str]:
         return sorted(self._components)
@@ -512,69 +532,6 @@ class ComponentRegistry:
                     representation=meta.get("representation"),
                 )
 
-    def discover_entry_point_components(
-        self,
-        entry_point_group: str = "feedbax.plugins",
-        entry_points: Iterable[Any] | None = None,
-    ) -> None:
-        if entry_points is None:
-            try:
-                entry_points = importlib.metadata.entry_points(group=entry_point_group)
-            except TypeError:
-                all_entry_points = importlib.metadata.entry_points()
-                entry_points_getter = getattr(all_entry_points, "get", None)
-                if callable(entry_points_getter):
-                    entry_points = cast(
-                        Iterable[Any],
-                        entry_points_getter(entry_point_group, []),
-                    )
-                else:
-                    entry_points = [
-                        entry_point
-                        for entry_point in all_entry_points
-                        if entry_point.group == entry_point_group
-                    ]
-        if entry_points is None:
-            return
-
-        for entry_point in entry_points:
-            provenance = self._entry_point_provenance(entry_point)
-            try:
-                plugin = entry_point.load()
-                registrar = self._component_registrar(plugin)
-                if registrar is None:
-                    continue
-                with _registration_provenance(provenance):
-                    registrar(self)
-            except Exception as exc:
-                logger.warning("Failed to load component entry point %s: %s", provenance, exc)
-                continue
-
-    def _component_registrar(self, plugin: Any) -> Any:
-        for attr in ("register_feedbax_components", "register_components"):
-            registrar = getattr(plugin, attr, None)
-            if callable(registrar):
-                return registrar
-        if not callable(plugin):
-            return None
-        try:
-            signature = inspect.signature(plugin)
-        except (TypeError, ValueError):
-            return None
-        parameter_names = set(signature.parameters)
-        if parameter_names & {"component_registry", "components"}:
-            return plugin
-        return None
-
-    def _entry_point_provenance(self, entry_point: Any) -> str:
-        dist = getattr(entry_point, "dist", None)
-        if dist is not None:
-            metadata = getattr(dist, "metadata", {})
-            package_name = metadata.get("Name") if hasattr(metadata, "get") else None
-            if package_name:
-                return f"package:{package_name}"
-        return f"entry-point:{getattr(entry_point, 'name', '<unknown>')}"
-
     def _complete_identity(self, meta: ComponentMeta) -> None:
         details = _identity_from_provenance(meta.name, meta.provenance)
         if meta.owner is None:
@@ -583,6 +540,7 @@ class ComponentRegistry:
             meta.identity = details.model_copy(update={"owner": meta.owner})
 
     def _to_definition(self, meta: ComponentMeta) -> ComponentDefinition:
+        meta = deepcopy(meta)
         return ComponentDefinition(
             name=meta.name,
             category=meta.category,
@@ -717,63 +675,6 @@ def _identity_from_provenance(type_id: str, provenance: str | None) -> Component
             stable=False,
         )
     return ComponentIdentity(type_id=type_id)
-
-
-def get_component_registry() -> ComponentRegistry:
-    global _DEFAULT_REGISTRY
-    if _DEFAULT_REGISTRY is None:
-        registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
-        _DEFAULT_REGISTRY = registry
-        registry.discover_entry_point_components()
-        registry.load_user_components(Path.home() / ".feedbax" / "components")
-    return _DEFAULT_REGISTRY
-
-
-def register_component_type(
-    name: str,
-    builder: ComponentBuilder,
-    *,
-    category: str = "Custom",
-    description: str = "",
-    param_schema: Iterable[ParamSchema | dict[str, Any]] = (),
-    input_ports: Iterable[str] = (),
-    output_ports: Iterable[str] = (),
-    icon: str = "box",
-    port_types: PortTypeSpec | dict[str, Any] | None = None,
-    domain: str = CAUSAL_DOMAIN_ID,
-    interior_domain: str | None = None,
-    is_composite: bool = False,
-    output_prototype_fn: OutputPrototypeFn | None = None,
-    provenance: str | None = None,
-    owner: str | None = None,
-    param_schema_version: str = "1",
-    supported_param_schema_versions: Iterable[str] | None = None,
-    trainable_by_default: bool = False,
-    representation: RepresentationSpec | dict[str, Any] | None = None,
-) -> ComponentMeta:
-    """Register an executable component type in the process-wide registry."""
-
-    return get_component_registry().register_component_type(
-        name=name,
-        builder=builder,
-        category=category,
-        description=description,
-        param_schema=param_schema,
-        input_ports=input_ports,
-        output_ports=output_ports,
-        icon=icon,
-        port_types=port_types,
-        domain=domain,
-        interior_domain=interior_domain,
-        is_composite=is_composite,
-        output_prototype_fn=output_prototype_fn,
-        provenance=provenance,
-        owner=owner,
-        param_schema_version=param_schema_version,
-        supported_param_schema_versions=supported_param_schema_versions,
-        trainable_by_default=trainable_by_default,
-        representation=representation,
-    )
 
 
 def required_interior_domain(node_type: str, registry: Any) -> str | None:

@@ -211,9 +211,7 @@ def _build_network(params: Mapping[str, Any]) -> SimpleStagedNetwork:
 def _build_mechanics(params: Mapping[str, Any]) -> Mechanics:
     plant_type = params.get("plant_type", "TwoLinkArm")
     if plant_type == "TwoLinkArm":
-        plant = DirectForceInput(
-            TwoLinkArm(l=params.get("link_lengths", (0.30, 0.33)))
-        )
+        plant = DirectForceInput(TwoLinkArm(l=params.get("link_lengths", (0.30, 0.33))))
     elif plant_type == "PointMass":
         plant = DirectForceInput(
             PointMass(
@@ -253,8 +251,7 @@ def _default_analytical_body_preset(params: Mapping[str, Any]) -> BodyPreset:
         )
         / 2.0,
         muscle_moment_arm_magnitudes=(
-            bounds.muscle_moment_arm_magnitudes_min
-            + bounds.muscle_moment_arm_magnitudes_max
+            bounds.muscle_moment_arm_magnitudes_min + bounds.muscle_moment_arm_magnitudes_max
         )
         / 2.0,
         tau_act=tau_act,
@@ -842,9 +839,7 @@ def _build_threshold_latched_force(params: Mapping[str, Any]) -> ThresholdLatche
 
 def _build_dynamics_matrix_perturb(params: Mapping[str, Any]) -> DynamicsMatrixPerturb:
     if "mass" not in params or params["mass"] is None:
-        raise ValueError(
-            "DynamicsMatrixPerturb requires explicit mass matching the wired plant"
-        )
+        raise ValueError("DynamicsMatrixPerturb requires explicit mass matching the wired plant")
     delta_A = jnp.asarray(params.get("delta_A", [[0.0, 0.0, 0.0, 0.0]] * 2))
     if delta_A.ndim != 2:
         raise ValueError("DynamicsMatrixPerturb delta_A must be a rank-2 array")
@@ -872,9 +867,7 @@ def _build_structural_linear_state_space(
         B_w=None if params.get("B_w") is None else jnp.asarray(params["B_w"]),
         dt=float(params.get("dt", 1.0)),
         initial_state=(
-            None
-            if params.get("initial_state") is None
-            else jnp.asarray(params["initial_state"])
+            None if params.get("initial_state") is None else jnp.asarray(params["initial_state"])
         ),
         pos_slice=tuple(params.get("pos_slice", (0, 2))),
         vel_slice=tuple(params.get("vel_slice", (2, 4))),
@@ -1062,21 +1055,14 @@ def build_component(
     node_type: str,
     params: Mapping[str, Any],
     *,
-    component_registry: Any = None,
+    component_registry: Any,
 ) -> Component:
     """Build a leaf component from a GraphSpec node."""
-
-    if component_registry is None or not hasattr(component_registry, "names"):
-        from feedbax.component_registry import get_component_registry
-
-        component_registry = get_component_registry()
     meta = component_registry.get(node_type)
     if meta is None:
         message = _UNREGISTERED_TEMPLATE_MESSAGES.get(node_type)
         if message is not None:
-            raise NotImplementedError(
-                message.format(node_type=node_type, node_name=node_name)
-            )
+            raise NotImplementedError(message.format(node_type=node_type, node_name=node_name))
         known = ", ".join(component_registry.names())
         raise ValueError(
             f"Unsupported component type {node_type!r} for node {node_name!r}. "

@@ -17,10 +17,9 @@ from typing import Any
 from feedbax.analysis.evaluation import (
     EvaluationRecipe,
     EvaluationRecipeExecutionError,
+    EvaluationRecipeRegistry,
     coerce_evaluation_run_spec,
     execute_evaluation_run_spec,
-    get_evaluation_recipe,
-    register_evaluation_recipe,
     STATES_SCHEMA_METADATA_KEY,
 )
 from feedbax.analysis.validation import (
@@ -58,8 +57,9 @@ def check_evaluation_recipe(
     evaluation_type: str,
     spec_factory: SpecFactory,
     *,
+    evaluation_registry: EvaluationRecipeRegistry,
     root: Path | str | None = None,
-    registry: SpecSchemaRegistry = default_spec_registry,
+    schema_registry: SpecSchemaRegistry = default_spec_registry,
     params_schema_waiver: str | None = None,
 ) -> EvaluationRecipeContractReport:
     """Assert one registered evaluation recipe satisfies the v1 producer contract.
@@ -69,7 +69,8 @@ def check_evaluation_recipe(
         spec_factory: Callable returning an ``EvaluationRunSpec``, mapping, or
             JSON path for a representative successful run.
         root: Optional manifest/cache root. A temporary root is used by default.
-        registry: Schema registry used to check the params schema family.
+        evaluation_registry: Caller-owned registry containing the recipe under test.
+        schema_registry: Schema registry used to check the params schema family.
         params_schema_waiver: Explicit reason allowing a producer to ship before
             its params family is registered. Downstream CI should omit this once
             a family exists or when strict params governance is enabled.
@@ -83,7 +84,7 @@ def check_evaluation_recipe(
             invalid.
     """
     validate_namespaced_type_key(evaluation_type, field="evaluation_type")
-    recipe = get_evaluation_recipe(evaluation_type)
+    recipe = evaluation_registry.get(evaluation_type)
     validate_evaluation_recipe(evaluation_type, recipe)
     spec = coerce_evaluation_run_spec(spec_factory())
     assert spec.evaluation_type == evaluation_type, (
@@ -94,7 +95,7 @@ def check_evaluation_recipe(
     params_schema_family = evaluation_params_schema_family_id(evaluation_type)
     params_schema_waived = _params_schema_waived_or_registered(
         params_schema_family,
-        registry=registry,
+        registry=schema_registry,
         waiver=params_schema_waiver,
     )
 
@@ -107,6 +108,7 @@ def check_evaluation_recipe(
                 root=Path(tmp),
                 params_schema_family=params_schema_family,
                 params_schema_waived=params_schema_waived,
+                evaluation_registry=evaluation_registry,
             )
     return _check_evaluation_recipe_in_root(
         evaluation_type,
@@ -115,6 +117,7 @@ def check_evaluation_recipe(
         root=Path(root),
         params_schema_family=params_schema_family,
         params_schema_waived=params_schema_waived,
+        evaluation_registry=evaluation_registry,
     )
 
 
@@ -147,12 +150,14 @@ def _check_evaluation_recipe_in_root(
     root: Path,
     params_schema_family: str,
     params_schema_waived: bool,
+    evaluation_registry: EvaluationRecipeRegistry,
 ) -> EvaluationRecipeContractReport:
     manifest, path = execute_evaluation_run_spec(
         spec,
         root=root,
         use_cache=True,
         force=True,
+        registry=evaluation_registry,
     )
     assert path.exists(), f"completed manifest path does not exist: {path}"
     assert manifest.status == "completed", f"expected completed manifest, got {manifest.status!r}"
@@ -174,6 +179,7 @@ def _check_evaluation_recipe_in_root(
         root=root,
         use_cache=True,
         force=False,
+        registry=evaluation_registry,
     )
     assert cached_path == path, "cache round-trip rewrote a different manifest path"
     assert cached_manifest.id == manifest.id, "cache round-trip changed manifest id"
@@ -183,7 +189,6 @@ def _check_evaluation_recipe_in_root(
 
     failure_manifest_id = _check_failure_manifest(
         evaluation_type,
-        recipe,
         spec,
         root=root,
     )
@@ -201,7 +206,6 @@ def _check_evaluation_recipe_in_root(
 
 def _check_failure_manifest(
     evaluation_type: str,
-    recipe: EvaluationRecipe,
     spec: EvaluationRunSpec,
     *,
     root: Path,
@@ -224,7 +228,8 @@ def _check_failure_manifest(
     ) -> None:
         raise RuntimeError("feedbax evaluation contract failure probe")
 
-    register_evaluation_recipe(evaluation_type, failing_recipe, replace=True)
+    failure_registry = EvaluationRecipeRegistry()
+    failure_registry.register(evaluation_type, failing_recipe)
     try:
         try:
             execute_evaluation_run_spec(
@@ -232,6 +237,7 @@ def _check_failure_manifest(
                 root=root,
                 use_cache=False,
                 force=True,
+                registry=failure_registry,
             )
         except EvaluationRecipeExecutionError as exc:
             assert exc.path.exists(), f"failed manifest path does not exist: {exc.path}"
@@ -242,4 +248,4 @@ def _check_failure_manifest(
             return exc.manifest.id
         raise AssertionError("failing evaluation recipe did not raise an execution error")
     finally:
-        register_evaluation_recipe(evaluation_type, recipe, replace=True)
+        failure_registry.seal()

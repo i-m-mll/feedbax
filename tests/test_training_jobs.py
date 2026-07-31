@@ -190,6 +190,13 @@ def test_worker_start_requires_external_identity() -> None:
     assert client.post("/start", json={"job_id": "job-a", "total_batches": 1}).status_code == 400
 
 
+def test_worker_lifespan_publishes_bootstrap_state_before_routes() -> None:
+    app = worker_app.create_app()
+    with TestClient(app) as client:
+        assert client.get("/health").status_code == 200
+        assert app.state.bootstrap_state.bundle.components.get("Gain") is not None
+
+
 def test_worker_rejects_start_while_job_running(monkeypatch) -> None:
     release = threading.Event()
     entered = threading.Event()
@@ -385,7 +392,9 @@ def test_training_service_starts_state_backed_worker_run(monkeypatch, tmp_path) 
     asyncio.run(run())
 
 
-def test_training_service_reads_legacy_v2_terminal_status_without_mutating(monkeypatch, tmp_path) -> None:
+def test_training_service_reads_legacy_v2_terminal_status_without_mutating(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
     bundle = SimpleNamespace(run_set_id="set-terminal", run_set_dir=tmp_path / "set-terminal")
     bundle.run_set_dir.mkdir(parents=True)
@@ -439,7 +448,9 @@ def test_training_service_reads_legacy_v2_terminal_status_without_mutating(monke
     assert store.load().rows["job-terminal"].status == "running"
 
 
-def test_training_service_reads_legacy_v2_orphan_status_without_mutating(monkeypatch, tmp_path) -> None:
+def test_training_service_reads_legacy_v2_orphan_status_without_mutating(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
     bundle = SimpleNamespace(run_set_id="set-orphan", run_set_dir=tmp_path / "set-orphan")
     bundle.run_set_dir.mkdir(parents=True)
@@ -672,10 +683,7 @@ def test_worker_client_emits_gap_marker_after_reconnect(monkeypatch) -> None:
             worker_client.httpx.ReadError("dropped"),
         ),
         (
-            [
-                'data: {"type": "training_complete", "job_id": "job-gap", '
-                '"seq": 3, "batch": 1}\n'
-            ],
+            ['data: {"type": "training_complete", "job_id": "job-gap", "seq": 3, "batch": 1}\n'],
             None,
         ),
     ]
@@ -729,10 +737,7 @@ def test_worker_client_emits_gap_marker_after_reconnect(monkeypatch) -> None:
     async def run() -> list[dict]:
         monkeypatch.setattr(worker_client.httpx, "AsyncClient", FakeClient)
         monkeypatch.setattr(worker_client, "_RECONNECT_DELAY", 0)
-        return [
-            event
-            async for event in worker_client.stream_events("http://worker", "job-gap")
-        ]
+        return [event async for event in worker_client.stream_events("http://worker", "job-gap")]
 
     events = asyncio.run(run())
 

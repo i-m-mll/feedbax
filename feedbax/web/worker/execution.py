@@ -116,6 +116,7 @@ def compile_training_run(
     task_spec: dict[str, Any],
     task_binding_spec: dict[str, Any] | StudioTaskBindingSpec,
     cfg: Any,
+    component_registry: Any,
 ) -> CompiledTrainingRun:
     """Compile Studio specs into a generic executable graph training plan."""
     graph_model = (
@@ -154,6 +155,7 @@ def compile_training_run(
             binding_model,
             graph_model,
             "/task_binding_spec",
+            component_registry=component_registry,
         )
         if issue.severity == "error"
     ]
@@ -168,6 +170,7 @@ def compile_training_run(
             graph_model,
             "/graph_spec",
             binding_model,
+            component_registry=component_registry,
         )
         if issue.severity == "error"
     ]
@@ -180,7 +183,7 @@ def compile_training_run(
     try:
         graph = spec_to_graph(
             graph_model,
-            {},
+            component_registry,
             input_prototypes=prototypes_from_task_bindings(binding_model),
         )
     except NotImplementedError as exc:
@@ -225,7 +228,7 @@ def compile_training_run(
         ) from exc
     loss_terms = retention_plan.loss_terms
     trace_requests = _compile_trace_requests(graph_model, retention_plan)
-    trainable_nodes = _derive_trainable_nodes(graph_model)
+    trainable_nodes = _derive_trainable_nodes(graph_model, component_registry)
     trainable_filter = _trainable_filter(graph, trainable_nodes)
 
     compiled = CompiledTrainingRun(
@@ -719,10 +722,7 @@ def _state_path_from_selector(selector: str) -> str:
     return path
 
 
-def _derive_trainable_nodes(graph_spec: GraphSpec) -> tuple[str, ...]:
-    from feedbax.component_registry import get_component_registry
-
-    registry = get_component_registry()
+def _derive_trainable_nodes(graph_spec: GraphSpec, registry: Any) -> tuple[str, ...]:
     trainable: list[str] = []
     for node_id, node in graph_spec.nodes.items():
         raw = node.params.get("trainable")

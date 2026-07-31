@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from importlib import resources
 import re
@@ -172,7 +173,7 @@ class ComparisonGridParams(StrictModel):
 class FigureMarginParams(StrictModel):
     """Optional Plotly figure margins."""
 
-    l: float | None = None
+    l: float | None = None  # noqa: E741 - Plotly's public margin key is "l".
     r: float | None = None
     t: float | None = None
     b: float | None = None
@@ -259,9 +260,6 @@ class FigureConstructorRegistration:
         return self.params_model.model_validate(dict(value or {}))
 
 
-_CONSTRUCTORS: dict[str, FigureConstructorRegistration] = {}
-_TEMPLATES: dict[str, Any] = {}
-_PIECES: dict[str, Any] = {}
 _TYPE_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
 
 
@@ -279,9 +277,90 @@ def _validate_namespaced_type_key(type_key: str, *, field: str) -> str:
     return type_key
 
 
+class FigureRegistry:
+    """Isolated constructors, templates, and pieces for figure dispatch."""
+
+    def __init__(self) -> None:
+        self._sealed = False
+        self._constructors: dict[str, FigureConstructorRegistration] = {}
+        self._templates: dict[str, Any] = {}
+        self._pieces: dict[str, Any] = {}
+
+    def register_constructor(
+        self,
+        key: str,
+        *,
+        tier: ConstructorTier,
+        constructor: TraceConstructor
+        | PanelConstructor
+        | FigureConstructor
+        | CustomFigureConstructor,
+        params_model: type[StrictModel] = EmptyParams,
+        description: str,
+        version: str = "v1",
+    ) -> None:
+        if self._sealed:
+            raise RuntimeError("figure registry is sealed")
+        key = _validate_namespaced_type_key(key, field="figure constructor")
+        if key in self._constructors:
+            raise ValueError(f"Figure constructor {key!r} is already registered")
+        self._constructors[key] = FigureConstructorRegistration(
+            key, tier, constructor, params_model, description, version
+        )
+
+    def register_template(self, template: Any) -> None:
+        if self._sealed:
+            raise RuntimeError("figure registry is sealed")
+        name = _validate_namespaced_type_key(template.name, field="figure template")
+        if name in self._templates:
+            raise ValueError(f"Figure template {name!r} is already registered")
+        self._templates[name] = deepcopy(template)
+
+    def register_piece(self, piece: Any) -> None:
+        if self._sealed:
+            raise RuntimeError("figure registry is sealed")
+        name = _validate_namespaced_type_key(piece.name, field="figure piece")
+        if name in self._pieces:
+            raise ValueError(f"Figure piece {name!r} is already registered")
+        self._pieces[name] = deepcopy(piece)
+
+    def keys(self) -> tuple[str, ...]:
+        return tuple(sorted((*self._constructors, *self._templates, *self._pieces)))
+
+    def constructor(self, key: str) -> FigureConstructorRegistration:
+        try:
+            return self._constructors[key]
+        except KeyError as exc:
+            raise ValueError(f"Figure constructor {key!r} is not registered") from exc
+
+    def constructors(
+        self, *, tier: ConstructorTier | None = None
+    ) -> tuple[FigureConstructorRegistration, ...]:
+        values = tuple(self._constructors[key] for key in sorted(self._constructors))
+        return values if tier is None else tuple(item for item in values if item.tier == tier)
+
+    def template(self, name: str) -> Any | None:
+        template = self._templates.get(name)
+        return deepcopy(template) if template is not None else None
+
+    def piece(self, name: str) -> Any | None:
+        piece = self._pieces.get(name)
+        return deepcopy(piece) if piece is not None else None
+
+    def templates(self) -> tuple[Any, ...]:
+        return tuple(deepcopy(self._templates[key]) for key in sorted(self._templates))
+
+    def pieces(self) -> tuple[Any, ...]:
+        return tuple(deepcopy(self._pieces[key]) for key in sorted(self._pieces))
+
+    def seal(self) -> None:
+        self._sealed = True
+
+
 def register_figure_constructor(
     key: str,
     *,
+    registry: FigureRegistry,
     tier: ConstructorTier,
     constructor: (
         TraceConstructor | PanelConstructor | FigureConstructor | CustomFigureConstructor
@@ -292,13 +371,12 @@ def register_figure_constructor(
     replace: bool = False,
 ) -> None:
     """Register a constructor under a stable namespaced key."""
-    key = _validate_namespaced_type_key(key, field="figure constructor")
-    if key in _CONSTRUCTORS and not replace:
-        raise ValueError(f"Figure constructor {key!r} is already registered")
-    _CONSTRUCTORS[key] = FigureConstructorRegistration(
-        key=key,
+    if replace:
+        raise ValueError("replace is unsupported for isolated bootstrap registries")
+    registry.register_constructor(
+        key,
         tier=tier,
-        callable=constructor,
+        constructor=constructor,
         params_model=params_model,
         description=description,
         version=version,
@@ -306,16 +384,13 @@ def register_figure_constructor(
 
 
 def get_figure_constructor(
-    key: str, *, tier: ConstructorTier | None = None
+    key: str, *, registry: FigureRegistry, tier: ConstructorTier | None = None
 ) -> FigureConstructorRegistration:
     """Return a registered constructor, optionally enforcing its tier."""
     try:
-        registration = _CONSTRUCTORS[key]
-    except KeyError as exc:
-        available = ", ".join(sorted(_CONSTRUCTORS)) or "none"
-        raise ValueError(
-            f"Figure constructor {key!r} is not registered. Registered constructors: {available}."
-        ) from exc
+        registration = registry.constructor(key)
+    except ValueError:
+        raise
     if tier is not None and registration.tier != tier:
         raise ValueError(
             f"Figure constructor {key!r} has tier {registration.tier!r}, expected {tier!r}"
@@ -324,91 +399,50 @@ def get_figure_constructor(
 
 
 def registered_figure_constructors(
-    *, tier: ConstructorTier | None = None
+    *, registry: FigureRegistry, tier: ConstructorTier | None = None
 ) -> tuple[FigureConstructorRegistration, ...]:
     """Return registered constructors sorted by key."""
-    registrations = sorted(_CONSTRUCTORS.values(), key=lambda item: item.key)
-    if tier is not None:
-        registrations = [item for item in registrations if item.tier == tier]
-    return tuple(registrations)
+    return registry.constructors(tier=tier)
 
 
-def unregister_figure_constructor(key: str) -> None:
-    """Remove a registered constructor, if present.
-
-    This is primarily useful for plugin lifecycle management and for tests that
-    must restore the process-global registry after registering a downstream
-    figure recipe.
-    """
-    _CONSTRUCTORS.pop(key, None)
-
-
-def register_figure_template(template: Any, *, replace: bool = False) -> None:
+def register_figure_template(
+    template: Any, *, registry: FigureRegistry, replace: bool = False
+) -> None:
     """Register a FigureTemplate-like object by name."""
-    name = _validate_namespaced_type_key(template.name, field="figure template")
-    if name in _TEMPLATES and not replace:
-        raise ValueError(f"Figure template {name!r} is already registered")
-    _TEMPLATES[name] = template
+    if replace:
+        raise ValueError("replace is unsupported for isolated bootstrap registries")
+    registry.register_template(template)
 
 
-def get_figure_template(name: str) -> Any:
-    try:
-        return _TEMPLATES[name]
-    except KeyError as exc:
-        try:
-            template = load_figure_template(name)
-        except FileNotFoundError:
-            available = ", ".join(sorted(_TEMPLATES)) or "none"
-            raise ValueError(
-                f"Figure template {name!r} is not registered and no package YAML resource "
-                f"was found. Registered templates: {available}."
-            ) from exc
-        register_figure_template(template)
-        return template
+def get_figure_template(name: str, *, registry: FigureRegistry) -> Any:
+    template = registry.template(name)
+    if template is None:
+        raise ValueError(f"Figure template {name!r} is not registered")
+    return template
 
 
-def registered_figure_templates() -> tuple[Any, ...]:
+def registered_figure_templates(*, registry: FigureRegistry) -> tuple[Any, ...]:
     """Return registered figure recipes sorted by their namespaced key."""
-    return tuple(_TEMPLATES[name] for name in sorted(_TEMPLATES))
+    return registry.templates()
 
 
-def unregister_figure_template(name: str) -> None:
-    """Remove a registered figure recipe, if present."""
-    _TEMPLATES.pop(name, None)
-
-
-def register_figure_piece(piece: Any, *, replace: bool = False) -> None:
+def register_figure_piece(piece: Any, *, registry: FigureRegistry, replace: bool = False) -> None:
     """Register a FigurePiece-like object by name."""
-    name = _validate_namespaced_type_key(piece.name, field="figure piece")
-    if name in _PIECES and not replace:
-        raise ValueError(f"Figure piece {name!r} is already registered")
-    _PIECES[name] = piece
+    if replace:
+        raise ValueError("replace is unsupported for isolated bootstrap registries")
+    registry.register_piece(piece)
 
 
-def get_figure_piece(name: str) -> Any:
-    try:
-        return _PIECES[name]
-    except KeyError as exc:
-        try:
-            piece = load_figure_piece(name)
-        except FileNotFoundError:
-            available = ", ".join(sorted(_PIECES)) or "none"
-            raise ValueError(
-                f"Figure piece {name!r} is not registered and no package YAML resource "
-                f"was found. Registered pieces: {available}."
-            ) from exc
-        register_figure_piece(piece)
-        return piece
+def get_figure_piece(name: str, *, registry: FigureRegistry) -> Any:
+    piece = registry.piece(name)
+    if piece is None:
+        raise ValueError(f"Figure piece {name!r} is not registered")
+    return piece
 
 
-def registered_figure_pieces() -> tuple[Any, ...]:
+def registered_figure_pieces(*, registry: FigureRegistry) -> tuple[Any, ...]:
     """Return registered figure pieces sorted by their namespaced key."""
-    return tuple(_PIECES[name] for name in sorted(_PIECES))
-
-
-def unregister_figure_piece(name: str) -> None:
-    """Remove a registered figure piece, if present."""
-    _PIECES.pop(name, None)
+    return registry.pieces()
 
 
 def _resource_file(
@@ -474,14 +508,9 @@ def _load_figure_resource(key: str, *, directory: str, model: type[Any], registr
     return model.model_validate(payload)
 
 
-def load_figure_template(key: str, *, registry: Any | None = None) -> Any:
+def load_figure_template(key: str, *, registry: Any) -> Any:
     """Load and validate a FigureTemplate YAML package resource."""
     from feedbax.contracts.figures import FigureTemplate
-
-    if registry is None:
-        from feedbax.plugins import _get_experiment_registry
-
-        registry = _get_experiment_registry()
 
     return _load_figure_resource(
         key,
@@ -491,14 +520,9 @@ def load_figure_template(key: str, *, registry: Any | None = None) -> Any:
     )
 
 
-def load_figure_piece(key: str, *, registry: Any | None = None) -> Any:
+def load_figure_piece(key: str, *, registry: Any) -> Any:
     """Load and validate a FigurePiece YAML package resource."""
     from feedbax.contracts.figures import FigurePiece
-
-    if registry is None:
-        from feedbax.plugins import _get_experiment_registry
-
-        registry = _get_experiment_registry()
 
     return _load_figure_resource(
         key,
@@ -508,7 +532,7 @@ def load_figure_piece(key: str, *, registry: Any | None = None) -> Any:
     )
 
 
-def constructor_catalog() -> list[dict[str, Any]]:
+def constructor_catalog(*, registry: FigureRegistry) -> list[dict[str, Any]]:
     """Return a JSON-serializable constructor catalog."""
     return [
         {
@@ -518,7 +542,7 @@ def constructor_catalog() -> list[dict[str, Any]]:
             "version": item.version,
             "params_schema": item.params_model.model_json_schema(),
         }
-        for item in registered_figure_constructors()
+        for item in registered_figure_constructors(registry=registry)
     ]
 
 
@@ -900,9 +924,7 @@ def _point_marker_trace(
     dim = points.shape[-1]
     scatter_type = _SCATTER_BY_DIM.get(dim)
     if scatter_type is None:
-        raise ValueError(
-            f"marker points must have 2 or 3 columns, got shape {points.shape}"
-        )
+        raise ValueError(f"marker points must have 2 or 3 columns, got shape {points.shape}")
     optional: dict[str, Any] = {}
     if legendgroup is not None:
         optional["legendgroup"] = legendgroup
@@ -990,9 +1012,7 @@ def _scalar_scatter(data: Mapping[str, Any], params: StrictModel) -> Sequence[An
             f"scalar_scatter requires 1-D 'x' and 'y'; got shapes {x.shape} and {y.shape}"
         )
     if x.shape[0] != y.shape[0]:
-        raise ValueError(
-            f"scalar_scatter 'x' and 'y' lengths differ: {x.shape[0]} vs {y.shape[0]}"
-        )
+        raise ValueError(f"scalar_scatter 'x' and 'y' lengths differ: {x.shape[0]} vs {y.shape[0]}")
     label = p.label or str(data.get("label", "Value"))
     color = p.color or str(data.get("color", "rgb(31,119,180)"))
     marker: dict[str, Any] = {
@@ -1057,9 +1077,7 @@ def _vrect(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any]:
     timing = _perturbation_timing(data, constructor="vrect")
     if timing is not None:
         if p.x0 is not None or p.x1 is not None or "x0" in data or "x1" in data:
-            raise ValueError(
-                "vrect perturbation timing cannot be combined with explicit x0 or x1"
-            )
+            raise ValueError("vrect perturbation timing cannot be combined with explicit x0 or x1")
         x = _perturbation_coordinates(data, timing)
         affected_range = timing.affected_range()
         if affected_range is None:
@@ -1151,9 +1169,7 @@ def _perturbation_coordinates(
     if not np.all(np.isfinite(x)):
         raise ValueError("vrect perturbation timing requires finite x coordinates")
     if np.any(np.diff(x) <= 0):
-        raise ValueError(
-            "vrect perturbation timing requires strictly increasing x coordinates"
-        )
+        raise ValueError("vrect perturbation timing requires strictly increasing x coordinates")
     return x
 
 
@@ -1275,8 +1291,7 @@ def _update_cartesian_panel(fig: go.Figure, panel: PanelContent, *, row: int, co
         subplot = fig.get_subplot(row, col)
         if subplot is None or not hasattr(subplot, "xaxis"):
             raise ValueError(
-                "equal_data_aspect requires a Cartesian x/y subplot at "
-                f"row {row}, col {col}"
+                f"equal_data_aspect requires a Cartesian x/y subplot at row {row}, col {col}"
             )
         shared_axes = []
         for axis_name, axis, layout_axes in (
@@ -1284,9 +1299,7 @@ def _update_cartesian_panel(fig: go.Figure, panel: PanelContent, *, row: int, co
             ("y", subplot.yaxis, fig.select_yaxes()),
         ):
             axis_ref = axis.plotly_name.replace("axis", "", 1)
-            if axis.matches is not None or any(
-                other.matches == axis_ref for other in layout_axes
-            ):
+            if axis.matches is not None or any(other.matches == axis_ref for other in layout_axes):
                 shared_axes.append(axis_name)
         if shared_axes:
             raise ValueError(
@@ -1407,9 +1420,7 @@ def _panel_colorbar_layout(
     if placement is None:
         return {}
     matches = [
-        (index, panel)
-        for index, panel in enumerate(panels)
-        if panel.name == placement.panel
+        (index, panel) for index, panel in enumerate(panels) if panel.name == placement.panel
     ]
     if len(matches) != 1:
         raise ValueError(
@@ -1435,9 +1446,7 @@ def _panel_colorbar_layout(
     width = x_high - x_low
     height = y_high - y_low
     if width <= 0.0 or height <= 0.0:
-        raise ValueError(
-            f"colorbar placement panel {placement.panel!r} has a non-positive domain"
-        )
+        raise ValueError(f"colorbar placement panel {placement.panel!r} has a non-positive domain")
     if placement.side == "right":
         x = x_high + placement.offset_fraction * width
         x_anchor = "left"
@@ -1504,7 +1513,7 @@ def _trajectories_2d_row(
     return fig
 
 
-def register_default_figure_constructors() -> None:
+def register_default_figure_constructors(registry: FigureRegistry) -> None:
     """Install Feedbax's built-in constructor set idempotently."""
     defaults: list[tuple[str, ConstructorTier, Callable[..., Any], type[StrictModel], str]] = [
         (
@@ -1583,15 +1592,11 @@ def register_default_figure_constructors() -> None:
         "feedbax.grid_figure": "v5",
     }
     for key, tier, constructor, params_model, description in defaults:
-        register_figure_constructor(
+        registry.register_constructor(
             key,
             tier=tier,  # type: ignore[arg-type]
             constructor=constructor,  # type: ignore[arg-type]
             params_model=params_model,
             description=description,
             version=changed_versions.get(key, "v1"),
-            replace=True,
         )
-
-
-register_default_figure_constructors()

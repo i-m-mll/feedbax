@@ -203,7 +203,7 @@ def compile_training_method_authoring(
     continuation: CheckpointContinuationRequest | Mapping[str, Any] | None = None,
     artifacts: ArtifactPolicySpec | None = None,
     risk_aggregation: RiskAggregationSpec | None = None,
-    _registry: training_contracts.TrainingMethodRegistry | None = None,
+    _registry: training_contracts.TrainingMethodRegistry,
 ) -> TrainingMethodAuthoringCompilation:
     """Compile one compact typed method payload into canonical run contracts.
 
@@ -224,7 +224,7 @@ def compile_training_method_authoring(
             "/row/payload_hash does not match the canonical authored payload"
         )
     normalized_ref = _normalize_method_ref(method_ref)
-    registry = _registry or training_contracts.DEFAULT_TRAINING_METHOD_REGISTRY
+    registry = _registry
     descriptor = _descriptor_for_authoring(normalized_ref, registry)
     artifact_policy = _copy_typed_option(
         artifacts,
@@ -447,5 +447,5 @@ def training_method_authoring_implementation_sha256(
             authoring_hook.task,
             authoring_hook.objective,
             authoring_hook.domain,
-        )
+        ),
     )

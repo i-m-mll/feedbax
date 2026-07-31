@@ -124,9 +124,7 @@ def test_input_sha256_matches_actual_file(
     assert stored_digest == actual_digest
 
 
-def test_existing_sha256_preserved(
-    tmp_path: Path, simple_fig: go.Figure, input_file: Path
-) -> None:
+def test_existing_sha256_preserved(tmp_path: Path, simple_fig: go.Figure, input_file: Path) -> None:
     """A pre-computed sha256 in the caller's spec is not overwritten."""
     precomputed = "deadbeef" * 8  # 64 hex chars
     spec: dict = {"inputs": [{"path": str(input_file), "sha256": precomputed}]}
@@ -136,9 +134,7 @@ def test_existing_sha256_preserved(
     assert data["inputs"][0]["sha256"] == precomputed
 
 
-def test_caller_spec_not_mutated(
-    tmp_path: Path, simple_fig: go.Figure, input_file: Path
-) -> None:
+def test_caller_spec_not_mutated(tmp_path: Path, simple_fig: go.Figure, input_file: Path) -> None:
     """save_figure_with_spec must not modify the caller's spec dict."""
     original: dict = {"inputs": [{"path": str(input_file)}], "seed": 42}
     spec_copy = {
@@ -156,6 +152,7 @@ def test_name_none_uses_timestamp(tmp_path: Path, simple_fig: go.Figure) -> None
     assert spec_path.exists()
     # Filename should match the UTC timestamp pattern YYYYMMDDTHHMMSSZ
     import re
+
     assert re.match(r"\d{8}T\d{6}Z\.json$", spec_path.name)
 
 
@@ -194,7 +191,7 @@ def test_render_filename_helper_matches_written_plotly_file(
 
 
 def test_save_figure_atomic_symlink_replaces_stale_target(
-    tmp_path: Path, simple_fig: go.Figure, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, simple_fig: go.Figure
 ) -> None:
     """Routed figure saves replace an existing symlink with the actual render name."""
     package_root = tmp_path / "toy_plot_pkg"
@@ -222,9 +219,6 @@ def test_save_figure_atomic_symlink_replaces_stale_target(
         },
     )
 
-    import feedbax.plugins as plugins
-
-    monkeypatch.setattr(plugins, "EXPERIMENT_REGISTRY", registry)
     spec_dir = package_root / "results" / "exp" / "figures" / "topic"
     spec_dir.mkdir(parents=True)
     stale_target = spec_dir / "stale.fig.json"
@@ -232,7 +226,14 @@ def test_save_figure_atomic_symlink_replaces_stale_target(
     symlink_path = spec_dir / "figure.fig.json"
     symlink_path.symlink_to(stale_target.name)
 
-    result = save_figure(simple_fig, {}, package="toy", experiment="exp", topic="topic")
+    result = save_figure(
+        simple_fig,
+        {},
+        package="toy",
+        experiment="exp",
+        topic="topic",
+        registry=registry,
+    )
 
     assert result["symlink_path"] == symlink_path
     assert symlink_path.is_symlink()
@@ -263,13 +264,9 @@ def test_unknown_render_format_rejected(tmp_path: Path, simple_fig: go.Figure) -
         )
 
 
-def test_save_render_false_returns_none_render(
-    tmp_path: Path, simple_fig: go.Figure
-) -> None:
+def test_save_render_false_returns_none_render(tmp_path: Path, simple_fig: go.Figure) -> None:
     """When save_render=False, render_path is None and no render file is written."""
-    _, render_path = save_figure_with_spec(
-        simple_fig, {}, tmp_path, name="test", save_render=False
-    )
+    _, render_path = save_figure_with_spec(simple_fig, {}, tmp_path, name="test", save_render=False)
     assert render_path is None
     # Only the spec file should exist
     files = list(tmp_path.iterdir())
@@ -279,9 +276,7 @@ def test_save_render_false_returns_none_render(
 
 def test_round_trip_spec_and_render(tmp_path: Path, simple_fig: go.Figure) -> None:
     """Spec and figure files coexist and both are valid after a save."""
-    spec_path, render_path = save_figure_with_spec(
-        simple_fig, {"seed": 7}, tmp_path, name="fig1"
-    )
+    spec_path, render_path = save_figure_with_spec(simple_fig, {"seed": 7}, tmp_path, name="fig1")
     # Spec
     with open(spec_path, encoding="utf-8") as f:
         data = json.load(f)
@@ -305,13 +300,10 @@ def test_extra_packages_in_versions(tmp_path: Path, simple_fig: go.Figure) -> No
     assert "numpy" in data["versions"]
 
 
-def test_unknown_package_recorded_as_unknown(
-    tmp_path: Path, simple_fig: go.Figure
-) -> None:
+def test_unknown_package_recorded_as_unknown(tmp_path: Path, simple_fig: go.Figure) -> None:
     """An uninstalled package name is recorded as 'unknown' rather than raising."""
     spec_path, _ = save_figure_with_spec(
-        simple_fig, {}, tmp_path, name="test",
-        extra_packages=["_nonexistent_package_xyz"]
+        simple_fig, {}, tmp_path, name="test", extra_packages=["_nonexistent_package_xyz"]
     )
     with open(spec_path, encoding="utf-8") as f:
         data = json.load(f)
