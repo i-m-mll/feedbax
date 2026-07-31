@@ -6,7 +6,7 @@ import copy
 import json
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import BaseModel
 
@@ -37,6 +37,9 @@ from feedbax.contracts.training import (
     TrainingRunSpec,
     WorkerExecutionSpec,
 )
+
+if TYPE_CHECKING:
+    from feedbax.training.row_lowering import TrainingRowLowererRegistration
 
 
 TRAINING_METHOD_AUTHORING_LOWERER_ID = "feedbax.training.method_authoring"
@@ -376,10 +379,10 @@ def compile_training_method_authoring(
     )
 
 
-def _training_method_row_lowerer_registration(
+def training_method_row_lowerer_registration(
     descriptor: TrainingMethodDescriptor[Any],
     registry: training_contracts.TrainingMethodRegistry,
-) -> Any:
+) -> TrainingRowLowererRegistration:
     """Derive one row-lowering registration from a complete authoring hook."""
     from feedbax.training.row_lowering import TrainingRowLowererRegistration
 

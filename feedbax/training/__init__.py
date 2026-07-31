@@ -156,6 +156,7 @@ try:
         TrainingMethodAuthoringCompilation,
         TrainingMethodAuthoringError,
         compile_training_method_authoring,
+        training_method_row_lowerer_registration,
         training_method_authoring_implementation_sha256,
     )
 except ImportError:
@@ -263,6 +264,7 @@ __all__ = [
     "checkpoint_slot_names",
     "checkpoint_slot_specs",
     "compile_training_method_authoring",
+    "training_method_row_lowerer_registration",
     "training_method_authoring_implementation_sha256",
     "execute_training_run_spec",
     "emit_training_run_spec_storage",

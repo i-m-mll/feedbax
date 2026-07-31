@@ -27,10 +27,18 @@ from feedbax.contracts.run_composition import (
     authored_envelope_hash,
 )
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
+from feedbax.registry_errors import RegistryCollisionError
 
 
 class TrainingRowLowererRegistryError(ValueError):
     """Raised when authored-row lowerer authority cannot be resolved exactly."""
+
+
+class TrainingRowLowererCollisionError(
+    TrainingRowLowererRegistryError,
+    RegistryCollisionError,
+):
+    """Raised when two lowerers claim the same canonical authority."""
 
 
 @dataclass(frozen=True)
@@ -193,7 +201,7 @@ class TrainingRowLowererRegistry:
                     f"{existing.implementation_sha256!r} and "
                     f"{registration.implementation_sha256!r}"
                 )
-            raise TrainingRowLowererRegistryError(
+            raise TrainingRowLowererCollisionError(
                 f"ambiguous training row lowerer registration for {key!r}: {conflict}"
             )
         self._registrations[key] = registration

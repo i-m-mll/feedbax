@@ -8,6 +8,9 @@ from pathlib import Path
 from feedbax.component_registry import ComponentRegistry
 from feedbax.analysis.evaluation import EvaluationRecipeRegistry
 from feedbax.analysis.evaluation_compaction import EvaluationBatchConsumerRegistry
+from feedbax.analysis.evaluation_product_union import (
+    EvaluationCompactProductUnionFinalizerRegistry,
+)
 from feedbax.analysis.reports import ReportRecipeRegistry, register_builtin_report_recipes
 from feedbax.analysis.specs import AnalysisRecipeRegistry
 from feedbax.contracts.training import TrainingMethodRegistry, default_training_method_registry
@@ -32,6 +35,7 @@ class ApplicationRegistryBundle:
     analysis_recipes: AnalysisRecipeRegistry
     evaluation_recipes: EvaluationRecipeRegistry
     evaluation_batch_consumers: EvaluationBatchConsumerRegistry
+    evaluation_product_union_finalizers: EvaluationCompactProductUnionFinalizerRegistry
     report_recipes: ReportRecipeRegistry
     figures: FigureRegistry
     conformance_checks: CheckRegistry
@@ -45,6 +49,7 @@ class ApplicationRegistryBundle:
         self.analysis_recipes.seal()
         self.evaluation_recipes.seal()
         self.evaluation_batch_consumers.seal()
+        self.evaluation_product_union_finalizers.seal()
         self.report_recipes.seal()
         self.figures.seal()
         self.conformance_checks.seal()
@@ -95,6 +100,12 @@ EVALUATION_BATCH_CONSUMERS = RegistryKey(
     EvaluationBatchConsumerRegistry,
     registered_keys=lambda value: value.keys(),
 )
+EVALUATION_PRODUCT_UNION_FINALIZERS = RegistryKey(
+    "evaluation_product_union_finalizers",
+    "evaluation_product_union_finalizers",
+    EvaluationCompactProductUnionFinalizerRegistry,
+    registered_keys=lambda value: value.keys(),
+)
 REPORT_RECIPES = RegistryKey(
     "report_recipes",
     "report_recipes",
@@ -120,6 +131,7 @@ APPLICATION_REGISTRY_KEYS = (
     ANALYSIS_RECIPES,
     EVALUATION_RECIPES,
     EVALUATION_BATCH_CONSUMERS,
+    EVALUATION_PRODUCT_UNION_FINALIZERS,
     REPORT_RECIPES,
     FIGURES,
     CONFORMANCE_CHECKS,
@@ -146,6 +158,7 @@ def new_application_registry_bundle(
         analysis_recipes=AnalysisRecipeRegistry(),
         evaluation_recipes=EvaluationRecipeRegistry(),
         evaluation_batch_consumers=EvaluationBatchConsumerRegistry(),
+        evaluation_product_union_finalizers=EvaluationCompactProductUnionFinalizerRegistry(),
         report_recipes=reports,
         figures=figures,
         conformance_checks=build_core_check_registry(),

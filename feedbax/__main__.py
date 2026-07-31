@@ -17,7 +17,12 @@ from pydantic import TypeAdapter
 from feedbax.contracts.checkpoints import CheckpointForkPlan
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.run_matrix import ExecutionDependency
-from feedbax.contracts.training import TrainingRunSpec, resolve_training_run_spec
+from feedbax.contracts.training import (
+    TrainingMethodRegistry,
+    TrainingRunSpec,
+    resolve_training_run_spec,
+    validate_training_run_spec_semantics,
+)
 from feedbax.plugins.composition import compose_application
 from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.orchestration.events import RunEventEmitter
@@ -66,7 +71,10 @@ def _read_pickle(path: str) -> Any:
         return pickle.load(stream)
 
 
-def _load_checkpoint_fork_plan_bindings(path: str) -> CheckpointForkPlanBindings:
+def _load_checkpoint_fork_plan_bindings(
+    path: str,
+    training_method_registry: TrainingMethodRegistry,
+) -> CheckpointForkPlanBindings:
     manifest_path = Path(path).resolve()
     payload = _read_json(str(manifest_path))
     expected = "feedbax.runtime.checkpoint_fork_plan_bindings"
@@ -81,14 +89,18 @@ def _load_checkpoint_fork_plan_bindings(path: str) -> CheckpointForkPlanBindings
     def loaded(name: str, loader: Any) -> dict[str, Any]:
         return {key: loader(str(resolved(value))) for key, value in payload.get(name, {}).items()}
 
+    run_specs = {
+        key: validate_training_run_spec_semantics(
+            TrainingRunSpec.model_validate(value),
+            training_method_registry,
+        )
+        for key, value in loaded("run_specs", _read_json).items()
+    }
     return CheckpointForkPlanBindings(
         checkpoint_roots={
             key: resolved(value) for key, value in payload["checkpoint_roots"].items()
         },
-        run_specs={
-            key: TrainingRunSpec.model_validate(value)
-            for key, value in loaded("run_specs", _read_json).items()
-        },
+        run_specs=run_specs,
         slot_templates=loaded("slot_templates", _read_pickle),
         segment_history_templates=loaded("segment_history_templates", _read_pickle),
         population_member_ids=loaded("population_member_ids", _read_json),
@@ -791,7 +803,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             print()
             return 0
         if args.adopt_command == "adopt":
-            run_spec = TrainingRunSpec.model_validate(_read_json(args.run_spec))
+            run_spec = validate_training_run_spec_semantics(
+                TrainingRunSpec.model_validate(_read_json(args.run_spec)),
+                registries.training_methods,
+            )
             phase_program = run_spec.worker_execution.method_contract.phase_program
             model_mapping, optimizer_mapping = _load_path_mapping(args.path_mapping)
             result = adopt_legacy_checkpoint(
@@ -849,7 +864,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             dependencies = TypeAdapter(list[ExecutionDependency]).validate_json(dependency_json)
             validate_checkpoint_fork_execution_dependencies(plan, dependencies)
-            bindings = _load_checkpoint_fork_plan_bindings(args.bindings)
+            bindings = _load_checkpoint_fork_plan_bindings(
+                args.bindings,
+                registries.training_methods,
+            )
             results = fork_checkpoint_plan(plan, bindings)
             json.dump(
                 {
@@ -867,7 +885,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             print()
             return 0
         if args.checkpoint_command == "relock":
-            bindings = _load_checkpoint_fork_plan_bindings(args.bindings)
+            bindings = _load_checkpoint_fork_plan_bindings(
+                args.bindings,
+                registries.training_methods,
+            )
             evidence = _load_run_contract_historical_evidence(args.historical_evidence)
             if args.write:
                 result = relock_checkpoint_fork_plan_file(
@@ -925,7 +946,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 summary: dict[str, Any] = {"target": raw_target}
                 try:
                     spec_path, checkpoint_root = _parse_checkpoint_fork_target(raw_target)
-                    run_spec = TrainingRunSpec.model_validate(_read_json(str(spec_path)))
+                    run_spec = validate_training_run_spec_semantics(
+                        TrainingRunSpec.model_validate(_read_json(str(spec_path))),
+                        registries.training_methods,
+                    )
                     phase_program = run_spec.worker_execution.method_contract.phase_program
                     result = fork_checkpoint_transaction(
                         args.source,

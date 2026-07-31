@@ -14,6 +14,8 @@ from enum import StrEnum
 from types import MappingProxyType, ModuleType
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
+from feedbax.registry_errors import RegistryCollisionError
+
 if TYPE_CHECKING:
     from .application import ApplicationRegistryBundle
 
@@ -338,7 +340,10 @@ def _validated_order(
                 f"plugin {plugin_id!r} has an unsupported declaration or protocol version",
                 plugin_id=plugin_id,
             )
-        if plugin_id in by_id:
+        existing = by_id.get(plugin_id)
+        if existing is not None and existing.registration is source.registration:
+            continue
+        if existing is not None:
             raise BootstrapError(
                 BootstrapErrorCode.DUPLICATE_PLUGIN,
                 f"duplicate plugin identity {plugin_id!r}",
@@ -392,7 +397,7 @@ def _validated_order(
             if not indegree[dependant]:
                 ready.append(dependant)
                 ready.sort()
-    if len(ordered) != len(sources):
+    if len(ordered) != len(by_id):
         raise BootstrapError(BootstrapErrorCode.DEPENDENCY_CYCLE, "plugin dependency cycle")
     return tuple(ordered)
 
@@ -437,6 +442,12 @@ async def _execute(
                     await result
             except BootstrapError:
                 raise
+            except RegistryCollisionError as exc:
+                raise BootstrapError(
+                    BootstrapErrorCode.NAMESPACE_COLLISION,
+                    f"plugin {declaration.plugin_id!r} registration failed: {exc}",
+                    plugin_id=declaration.plugin_id,
+                ) from exc
             except Exception as exc:
                 code = (
                     BootstrapErrorCode.NAMESPACE_COLLISION

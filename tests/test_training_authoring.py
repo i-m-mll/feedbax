@@ -62,7 +62,7 @@ from feedbax.plugins import (
     bootstrap_application,
     new_registration_context,
 )
-from feedbax.training.authoring import _training_method_row_lowerer_registration
+from feedbax.training.authoring import training_method_row_lowerer_registration
 from feedbax.training.row_lowering import (
     training_row_lowerer_implementation_sha256,
 )
@@ -765,7 +765,7 @@ def _descriptor_registration(
         for descriptor in descriptors:
             methods.register_descriptor(descriptor)
             if descriptor.authoring_hook is not None:
-                lowerers.register(_training_method_row_lowerer_registration(descriptor))
+                lowerers.register(training_method_row_lowerer_registration(descriptor, methods))
 
     return PluginRegistration(
         PluginDeclaration(
@@ -998,7 +998,7 @@ from feedbax.contracts.training import (
     standard_supervised_update_kernels,
 )
 from feedbax.plugins import FamilyRequirement, PluginDeclaration, PluginRegistration, ROW_LOWERERS, TRAINING_METHODS
-from feedbax.training.authoring import _training_method_row_lowerer_registration
+from feedbax.training.authoring import training_method_row_lowerer_registration
 
 
 class Payload(BaseModel):
@@ -1031,9 +1031,10 @@ DESCRIPTOR = TrainingMethodDescriptor(
     )
 
 def register(context):
-    context.registry(TRAINING_METHODS).register_descriptor(DESCRIPTOR)
+    methods = context.registry(TRAINING_METHODS)
+    methods.register_descriptor(DESCRIPTOR)
     context.registry(ROW_LOWERERS).register(
-        _training_method_row_lowerer_registration(DESCRIPTOR)
+        training_method_row_lowerer_registration(DESCRIPTOR, methods)
     )
 
 PLUGIN_REGISTRATION = PluginRegistration(

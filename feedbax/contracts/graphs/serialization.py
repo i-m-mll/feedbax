@@ -91,7 +91,11 @@ from feedbax.runtime.parameter_constraints import (
     apply_parameter_constraints,
     normalize_parameter_constraints,
 )
-from feedbax.contracts.graphs.builders import build_component, nonlinearity_name
+from feedbax.contracts.graphs.builders import (
+    _unsupported_component_message,
+    build_component,
+    nonlinearity_name,
+)
 from feedbax.contracts.graphs.domain_compilers import get_domain_compiler
 from feedbax.contracts.graphs.prototypes import (
     normalize_derived_dimensions,
@@ -1144,6 +1148,14 @@ def spec_to_graph(
         required_domain = required_interior_domain(node_type, metadata_registry)
         if required_domain is None and metadata_registry is not execution_registry:
             required_domain = required_interior_domain(node_type, execution_registry)
+        if required_domain is None:
+            unsupported_message = _unsupported_component_message(
+                node_name,
+                node_type,
+                execution_registry,
+            )
+            if unsupported_message is not None:
+                raise NotImplementedError(unsupported_message)
         if node_type == "DelayedReaches":
             node_params = apply_delayed_reaches_preset(node_params)
             node_params.setdefault("n_steps", delayed_reaches_n_steps_from_params(node_params))

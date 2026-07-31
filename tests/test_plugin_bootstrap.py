@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from pydantic import BaseModel
@@ -16,6 +17,7 @@ from feedbax.plugins.application import (
     EXPERIMENT_PACKAGES,
     EVALUATION_RECIPES,
     FIGURES,
+    ROW_LOWERERS,
     TRAINING_METHODS,
     ApplicationRegistryBundle,
     new_application_registry_bundle,
@@ -32,6 +34,7 @@ from feedbax.plugins.bootstrap import (
     bootstrap_application,
     discover_plugin_registrations,
 )
+from feedbax.training.row_lowering import TrainingRowLowererRegistration
 
 
 class NamesRegistry:
@@ -268,6 +271,54 @@ def test_discovery_rejects_legacy_entry_point_values() -> None:
     assert caught.value.code is BootstrapErrorCode.INVALID_REGISTRATION
 
 
+def test_installed_and_explicit_same_registration_executes_once(monkeypatch) -> None:
+    calls: list[str] = []
+    registration = _plugin(
+        "pkg.same_source",
+        lambda context: (
+            calls.append("register"),
+            context.registry(NAMES).register("same"),
+        ),
+    )
+    module_name = "tests_same_source_plugin"
+    module = ModuleType(module_name)
+    module.PLUGIN_REGISTRATION = registration
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    class InstalledPoint:
+        name = "same-source"
+        value = f"{module_name}:PLUGIN_REGISTRATION"
+        dist = None
+
+        @staticmethod
+        def load():
+            return registration
+
+    state = asyncio.run(
+        bootstrap_application(
+            _context(),
+            entry_points=(InstalledPoint(),),
+            modules=(module_name,),
+        )
+    )
+
+    assert calls == ["register"]
+    assert state.registry(NAMES).values == ["same"]
+    assert len(state.provenance) == 1
+    assert state.provenance[0].entry_point_name == "same-source"
+    assert state.provenance[0].entry_point_value == InstalledPoint.value
+
+
+def test_distinct_registrations_with_same_plugin_id_are_rejected() -> None:
+    first = _plugin("pkg.conflict", lambda _context: None)
+    second = _plugin("pkg.conflict", lambda _context: None)
+
+    with pytest.raises(BootstrapError) as caught:
+        asyncio.run(bootstrap_application(_context(), registrations=(first, second)))
+
+    assert caught.value.code is BootstrapErrorCode.DUPLICATE_PLUGIN
+
+
 def test_concurrent_load_failure_poisoning_executes_discovery_once() -> None:
     loads = 0
 
@@ -465,6 +516,37 @@ def test_component_and_plugin_namespace_collisions_are_typed() -> None:
             )
         )
     assert package_error.value.code is BootstrapErrorCode.NAMESPACE_COLLISION
+
+
+def test_row_lowerer_authority_collision_is_typed_namespace_failure() -> None:
+    def plugin(plugin_id: str, owner: str) -> PluginRegistration:
+        registration = TrainingRowLowererRegistration(
+            authored_schema_id="tests.spec.row",
+            authored_schema_version="tests.spec.row.v1",
+            lowerer_id="tests.row",
+            lowerer_version="tests.row.v1",
+            implementation_sha256="0" * 64,
+            lower=lambda _row, _context: {},
+            owner=owner,
+        )
+        return PluginRegistration(
+            PluginDeclaration(
+                plugin_id,
+                "1",
+                families=(FamilyRequirement(ROW_LOWERERS.family),),
+            ),
+            lambda context: context.registry(ROW_LOWERERS).register(registration),
+        )
+
+    with pytest.raises(BootstrapError) as caught:
+        asyncio.run(
+            bootstrap_application(
+                _context(),
+                registrations=(plugin("pkg.one", "one"), plugin("pkg.two", "two")),
+            )
+        )
+
+    assert caught.value.code is BootstrapErrorCode.NAMESPACE_COLLISION
 
 
 def test_runpod_smoke_fixture_registers_method_and_preparation_families() -> None:
