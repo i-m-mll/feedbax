@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .runner import run_fixture
+from . import run_fixture
 
 
 def main(argv: list[str] | None = None) -> int:

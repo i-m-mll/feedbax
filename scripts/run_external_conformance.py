@@ -84,7 +84,6 @@ def main() -> int:
         execution_env = dict(env)
         execution_env.pop("PYTHONPATH", None)
         execution_env["UV_CACHE_DIR"] = str(work / "runtime-uv-cache")
-        execution_env["HOME"] = str(work / "home")
         execution_env["XDG_CACHE_HOME"] = str(work / "cache")
         execution_env["FEEDBAX_JAX_COMPILATION_CACHE_DIR"] = str(work / "jax-cache")
         execution_env["FEEDBAX_REPO_SNAPSHOT_CACHE_DIR"] = str(work / "snapshot-cache")
