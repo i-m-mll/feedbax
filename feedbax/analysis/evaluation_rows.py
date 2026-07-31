@@ -126,6 +126,33 @@ def _resolve_row(
             row_index=row_index,
             manifest_id=manifest_id,
         )
+    handle = item.evaluation_state_handle
+    if handle is None:
+        raise EvaluationRowProjectionError(
+            EvaluationRowProjectionErrorCode.STATE_HANDLE_MISSING,
+            f"evaluation row {manifest_id!r} lacks a resolved state handle",
+            row_index=row_index,
+            manifest_id=manifest_id,
+        )
+    if type(handle) is not ResolvedEvaluationStateHandle or not handle._is_resolver_issued():
+        raise EvaluationRowProjectionError(
+            EvaluationRowProjectionErrorCode.STATE_HANDLE_INVALID,
+            f"evaluation row {manifest_id!r} has an invalid state handle type",
+            row_index=row_index,
+            manifest_id=manifest_id,
+        )
+    if (
+        item.states is not handle.states
+        or item.evaluation_state_source is None
+        or not handle._matches_source(item.evaluation_state_source)
+    ):
+        raise EvaluationRowProjectionError(
+            EvaluationRowProjectionErrorCode.STATE_HANDLE_MISMATCH,
+            f"evaluation row {manifest_id!r} does not match its resolver-issued handle",
+            row_index=row_index,
+            manifest_id=manifest_id,
+            source_kind=handle.source.source_kind,
+        )
     try:
         manifest = load_manifest_bytes(manifest_input.raw_bytes)
         if not isinstance(manifest, EvaluationRunManifest):
@@ -145,28 +172,8 @@ def _resolve_row(
             cause=exc,
         ) from exc
 
-    handle = item.evaluation_state_handle
-    if handle is None:
-        raise EvaluationRowProjectionError(
-            EvaluationRowProjectionErrorCode.STATE_HANDLE_MISSING,
-            f"evaluation row {manifest.id!r} lacks a resolved state handle",
-            row_index=row_index,
-            manifest_id=manifest.id,
-        )
-    if type(handle) is not ResolvedEvaluationStateHandle or not handle._is_resolver_issued():
-        raise EvaluationRowProjectionError(
-            EvaluationRowProjectionErrorCode.STATE_HANDLE_INVALID,
-            f"evaluation row {manifest.id!r} has an invalid state handle type",
-            row_index=row_index,
-            manifest_id=manifest.id,
-        )
     portable_ref = ref.model_copy(update={"uri": None})
-    if (
-        item.states is not handle.states
-        or item.evaluation_state_source is None
-        or not handle._matches_source(item.evaluation_state_source)
-        or not handle._matches_authority(portable_ref)
-    ):
+    if not handle._matches_authority(portable_ref):
         raise EvaluationRowProjectionError(
             EvaluationRowProjectionErrorCode.STATE_HANDLE_MISMATCH,
             f"evaluation row {manifest.id!r} does not match its resolver-issued handle",

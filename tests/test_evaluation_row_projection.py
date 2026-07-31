@@ -288,6 +288,30 @@ def test_cross_row_source_retarget_is_rejected(
     assert caught.value.code is EvaluationRowProjectionErrorCode.STATE_HANDLE_MISMATCH
 
 
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda source: setattr(source, "cache_key", "retargeted"),
+        lambda source: source.evaluation_manifest_authority.metadata.__setitem__(
+            "manifest_sha256", "f" * 64
+        ),
+    ],
+    ids=["top-level-source-field", "nested-authority-field"],
+)
+def test_in_place_source_mutation_breaks_handle_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutate: Any,
+) -> None:
+    item = _resolved_input(tmp_path, monkeypatch)
+    mutate(item.evaluation_state_source)
+
+    with pytest.raises(EvaluationRowProjectionError) as caught:
+        project_evaluation_rows([item], project=_project)
+
+    assert caught.value.code is EvaluationRowProjectionErrorCode.STATE_HANDLE_MISMATCH
+
+
 def test_projector_failure_is_reason_coded(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
