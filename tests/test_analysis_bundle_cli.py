@@ -25,8 +25,6 @@ from feedbax.analysis.bundles import (
 from feedbax.analysis.evaluation import (
     EvaluationRecipeResult,
     execute_evaluation_run_spec,
-    register_evaluation_recipe,
-    unregister_evaluation_recipe,
 )
 from feedbax.analysis.execution_context import (
     StagedCheckpointCustodyRootBinding,
@@ -35,8 +33,6 @@ from feedbax.analysis.execution_context import (
 from feedbax.analysis.specs import (
     AnalysisRecipeExecutionError,
     AnalysisRecipeResult,
-    register_analysis_recipe,
-    unregister_analysis_recipe,
 )
 from feedbax.bin import analysis as analysis_cli
 from feedbax.config.yaml import get_yaml_loader
@@ -59,6 +55,7 @@ from feedbax.contracts.staged_execution import (
     StagedCheckpointCustodySpec,
     StagedExecutionDescriptor,
 )
+from feedbax.plugins.bootstrap import BootstrapState
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.analysis_recipe_contract]
@@ -70,22 +67,19 @@ CUSTODY_BINDING_NAME = "capture-checkpoints"
 
 
 @pytest.fixture
-def toy_evaluation_recipe():
+def toy_evaluation_recipe(application_registry_bundle):
     def recipe(run_spec: EvaluationRunSpec, _root: Path, _states_path: Path, _context):
         return EvaluationRecipeResult(
             states={"value": np.asarray(run_spec.params["n_trials"], dtype=np.int32)},
             summary_metrics={"n_trials": run_spec.params["n_trials"]},
         )
 
-    register_evaluation_recipe(BUNDLE_CLI_EVALUATION_TYPE, recipe, replace=True)
-    try:
-        yield
-    finally:
-        unregister_evaluation_recipe(BUNDLE_CLI_EVALUATION_TYPE)
+    application_registry_bundle.evaluation_recipes.register(BUNDLE_CLI_EVALUATION_TYPE, recipe)
+    return application_registry_bundle.evaluation_recipes
 
 
 @pytest.fixture
-def toy_analysis_recipe():
+def toy_analysis_recipe(application_registry_bundle, monkeypatch):
     def recipe(_spec, _root, inputs, _execution_context):
         value = sum(int(resolved.states["value"]) for resolved in inputs)
         return AnalysisRecipeResult(
@@ -93,15 +87,17 @@ def toy_analysis_recipe():
             data=build_toy_analysis_data(value=value),
         )
 
-    register_analysis_recipe(BUNDLE_CLI_ANALYSIS_TYPE, recipe, replace=True)
-    try:
-        yield
-    finally:
-        unregister_analysis_recipe(BUNDLE_CLI_ANALYSIS_TYPE)
+    application_registry_bundle.analysis_recipes.register(BUNDLE_CLI_ANALYSIS_TYPE, recipe)
+
+    async def compose_application(**_kwargs):
+        return BootstrapState(application_registry_bundle, ())
+
+    monkeypatch.setattr(analysis_cli, "compose_application", compose_application)
+    return application_registry_bundle.analysis_recipes
 
 
 @pytest.fixture
-def custody_analysis_recipe():
+def custody_analysis_recipe(application_registry_bundle, monkeypatch):
     """A recipe that cannot run without a bound checkpoint custody root."""
     seen_roots: list[Path] = []
 
@@ -115,14 +111,16 @@ def custody_analysis_recipe():
             data=build_toy_analysis_data(value=value),
         )
 
-    register_analysis_recipe(BUNDLE_CLI_CUSTODY_ANALYSIS_TYPE, recipe, replace=True)
-    try:
-        yield seen_roots
-    finally:
-        unregister_analysis_recipe(BUNDLE_CLI_CUSTODY_ANALYSIS_TYPE)
+    application_registry_bundle.analysis_recipes.register(BUNDLE_CLI_CUSTODY_ANALYSIS_TYPE, recipe)
+
+    async def compose_application(**_kwargs):
+        return BootstrapState(application_registry_bundle, ())
+
+    monkeypatch.setattr(analysis_cli, "compose_application", compose_application)
+    return seen_roots
 
 
-def _execute_toy_eval(root: Path, *, n_trials: int = 4):
+def _execute_toy_eval(root: Path, registry, *, n_trials: int = 4):
     spec = EvaluationRunSpec(
         evaluation_type=BUNDLE_CLI_EVALUATION_TYPE,
         inputs=[
@@ -134,7 +132,7 @@ def _execute_toy_eval(root: Path, *, n_trials: int = 4):
         ],
         params={"n_trials": n_trials},
     )
-    return execute_evaluation_run_spec(spec, root=root, force=True)
+    return execute_evaluation_run_spec(spec, registry=registry, root=root, force=True)
 
 
 def _template_bundle_payload(
@@ -183,7 +181,7 @@ def test_bundle_subcommand_executes_json_bundle_file_without_registered_package(
     toy_analysis_recipe,
 ) -> None:
     """The motivating downstream case: tracked JSON bundle, no experiment package."""
-    evaluation, _path = _execute_toy_eval(tmp_path, n_trials=4)
+    evaluation, _path = _execute_toy_eval(tmp_path, toy_evaluation_recipe, n_trials=4)
     spec_path = tmp_path / "bundle.json"
     spec_path.write_text(
         json.dumps(_template_bundle_payload(evaluation.id), sort_keys=True),
@@ -222,7 +220,7 @@ def test_bundle_subcommand_executes_yaml_bundle_file(
     toy_evaluation_recipe,
     toy_analysis_recipe,
 ) -> None:
-    evaluation, _path = _execute_toy_eval(tmp_path, n_trials=5)
+    evaluation, _path = _execute_toy_eval(tmp_path, toy_evaluation_recipe, n_trials=5)
     spec_path = tmp_path / "bundle.yaml"
     with spec_path.open("w", encoding="utf-8") as handle:
         get_yaml_loader().dump(_template_bundle_payload(evaluation.id), handle)
@@ -250,7 +248,7 @@ def test_bundle_subcommand_resolves_delta_authored_bundle_file(
     toy_evaluation_recipe,
     toy_analysis_recipe,
 ) -> None:
-    evaluation, _path = _execute_toy_eval(tmp_path, n_trials=6)
+    evaluation, _path = _execute_toy_eval(tmp_path, toy_evaluation_recipe, n_trials=6)
     base = _template_bundle_payload(evaluation.id)
     (tmp_path / "base.json").write_text(json.dumps(base), encoding="utf-8")
     delta = {
@@ -383,7 +381,7 @@ def test_bundle_subcommand_binds_checkpoint_custody_for_template_recipe(
     custody_analysis_recipe,
 ) -> None:
     """A template bundle whose recipe needs checkpoint custody now executes end to end."""
-    evaluation, _path = _execute_toy_eval(tmp_path, n_trials=7)
+    evaluation, _path = _execute_toy_eval(tmp_path, toy_evaluation_recipe, n_trials=7)
     checkpoint_root = tmp_path / "retained" / "checkpoints"
     checkpoint_root.mkdir(parents=True)
     spec_path = tmp_path / "bundle.json"
@@ -429,11 +427,12 @@ def test_bundle_subcommand_binds_checkpoint_custody_for_template_recipe(
 
 def test_execute_analysis_bundle_forwards_checkpoint_custody_bindings(
     tmp_path: Path,
+    application_registry_bundle,
     toy_evaluation_recipe,
     custody_analysis_recipe,
 ) -> None:
     """The Python API is fixed independently of the CLI."""
-    evaluation, _path = _execute_toy_eval(tmp_path, n_trials=8)
+    evaluation, _path = _execute_toy_eval(tmp_path, toy_evaluation_recipe, n_trials=8)
     checkpoint_root = tmp_path / "checkpoints"
     checkpoint_root.mkdir()
     bundle = AnalysisBundleSpec.model_validate(
@@ -455,6 +454,7 @@ def test_execute_analysis_bundle_forwards_checkpoint_custody_bindings(
         checkpoint_custody_bindings=[
             StagedCheckpointCustodyRootBinding(CUSTODY_BINDING_NAME, checkpoint_root)
         ],
+        registries=application_registry_bundle,
     )
 
     assert len(outputs) == 1
@@ -465,11 +465,12 @@ def test_execute_analysis_bundle_forwards_checkpoint_custody_bindings(
 
 def test_execute_analysis_bundle_without_bindings_still_lacks_custody(
     tmp_path: Path,
+    application_registry_bundle,
     toy_evaluation_recipe,
     custody_analysis_recipe,
 ) -> None:
     """Guard the defect this fixes: no bindings means the recipe still cannot resolve custody."""
-    evaluation, _path = _execute_toy_eval(tmp_path, n_trials=9)
+    evaluation, _path = _execute_toy_eval(tmp_path, toy_evaluation_recipe, n_trials=9)
     bundle = AnalysisBundleSpec.model_validate(
         _template_bundle_payload(
             evaluation.id,
@@ -484,6 +485,7 @@ def test_execute_analysis_bundle_without_bindings_still_lacks_custody(
             root=tmp_path,
             fig_dump_path=tmp_path / "figures",
             fig_dump_formats=("json",),
+            registries=application_registry_bundle,
         )
 
     cause = excinfo.value.__cause__
@@ -494,6 +496,7 @@ def test_execute_analysis_bundle_without_bindings_still_lacks_custody(
 
 def test_execute_analysis_bundle_rejects_unknown_binding_before_recipe(
     tmp_path: Path,
+    application_registry_bundle,
     toy_evaluation_recipe,
 ) -> None:
     """Per-spec binding preflight runs for bundle templates, as it does for run specs."""
@@ -504,7 +507,7 @@ def test_execute_analysis_bundle_rejects_unknown_binding_before_recipe(
         calls.append(args)
         raise AssertionError("recipe must not run")
 
-    evaluation, _path = _execute_toy_eval(tmp_path, n_trials=10)
+    evaluation, _path = _execute_toy_eval(tmp_path, toy_evaluation_recipe, n_trials=10)
     checkpoint_root = tmp_path / "checkpoints"
     checkpoint_root.mkdir()
     bundle = AnalysisBundleSpec.model_validate(
@@ -515,22 +518,20 @@ def test_execute_analysis_bundle_rejects_unknown_binding_before_recipe(
         )
     )
 
-    register_analysis_recipe(analysis_type, recipe, replace=True)
-    try:
-        with pytest.raises(StagedExecutionContextError, match="unavailable.*unknown"):
-            execute_analysis_bundle(
-                bundle,
-                root=tmp_path,
-                fig_dump_path=tmp_path / "figures",
-                fig_dump_formats=("json",),
-                execution_descriptor=StagedExecutionDescriptor.model_validate(
-                    _checkpoint_descriptor_payload()
-                ),
-                checkpoint_custody_bindings=[
-                    StagedCheckpointCustodyRootBinding(CUSTODY_BINDING_NAME, checkpoint_root)
-                ],
-            )
-    finally:
-        unregister_analysis_recipe(analysis_type)
+    application_registry_bundle.analysis_recipes.register(analysis_type, recipe)
+    with pytest.raises(StagedExecutionContextError, match="unavailable.*unknown"):
+        execute_analysis_bundle(
+            bundle,
+            root=tmp_path,
+            fig_dump_path=tmp_path / "figures",
+            fig_dump_formats=("json",),
+            execution_descriptor=StagedExecutionDescriptor.model_validate(
+                _checkpoint_descriptor_payload()
+            ),
+            checkpoint_custody_bindings=[
+                StagedCheckpointCustodyRootBinding(CUSTODY_BINDING_NAME, checkpoint_root)
+            ],
+            registries=application_registry_bundle,
+        )
 
     assert calls == []

@@ -61,7 +61,9 @@ def _network_controller_graph_spec() -> GraphSpec:
 
 
 def test_spec_to_graph_controller_template_instantiates_explicit_nodes() -> None:
-    graph = spec_to_graph(_network_controller_graph_spec(), {})
+    graph = spec_to_graph(
+        _network_controller_graph_spec(), ComponentRegistry(load_user_components=False)
+    )
 
     assert not any(isinstance(node, SimpleStagedNetwork) for node in graph.nodes.values())
     assert set(graph.nodes) == {"input_mux", "cell", "readout", "mechanics"}
@@ -75,7 +77,7 @@ def test_gru_network_subgraph_runs_with_recurrent_zero_initializer() -> None:
         cell_type="GRU",
         out_nonlinearity="identity",
     )
-    graph = spec_to_graph(subgraph, {})
+    graph = spec_to_graph(subgraph, ComponentRegistry(load_user_components=False))
     state = init_state_from_component(graph)
 
     outputs, _ = graph(
@@ -100,7 +102,7 @@ def test_lstm_network_subgraph_runs_with_recurrent_zero_initializers() -> None:
         cell_type="LSTM",
         out_nonlinearity="identity",
     )
-    graph = spec_to_graph(subgraph, {})
+    graph = spec_to_graph(subgraph, ComponentRegistry(load_user_components=False))
     state = init_state_from_component(graph)
 
     outputs, _ = graph(
@@ -131,7 +133,7 @@ def test_vanilla_rnn_network_subgraph_runs_and_serializes_roundtrip() -> None:
     assert json_roundtrip.nodes["cell"].input_ports == ["input", "hidden"]
     assert json_roundtrip.nodes["cell"].output_ports == ["output", "hidden"]
 
-    graph = spec_to_graph(json_roundtrip, {})
+    graph = spec_to_graph(json_roundtrip, ComponentRegistry(load_user_components=False))
     state = init_state_from_component(graph)
 
     assert isinstance(graph.nodes["cell"], VanillaRNN)
@@ -172,10 +174,10 @@ def test_vanilla_rnn_bias_configuration_survives_runtime_roundtrip(
     authored.nodes["cell"].params["use_bias"] = cell_use_bias
     authored.nodes["readout"].params["use_bias"] = readout_use_bias
 
-    graph = spec_to_graph(authored, {})
+    graph = spec_to_graph(authored, ComponentRegistry(load_user_components=False))
     serialized = graph_to_spec(graph)
     restored_spec = GraphSpec.model_validate_json(serialized.model_dump_json())
-    restored_graph = spec_to_graph(restored_spec, {})
+    restored_graph = spec_to_graph(restored_spec, ComponentRegistry(load_user_components=False))
     canonical = graph_to_spec(restored_graph)
 
     assert serialized.nodes["cell"].params["use_bias"] is cell_use_bias
@@ -198,8 +200,12 @@ def test_vanilla_rnn_without_bias_executes_as_homogeneous_linear_recurrence() ->
     authored.nodes["cell"].params.update({"activation": "identity", "use_bias": False})
     authored.nodes["readout"].params["use_bias"] = False
     graph = spec_to_graph(
-        GraphSpec.model_validate_json(graph_to_spec(spec_to_graph(authored, {})).model_dump_json()),
-        {},
+        GraphSpec.model_validate_json(
+            graph_to_spec(
+                spec_to_graph(authored, ComponentRegistry(load_user_components=False))
+            ).model_dump_json()
+        ),
+        ComponentRegistry(load_user_components=False),
     )
     state = init_state_from_component(graph)
 
@@ -228,7 +234,7 @@ def test_vanilla_rnn_omitted_bias_configuration_keeps_enabled_default() -> None:
     authored.nodes["cell"].params.pop("use_bias", None)
     authored.nodes["readout"].params.pop("use_bias", None)
 
-    graph = spec_to_graph(authored, {})
+    graph = spec_to_graph(authored, ComponentRegistry(load_user_components=False))
     serialized = graph_to_spec(graph)
 
     assert graph.nodes["cell"].cell.use_bias is True
@@ -371,7 +377,7 @@ def _node_output_recurrent_spec() -> GraphSpec:
 def test_graph_input_recurrent_initializer_graphspec_runs_from_external_input() -> None:
     graph = spec_to_graph(
         _graph_input_recurrent_spec(),
-        {},
+        ComponentRegistry(load_user_components=False),
         input_prototypes={("__graph__", "seed"): jnp.zeros((2,))},
     )
     state = init_state_from_component(graph)
@@ -396,7 +402,7 @@ def test_graph_input_recurrent_initializer_serializes_verbatim() -> None:
     runtime_roundtrip = graph_to_spec(
         spec_to_graph(
             spec,
-            {},
+            ComponentRegistry(load_user_components=False),
             input_prototypes={("__graph__", "seed"): jnp.zeros((2,))},
         )
     )
@@ -426,7 +432,7 @@ def test_graph_input_recurrent_initializer_feeds_prototype_inference() -> None:
 def test_node_output_recurrent_initializer_graphspec_runs_from_source_node() -> None:
     graph = spec_to_graph(
         _node_output_recurrent_spec(),
-        {},
+        ComponentRegistry(load_user_components=False),
         input_prototypes={("__graph__", "context"): jnp.zeros((2,))},
     )
     state = init_state_from_component(graph)
@@ -451,7 +457,7 @@ def test_node_output_recurrent_initializer_serializes_verbatim() -> None:
     runtime_roundtrip = graph_to_spec(
         spec_to_graph(
             spec,
-            {},
+            ComponentRegistry(load_user_components=False),
             input_prototypes={("__graph__", "context"): jnp.zeros((2,))},
         )
     )
@@ -502,7 +508,9 @@ def test_constant_recurrent_initializer_serializes_dtype_verbatim() -> None:
     spec = _constant_recurrent_spec()
 
     json_roundtrip = GraphSpec.model_validate_json(spec.model_dump_json())
-    runtime_roundtrip = graph_to_spec(spec_to_graph(spec, {}))
+    runtime_roundtrip = graph_to_spec(
+        spec_to_graph(spec, ComponentRegistry(load_user_components=False))
+    )
 
     assert json_roundtrip.wires[0].recurrent_initializer == {
         "kind": "constant",
@@ -516,7 +524,10 @@ def test_constant_recurrent_initializer_serializes_dtype_verbatim() -> None:
 
 def test_constant_recurrent_initializer_dtype_preserved_end_to_end(enable_jax_x64) -> None:
     spec = _constant_recurrent_spec()
-    graph = spec_to_graph(GraphSpec.model_validate_json(spec.model_dump_json()), {})
+    graph = spec_to_graph(
+        GraphSpec.model_validate_json(spec.model_dump_json()),
+        ComponentRegistry(load_user_components=False),
+    )
 
     wire = next(w for w in graph.wires if w.temporality == "recurrent")
     value = graph._initial_value_from_recurrent_initializer(wire)
@@ -648,7 +659,7 @@ def test_linear_activation_from_graph_spec_is_honored() -> None:
         input_bindings={"input": ("linear", "input")},
         output_bindings={"output": ("linear", "output")},
     )
-    graph = spec_to_graph(spec, {})
+    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
     state = init_state_from_component(graph)
     component = graph.nodes["linear"]
 
@@ -710,7 +721,7 @@ def test_generic_template_node_instantiates_persisted_subgraph() -> None:
         subgraphs={"controller": subgraph},
     )
 
-    graph = spec_to_graph(spec, {})
+    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
     assert isinstance(graph.nodes["controller"], Graph)
 
     state = init_state_from_component(graph)
@@ -756,7 +767,7 @@ def test_delayed_channel_infers_vector_prototype_and_runs_under_scan() -> None:
         input_bindings={"input": ("readout", "input")},
         output_bindings={"output": ("delay", "output")},
     )
-    graph = spec_to_graph(spec, {})
+    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
     state = init_state_from_component(graph)
 
     assert isinstance(graph.nodes["delay"], Channel)
@@ -796,7 +807,7 @@ def test_simple_feedback_template_infers_feedback_motor_and_force_filter_shapes(
     assert "input_shape" not in spec.nodes["efferent"].params
     assert "input_shape" not in spec.nodes["force_filter"].params
 
-    graph = spec_to_graph(spec, {})
+    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
     assert graph.nodes["feedback"].input_proto.shape == (6,)
     assert graph.nodes["efferent"].input_proto.shape == (2,)
     assert graph.nodes["force_filter"].input_proto.shape == (2,)
@@ -836,7 +847,7 @@ def test_stateful_input_shape_fields_round_trip() -> None:
     assert spec.nodes["delay"].params["input_shape"] == [3]
     assert spec.nodes["filter"].params["input_shape"] == [3]
 
-    restored = spec_to_graph(spec, {})
+    restored = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
     assert restored.nodes["channel"].input_proto.shape == (3,)
     assert restored.nodes["delay"].input_proto.shape == (3,)
     assert restored.nodes["filter"].input_proto.shape == (3,)
@@ -858,7 +869,9 @@ def test_spec_to_graph_round_trips_external_boundary_verbatim() -> None:
         output_bindings={"readout": ("gain", "output")},
     )
 
-    round_tripped = graph_to_spec(spec_to_graph(spec, {}))
+    round_tripped = graph_to_spec(
+        spec_to_graph(spec, ComponentRegistry(load_user_components=False))
+    )
 
     assert round_tripped.input_ports == spec.input_ports
     assert round_tripped.output_ports == spec.output_ports
@@ -885,7 +898,9 @@ def test_delayed_center_out_task_params_round_trip_through_graph_spec() -> None:
         output_bindings={"inputs": ("task", "inputs")},
     )
 
-    round_tripped = graph_to_spec(spec_to_graph(spec, {}))
+    round_tripped = graph_to_spec(
+        spec_to_graph(spec, ComponentRegistry(load_user_components=False))
+    )
     params = round_tripped.nodes["task"].params
 
     assert params["preset"] == "delayed_center_out"
@@ -915,14 +930,14 @@ def test_stateful_prototype_preflight_error_includes_node_and_port() -> None:
     )
 
     with pytest.raises(ValueError, match="DelayLine node 'delay' port 'input'"):
-        spec_to_graph(spec, {})
+        spec_to_graph(spec, ComponentRegistry(load_user_components=False))
 
 
 def test_spec_to_graph_rejects_unsupported_graph_spec_version() -> None:
     spec = GraphSpec.model_construct(schema_version="feedbax.spec.graph.v99")
 
     with pytest.raises(ValueError, match="source_version='feedbax.spec.graph.v99'"):
-        spec_to_graph(spec, {})
+        spec_to_graph(spec, ComponentRegistry(load_user_components=False))
 
 
 def test_spec_to_graph_rejects_missing_required_registry_param() -> None:
@@ -977,7 +992,7 @@ def test_spec_to_graph_rejects_missing_network_subgraph_during_prototype_inferen
     )
 
     with pytest.raises(ValueError, match="Network node 'network' requires a subgraph"):
-        spec_to_graph(spec, {})
+        spec_to_graph(spec, ComponentRegistry(load_user_components=False))
 
 
 def test_spec_to_graph_rejects_missing_source_output_prototype() -> None:
@@ -1009,4 +1024,4 @@ def test_spec_to_graph_rejects_missing_source_output_prototype() -> None:
     )
 
     with pytest.raises(ValueError, match="Gain node 'gain' port 'input'"):
-        spec_to_graph(spec, {})
+        spec_to_graph(spec, ComponentRegistry(load_user_components=False))

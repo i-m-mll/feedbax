@@ -11,6 +11,7 @@ import queue
 import shutil
 import threading
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Deque, Dict, Optional, Tuple
@@ -19,6 +20,9 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import ValidationError as PydanticValidationError
+
+from feedbax.plugins.bootstrap import BootstrapState
+from feedbax.plugins.composition import compose_application
 
 from feedbax.studio.schema import validate_task_binding_schema
 from feedbax.studio.protocol import infer_task_n_steps
@@ -259,7 +263,7 @@ def _as_mapping(name: str, value: Any) -> Dict[str, Any]:
     return value
 
 
-def _require_worker_specs(job: _Job) -> None:
+def _require_worker_specs(job: _Job, bootstrap_state: BootstrapState) -> None:
     """Validate the Studio payload shape required by the real worker path."""
     _as_mapping("training_spec", job.training_spec)
     _as_mapping("task_spec", job.task_spec)
@@ -313,7 +317,12 @@ def _require_worker_specs(job: _Job) -> None:
     job.task_binding_spec = binding_spec.model_dump(mode="json", exclude_none=True)
     issues = [
         issue
-        for issue in validate_task_binding_schema(binding_spec, graph_spec, "/task_binding_spec")
+        for issue in validate_task_binding_schema(
+            binding_spec,
+            graph_spec,
+            "/task_binding_spec",
+            component_registry=bootstrap_state.bundle.components,
+        )
         if issue.severity == "error" or issue.type == "task_binding_unknown_schema"
     ]
     if issues:
@@ -384,7 +393,7 @@ def _extract_training_cfg(
     return cfg
 
 
-def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
+def _run_training_real(job: _Job, cfg: "_TrainingCfg", bootstrap_state: BootstrapState) -> None:
     """Real JAX training loop over the serialized graph boundary.
 
     Leaf components remain opaque executable components; the worker no longer
@@ -398,6 +407,7 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         task_spec=_as_mapping("task_spec", job.task_spec),
         task_binding_spec=_as_mapping("task_binding_spec", job.task_binding_spec),
         cfg=cfg,
+        component_registry=bootstrap_state.bundle.components,
     )
     result = run_training_graph(
         compiled,
@@ -462,16 +472,16 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
     _emit(job, complete_event)
 
 
-def _run_training(job: _Job) -> None:
+def _run_training(job: _Job, bootstrap_state: BootstrapState) -> None:
     """Training entry point. Always attempts real JAX training.
 
     Invalid Studio payloads terminate with a ``training_error`` event instead
     of falling through to synthetic output.
     """
     try:
-        _require_worker_specs(job)
+        _require_worker_specs(job, bootstrap_state)
         cfg = _extract_training_cfg(job.training_config, job.task_spec)
-        _run_training_real(job, cfg)
+        _run_training_real(job, cfg, bootstrap_state)
     except GraphCompilationError as exc:
         with job._state_lock:
             should_emit = job.status == WorkerStatus.RUNNING
@@ -546,7 +556,9 @@ def _emit(job: _Job, event: dict) -> None:
     job.event_queue.put(run_event)
 
 
-def create_app(auth_token: Optional[str] = None) -> FastAPI:
+def create_app(
+    auth_token: Optional[str] = None, *, bootstrap_modules: tuple[str, ...] = ()
+) -> FastAPI:
     """Create and return the worker FastAPI application.
 
     Args:
@@ -554,7 +566,13 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
             include ``Authorization: Bearer <token>``; requests without it
             receive HTTP 401.
     """
-    app = FastAPI(title="Feedbax Training Worker", version="0.1.0")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.bootstrap_state = await compose_application(modules=bootstrap_modules)
+        yield
+
+    app = FastAPI(title="Feedbax Training Worker", version="0.1.0", lifespan=lifespan)
 
     # ------------------------------------------------------------------
     # Auth dependency
@@ -659,7 +677,7 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
 
         def _run_training_and_evict() -> None:
             try:
-                _run_training(job)
+                _run_training(job, app.state.bootstrap_state)
             finally:
                 with job._state_lock:
                     if _is_terminal_status(job.status) and job.terminal_at is None:

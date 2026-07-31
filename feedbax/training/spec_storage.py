@@ -22,6 +22,7 @@ from feedbax.contracts.run_matrix import (
     TrainingRunMatrixSpec,
 )
 from feedbax.contracts.migrations import default_spec_registry
+from feedbax.contracts.training import TrainingMethodRegistry
 from feedbax.contracts.training_matrix_composition import (
     TrainingRunMatrixDeltaSpec,
     flatten_training_run_matrix_delta,
@@ -43,7 +44,6 @@ from feedbax.training.run_matrix import (
     MaterializedRunMatrix,
     RowPayloadValidator,
     TrainingRowLowerer,
-    _validate_training_payload,
     materialize_adapted_run_matrix,
     materialize_run_matrix,
 )
@@ -74,6 +74,7 @@ def compile_training_run_matrix(
     *,
     run_set_id: str,
     context: Any,
+    method_registry: TrainingMethodRegistry,
     allow_inline_base: bool = False,
     row_validator: RowPayloadValidator | None = None,
     row_lowerer: TrainingRowLowerer | None = None,
@@ -104,8 +105,13 @@ def compile_training_run_matrix(
             "inline matrix bases are tests/fixtures only; production assembly requires "
             "a content-pinned authored_intent or resolved_output reference"
         )
-    if row_validator is None and row_lowerer is None:
-        materialized = materialize_run_matrix(matrix, repo_root=repo_root)
+    if row_validator is None:
+        materialized = materialize_run_matrix(
+            matrix,
+            repo_root=repo_root,
+            method_registry=method_registry,
+            row_lowerer=row_lowerer,
+        )
     else:
         materialized = materialize_adapted_run_matrix(
             matrix,
@@ -181,25 +187,15 @@ class TrainingRunMatrixCompiler:
     def __init__(
         self,
         *,
+        method_registry: TrainingMethodRegistry,
         allow_inline_base: bool = False,
         row_validator: RowPayloadValidator | None = None,
         row_lowerer: TrainingRowLowerer | None = None,
     ) -> None:
         self.allow_inline_base = allow_inline_base
-        if row_lowerer is None:
-            from feedbax.contracts.training import DEFAULT_TRAINING_METHOD_REGISTRY
-            from feedbax.training.row_lowering import (
-                DEFAULT_TRAINING_ROW_LOWERER_REGISTRY,
-            )
-
-            row_lowerer = DEFAULT_TRAINING_ROW_LOWERER_REGISTRY.lower
-            if row_validator is None:
-                def row_validator(payload: dict[str, Any], row_id: str) -> Any:
-                    return _validate_training_payload(
-                        payload,
-                        row_id=row_id,
-                        method_registry=DEFAULT_TRAINING_METHOD_REGISTRY,
-                    )
+        self.method_registry = method_registry
+        if row_lowerer is None or row_validator is None:
+            raise ValueError("row_lowerer and row_validator must be injected after bootstrap")
         self.row_validator = row_validator
         self.row_lowerer = row_lowerer
 
@@ -214,6 +210,7 @@ class TrainingRunMatrixCompiler:
             authored,
             run_set_id=run_set_id,
             context=context,
+            method_registry=self.method_registry,
             allow_inline_base=self.allow_inline_base,
             row_validator=self.row_validator,
             row_lowerer=self.row_lowerer,
@@ -242,9 +239,7 @@ class TrainingRunIdentityAdapter:
             "resolved_semantics": "feedbax.spec.training_run_resolved_semantics.v1",
             "execution_capsule": TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
             "training_row_provenance": TRAINING_ROW_PROVENANCE_SCHEMA_VERSION,
-            "training_row_planning_provenance": (
-                TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION
-            ),
+            "training_row_planning_provenance": (TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION),
         }
         if (
             context.authored_ref is not None
@@ -252,9 +247,7 @@ class TrainingRunIdentityAdapter:
         ):
             versions["training_run_matrix_delta"] = context.authored_ref.schema_version
         if row.provenance is not None and row.provenance.lowerer_identities:
-            versions["training_row_lowering_result"] = (
-                TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION
-            )
+            versions["training_row_lowering_result"] = TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION
         _record_payload_schema_versions(row.payload, versions)
         return TrainingRunExecutionCapsule(
             materializer_commit=context.materializer_commit,
@@ -283,12 +276,14 @@ class TrainingRunIdentityAdapter:
 def register_training_run_matrix_compiler(
     registry: Any,
     *,
+    method_registry: TrainingMethodRegistry,
     allow_inline_base: bool = False,
     row_validator: RowPayloadValidator | None = None,
     row_lowerer: TrainingRowLowerer | None = None,
 ) -> None:
     """Register the default matrix compiler and identity adapter."""
     compiler = TrainingRunMatrixCompiler(
+        method_registry=method_registry,
         allow_inline_base=allow_inline_base,
         row_validator=row_validator,
         row_lowerer=row_lowerer,
@@ -313,9 +308,7 @@ def stamp_training_run_manifest_identities(
 ) -> TrainingRunManifest:
     """Stamp dual identity without permitting archived identity redefinition."""
     if manifest.intent_hash is not None and manifest.intent_hash != storage.intent_hash:
-        raise ValueError(
-            "archived TrainingRunManifest intent_hash must never be overwritten"
-        )
+        raise ValueError("archived TrainingRunManifest intent_hash must never be overwritten")
     expected_execution = training_run_execution_hash(
         storage.resolved_root_hash,
         storage.capsule.input_data_identities,
@@ -347,6 +340,7 @@ def emit_training_run_spec_storage(
     dependency_lock_path: Path,
     input_data_identities: list[dict[str, Any]] | None = None,
     environment_digest: str | None = None,
+    method_registry: TrainingMethodRegistry,
     allow_inline_base: bool = False,
     row_validator: RowPayloadValidator | None = None,
     row_lowerer: TrainingRowLowerer | None = None,
@@ -388,8 +382,13 @@ def emit_training_run_spec_storage(
             "inline matrix bases are tests/fixtures only; production emission requires "
             "a content-pinned authored_intent or resolved_output reference"
         )
-    if row_validator is None and row_lowerer is None:
-        materialized = materialize_run_matrix(matrix, repo_root=repo_root)
+    if row_validator is None:
+        materialized = materialize_run_matrix(
+            matrix,
+            repo_root=repo_root,
+            method_registry=method_registry,
+            row_lowerer=row_lowerer,
+        )
     else:
         materialized = materialize_adapted_run_matrix(
             matrix,
@@ -410,9 +409,7 @@ def emit_training_run_spec_storage(
                 "planned_run_id": row.planned_run_id,
                 "seed": row.seed,
                 "axis_coordinates": (
-                    _row_coordinate(materialized, row).model_dump(
-                        mode="json", exclude_none=True
-                    )
+                    _row_coordinate(materialized, row).model_dump(mode="json", exclude_none=True)
                     if _row_coordinate(materialized, row) is not None
                     else None
                 ),
@@ -422,9 +419,7 @@ def emit_training_run_spec_storage(
                     else override
                     for override in row.overrides
                 ],
-                "row_provenance": row.provenance.model_dump(
-                    mode="json", exclude_none=True
-                ),
+                "row_provenance": row.provenance.model_dump(mode="json", exclude_none=True),
                 "payload": row.payload,
             }
             for row in materialized.rows
@@ -444,9 +439,7 @@ def emit_training_run_spec_storage(
         "resolved_semantics": snapshot["schema_version"],
         "execution_capsule": TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
         "training_row_provenance": TRAINING_ROW_PROVENANCE_SCHEMA_VERSION,
-        "training_row_planning_provenance": (
-            TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION
-        ),
+        "training_row_planning_provenance": (TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION),
     }
     if authored_document["schema_id"] == TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID:
         relevant_versions["training_run_matrix_delta"] = authored_document["schema_version"]

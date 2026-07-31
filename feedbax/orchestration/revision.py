@@ -34,6 +34,7 @@ import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import feedbax
 from feedbax._distribution_provenance import (
@@ -89,9 +90,7 @@ def _resolve_checkout_revision(package_root: Path) -> str | None:
     checkout_root = Path(top_level.stdout.strip()).resolve()
     if package_root != checkout_root / "feedbax":
         return None
-    tracked = _run_git(
-        checkout_root, ["ls-files", "--error-unmatch", "feedbax/__init__.py"]
-    )
+    tracked = _run_git(checkout_root, ["ls-files", "--error-unmatch", "feedbax/__init__.py"])
     if tracked is None or tracked.returncode != 0:
         return None
     try:
@@ -163,8 +162,7 @@ def assert_feedbax_revision_exact(locked_revision: str) -> str:
     actual_revision = resolve_feedbax_revision()
     if actual_revision != locked_revision:
         raise FeedbaxRevisionError(
-            "Feedbax revision pin mismatch: "
-            f"locked={locked_revision} loaded={actual_revision}"
+            f"Feedbax revision pin mismatch: locked={locked_revision} loaded={actual_revision}"
         )
     return actual_revision
 
@@ -343,13 +341,13 @@ def _git_toplevel(path: Path) -> Path:
             text=True,
         )
     except (OSError, subprocess.CalledProcessError) as exc:
-        raise FeedbaxRevisionError(
-            f"cannot resolve the Git top-level directory of {path}"
-        ) from exc
+        raise FeedbaxRevisionError(f"cannot resolve the Git top-level directory of {path}") from exc
     return Path(result.stdout.strip()).resolve()
 
 
-def resolve_science_repo_import_revisions() -> dict[str, str]:
+def resolve_science_repo_import_revisions(
+    plugin_provenance: Sequence[Any],
+) -> dict[str, str]:
     """Resolve the revision of every checkout supplying ``feedbax.plugins`` modules.
 
     CERTIFY re-derives row payloads by importing the science-repo code published
@@ -364,12 +362,10 @@ def resolve_science_repo_import_revisions() -> dict[str, str]:
         whose module source or containing checkout cannot be resolved are skipped
         rather than guessed; the caller decides how to treat an empty result.
     """
-    from feedbax.plugins.discovery import feedbax_plugin_entry_points
-
     feedbax_root = _git_toplevel(_feedbax_package_root())
     revisions: dict[str, str] = {}
-    for entry_point in feedbax_plugin_entry_points():
-        module_name = getattr(entry_point, "module", None)
+    for provenance in plugin_provenance:
+        module_name = str(getattr(provenance, "entry_point_value", "")).partition(":")[0]
         if not isinstance(module_name, str) or not module_name:
             continue
         top_level = module_name.split(".", 1)[0]
@@ -448,8 +444,7 @@ def _feedbax_tree_is_dirty(package_root: Path) -> bool:
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise FeedbaxRevisionError(
-            "cannot resolve the working-tree cleanliness of the imported Feedbax "
-            "module source"
+            "cannot resolve the working-tree cleanliness of the imported Feedbax module source"
         ) from exc
     return bool(result.stdout.strip())
 
@@ -502,8 +497,7 @@ def check_feedbax_provenance(
             provenance = resolve_feedbax_provenance()
         except FeedbaxRevisionError as exc:
             warnings.warn(
-                "Feedbax provenance override in effect; unverifiable provenance "
-                f"ignored: {exc}",
+                f"Feedbax provenance override in effect; unverifiable provenance ignored: {exc}",
                 stacklevel=2,
             )
             return None
@@ -523,7 +517,6 @@ def check_feedbax_provenance(
         )
     if provenance.revision != locked_revision:
         raise FeedbaxRevisionError(
-            "Feedbax revision pin mismatch: "
-            f"locked={locked_revision} loaded={provenance.revision}"
+            f"Feedbax revision pin mismatch: locked={locked_revision} loaded={provenance.revision}"
         )
     return provenance

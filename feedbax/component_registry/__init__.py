@@ -6,8 +6,6 @@ from .registry import (
     ComponentResolution,
     TemplateBuilderIssue,
     format_missing_interior_message,
-    get_component_registry,
-    register_component_type,
     required_interior_domain,
 )
 from .cde_templates import register_cde_templates
@@ -25,8 +23,6 @@ __all__ = [
     "DomainRegistry",
     "builtin_domain_registry",
     "format_missing_interior_message",
-    "get_component_registry",
-    "register_component_type",
     "register_cde_templates",
     "required_interior_domain",
     "TemplateBuilderIssue",

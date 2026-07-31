@@ -24,7 +24,7 @@ from feedbax.contracts.staged_execution import (
     StagedExecutionDescriptor,
     validate_staged_binding_name,
 )
-from feedbax.contracts.acausal import (
+from feedbax.contracts.acausal import (  # noqa: F401
     ACAUSAL_GRAPH_SCHEMA_ID,
     ACAUSAL_GRAPH_SCHEMA_VERSION,
     AcausalConnectionSpec,
@@ -357,7 +357,6 @@ from feedbax.contracts.selection import (
 from feedbax.contracts.training import (
     ArtifactPolicySpec,
     CheckpointProgressPolicySpec,
-    DEFAULT_TRAINING_METHOD_REGISTRY,
     EarlyStoppingSpec,
     ExecutionPolicySpec,
     GraphTopologySourceSpec,
@@ -605,7 +604,6 @@ __all__ = [
     "ConsistencyPredicateRule",
     "ConsistencyPredicateSpec",
     "ContentIntegrityDigest",
-    "DEFAULT_TRAINING_METHOD_REGISTRY",
     "DataProductParentRef",
     "EvaluationManifestProvenanceEnvelope",
     "DataProductDrift",

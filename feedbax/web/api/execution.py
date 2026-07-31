@@ -5,7 +5,7 @@ from typing import Any, Optional
 import jax
 import jax.numpy as jnp
 import numpy as np
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from feedbax.contracts.graph import GraphSpec
@@ -22,9 +22,9 @@ class SimulationRequest(BaseModel):
     inputs: Optional[dict[str, Any]] = None
 
 
-@router.post('/simulate')
+@router.post("/simulate")
 async def simulate(_: SimulationRequest):
-    raise HTTPException(status_code=501, detail='Simulation not implemented yet')
+    raise HTTPException(status_code=501, detail="Simulation not implemented yet")
 
 
 class TaskTrialSampleRequest(BaseModel):
@@ -123,7 +123,9 @@ def _sampled_trial_payload(trial: TaskTrialSpec, *, index: int) -> SampledTaskTr
 
 
 @router.post("/task-trials/sample", response_model=TaskTrialSampleResponse)
-async def sample_task_trials(payload: TaskTrialSampleRequest) -> TaskTrialSampleResponse:
+async def sample_task_trials(
+    payload: TaskTrialSampleRequest, request: Request
+) -> TaskTrialSampleResponse:
     count = int(payload.count)
     if count < 1 or count > 64:
         raise HTTPException(status_code=422, detail="count must be between 1 and 64")
@@ -136,7 +138,12 @@ async def sample_task_trials(payload: TaskTrialSampleRequest) -> TaskTrialSample
         )
 
     try:
-        component = build_component("preview_task", task_type, payload.task_spec.params)
+        component = build_component(
+            "preview_task",
+            task_type,
+            payload.task_spec.params,
+            component_registry=request.app.state.bootstrap_state.bundle.components,
+        )
     except (NotImplementedError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

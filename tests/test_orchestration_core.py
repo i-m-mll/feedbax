@@ -105,7 +105,7 @@ from feedbax.orchestration.conformance import (
     CheckEntry,
     CheckRegistry,
     ConformanceRowArtifacts,
-    build_default_check_registry,
+    build_core_check_registry,
     run_conformance_checks,
 )
 from feedbax.orchestration.drivers.base import DriverRowProbe
@@ -1995,7 +1995,7 @@ def test_request_assembly_certifies_all_core_checks_with_independent_identity(
             registry=registry,
             driver_factory=lambda _bundle: driver,
             run_set_id=run_set_id,
-            conformance_registry=build_default_check_registry(include_plugins=False),
+            conformance_registry=build_core_check_registry(),
         )
         return engine.run()
 
@@ -2556,9 +2556,11 @@ def test_production_stage_engine_call_sites_supply_nonempty_registry() -> None:
                 ),
                 None,
             )
-            assert isinstance(registry, ast.Call), f"{relative}:{call.lineno}"
-            assert isinstance(registry.func, ast.Name), f"{relative}:{call.lineno}"
-            assert registry.func.id == "build_default_check_registry", f"{relative}:{call.lineno}"
+            assert isinstance(registry, (ast.Attribute, ast.Name)), f"{relative}:{call.lineno}"
+            if isinstance(registry, ast.Attribute):
+                assert registry.attr == "conformance_checks", f"{relative}:{call.lineno}"
+            else:
+                assert registry.id == "conformance_registry", f"{relative}:{call.lineno}"
 
 
 def test_conformance_discovery_prefers_typed_diagnostics_over_manifest_metrics(
@@ -2799,7 +2801,7 @@ def test_production_default_certificate_rejects_declared_rewarm_with_flat_lr(
     engine = StageEngine(
         bundle=bundle,
         driver=FakeDriver(),
-        conformance_registry=build_default_check_registry(include_plugins=False),
+        conformance_registry=build_core_check_registry(),
     )
     state = _with_local_realized_proof(state, bundle)
     _state, outputs = engine._stage_certify(state)
@@ -2807,9 +2809,7 @@ def test_production_default_certificate_rejects_declared_rewarm_with_flat_lr(
     checks = {entry["check_id"]: entry for entry in certificate["rows"]["rewarm"]["checks"]}
 
     assert outputs["overall"] == "fail"
-    assert set(checks) == {
-        check_id for check_id, _check in build_default_check_registry(include_plugins=False).items()
-    }
+    assert set(checks) == {check_id for check_id, _check in build_core_check_registry().items()}
     assert all(entry["status"] in {"pass", "fail"} for entry in checks.values())
     assert checks["lr_trace"]["status"] == "fail"
 
@@ -3057,9 +3057,8 @@ def test_failed_local_teardown_terminates_orphaned_worker_process_group(
     launch = driver.launch_row(bundle, bundle.rows[0], state)
     deadline = time.monotonic() + 5
     while (
-        (not child_pid_path.exists() or driver._processes["failed"].poll() is None)
-        and time.monotonic() < deadline
-    ):
+        not child_pid_path.exists() or driver._processes["failed"].poll() is None
+    ) and time.monotonic() < deadline:
         time.sleep(0.01)
     assert child_pid_path.is_file()
     assert driver._processes["failed"].poll() == 0
@@ -3480,11 +3479,9 @@ def test_resolve_science_repo_import_revisions_excludes_feedbax_checkout() -> No
     # Feedbax itself publishes no ``feedbax.plugins`` entry points and its own
     # checkout is always excluded, so resolution is a well-typed no-op here and
     # never reports the host revision as an imported science revision.
-    resolved = revision.resolve_science_repo_import_revisions()
+    resolved = revision.resolve_science_repo_import_revisions(())
     assert isinstance(resolved, dict)
-    feedbax_root = str(
-        revision._git_toplevel(revision._feedbax_package_root())
-    )
+    feedbax_root = str(revision._git_toplevel(revision._feedbax_package_root()))
     assert feedbax_root not in resolved
 
 
@@ -3505,9 +3502,7 @@ def test_stage_certify_refuses_mismatched_science_repo_revision(
     certificate_path = bundle.run_set_dir / "conformance.json"
     certificate_bytes_before = certificate_path.read_bytes()
 
-    record = RepoSnapshotRecord(
-        commit="c" * 40, dirty=False, content_sha256="1" * 64, file_count=2
-    )
+    record = RepoSnapshotRecord(commit="c" * 40, dirty=False, content_sha256="1" * 64, file_count=2)
     plan = RepoRealizationPlan.create(
         primary_repo="rlrmp2",
         repos={
@@ -3516,9 +3511,7 @@ def test_stage_certify_refuses_mismatched_science_repo_revision(
                 staging_root="/staging/rlrmp2",
                 remote_root="/work/rlrmp2",
                 snapshot=record,
-                sealed_lock_digests={
-                    "uv.lock": hashlib.sha256(b"version = 1\n").hexdigest()
-                },
+                sealed_lock_digests={"uv.lock": hashlib.sha256(b"version = 1\n").hexdigest()},
             )
         },
         editable_source_resolutions=[],
@@ -3538,7 +3531,7 @@ def test_stage_certify_refuses_mismatched_science_repo_revision(
     monkeypatch.setattr(
         stages,
         "resolve_science_repo_import_revisions",
-        lambda: {"/imported/rlrmp2": "d" * 40},
+        lambda _plugin_provenance: {"/imported/rlrmp2": "d" * 40},
     )
     with pytest.raises(
         revision.FeedbaxRevisionError,
@@ -3553,7 +3546,7 @@ def test_stage_certify_refuses_mismatched_science_repo_revision(
     monkeypatch.setattr(
         stages,
         "resolve_science_repo_import_revisions",
-        lambda: {"/imported/rlrmp2": "c" * 40},
+        lambda _plugin_provenance: {"/imported/rlrmp2": "c" * 40},
     )
     _proceeded, outputs = engine._stage_certify(store.load())
     assert outputs["overall"] == "pass"

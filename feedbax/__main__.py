@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import importlib
 import json
 import pickle
@@ -16,7 +17,13 @@ from pydantic import TypeAdapter
 from feedbax.contracts.checkpoints import CheckpointForkPlan
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.run_matrix import ExecutionDependency
-from feedbax.contracts.training import DEFAULT_TRAINING_METHOD_REGISTRY, TrainingRunSpec
+from feedbax.contracts.training import (
+    TrainingMethodRegistry,
+    TrainingRunSpec,
+    resolve_training_run_spec,
+    validate_training_run_spec_semantics,
+)
+from feedbax.plugins.composition import compose_application
 from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.orchestration.events import RunEventEmitter
 from feedbax.training.executor import (
@@ -25,7 +32,6 @@ from feedbax.training.executor import (
 )
 from feedbax.training.interruption import RunInterruptionController
 from feedbax.training.preparation import (
-    DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY,
     ExecutionPreparationPlan,
     ExecutionPreparationRequest,
     lower_zero_level_preparation_plan,
@@ -65,7 +71,10 @@ def _read_pickle(path: str) -> Any:
         return pickle.load(stream)
 
 
-def _load_checkpoint_fork_plan_bindings(path: str) -> CheckpointForkPlanBindings:
+def _load_checkpoint_fork_plan_bindings(
+    path: str,
+    training_method_registry: TrainingMethodRegistry,
+) -> CheckpointForkPlanBindings:
     manifest_path = Path(path).resolve()
     payload = _read_json(str(manifest_path))
     expected = "feedbax.runtime.checkpoint_fork_plan_bindings"
@@ -80,14 +89,18 @@ def _load_checkpoint_fork_plan_bindings(path: str) -> CheckpointForkPlanBindings
     def loaded(name: str, loader: Any) -> dict[str, Any]:
         return {key: loader(str(resolved(value))) for key, value in payload.get(name, {}).items()}
 
+    run_specs = {
+        key: validate_training_run_spec_semantics(
+            TrainingRunSpec.model_validate(value),
+            training_method_registry,
+        )
+        for key, value in loaded("run_specs", _read_json).items()
+    }
     return CheckpointForkPlanBindings(
         checkpoint_roots={
             key: resolved(value) for key, value in payload["checkpoint_roots"].items()
         },
-        run_specs={
-            key: TrainingRunSpec.model_validate(value)
-            for key, value in loaded("run_specs", _read_json).items()
-        },
+        run_specs=run_specs,
         slot_templates=loaded("slot_templates", _read_pickle),
         segment_history_templates=loaded("segment_history_templates", _read_pickle),
         population_member_ids=loaded("population_member_ids", _read_json),
@@ -150,12 +163,6 @@ def _load_slot_transforms(refs: Sequence[str] | None) -> dict[str, Any]:
             raise ValueError("--slot-transform entries must use SLOT=module:function")
         transforms[slot] = _load_callable(callable_ref)
     return transforms
-
-
-def _load_training_method_plugins(module_names: Sequence[str] | None) -> None:
-    from feedbax.plugins import load_training_method_plugins
-
-    load_training_method_plugins(modules=module_names)
 
 
 def _checkpoint_fork_targets(args: argparse.Namespace) -> list[str]:
@@ -574,6 +581,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
+    bootstrap_state = asyncio.run(
+        compose_application(modules=tuple(getattr(args, "plugin", None) or ()))
+    )
+    registries = bootstrap_state.bundle
     if args.command == "matrix-harness":
         from feedbax.analysis.harness import main as harness_main
 
@@ -608,20 +619,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             harness_argv.extend(("--execution-policy", args.execution_policy))
         if args.allow_large_per_row:
             harness_argv.append("--allow-large-per-row")
-        return harness_main(harness_argv)
+        return harness_main(harness_argv, bootstrap_state=bootstrap_state)
     if args.command == "execute-training-run-spec":
-        _load_training_method_plugins(args.plugin)
         run_spec = validate_training_run_spec(_read_json(args.spec))
-        resolved_method = run_spec.resolved_method
+        resolved_method = resolve_training_run_spec(run_spec, registries.training_methods)
         method_registration = resolved_method.registration
-        preparation_registration = DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY.get(
-            run_spec.method_ref.key
-        )
+        preparation_registration = registries.execution_preparations.get(run_spec.method_ref.key)
         mapping_levels, _slot_axis_bindings = resolve_execution_mapping(run_spec.worker_execution)
         if method_registration.requires_execution_preparation:
             require_execution_preparation_provider(
                 method_ref=run_spec.method_ref.key,
-                preparation_registry=DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY,
+                preparation_registry=registries.execution_preparations,
             )
         if mapping_levels and args.initial_slots:
             raise ValueError(
@@ -636,7 +644,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         initial_slots = _read_json(args.initial_slots) if args.initial_slots else None
         preparation = None
         if preparation_registration is not None:
-            prepared = DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY.prepare(
+            prepared = registries.execution_preparations.prepare(
                 ExecutionPreparationRequest(
                     run_spec=run_spec,
                     method_payload=resolved_method.payload,
@@ -688,7 +696,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     initial_slots=initial_slots,
                     manifest_root=args.manifest_root,
                     checkpoint_root=args.checkpoint_root,
-                    registry=DEFAULT_TRAINING_METHOD_REGISTRY,
+                    registry=registries.training_methods,
                     training_spec_payload=training_payload,
                     training_spec_payload_kind=args.training_payload_kind,
                     training_spec_payload_schema_id=args.training_payload_schema_id,
@@ -727,7 +735,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         print()
         return 1 if result.status == "failed" else 0
     if args.command == "preflight-training-run-manifest":
-        _load_training_method_plugins(args.plugin)
         training_payload = _read_json(args.training_payload) if args.training_payload else None
         metadata_projection = (
             _read_json(args.manifest_metadata_projection)
@@ -749,7 +756,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         projection_custody = prepare_training_manifest_metadata_projection(
             metadata_projection,
-            registry=DEFAULT_TRAINING_METHOD_REGISTRY,
+            registry=registries.training_methods,
             run_spec=run_spec,
             training_spec_payload=training_payload,
             training_spec_payload_kind=args.training_payload_kind,
@@ -796,8 +803,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             print()
             return 0
         if args.adopt_command == "adopt":
-            _load_training_method_plugins(args.plugin)
-            run_spec = TrainingRunSpec.model_validate(_read_json(args.run_spec))
+            run_spec = validate_training_run_spec_semantics(
+                TrainingRunSpec.model_validate(_read_json(args.run_spec)),
+                registries.training_methods,
+            )
             phase_program = run_spec.worker_execution.method_contract.phase_program
             model_mapping, optimizer_mapping = _load_path_mapping(args.path_mapping)
             result = adopt_legacy_checkpoint(
@@ -845,7 +854,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
     if args.command == "checkpoint":
         if args.checkpoint_command == "fork-plan":
-            _load_training_method_plugins(args.plugin)
             plan = CheckpointForkPlan.model_validate(
                 default_spec_registry.migrate("CheckpointForkPlan", _read_json(args.plan)).payload
             )
@@ -856,7 +864,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             dependencies = TypeAdapter(list[ExecutionDependency]).validate_json(dependency_json)
             validate_checkpoint_fork_execution_dependencies(plan, dependencies)
-            bindings = _load_checkpoint_fork_plan_bindings(args.bindings)
+            bindings = _load_checkpoint_fork_plan_bindings(
+                args.bindings,
+                registries.training_methods,
+            )
             results = fork_checkpoint_plan(plan, bindings)
             json.dump(
                 {
@@ -874,8 +885,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             print()
             return 0
         if args.checkpoint_command == "relock":
-            _load_training_method_plugins(args.plugin)
-            bindings = _load_checkpoint_fork_plan_bindings(args.bindings)
+            bindings = _load_checkpoint_fork_plan_bindings(
+                args.bindings,
+                registries.training_methods,
+            )
             evidence = _load_run_contract_historical_evidence(args.historical_evidence)
             if args.write:
                 result = relock_checkpoint_fork_plan_file(
@@ -904,18 +917,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             classification = classify_checkpoint_fork_plan_derived_digests(
                 plan, bindings, historical_evidence=evidence
             )
-            has_drift = any(
-                not item.is_unchanged for item in classification.classifications
-            )
+            has_drift = any(not item.is_unchanged for item in classification.classifications)
             json.dump(
                 {
                     "status": "drift" if has_drift else "clean",
                     "targets": {
                         item.target_id: {
                             "run_contract_class": item.run_contract_class,
-                            "sentinel_input_drift_paths": list(
-                                item.sentinel_input_drift_paths
-                            ),
+                            "sentinel_input_drift_paths": list(item.sentinel_input_drift_paths),
                             "proof_mode": item.proof_mode,
                             "difference_paths": list(item.difference_paths),
                         }
@@ -929,7 +938,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             print()
             return 1 if has_drift else 0
         if args.checkpoint_command == "fork":
-            _load_training_method_plugins(args.plugin)
             expected_slots = _read_pickle(args.expected_slots) if args.expected_slots else None
             slot_transforms = _load_slot_transforms(args.slot_transform)
             target_summaries: list[dict[str, Any]] = []
@@ -938,7 +946,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 summary: dict[str, Any] = {"target": raw_target}
                 try:
                     spec_path, checkpoint_root = _parse_checkpoint_fork_target(raw_target)
-                    run_spec = TrainingRunSpec.model_validate(_read_json(str(spec_path)))
+                    run_spec = validate_training_run_spec_semantics(
+                        TrainingRunSpec.model_validate(_read_json(str(spec_path))),
+                        registries.training_methods,
+                    )
                     phase_program = run_spec.worker_execution.method_contract.phase_program
                     result = fork_checkpoint_transaction(
                         args.source,

@@ -5,6 +5,7 @@ Takes a single positional argument: the path to the YAML config.
 """
 
 import argparse
+import asyncio
 from contextlib import contextmanager, redirect_stdout
 import json
 import logging
@@ -60,7 +61,9 @@ from feedbax.config.utils import deep_merge
 from feedbax.config.yaml import get_yaml_loader
 from feedbax.contracts.staged_execution import StagedExecutionDescriptor
 from feedbax.contracts.run_aliases import RunAliasCatalog
-from feedbax.plugins import EXPERIMENT_REGISTRY
+from feedbax.plugins.bootstrap import BootstrapState
+from feedbax.plugins.composition import compose_application
+from feedbax.bin._setup import setup_application_package
 
 logger = logging.getLogger(os.path.basename(__file__))
 
@@ -191,18 +194,13 @@ def build_run_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run_analysis_run_spec_file(argv: list[str]) -> None:
+def run_analysis_run_spec_file(argv: list[str], state: BootstrapState) -> None:
     """Execute one serialized ``AnalysisRunSpec`` file and print its manifest summary."""
     args = build_run_arg_parser().parse_args(argv)
-    from feedbax.plugins import load_training_method_plugins
-
-    load_training_method_plugins()
     _apply_plotly_template_default()
     spec = _load_spec_document(args.spec, label="AnalysisRunSpec")
     run_alias_catalogs = [
-        RunAliasCatalog.model_validate(
-            _load_spec_document(path, label="run alias catalog")
-        )
+        RunAliasCatalog.model_validate(_load_spec_document(path, label="run alias catalog"))
         for path in args.run_aliases
     ]
     if (args.artifact_provider or args.manifest_root or args.checkpoint_custody) and (
@@ -235,6 +233,9 @@ def run_analysis_run_spec_file(argv: list[str]) -> None:
     with _bundle_human_output_to_stderr():
         manifest, path = execute_analysis_run_spec(
             spec,
+            registry=state.bundle.analysis_recipes,
+            evaluation_registry=state.bundle.evaluation_recipes,
+            experiment_registry=state.bundle.experiment_packages,
             root=args.root,
             repo_root=args.repo_root,
             run_alias_catalogs=run_alias_catalogs,
@@ -257,9 +258,7 @@ def run_analysis_run_spec_file(argv: list[str]) -> None:
 def build_report_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="feedbax-analysis report",
-        description=(
-            "Execute an authored ReportSpec JSON/YAML file against exact staged parents."
-        ),
+        description=("Execute an authored ReportSpec JSON/YAML file against exact staged parents."),
     )
     parser.add_argument(
         "spec",
@@ -312,12 +311,9 @@ def _report_manifest_payload(manifest, path: Path) -> dict[str, object]:
     }
 
 
-def run_authored_report_spec_file(argv: list[str]) -> None:
+def run_authored_report_spec_file(argv: list[str], state: BootstrapState) -> None:
     """Execute one serialized authored ``ReportSpec`` with exact staged parents."""
     args = build_report_arg_parser().parse_args(argv)
-    from feedbax.plugins import load_training_method_plugins
-
-    load_training_method_plugins()
     _apply_plotly_template_default()
     spec = _load_spec_document(args.spec, label="ReportSpec")
     exact_payload = _load_json_object(args.exact_parents, label="--exact-parents")
@@ -332,9 +328,7 @@ def run_authored_report_spec_file(argv: list[str]) -> None:
             f"schema_version; missing {', '.join(missing_schema)}"
         )
     exact_parents = migrate_staged_exact_parents(exact_payload)
-    if (args.artifact_provider or args.checkpoint_custody) and (
-        args.execution_descriptor is None
-    ):
+    if (args.artifact_provider or args.checkpoint_custody) and (args.execution_descriptor is None):
         raise ValueError(
             "--artifact-provider and --checkpoint-custody require --execution-descriptor"
         )
@@ -358,6 +352,7 @@ def run_authored_report_spec_file(argv: list[str]) -> None:
         with _bundle_human_output_to_stderr():
             manifest, path = execute_authored_report_spec(
                 spec,
+                registry=state.bundle.report_recipes,
                 exact_parents=exact_parents,
                 root=args.root,
                 execution_descriptor=execution_descriptor,
@@ -365,7 +360,9 @@ def run_authored_report_spec_file(argv: list[str]) -> None:
                 checkpoint_custody_bindings=checkpoint_custody_bindings,
             )
     except ReportRecipeExecutionError as exc:
-        print(json.dumps(_report_manifest_payload(exc.manifest, exc.path), indent=2, sort_keys=True))
+        print(
+            json.dumps(_report_manifest_payload(exc.manifest, exc.path), indent=2, sort_keys=True)
+        )
         raise
     print(json.dumps(_report_manifest_payload(manifest, path), indent=2, sort_keys=True))
 
@@ -384,6 +381,7 @@ def _execute_authored_analysis_bundle(
     artifact_provider: list[str],
     checkpoint_custody: list[str],
     dry_run: bool,
+    state: BootstrapState,
 ) -> object:
     """Dispatch one authored bundle on its execution shape and return its JSON payload.
 
@@ -433,6 +431,7 @@ def _execute_authored_analysis_bundle(
         with _bundle_human_output_to_stderr():
             outputs = execute_analysis_bundle(
                 authored_bundle,
+                registries=state.bundle,
                 **execution_kwargs,
                 **binding_kwargs,
             )
@@ -476,6 +475,7 @@ def _execute_authored_analysis_bundle(
         with _bundle_human_output_to_stderr():
             execution = execute_staged_analysis_bundle(
                 authored_bundle,
+                registries=state.bundle,
                 exact_parents=exact_parents,
                 **binding_kwargs,
                 **execution_kwargs,
@@ -541,10 +541,7 @@ def build_bundle_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         metavar="PATH",
-        help=(
-            "Versioned exact-parent JSON document for staged bundle execution; "
-            "requires --root."
-        ),
+        help=("Versioned exact-parent JSON document for staged bundle execution; requires --root."),
     )
     parser.add_argument(
         "--execution-descriptor",
@@ -574,16 +571,11 @@ def build_bundle_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run_analysis_bundle_spec_file(argv: list[str]) -> None:
+def run_analysis_bundle_spec_file(argv: list[str], state: BootstrapState) -> None:
     """Execute one serialized ``AnalysisBundleSpec`` file and print its JSON payload."""
     args = build_bundle_arg_parser().parse_args(argv)
-    from feedbax.plugins import load_training_method_plugins
-
-    load_training_method_plugins()
     _apply_plotly_template_default()
-    if (args.artifact_provider or args.checkpoint_custody) and (
-        args.execution_descriptor is None
-    ):
+    if (args.artifact_provider or args.checkpoint_custody) and (args.execution_descriptor is None):
         raise ValueError(
             "--artifact-provider and --checkpoint-custody require --execution-descriptor"
         )
@@ -605,6 +597,7 @@ def run_analysis_bundle_spec_file(argv: list[str]) -> None:
         artifact_provider=args.artifact_provider,
         checkpoint_custody=args.checkpoint_custody,
         dry_run=args.dry_run,
+        state=state,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
 
@@ -744,16 +737,28 @@ def build_arg_parser():
     return parser
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(
+    argv: list[str] | None = None,
+    *,
+    bootstrap_state: BootstrapState | None = None,
+    application_setup: bool = True,
+) -> None:
     args_in = list(argv or sys.argv[1:])
+    state = bootstrap_state or asyncio.run(compose_application())
+    if application_setup:
+        setup_application_package(
+            args_in,
+            domain="analysis",
+            registry=state.bundle.experiment_packages,
+        )
     if args_in and args_in[0] == RUN_SUBCOMMAND:
-        run_analysis_run_spec_file(args_in[1:])
+        run_analysis_run_spec_file(args_in[1:], state)
         return
     if args_in and args_in[0] == REPORT_SUBCOMMAND:
-        run_authored_report_spec_file(args_in[1:])
+        run_authored_report_spec_file(args_in[1:], state)
         return
     if args_in and args_in[0] == BUNDLE_SUBCOMMAND:
-        run_analysis_bundle_spec_file(args_in[1:])
+        run_analysis_bundle_spec_file(args_in[1:], state)
         return
 
     parser = build_arg_parser()
@@ -781,7 +786,9 @@ def main(argv: list[str] | None = None) -> None:
     fig_dump_formats = args.fig_dump_formats.split(",")
 
     if args.bundle:
-        authored_bundle = load_analysis_bundle(args.bundle, registry=EXPERIMENT_REGISTRY)
+        authored_bundle = load_analysis_bundle(
+            args.bundle, registry=state.bundle.experiment_packages
+        )
         payload = _execute_authored_analysis_bundle(
             authored_bundle,
             root=Path(args.manifest_root) if args.manifest_root else None,
@@ -794,13 +801,12 @@ def main(argv: list[str] | None = None) -> None:
                 Path(args.exact_parents) if args.exact_parents is not None else None
             ),
             execution_descriptor_path=(
-                Path(args.execution_descriptor)
-                if args.execution_descriptor is not None
-                else None
+                Path(args.execution_descriptor) if args.execution_descriptor is not None else None
             ),
             artifact_provider=args.artifact_provider,
             checkpoint_custody=args.checkpoint_custody,
             dry_run=args.dry_run,
+            state=state,
         )
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
@@ -823,6 +829,7 @@ def main(argv: list[str] | None = None) -> None:
         no_pickle=args.no_pickle if args.single else True,  #! For now, don't pickle in batched mode
         states_pkl_dir=states_pkl_dir,
         memory_warn_gb=args.memory_warn_gb,
+        registry=state.bundle.experiment_packages,
         key=key,
     )
 
@@ -830,7 +837,9 @@ def main(argv: list[str] | None = None) -> None:
         if args.single:
             module_key = args.single
             module_config = load_config(
-                module_key, config_type="analysis", registry=EXPERIMENT_REGISTRY
+                module_key,
+                config_type="analysis",
+                registry=state.bundle.experiment_packages,
             )
             fig_dump_dir = fig_dump_manager.prepare_module_dir(module_key, module_config)
 
@@ -840,11 +849,17 @@ def main(argv: list[str] | None = None) -> None:
                 fig_dump_dir=fig_dump_dir,
             )
         else:
-            batched_spec = load_batch_config(domain="analysis", config_key=args.batched)
+            batched_spec = load_batch_config(
+                domain="analysis",
+                config_key=args.batched,
+                registry=state.bundle.experiment_packages,
+            )
 
             module_configs_base = {
                 module_key: load_config(
-                    module_key, config_type="analysis", registry=EXPERIMENT_REGISTRY
+                    module_key,
+                    config_type="analysis",
+                    registry=state.bundle.experiment_packages,
                 )
                 for module_key in batched_spec.keys()
             }
@@ -861,7 +876,9 @@ def main(argv: list[str] | None = None) -> None:
             # raise an exception later
             for module_key in batched_spec:
                 for module_config in module_configs[module_key]:
-                    check_records_for_analysis(module_key, module_config)
+                    check_records_for_analysis(
+                        module_key, module_config, state.bundle.experiment_packages
+                    )
 
             for module_key in batched_spec:
                 fig_dump_manager.prepare_module_dir(module_key, module_configs_base[module_key])

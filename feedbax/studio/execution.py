@@ -9,7 +9,7 @@ import sys
 import uuid
 import copy
 from pathlib import Path
-from typing import Any, Literal, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Literal, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -94,6 +94,9 @@ from feedbax.contracts.graph import (
     StudioValidationState,
     StudioWorkspaceSpec,
 )
+
+if TYPE_CHECKING:
+    from feedbax.plugins.application import ApplicationRegistryBundle
 
 ExecutionTarget = Literal["local", "gcp", "runpod", "manual"]
 
@@ -276,6 +279,8 @@ class StudioExecutionPreparationError(ValueError):
 
 def prepare_studio_training_execution(
     request: StudioTrainingExecutionRequest,
+    *,
+    registry_bundle: ApplicationRegistryBundle,
 ) -> StudioTrainingExecutionPreparation:
     """Prepare a provider execution plan from the active Studio train scenario.
 
@@ -313,6 +318,7 @@ def prepare_studio_training_execution(
         graph=scenario.graph.model_dump(mode="json", exclude_none=True),
         training_spec=scenario.training_spec,
         task_spec=scenario.task_spec,
+        component_registry=registry_bundle.components,
         task_binding_spec=scenario.task_binding_spec.model_dump(mode="json", exclude_none=True)
         if scenario.task_binding_spec is not None
         else None,
@@ -377,27 +383,30 @@ def prepare_studio_training_execution(
         ),
     )
     if request.queue_manifest_ids:
-        staged_training_refs, staged_run_set_ref, staged_summary = (
-            _queue_training_manifest_subset(
-                stage=stage,
-                request=request,
-                execution_target=execution_target,
-            )
+        staged_training_refs, staged_run_set_ref, staged_summary = _queue_training_manifest_subset(
+            stage=stage,
+            request=request,
+            execution_target=execution_target,
         )
     else:
-        staged_training_refs, staged_run_set_ref, staged_summary = _stage_pending_training_manifests(
-            workspace=workspace,
-            stage=stage,
-            scenario_id=stage.scenario_id,
-            graph_spec=scenario.graph.model_dump(mode="json", exclude_none=True),
-            training_spec=scenario.training_spec,
-            task_spec=scenario.task_spec,
-            task_binding_spec=scenario.task_binding_spec.model_dump(mode="json", exclude_none=True)
-            if scenario.task_binding_spec is not None
-            else None,
-            request=request,
-            job_id=plan.job_id,
-            execution_target=execution_target,
+        staged_training_refs, staged_run_set_ref, staged_summary = (
+            _stage_pending_training_manifests(
+                workspace=workspace,
+                stage=stage,
+                scenario_id=stage.scenario_id,
+                graph_spec=scenario.graph.model_dump(mode="json", exclude_none=True),
+                training_spec=scenario.training_spec,
+                task_spec=scenario.task_spec,
+                task_binding_spec=scenario.task_binding_spec.model_dump(
+                    mode="json", exclude_none=True
+                )
+                if scenario.task_binding_spec is not None
+                else None,
+                request=request,
+                job_id=plan.job_id,
+                execution_target=execution_target,
+                registry_bundle=registry_bundle,
+            )
         )
     for staged_ref in staged_training_refs:
         stage.manifest_refs = _upsert_manifest_ref(stage.manifest_refs, staged_ref)
@@ -448,6 +457,8 @@ def prepare_studio_training_execution(
 
 def run_studio_training_local_execution(
     request: StudioTrainingLocalRunRequest,
+    *,
+    registry_bundle: ApplicationRegistryBundle,
 ) -> StudioTrainingLocalRunResult:
     """Run a Studio train-stage scenario through the local provider boundary."""
 
@@ -469,7 +480,8 @@ def run_studio_training_local_execution(
             local_cwd=str(snapshot_dir),
             issues=request.issues,
             metadata=request.metadata,
-        )
+        ),
+        registry_bundle=registry_bundle,
     )
     _materialize_local_execution_snapshot(preparation, snapshot_dir)
 
@@ -670,6 +682,8 @@ def stage_studio_evaluation_matrix(
 
 def run_studio_evaluation_local_execution(
     request: StudioEvaluationLocalRunRequest,
+    *,
+    registry_bundle: ApplicationRegistryBundle,
 ) -> StudioEvaluationLocalRunResult:
     """Stage and execute selected Studio evaluations through registered recipes."""
 
@@ -714,6 +728,7 @@ def run_studio_evaluation_local_execution(
                 issues=request.issues,
                 metadata=manifest.metadata,
                 force=request.reprocess == "all",
+                registry=registry_bundle.evaluation_recipes,
             )
             completed += 1 if executed.status == "completed" else 0
             failed += 1 if executed.status == "failed" else 0
@@ -811,6 +826,8 @@ def _stale_evaluation_launch_ids(request: StudioEvaluationMatrixRequest) -> set[
 
 def materialize_studio_pipeline(
     request: StudioPipelineMaterializationRequest,
+    *,
+    registry_bundle: ApplicationRegistryBundle,
 ) -> StudioPipelineMaterializationResult:
     """Materialize the first Studio train -> eval -> analysis -> report path.
 
@@ -834,6 +851,7 @@ def materialize_studio_pipeline(
                 job_id=f"{base_job_id}-eval",
                 issues=request.issues,
                 request_metadata=request.metadata,
+                registry_bundle=registry_bundle,
             )
         elif stage_kind == "analysis":
             manifest_path, stage_artifacts = _materialize_analysis_stage(
@@ -842,6 +860,7 @@ def materialize_studio_pipeline(
                 job_id=f"{base_job_id}-analysis",
                 issues=request.issues,
                 request_metadata=request.metadata,
+                registry_bundle=registry_bundle,
             )
         elif stage_kind == "report":
             manifest_path, stage_artifacts = _materialize_report_stage(
@@ -850,6 +869,7 @@ def materialize_studio_pipeline(
                 job_id=f"{base_job_id}-report",
                 issues=request.issues,
                 request_metadata=request.metadata,
+                registry_bundle=registry_bundle,
             )
         else:  # pragma: no cover - Literal keeps this unreachable.
             raise StudioExecutionPreparationError(f"Unsupported stage kind {stage_kind!r}")
@@ -899,13 +919,25 @@ def _validate_training_scenario(
     training_spec: dict[str, Any],
     task_spec: dict[str, Any],
     task_binding_spec: dict[str, Any] | None = None,
+    component_registry: Any,
 ) -> StudioValidationState:
-    from feedbax.integrations.provider import validate_graph_spec, validate_task_spec, validate_training_spec
+    from feedbax.integrations.provider import (
+        validate_graph_spec,
+        validate_task_spec,
+        validate_training_spec,
+    )
 
-    graph_result = validate_graph_spec(graph)
-    training_result = validate_training_spec(training_spec, graph_spec=graph, task_spec=task_spec)
+    graph_result = validate_graph_spec(graph, component_registry=component_registry)
+    training_result = validate_training_spec(
+        training_spec,
+        graph_spec=graph,
+        task_spec=task_spec,
+        component_registry=component_registry,
+    )
     task_result = validate_task_spec(task_spec)
-    task_binding_errors = _validate_task_binding_spec(graph, task_binding_spec)
+    task_binding_errors = _validate_task_binding_spec(
+        graph, task_binding_spec, component_registry=component_registry
+    )
 
     errors = [
         *_provider_issues_to_studio(graph_result.errors, prefix="graph"),
@@ -943,6 +975,8 @@ def _validate_training_scenario(
 def _validate_task_binding_spec(
     graph: dict[str, Any],
     task_binding_spec: dict[str, Any] | None,
+    *,
+    component_registry: Any,
 ) -> list[StudioValidationIssue]:
     if task_binding_spec is None:
         return []
@@ -975,7 +1009,12 @@ def _validate_task_binding_spec(
         ]
     graph_spec = GraphSpec.model_validate(graph)
     return _schema_issues_to_studio(
-        validate_task_binding_schema(validated_spec, graph_spec, "/task_binding_spec")
+        validate_task_binding_schema(
+            validated_spec,
+            graph_spec,
+            "/task_binding_spec",
+            component_registry=component_registry,
+        )
     )
 
 
@@ -1047,7 +1086,9 @@ def _build_execution_spec(
             else None,
             "training_spec": scenario.training_spec,
             "task_spec": scenario.task_spec,
-            "task_binding_spec": scenario.task_binding_spec.model_dump(mode="json", exclude_none=True)
+            "task_binding_spec": scenario.task_binding_spec.model_dump(
+                mode="json", exclude_none=True
+            )
             if scenario.task_binding_spec is not None
             else None,
             "objective_spec": scenario.objective_spec,
@@ -1116,9 +1157,7 @@ def _materialize_local_execution_snapshot(
         "execution-spec.json": preparation.execution_spec.model_dump(
             mode="json", exclude_none=True
         ),
-        "workspace-snapshot.json": preparation.workspace.model_dump(
-            mode="json", exclude_none=True
-        ),
+        "workspace-snapshot.json": preparation.workspace.model_dump(mode="json", exclude_none=True),
         "graph-spec.json": scenario.graph.model_dump(mode="json", exclude_none=True)
         if scenario.graph is not None
         else {},
@@ -1267,6 +1306,7 @@ def _stage_pending_training_manifests(
     request: StudioTrainingExecutionRequest,
     job_id: str,
     execution_target: str,
+    registry_bundle: ApplicationRegistryBundle,
 ) -> tuple[list[StudioManifestRef], StudioManifestRef | None, dict[str, Any]]:
     matrix_spec = matrix_spec_from_selection(stage.selection_spec)
     if matrix_spec is None:
@@ -1287,14 +1327,18 @@ def _stage_pending_training_manifests(
             stage=stage,
             job_id=job_id,
         )
-        return [pending_ref], None, {
-            "manifest_id": pending_manifest.id,
-            "status": pending_manifest.status,
-            "path": str(pending_path),
-            "staged_at": utc_now().isoformat(),
-            "run_count": 1,
-            "execution_target": execution_target,
-        }
+        return (
+            [pending_ref],
+            None,
+            {
+                "manifest_id": pending_manifest.id,
+                "status": pending_manifest.status,
+                "path": str(pending_path),
+                "staged_at": utc_now().isoformat(),
+                "run_count": 1,
+                "execution_target": execution_target,
+            },
+        )
 
     try:
         materialized = materialize_sweep_matrix(
@@ -1304,12 +1348,17 @@ def _stage_pending_training_manifests(
             task_spec=task_spec,
             task_binding_spec=task_binding_spec,
             default_name=f"{stage.label} matrix",
+            method_registry=registry_bundle.training_methods,
+            row_lowerer_registry=registry_bundle.row_lowerers,
         )
     except SweepMatrixError as exc:
         raise StudioExecutionPreparationError(str(exc)) from exc
 
     for row in materialized.rows:
-        _validate_materialized_training_row(row)
+        _validate_materialized_training_row(
+            row,
+            component_registry=registry_bundle.components,
+        )
 
     root_path = default_manifest_root()
     materialized_run_set = materialized.run_set_manifest
@@ -1399,16 +1448,20 @@ def _stage_pending_training_manifests(
         "execution_target": execution_target,
         "execution_backend": request.backend,
     }
-    return run_refs, run_set_ref, {
-        "manifest_id": run_set.id,
-        "status": run_set.status,
-        "path": str(run_set_path),
-        "staged_at": utc_now().isoformat(),
-        "run_count": len(materialized.rows),
-        "run_ids": [row.planned_run_id for row in materialized.rows],
-        "run_paths": run_paths,
-        "execution_target": execution_target,
-    }
+    return (
+        run_refs,
+        run_set_ref,
+        {
+            "manifest_id": run_set.id,
+            "status": run_set.status,
+            "path": str(run_set_path),
+            "staged_at": utc_now().isoformat(),
+            "run_count": len(materialized.rows),
+            "run_ids": [row.planned_run_id for row in materialized.rows],
+            "run_paths": run_paths,
+            "execution_target": execution_target,
+        },
+    )
 
 
 def _write_pending_training_manifest_for_matrix_row(
@@ -1455,8 +1508,7 @@ def _write_pending_training_manifest_for_matrix_row(
         else {
             "row_id": row.row_id,
             "overrides": [
-                override.model_dump(mode="json", exclude_none=True)
-                for override in row.overrides
+                override.model_dump(mode="json", exclude_none=True) for override in row.overrides
             ],
         }
     )
@@ -1523,7 +1575,11 @@ def _write_pending_training_manifest_for_matrix_row(
     return manifest, write_manifest(manifest, root=root)
 
 
-def _validate_materialized_training_row(row: MaterializedMatrixRow) -> None:
+def _validate_materialized_training_row(
+    row: MaterializedMatrixRow,
+    *,
+    component_registry: Any,
+) -> None:
     if row.spec is not None:
         return
     graph_spec, training_spec, task_spec, task_binding_spec, _ = _materialized_row_specs(row)
@@ -1532,6 +1588,7 @@ def _validate_materialized_training_row(row: MaterializedMatrixRow) -> None:
         training_spec=training_spec,
         task_spec=task_spec,
         task_binding_spec=task_binding_spec,
+        component_registry=component_registry,
     )
     if not validation.errors:
         return
@@ -1629,9 +1686,7 @@ def _manifest_spec_hashes(manifest: Any) -> dict[str, str]:
 
 def _ui_spec_hashes(payloads: dict[str, Any]) -> dict[str, str]:
     return {
-        key: _stable_ui_hash(value)
-        for key, value in payloads.items()
-        if isinstance(value, dict)
+        key: _stable_ui_hash(value) for key, value in payloads.items() if isinstance(value, dict)
     }
 
 
@@ -1720,14 +1775,18 @@ def _queue_training_manifest_subset(
             )
 
     now = utc_now().isoformat()
-    return selected_refs, None, {
-        "manifest_ids": selected_ids,
-        "status": "pending",
-        "prepared_at": now,
-        "run_count": sum(_manifest_ref_run_count(ref) for ref in selected_refs),
-        "execution_target": execution_target,
-        "source": "queue_manifest_subset",
-    }
+    return (
+        selected_refs,
+        None,
+        {
+            "manifest_ids": selected_ids,
+            "status": "pending",
+            "prepared_at": now,
+            "run_count": sum(_manifest_ref_run_count(ref) for ref in selected_refs),
+            "execution_target": execution_target,
+            "source": "queue_manifest_subset",
+        },
+    )
 
 
 def _stage_manifest_refs_by_id(stage: StudioStageSpec) -> dict[str, StudioManifestRef]:
@@ -2005,7 +2064,9 @@ def _selected_training_refs(
     refs = [refs_by_id.get(id_) or _indexed_training_parent_ref(id_) for id_ in ids]
     refs = [ref for ref in refs if ref is not None]
     if not refs:
-        raise StudioExecutionPreparationError("Evaluation staging requires at least one training run")
+        raise StudioExecutionPreparationError(
+            "Evaluation staging requires at least one training run"
+        )
     return refs
 
 
@@ -2092,13 +2153,17 @@ def _selection_spec_payload(
 
 
 def _stage_eval_params(eval_stage: StudioStageSpec) -> dict[str, Any]:
-    execution_spec = eval_stage.execution_spec if isinstance(eval_stage.execution_spec, dict) else {}
+    execution_spec = (
+        eval_stage.execution_spec if isinstance(eval_stage.execution_spec, dict) else {}
+    )
     raw = execution_spec.get("eval_params") or eval_stage.selection_spec.get("eval_params")
     return dict(raw) if isinstance(raw, dict) else {}
 
 
 def _stage_condition_matrix(eval_stage: StudioStageSpec) -> dict[str, Any]:
-    execution_spec = eval_stage.execution_spec if isinstance(eval_stage.execution_spec, dict) else {}
+    execution_spec = (
+        eval_stage.execution_spec if isinstance(eval_stage.execution_spec, dict) else {}
+    )
     raw = (
         eval_stage.selection_spec.get("condition_matrix")
         or eval_stage.selection_spec.get("matrix")
@@ -2130,8 +2195,7 @@ def _expand_eval_conditions(
     except SweepMatrixError as exc:
         raise StudioExecutionPreparationError(str(exc)) from exc
     axes_with_values = [
-        axis.model_copy(update={"values": _variation_values(axis.variation)})
-        for axis in axes
+        axis.model_copy(update={"values": _variation_values(axis.variation)}) for axis in axes
     ]
     axis_by_id = {axis.id: axis for axis in axes_with_values}
     conditions: list[dict[str, Any]] = []
@@ -2462,6 +2526,7 @@ def _materialize_eval_stage(
     job_id: str,
     issues: list[str],
     request_metadata: dict[str, Any],
+    registry_bundle: ApplicationRegistryBundle,
 ) -> tuple[Path, list[StudioArtifactRef]]:
     train_stage = _select_stage_by_kind(workspace, "train")
     eval_stage = _select_stage_by_kind(workspace, "eval")
@@ -2495,10 +2560,14 @@ def _materialize_eval_stage(
     input_refs = _collection_manifest_parents(training_collection)
     analysis_stage = _select_stage_by_kind(workspace, "analysis")
     analysis_scenario = workspace.scenarios.get(analysis_stage.scenario_id or "")
-    downstream_states_policy = (analysis_scenario.analysis_spec or {}).get(
-        "evaluation_states_policy",
-        "recompute",
-    ) if analysis_scenario is not None else "recompute"
+    downstream_states_policy = (
+        (analysis_scenario.analysis_spec or {}).get(
+            "evaluation_states_policy",
+            "recompute",
+        )
+        if analysis_scenario is not None
+        else "recompute"
+    )
     spec = EvaluationRunSpec(
         evaluation_type="feedbax.studio.default_eval",
         training_run_ids=[ref.id for ref in input_refs if ref.kind == "TrainingRunManifest"],
@@ -2529,6 +2598,7 @@ def _materialize_eval_stage(
             job_id=job_id,
         ),
         metadata={"studio": _stage_manifest_metadata(workspace, eval_stage, job_id)},
+        registry=registry_bundle.evaluation_recipes,
     )
     manifest_ref = _studio_manifest_ref(
         manifest.kind,
@@ -2539,8 +2609,7 @@ def _materialize_eval_stage(
         manifest=manifest,
     )
     artifact_refs = [
-        _studio_artifact_ref(artifact, kind="EvaluationResult")
-        for artifact in manifest.artifacts
+        _studio_artifact_ref(artifact, kind="EvaluationResult") for artifact in manifest.artifacts
     ]
     _complete_stage_with_manifest(
         workspace,
@@ -2565,6 +2634,7 @@ def _materialize_analysis_stage(
     job_id: str,
     issues: list[str],
     request_metadata: dict[str, Any],
+    registry_bundle: ApplicationRegistryBundle,
 ) -> tuple[Path, list[StudioArtifactRef]]:
     eval_stage = _select_stage_by_kind(workspace, "eval")
     analysis_stage = _select_stage_by_kind(workspace, "analysis")
@@ -2617,6 +2687,9 @@ def _materialize_analysis_stage(
             "input_evaluation_runs": [ref.id for ref in input_refs],
         },
         fig_dump_formats=("json",),
+        registry=registry_bundle.analysis_recipes,
+        evaluation_registry=registry_bundle.evaluation_recipes,
+        experiment_registry=registry_bundle.experiment_packages,
     )
     manifest_ref = _studio_manifest_ref(
         manifest.kind,
@@ -2627,8 +2700,7 @@ def _materialize_analysis_stage(
         manifest=manifest,
     )
     artifact_refs = [
-        _studio_artifact_ref(artifact, kind="AnalysisArtifact")
-        for artifact in manifest.artifacts
+        _studio_artifact_ref(artifact, kind="AnalysisArtifact") for artifact in manifest.artifacts
     ]
     _complete_stage_with_manifest(
         workspace,
@@ -2668,6 +2740,7 @@ def _materialize_report_stage(
     job_id: str,
     issues: list[str],
     request_metadata: dict[str, Any],
+    registry_bundle: ApplicationRegistryBundle,
 ) -> tuple[Path, list[StudioArtifactRef]]:
     analysis_stage = _select_stage_by_kind(workspace, "analysis")
     report_stage = _select_stage_by_kind(workspace, "report")
@@ -2708,6 +2781,7 @@ def _materialize_report_stage(
             job_id=job_id,
         ),
         metadata={"studio": _stage_manifest_metadata(workspace, report_stage, job_id)},
+        registry=registry_bundle.report_recipes,
     )
     manifest_ref = _studio_manifest_ref(
         manifest.kind,
@@ -2718,8 +2792,7 @@ def _materialize_report_stage(
         manifest=manifest,
     )
     artifact_refs = [
-        _studio_artifact_ref(artifact, kind="ReportArtifact")
-        for artifact in manifest.artifacts
+        _studio_artifact_ref(artifact, kind="ReportArtifact") for artifact in manifest.artifacts
     ]
     _complete_stage_with_manifest(
         workspace,

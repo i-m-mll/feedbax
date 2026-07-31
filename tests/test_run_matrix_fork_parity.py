@@ -87,9 +87,7 @@ def _mapped_source_view(slots: dict[str, object]) -> _LoadedSourceManifest:
             "schema_id": "feedbax.manifest.training_checkpoint_transaction",
             "completed_training_batches": 4,
             "metadata": {"optimizer_step": 4},
-            "slots": [
-                {"slot": name, "materialized_axes": [binding]} for name in slots
-            ],
+            "slots": [{"slot": name, "materialized_axes": [binding]} for name in slots],
         },
         slots,
     )
@@ -189,7 +187,7 @@ def _registration_only_method_registry() -> TrainingMethodRegistry:
     return registry
 
 
-def _standard_fork_inputs(tmp_path: Path):
+def _standard_fork_inputs(tmp_path: Path, application_registry_bundle):
     run_spec = _run_spec(minimax=True)
     matrix = TrainingRunMatrixSpec.model_validate(
         {
@@ -204,7 +202,12 @@ def _standard_fork_inputs(tmp_path: Path):
             "rows": [{"row_id": "target", "overrides": []}],
         }
     )
-    materialized = materialize_run_matrix(matrix, repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        matrix,
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
     target_spec = materialized.rows[0].spec
     assert target_spec is not None
     slots = _minimax_slots()
@@ -222,9 +225,15 @@ def _standard_fork_inputs(tmp_path: Path):
 
 def _topology_parity_inputs(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> tuple[TrainingRunMatrixSpec, MaterializedRunMatrix, Path, Path, dict[str, str]]:
     spec = _matrix(_training_run_payload())
-    materialized = materialize_run_matrix(spec, repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        spec,
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
     one_row = MaterializedRunMatrix(
         matrix_spec_sha256=materialized.matrix_spec_sha256,
         run_set_id=materialized.run_set_id,
@@ -263,9 +272,16 @@ def _topology_parity_inputs(
     return spec, one_row, source, target, declaration
 
 
-def test_fork_matrix_checkpoints_skip_fork_writes_parity_table(tmp_path: Path) -> None:
+def test_fork_matrix_checkpoints_skip_fork_writes_parity_table(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     spec = _matrix(_training_run_payload())
-    materialized = materialize_run_matrix(spec, repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        spec,
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
     source = tmp_path / "source"
     target = tmp_path / "target"
     _write_latest(source, transaction_id="tx-source", digest="same")
@@ -284,6 +300,7 @@ def test_fork_matrix_checkpoints_skip_fork_writes_parity_table(tmp_path: Path) -
         target_checkpoint_roots={"lr_hi": target},
         parity_output_path=tmp_path / "parity.json",
         skip_fork=True,
+        method_registry=application_registry_bundle.training_methods,
     )
 
     assert table["schema_version"] == "feedbax.run_matrix_fork_parity.v1"
@@ -301,7 +318,9 @@ def test_fork_matrix_checkpoints_skip_fork_writes_parity_table(tmp_path: Path) -
     assert continuation["recorded_optimizer_step"] == 4
 
 
-def test_fork_path_leaves_typed_schedule_payload_byte_identical(tmp_path: Path) -> None:
+def test_fork_path_leaves_typed_schedule_payload_byte_identical(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     payload = _training_run_payload()
     payload["method_payload"]["payload"]["optimizer"]["lr_schedule"] = {
         "kind": "warmup_cosine",
@@ -311,9 +330,16 @@ def test_fork_path_leaves_typed_schedule_payload_byte_identical(tmp_path: Path) 
         "origin": {"kind": "segment_start"},
     }
     spec = _matrix(payload)
-    materialized = materialize_run_matrix(spec, repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        spec,
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
     row = materialized.rows[0]
-    before = canonical_json_bytes(row.payload["method_payload"]["payload"]["optimizer"]["lr_schedule"])
+    before = canonical_json_bytes(
+        row.payload["method_payload"]["payload"]["optimizer"]["lr_schedule"]
+    )
     source = tmp_path / "source"
     target = tmp_path / "target"
     _write_latest(source, transaction_id="tx-source", digest="same")
@@ -332,15 +358,25 @@ def test_fork_path_leaves_typed_schedule_payload_byte_identical(tmp_path: Path) 
         target_checkpoint_roots={"lr_hi": target},
         parity_output_path=tmp_path / "parity.json",
         skip_fork=True,
+        method_registry=application_registry_bundle.training_methods,
     )
 
-    after = canonical_json_bytes(row.payload["method_payload"]["payload"]["optimizer"]["lr_schedule"])
+    after = canonical_json_bytes(
+        row.payload["method_payload"]["payload"]["optimizer"]["lr_schedule"]
+    )
     assert after == before
 
 
-def test_fork_matrix_checkpoints_reports_mismatched_slot(tmp_path: Path) -> None:
+def test_fork_matrix_checkpoints_reports_mismatched_slot(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     spec = _matrix(_training_run_payload())
-    materialized = materialize_run_matrix(spec, repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        spec,
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
     source = tmp_path / "source"
     target = tmp_path / "target"
     _write_latest(source, transaction_id="tx-source", digest="source")
@@ -360,11 +396,16 @@ def test_fork_matrix_checkpoints_reports_mismatched_slot(tmp_path: Path) -> None
             target_checkpoint_roots={"lr_hi": target},
             parity_output_path=tmp_path / "parity.json",
             skip_fork=True,
+            method_registry=application_registry_bundle.training_methods,
         )
 
 
-def test_fork_matrix_parity_accepts_declared_topology_change(tmp_path: Path) -> None:
-    spec, materialized, source, target, declaration = _topology_parity_inputs(tmp_path)
+def test_fork_matrix_parity_accepts_declared_topology_change(
+    tmp_path: Path, application_registry_bundle
+) -> None:
+    spec, materialized, source, target, declaration = _topology_parity_inputs(
+        tmp_path, application_registry_bundle=application_registry_bundle
+    )
 
     table = fork_matrix_checkpoints(
         spec,
@@ -381,6 +422,7 @@ def test_fork_matrix_parity_accepts_declared_topology_change(tmp_path: Path) -> 
         row_target_transformed_slots={"lr_hi": ["model"]},
         row_target_only_slots={"lr_hi": {"adaptive_state": declaration}},
         skip_fork=True,
+        method_registry=application_registry_bundle.training_methods,
     )
 
     assert table["ok"] is True
@@ -408,8 +450,11 @@ def test_fork_matrix_parity_rejects_topology_contract_drift(
     tmp_path: Path,
     mutation: str,
     error: str,
+    application_registry_bundle,
 ) -> None:
-    spec, materialized, source, target, declaration = _topology_parity_inputs(tmp_path)
+    spec, materialized, source, target, declaration = _topology_parity_inputs(
+        tmp_path, application_registry_bundle=application_registry_bundle
+    )
     target_manifest_path = next((target / "transactions").glob("*/manifest.json"))
     target_manifest = json.loads(target_manifest_path.read_text(encoding="utf-8"))
     transformed_slots: list[str] = ["model"]
@@ -460,11 +505,13 @@ def test_fork_matrix_parity_rejects_topology_contract_drift(
             row_target_transformed_slots={"lr_hi": transformed_slots},
             row_target_only_slots={"lr_hi": {"adaptive_state": declaration}},
             skip_fork=True,
+            method_registry=application_registry_bundle.training_methods,
         )
 
 
 def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     """A continuation can cross barriers only through a declared mapping."""
     continuation = CheckpointContinuationRequest(
@@ -516,7 +563,12 @@ def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
             "rows": [{"row_id": "continuation", "overrides": []}],
         }
     )
-    materialized = materialize_run_matrix(matrix, repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        matrix,
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
     source_slots = _minimax_slots()
     source_slots["controller"] = BatchHistory(
         jnp.arange(5 * 12000, dtype=jnp.float32).reshape(5, 12000)
@@ -531,9 +583,7 @@ def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
         completed_training_batches=12000,
     )
     target_slots = _minimax_slots()
-    target_slots["controller"] = BatchHistory(
-        jnp.full((5, 4500), -1.0, dtype=jnp.float32)
-    )
+    target_slots["controller"] = BatchHistory(jnp.full((5, 4500), -1.0, dtype=jnp.float32))
     target_coordinate = ProgressCoordinate(
         run_id="run-1",
         phase="warmup",
@@ -558,6 +608,7 @@ def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
         target_slot_templates={"continuation": target_slots},
         row_barrier_mappings={"continuation": barrier_mapping},
         parity_output_path=tmp_path / "parity.json",
+        method_registry=application_registry_bundle.training_methods,
     )
 
     resumed = load_latest_checkpoint(
@@ -594,9 +645,7 @@ def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
                 materialized.rows[0].spec.worker_execution.method_contract.phase_program
             ),
             expected_slots=target_slots,
-            continuation_request=continuation.model_copy(
-                update={"additional_batches": 4499}
-            ),
+            continuation_request=continuation.model_copy(update={"additional_batches": 4499}),
         )
 
 
@@ -637,6 +686,20 @@ def test_fork_cli_materializes_targets_and_writes_parity_table(tmp_path: Path) -
     assert parity["schema_version"] == "feedbax.run_matrix_fork_parity.v1"
     assert parity["ok"] is True
     assert {row["row_id"] for row in parity["rows"]} == {"lr_hi", "lr_lo"}
+
+
+def test_render_cli_uses_bootstrapped_method_and_row_registries(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    matrix_path = tmp_path / "matrix.json"
+    matrix_path.write_text(
+        json.dumps(_matrix(_training_run_payload()).model_dump(mode="json", exclude_none=True)),
+        encoding="utf-8",
+    )
+
+    assert main(["render", str(matrix_path), "--repo-root", str(tmp_path)]) == 0
+    assert "Matrix:" in capsys.readouterr().out
 
 
 def test_fork_cli_rejects_malformed_target(tmp_path: Path) -> None:
@@ -709,9 +772,15 @@ def _matrix_plan_for_rows(
 
 def test_matrix_fork_rejects_plan_plus_legacy_mappings_before_source_read(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     spec = _matrix(_training_run_payload())
-    materialized = materialize_run_matrix(spec, repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        spec,
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
     row = materialized.rows[0]
     assert row.spec is not None
     plan = CheckpointForkPlan(
@@ -747,13 +816,21 @@ def test_matrix_fork_rejects_plan_plus_legacy_mappings_before_source_read(
                 run_specs={"run": row.spec},
                 slot_templates={"slots": {}},
             ),
+            method_registry=application_registry_bundle.training_methods,
         )
     assert not (tmp_path / "target").exists()
 
 
-def test_matrix_fork_plan_rejects_unknown_row_before_write(tmp_path: Path) -> None:
+def test_matrix_fork_plan_rejects_unknown_row_before_write(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     spec = _matrix(_training_run_payload())
-    materialized = materialize_run_matrix(spec, repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        spec,
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
     plan, bindings = _matrix_plan_for_rows(materialized, tmp_path, ["unknown"])
     with pytest.raises(RunMatrixError, match="unknown matrix rows"):
         fork_matrix_checkpoints(
@@ -763,13 +840,21 @@ def test_matrix_fork_plan_rejects_unknown_row_before_write(tmp_path: Path) -> No
             parity_output_path=tmp_path / "parity.json",
             fork_plan=plan,
             fork_plan_bindings=bindings,
+            method_registry=application_registry_bundle.training_methods,
         )
     assert not (tmp_path / "target-unknown").exists()
 
 
-def test_matrix_fork_plan_rejects_missing_row_before_write(tmp_path: Path) -> None:
+def test_matrix_fork_plan_rejects_missing_row_before_write(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     spec = _matrix(_training_run_payload())
-    materialized = materialize_run_matrix(spec, repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        spec,
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
     plan, bindings = _matrix_plan_for_rows(
         materialized,
         tmp_path,
@@ -783,15 +868,22 @@ def test_matrix_fork_plan_rejects_missing_row_before_write(tmp_path: Path) -> No
             parity_output_path=tmp_path / "parity.json",
             fork_plan=plan,
             fork_plan_bindings=bindings,
+            method_registry=application_registry_bundle.training_methods,
         )
     assert not (tmp_path / f"target-{materialized.rows[0].row_id}").exists()
 
 
 def test_matrix_fork_plan_rejects_runtime_row_spec_drift_before_write(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     spec = _matrix(_training_run_payload())
-    materialized = materialize_run_matrix(spec, repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        spec,
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
     row_ids = [row.row_id for row in materialized.rows]
     plan, bindings = _matrix_plan_for_rows(materialized, tmp_path, row_ids)
     run_specs = dict(bindings.run_specs)
@@ -809,13 +901,21 @@ def test_matrix_fork_plan_rejects_runtime_row_spec_drift_before_write(
             parity_output_path=tmp_path / "parity.json",
             fork_plan=plan,
             fork_plan_bindings=bindings,
+            method_registry=application_registry_bundle.training_methods,
         )
     assert not any((tmp_path / f"target-{row_id}").exists() for row_id in row_ids)
 
 
-def test_matrix_fork_plan_rejects_source_root_drift_before_write(tmp_path: Path) -> None:
+def test_matrix_fork_plan_rejects_source_root_drift_before_write(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     spec = _matrix(_training_run_payload())
-    materialized = materialize_run_matrix(spec, repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        spec,
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
     row_ids = [row.row_id for row in materialized.rows]
     plan, bindings = _matrix_plan_for_rows(materialized, tmp_path, row_ids)
     with pytest.raises(RunMatrixError, match="does not match.*source binding"):
@@ -826,14 +926,18 @@ def test_matrix_fork_plan_rejects_source_root_drift_before_write(tmp_path: Path)
             parity_output_path=tmp_path / "parity.json",
             fork_plan=plan,
             fork_plan_bindings=bindings,
+            method_registry=application_registry_bundle.training_methods,
         )
     assert not any((tmp_path / f"target-{row_id}").exists() for row_id in row_ids)
 
 
 def test_missing_descriptor_optimizer_projector_fails_before_fork_writes(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
-    matrix, materialized, slots = _standard_fork_inputs(tmp_path)
+    matrix, materialized, slots = _standard_fork_inputs(
+        tmp_path, application_registry_bundle=application_registry_bundle
+    )
     target_root = tmp_path / "target"
     parity_path = tmp_path / "parity.json"
 
@@ -854,13 +958,16 @@ def test_missing_descriptor_optimizer_projector_fails_before_fork_writes(
 
 def test_explicit_lr_reporter_overrides_missing_descriptor_projector(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     class ExplicitReporter:
         def points(self, *, source_manifest, row_payload, row_spec, declared_mode):
             del source_manifest, row_payload, row_spec
             return [{"step": 0, "lr": 0.01, "mode": declared_mode}]
 
-    matrix, materialized, slots = _standard_fork_inputs(tmp_path)
+    matrix, materialized, slots = _standard_fork_inputs(
+        tmp_path, application_registry_bundle=application_registry_bundle
+    )
     target_root = tmp_path / "target"
     parity_path = tmp_path / "parity.json"
     table = fork_matrix_checkpoints(
@@ -880,7 +987,9 @@ def test_explicit_lr_reporter_overrides_missing_descriptor_projector(
     assert parity_path.exists()
 
 
-def test_matrix_fork_executes_typed_plan_and_writes_parity(tmp_path: Path) -> None:
+def test_matrix_fork_executes_typed_plan_and_writes_parity(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     reporter_calls: list[str] = []
 
     class PlanReporter:
@@ -904,7 +1013,12 @@ def test_matrix_fork_executes_typed_plan_and_writes_parity(tmp_path: Path) -> No
             "rows": [{"row_id": "target", "overrides": []}],
         }
     )
-    materialized = materialize_run_matrix(matrix, repo_root=tmp_path)
+    materialized = materialize_run_matrix(
+        matrix,
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
     target_spec = materialized.rows[0].spec
     assert target_spec is not None
     source = write_checkpoint_transaction(
@@ -949,16 +1063,31 @@ def test_matrix_fork_executes_typed_plan_and_writes_parity(tmp_path: Path) -> No
     record = CheckpointForkTransformRecord(
         slot="model", identity="tests.target", version="1", implementation_sha256="f" * 64
     )
-    placed_plan = plan.model_copy(update={"targets": [plan.targets[0].model_copy(update={
-        "transforms": [CheckpointForkTransformStep(
-            step_id="target", stage="target_post", records=[record]
-        )]
-    })]})
+    placed_plan = plan.model_copy(
+        update={
+            "targets": [
+                plan.targets[0].model_copy(
+                    update={
+                        "transforms": [
+                            CheckpointForkTransformStep(
+                                step_id="target", stage="target_post", records=[record]
+                            )
+                        ]
+                    }
+                )
+            ]
+        }
+    )
     placed = DurableSlotTransform(
-        transform_id="tests.target", version="1", implementation_sha256="f" * 64,
-        stage="target_post", target_row_id="target", slot="model",
+        transform_id="tests.target",
+        version="1",
+        implementation_sha256="f" * 64,
+        stage="target_post",
+        target_row_id="target",
+        slot="model",
     )
     placed_dependency = dependency.model_copy(update={"slot_transforms": [placed]})
+
     def verify(dependencies, checked_plan=placed_plan):
         checked = matrix.model_copy(update={"execution_dependencies": dependencies})
         _validate_typed_checkpoint_dependencies(checked, materialized, checked_plan)
@@ -989,6 +1118,7 @@ def test_matrix_fork_executes_typed_plan_and_writes_parity(tmp_path: Path) -> No
             slot_templates={"slots": _minimax_slots()},
         ),
         lr_reporter=PlanReporter(),
+        method_registry=application_registry_bundle.training_methods,
     )
     assert parity["ok"] is True
     assert reporter_calls == ["restart"]

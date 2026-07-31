@@ -43,6 +43,7 @@ from jax_cookbook import arrays_to_lists
 
 if TYPE_CHECKING:
     from feedbax.persistence.database import EvaluationRecord, ModelRecord
+    from feedbax.plugins.registry import ExperimentRegistry
 
 
 _FIGURE_ROUTING_KEY = "figure_routing"
@@ -80,6 +81,7 @@ class AnalysisRunContext:
     provenance: Provenance | None = None
     issues: list[str] | None = None
     metadata: dict[str, Any] | None = None
+    experiment_registry: ExperimentRegistry | None = None
     index_manifest: bool = True
     _artifacts: list[ArtifactRef] = field(default_factory=list, init=False)
     _regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = field(
@@ -91,9 +93,9 @@ class AnalysisRunContext:
         default_factory=list,
         init=False,
     )
-    _evaluation_state_resolution_diagnostics: list[
-        AnalysisEvaluationStateResolutionDiagnostic
-    ] = field(default_factory=list, init=False)
+    _evaluation_state_resolution_diagnostics: list[AnalysisEvaluationStateResolutionDiagnostic] = (
+        field(default_factory=list, init=False)
+    )
     _produced_data: list[AnalysisDataProduct] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
@@ -513,7 +515,9 @@ class AnalysisRunContext:
         analysis_label: str | None,
         ordinal: int,
     ) -> str:
-        label = _safe_name(analysis_label) if analysis_label is not None else _safe_name(analysis_name)
+        label = (
+            _safe_name(analysis_label) if analysis_label is not None else _safe_name(analysis_name)
+        )
         return f"{label}_{_safe_name(analysis_name)}_{ordinal}"
 
     def _route_figure_projection(
@@ -529,6 +533,8 @@ class AnalysisRunContext:
         routing = self._figure_routing(params)
         if routing is None:
             return None
+        if self.experiment_registry is None:
+            raise ValueError("routed analysis figures require an injected experiment registry")
 
         from feedbax.plot.io import save_figure as save_routed_figure  # noqa: PLC0415
 
@@ -546,12 +552,10 @@ class AnalysisRunContext:
             package=str(routing["package"]),
             experiment=str(routing["experiment"]),
             topic=str(routing["topic"]),
+            registry=self.experiment_registry,
             extra_packages=self._figure_routing_extra_packages(routing),
         )
-        return {
-            key: str(value) if value is not None else None
-            for key, value in result.items()
-        }
+        return {key: str(value) if value is not None else None for key, value in result.items()}
 
     def _figure_routing(self, params: dict[str, Any]) -> dict[str, Any] | None:
         for candidate in self._figure_routing_candidates(params):
@@ -629,7 +633,9 @@ class AnalysisRunContext:
         )
         provenance.parents = list(self.spec.inputs)
         if self.issues:
-            provenance.issues.extend(issue for issue in self.issues if issue not in provenance.issues)
+            provenance.issues.extend(
+                issue for issue in self.issues if issue not in provenance.issues
+            )
         if provenance.entrypoint is None:
             provenance.entrypoint = EntrypointRef(
                 kind="feedbax-analysis-context",

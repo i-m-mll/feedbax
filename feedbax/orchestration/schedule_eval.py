@@ -285,7 +285,7 @@ def project_training_schedules(
     *,
     coordinates: Sequence[int],
     lineage: CheckpointSegmentLineage,
-    resolved_method: ResolvedTrainingMethod[Any] | None = None,
+    resolved_method: ResolvedTrainingMethod[Any],
     validate_continuation_lineage: bool = True,
 ) -> ScheduleProjection:
     """Build the complete sampled schedule table consumed by runtime and preflight.
@@ -294,9 +294,8 @@ def project_training_schedules(
     coordinate ``N`` is the schedule value applied by update ``N``.
     """
     normalized_coordinates = tuple(int(coordinate) for coordinate in coordinates)
-    if (
-        not normalized_coordinates
-        or normalized_coordinates != tuple(sorted(set(normalized_coordinates)))
+    if not normalized_coordinates or normalized_coordinates != tuple(
+        sorted(set(normalized_coordinates))
     ):
         raise ValueError("schedule projection coordinates must be non-empty, unique, and sorted")
     continuation = run_spec.checkpoint_progress.continuation
@@ -311,14 +310,13 @@ def project_training_schedules(
                 "schedule projection lineage contradicts continuation; "
                 f"lineage={actual_lineage!r}, continuation={expected_lineage!r}"
             )
-    resolved = resolved_method or run_spec.resolved_method
-    descriptor = resolved.descriptor
+    descriptor = resolved_method.descriptor
     if descriptor is None or descriptor.schedule_projector is None:
         raise ValueError(
             f"training method {run_spec.method_ref.key!r} has no complete schedule projector"
         )
     method_projection = descriptor.schedule_projector.project(
-        resolved.payload,
+        resolved_method.payload,
         normalized_coordinates,
         lineage=lineage,
     )
@@ -327,7 +325,7 @@ def project_training_schedules(
             f"training method {run_spec.method_ref.key!r} has no optimizer spec projector"
         )
     optimizer = OptimizerSpec.model_validate(
-        descriptor.optimizer_spec_projector(resolved.payload)
+        descriptor.optimizer_spec_projector(resolved_method.payload)
     )
     if LEARNING_RATE_SCHEDULE_ID in method_projection.schedules:
         raise ValueError(
@@ -381,6 +379,8 @@ def compare_continuation_schedule_projections(
     target_run_spec: TrainingRunSpec,
     source_manifest: CheckpointTransactionManifest,
     continuation: CheckpointContinuationRequest,
+    source_resolved_method: ResolvedTrainingMethod[Any],
+    target_resolved_method: ResolvedTrainingMethod[Any],
 ) -> tuple[list[str], dict[str, Any]]:
     """Compare source-realized and target-declared schedules over ``N..N+2``."""
     boundary = continuation.source_completed_batches
@@ -400,6 +400,7 @@ def compare_continuation_schedule_projections(
         source_run_spec,
         coordinates=coordinates,
         lineage=source_manifest.segment_lineage,
+        resolved_method=source_resolved_method,
         validate_continuation_lineage=False,
     )
     target = project_training_schedules(
@@ -410,6 +411,7 @@ def compare_continuation_schedule_projections(
             start_batch=boundary,
             segment_batch_count=continuation.additional_batches or 0,
         ),
+        resolved_method=target_resolved_method,
     )
     exemptions = {
         exemption.schedule_id: exemption
@@ -479,9 +481,13 @@ def _schedule_comparison_record(
     target_values = _projection_values(target, coordinates)
     source_origin = None if source is None else source.origin.model_dump(mode="json")
     target_origin = None if target is None else target.origin.model_dump(mode="json")
-    values_match = source_values is not None and target_values is not None and all(
-        math.isclose(source_value, target_value, rel_tol=SCHEDULE_REL_TOL, abs_tol=0.0)
-        for source_value, target_value in zip(source_values, target_values, strict=True)
+    values_match = (
+        source_values is not None
+        and target_values is not None
+        and all(
+            math.isclose(source_value, target_value, rel_tol=SCHEDULE_REL_TOL, abs_tol=0.0)
+            for source_value, target_value in zip(source_values, target_values, strict=True)
+        )
     )
     return {
         "schedule_id": schedule_id,
@@ -509,8 +515,7 @@ def _projection_values(
     if projection is None:
         return None
     values = {
-        sample.coordinate: _normalize_schedule_value(sample.value)
-        for sample in projection.samples
+        sample.coordinate: _normalize_schedule_value(sample.value) for sample in projection.samples
     }
     if set(values) != set(coordinates):
         raise ValueError(

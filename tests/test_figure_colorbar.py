@@ -104,22 +104,20 @@ def _family_colors() -> list[str]:
     return list(sample_colorscale_unique(COLORSCALE, KNOT_COUNT, colortype="rgb"))
 
 
-def _render(spec: FigureSpec, root: Path) -> dict[str, Any]:
-    manifest, _path = execute_figure_spec(spec, root=root)
+def _render(spec: FigureSpec, root: Path, *, figure_registry) -> dict[str, Any]:
+    manifest, _path = execute_figure_spec(spec, root=root, registry=figure_registry)
     rendered = figure_manifest_plotly_json(manifest)
     assert rendered is not None
     return rendered
 
 
 def _colorbar_traces(rendered: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
-        trace
-        for trace in rendered["data"]
-        if trace.get("marker", {}).get("showscale") is True
-    ]
+    return [trace for trace in rendered["data"] if trace.get("marker", {}).get("showscale") is True]
 
 
-def test_declared_colorbar_renders_a_key_without_legend_entries(tmp_path: Path) -> None:
+def test_declared_colorbar_renders_a_key_without_legend_entries(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     spec = FigureSpec(
         name="standalone-colorbar",
         assembler="feedbax.grid_figure",
@@ -128,7 +126,7 @@ def test_declared_colorbar_renders_a_key_without_legend_entries(tmp_path: Path) 
         colorbar=FigureColorbar(title="s", colorscale=COLORSCALE, range=(0.0, 1.0)),
     )
 
-    rendered = _render(spec, tmp_path)
+    rendered = _render(spec, tmp_path, figure_registry=application_registry_bundle.figures)
 
     (carrier,) = _colorbar_traces(rendered)
     assert carrier["marker"]["colorscale"] is not None
@@ -139,7 +137,9 @@ def test_declared_colorbar_renders_a_key_without_legend_entries(tmp_path: Path) 
     assert carrier["x"] == [None] and carrier["y"] == [None]
 
 
-def test_figures_without_a_colorbar_render_and_hash_unchanged(tmp_path: Path) -> None:
+def test_figures_without_a_colorbar_render_and_hash_unchanged(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     spec = FigureSpec(
         name="unkeyed-figure",
         assembler="feedbax.grid_figure",
@@ -153,8 +153,8 @@ def test_figures_without_a_colorbar_render_and_hash_unchanged(tmp_path: Path) ->
         }
     )
 
-    rendered = _render(spec, tmp_path)
-    keyed_rendered = _render(keyed, tmp_path)
+    rendered = _render(spec, tmp_path, figure_registry=application_registry_bundle.figures)
+    keyed_rendered = _render(keyed, tmp_path, figure_registry=application_registry_bundle.figures)
 
     assert _colorbar_traces(rendered) == []
     assert b"colorbar" not in canonical_json_bytes(spec)
@@ -195,6 +195,7 @@ def test_colorbar_panel_placement_has_explicit_schema_identity() -> None:
 
 def test_colorbar_placement_resolves_against_selected_panel_domain(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     spec = FigureSpec(
         name="panel-relative-colorbar",
@@ -218,7 +219,7 @@ def test_colorbar_placement_resolves_against_selected_panel_domain(
         ),
     )
 
-    rendered = _render(spec, tmp_path)
+    rendered = _render(spec, tmp_path, figure_registry=application_registry_bundle.figures)
 
     (carrier,) = _colorbar_traces(rendered)
     colorbar = carrier["marker"]["colorbar"]
@@ -267,6 +268,7 @@ def test_invalid_colorbar_panel_placement_fails_closed(
 
 def test_colorbar_placement_rejects_unknown_panel_without_artifact(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     spec = FigureSpec(
         name="unknown-colorbar-panel",
@@ -283,7 +285,7 @@ def test_colorbar_placement_rejects_unknown_panel_without_artifact(
     )
 
     with pytest.raises(FigureSpecExecutionError) as exc_info:
-        execute_figure_spec(spec, root=tmp_path)
+        execute_figure_spec(spec, root=tmp_path, registry=application_registry_bundle.figures)
 
     assert "exactly one panel named 'missing'" in exc_info.value.manifest.failure["message"]
     assert exc_info.value.manifest.artifacts == []
@@ -292,15 +294,18 @@ def test_colorbar_placement_rejects_unknown_panel_without_artifact(
 
 def test_colorbar_placement_rejects_non_grid_figure_assembler(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
-    grid = get_figure_constructor("feedbax.grid_figure", tier="figure")
+    grid = get_figure_constructor(
+        "feedbax.grid_figure", tier="figure", registry=application_registry_bundle.figures
+    )
     register_figure_constructor(
         "feedbax.test_grid_figure_without_panel_placement",
         tier="figure",
         constructor=grid.callable,
         params_model=GridFigureParams,
         description="Grid-compatible test finalizer without placement authority.",
-        replace=True,
+        registry=application_registry_bundle.figures,
     )
     spec = FigureSpec(
         name="unsupported-colorbar-placement",
@@ -317,16 +322,19 @@ def test_colorbar_placement_rejects_non_grid_figure_assembler(
     )
 
     with pytest.raises(FigureSpecExecutionError) as exc_info:
-        execute_figure_spec(spec, root=tmp_path)
+        execute_figure_spec(spec, root=tmp_path, registry=application_registry_bundle.figures)
 
-    assert "requires the feedbax.comparison_grid/feedbax.grid_figure" in (
-        exc_info.value.manifest.failure["message"]
+    assert (
+        "requires the feedbax.comparison_grid/feedbax.grid_figure"
+        in (exc_info.value.manifest.failure["message"])
     )
     assert exc_info.value.manifest.artifacts == []
     assert not (tmp_path / "figures").exists()
 
 
-def test_family_bound_colorbar_reads_the_family_assigned_colors(tmp_path: Path) -> None:
+def test_family_bound_colorbar_reads_the_family_assigned_colors(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     spec = FigureSpec(
         name="family-colorbar",
         assembler="feedbax.grid_figure",
@@ -337,7 +345,7 @@ def test_family_bound_colorbar_reads_the_family_assigned_colors(tmp_path: Path) 
     )
 
     resolved = resolve_figure_colorbar(spec)
-    rendered = _render(spec, tmp_path)
+    rendered = _render(spec, tmp_path, figure_registry=application_registry_bundle.figures)
 
     assert resolved is not None and resolved.family is None
     assert resolved.colorscale == [
@@ -385,7 +393,9 @@ def test_family_bound_colorbar_places_uneven_indices_at_their_positions() -> Non
     assert resolved.range == (0.0, 3.0)
 
 
-def test_family_bound_colorbar_keys_the_colors_its_traces_were_given(tmp_path: Path) -> None:
+def test_family_bound_colorbar_keys_the_colors_its_traces_were_given(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     spec = FigureSpec(
         name="agreeing-colorbar",
         assembler="feedbax.grid_figure",
@@ -395,7 +405,7 @@ def test_family_bound_colorbar_keys_the_colors_its_traces_were_given(tmp_path: P
         colorbar=FigureColorbar(family="knots"),
     )
 
-    rendered = _render(spec, tmp_path)
+    rendered = _render(spec, tmp_path, figure_registry=application_registry_bundle.figures)
 
     (carrier,) = _colorbar_traces(rendered)
     key_colors = [stop[1] for stop in carrier["marker"]["colorscale"]]
@@ -469,7 +479,9 @@ def test_malformed_colorbar_family_bindings_fail_closed(
         )
 
 
-def test_colorbar_authored_as_an_assembler_param_fails_closed(tmp_path: Path) -> None:
+def test_colorbar_authored_as_an_assembler_param_fails_closed(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     spec = FigureSpec(
         name="misplaced-colorbar",
         assembler="feedbax.grid_figure",
@@ -479,7 +491,7 @@ def test_colorbar_authored_as_an_assembler_param_fails_closed(tmp_path: Path) ->
     )
 
     with pytest.raises(FigureSpecExecutionError) as exc_info:
-        execute_figure_spec(spec, root=tmp_path)
+        execute_figure_spec(spec, root=tmp_path, registry=application_registry_bundle.figures)
 
     assert "not by assembler_params" in exc_info.value.manifest.failure["message"]
 
@@ -499,7 +511,9 @@ def _sweep_colors() -> list[str]:
     return list(sample_colorscale_at(COLORSCALE, positions, colortype="rgb"))
 
 
-def test_value_keyed_colorbar_stops_at_the_member_values(tmp_path: Path) -> None:
+def test_value_keyed_colorbar_stops_at_the_member_values(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     spec = FigureSpec(
         name="value-colorbar",
         assembler="feedbax.grid_figure",
@@ -510,7 +524,7 @@ def test_value_keyed_colorbar_stops_at_the_member_values(tmp_path: Path) -> None
     )
 
     resolved = resolve_figure_colorbar(spec)
-    rendered = _render(spec, tmp_path)
+    rendered = _render(spec, tmp_path, figure_registry=application_registry_bundle.figures)
 
     assert resolved is not None and resolved.family is None
     # Stops sit where the values sit, not at even index spacing.
@@ -524,6 +538,7 @@ def test_value_keyed_colorbar_stops_at_the_member_values(tmp_path: Path) -> None
 
 def test_value_keyed_colorbar_agrees_with_the_colors_its_traces_were_given(
     tmp_path: Path,
+    application_registry_bundle,
 ) -> None:
     spec = FigureSpec(
         name="agreeing-value-colorbar",
@@ -534,7 +549,7 @@ def test_value_keyed_colorbar_agrees_with_the_colors_its_traces_were_given(
         colorbar=FigureColorbar(family="knots"),
     )
 
-    rendered = _render(spec, tmp_path)
+    rendered = _render(spec, tmp_path, figure_registry=application_registry_bundle.figures)
 
     (carrier,) = _colorbar_traces(rendered)
     trace_colors = [
@@ -550,9 +565,7 @@ def test_value_keyed_colorbar_accepts_named_indices() -> None:
     spec = FigureSpec(
         name="named-index-value-colorbar",
         assembler="feedbax.grid_figure",
-        trace_families=[
-            _sweep_family(index=TraceFamilyIndex(values=["slow", "mid", "fast"]))
-        ],
+        trace_families=[_sweep_family(index=TraceFamilyIndex(values=["slow", "mid", "fast"]))],
         colorbar=FigureColorbar(family="knots"),
     )
 
@@ -573,7 +586,9 @@ def test_value_keyed_colorbar_rejects_an_explicit_range() -> None:
         )
 
 
-def test_colorbar_on_an_assembler_without_one_fails_closed(tmp_path: Path) -> None:
+def test_colorbar_on_an_assembler_without_one_fails_closed(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     spec = FigureSpec(
         name="unsupported-assembler-colorbar",
         assembler="feedbax.trajectories_2d_row",
@@ -583,6 +598,6 @@ def test_colorbar_on_an_assembler_without_one_fails_closed(tmp_path: Path) -> No
     )
 
     with pytest.raises(FigureSpecExecutionError) as exc_info:
-        execute_figure_spec(spec, root=tmp_path)
+        execute_figure_spec(spec, root=tmp_path, registry=application_registry_bundle.figures)
 
     assert "declares no colorbar parameter" in exc_info.value.manifest.failure["message"]

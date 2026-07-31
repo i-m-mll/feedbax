@@ -9,7 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-from typing import Any, Literal, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias, TypeVar
 from urllib.parse import unquote, urlsplit
 
 from pydantic import Field, field_validator, model_validator
@@ -55,6 +55,9 @@ from feedbax.contracts.analysis_bundle_composition import (
     flatten_analysis_bundle_delta,
     is_analysis_bundle_delta_payload,
 )
+
+if TYPE_CHECKING:
+    from feedbax.plugins.application import ApplicationRegistryBundle
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
@@ -109,7 +112,6 @@ from feedbax.persistence.manifest_index import (
     iter_indexed_manifest_paths_by_kind,
     iter_manifest_files,
 )
-from feedbax.plugins import EXPERIMENT_REGISTRY
 from feedbax.plugins.registry import ExperimentRegistry
 
 ANALYSIS_BUNDLE_SCHEMA_ID = "feedbax.spec.analysis_bundle"
@@ -118,12 +120,8 @@ ANALYSIS_BUNDLE_SCHEMA_VERSION_V3 = "feedbax.spec.analysis_bundle.v3"
 ANALYSIS_BUNDLE_SCHEMA_VERSION_V4 = "feedbax.spec.analysis_bundle.v4"
 ANALYSIS_BUNDLE_SCHEMA_VERSION = "feedbax.spec.analysis_bundle.v5"
 ANALYSIS_BUNDLE_EXECUTION_SCHEMA_ID = "feedbax.manifest.analysis_bundle_execution"
-ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION_V1 = (
-    "feedbax.manifest.analysis_bundle_execution.v1"
-)
-ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION = (
-    "feedbax.manifest.analysis_bundle_execution.v2"
-)
+ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION_V1 = "feedbax.manifest.analysis_bundle_execution.v1"
+ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION = "feedbax.manifest.analysis_bundle_execution.v2"
 
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 _IMMUTABLE_MANIFEST_URI_PATTERN = re.compile(r"artifact://sha256/([0-9a-f]{64})")
@@ -430,9 +428,7 @@ class BundleStageExecutionRecord(StrictModel):
 class StagedAnalysisBundleExecution(StrictModel):
     """Durable execution provenance for a staged analysis bundle plan."""
 
-    schema_id: Literal[ANALYSIS_BUNDLE_EXECUTION_SCHEMA_ID] = (
-        ANALYSIS_BUNDLE_EXECUTION_SCHEMA_ID
-    )
+    schema_id: Literal[ANALYSIS_BUNDLE_EXECUTION_SCHEMA_ID] = ANALYSIS_BUNDLE_EXECUTION_SCHEMA_ID
     schema_version: Literal[ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION] = (
         ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION
     )
@@ -546,12 +542,11 @@ def authored_analysis_bundle_from_payload(
 def load_analysis_bundle(
     key: str,
     *,
-    registry: ExperimentRegistry | None = None,
+    registry: ExperimentRegistry,
 ) -> AnalysisBundleSpec | AnalysisBundleDeltaSpec:
     """Load and validate direct or delta-authored analysis bundle YAML."""
-    active_registry = registry or EXPERIMENT_REGISTRY
-    package_name, bundle_name = _split_bundle_key(key, active_registry)
-    metadata = active_registry.get_package_metadata(package_name)
+    package_name, bundle_name = _split_bundle_key(key, registry)
+    metadata = registry.get_package_metadata(package_name)
     resource_root = (
         f"{metadata.package_module.__name__}.{metadata.config_resource_root}.analysis_bundles"
     )
@@ -916,9 +911,7 @@ def _require_exact_parent_metadata(
         observed = parent.metadata.get(field_name)
         if field_name == "manifest_status" and not require_completed_status:
             if not isinstance(observed, str) or not observed:
-                raise ValueError(
-                    "exact parent metadata.manifest_status must be a nonempty string"
-                )
+                raise ValueError("exact parent metadata.manifest_status must be a nonempty string")
             continue
         if observed != expected:
             raise ValueError(
@@ -1019,16 +1012,12 @@ def _dependency_observations_for_training_run(
             authentic = True
             diagnostic = None
         else:
-            certified_match = any(
-                _same_material_ref(value, candidate)
-                for candidate in certified
-            )
+            certified_match = any(_same_material_ref(value, candidate) for candidate in certified)
             if not certified_match:
                 available = False
                 authentic = False
                 diagnostic = (
-                    "not present with the same material identity in the certified "
-                    "artifact prefix"
+                    "not present with the same material identity in the certified artifact prefix"
                 )
             else:
                 available, authentic, diagnostic = _authenticate_material_dependency(
@@ -1298,8 +1287,7 @@ def _preflight_staged_exact_parents(
             )
         )
         parent_refs = tuple(
-            execution_parent if candidate == parent else candidate
-            for candidate in parent_refs
+            execution_parent if candidate == parent else candidate for candidate in parent_refs
         )
 
     if len(manifests) != len(parent_refs):
@@ -1323,8 +1311,7 @@ def _preflight_per_input_prerequisites(
             continue
         if "staged_prerequisites" in _params_for_stage(stage, bundle.params_base):
             raise ValueError(
-                f"bundle stage {stage.name!r} params must not declare reserved "
-                "staged_prerequisites"
+                f"bundle stage {stage.name!r} params must not declare reserved staged_prerequisites"
             )
         for binding in stage.prerequisite_bindings:
             if binding.input_id not in selected_ids:
@@ -1488,9 +1475,7 @@ def _with_stage_output_execution_locations(
 ) -> StagedExecutionContext:
     """Retain completed stage manifests as authority for later stages."""
     locations = list(context.parent_execution_locations)
-    known_parents = {
-        location.parent.model_dump_json(exclude_none=False) for location in locations
-    }
+    known_parents = {location.parent.model_dump_json(exclude_none=False) for location in locations}
     for product in products:
         if product.manifest_ref is None:
             continue
@@ -1640,6 +1625,7 @@ def _execute_evaluation_stage(
     bundle: AnalysisBundleSpec,
     execution_context: StagedExecutionContext,
     prerequisites: ResolvedPerInputPrerequisites,
+    registries: ApplicationRegistryBundle,
 ) -> list[StageMaterialization]:
     products: list[StageMaterialization] = []
     for inputs in input_groups:
@@ -1678,6 +1664,7 @@ def _execute_evaluation_stage(
         else:
             manifest, path = execute_evaluation_run_spec(
                 spec,
+                registry=registries.evaluation_recipes,
                 root=root,
                 issues=list(issues),
                 provenance=Provenance(parents=provenance_parents),
@@ -1711,6 +1698,7 @@ def _execute_analysis_stage(
     fig_dump_path: Path | str | None,
     fig_dump_formats: Sequence[str],
     execution_context: StagedExecutionContext,
+    registries: ApplicationRegistryBundle,
 ) -> list[StageMaterialization]:
     def build_spec(inputs: Sequence[ParentRef], _index: int) -> AnalysisRunSpec:
         return AnalysisRunSpec(
@@ -1730,6 +1718,9 @@ def _execute_analysis_stage(
         base_provenance.parents = list(inputs)
         return execute_analysis_run_spec(
             spec,
+            registry=registries.analysis_recipes,
+            evaluation_registry=registries.evaluation_recipes,
+            experiment_registry=registries.experiment_packages,
             root=root,
             issues=list(issues),
             provenance=base_provenance,
@@ -1789,6 +1780,7 @@ def _execute_materialization_stage(
     fig_dump_path: Path | str | None,
     fig_dump_formats: Sequence[str],
     execution_context: StagedExecutionContext,
+    registries: ApplicationRegistryBundle,
 ) -> list[StageMaterialization]:
     def build_spec(inputs: Sequence[ParentRef], _index: int) -> AnalysisRunSpec:
         return AnalysisRunSpec(
@@ -1808,6 +1800,9 @@ def _execute_materialization_stage(
         base_provenance.parents = list(inputs)
         return execute_analysis_run_spec(
             spec,
+            registry=registries.analysis_recipes,
+            evaluation_registry=registries.evaluation_recipes,
+            experiment_registry=registries.experiment_packages,
             root=root,
             issues=list(issues),
             provenance=base_provenance,
@@ -1846,6 +1841,7 @@ def _execute_figure_stage(
     issues: Sequence[str],
     bundle: AnalysisBundleSpec,
     execution_context: StagedExecutionContext,
+    registries: ApplicationRegistryBundle,
 ) -> list[StageMaterialization]:
     products: list[StageMaterialization] = []
     if stage.figure is None:
@@ -1862,9 +1858,7 @@ def _execute_figure_stage(
                 "schema_version": bundle.schema_version,
             }
         }
-        provider_bindings = list(
-            execution_context.parent_artifact_provider_bindings
-        )
+        provider_bindings = list(execution_context.parent_artifact_provider_bindings)
         binding_keys = {
             (
                 binding.parent.model_dump_json(exclude_none=False),
@@ -1876,11 +1870,7 @@ def _execute_figure_stage(
             authority_parents = (
                 [authority.parent]
                 if isinstance(authority, FigureInputAuthority)
-                else [
-                    parent
-                    for parent in runtime_inputs
-                    if parent.role == authority.input_role
-                ]
+                else [parent for parent in runtime_inputs if parent.role == authority.input_role]
             )
             for parent in authority_parents:
                 if not any(
@@ -1909,6 +1899,7 @@ def _execute_figure_stage(
         )
         manifest, path = execute_figure_spec(
             stage.figure,
+            registry=registries.figures,
             runtime_inputs=runtime_inputs,
             runtime_input_authorities=runtime_input_authorities,
             runtime_metadata=runtime_metadata,
@@ -1960,6 +1951,7 @@ def _execute_report_stage(
     issues: Sequence[str],
     bundle: AnalysisBundleSpec,
     execution_context: StagedExecutionContext,
+    registries: ApplicationRegistryBundle,
 ) -> list[StageMaterialization]:
     def build_spec(inputs: Sequence[ParentRef], index: int) -> ReportSpec:
         stage_params = _params_for_stage(stage, bundle.params_base)
@@ -1993,6 +1985,7 @@ def _execute_report_stage(
     ) -> tuple[ReportManifest, Path]:
         return execute_report_spec(
             spec,
+            registry=registries.report_recipes,
             root=root,
             provenance=Provenance(
                 parents=list(inputs),
@@ -2074,9 +2067,7 @@ def expand_analysis_bundle(
     """Expand bundle templates into executable analysis run specs."""
     bundle, flattening = resolve_analysis_bundle_authoring(bundle, repo_root=repo_root)
     composition = (
-        analysis_bundle_composition_provenance(flattening)
-        if flattening is not None
-        else None
+        analysis_bundle_composition_provenance(flattening) if flattening is not None else None
     )
     if not bundle.templates:
         raise ValueError(f"Analysis bundle {bundle.name!r} has no templates")
@@ -2155,6 +2146,7 @@ def execute_analysis_bundle(
     issues: list[str] | None = None,
     fig_dump_path: Path | str | None = None,
     fig_dump_formats: Sequence[str] = ("html",),
+    registries: ApplicationRegistryBundle,
 ) -> list[tuple[BundleExpansion, AnalysisRunManifest, Path]]:
     """Apply a bundle to a manifest root and execute all generated specs.
 
@@ -2166,9 +2158,7 @@ def execute_analysis_bundle(
     authored_bundle = bundle
     bundle, flattening = resolve_analysis_bundle_authoring(bundle, repo_root=repo_root)
     composition = (
-        analysis_bundle_composition_provenance(flattening)
-        if flattening is not None
-        else None
+        analysis_bundle_composition_provenance(flattening) if flattening is not None else None
     )
     root_path = Path(root) if root is not None else default_manifest_root()
     matched_manifests = select_bundle_manifests(bundle, root_path, run_ids=run_ids)
@@ -2195,6 +2185,9 @@ def execute_analysis_bundle(
             bundle_metadata["composition"] = composition
         manifest, path = execute_analysis_run_spec(
             expansion.spec,
+            registry=registries.analysis_recipes,
+            evaluation_registry=registries.evaluation_recipes,
+            experiment_registry=registries.experiment_packages,
             root=root_path,
             repo_root=repo_root,
             issues=issues,
@@ -2536,9 +2529,7 @@ def dry_run_staged_analysis_bundle(
         stages=records,
         metadata=dict(bundle.metadata),
         bundle_composition=(
-            analysis_bundle_composition_provenance(flattening)
-            if flattening is not None
-            else None
+            analysis_bundle_composition_provenance(flattening) if flattening is not None else None
         ),
     )
 
@@ -2556,6 +2547,7 @@ def execute_staged_analysis_bundle(
     issues: list[str] | None = None,
     fig_dump_path: Path | str | None = None,
     fig_dump_formats: Sequence[str] = ("html",),
+    registries: ApplicationRegistryBundle,
 ) -> StagedAnalysisBundleExecution:
     """Execute an ordered staged bundle plan and return durable lineage records.
 
@@ -2699,6 +2691,7 @@ def execute_staged_analysis_bundle(
                 bundle=bundle,
                 execution_context=execution_context,
                 prerequisites=prerequisite_resolution,
+                registries=registries,
             )
         elif stage.kind == "analysis":
             products = _execute_analysis_stage(
@@ -2710,6 +2703,7 @@ def execute_staged_analysis_bundle(
                 fig_dump_path=fig_dump_path,
                 fig_dump_formats=fig_dump_formats,
                 execution_context=execution_context,
+                registries=registries,
             )
         elif stage.kind == "materialization":
             products = _execute_materialization_stage(
@@ -2721,6 +2715,7 @@ def execute_staged_analysis_bundle(
                 fig_dump_path=fig_dump_path,
                 fig_dump_formats=fig_dump_formats,
                 execution_context=execution_context,
+                registries=registries,
             )
         elif stage.kind == "figure":
             products = _execute_figure_stage(
@@ -2730,6 +2725,7 @@ def execute_staged_analysis_bundle(
                 issues=issue_refs,
                 bundle=bundle,
                 execution_context=execution_context,
+                registries=registries,
             )
         elif stage.kind == "report":
             products = _execute_report_stage(
@@ -2739,6 +2735,7 @@ def execute_staged_analysis_bundle(
                 issues=issue_refs,
                 bundle=bundle,
                 execution_context=execution_context,
+                registries=registries,
             )
         else:  # pragma: no cover - Literal validation keeps this unreachable.
             raise ValueError(f"Unsupported bundle stage kind {stage.kind!r}")
@@ -2780,8 +2777,6 @@ def execute_staged_analysis_bundle(
         report_outputs=report_outputs,
         metadata=dict(bundle.metadata),
         bundle_composition=(
-            analysis_bundle_composition_provenance(flattening)
-            if flattening is not None
-            else None
+            analysis_bundle_composition_provenance(flattening) if flattening is not None else None
         ),
     )

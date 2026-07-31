@@ -213,9 +213,6 @@ class AnalysisRecipeResult:
 AnalysisRecipe = AnalysisRecipeProtocol
 AnalysisRecipeResultValidator = Callable[[str, AnalysisRecipeResult], None]
 
-_ANALYSIS_RECIPES: dict[str, AnalysisRecipe] = {}
-_EVALUATION_STATES_STRUCTURE_PROVIDERS: dict[str, EvaluationStatesStructureProviderProtocol] = {}
-
 
 class AnalysisRecipeExecutionError(RuntimeError):
     """Raised after a registered analysis recipe fails and a failed manifest is written."""
@@ -243,63 +240,51 @@ class AnalysisEvaluationStatesResolutionError(RuntimeError):
             self.__cause__ = cause
 
 
-def register_analysis_recipe(
-    analysis_type: str,
-    recipe: AnalysisRecipe,
-    *,
-    replace: bool = False,
-    evaluation_states_structure: EvaluationStatesStructureProviderProtocol | None = None,
-) -> None:
-    """Register an executable analysis recipe by stable type key."""
-    analysis_type = validate_namespaced_type_key(
-        analysis_type,
-        field="analysis_type",
-    )
-    if analysis_type in _ANALYSIS_RECIPES and not replace:
-        raise ValueError(f"Analysis recipe {analysis_type!r} is already registered")
-    validated_recipe = validate_analysis_recipe(analysis_type, recipe)
-    validated_structure = (
-        validate_evaluation_states_structure_provider(
-            analysis_type,
-            evaluation_states_structure,
-        )
-        if evaluation_states_structure is not None
-        else None
-    )
-    _ANALYSIS_RECIPES[analysis_type] = validated_recipe
-    if validated_structure is None:
-        _EVALUATION_STATES_STRUCTURE_PROVIDERS.pop(analysis_type, None)
-    else:
-        _EVALUATION_STATES_STRUCTURE_PROVIDERS[analysis_type] = validated_structure
+class AnalysisRecipeRegistry:
+    """Isolated registry for analysis recipes and their state structure providers."""
 
+    def __init__(self) -> None:
+        self._sealed = False
+        self._recipes: dict[str, AnalysisRecipe] = {}
+        self._structures: dict[str, EvaluationStatesStructureProviderProtocol] = {}
 
-def unregister_analysis_recipe(analysis_type: str) -> None:
-    """Remove a previously registered analysis recipe."""
-    _ANALYSIS_RECIPES.pop(analysis_type, None)
-    _EVALUATION_STATES_STRUCTURE_PROVIDERS.pop(analysis_type, None)
+    def register(
+        self,
+        analysis_type: str,
+        recipe: AnalysisRecipe,
+        *,
+        evaluation_states_structure: EvaluationStatesStructureProviderProtocol | None = None,
+    ) -> None:
+        if self._sealed:
+            raise RuntimeError("analysis recipe registry is sealed")
+        analysis_type = validate_namespaced_type_key(analysis_type, field="analysis_type")
+        if analysis_type in self._recipes:
+            raise ValueError(f"Analysis recipe {analysis_type!r} is already registered")
+        self._recipes[analysis_type] = validate_analysis_recipe(analysis_type, recipe)
+        if evaluation_states_structure is not None:
+            self._structures[analysis_type] = validate_evaluation_states_structure_provider(
+                analysis_type, evaluation_states_structure
+            )
 
+    def keys(self) -> tuple[str, ...]:
+        return tuple(sorted(self._recipes))
 
-def registered_analysis_types() -> tuple[str, ...]:
-    """Return registered executable analysis type keys."""
-    return tuple(sorted(_ANALYSIS_RECIPES))
+    def get(self, analysis_type: str) -> AnalysisRecipe:
+        try:
+            return self._recipes[analysis_type]
+        except KeyError as exc:
+            raise ValueError(
+                f"Analysis recipe {analysis_type!r} is not registered. "
+                f"Registered analysis recipes: {', '.join(self.keys()) or 'none'}."
+            ) from exc
 
+    def structure_provider(
+        self, analysis_type: str
+    ) -> EvaluationStatesStructureProviderProtocol | None:
+        return self._structures.get(analysis_type)
 
-def get_analysis_recipe(analysis_type: str) -> AnalysisRecipe:
-    """Return a registered analysis recipe or raise a clear execution error."""
-    try:
-        return _ANALYSIS_RECIPES[analysis_type]
-    except KeyError as exc:
-        available = ", ".join(registered_analysis_types()) or "none"
-        raise ValueError(
-            f"Analysis recipe {analysis_type!r} is not registered. "
-            f"Registered analysis recipes: {available}."
-        ) from exc
-
-
-def _get_evaluation_states_structure_provider(
-    analysis_type: str,
-) -> EvaluationStatesStructureProviderProtocol | None:
-    return _EVALUATION_STATES_STRUCTURE_PROVIDERS.get(analysis_type)
+    def seal(self) -> None:
+        self._sealed = True
 
 
 def resolve_analysis_run_authoring(
@@ -430,6 +415,8 @@ def _analysis_input_authentication(
 def resolve_analysis_inputs(
     spec: AnalysisRunSpec,
     *,
+    registry: AnalysisRecipeRegistry,
+    evaluation_registry: Any,
     root: Path | str | None = None,
     authenticated_inputs: Mapping[int, ResolvedManifestInput] | None = None,
     execution_context: StagedExecutionContext = EMPTY_STAGED_EXECUTION_CONTEXT,
@@ -467,9 +454,7 @@ def resolve_analysis_inputs(
                     ref,
                     manifest,
                     root=root_path,
-                    structure_provider=_get_evaluation_states_structure_provider(
-                        spec.analysis_type
-                    ),
+                    structure_provider=registry.structure_provider(spec.analysis_type),
                 )
                 resolved.append(
                     ResolvedAnalysisInput(
@@ -508,6 +493,7 @@ def resolve_analysis_inputs(
                             manifest,
                             root=root_path,
                             execution_context=execution_context,
+                            registry=evaluation_registry,
                         )
                         state_source = AnalysisEvaluationStateSource(
                             source_kind="analysis_time_recompute",
@@ -539,6 +525,7 @@ def resolve_analysis_inputs(
                         manifest,
                         root=root_path,
                         execution_context=execution_context,
+                        registry=evaluation_registry,
                     )
                     state_source = AnalysisEvaluationStateSource(
                         source_kind="analysis_time_recompute",
@@ -791,6 +778,7 @@ def _rederive_evaluation_states(
     *,
     root: Path,
     execution_context: StagedExecutionContext,
+    registry: Any,
 ) -> tuple[EvaluationRunManifest, Path]:
     if not isinstance(manifest, EvaluationRunManifest):
         raise TypeError(
@@ -805,6 +793,7 @@ def _rederive_evaluation_states(
     metadata = {key: value for key, value in manifest.metadata.items() if key != "cache"}
     rederived, path = execute_evaluation_run_spec(
         run_spec,
+        registry=registry,
         root=root,
         provenance=manifest.provenance,
         metadata=metadata,
@@ -878,6 +867,9 @@ def _preflight_checkpoint_binding_names(
 def execute_analysis_run_spec(
     spec: AnalysisRunSpec | AnalysisRunDeltaSpec | Mapping[str, Any] | Path | str,
     *,
+    registry: AnalysisRecipeRegistry,
+    evaluation_registry: Any,
+    experiment_registry: Any,
     root: Path | str | None = None,
     repo_root: Path | str | None = None,
     run_alias_catalogs: Sequence[RunAliasCatalog | Mapping[str, Any]] = (),
@@ -951,6 +943,7 @@ def execute_analysis_run_spec(
         provenance=provenance,
         issues=issues,
         metadata=metadata,
+        experiment_registry=experiment_registry,
     )
 
     try:
@@ -959,7 +952,7 @@ def execute_analysis_run_spec(
             root=root_path,
             execution_context=execution_context,
         )
-        recipe = get_analysis_recipe(run_spec.analysis_type)
+        recipe = registry.get(run_spec.analysis_type)
         manifest_id = analysis_run_manifest_id(run_spec)
         if use_cache and not force:
             try:
@@ -978,6 +971,8 @@ def execute_analysis_run_spec(
 
         resolved_inputs = resolve_analysis_inputs(
             run_spec,
+            registry=registry,
+            evaluation_registry=evaluation_registry,
             root=root_path,
             authenticated_inputs=authenticated_inputs,
             execution_context=execution_context,

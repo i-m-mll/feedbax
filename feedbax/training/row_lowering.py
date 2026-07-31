@@ -27,10 +27,18 @@ from feedbax.contracts.run_composition import (
     authored_envelope_hash,
 )
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
+from feedbax.registry_errors import RegistryCollisionError
 
 
 class TrainingRowLowererRegistryError(ValueError):
     """Raised when authored-row lowerer authority cannot be resolved exactly."""
+
+
+class TrainingRowLowererCollisionError(
+    TrainingRowLowererRegistryError,
+    RegistryCollisionError,
+):
+    """Raised when two lowerers claim the same canonical authority."""
 
 
 @dataclass(frozen=True)
@@ -66,10 +74,7 @@ class TrainingRowLoweringContext:
     parents: tuple[GovernedTrainingRowParent, ...] = ()
 
     def __post_init__(self) -> None:
-        keys = [
-            (item.provenance.parent_kind, item.provenance.ref)
-            for item in self.parents
-        ]
+        keys = [(item.provenance.parent_kind, item.provenance.ref) for item in self.parents]
         if len(keys) != len(set(keys)):
             raise TrainingRowLowererRegistryError(
                 "governed training-row parents contain ambiguous kind/ref declarations"
@@ -98,8 +103,7 @@ class TrainingRowLoweringContext:
         matches = [
             item
             for item in self.parents
-            if item.provenance.parent_kind == parent.kind
-            and item.provenance.ref == parent.ref
+            if item.provenance.parent_kind == parent.kind and item.provenance.ref == parent.ref
         ]
         if len(matches) != 1:
             state = "missing or undeclared" if not matches else "ambiguous"
@@ -127,8 +131,7 @@ class TrainingRowLoweringContext:
             result = payload
         if observed_hash != expected_hash:
             raise TrainingRowLowererRegistryError(
-                f"governed training-row parent {parent.kind}:{parent.ref!r} "
-                "semantic hash drifted"
+                f"governed training-row parent {parent.kind}:{parent.ref!r} semantic hash drifted"
             )
         return result
 
@@ -174,28 +177,22 @@ class TrainingRowLowererRegistry:
     """Registry resolving lowerers from exact authored and authority identities."""
 
     def __init__(self) -> None:
-        self._registrations: dict[
-            tuple[str, str, str, str], TrainingRowLowererRegistration
-        ] = {}
+        self._sealed = False
+        self._registrations: dict[tuple[str, str, str, str], TrainingRowLowererRegistration] = {}
 
     def register(self, registration: TrainingRowLowererRegistration) -> None:
         """Register one exact lowering authority.
 
-        Replaying the same owner and implementation identity is idempotent.
-        Conflicting ownership or implementation identity remains ambiguous and
-        fails before the existing registration is changed.
+        Duplicate canonical identities fail before the existing registration changes.
         """
+        if self._sealed:
+            raise RuntimeError("training row lowerer registry is sealed")
         if not isinstance(registration, TrainingRowLowererRegistration):
             raise TypeError("registration must be a TrainingRowLowererRegistration")
         registration.validate_structure()
         key = self._key(registration)
         existing = self._registrations.get(key)
         if existing is not None:
-            if (
-                existing.owner == registration.owner
-                and existing.implementation_sha256 == registration.implementation_sha256
-            ):
-                return
             if existing.owner != registration.owner:
                 conflict = f"owners {existing.owner!r} and {registration.owner!r}"
             else:
@@ -204,10 +201,13 @@ class TrainingRowLowererRegistry:
                     f"{existing.implementation_sha256!r} and "
                     f"{registration.implementation_sha256!r}"
                 )
-            raise TrainingRowLowererRegistryError(
+            raise TrainingRowLowererCollisionError(
                 f"ambiguous training row lowerer registration for {key!r}: {conflict}"
             )
         self._registrations[key] = registration
+
+    def seal(self) -> None:
+        self._sealed = True
 
     def available_keys(self) -> tuple[tuple[str, str, str, str], ...]:
         """Return exact registrations in deterministic order."""
@@ -234,9 +234,7 @@ class TrainingRowLowererRegistry:
             ) from exc
         authored_schema_id = authored_row.payload.get("schema_id")
         authored_schema_version = authored_row.payload.get("schema_version")
-        if not isinstance(authored_schema_id, str) or not isinstance(
-            authored_schema_version, str
-        ):
+        if not isinstance(authored_schema_id, str) or not isinstance(authored_schema_version, str):
             raise TrainingRowLowererRegistryError(
                 "authored rows declaring a lowerer require schema_id and schema_version"
             )
@@ -292,9 +290,6 @@ class TrainingRowLowererRegistry:
         )
 
 
-DEFAULT_TRAINING_ROW_LOWERER_REGISTRY = TrainingRowLowererRegistry()
-
-
 def training_row_lowerer_implementation_sha256(
     lower: Callable[..., Any] | Iterable[Callable[..., Any]],
 ) -> str:
@@ -306,8 +301,7 @@ def training_row_lowerer_implementation_sha256(
                 "training row lowerer implementation dependencies must be callable"
             )
         identities = [
-            _training_row_lowerer_callable_identity(dependency)
-            for dependency in dependencies
+            _training_row_lowerer_callable_identity(dependency) for dependency in dependencies
         ]
         if not identities:
             raise TrainingRowLowererRegistryError(

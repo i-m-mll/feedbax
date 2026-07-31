@@ -20,9 +20,7 @@ from feedbax.analysis import (
     AnalysisRunDeltaSpec,
     coerce_analysis_run_spec,
     execute_analysis_run_spec,
-    register_analysis_recipe,
     resolve_analysis_run_authoring,
-    unregister_analysis_recipe,
 )
 from feedbax.contracts import analysis_composition
 from feedbax.contracts.analysis_composition import (
@@ -47,7 +45,7 @@ from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 _EXECUTION_ANALYSIS_TYPE = "example.velocity_profiles"
 
 
-def _register_toy_velocity_recipe() -> None:
+def _register_toy_velocity_recipe(registry) -> None:
     """Register a minimal recipe for the shared velocity-profile analysis type."""
 
     def recipe(_spec, _root, _inputs, _execution_context) -> AnalysisRecipeResult:
@@ -56,7 +54,7 @@ def _register_toy_velocity_recipe() -> None:
             data=build_toy_analysis_data(value=0),
         )
 
-    register_analysis_recipe(_EXECUTION_ANALYSIS_TYPE, recipe, replace=True)
+    registry.register(_EXECUTION_ANALYSIS_TYPE, recipe)
 
 
 def _write(tmp_path: Path, name: str, payload: dict[str, Any]) -> str:
@@ -286,7 +284,9 @@ def test_parent_resolution_is_pinned_confined_and_schema_checked(tmp_path: Path)
     wrong_schema_sha = _write(tmp_path, "wrong.json", {"schema_id": "feedbax.spec.something_else"})
     with pytest.raises(ValueError, match="must declare schema_id"):
         flatten_analysis_run_delta(
-            AnalysisRunDeltaSpec.model_validate(_delta("wrong.json", wrong_schema_sha, child["deltas"])),
+            AnalysisRunDeltaSpec.model_validate(
+                _delta("wrong.json", wrong_schema_sha, child["deltas"])
+            ),
             repo_root=tmp_path,
         )
 
@@ -329,7 +329,12 @@ def test_invalid_delta_documents_fail_closed(tmp_path: Path) -> None:
     replace_missing = _delta(
         "base.json",
         base_sha,
-        [{"layer_id": "r", "patches": [{"path": "params.nonexistent", "op": "replace", "value": 1}]}],
+        [
+            {
+                "layer_id": "r",
+                "patches": [{"path": "params.nonexistent", "op": "replace", "value": 1}],
+            }
+        ],
     )
     with pytest.raises(ValueError, match="missing key"):
         flatten_analysis_run_delta(
@@ -459,7 +464,9 @@ def test_coerce_delta_requires_repo_root(tmp_path: Path) -> None:
         coerce_analysis_run_spec(child)
 
 
-def test_delta_authored_execution_records_composition_provenance(tmp_path: Path) -> None:
+def test_delta_authored_execution_records_composition_provenance(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     """A delta-authored run embeds the canonical composition record in manifest metadata."""
     base_sha = _shared_velocity_base(tmp_path)
     child = _delta(
@@ -479,16 +486,16 @@ def test_delta_authored_execution_records_composition_provenance(tmp_path: Path)
     )
     expected = analysis_composition_provenance(flattened)
 
-    _register_toy_velocity_recipe()
-    try:
-        manifest, _path = execute_analysis_run_spec(
-            child,
-            root=tmp_path / "runs",
-            repo_root=tmp_path,
-            fig_dump_path=tmp_path / "figs",
-        )
-    finally:
-        unregister_analysis_recipe(_EXECUTION_ANALYSIS_TYPE)
+    _register_toy_velocity_recipe(application_registry_bundle.analysis_recipes)
+    manifest, _path = execute_analysis_run_spec(
+        child,
+        root=tmp_path / "runs",
+        repo_root=tmp_path,
+        fig_dump_path=tmp_path / "figs",
+        registry=application_registry_bundle.analysis_recipes,
+        evaluation_registry=application_registry_bundle.evaluation_recipes,
+        experiment_registry=application_registry_bundle.experiment_packages,
+    )
 
     provenance = manifest.metadata["analysis_composition"]
     assert provenance == expected
@@ -501,19 +508,21 @@ def test_delta_authored_execution_records_composition_provenance(tmp_path: Path)
     assert provenance["attribution"] == {"params.expected_grid.conditioning": "sisu"}
 
 
-def test_direct_spec_execution_metadata_carries_no_composition_key(tmp_path: Path) -> None:
+def test_direct_spec_execution_metadata_carries_no_composition_key(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     """A direct (non-delta) run's manifest metadata stays free of any composition key."""
     direct = _analysis_base("example.velocity_profiles", {"aggregation": "mean"})
 
-    _register_toy_velocity_recipe()
-    try:
-        manifest, _path = execute_analysis_run_spec(
-            direct,
-            root=tmp_path / "runs",
-            fig_dump_path=tmp_path / "figs",
-        )
-    finally:
-        unregister_analysis_recipe(_EXECUTION_ANALYSIS_TYPE)
+    _register_toy_velocity_recipe(application_registry_bundle.analysis_recipes)
+    manifest, _path = execute_analysis_run_spec(
+        direct,
+        root=tmp_path / "runs",
+        fig_dump_path=tmp_path / "figs",
+        registry=application_registry_bundle.analysis_recipes,
+        evaluation_registry=application_registry_bundle.evaluation_recipes,
+        experiment_registry=application_registry_bundle.experiment_packages,
+    )
 
     assert "analysis_composition" not in manifest.metadata
 

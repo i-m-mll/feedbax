@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from feedbax.component_registry import ComponentRegistry
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -85,7 +87,7 @@ def _linear_constraint_spec(mask) -> GraphSpec:
 def test_graphspec_parameter_constraints_materialize_and_round_trip() -> None:
     spec = _linear_constraint_spec([[1, 0], [0, 1]])
 
-    graph = spec_to_graph(spec)
+    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
 
     weight = graph.nodes["readout"].layer.weight
     assert weight[0, 1] == 0.0
@@ -122,7 +124,8 @@ def test_recurrent_input_kernel_constraints_use_stable_roles(
             parameter_constraints=[
                 ParameterConstraintSpec(node="cell", role=role, mask=mask, value=0.0)
             ],
-        )
+        ),
+        ComponentRegistry(load_user_components=False),
     )
 
     assert jnp.all(graph.nodes["cell"].cell.weight_ih[:, 1] == 0.0)
@@ -260,7 +263,7 @@ def test_network_template_population_constraints_materialize_without_recurrent_m
         ("readout", "weight"),
     ]
 
-    graph = spec_to_graph(spec)
+    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
     input_mask = population_input_kernel_mask(population, 2, gate_count=3)
     readout_mask = population_readout_kernel_mask(population, 2)
 
@@ -297,7 +300,8 @@ def test_population_constraints_match_simplestagednetwork_fixed_assignment(
             out_size=2,
             cell_type=cell_type,
             population_structure=population,
-        )
+        ),
+        ComponentRegistry(load_user_components=False),
     )
 
     input_mask = population_input_kernel_mask(population, 2, gate_count=gate_count).astype(bool)
@@ -496,7 +500,8 @@ def test_population_constraints_project_after_synthetic_update() -> None:
             out_size=2,
             cell_type="LSTM",
             population_structure=population,
-        )
+        ),
+        ComponentRegistry(load_user_components=False),
     )
     graph = eqx.tree_at(
         lambda g: g.nodes["cell"].cell.weight_ih,
@@ -556,17 +561,21 @@ def test_population_constraints_round_trip_from_legacy_network_serialization() -
         )
     )
 
-    restored = graph_to_spec(spec_to_graph(spec))
+    restored = graph_to_spec(spec_to_graph(spec, ComponentRegistry(load_user_components=False)))
     assert restored.parameter_constraints == spec.parameter_constraints
 
 
 def test_parameter_constraints_reject_incompatible_mask_shape() -> None:
     with pytest.raises(ValueError, match="mask shape"):
-        spec_to_graph(_linear_constraint_spec([[1, 0, 1]]))
+        spec_to_graph(
+            _linear_constraint_spec([[1, 0, 1]]), ComponentRegistry(load_user_components=False)
+        )
 
 
 def test_apply_parameter_constraints_rejects_unsupported_role() -> None:
-    graph = spec_to_graph(_linear_constraint_spec([[1, 1], [1, 1]]))
+    graph = spec_to_graph(
+        _linear_constraint_spec([[1, 1], [1, 1]]), ComponentRegistry(load_user_components=False)
+    )
     bad = ParameterConstraintSpec(node="readout", role="input_kernel", mask=[[1, 1], [1, 1]])
 
     with pytest.raises(ValueError, match="Unsupported Linear parameter role"):

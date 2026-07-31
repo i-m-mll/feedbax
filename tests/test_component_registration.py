@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import textwrap
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import equinox as eqx
 import jax
@@ -13,9 +14,7 @@ from feedbax.component_registry import (
     ComponentRegistry,
     ComponentMigration,
     ComponentMigrationPack,
-    get_component_registry,
     register_cde_templates,
-    register_component_type,
 )
 from feedbax.runtime.channel import Channel
 from feedbax.runtime.components import Gain
@@ -25,6 +24,13 @@ from feedbax.models.cde import CDENetwork
 from feedbax.runtime.graph import Component
 from feedbax.contracts.graphs.serialization import spec_to_graph
 from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION, RepresentationSpec
+from feedbax.plugins.application import COMPONENTS, new_registration_context
+from feedbax.plugins.bootstrap import (
+    FamilyRequirement,
+    PluginDeclaration,
+    PluginRegistration,
+    bootstrap_application,
+)
 
 
 class _PrototypeSource(Component):
@@ -59,7 +65,8 @@ def _single_node_spec(
 
 
 def test_programmatic_component_registration_materializes_via_spec_to_graph() -> None:
-    register_component_type(
+    registry = ComponentRegistry(load_user_components=False)
+    registry.register_component_type(
         "TestProgrammaticGain",
         lambda params: Gain(gain=float(params["gain"])),
         category="Test",
@@ -70,7 +77,6 @@ def test_programmatic_component_registration_materializes_via_spec_to_graph() ->
         provenance="test-suite",
     )
 
-    registry = get_component_registry()
     meta = registry.get("TestProgrammaticGain")
     assert meta is not None
     assert meta.default_params == {"gain": 3.0}
@@ -84,20 +90,20 @@ def test_programmatic_component_registration_materializes_via_spec_to_graph() ->
     assert definition.output_ports == ["output"]
     assert definition.provenance == "test-suite"
 
-    graph = spec_to_graph(_single_node_spec("TestProgrammaticGain", {"gain": 4.0}))
+    graph = spec_to_graph(_single_node_spec("TestProgrammaticGain", {"gain": 4.0}), registry)
 
     component = graph.nodes["component"]
     assert isinstance(component, Gain)
     assert component.gain == 4.0
 
-    default_graph = spec_to_graph(_single_node_spec("TestProgrammaticGain"))
+    default_graph = spec_to_graph(_single_node_spec("TestProgrammaticGain"), registry)
     default_component = default_graph.nodes["component"]
     assert isinstance(default_component, Gain)
     assert default_component.gain == 3.0
 
 
 def test_registered_component_output_prototype_feeds_stateful_materialization() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     registry.register_component_type(
         "TestPrototypeSource",
         lambda params: _PrototypeSource(),
@@ -144,7 +150,7 @@ def test_registered_component_output_prototype_feeds_stateful_materialization() 
 
 
 def test_feedbax_component_meta_rejects_output_prototype_mutation() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     meta = registry.get("FixedField")
     assert meta is not None
     assert meta.provenance == "feedbax"
@@ -157,7 +163,7 @@ def test_feedbax_component_meta_rejects_output_prototype_mutation() -> None:
 
 
 def test_builtin_registry_has_explicit_builders_and_consistent_port_metadata() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
 
     for name in registry.names():
         meta = registry.get(name)
@@ -169,7 +175,7 @@ def test_builtin_registry_has_explicit_builders_and_consistent_port_metadata() -
 
 
 def test_unsupported_builtin_builder_contract_fails_clearly() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     meta = registry.get("MomentArmProjection")
     assert meta is not None
     assert callable(meta.builder)
@@ -181,7 +187,8 @@ def test_unsupported_builtin_builder_contract_fails_clearly() -> None:
 
 
 def test_entry_point_component_registration_records_package_provenance() -> None:
-    def registrar(component_registry: ComponentRegistry) -> None:
+    def registrar(context) -> None:
+        component_registry = context.registry(COMPONENTS)
         component_registry.register_component_type(
             "TestEntryPointGain",
             lambda params: Gain(gain=float(params.get("gain", 1.0))),
@@ -189,6 +196,7 @@ def test_entry_point_component_registration_records_package_provenance() -> None
             param_schema=[{"name": "gain", "type": "float", "default": 2.0}],
             input_ports=["input"],
             output_ports=["output"],
+            provenance="package:feedbax-test-plugin",
         )
 
     class FakeDist:
@@ -198,11 +206,24 @@ def test_entry_point_component_registration_records_package_provenance() -> None
         name = "feedbax_test_plugin"
         dist = FakeDist()
 
-        def load(self) -> Callable[[ComponentRegistry], None]:
-            return registrar
+        value = "feedbax_test_plugin:PLUGIN_REGISTRATION"
 
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
-    registry.discover_entry_point_components(entry_points=[FakeEntryPoint()])
+        def load(self) -> PluginRegistration:
+            return PluginRegistration(
+                PluginDeclaration(
+                    "feedbax.test.components",
+                    "1",
+                    families=(FamilyRequirement(COMPONENTS.family),),
+                ),
+                registrar,
+            )
+
+    state = asyncio.run(
+        bootstrap_application(
+            new_registration_context(local_component_source=None), entry_points=[FakeEntryPoint()]
+        )
+    )
+    registry = state.bundle.components
 
     meta = registry.get("TestEntryPointGain")
     assert meta is not None
@@ -245,7 +266,7 @@ def test_user_component_file_registers_palette_metadata_and_builder(
         )
     )
 
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     registry.load_user_components(tmp_path)
 
     definition = next(item for item in registry.list_all() if item.name == "TestUserFileGain")
@@ -260,7 +281,7 @@ def test_user_component_file_registers_palette_metadata_and_builder(
 
 
 def test_unknown_component_error_names_type_and_known_registry_contents() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
 
     with pytest.raises(ValueError) as exc_info:
         spec_to_graph(_single_node_spec("DefinitelyUnknownComponent"), registry)
@@ -272,7 +293,7 @@ def test_unknown_component_error_names_type_and_known_registry_contents() -> Non
 
 
 def test_cde_primitives_build_and_execute_with_expected_semantics() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     state_key = jax.random.PRNGKey(0)
 
     input_node = build_component(
@@ -331,13 +352,13 @@ def test_cde_primitives_build_and_execute_with_expected_semantics() -> None:
 
 
 def test_cde_templates_are_not_builtin_defaults() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
 
     assert registry.get("CDE Standard") is None
 
 
 def test_caller_registered_cde_templates_are_executable_and_run_one_step() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     registry.register_template_pack(register_cde_templates, provenance="test-cde-pack")
 
     for template_name in ("CDE Standard", "CDE + Decay", "CDE + Anti-NF", "CDE Hybrid v9b"):
@@ -365,7 +386,7 @@ def test_caller_registered_cde_templates_are_executable_and_run_one_step() -> No
 
 
 def test_executable_builtin_templates_have_complete_builders() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     for template_name in ("Recurrent Controller", "Simple Feedback Loop"):
         meta = registry.get(template_name)
         assert meta is not None
@@ -373,7 +394,7 @@ def test_executable_builtin_templates_have_complete_builders() -> None:
 
 
 def test_cde_standard_template_matches_standard_cde_network_step() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     registry.register_template_pack(register_cde_templates, provenance="test-cde-pack")
     meta = registry.get("CDE Standard")
     assert meta is not None
@@ -408,7 +429,7 @@ def test_cde_standard_template_matches_standard_cde_network_step() -> None:
 
 
 def test_builtin_component_rename_migration_materializes_registered_target() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     registry.register_migration(
         ComponentMigration(
             source_type="LegacyGain",
@@ -431,7 +452,7 @@ def test_builtin_component_rename_migration_materializes_registered_target() -> 
 
 
 def test_component_parameter_schema_migration_renames_required_parameter() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     registry.register_migration(
         ComponentMigration(
             source_type="Gain",
@@ -455,7 +476,7 @@ def test_component_parameter_schema_migration_renames_required_parameter() -> No
 
 
 def test_downstream_migration_pack_can_migrate_owned_component_id() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     registry.register_component_type(
         "rlrmp.CurrentGain",
         lambda params: Gain(gain=float(params["gain"])),
@@ -493,7 +514,7 @@ def test_downstream_migration_pack_can_migrate_owned_component_id() -> None:
 
 
 def test_component_registry_round_trips_representation_contract() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     representation = RepresentationSpec.model_validate(
         {
             "anchors": [
@@ -551,14 +572,12 @@ def test_component_registry_round_trips_representation_contract() -> None:
 
 
 def test_builtin_mechanics_expose_workspace_representations() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     definitions = {item.name: item for item in registry.list_all()}
 
     point_mass = definitions["PointMass"]
     assert point_mass.representation is not None
-    assert [element.archetype for element in point_mass.representation.elements] == [
-        "point_body"
-    ]
+    assert [element.archetype for element in point_mass.representation.elements] == ["point_body"]
     assert point_mass.representation.anchors[0].id == "center"
     assert point_mass.representation.anchors[0].binding is not None
 
@@ -583,7 +602,7 @@ def test_builtin_mechanics_expose_workspace_representations() -> None:
 
 
 def test_two_link_arm_builder_uses_representation_link_lengths_param() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
 
     component = build_component(
         "arm",
@@ -596,7 +615,7 @@ def test_two_link_arm_builder_uses_representation_link_lengths_param() -> None:
 
 
 def test_builtin_muscle_representations_declare_consolidated_geometry_sources() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     definitions = {item.name: item for item in registry.list_all()}
 
     arm_template = definitions["Arm6MuscleRigidTendon"]
@@ -641,10 +660,7 @@ def test_builtin_muscle_representations_declare_consolidated_geometry_sources() 
     }
     analytical_elements = {element.id: element for element in analytical.representation.elements}
     assert analytical_elements["muscle-paths"].frame_provider is not None
-    assert (
-        analytical_elements["muscle-paths"].frame_provider.kind
-        == "from_representation_element"
-    )
+    assert analytical_elements["muscle-paths"].frame_provider.kind == "from_representation_element"
     assert analytical_elements["muscle-paths"].frame_provider.element_id == "links"
     assert analytical_elements["links"].planar_chain is not None
     assert analytical_elements["links"].planar_chain.pose_fallback == "zero"
@@ -669,7 +685,7 @@ def test_builtin_muscle_representations_declare_consolidated_geometry_sources() 
 
 
 def test_builtin_reach_tasks_expose_schematic_objective_representations() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     definitions = {item.name: item for item in registry.list_all()}
 
     simple = definitions["SimpleReaches"]
@@ -694,7 +710,7 @@ def test_builtin_reach_tasks_expose_schematic_objective_representations() -> Non
 
 
 def test_component_registry_rejects_representation_unknown_param_path() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
 
     with pytest.raises(ValueError, match="declared parameter"):
         registry.register_component_type(
@@ -868,7 +884,7 @@ def test_representation_selector_anchor_subpaths_are_enumerated() -> None:
 
 
 def test_absent_downstream_owner_fails_with_actionable_message() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
 
     with pytest.raises(ValueError) as exc_info:
         spec_to_graph(_single_node_spec("rlrmp.LegacyGain", {"gain": 1.0}), registry)
@@ -880,7 +896,7 @@ def test_absent_downstream_owner_fails_with_actionable_message() -> None:
 
 
 def test_loaded_owner_without_migration_edge_fails_with_version_context() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     registry.register_component_type(
         "rlrmp.CurrentGain",
         lambda params: Gain(gain=float(params["gain"])),
@@ -901,7 +917,7 @@ def test_loaded_owner_without_migration_edge_fails_with_version_context() -> Non
 
 
 def test_unsupported_component_parameter_schema_fails_with_current_version() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
 
     with pytest.raises(ValueError) as exc_info:
         spec_to_graph(
@@ -916,7 +932,7 @@ def test_unsupported_component_parameter_schema_fails_with_current_version() -> 
 
 
 def test_elementwise_affine_modulator_is_builtin_component() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
 
     meta = registry.get("ElementwiseAffineModulator")
 

@@ -57,6 +57,16 @@ from feedbax.orchestration.staged_root_custody import (
     seal_staged_root,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.plugins.application import new_application_registry_bundle
+
+
+def _assembly_registry():
+    registries = new_application_registry_bundle(local_component_source=None)
+    return build_default_assembly_registry(
+        method_registry=registries.training_methods,
+        row_lowerer_registry=registries.row_lowerers,
+        evaluation_registry=registries.evaluation_recipes,
+    )
 
 
 def _matrix() -> dict[str, Any]:
@@ -187,7 +197,7 @@ def _assemble(request: RunAssemblyRequest, tmp_path: Path, *, run_set_id: str = 
             repo_root=tmp_path,
             materializer_commit="d9e62cfd" + "0" * 32,
         ),
-        registry=build_default_assembly_registry(),
+        registry=_assembly_registry(),
     )
 
 
@@ -208,9 +218,7 @@ def test_authored_matrix_compiles_ordered_batches_under_one_matrix_identity(
         matrix,
         batch_plan=plan,
         output_preflight=_output_preflight(expected_rows=2),
-    ).model_copy(
-        update={"launch_policy": LaunchPolicy(max_parallel_rows=4)}
-    )
+    ).model_copy(update={"launch_policy": LaunchPolicy(max_parallel_rows=4)})
     bundle = _assemble(request, tmp_path)
 
     assert bundle.execution_family == "evaluation-matrix"
@@ -334,7 +342,7 @@ def test_insufficient_disk_fails_before_run_output_root(
             repo_root=tmp_path,
             materializer_commit="d9e62cfd" + "0" * 32,
         ),
-        registry=build_default_assembly_registry(),
+        registry=_assembly_registry(),
         driver_factory=lambda _bundle: pytest.fail("driver constructed before disk refusal"),
         run_set_id=run_set_id,
     )
@@ -375,7 +383,7 @@ def test_successful_pre_output_pass_is_pure_before_the_run_lock(
             repo_root=tmp_path,
             materializer_commit="d9e62cfd" + "0" * 32,
         ),
-        registry=build_default_assembly_registry(),
+        registry=_assembly_registry(),
     )
 
     assert prepared.evaluation_output_preflight is not None
@@ -411,7 +419,7 @@ def test_stage_engine_reuses_the_pre_root_capacity_decision_inside_the_lock(
             repo_root=tmp_path,
             materializer_commit="d9e62cfd" + "0" * 32,
         ),
-        registry=build_default_assembly_registry(),
+        registry=_assembly_registry(),
         driver_factory=lambda _bundle: SimpleNamespace(),
         run_set_id=run_set_id,
     )
@@ -741,12 +749,18 @@ def test_provider_free_cli_shadow_reaches_terminal_collection_in_fresh_process(
 import os
 from pathlib import Path
 
-from feedbax.analysis.evaluation import EvaluationRecipeResult, register_evaluation_recipe
+from feedbax.analysis.evaluation import EvaluationRecipeResult
 from feedbax.analysis import (
     EvaluationBatchFragment,
     EvaluationBatchFinalizeInput,
     EvaluationBatchMergeState,
-    register_evaluation_batch_consumer,
+)
+from feedbax.plugins import (
+    EVALUATION_BATCH_CONSUMERS,
+    EVALUATION_RECIPES,
+    FamilyRequirement,
+    PluginDeclaration,
+    PluginRegistration,
 )
 
 def _recipe(_spec, _root, _states_path, _context):
@@ -781,14 +795,13 @@ def _compact(value):
         role=f"{leaf}_result",
     )
 
-def register_feedbax_analysis_recipes():
-    register_evaluation_recipe(
+def _register(context):
+    context.registry(EVALUATION_RECIPES).register(
         "tests.evaluation_orchestration",
         _recipe,
         batch_recipe=_batch,
-        replace=True,
     )
-    register_evaluation_batch_consumer(
+    context.registry(EVALUATION_BATCH_CONSUMERS).register(
         "tests.projector",
         "v1",
         compact=_compact,
@@ -813,8 +826,19 @@ def register_feedbax_analysis_recipes():
             schema_version=f"tests.{value.parameters['leaf']}.product.v1",
             role=f"{value.parameters['leaf']}_result",
         ),
-        replace=True,
     )
+
+PLUGIN_REGISTRATION = PluginRegistration(
+    declaration=PluginDeclaration(
+        plugin_id="tests.evaluation_plugin",
+        version="1",
+        families=(
+            FamilyRequirement(EVALUATION_RECIPES.family),
+            FamilyRequirement(EVALUATION_BATCH_CONSUMERS.family),
+        ),
+    ),
+    register=_register,
+)
 """.strip(),
         encoding="utf-8",
     )
@@ -825,7 +849,7 @@ def register_feedbax_analysis_recipes():
         encoding="utf-8",
     )
     (dist_info / "entry_points.txt").write_text(
-        "[feedbax.plugins]\nevaluation-test = evaluation_plugin\n",
+        "[feedbax.plugins]\nevaluation-test = evaluation_plugin:PLUGIN_REGISTRATION\n",
         encoding="utf-8",
     )
     manifest_root = tmp_path / "shadow-roots" / "manifests"
@@ -984,14 +1008,12 @@ def register_feedbax_analysis_recipes():
     assert all(item["ordered_batch_ids"] for item in topology["processes"])
     assert sum(len(item["ordered_batch_ids"]) for item in topology["processes"]) == 8
     assert all(
-        [timing["batch_id"] for timing in item["batch_timings"]]
-        == item["ordered_batch_ids"]
+        [timing["batch_id"] for timing in item["batch_timings"]] == item["ordered_batch_ids"]
         for item in topology["processes"]
     )
     assert all(
         timing["completed_offset_ns"] >= timing["started_offset_ns"] >= 0
-        and timing["duration_ns"]
-        == timing["completed_offset_ns"] - timing["started_offset_ns"]
+        and timing["duration_ns"] == timing["completed_offset_ns"] - timing["started_offset_ns"]
         and not timing["reused_verified_fragments"]
         for item in topology["processes"]
         for timing in item["batch_timings"]
@@ -1086,9 +1108,7 @@ def test_runpod_dry_run_keeps_the_same_public_matrix_executor(
         "projection": "velocity"
     }
     assert (
-        bundle.rows[0].launch.metadata["batch_plan"]["consumers"][0][
-            "terminal_analysis_type"
-        ]
+        bundle.rows[0].launch.metadata["batch_plan"]["consumers"][0]["terminal_analysis_type"]
         == "tests.velocity.analysis"
     )
     assert bundle.rows[0].launch.collect == local_bundle.rows[0].launch.collect
