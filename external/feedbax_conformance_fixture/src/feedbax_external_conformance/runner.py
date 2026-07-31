@@ -16,7 +16,7 @@ from .cases import (
     check_exact_parent_migration,
     check_material_dependencies,
     check_ordered_registration,
-    check_typed_evaluation_row_projection,
+    check_resolved_evaluation_row_projection,
     check_value_identity,
 )
 from .lifecycle import check_public_lifecycle_recovery
@@ -105,7 +105,7 @@ def run_fixture(*, source_root: Path | None = None) -> ConformanceResult:
         "value_identity": check_value_identity(),
         "material_dependencies": check_material_dependencies(),
         "staged_exact_parent_migration": check_exact_parent_migration(),
-        "typed_evaluation_row_projection": check_typed_evaluation_row_projection(),
+        "resolved_evaluation_row_projection": check_resolved_evaluation_row_projection(),
         "public_lifecycle_recovery": check_public_lifecycle_recovery(),
     }
 

@@ -28,18 +28,12 @@ therefore authenticates installed-wheel provenance at both execution
 boundaries. The deployment policy is explicitly local and cloud-unauthorized;
 all custody, orchestration, and cache paths are unique temporary directories.
 
-The result schema is `feedbax.external_conformance.result.v6`. Its evidence map
-has exactly seven case IDs with strict boolean values, including typed
-verified-provenance evaluation-row projection. V2 remains the exact six-case
-foundation and rejects rather than pretending it measured the new case. V3
-rejects because its row-projection case did not require a resolver-issued
-state-materialization receipt. V4 rejects because its receipt bound only
-mutable aliases rather than canonical state/source value identities and
-authenticated raw-byte manifest facts. V5 rejects because its receipt did not
-bind those state/source facts to the authenticated requested evaluation-manifest
-authority, permitting a cross-row splice. Historical v2 through v5 case tuples
-and sets remain separately frozen. The `current` and `minimum` protocol role
-slots remain explicitly required and None-only until owner ratification.
-Version 1 can normalize to v2 only when the later role field is absent, then
-rejects for the same missing v3 evidence. Unknown, ambiguous, versionless, and
-future versions are rejected.
+The result schema is `feedbax.external_conformance.result.v7`. Its evidence map
+has exactly seven strict-boolean cases, including the narrow resolver-handle
+evaluation-row projection. V2 remains the protected exact six-case foundation
+and rejects rather than pretending it measured the new case. Unshipped v3-v6
+results reject explicitly and carry no maintained per-version case scaffolding.
+The `current` and `minimum` protocol role slots remain required and None-only
+until owner ratification. Version 1 can normalize to v2 only when the later role
+field is absent, then rejects for the same missing current evidence. Unknown,
+ambiguous, versionless, and future versions reject.

@@ -65,32 +65,27 @@ lifecycle child is separately fixed and asserted as a print-only Python
 command.
 
 The versioned machine result is
-`feedbax.external_conformance.result.v6`. V2 remains the frozen exact six-case
-foundation result; it rejects rather than migrating because it contains no
-evidence for the required `typed_evaluation_row_projection` case. V1 can be
-deterministically normalized to v2 by adding separate unbound `current` and
-`minimum` protocol role slots, but then rejects for the same missing v3
-evidence. V3 rejects because its projection evidence did not require a
-resolver-issued state-materialization receipt. V4 rejects because its receipt
-bound mutable aliases without canonical state/source identities or raw-byte
-manifest authority. V5 rejects because the receipt did not bind its state and
-source to the authenticated requested evaluation-manifest authority. V6
-requires that generic binding and the exact seven case IDs with strict boolean
-values, plus both None-valued role slots explicitly. V2 through v6 case tuples
-and sets are each literal frozen history even where their keys coincide. Those
-slots are not stability guarantees and remain unbound until the owner-ratified
-policy exists. Adding or removing a case, binding a protocol role, or changing
-required evidence fields requires another deliberate schema version and
-migration or rejection decision.
+`feedbax.external_conformance.result.v7`. V2 remains the frozen exact six-case
+foundation and rejects because it contains no
+`resolved_evaluation_row_projection` evidence. V1 can be deterministically
+normalized to v2 by adding separate unbound `current` and `minimum` protocol
+role slots, then rejects for the same missing evidence. Intervening unshipped
+v3-v6 results reject explicitly; they are not reinterpreted as proof of the
+narrowed v7 contract. Only the protected v2 and current v7 case sets are
+maintained. The role slots remain None-only until the owner-ratified policy
+exists.
 
-The typed evaluation-row case uses only public clean-wheel imports. It resolves
-durable states through `resolve_analysis_inputs`, then requires the exact
-resolver capability and its snapshotted canonical state/source value identities.
-Manifest, run-spec, and metadata facts are parsed from authenticated raw bytes
-and their portable authority must equal the authority snapshotted by the
-resolver receipt before one downstream-owned cross-field callback runs. It also proves structured
-error categories and exact authored-Cartesian coverage without embedding
-conditioning, target, replicate, or mixed-authority scientific policy.
+The evaluation-row case uses only public clean-wheel imports. It resolves
+durable states through `resolve_analysis_inputs`, receives an exact
+`ResolvedEvaluationStateHandle` with a private issuance sentinel and canonical
+immutable source/authority facts, derives manifest, run-spec, metadata, and
+producer provenance from authenticated raw bytes, and invokes one downstream
+cross-field callback. A cross-authority splice rejects with a stable error
+code. The handle records provenance and materialization at resolver issuance;
+it does not claim durable content authentication for cache or recompute state
+bytes, nor protection from hostile same-process mutation after resolution.
+Coverage, duplicate handling, conditioning, geometry, replicate policy, and
+mixed-authority scientific verdicts remain downstream.
 
 The production lifecycle case uses the installed-wheel
 `StageEngine`/`LocalOrchestrationDriver` path with one deterministic local row.
