@@ -28,9 +28,7 @@ RUN_SET_STATE_SCHEMA_VERSION_V3 = "feedbax.orchestration.run_set_state.v3"
 RUN_SET_STATE_SCHEMA_VERSION_V4 = "feedbax.orchestration.run_set_state.v4"
 RUN_SET_STATE_SCHEMA_VERSION = "feedbax.orchestration.run_set_state.v5"
 EMERGENCY_RUN_SET_RECORD_SCHEMA_ID = "feedbax.orchestration.emergency_run_set_record"
-EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION = (
-    "feedbax.orchestration.emergency_run_set_record.v1"
-)
+EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION = "feedbax.orchestration.emergency_run_set_record.v1"
 REGISTRATION_HISTORY_SCHEMA_ID = "feedbax.orchestration.registration_history"
 REGISTRATION_HISTORY_SCHEMA_VERSION = "feedbax.orchestration.registration_history.v1"
 ROW_STATUSES = ("pending", "launched", "ready", "running", "completed", "failed", "stopped")
@@ -72,6 +70,18 @@ class StateLockError(RuntimeError):
 
 class ControlFilesystemPreflightError(RuntimeError):
     """Raised when the control filesystem cannot support durable state updates."""
+
+
+class PrimaryStatePersistenceError(OSError):
+    """The primary run-set state could not be durably replaced."""
+
+    def __init__(self, path: Path, cause: OSError) -> None:
+        self.path = path
+        self.cause = cause
+        super().__init__(
+            cause.errno,
+            f"primary run-set state persistence failed at {path}: {cause}",
+        )
 
 
 class PreflightCheckEntry(StrictModel):
@@ -153,12 +163,12 @@ class RegistrationHistoryEntry(StrictModel):
 class RegistrationHistory(StrictModel):
     """Versioned fail-to-pass registration history for one run set."""
 
-    schema_id: Literal[
-        "feedbax.orchestration.registration_history"
-    ] = REGISTRATION_HISTORY_SCHEMA_ID
-    schema_version: Literal[
-        "feedbax.orchestration.registration_history.v1"
-    ] = REGISTRATION_HISTORY_SCHEMA_VERSION
+    schema_id: Literal["feedbax.orchestration.registration_history"] = (
+        REGISTRATION_HISTORY_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.orchestration.registration_history.v1"] = (
+        REGISTRATION_HISTORY_SCHEMA_VERSION
+    )
     run_set_id: str = Field(min_length=1)
     entries: list[RegistrationHistoryEntry] = Field(min_length=1, max_length=1)
 
@@ -174,12 +184,12 @@ class EmergencyProviderIdentity(StrictModel):
 class EmergencyRunSetRecord(StrictModel):
     """Bounded recovery record independent of the primary run-set state document."""
 
-    schema_id: Literal[
-        "feedbax.orchestration.emergency_run_set_record"
-    ] = EMERGENCY_RUN_SET_RECORD_SCHEMA_ID
-    schema_version: Literal[
-        "feedbax.orchestration.emergency_run_set_record.v1"
-    ] = EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION
+    schema_id: Literal["feedbax.orchestration.emergency_run_set_record"] = (
+        EMERGENCY_RUN_SET_RECORD_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.orchestration.emergency_run_set_record.v1"] = (
+        EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION
+    )
     run_set_id: str = Field(min_length=1)
     recorded_at: datetime = Field(default_factory=utc_now)
     provider_identity: EmergencyProviderIdentity
@@ -256,9 +266,7 @@ class RunSetStateStore:
         self.control_reserve_path = self.path.with_suffix(self.path.suffix + ".reserve")
         self.emergency_path = self.path.with_suffix(self.path.suffix + ".emergency.json")
         self.emergency_lock_path = self.path.with_suffix(self.path.suffix + ".emergency.lock")
-        self.emergency_reserve_path = self.path.with_suffix(
-            self.path.suffix + ".emergency.reserve"
-        )
+        self.emergency_reserve_path = self.path.with_suffix(self.path.suffix + ".emergency.reserve")
 
     def load(self) -> RunSetState:
         """Load the current state document."""
@@ -266,6 +274,15 @@ class RunSetStateStore:
 
     def save(self, state: RunSetState, *, crash_before_replace: bool = False) -> Path:
         """Atomically write ``state`` using temp-file plus ``os.replace``."""
+        try:
+            return self._save(state, crash_before_replace=crash_before_replace)
+        except PrimaryStatePersistenceError:
+            raise
+        except OSError as exc:
+            raise PrimaryStatePersistenceError(self.path, exc) from exc
+
+    def _save(self, state: RunSetState, *, crash_before_replace: bool = False) -> Path:
+        """Perform one unwrapped atomic primary-state write."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = state.model_copy(update={"updated_at": utc_now()}).model_dump(mode="json")
         fd, tmp_name = tempfile.mkstemp(
@@ -446,9 +463,7 @@ def _validate_reserve_sizes(
     state_update_bytes: int,
 ) -> None:
     if not 0 <= control_bytes <= MAX_CONTROL_RESERVE_BYTES:
-        raise ValueError(
-            f"control reserve must be between 0 and {MAX_CONTROL_RESERVE_BYTES} bytes"
-        )
+        raise ValueError(f"control reserve must be between 0 and {MAX_CONTROL_RESERVE_BYTES} bytes")
     if not MAX_EMERGENCY_RECORD_BYTES <= emergency_bytes <= MAX_CONTROL_RESERVE_BYTES:
         raise ValueError(
             "emergency reserve must cover the maximum emergency record and remain bounded: "
@@ -572,8 +587,7 @@ def _publish_reserved_emergency(
             reserve_stat.st_ino,
         ):
             raise ControlFilesystemPreflightError(
-                "emergency reserve changed concurrently; refusing to overwrite an "
-                "unverified inode"
+                "emergency reserve changed concurrently; refusing to overwrite an unverified inode"
             )
         _require_reserved_capacity(descriptor_stat, MAX_EMERGENCY_RECORD_BYTES)
 

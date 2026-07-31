@@ -3613,10 +3613,18 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION,
             owner_module="feedbax.orchestration.state",
             emitted_by=("feedbax.orchestration.state.RunSetStateStore.save_emergency",),
-            consumed_by=("feedbax.orchestration.state.RunSetStateStore.load_emergency",),
-            description="Bounded fail-closed recovery record for control-state failures.",
+            consumed_by=(
+                "feedbax.orchestration.state.RunSetStateStore.load_emergency",
+                "feedbax.orchestration.stages.StageEngine",
+                "feedbax.bin.orchestrate.cmd_status",
+            ),
+            description=(
+                "Bounded fail-closed recovery and custody gate for control-state failures."
+            ),
             rejected_old_versions=(f"{EMERGENCY_RUN_SET_RECORD_SCHEMA_ID}.v0",),
             required_tests=(
+                "tests/test_orchestration_core.py",
+                "tests/test_orchestration_cli.py",
                 "tests/test_orchestration_state_persistence.py",
                 "tests/test_structured_spec_migrations.py",
             ),

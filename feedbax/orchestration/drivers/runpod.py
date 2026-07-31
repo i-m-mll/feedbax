@@ -894,11 +894,7 @@ class RunPodOrchestrationDriver:
         default_variant = (
             "externally-managed"
             if self._provided_endpoint or self._provided_pod
-            else (
-                "engine-acquired"
-                if self.config.auto_teardown
-                else "engine-acquired-preserved"
-            )
+            else ("engine-acquired" if self.config.auto_teardown else "engine-acquired-preserved")
         )
         self.realized_capabilities = realized_capabilities or self.capability_envelope.realize(
             default_variant
@@ -2395,6 +2391,12 @@ class RunPodOrchestrationDriver:
             "owned_by_run": owned_by_run,
             "teardown_allowed": owned_by_run,
             "pod_id": pod_id if isinstance(pod_id, str) else None,
+            "resource_id": pod_id if isinstance(pod_id, str) else None,
+            "endpoint": (
+                f"ssh://{self._endpoint.host}:{self._endpoint.port}"
+                if self._endpoint is not None
+                else None
+            ),
         }
 
     def has_pending_owned_resource(self) -> bool:
@@ -3954,8 +3956,7 @@ def runpod_config_for_bundle(
     resources = bundle.deployment_policy.resources
     raw_patches = metadata.get("runpod_path_patches", ())
     path_patches = tuple(
-        (str(item["remote_file"]), str(item["from"]), str(item["to"]))
-        for item in raw_patches
+        (str(item["remote_file"]), str(item["from"]), str(item["to"])) for item in raw_patches
     )
     return RunPodDriverConfig(
         pod_id=_string_or_none(metadata.get("runpod_pod_id")),
@@ -3970,8 +3971,7 @@ def runpod_config_for_bundle(
             str(name): str(path) for name, path in metadata.get("runpod_local_repos", {}).items()
         },
         remote_repos={
-            str(name): str(path)
-            for name, path in metadata.get("runpod_remote_repos", {}).items()
+            str(name): str(path) for name, path in metadata.get("runpod_remote_repos", {}).items()
         },
         primary_repo=_string_or_none(metadata.get("runpod_primary_repo")),
         protected_refs={

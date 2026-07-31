@@ -46,6 +46,8 @@ from feedbax.orchestration import (
     CompilerIdentity,
     DeploymentPolicy,
     DeploymentResourceRequest,
+    EmergencyProviderIdentity,
+    EmergencyRunSetRecord,
     EnvironmentDeclaration,
     LaunchPolicy,
     RowLaunchSpec,
@@ -591,6 +593,46 @@ def test_json_status_validates_state_document(
 
     payload = json.loads(capsys.readouterr().out)
     assert RunSetState.model_validate(payload).run_set_id == "json-status"
+
+
+def test_status_prefers_active_emergency_recovery_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
+    bundle = _bundle(tmp_path, run_set_id="emergency-status")
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    store.save(RunSetState(run_set_id=bundle.run_set_id))
+    store.preflight_and_reserve()
+    store.save_emergency(
+        EmergencyRunSetRecord(
+            run_set_id=bundle.run_set_id,
+            provider_identity=EmergencyProviderIdentity(
+                provider="fixture-provider",
+                resource_id="resource-123",
+            ),
+            preservation_state="preserve-required",
+            lease_state="resource preserved",
+            custody_complete=False,
+            spend_boundary='{"semantics":"driver-observed"}',
+            primary_failure="primary run-set state persistence failed",
+            next_recovery_action="collect declared outputs before teardown",
+        )
+    )
+
+    assert orchestrate.main(["status", "--run-set", bundle.run_set_id, "--json"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    recovery = EmergencyRunSetRecord.model_validate(payload)
+    assert recovery.preservation_state == "preserve-required"
+    assert recovery.provider_identity.resource_id == "resource-123"
+    assert recovery.next_recovery_action == "collect declared outputs before teardown"
+
+    store.path.write_text("{invalid primary state", encoding="utf-8")
+    assert orchestrate.main(["status", "--run-set", bundle.run_set_id, "--json"]) == 1
+    fallback = EmergencyRunSetRecord.model_validate_json(capsys.readouterr().out)
+    assert fallback == recovery
 
 
 @pytest.mark.parametrize(

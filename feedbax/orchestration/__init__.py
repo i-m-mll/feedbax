@@ -123,6 +123,7 @@ __all__ = [
     "StateLockError",
     "ControlFilesystemPreflight",
     "ControlFilesystemPreflightError",
+    "PrimaryStatePersistenceError",
     "SchemaArtifactRef",
     "assemble_run_bundle",
     "assert_certificate_allows_completed_registration",
