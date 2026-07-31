@@ -252,7 +252,7 @@ def test_constructor_versions_are_reported_in_catalog_and_manifest(tmp_path: Pat
     expected = {
         "feedbax.profile_band": "v2",
         "feedbax.profile_curves": "v1",
-        "feedbax.comparison_grid": "v4",
+        "feedbax.comparison_grid": "v5",
         "feedbax.grid_figure": "v5",
     }
     catalog_versions = {item["key"]: item["version"] for item in constructor_catalog()}
@@ -712,7 +712,7 @@ def test_equal_data_aspect_renders_exactly_in_placed_grid_panel(tmp_path: Path) 
     assert "scaleanchor" not in rendered["layout"]["yaxis"]
     assert rendered["layout"]["yaxis2"]["scaleanchor"] == "x2"
     assert rendered["layout"]["yaxis2"]["scaleratio"] == 1
-    assert manifest.constructor_versions["feedbax.comparison_grid"] == "v4"
+    assert manifest.constructor_versions["feedbax.comparison_grid"] == "v5"
 
 
 def test_equal_data_aspect_rejects_inconsistent_axis_declaration() -> None:
