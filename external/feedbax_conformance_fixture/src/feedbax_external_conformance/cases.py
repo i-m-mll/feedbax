@@ -8,6 +8,8 @@ from dataclasses import dataclass, replace
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 
 import numpy as np
@@ -25,6 +27,12 @@ from feedbax.analysis import (
     project_evaluation_rows,
     resolve_analysis_inputs,
 )
+from feedbax.analysis.bundles import (
+    AnalysisBundleSpec,
+    BundleStageSpec,
+    execute_staged_analysis_bundle,
+)
+from feedbax.analysis.figures import coerce_figure_spec, resolve_figure_spec
 from feedbax.analysis.evaluation import (
     EvaluationBatchExecution,
     EvaluationRunMatrixSpec,
@@ -76,6 +84,14 @@ from feedbax.contracts import (
     semantic_value_sha256,
     value_identity_record,
 )
+from feedbax.contracts.figures import (
+    FigureCompositionProvenance,
+    FigureCompositionSourceRecord,
+    FigureCompositionSpec,
+    FigureRuntimeBindingSpec,
+    FigureSpec,
+    ResolvedFigureSpec,
+)
 from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
 from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
 from feedbax.contracts.manifest import (
@@ -92,6 +108,14 @@ from feedbax.contracts.manifest import (
     load_manifest,
     sha256_bytes,
     write_manifest,
+    OverridePatch,
+)
+from feedbax.contracts.matrix_core import (
+    SOURCE_DOCUMENT_INHERITANCE_KEY,
+    ContentPinnedJsonBase,
+    SourceDocumentInheritance,
+    load_content_pinned_json_base,
+    materialize_inherited_document,
 )
 from feedbax.contracts.evaluation_lifecycle import (
     EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID,
@@ -107,8 +131,10 @@ from feedbax.contracts.evaluation_product_union import (
 )
 from feedbax.contracts.run_matrix import (
     AuthoredTrainingRow,
+    MatrixCompositionDelta,
     TRAINING_ROW_LOWERER_REF_FIELD,
     TrainingRowLowererRef,
+    apply_composition_deltas,
 )
 from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.contracts.training import MethodPayloadEnvelope, MethodRefSpec
@@ -1306,10 +1332,206 @@ def check_resolved_evaluation_row_projection() -> bool:
     return True
 
 
+def check_figure_composition_public_contract() -> bool:
+    """Prove the installed public figure composition and display contract."""
+
+    def write_json(root: Path, name: str, payload: dict[str, object]) -> ContentPinnedJsonBase:
+        path = root / name
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return ContentPinnedJsonBase(
+            ref=name,
+            sha256=sha256_bytes(canonical_json_bytes(payload)),
+        )
+
+    with TemporaryDirectory() as directory:
+        root = Path(directory).resolve()
+        base = FigureSpec(name="base", assembler="feedbax.grid_figure")
+        base_ref = write_json(root, "base.json", base.model_dump(mode="json", exclude_none=True))
+        middle = FigureCompositionSpec(
+            parent=base_ref,
+            deltas=[
+                MatrixCompositionDelta(
+                    layer_id="middle",
+                    patches=[OverridePatch(op="replace", path="name", value="middle")],
+                )
+            ],
+        )
+        middle_ref = write_json(
+            root,
+            "middle.json",
+            middle.model_dump(mode="json", exclude_none=True),
+        )
+        leaf = FigureCompositionSpec(
+            parent=middle_ref,
+            deltas=[
+                MatrixCompositionDelta(
+                    layer_id="leaf",
+                    patches=[OverridePatch(op="replace", path="name", value="resolved")],
+                    acknowledges_ancestor_paths=["name"],
+                )
+            ],
+        )
+        resolved = resolve_figure_spec(leaf, repo_root=root)
+        if not isinstance(resolved, ResolvedFigureSpec):
+            raise AssertionError("public resolver returned the wrong result type")
+        if resolved.figure_spec.schema_version != "feedbax.spec.figure.v2":
+            raise AssertionError("composition did not resolve to ordinary FigureSpec v2")
+        if resolved.authored_identity_sha256 == resolved.resolved_identity_sha256:
+            raise AssertionError("authored and resolved figure identities collapsed")
+        if not isinstance(resolved.composition, FigureCompositionProvenance):
+            raise AssertionError("composition provenance is missing")
+        documents = resolved.composition.documents
+        if [
+            (record.order, record.role, record.ref, record.payload_path)
+            for record in documents
+        ] != [
+            (0, "root_figure", "base.json", None),
+            (1, "composition_envelope", "middle.json", None),
+            (2, "authored_leaf", "<inline>", None),
+        ] or not all(
+            isinstance(record, FigureCompositionSourceRecord)
+            for record in documents
+        ):
+            raise AssertionError("full-chain source custody drifted")
+        qualified = [
+            layer_id
+            for layer in resolved.composition.layers
+            for layer_id in layer.qualified_layer_ids
+        ]
+        if len(qualified) != len(set(qualified)) or not all(":" in item for item in qualified):
+            raise AssertionError("composition layer attribution is not qualified and unique")
+        if coerce_figure_spec(leaf, repo_root=root) != resolved.figure_spec:
+            raise AssertionError("coercer and resolver semantics diverged")
+
+        leaf_path = root / "leaf.json"
+        leaf_path.write_text(leaf.model_dump_json(), encoding="utf-8")
+        figure_cli = Path(sys.executable).with_name("feedbax-figure")
+        if not figure_cli.is_file():
+            raise AssertionError("installed feedbax-figure console entrypoint is unavailable")
+        displayed_spec = subprocess.run(
+            [str(figure_cli), "resolve", str(leaf_path), "--repo-root", str(root)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if json.loads(displayed_spec.stdout) != resolved.figure_spec.model_dump(
+            mode="json", exclude_none=True
+        ):
+            raise AssertionError("CLI display differs from public resolver semantics")
+        displayed = json.loads(
+            subprocess.run(
+                [
+                    str(figure_cli),
+                    "resolve",
+                    str(leaf_path),
+                    "--repo-root",
+                    str(root),
+                    "--with-lineage",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+        )
+        if displayed["resolved_identity_sha256"] != resolved.resolved_identity_sha256:
+            raise AssertionError("CLI lineage identity differs from resolver identity")
+
+        shared = {"index": {"values": [0, 1]}}
+        shared_ref = write_json(root, "shared.json", shared).model_copy(
+            update={"payload_path": ("index",)}
+        )
+        inherited = {
+            "families": [{}],
+            SOURCE_DOCUMENT_INHERITANCE_KEY: SourceDocumentInheritance(
+                inherit=[{"target": "families.0.index", "parent": shared_ref}]
+            ).model_dump(mode="json", exclude_none=True),
+        }
+        effective = materialize_inherited_document(inherited, repo_root=root)
+        if effective["families"][0]["index"] != load_content_pinned_json_base(
+            shared_ref, repo_root=root
+        ):
+            raise AssertionError("canonical list-index graft differs from selected payload")
+        collided = json.loads(json.dumps(inherited))
+        collided["families"][0]["index"] = {"local": True}
+        try:
+            materialize_inherited_document(collided, repo_root=root)
+        except ValueError as exc:
+            if "collides with a locally-present key" not in str(exc):
+                raise
+        else:
+            raise AssertionError("source inheritance overwrote a present target")
+
+        payload = {"metadata": {"variant": "base"}}
+        ancestor = MatrixCompositionDelta(
+            layer_id="ancestor",
+            patches=[OverridePatch(op="replace", path="metadata", value={"variant": "a"})],
+        )
+        sibling = MatrixCompositionDelta(
+            layer_id="child",
+            patches=[OverridePatch(op="replace", path="metadata.variant", value="b")],
+            acknowledges_ancestor_paths=["metadata.other"],
+        )
+        try:
+            apply_composition_deltas(payload, [ancestor, sibling])
+        except ValueError as exc:
+            if "without explicit acknowledgement" not in str(exc):
+                raise
+        else:
+            raise AssertionError("sibling path acknowledged an overlapping composition write")
+
+        stage = BundleStageSpec(name="figure", kind="figure", figure=leaf)
+        bundle = AnalysisBundleSpec(name="figure-bundle", stages=[stage])
+        registries = asyncio.run(
+            bootstrap_application(new_fixture_registration_context(), registrations=())
+        ).bundle
+        execution_root = root / "bundle-execution"
+        execution = execute_staged_analysis_bundle(
+            bundle,
+            root=execution_root,
+            repo_root=root,
+            registries=registries,
+        )
+        if len(execution.stages) != 1 or execution.stages[0].status != "materialized":
+            raise AssertionError("composed staged figure did not complete")
+        manifest_paths = list((execution_root / "manifests" / "FigureManifest").glob("*.json"))
+        if len(manifest_paths) != 1:
+            raise AssertionError("composed staged figure did not emit one manifest")
+        manifest = load_manifest(manifest_paths[0])
+        if manifest.kind != "FigureManifest" or manifest.figure_spec.inline != (
+            resolved.figure_spec.model_dump(mode="json", exclude_none=True)
+        ):
+            raise AssertionError("staged execution semantics differ from public resolution")
+        for untrusted_root in (None, root / "wrong-repo-root"):
+            if untrusted_root is not None:
+                untrusted_root.mkdir()
+            try:
+                execute_staged_analysis_bundle(
+                    bundle,
+                    root=root / f"rejected-{untrusted_root is None}",
+                    repo_root=untrusted_root,
+                    registries=registries,
+                )
+            except (FileNotFoundError, ValueError):
+                pass
+            else:
+                raise AssertionError("staged composition accepted an untrusted repository root")
+        runtime = FigureRuntimeBindingSpec(
+            authored_figure_source_sha256=resolved.authored_identity_sha256,
+            resolved_figure_spec_sha256=resolved.resolved_identity_sha256,
+            inputs=[],
+            input_authorities=[],
+            artifact_provider_bindings=[],
+        )
+        if runtime.schema_version != "feedbax.spec.figure_runtime_binding.v2":
+            raise AssertionError("runtime binding v2 identity contract drifted")
+    return True
+
+
 __all__ = [
     "check_component_registration_and_migration",
     "check_component_param_array_values",
     "check_exact_parent_migration",
+    "check_figure_composition_public_contract",
     "check_material_dependencies",
     "check_ordered_registration",
     "check_resolved_evaluation_row_projection",

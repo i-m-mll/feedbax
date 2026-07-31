@@ -18,6 +18,7 @@ from .cases import (
     check_dynamic_component_ports,
     check_exact_parent_migration,
     check_external_driver_plugin,
+    check_figure_composition_public_contract,
     check_material_dependencies,
     check_ordered_registration,
     check_resolved_evaluation_row_projection,
@@ -119,6 +120,7 @@ def run_fixture(*, source_root: Path | None = None) -> ConformanceResult:
         "resolved_evaluation_row_projection": check_resolved_evaluation_row_projection(),
         "public_lifecycle_recovery": check_public_lifecycle_recovery(),
         "custody_persistence_recovery": check_custody_persistence_recovery(),
+        "figure_composition_public_contract": check_figure_composition_public_contract(),
     }
 
     _require_loaded_feedbax_modules_under(feedbax_root)

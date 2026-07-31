@@ -400,7 +400,7 @@ def test_plugin_api_checker_rejects_facade_inventory_drift(
         module._check_plugin_api(copy.deepcopy(_PLUGIN_ROW), "rendered inventory")
 
 
-def test_ratified_rows_bind_v12_and_have_no_pending_coverage() -> None:
+def test_ratified_rows_bind_v13_and_have_no_pending_coverage() -> None:
     fixture = ROOT / "external" / "feedbax_conformance_fixture"
     manifest = json.loads(
         (fixture / "src/feedbax_external_conformance/policy_manifest.v1.json").read_text(
@@ -413,6 +413,7 @@ def test_ratified_rows_bind_v12_and_have_no_pending_coverage() -> None:
         "custody-persistence",
         "emergency-persistence",
         "result-role-binding",
+        "figure-composition",
     ):
         assert rows[row_id]["coverage_status"] == "covered"
     assert rows["terminal-certification"]["coverage_status"] == "not-external-covered"
@@ -422,8 +423,8 @@ def test_ratified_rows_bind_v12_and_have_no_pending_coverage() -> None:
     result_source = (fixture / "src/feedbax_external_conformance/result.py").read_text(
         encoding="utf-8"
     )
-    assert 'Literal["feedbax.external_conformance.result.v12"]' in result_source
-    assert "v11 cannot migrate to v12" in result_source
+    assert 'Literal["feedbax.external_conformance.result.v13"]' in result_source
+    assert "v12 cannot migrate to v13" in result_source
 
 
 def test_ratified_policy_checker_rejects_residual_pending_rows(

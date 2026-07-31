@@ -21,6 +21,8 @@ GUARANTEE_START = "<!-- policy-guarantees:start -->"
 GUARANTEE_END = "<!-- policy-guarantees:end -->"
 PLUGIN_API_START = "<!-- plugin-api-inventory:start -->"
 PLUGIN_API_END = "<!-- plugin-api-inventory:end -->"
+FIGURE_API_START = "<!-- figure-api-inventory:start -->"
+FIGURE_API_END = "<!-- figure-api-inventory:end -->"
 INSTRUCTION_FILES = (ROOT / "AGENTS.md", ROOT / "CLAUDE.md")
 POLICY_DOCUMENT = ROOT / "docs" / "design" / "downstream_interface_stability.md"
 FIXTURE_ROOT = ROOT / "external" / "feedbax_conformance_fixture"
@@ -254,6 +256,54 @@ def _check_plugin_api(row: dict[str, object], document: str) -> None:
         raise ValueError(f"plugin API family inventory contains accidental names {accidental!r}")
 
 
+def _check_figure_api(row: dict[str, object], document: str) -> None:
+    public_api = row.get("public_api")
+    if not isinstance(public_api, dict) or set(public_api) != {"namespaces", "cli"}:
+        raise ValueError("figure-composition.public_api has an invalid shape")
+    namespaces = public_api["namespaces"]
+    if not isinstance(namespaces, list) or not namespaces:
+        raise ValueError("figure public API namespaces must be a non-empty list")
+    declared: dict[str, tuple[str, ...]] = {}
+    for index, value in enumerate(namespaces):
+        if not isinstance(value, dict) or set(value) != {"namespace", "public_names"}:
+            raise ValueError(f"figure public API namespace {index} has an invalid shape")
+        namespace = value["namespace"]
+        if not isinstance(namespace, str) or not namespace:
+            raise ValueError(f"figure public API namespace {index} has an invalid name")
+        declared[namespace] = _unique_strings(
+            value["public_names"], field=f"figure namespace {namespace} public_names"
+        )
+    if len(declared) != len(namespaces):
+        raise ValueError("figure public API namespaces contain duplicates")
+    cli = _unique_strings(public_api["cli"], field="figure CLI")
+
+    block = _marked_block(POLICY_DOCUMENT, FIGURE_API_START, FIGURE_API_END)
+    documented: dict[str, tuple[str, ...]] = {}
+    documented_cli: tuple[str, ...] | None = None
+    for line in block.splitlines():
+        if line.startswith("Namespace `"):
+            tokens = re.findall(r"`([^`]+)`", line)
+            documented[tokens[0]] = tuple(tokens[1:])
+        elif line.startswith("CLI: "):
+            documented_cli = tuple(re.findall(r"`([^`]+)`", line))
+    if documented != declared or documented_cli != cli:
+        raise ValueError("policy document figure API inventory drifted from the manifest")
+    for namespace, names in declared.items():
+        module = importlib.import_module(namespace)
+        for name in names:
+            if not hasattr(module, name):
+                raise ValueError(f"figure public API name {namespace}:{name} is unavailable")
+    cli_source = (ROOT / "feedbax" / "bin" / "figure.py").read_text(encoding="utf-8")
+    if 'add_parser(\n        "resolve"' not in cli_source or '"--with-lineage"' not in cli_source:
+        raise ValueError("feedbax-figure resolve CLI inventory drifted")
+    semantics = row.get("semantics")
+    if not isinstance(semantics, list) or not semantics:
+        raise ValueError("figure-composition semantics must be a non-empty list")
+    for statement in _unique_strings(semantics, field="figure semantics"):
+        if statement not in document:
+            raise ValueError(f"policy document omits figure semantic {statement!r}")
+
+
 def check_policy() -> None:
     blocks = [_marked_block(path, START, END) for path in INSTRUCTION_FILES]
     if blocks[0] != blocks[1]:
@@ -330,10 +380,10 @@ def check_policy() -> None:
     result_source = (FIXTURE_ROOT / "src" / "feedbax_external_conformance" / "result.py").read_text(
         encoding="utf-8"
     )
-    if 'Literal["feedbax.external_conformance.result.v12"]' not in result_source:
-        raise ValueError("ratified policy requires the authoritative v12 result")
-    if "v11 cannot migrate to v12" not in result_source:
-        raise ValueError("v11 must reject rather than synthesize custody and role evidence")
+    if 'Literal["feedbax.external_conformance.result.v13"]' not in result_source:
+        raise ValueError("ratified policy requires the authoritative v13 result")
+    if "v12 cannot migrate to v13" not in result_source:
+        raise ValueError("v12 must reject rather than synthesize figure evidence")
     if "pending-final-sync" in document or "pending-final-sync" in POLICY_MANIFEST.read_text(
         encoding="utf-8"
     ):
@@ -347,11 +397,13 @@ def check_policy() -> None:
     if driver_row.get("schemas") != DRIVER_POLICY_SCHEMAS:
         raise ValueError("driver policy schema and migration mapping drifted")
     _check_plugin_api(manifest_rows["plugin-bootstrap"], document)
+    _check_figure_api(manifest_rows["figure-composition"], document)
     for row_id in (
         "orchestration-lifecycle",
         "custody-persistence",
         "emergency-persistence",
         "result-role-binding",
+        "figure-composition",
     ):
         row = manifest_rows.get(row_id)
         if row is None or row.get("coverage_status") != "covered":
@@ -363,7 +415,7 @@ def check_policy() -> None:
     ]:
         raise ValueError("emergency persistence schema mapping drifted")
     if manifest_rows["result-role-binding"].get("schemas", {}).get("current") != [
-        "feedbax.external_conformance.result.v12"
+        "feedbax.external_conformance.result.v13"
     ]:
         raise ValueError("result-role schema mapping drifted")
     for row_id, row in manifest_rows.items():

@@ -427,7 +427,7 @@
       ],
       "schemas": {
         "current": [
-          "feedbax.external_conformance.result.v12"
+          "feedbax.external_conformance.result.v13"
         ],
         "migrated": [
           "feedbax.external_conformance.result.v1 to v2 normalization before rejection"
@@ -440,6 +440,7 @@
           "feedbax.external_conformance.result.v9",
           "feedbax.external_conformance.result.v10",
           "feedbax.external_conformance.result.v11",
+          "feedbax.external_conformance.result.v12",
           "unknown"
         ]
       },
@@ -476,6 +477,94 @@
           "feedbax.spec.component_definition.v2"
         ],
         "rejected": [
+          "unknown"
+        ]
+      },
+      "coverage_status": "covered"
+    },
+    {
+      "row_id": "figure-composition",
+      "case_ids": [
+        "figure_composition_public_contract"
+      ],
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.contracts.figures",
+            "public_names": [
+              "FigureCompositionSpec",
+              "FigureCompositionProvenance",
+              "FigureCompositionSourceRecord",
+              "ResolvedFigureSpec",
+              "FigureRuntimeBindingSpec",
+              "FigureSpec"
+            ]
+          },
+          {
+            "namespace": "feedbax.analysis.figures",
+            "public_names": [
+              "resolve_figure_spec",
+              "coerce_figure_spec"
+            ]
+          },
+          {
+            "namespace": "feedbax.analysis.bundles",
+            "public_names": [
+              "BundleStageSpec",
+              "AnalysisBundleSpec",
+              "execute_staged_analysis_bundle"
+            ]
+          },
+          {
+            "namespace": "feedbax.contracts.matrix_core",
+            "public_names": [
+              "ContentPinnedJsonBase",
+              "SourceDocumentInheritance",
+              "materialize_inherited_document",
+              "load_content_pinned_json_base"
+            ]
+          },
+          {
+            "namespace": "feedbax.contracts.run_matrix",
+            "public_names": [
+              "MatrixCompositionDelta",
+              "apply_composition_deltas"
+            ]
+          }
+        ],
+        "cli": [
+          "feedbax-figure resolve",
+          "feedbax-figure resolve --with-lineage"
+        ]
+      },
+      "semantics": [
+        "resolved ordinary FigureSpec v2 identity remains separate from authored composition and provenance identity",
+        "provenance retains ordered full-chain source custody and qualified unique layer attribution",
+        "BundleStageSpec.figure admits composition and staged bundle execution resolves only beneath its trusted repo_root",
+        "FigureRuntimeBindingSpec v2 separates authored_figure_source_sha256 from resolved_figure_spec_sha256",
+        "Studio rejects composition without a server-owned root using figure_composition_not_supported_in_studio",
+        "ContentPinnedJsonBase payload_path and SourceDocumentInheritance share canonical list-index rules and graft only absent targets",
+        "MatrixCompositionDelta acknowledgement must overlap both the ancestor-written path and the current patch path"
+      ],
+      "schemas": {
+        "current": [
+          "feedbax.spec.figure.v2",
+          "feedbax.spec.figure_composition.v1",
+          "feedbax.spec.figure_composition_provenance.v1",
+          "feedbax.spec.figure_runtime_binding.v2",
+          "feedbax.spec.analysis_bundle.v6",
+          "feedbax.spec.source_document_inheritance.v1"
+        ],
+        "migrated": [
+          "feedbax.spec.figure_runtime_binding.v1",
+          "feedbax.spec.analysis_bundle.v5"
+        ],
+        "rejected": [
+          "feedbax.spec.figure.v1",
+          "feedbax.spec.figure_composition.v0",
+          "feedbax.spec.figure_composition_provenance.v0",
+          "feedbax.spec.figure_runtime_binding.v0",
+          "feedbax.spec.source_document_inheritance.v0",
           "unknown"
         ]
       },

@@ -67,10 +67,32 @@ explicitly.
 | `terminal-certification` | `feedbax.contracts.manifest` and the same names at `feedbax.contracts` | `TRAINING_RUN_CERTIFICATION_SCHEMA_ID`, `TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION`, `TRAINING_RUN_CERTIFICATION_MIGRATION_TABLE`, `TrainingRunCertification`, `training_run_certification` | `feedbax.manifest.training_run_certification.v1` is current; v0 is rejected. Legacy completed/cancelled manifests project deterministically, legacy failed and nonterminal manifests reject because their terminal meaning is ambiguous. Focused in-repo migration tests cover this schema, but no external fixture case does, so this row does not claim a T cell. | No external case |
 | `custody-persistence` | `feedbax.orchestration` | `RUN_SET_STATE_SCHEMA_ID`, `RUN_SET_STATE_SCHEMA_VERSION`, `RUN_SET_STATE_SCHEMA_VERSION_V4`, `PrimaryStatePersistenceError`, `CustodyPreservationRequired`, `RunSetState`, `RunSetStateStore`, `StageEngine` | `feedbax.orchestration.run_set_state.v5` is current and versions v0 through v4 reject. Primary persistence failure retains its typed `OSError` cause; destructive ephemeral teardown is blocked by the typed custody exception until collection is durably complete, then occurs exactly once. | `custody_persistence_recovery` |
 | `emergency-persistence` | `feedbax.orchestration` | `EMERGENCY_RUN_SET_RECORD_SCHEMA_ID`, `EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION`, `ControlFilesystemPreflight`, `ControlFilesystemPreflightError`, `EmergencyProviderIdentity`, `EmergencyRunSetRecord`, `RunSetStateStore` | `feedbax.orchestration.emergency_run_set_record.v1` is current; v0, unknown, and malformed records reject. The bounded reserved channel publishes and reads back provider identity, preservation state, custody completion, spend boundary, primary failure, and next recovery action before destructive teardown. | `custody_persistence_recovery` |
-| `result-role-binding` | `feedbax_external_conformance` | `RESULT_SCHEMA_ID`, `RESULT_SCHEMA_VERSION`, `RESULT_SCHEMA_VERSION_V11`, `REQUIRED_CASE_IDS`, `V10_REQUIRED_CASE_IDS`, `V11_REQUIRED_CASE_IDS`, `ConformanceResult`, `ProtocolRoleSlots`, `load_result` | `feedbax.external_conformance.result.v12` preserves the exact v10 and v11 inventories in order, appends `custody_persistence_recovery`, and requires explicit numeric roles `current = 1` and `minimum = 1`. V11 rejects for missing custody and bound-role evidence; it never migrates synthetically. V1 retains its v2 normalization-before-rejection behavior, and all other earlier decisions remain explicit. | `custody_persistence_recovery` |
+| `result-role-binding` | `feedbax_external_conformance` | `RESULT_SCHEMA_ID`, `RESULT_SCHEMA_VERSION`, `RESULT_SCHEMA_VERSION_V11`, `RESULT_SCHEMA_VERSION_V12`, `REQUIRED_CASE_IDS`, `V10_REQUIRED_CASE_IDS`, `V11_REQUIRED_CASE_IDS`, `V12_REQUIRED_CASE_IDS`, `ConformanceResult`, `ProtocolRoleSlots`, `load_result` | `feedbax.external_conformance.result.v13` preserves the exact twelve-case v12 inventory in order, appends `figure_composition_public_contract`, and requires explicit numeric roles `current = 1` and `minimum = 1`. V12 rejects for missing figure-composition evidence; it never migrates synthetically. V1 retains its v2 normalization-before-rejection behavior, and all other earlier decisions remain explicit. | `custody_persistence_recovery` |
 | `array-values` | `feedbax.contracts.array_values` and the same names at `feedbax.contracts` | `ARRAY_VALUE_SCHEMA_ID`, `ARRAY_VALUE_SCHEMA_VERSION`, `ArrayValueSpec`, `ConstantArrayValueSpec`, `SparseCooArrayValueSpec`, `SparseCooEntrySpec`, `materialize_array_value` | `feedbax.spec.component_param.array_value.v1` is current. Partial tags and unknown versions reject; canonical sparse COO and constant declarations materialize deterministically. | `component_param_array_values` |
 | `dynamic-component-definition` | `feedbax.contracts.component` | `COMPONENT_DEFINITION_SCHEMA_ID`, `COMPONENT_DEFINITION_SCHEMA_VERSION`, `COMPONENT_DEFINITION_SCHEMA_VERSION_V1`, `COMPONENT_DEFINITION_SCHEMA_VERSION_V2`, `ComponentDefinition`, `DynamicPortLayout`, `DynamicPortPolicy`, `DynamicPortPolicyError`, `derive_dynamic_port_count`, `derive_dynamic_port_layout`, `validate_dynamic_port_layout`, `migrate_component_definition_payload`, `migrate_component_definition_v1_to_v2_payload`, `migrate_component_definition_v2_to_v3_payload` | `feedbax.spec.component_definition.v3` is current. v1 migrates to v2 port kinds; v2 migrates to v3 dynamic-port policy. Dynamic layouts derive only from declared policy and parameters and reject mismatches. | `dynamic_component_ports` |
+| `figure-composition` | `feedbax.contracts.figures`; `feedbax.analysis.figures`; `feedbax.analysis.bundles`; `feedbax.contracts.matrix_core`; `feedbax.contracts.run_matrix` | Exact namespace and CLI inventory below. | Composition resolves through one public resolver to ordinary `feedbax.spec.figure.v2` semantics while retaining distinct authored identity and ordered full-chain provenance. Bundle execution owns a trusted repository root, Studio rejects unsupported composition with a typed error, runtime binding v2 separates authored and resolved identities, inheritance uses canonical absent-only list-index grafting, and overlapping deltas require prefix-aware acknowledgement with qualified layer attribution. | `figure_composition_public_contract` |
 <!-- policy-guarantees:end -->
+
+The figure-composition row has this exact manifest-driven public inventory:
+
+<!-- figure-api-inventory:start -->
+Namespace `feedbax.contracts.figures`: `FigureCompositionSpec`, `FigureCompositionProvenance`, `FigureCompositionSourceRecord`, `ResolvedFigureSpec`, `FigureRuntimeBindingSpec`, `FigureSpec`
+Namespace `feedbax.analysis.figures`: `resolve_figure_spec`, `coerce_figure_spec`
+Namespace `feedbax.analysis.bundles`: `BundleStageSpec`, `AnalysisBundleSpec`, `execute_staged_analysis_bundle`
+Namespace `feedbax.contracts.matrix_core`: `ContentPinnedJsonBase`, `SourceDocumentInheritance`, `materialize_inherited_document`, `load_content_pinned_json_base`
+Namespace `feedbax.contracts.run_matrix`: `MatrixCompositionDelta`, `apply_composition_deltas`
+CLI: `feedbax-figure resolve`, `feedbax-figure resolve --with-lineage`
+<!-- figure-api-inventory:end -->
+
+The ratified semantics are deliberately narrow:
+
+- resolved ordinary FigureSpec v2 identity remains separate from authored composition and provenance identity
+- provenance retains ordered full-chain source custody and qualified unique layer attribution
+- BundleStageSpec.figure admits composition and staged bundle execution resolves only beneath its trusted repo_root
+- FigureRuntimeBindingSpec v2 separates authored_figure_source_sha256 from resolved_figure_spec_sha256
+- Studio rejects composition without a server-owned root using figure_composition_not_supported_in_studio
+- ContentPinnedJsonBase payload_path and SourceDocumentInheritance share canonical list-index rules and graft only absent targets
+- MatrixCompositionDelta acknowledgement must overlap both the ancestor-written path and the current patch path
 
 The versioned fixture-policy manifest is
 `external/feedbax_conformance_fixture/src/feedbax_external_conformance/policy_manifest.v1.json`.
@@ -94,8 +116,10 @@ Direct RLRMP entrypoint imports (ordered): `EVALUATION_RECIPES`, `FamilyRequirem
 <!-- plugin-api-inventory:end -->
 
 It is the machine-readable mapping of these row IDs to schemas and real case
-IDs. V12 preserves the v10 dynamic-component and v11 external-driver evidence,
-then adds the custody/persistence case and binds both numeric protocol roles.
+IDs. V13 preserves the exact twelve-case v12 inventory and order, then appends
+the figure-composition case. The v12 inventory already preserves the v10
+dynamic-component and v11 external-driver evidence, adds the custody/persistence
+case, and binds both numeric protocol roles.
 The terminal-certification row remains explicitly non-external-covered rather
 than claiming a false stability/conformance cell for its focused in-repo tests.
 
@@ -129,5 +153,6 @@ owner gate is satisfied.
 The existing clean-wheel runner remains the only runner. CI invokes
 `scripts/run_external_conformance.py`, persists its validated machine-readable
 result, validates installed dependency metadata with `uv pip check`, and uploads
-that validated v12 result as an artifact. V12 is the single ratification
-transition: no policy-only intermediate result or later v13 is created.
+that validated v13 result as an artifact. V13 is the single post-composition
+ratification transition; v12 remains explicit historical evidence and rejects
+rather than acquiring the new case synthetically.

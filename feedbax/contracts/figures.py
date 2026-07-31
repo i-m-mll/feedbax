@@ -1500,6 +1500,11 @@ class FigureCompositionDocument(StrictModel):
         return self
 
 
+# Public stability name for the existing source-custody record. Keep the
+# implementation name as an alias so serialized provenance remains unchanged.
+FigureCompositionSourceRecord = FigureCompositionDocument
+
+
 class FigureCompositionProvenance(StrictModel):
     """Lineage joining authored composition identity to resolved semantics."""
 

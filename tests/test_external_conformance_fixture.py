@@ -67,7 +67,7 @@ def test_result_v1_migrates_to_v2_then_rejects_missing_current_evidence(
 
     with pytest.raises(
         ValueError,
-        match="v2 cannot migrate to v12.*resolved_evaluation_row_projection",
+        match="v2 cannot migrate to v13.*resolved_evaluation_row_projection",
     ):
         fixture_package.load_result(legacy)
 
@@ -105,7 +105,7 @@ def test_result_v2_rejects_because_the_new_case_was_not_measured(
 
     with pytest.raises(
         ValueError,
-        match="v2 cannot migrate to v12.*resolved_evaluation_row_projection",
+        match="v2 cannot migrate to v13.*resolved_evaluation_row_projection",
     ):
         fixture_package.load_result(payload)
 
@@ -148,7 +148,7 @@ def test_result_v7_rejects_because_array_value_case_was_not_measured(
     payload["schema_version"] = "feedbax.external_conformance.result.v7"
     payload["cases"].pop("component_param_array_values")
 
-    with pytest.raises(ValueError, match="v7 cannot migrate to v12.*array_values"):
+    with pytest.raises(ValueError, match="v7 cannot migrate to v13.*array_values"):
         fixture_package.load_result(payload)
 
 
@@ -167,7 +167,7 @@ def test_result_v8_rejects_because_unified_bootstrap_was_not_measured(
     payload["schema_version"] = "feedbax.external_conformance.result.v8"
     payload["cases"].pop("unified_plugin_bootstrap")
 
-    with pytest.raises(ValueError, match="v8 cannot migrate to v12.*unified_plugin_bootstrap"):
+    with pytest.raises(ValueError, match="v8 cannot migrate to v13.*unified_plugin_bootstrap"):
         fixture_package.load_result(payload)
 
 
@@ -186,7 +186,7 @@ def test_result_v9_rejects_because_dynamic_ports_were_not_measured(
     payload["schema_version"] = "feedbax.external_conformance.result.v9"
     payload["cases"].pop("dynamic_component_ports")
 
-    with pytest.raises(ValueError, match="v9 cannot migrate to v12.*dynamic_component_ports"):
+    with pytest.raises(ValueError, match="v9 cannot migrate to v13.*dynamic_component_ports"):
         fixture_package.load_result(payload)
 
 
@@ -203,7 +203,7 @@ def test_result_v10_rejects_unmeasured_external_driver_plugin(fixture_package) -
     payload["schema_version"] = "feedbax.external_conformance.result.v10"
     payload["cases"].pop("external_driver_plugin")
 
-    with pytest.raises(ValueError, match="v10 cannot migrate to v12.*external_driver_plugin"):
+    with pytest.raises(ValueError, match="v10 cannot migrate to v13.*external_driver_plugin"):
         fixture_package.load_result(payload)
 
 
@@ -223,14 +223,34 @@ def test_result_v11_rejects_missing_custody_and_bound_protocol_roles(fixture_pac
 
     with pytest.raises(
         ValueError,
-        match="v11 cannot migrate to v12.*custody_persistence_recovery.*roles are unbound",
+        match="v11 cannot migrate to v13.*custody_persistence_recovery.*roles are unbound",
+    ):
+        fixture_package.load_result(payload)
+
+
+def test_result_v12_rejects_unmeasured_figure_composition(fixture_package) -> None:
+    payload = fixture_package.ConformanceResult(
+        status="pass",
+        feedbax_version="0.2.0",
+        feedbax_install_root="/installed/feedbax",
+        fixture_install_root="/installed/fixture",
+        protocol_roles=_protocol_roles(),
+        cases=_required_cases(fixture_package),
+        lifecycle={"status": "pass"},
+    ).model_dump(mode="json")
+    payload["schema_version"] = fixture_package.RESULT_SCHEMA_VERSION_V12
+    payload["cases"] = dict.fromkeys(fixture_package.V12_REQUIRED_CASE_IDS, True)
+
+    with pytest.raises(
+        ValueError,
+        match="v12 cannot migrate to v13.*figure_composition_public_contract",
     ):
         fixture_package.load_result(payload)
 
 
 @pytest.mark.parametrize(
     "version",
-    [None, "feedbax.external_conformance.result.v0", "feedbax.external_conformance.result.v13"],
+    [None, "feedbax.external_conformance.result.v0", "feedbax.external_conformance.result.v14"],
 )
 def test_result_rejects_unsupported_versions(fixture_package, version: str | None) -> None:
     payload = {
@@ -297,7 +317,7 @@ def test_result_rejects_inconsistent_outcomes(
         )
 
 
-def test_result_v12_preserves_v11_inventory_and_appends_custody_case(
+def test_result_v13_preserves_v12_inventory_and_appends_figure_case(
     fixture_package,
 ) -> None:
     assert fixture_package.V2_REQUIRED_CASE_IDS == (
@@ -333,11 +353,14 @@ def test_result_v12_preserves_v11_inventory_and_appends_custody_case(
         "resolved_evaluation_row_projection",
         "public_lifecycle_recovery",
     )
-    current_case_contract = (*v11_case_contract, "custody_persistence_recovery")
+    v12_case_contract = (*v11_case_contract, "custody_persistence_recovery")
+    current_case_contract = (*v12_case_contract, "figure_composition_public_contract")
     assert fixture_package.V10_REQUIRED_CASE_IDS == v10_case_contract
     assert fixture_package.V10_REQUIRED_CASE_ID_SET == frozenset(v10_case_contract)
     assert fixture_package.V11_REQUIRED_CASE_IDS == v11_case_contract
     assert fixture_package.V11_REQUIRED_CASE_ID_SET == frozenset(v11_case_contract)
+    assert fixture_package.V12_REQUIRED_CASE_IDS == v12_case_contract
+    assert fixture_package.V12_REQUIRED_CASE_ID_SET == frozenset(v12_case_contract)
     assert fixture_package.REQUIRED_CASE_IDS == current_case_contract
     assert fixture_package.V2_REQUIRED_CASE_ID_SET == frozenset(
         fixture_package.V2_REQUIRED_CASE_IDS
@@ -363,7 +386,7 @@ def test_result_v12_preserves_v11_inventory_and_appends_custody_case(
             fixture_package.ConformanceResult.model_validate({**valid, "cases": cases})
 
 
-def test_runner_case_order_exactly_matches_v12_inventory(fixture_package) -> None:
+def test_runner_case_order_exactly_matches_v13_inventory(fixture_package) -> None:
     runner_path = FIXTURE_SRC / "feedbax_external_conformance" / "runner.py"
     tree = ast.parse(runner_path.read_text(encoding="utf-8"), filename=str(runner_path))
     case_keys: tuple[str, ...] | None = None
@@ -385,7 +408,7 @@ def test_runner_case_order_exactly_matches_v12_inventory(fixture_package) -> Non
     assert case_keys == fixture_package.REQUIRED_CASE_IDS
 
 
-def test_result_v12_case_values_are_strict_booleans(fixture_package) -> None:
+def test_result_v13_case_values_are_strict_booleans(fixture_package) -> None:
     cases = _required_cases(fixture_package)
     cases["public_lifecycle_recovery"] = "yes"
 
@@ -403,7 +426,7 @@ def test_result_v12_case_values_are_strict_booleans(fixture_package) -> None:
 
 @pytest.mark.parametrize("slot", ["current", "minimum"])
 @pytest.mark.parametrize("unsupported", [None, 0, 2, "1", True, 1.0])
-def test_result_v12_protocol_roles_are_bound_to_one(
+def test_result_v13_protocol_roles_are_bound_to_one(
     fixture_package, slot: str, unsupported: object
 ) -> None:
     roles: dict[str, object] = _protocol_roles()
@@ -425,13 +448,13 @@ def test_result_v12_protocol_roles_are_bound_to_one(
     [None, {}, {"current": None}, {"minimum": None}],
     ids=["absent", "empty", "missing-minimum", "missing-current"],
 )
-def test_result_v12_requires_explicit_protocol_role_slots(
+def test_result_v13_requires_explicit_protocol_role_slots(
     fixture_package,
     protocol_roles: dict[str, int] | None,
 ) -> None:
     payload = {
         "schema_id": "feedbax.external_conformance.result",
-        "schema_version": "feedbax.external_conformance.result.v12",
+        "schema_version": "feedbax.external_conformance.result.v13",
         "status": "pass",
         "feedbax_version": "0.1.2",
         "feedbax_install_root": "/installed/feedbax",
@@ -517,6 +540,12 @@ def test_resolved_projection_case_uses_explicit_bootstrap_registries(
     cases = importlib.import_module(f"{fixture_package.__name__}.cases")
 
     assert cases.check_resolved_evaluation_row_projection()
+
+
+def test_figure_composition_case_uses_public_installed_contract(fixture_package) -> None:
+    cases = importlib.import_module(f"{fixture_package.__name__}.cases")
+
+    assert cases.check_figure_composition_public_contract()
 
 
 def test_unified_bootstrap_case_uses_typed_plugin_registrations(
@@ -701,10 +730,10 @@ def test_clean_wheel_runner_checks_installed_dependency_metadata(
     ]
 
 
-def test_clean_wheel_wrapper_pins_v12_roles_and_persisted_output() -> None:
+def test_clean_wheel_wrapper_pins_v13_roles_and_persisted_output() -> None:
     source = (ROOT / "scripts" / "run_external_conformance.py").read_text(encoding="utf-8")
 
-    assert 'payload["schema_version"] != "feedbax.external_conformance.result.v12"' in source
+    assert 'payload["schema_version"] != "feedbax.external_conformance.result.v13"' in source
     assert 'payload["protocol_roles"] != {"current": 1, "minimum": 1}' in source
     assert "args.result_out.write_text" in source
 
@@ -721,7 +750,7 @@ def test_clean_wheel_wrapper_rejects_malformed_result(
     result_path.write_text(
         """{
   "schema_id": "feedbax.external_conformance.result",
-  "schema_version": "feedbax.external_conformance.result.v12",
+  "schema_version": "feedbax.external_conformance.result.v13",
   "status": "pass",
   "feedbax_version": "0.1.2",
   "feedbax_install_root": "/isolated/feedbax",
