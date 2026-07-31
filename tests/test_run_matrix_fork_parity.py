@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -26,9 +28,9 @@ from feedbax.contracts.run_matrix import (
 from feedbax.contracts.training import (
     TrainingMethodRegistry,
     default_training_method_registry,
-    standard_supervised_method_ref,
 )
 from feedbax.contracts.worker import ProgressCoordinate
+from feedbax.plugins import bootstrap_application, new_registration_context
 from feedbax.training.checkpoint_custody import (
     CheckpointCompatibilityError,
     CheckpointForkPlanBindings,
@@ -52,6 +54,21 @@ from tests.test_run_matrix_materialization import _matrix, _training_run_payload
 from tests.test_checkpoint_custody import _coordinate, _minimax_slots, _run_spec
 from feedbax.training.run_matrix import materialize_run_matrix
 from feedbax.contracts.manifest import canonical_json_bytes
+from tests.checkpoint_minimax_plugin import (
+    PLUGIN_REGISTRATION,
+    checkpoint_minimax_method_descriptor,
+)
+
+
+@pytest.fixture
+def application_registry_bundle():
+    state = asyncio.run(
+        bootstrap_application(
+            new_registration_context(local_component_source=None),
+            registrations=(PLUGIN_REGISTRATION,),
+        )
+    )
+    return state.bundle
 
 
 def _write_latest(root: Path, *, transaction_id: str, digest: str) -> None:
@@ -177,13 +194,13 @@ def _target_transform_provenance(
 
 
 def _registration_only_method_registry() -> TrainingMethodRegistry:
-    default = default_training_method_registry()
-    registration = default.resolve(
-        standard_supervised_method_ref(),
-        path="/method_ref",
-    )
     registry = TrainingMethodRegistry()
-    registry.register(registration)
+    registry.register_descriptor(
+        replace(
+            checkpoint_minimax_method_descriptor(),
+            optimizer_spec_projector=None,
+        )
+    )
     return registry
 
 

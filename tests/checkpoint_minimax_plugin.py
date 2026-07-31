@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from feedbax.contracts.training import (
     MethodPayloadEnvelope,
     MethodRefSpec,
+    OptimizerSpec,
     TrainingMethodDescriptor,
 )
 from feedbax.contracts.worker import (
@@ -36,6 +37,7 @@ class CheckpointMinimaxPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     contract: Literal["toy_minimax"] = "toy_minimax"
+    optimizer: OptimizerSpec = Field(default_factory=lambda: OptimizerSpec(type="adamw"))
 
 
 def checkpoint_minimax_method_contract(
@@ -89,18 +91,24 @@ def _update_kernels(_payload: CheckpointMinimaxPayload):
     }
 
 
+def checkpoint_minimax_method_descriptor() -> TrainingMethodDescriptor[CheckpointMinimaxPayload]:
+    """Return the typed descriptor for the checkpoint minimax test method."""
+    return TrainingMethodDescriptor(
+        method_ref=METHOD_REF,
+        payload_schema_id=PAYLOAD_SCHEMA_ID,
+        payload_schema_version=PAYLOAD_SCHEMA_VERSION,
+        payload_model=CheckpointMinimaxPayload,
+        contract_compiler=checkpoint_minimax_method_contract,
+        update_kernels_factory=_update_kernels,
+        optimizer_spec_projector=lambda payload: payload.optimizer,
+        owner="tests",
+        package="tests",
+    )
+
+
 def _register(context) -> None:
     context.registry(TRAINING_METHODS).register_descriptor(
-        TrainingMethodDescriptor(
-            method_ref=METHOD_REF,
-            payload_schema_id=PAYLOAD_SCHEMA_ID,
-            payload_schema_version=PAYLOAD_SCHEMA_VERSION,
-            payload_model=CheckpointMinimaxPayload,
-            contract_compiler=checkpoint_minimax_method_contract,
-            update_kernels_factory=_update_kernels,
-            owner="tests",
-            package="tests",
-        )
+        checkpoint_minimax_method_descriptor()
     )
 
 
