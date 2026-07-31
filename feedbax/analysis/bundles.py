@@ -28,7 +28,7 @@ from feedbax.analysis.execution_context import (
     with_staged_parent_artifact_provider_bindings,
     with_staged_repo_root,
 )
-from feedbax.analysis.exact_parents import StagedExactParents
+from feedbax.analysis.exact_parents import StagedExactParents, migrate_staged_exact_parents
 from feedbax.analysis.figures import FIGURE_RENDER_ROLE, execute_figure_spec
 from feedbax.analysis.materialization import ContextMaterializer
 from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
@@ -73,6 +73,7 @@ from feedbax.contracts.manifest import (
     SpecPayload,
     StrictModel,
     TrainingRunManifest,
+    training_run_certification,
     StagedEvaluationPrerequisite,
     OverridePatch,
     canonical_json_bytes,
@@ -85,6 +86,14 @@ from feedbax.contracts.manifest import (
     write_manifest,
     load_manifest_bytes,
 )
+from feedbax.contracts.material_dependencies import (
+    IncidentalAdmissionFailure,
+    MaterialDependencyObservation,
+    MaterialDependencySet,
+    dependency_value_sha256,
+    validate_material_dependency_admission,
+)
+from feedbax.contracts.value_identity import ValueIdentityRecord
 from feedbax.contracts.staged_execution import StagedExecutionDescriptor
 from feedbax.contracts.run_matrix import apply_override_patches
 from feedbax.contracts.selection import (
@@ -870,7 +879,11 @@ def _exact_execution_location_key(execution_uri: str) -> str:
     return relative.as_posix()
 
 
-def _require_exact_parent_metadata(parent: ParentRef) -> tuple[str, int]:
+def _require_exact_parent_metadata(
+    parent: ParentRef,
+    *,
+    require_completed_status: bool = True,
+) -> tuple[str, int]:
     """Validate exact immutable-parent identity and return digest and size."""
     if parent.kind != "TrainingRunManifest":
         raise ValueError(f"exact parent kind must be 'TrainingRunManifest'; got {parent.kind!r}")
@@ -901,6 +914,12 @@ def _require_exact_parent_metadata(parent: ParentRef) -> tuple[str, int]:
             raise ValueError(f"exact parent metadata.{field_name} must be a nonempty string")
     for field_name, expected in _EXACT_PARENT_REQUIRED_STATUS_METADATA.items():
         observed = parent.metadata.get(field_name)
+        if field_name == "manifest_status" and not require_completed_status:
+            if not isinstance(observed, str) or not observed:
+                raise ValueError(
+                    "exact parent metadata.manifest_status must be a nonempty string"
+                )
+            continue
         if observed != expected:
             raise ValueError(
                 f"exact parent metadata.{field_name} must be {expected!r}; got {observed!r}"
@@ -947,8 +966,10 @@ def _available_training_identity_values(
 def _validate_exact_manifest_identity(
     manifest: TrainingRunManifest,
     parent: ParentRef,
+    *,
+    require_completed_status: bool = True,
 ) -> None:
-    if manifest.status != "completed":
+    if require_completed_status and manifest.status != "completed":
         raise ValueError(
             f"exact parent TrainingRunManifest status must be 'completed'; got {manifest.status!r}"
         )
@@ -967,11 +988,195 @@ def _validate_exact_manifest_identity(
                 )
 
 
+def _dependency_observations_for_training_run(
+    spec: MaterialDependencySet,
+    *,
+    parent: ParentRef,
+    manifest: TrainingRunManifest,
+    execution_context: StagedExecutionContext,
+) -> list[MaterialDependencyObservation]:
+    """Project authenticated manifest/certification facts into generic admission."""
+    certification = training_run_certification(manifest)
+    certified = tuple(certification.certified_artifacts)
+    observations: list[MaterialDependencyObservation] = []
+    for dependency in spec.dependencies:
+        value = dependency.value
+        if isinstance(value, ValueIdentityRecord):
+            observations.append(
+                MaterialDependencyObservation(
+                    name=dependency.name,
+                    value=value,
+                    available=False,
+                    authentic=False,
+                    diagnostic=(
+                        "value identities require an explicit downstream runtime observation"
+                    ),
+                )
+            )
+            continue
+        if isinstance(value, ParentRef) and _same_material_ref(value, parent):
+            available = True
+            authentic = True
+            diagnostic = None
+        else:
+            certified_match = any(
+                _same_material_ref(value, candidate)
+                for candidate in certified
+            )
+            if not certified_match:
+                available = False
+                authentic = False
+                diagnostic = (
+                    "not present with the same material identity in the certified "
+                    "artifact prefix"
+                )
+            else:
+                available, authentic, diagnostic = _authenticate_material_dependency(
+                    value,
+                    execution_context=execution_context,
+                )
+        observations.append(
+            MaterialDependencyObservation(
+                name=dependency.name,
+                value=value,
+                available=available,
+                authentic=authentic,
+                diagnostic=diagnostic,
+            )
+        )
+    return observations
+
+
+def _same_material_ref(
+    declared: ParentRef | ArtifactRef,
+    observed: ParentRef | ArtifactRef,
+) -> bool:
+    if isinstance(declared, ParentRef) != isinstance(observed, ParentRef):
+        return False
+    if (
+        isinstance(declared, ParentRef)
+        and isinstance(observed, ParentRef)
+        and declared.kind != observed.kind
+    ):
+        return False
+    declared_digest = dependency_value_sha256(declared)
+    return (
+        declared_digest is not None
+        and _SHA256_PATTERN.fullmatch(declared_digest) is not None
+        and declared_digest == dependency_value_sha256(observed)
+    )
+
+
+def _authenticate_material_dependency(
+    value: ParentRef | ArtifactRef,
+    *,
+    execution_context: StagedExecutionContext,
+) -> tuple[bool, bool, str | None]:
+    """Authenticate one certified value through existing runtime authority."""
+    if isinstance(value, ParentRef):
+        try:
+            if value.kind == "TrainingCheckpointTransactionManifest":
+                resolved = execution_context.resolve_checkpoint_custody_ref(value)
+                expected_digest = dependency_value_sha256(value)
+                if resolved.manifest_sha256 != expected_digest:
+                    return (
+                        True,
+                        False,
+                        "checkpoint custody resolved a different manifest digest",
+                    )
+                return True, True, None
+            resolved_manifest = execution_context.resolve_manifest_input(value)
+            expected_digest = dependency_value_sha256(value)
+            if resolved_manifest.sha256 != expected_digest:
+                return True, False, "manifest authority resolved a different digest"
+            return True, True, None
+        except Exception as exc:
+            diagnostic = str(exc)
+            missing = (
+                isinstance(exc, FileNotFoundError)
+                or " is missing:" in diagnostic
+                or "binding is unavailable" in diagnostic
+                or "location is unavailable" in diagnostic
+                or "root is not a directory" in diagnostic
+            )
+            return not missing, False, diagnostic
+
+    if not execution_context.opened_artifact_providers:
+        return False, False, "no immutable artifact provider is bound"
+    missing_diagnostics: list[str] = []
+    integrity_diagnostics: list[str] = []
+    for provider_name in sorted(execution_context.opened_artifact_providers):
+        provider = execution_context.artifact_provider(provider_name)
+        try:
+            provider.get_bytes(value)
+            return True, True, None
+        except FileNotFoundError as exc:
+            missing_diagnostics.append(f"{provider_name}: {exc}")
+        except Exception as exc:
+            integrity_diagnostics.append(f"{provider_name}: {exc}")
+    if integrity_diagnostics:
+        return True, False, "; ".join(integrity_diagnostics)
+    return False, False, "; ".join(missing_diagnostics) or "artifact bytes are unavailable"
+
+
+def _admit_exact_parent_material_dependencies(
+    spec: MaterialDependencySet,
+    *,
+    parent: ParentRef,
+    manifest: TrainingRunManifest,
+    execution_context: StagedExecutionContext,
+) -> str:
+    observations = _dependency_observations_for_training_run(
+        spec,
+        parent=parent,
+        manifest=manifest,
+        execution_context=execution_context,
+    )
+    incidental_failures = []
+    if manifest.status != "completed":
+        waiver = spec.waiver
+        if waiver is None:
+            raise ValueError(
+                "incidental admission check 'manifest_status_completed' failed without "
+                "an authored waiver"
+            )
+        target_matches = [
+            dependency.name
+            for dependency in spec.dependencies
+            if dependency.value != waiver.manifest
+            and dependency_value_sha256(dependency.value) == waiver.artifact_sha256
+        ]
+        if len(target_matches) != 1:
+            raise ValueError(
+                "admission waiver artifact hash must select exactly one declared "
+                f"dependency; matches={sorted(target_matches)!r}"
+            )
+        incidental_failures.append(
+            IncidentalAdmissionFailure(
+                check="manifest_status_completed",
+                manifest=parent,
+                artifact_sha256=waiver.artifact_sha256,
+                diagnostic=(
+                    f"TrainingRunManifest status is {manifest.status!r}; "
+                    f"declared certified dependency {target_matches[0]!r} remains "
+                    "independently admissible"
+                ),
+            )
+        )
+    admission = validate_material_dependency_admission(
+        spec,
+        observations,
+        incidental_failures=incidental_failures,
+    )
+    return admission.identity_sha256
+
+
 def _preflight_staged_exact_parents(
     bundle: AnalysisBundleSpec,
     exact_parents: StagedExactParents,
     *,
     root: Path,
+    execution_context: StagedExecutionContext,
 ) -> tuple[
     list[TrainingRunManifest],
     tuple[ParentRef, ...],
@@ -1000,8 +1205,11 @@ def _preflight_staged_exact_parents(
     if len(set(location_keys)) != len(location_keys):
         raise ValueError("StagedExactParents contains a duplicate execution location")
 
-    for parent in parent_refs:
-        _require_exact_parent_metadata(parent)
+    for entry in entries:
+        _require_exact_parent_metadata(
+            entry.parent,
+            require_completed_status=entry.material_dependencies is None,
+        )
 
     predicate = bundle.predicate
     exact_id_set = set(parent_ids)
@@ -1031,7 +1239,10 @@ def _preflight_staged_exact_parents(
     locations: list[StagedParentExecutionLocation] = []
     for entry in entries:
         parent = entry.parent
-        declared_digest, declared_size = _require_exact_parent_metadata(parent)
+        declared_digest, declared_size = _require_exact_parent_metadata(
+            parent,
+            require_completed_status=entry.material_dependencies is None,
+        )
         execution_ref = parent.model_copy(update={"uri": entry.execution_uri})
         resolved = resolve_evaluation_inputs(
             EvaluationRunSpec(
@@ -1051,16 +1262,44 @@ def _preflight_staged_exact_parents(
                 "exact parent manifest byte size does not match metadata.size_bytes: "
                 f"declared={declared_size}, observed={observed_size}"
             )
-        _validate_exact_manifest_identity(resolved.manifest, parent)
+        _validate_exact_manifest_identity(
+            resolved.manifest,
+            parent,
+            require_completed_status=entry.material_dependencies is None,
+        )
+        execution_parent = parent
+        if entry.material_dependencies is not None:
+            dependency_identity = _admit_exact_parent_material_dependencies(
+                entry.material_dependencies,
+                parent=parent,
+                manifest=resolved.manifest,
+                execution_context=execution_context,
+            )
+            execution_parent = parent.model_copy(
+                update={
+                    "metadata": {
+                        **parent.metadata,
+                        "material_dependency_identity_sha256": dependency_identity,
+                        "material_dependencies": entry.material_dependencies.model_dump(
+                            mode="json",
+                            exclude_none=True,
+                        ),
+                    }
+                }
+            )
         if not predicate_matches_manifest(predicate, resolved.manifest):
             raise ValueError(f"exact parent {parent.id!r} does not satisfy the bundle predicate")
         manifests.append(resolved.manifest)
         locations.append(
             StagedParentExecutionLocation(
-                parent=parent,
+                parent=execution_parent,
                 root=root.resolve(strict=True),
                 execution_uri=entry.execution_uri,
             )
+        )
+        parent_refs = tuple(
+            execution_parent if candidate == parent else candidate
+            for candidate in parent_refs
         )
 
     if len(manifests) != len(parent_refs):
@@ -2136,7 +2375,7 @@ def dry_run_staged_analysis_bundle(
     if exact_parents is not None and root is None:
         raise ValueError("exact-parent staged dry-run requires an explicit manifest root")
     if exact_parents is not None:
-        exact_parents = StagedExactParents.model_validate(exact_parents.model_dump(mode="json"))
+        exact_parents = migrate_staged_exact_parents(exact_parents)
 
     root_path = Path(root) if root is not None else default_manifest_root()
     bundle_parent_refs: tuple[ParentRef, ...] | None = None
@@ -2153,6 +2392,7 @@ def dry_run_staged_analysis_bundle(
             bundle,
             exact_parents,
             root=root_path,
+            execution_context=_execution_context,
         )
         _execution_context = with_staged_parent_execution_locations(
             _execution_context,
@@ -2341,7 +2581,7 @@ def execute_staged_analysis_bundle(
         raise ValueError("exact-parent staged execution requires an explicit manifest root")
 
     if exact_parents is not None:
-        exact_parents = StagedExactParents.model_validate(exact_parents.model_dump(mode="json"))
+        exact_parents = migrate_staged_exact_parents(exact_parents)
 
     root_path = Path(root) if root is not None else default_manifest_root()
     issue_refs = list(issues or [])
@@ -2356,6 +2596,7 @@ def execute_staged_analysis_bundle(
             bundle,
             exact_parents,
             root=root_path,
+            execution_context=execution_context,
         )
         execution_context = with_staged_parent_execution_locations(
             execution_context,

@@ -449,6 +449,28 @@ from feedbax.contracts.value_identity import (
     semantic_value_sha256,
     value_identity_record,
 )
+from feedbax.contracts.material_dependencies import (
+    ADMISSION_WAIVER_SCHEMA_ID,
+    ADMISSION_WAIVER_SCHEMA_VERSION,
+    MATERIAL_DEPENDENCIES_SCHEMA_ID,
+    MATERIAL_DEPENDENCIES_SCHEMA_VERSION,
+    AdmissionWaiver,
+    IncidentalAdmissionFailure,
+    MaterialDependency,
+    MaterialDependencyAdmission,
+    MaterialDependencyObservation,
+    MaterialDependencySet,
+    dependency_value_sha256,
+    material_dependency_identity_sha256,
+    validate_material_dependency_admission,
+)
+from feedbax.contracts.manifest import (
+    TRAINING_RUN_CERTIFICATION_SCHEMA_ID,
+    TRAINING_RUN_CERTIFICATION_MIGRATION_TABLE,
+    TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION,
+    TrainingRunCertification,
+    training_run_certification,
+)
 from feedbax.contracts.workspace_replay import (
     WORKSPACE_REPLAY_SCHEMA_ID,
     WORKSPACE_REPLAY_SCHEMA_VERSION,
@@ -484,6 +506,20 @@ from feedbax.contracts.studio_api import (
 )
 
 __all__ = [
+    "ADMISSION_WAIVER_SCHEMA_ID",
+    "ADMISSION_WAIVER_SCHEMA_VERSION",
+    "AdmissionWaiver",
+    "IncidentalAdmissionFailure",
+    "MATERIAL_DEPENDENCIES_SCHEMA_ID",
+    "MATERIAL_DEPENDENCIES_SCHEMA_VERSION",
+    "MaterialDependency",
+    "MaterialDependencyAdmission",
+    "MaterialDependencyObservation",
+    "MaterialDependencySet",
+    "TRAINING_RUN_CERTIFICATION_SCHEMA_ID",
+    "TRAINING_RUN_CERTIFICATION_MIGRATION_TABLE",
+    "TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION",
+    "TrainingRunCertification",
     "ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID",
     "ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION",
     "ANALYSIS_DATA_PRODUCT_SCHEMA_ID",
@@ -915,4 +951,8 @@ __all__ = [
     "StagedCheckpointCustodySpec",
     "StagedExecutionDescriptor",
     "validate_staged_binding_name",
+    "dependency_value_sha256",
+    "material_dependency_identity_sha256",
+    "training_run_certification",
+    "validate_material_dependency_admission",
 ]

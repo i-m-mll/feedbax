@@ -35,6 +35,12 @@ from feedbax.contracts.manifest import (
     store_bytes_artifact,
     write_manifest,
 )
+from feedbax.contracts.material_dependencies import (
+    MATERIAL_DEPENDENCIES_SCHEMA_ID,
+    MATERIAL_DEPENDENCIES_SCHEMA_VERSION,
+    MaterialDependency,
+    MaterialDependencySet,
+)
 
 
 def _write_analysis_manifest(root: Path) -> ParentRef:
@@ -254,6 +260,68 @@ def test_authored_report_exact_parents_reject_duplicate_parent_ids_before_output
     with pytest.raises(ValueError, match="duplicate ParentRef id"):
         execute_authored_report_spec(
             ReportSpec(report_type="testpkg.never_runs"),
+            exact_parents=exact,
+            root=root,
+        )
+
+    assert not (root / "manifests" / "reports").exists()
+
+
+def test_authored_report_rejects_unhandled_material_dependencies_before_outputs(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    manifest = AnalysisRunManifest(
+        id="feedbax-analysis-run:material-report-input",
+        status="completed",
+        analysis_spec=spec_payload(
+            "AnalysisRunSpec",
+            {"analysis_type": "testpkg.source_analysis"},
+        ),
+    )
+    raw = manifest.model_dump_json(indent=2).encode("utf-8")
+    relative = Path("parents") / "analysis.json"
+    path = root / relative
+    path.parent.mkdir()
+    path.write_bytes(raw)
+    parent = ParentRef(
+        kind=manifest.kind,
+        id=manifest.id,
+        role="analysis",
+        uri=f"artifact://sha256/{hashlib.sha256(raw).hexdigest()}",
+        metadata={
+            "ref_schema_id": "feedbax.ref.authenticated_manifest",
+            "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+            "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+            "size_bytes": len(raw),
+        },
+    )
+    exact = StagedExactParents(
+        schema_id=STAGED_EXACT_PARENTS_SCHEMA_ID,
+        schema_version=STAGED_EXACT_PARENTS_SCHEMA_VERSION,
+        parents=[
+            StagedExactParentEntry(
+                parent=parent,
+                execution_uri=relative.as_posix(),
+                material_dependencies=MaterialDependencySet(
+                    schema_id=MATERIAL_DEPENDENCIES_SCHEMA_ID,
+                    schema_version=MATERIAL_DEPENDENCIES_SCHEMA_VERSION,
+                    dependencies=[
+                        MaterialDependency(name="analysis_manifest", value=parent)
+                    ],
+                    identity_inputs=["analysis_manifest"],
+                ),
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="cannot ignore.*material_dependencies"):
+        execute_authored_report_spec(
+            ReportSpec(
+                report_type="testpkg.never_runs",
+                inputs=[parent],
+            ),
             exact_parents=exact,
             root=root,
         )
