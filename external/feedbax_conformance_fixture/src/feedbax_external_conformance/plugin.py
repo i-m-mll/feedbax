@@ -179,7 +179,7 @@ class FixtureAnalysis(AbstractAnalysis):
         return {"total": float(jnp.asarray(data.states.value).sum())}
 
     def make_figs(self, _data: AnalysisInputData, *, result, **_kwargs):
-        return {}
+        return None
 
 
 def _fixture_method_descriptor() -> TrainingMethodDescriptor:
