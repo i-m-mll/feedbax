@@ -655,6 +655,25 @@ def _route_assembler_params(
     )
 
 
+def _panel_grid_declarations(spec: FigureSpec) -> list[str]:
+    """Return the grid-shape panel fields a spec declares, in stable order.
+
+    These are the declarations only a panel assembler that composes an explicit
+    subplot grid can honor: a non-Cartesian panel type and multi-cell spans. A
+    spec that declares one against an assembler that ignores it would render a
+    figure that quietly disagrees with what was authored.
+    """
+    declarations: list[str] = []
+    for field_name, declared in (
+        ("panel_type", lambda panel: panel.panel_type is not None),
+        ("row_span", lambda panel: panel.row_span is not None),
+        ("col_span", lambda panel: panel.col_span is not None),
+    ):
+        if any(declared(panel) for panel in spec.panels):
+            declarations.append(field_name)
+    return declarations
+
+
 def _build_figures(
     spec: FigureSpec,
     context: ExpressionContext,
@@ -681,6 +700,12 @@ def _build_figures(
             raise ValueError(
                 "FigureSpec declares equal_data_aspect, which requires a registered "
                 f"panel assembler; {assembler_key!r} is a custom_figure assembler"
+            )
+        declared = _panel_grid_declarations(spec)
+        if declared:
+            raise ValueError(
+                f"FigureSpec declares {declared}, which requires a registered panel "
+                f"assembler; {assembler_key!r} is a custom_figure assembler"
             )
         if spec.colorbar is not None:
             raise ValueError(
@@ -717,6 +742,12 @@ def _build_figures(
     ):
         raise ValueError(
             "FigureSpec declares equal_data_aspect, but panel assembler "
+            f"{panel_registration.key!r} does not support it"
+        )
+    declared = _panel_grid_declarations(spec)
+    if declared and panel_registration.key != "feedbax.comparison_grid":
+        raise ValueError(
+            f"FigureSpec declares {declared}, but panel assembler "
             f"{panel_registration.key!r} does not support it"
         )
     figure_registration = get_figure_constructor(assembler_key, tier="figure")
@@ -1112,6 +1143,7 @@ def _panel_contents(
         axes_labels = panel.axes_labels.model_dump() if panel and panel.axes_labels else None
         x_axis = panel.x_axis.model_dump(exclude_none=True) if panel and panel.x_axis else None
         y_axis = panel.y_axis.model_dump(exclude_none=True) if panel and panel.y_axis else None
+        z_axis = panel.z_axis.model_dump(exclude_none=True) if panel and panel.z_axis else None
         equal_data_aspect = (
             panel.equal_data_aspect.model_dump(exclude_none=True)
             if panel and panel.equal_data_aspect
@@ -1128,6 +1160,10 @@ def _panel_contents(
                 x_axis=x_axis,
                 y_axis=y_axis,
                 equal_data_aspect=equal_data_aspect,
+                z_axis=z_axis,
+                panel_type=panel.panel_type if panel else None,
+                row_span=panel.row_span if panel else None,
+                col_span=panel.col_span if panel else None,
             )
         )
     return contents
@@ -1191,6 +1227,14 @@ def _facet_panel_contents(
                     )
                     else None
                 ),
+                z_axis=(
+                    base_panel.z_axis.model_dump(exclude_none=True)
+                    if base_panel is not None and base_panel.z_axis is not None
+                    else None
+                ),
+                panel_type=base_panel.panel_type if base_panel is not None else None,
+                row_span=base_panel.row_span if base_panel is not None else None,
+                col_span=base_panel.col_span if base_panel is not None else None,
             )
         )
     return contents

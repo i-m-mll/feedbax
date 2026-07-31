@@ -44,11 +44,15 @@ class ProfileBandParams(ProfileParams):
 
 
 class TrajectoryStartMarkerParams(StrictModel):
-    """Marker on the first sample of every plotted 2D trajectory.
+    """Marker on the first sample of every plotted trajectory.
 
     A ``color`` of ``None`` means each marker inherits the color of the
     trajectory it belongs to, so markers follow a continuous colorscale
     instead of collapsing to one flat color.
+
+    ``symbol`` is passed to Plotly unchanged and is validated by the trace type
+    that draws it. The 3D symbol vocabulary is the smaller one, so a symbol a 2D
+    panel accepts is not automatically available to a 3D one.
     """
 
     label: str | None = None
@@ -58,8 +62,14 @@ class TrajectoryStartMarkerParams(StrictModel):
     showlegend: bool | None = None
 
 
-class Trajectory2DParams(StrictModel):
-    """Defaults for 2D trajectory traces."""
+class TrajectoryParams(StrictModel):
+    """Encodings shared by the 2D and 3D trajectory constructors.
+
+    These are the channels a trajectory carries regardless of how many spatial
+    dimensions it is drawn in: which color it takes and from where, how many
+    curves are drawn, whether a mean is added, and how the line and its start
+    marker are styled.
+    """
 
     label: str | None = None
     color: str | None = None
@@ -74,9 +84,25 @@ class Trajectory2DParams(StrictModel):
     line_width: float = 0.75
     mean_line_width: float = 2.5
     start_marker: TrajectoryStartMarkerParams | None = None
+
+
+class Trajectory2DParams(TrajectoryParams):
+    """Defaults for 2D trajectory traces."""
+
     affected_color: str = "rgba(255, 160, 160, 0.65)"
     affected_line_width: float = 6.0
     affected_marker_size: float = 10.0
+
+
+class Trajectory3DParams(TrajectoryParams):
+    """Defaults for 3D trajectory traces.
+
+    A 3D trajectory carries exactly the shared encodings and adds none of its
+    own. The perturbation underlay the 2D constructor draws is deliberately
+    absent: it is an authored annotation of when a perturbation applied, and no
+    3D consumer has asked for one, so ``trajectory_3d`` rejects perturbation
+    timing rather than accepting and ignoring it.
+    """
 
 
 class EndpointMarkerParams(StrictModel):
@@ -180,7 +206,11 @@ class Trajectories2DRowParams(StrictModel):
 
 @dataclass(frozen=True)
 class PanelContent:
-    """Resolved traces and layout metadata for one panel."""
+    """Resolved traces and layout metadata for one panel.
+
+    ``panel_type`` of ``None`` is the Cartesian panel, which is what every panel
+    was before scene panels existed; ``"scene"`` is the 3D one.
+    """
 
     name: str
     traces: tuple[Any, ...] = ()
@@ -191,6 +221,10 @@ class PanelContent:
     x_axis: Mapping[str, Any] | None = None
     y_axis: Mapping[str, Any] | None = None
     equal_data_aspect: Mapping[str, Any] | None = None
+    z_axis: Mapping[str, Any] | None = None
+    panel_type: str | None = None
+    row_span: int | None = None
+    col_span: int | None = None
 
 
 TraceConstructor = Callable[[Mapping[str, Any], StrictModel], Sequence[Any]]
@@ -578,30 +612,61 @@ def _profile_curves(data: Mapping[str, Any], params: StrictModel) -> Sequence[An
     return traces
 
 
-def _trajectory_2d(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any]:
-    p = Trajectory2DParams.model_validate(params.model_dump())
+#: Plotly coordinate argument names, in the order a trajectory's columns take.
+_COORDINATE_NAMES = ("x", "y", "z")
+
+#: The scatter trace type that draws points of each spatial dimensionality.
+_SCATTER_BY_DIM: dict[int, type[Any]] = {2: go.Scatter, 3: go.Scatter3d}
+
+
+@dataclass(frozen=True)
+class _TrajectoryCurves:
+    """Curves, per-curve colors, and label prepared for a trajectory constructor.
+
+    This is the shared core of the trajectory constructors: everything that
+    depends on the authored encodings rather than on how many spatial
+    dimensions the traces are drawn in.
+    """
+
+    curves: np.ndarray
+    colors: list[str]
+    group_colors: list[str]
+    label: str
+
+
+def _coordinates(points: np.ndarray, dim: int) -> dict[str, np.ndarray]:
+    """Return the Plotly coordinate arguments for one array of plotted points."""
+    return {name: points[..., axis] for axis, name in enumerate(_COORDINATE_NAMES[:dim])}
+
+
+def _trajectory_array(data: Mapping[str, Any], *, constructor: str, dim: int) -> np.ndarray:
+    """Return authored trajectories as a batched ``(..., time, dim)`` array."""
     trajectories = _array(data.get("trajectories", data.get("y", [])))
     if trajectories.ndim == 2:
         trajectories = trajectories[None, :, :]
-    if trajectories.ndim < 3 or trajectories.shape[-1] != 2:
+    if trajectories.ndim < 3 or trajectories.shape[-1] != dim:
         raise ValueError(
-            "trajectory_2d requires trajectories with shape (..., time, 2), "
+            f"{constructor} requires trajectories with shape (..., time, {dim}), "
             f"got {trajectories.shape}"
         )
-    timing = _perturbation_timing(data, constructor="trajectory_2d")
-    if timing is not None and trajectories.shape[-2] != timing.sample_count:
-        raise ValueError(
-            "trajectory_2d perturbation timing sample_count "
-            f"{timing.sample_count} does not match every plotted trajectory length "
-            f"{trajectories.shape[-2]}"
-        )
+    return trajectories
+
+
+def _trajectory_curves(
+    trajectories: np.ndarray,
+    data: Mapping[str, Any],
+    p: TrajectoryParams,
+    *,
+    constructor: str,
+) -> _TrajectoryCurves:
+    """Resolve authored colors and flatten a trajectory batch into drawn curves."""
     label = p.label or str(data.get("label", "Trajectory"))
     colorscale = p.colorscale
     if colorscale is None and p.colorscale_key is not None:
         colorscales = data.get("colorscales")
         if not isinstance(colorscales, Mapping) or p.colorscale_key not in colorscales:
             raise ValueError(
-                f"trajectory_2d colorscale_key {p.colorscale_key!r} is not present in data.colorscales"
+                f"{constructor} colorscale_key {p.colorscale_key!r} is not present in data.colorscales"
             )
         colorscale = colorscales[p.colorscale_key]
     if colorscale is None:
@@ -611,33 +676,80 @@ def _trajectory_2d(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any
     axis = p.colorscale_axis if p.colorscale_axis >= 0 else len(batch_shape) + p.colorscale_axis
     if axis < 0 or axis >= len(batch_shape):
         raise ValueError(
-            f"trajectory_2d colorscale_axis {p.colorscale_axis} is outside batch shape {batch_shape}"
+            f"{constructor} colorscale_axis {p.colorscale_axis} is outside batch shape {batch_shape}"
         )
     trajectories = np.moveaxis(trajectories, axis, 0)[:: max(1, p.stride)]
     group_count = trajectories.shape[0]
     curves_per_group = int(np.prod(trajectories.shape[1:-2], dtype=int)) or 1
-    trajectories = trajectories.reshape((-1, *trajectories.shape[-2:]))
+    curves = trajectories.reshape((-1, *trajectories.shape[-2:]))
+    group_colors: list[str]
     if p.color is not None:
         group_colors = [p.color] * group_count
     elif colorscale is not None:
-        group_colors = list(sample_colorscale_unique(colorscale, group_count, colortype="rgb"))
+        group_colors = [
+            str(color)
+            for color in sample_colorscale_unique(colorscale, group_count, colortype="rgb")
+        ]
     else:
         group_colors = [str(data.get("color", "rgb(31,119,180)"))] * group_count
     colors = [color for color in group_colors for _ in range(curves_per_group)]
+    return _TrajectoryCurves(
+        curves=curves,
+        colors=colors,
+        group_colors=group_colors,
+        label=label,
+    )
+
+
+def _trajectory_line(p: TrajectoryParams, color: str, width: float) -> dict[str, Any]:
+    """Return one trajectory line style, carrying dash only when authored."""
+    line: dict[str, Any] = {"color": color, "width": width}
+    if p.line_dash is not None:
+        line["dash"] = p.line_dash
+    return line
+
+
+def _trajectory_start_marker(prepared: _TrajectoryCurves, p: TrajectoryParams) -> list[Any]:
+    """Return the authored start-marker trace, or nothing when none is authored."""
+    if p.start_marker is None or prepared.curves.shape[0] == 0:
+        return []
+    marker = p.start_marker
+    marker_label = marker.label or f"{prepared.label} start"
+    return [
+        _point_marker_trace(
+            prepared.curves[:, 0, :],
+            name=marker_label,
+            color=marker.color if marker.color is not None else prepared.colors,
+            size=marker.size,
+            symbol=marker.symbol,
+            legendgroup=marker_label,
+            showlegend=marker.showlegend,
+        )
+    ]
+
+
+def _trajectory_2d(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any]:
+    p = Trajectory2DParams.model_validate(params.model_dump())
+    trajectories = _trajectory_array(data, constructor="trajectory_2d", dim=2)
+    timing = _perturbation_timing(data, constructor="trajectory_2d")
+    if timing is not None and trajectories.shape[-2] != timing.sample_count:
+        raise ValueError(
+            "trajectory_2d perturbation timing sample_count "
+            f"{timing.sample_count} does not match every plotted trajectory length "
+            f"{trajectories.shape[-2]}"
+        )
+    prepared = _trajectory_curves(trajectories, data, p, constructor="trajectory_2d")
+    label = prepared.label
     traces: list[Any] = []
-    for index, (traj, color) in enumerate(zip(trajectories, colors, strict=True)):
-        line: dict[str, Any] = {"color": color, "width": p.line_width}
-        if p.line_dash is not None:
-            line["dash"] = p.line_dash
+    for index, (traj, color) in enumerate(zip(prepared.curves, prepared.colors, strict=True)):
         scientific_trace = go.Scatter(
             name=label,
             legendgroup=label,
             showlegend=index == 0 and p.showlegend is not False,
-            x=traj[:, 0],
-            y=traj[:, 1],
+            **_coordinates(traj, 2),
             mode="lines",
             opacity=p.opacity,
-            line=line,
+            line=_trajectory_line(p, color, p.line_width),
         )
         traces.extend(
             _trajectory_with_affected_underlay(
@@ -649,21 +761,17 @@ def _trajectory_2d(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any
                 marker_size=p.affected_marker_size,
             )
         )
-    if p.show_mean and trajectories.shape[0] > 1:
-        mean = np.nanmean(trajectories, axis=0)
+    if p.show_mean and prepared.curves.shape[0] > 1:
+        mean = np.nanmean(prepared.curves, axis=0)
         mean_trace_kwargs: dict[str, Any] = {}
         if p.showlegend is not None:
             mean_trace_kwargs["showlegend"] = p.showlegend
-        mean_line: dict[str, Any] = {"color": group_colors[0], "width": p.mean_line_width}
-        if p.line_dash is not None:
-            mean_line["dash"] = p.line_dash
         mean_trace = go.Scatter(
             name=f"{label} mean",
             legendgroup=label,
-            x=mean[:, 0],
-            y=mean[:, 1],
+            **_coordinates(mean, 2),
             mode="lines",
-            line=mean_line,
+            line=_trajectory_line(p, prepared.group_colors[0], p.mean_line_width),
             **mean_trace_kwargs,
         )
         traces.extend(
@@ -676,20 +784,49 @@ def _trajectory_2d(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any
                 marker_size=p.affected_marker_size,
             )
         )
-    if p.start_marker is not None and trajectories.shape[0] > 0:
-        marker = p.start_marker
-        marker_label = marker.label or f"{label} start"
+    traces.extend(_trajectory_start_marker(prepared, p))
+    return traces
+
+
+def _trajectory_3d(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any]:
+    p = Trajectory3DParams.model_validate(params.model_dump())
+    trajectories = _trajectory_array(data, constructor="trajectory_3d", dim=3)
+    if data.get("perturbation_timing") is not None:
+        raise ValueError(
+            "trajectory_3d draws no perturbation underlay, so perturbation_timing data "
+            "would be silently ignored; annotate the perturbation in a 2D panel instead"
+        )
+    prepared = _trajectory_curves(trajectories, data, p, constructor="trajectory_3d")
+    label = prepared.label
+    traces: list[Any] = []
+    for index, (traj, color) in enumerate(zip(prepared.curves, prepared.colors, strict=True)):
         traces.append(
-            _point_marker_trace(
-                trajectories[:, 0, :],
-                name=marker_label,
-                color=marker.color if marker.color is not None else colors,
-                size=marker.size,
-                symbol=marker.symbol,
-                legendgroup=marker_label,
-                showlegend=marker.showlegend,
+            go.Scatter3d(
+                name=label,
+                legendgroup=label,
+                showlegend=index == 0 and p.showlegend is not False,
+                **_coordinates(traj, 3),
+                mode="lines",
+                opacity=p.opacity,
+                line=_trajectory_line(p, color, p.line_width),
             )
         )
+    if p.show_mean and prepared.curves.shape[0] > 1:
+        mean = np.nanmean(prepared.curves, axis=0)
+        mean_trace_kwargs: dict[str, Any] = {}
+        if p.showlegend is not None:
+            mean_trace_kwargs["showlegend"] = p.showlegend
+        traces.append(
+            go.Scatter3d(
+                name=f"{label} mean",
+                legendgroup=label,
+                **_coordinates(mean, 3),
+                mode="lines",
+                line=_trajectory_line(p, prepared.group_colors[0], p.mean_line_width),
+                **mean_trace_kwargs,
+            )
+        )
+    traces.extend(_trajectory_start_marker(prepared, p))
     return traces
 
 
@@ -733,11 +870,15 @@ def _point_marker_trace(
     symbol: str,
     legendgroup: str | None = None,
     showlegend: bool | None = None,
-) -> go.Scatter:
+) -> Any:
     """Return one markers-only trace over an array of plotted points.
 
+    The points' own last axis states how many spatial dimensions they occupy and
+    therefore which scatter type draws them: two columns are a Cartesian
+    ``Scatter``, three are a ``Scatter3d``.
+
     Args:
-        points: Marker positions with shape ``(n, 2)``.
+        points: Marker positions with shape ``(n, 2)`` or ``(n, 3)``.
         name: Trace name, which is also the legend entry text.
         color: One Plotly color for every marker, or one color per point.
         size: Marker size.
@@ -745,15 +886,20 @@ def _point_marker_trace(
         legendgroup: Optional legend group; omitted when ``None``.
         showlegend: Optional legend visibility; Plotly's default when ``None``.
     """
+    dim = points.shape[-1]
+    scatter_type = _SCATTER_BY_DIM.get(dim)
+    if scatter_type is None:
+        raise ValueError(
+            f"marker points must have 2 or 3 columns, got shape {points.shape}"
+        )
     optional: dict[str, Any] = {}
     if legendgroup is not None:
         optional["legendgroup"] = legendgroup
     if showlegend is not None:
         optional["showlegend"] = showlegend
-    return go.Scatter(
+    return scatter_type(
         name=name,
-        x=points[:, 0],
-        y=points[:, 1],
+        **_coordinates(points, dim),
         mode="markers",
         marker={"color": color, "size": size, "symbol": symbol},
         **optional,
@@ -1000,11 +1146,140 @@ def _perturbation_coordinates(
     return x
 
 
+def _panel_cell(panel: PanelContent, index: int) -> tuple[int, int]:
+    """Return the grid cell a panel starts at."""
+    return panel.row or index + 1, panel.col or 1
+
+
+def _subplot_specs(
+    panel_list: Sequence[PanelContent],
+    *,
+    rows: int,
+    cols: int,
+) -> list[list[dict[str, Any] | None]] | None:
+    """Return the Plotly ``specs`` grid, or ``None`` when every cell is plain.
+
+    A grid of plain Cartesian cells is exactly what ``make_subplots`` builds
+    without ``specs`` at all, so it is left unstated. Anything else — a scene
+    panel or a panel spanning several cells — is stated explicitly, and the
+    cells a span covers are ``None`` because Plotly reserves them for the
+    spanning panel rather than giving them subplots of their own.
+    """
+    if not any(
+        panel.panel_type not in (None, "xy")
+        or (panel.row_span or 1) > 1
+        or (panel.col_span or 1) > 1
+        for panel in panel_list
+    ):
+        return None
+    grid: list[list[dict[str, Any] | None]] = [
+        [{"type": "xy"} for _ in range(cols)] for _ in range(rows)
+    ]
+    claimed: dict[tuple[int, int], str] = {}
+    for index, panel in enumerate(panel_list):
+        row, col = _panel_cell(panel, index)
+        row_span = panel.row_span or 1
+        col_span = panel.col_span or 1
+        if row + row_span - 1 > rows or col + col_span - 1 > cols:
+            raise ValueError(
+                f"panel {panel.name!r} spans {row_span}x{col_span} cells from "
+                f"row {row}, col {col}, which leaves the {rows}x{cols} grid"
+            )
+        for covered_row in range(row, row + row_span):
+            for covered_col in range(col, col + col_span):
+                owner = claimed.get((covered_row, covered_col))
+                if owner is not None:
+                    raise ValueError(
+                        f"panels {owner!r} and {panel.name!r} both claim grid cell "
+                        f"row {covered_row}, col {covered_col}"
+                    )
+                claimed[(covered_row, covered_col)] = panel.name
+                grid[covered_row - 1][covered_col - 1] = None
+        spec: dict[str, Any] = {"type": panel.panel_type or "xy"}
+        if row_span > 1:
+            spec["rowspan"] = row_span
+        if col_span > 1:
+            spec["colspan"] = col_span
+        grid[row - 1][col - 1] = spec
+    return grid
+
+
+def _update_scene_panel(fig: go.Figure, panel: PanelContent, *, row: int, col: int) -> None:
+    """Apply one scene panel's labels, axis settings, and aspect mode.
+
+    A scene subplot carries its axes inside ``layout.scene`` rather than as
+    Cartesian layout axes, so ``update_xaxes`` silently reaches nothing here and
+    ``update_scenes`` is the surface that does.
+    """
+    scene: dict[str, Any] = {}
+    if panel.axes_labels:
+        for name in _COORDINATE_NAMES:
+            title = panel.axes_labels.get(name)
+            if title is not None:
+                scene[f"{name}axis_title_text"] = title
+    for name, axis in (
+        ("x", panel.x_axis),
+        ("y", panel.y_axis),
+        ("z", panel.z_axis),
+    ):
+        if axis:
+            scene[f"{name}axis"] = dict(axis)
+    if panel.equal_data_aspect:
+        # A scene has no per-axis scale anchor; equal data units are its aspect mode.
+        scene["aspectmode"] = "data"
+    if scene:
+        fig.update_scenes(**scene, row=row, col=col)
+
+
+def _update_cartesian_panel(fig: go.Figure, panel: PanelContent, *, row: int, col: int) -> None:
+    """Apply one Cartesian panel's labels, axis settings, and aspect ratio."""
+    if panel.axes_labels:
+        fig.update_xaxes(title_text=panel.axes_labels.get("x"), row=row, col=col)
+        fig.update_yaxes(title_text=panel.axes_labels.get("y"), row=row, col=col)
+    if panel.x_axis:
+        fig.update_xaxes(**panel.x_axis, row=row, col=col)
+    if panel.y_axis:
+        fig.update_yaxes(**panel.y_axis, row=row, col=col)
+    if panel.equal_data_aspect:
+        subplot = fig.get_subplot(row, col)
+        if subplot is None or not hasattr(subplot, "xaxis"):
+            raise ValueError(
+                "equal_data_aspect requires a Cartesian x/y subplot at "
+                f"row {row}, col {col}"
+            )
+        shared_axes = []
+        for axis_name, axis, layout_axes in (
+            ("x", subplot.xaxis, fig.select_xaxes()),
+            ("y", subplot.yaxis, fig.select_yaxes()),
+        ):
+            axis_ref = axis.plotly_name.replace("axis", "", 1)
+            if axis.matches is not None or any(
+                other.matches == axis_ref for other in layout_axes
+            ):
+                shared_axes.append(axis_name)
+        if shared_axes:
+            raise ValueError(
+                "equal_data_aspect cannot constrain shared axes at "
+                f"row {row}, col {col}: {shared_axes}; set the corresponding "
+                "shared_xaxes/shared_yaxes parameter to False"
+            )
+        x_axis_ref = subplot.xaxis.plotly_name.replace("axis", "", 1)
+        fig.update_yaxes(
+            scaleanchor=x_axis_ref,
+            scaleratio=panel.equal_data_aspect["ratio"],
+            row=row,
+            col=col,
+        )
+
+
 def _comparison_grid(panels: Sequence[PanelContent], params: StrictModel) -> go.Figure:
     p = ComparisonGridParams.model_validate(params.model_dump())
     panel_list = list(panels) or [PanelContent(name="main")]
-    max_row = max((panel.row or index + 1) for index, panel in enumerate(panel_list))
-    max_col = max((panel.col or 1) for panel in panel_list)
+    max_row = max(
+        (panel.row or index + 1) + (panel.row_span or 1) - 1
+        for index, panel in enumerate(panel_list)
+    )
+    max_col = max((panel.col or 1) + (panel.col_span or 1) - 1 for panel in panel_list)
     titles = [panel.title or panel.name for panel in panel_list]
     fig = make_subplots(
         rows=max_row,
@@ -1014,52 +1289,19 @@ def _comparison_grid(panels: Sequence[PanelContent], params: StrictModel) -> go.
         shared_yaxes=p.shared_yaxes,
         horizontal_spacing=p.horizontal_spacing,
         vertical_spacing=p.vertical_spacing,
+        specs=_subplot_specs(panel_list, rows=max_row, cols=max_col),
     )
     for index, panel in enumerate(panel_list):
-        row = panel.row or index + 1
-        col = panel.col or 1
+        row, col = _panel_cell(panel, index)
         for trace in panel.traces:
             if isinstance(trace, go.layout.Shape):
                 fig.add_shape(trace, row=row, col=col)
             else:
                 fig.add_trace(trace, row=row, col=col)
-        if panel.axes_labels:
-            fig.update_xaxes(title_text=panel.axes_labels.get("x"), row=row, col=col)
-            fig.update_yaxes(title_text=panel.axes_labels.get("y"), row=row, col=col)
-        if panel.x_axis:
-            fig.update_xaxes(**panel.x_axis, row=row, col=col)
-        if panel.y_axis:
-            fig.update_yaxes(**panel.y_axis, row=row, col=col)
-        if panel.equal_data_aspect:
-            subplot = fig.get_subplot(row, col)
-            if subplot is None or not hasattr(subplot, "xaxis"):
-                raise ValueError(
-                    "equal_data_aspect requires a Cartesian x/y subplot at "
-                    f"row {row}, col {col}"
-                )
-            shared_axes = []
-            for axis_name, axis, layout_axes in (
-                ("x", subplot.xaxis, fig.select_xaxes()),
-                ("y", subplot.yaxis, fig.select_yaxes()),
-            ):
-                axis_ref = axis.plotly_name.replace("axis", "", 1)
-                if axis.matches is not None or any(
-                    other.matches == axis_ref for other in layout_axes
-                ):
-                    shared_axes.append(axis_name)
-            if shared_axes:
-                raise ValueError(
-                    "equal_data_aspect cannot constrain shared axes at "
-                    f"row {row}, col {col}: {shared_axes}; set the corresponding "
-                    "shared_xaxes/shared_yaxes parameter to False"
-                )
-            x_axis_ref = subplot.xaxis.plotly_name.replace("axis", "", 1)
-            fig.update_yaxes(
-                scaleanchor=x_axis_ref,
-                scaleratio=panel.equal_data_aspect["ratio"],
-                row=row,
-                col=col,
-            )
+        if panel.panel_type == "scene":
+            _update_scene_panel(fig, panel, row=row, col=col)
+        else:
+            _update_cartesian_panel(fig, panel, row=row, col=col)
     return fig
 
 
@@ -1103,6 +1345,27 @@ def _colorbar_carrier(
     )
 
 
+def _subplot_paper_domains(
+    subplot: Any,
+) -> tuple[tuple[float, ...] | None, tuple[float, ...] | None]:
+    """Return one subplot's paper-coordinate x and y domains, whatever its type.
+
+    A Cartesian subplot states its domains on its two layout axes; a scene
+    states one ``domain`` covering the whole cube. Both are the same rectangle
+    of the paper, which is all a colorbar needs to be placed beside a panel.
+    """
+    if subplot is None:
+        return None, None
+    if isinstance(subplot, go.layout.Scene):
+        domain: Any = subplot.domain
+        if domain is None:
+            return None, None
+        return tuple(domain.x or ()), tuple(domain.y or ())
+    if not hasattr(subplot, "xaxis") or not hasattr(subplot, "yaxis"):
+        return None, None
+    return tuple(subplot.xaxis.domain or ()), tuple(subplot.yaxis.domain or ())
+
+
 def _panel_colorbar_layout(
     fig: go.Figure,
     panels: Sequence[PanelContent],
@@ -1123,16 +1386,14 @@ def _panel_colorbar_layout(
             f"{placement.panel!r}; found {len(matches)}"
         )
     index, panel = matches[0]
-    row = panel.row or index + 1
-    col = panel.col or 1
+    row, col = _panel_cell(panel, index)
     subplot = fig.get_subplot(row, col)
-    if subplot is None or not hasattr(subplot, "xaxis") or not hasattr(subplot, "yaxis"):
+    x_domain, y_domain = _subplot_paper_domains(subplot)
+    if x_domain is None or y_domain is None:
         raise ValueError(
-            "colorbar placement requires a Cartesian panel with resolved x/y domains; "
+            "colorbar placement requires a panel with resolved paper domains; "
             f"panel {placement.panel!r} is at row {row}, col {col}"
         )
-    x_domain = tuple(subplot.xaxis.domain or ())
-    y_domain = tuple(subplot.yaxis.domain or ())
     if len(x_domain) != 2 or len(y_domain) != 2:
         raise ValueError(
             "colorbar placement requires resolved two-point x/y domains for panel "
@@ -1237,6 +1498,13 @@ def register_default_figure_constructors() -> None:
             "2D trajectory traces.",
         ),
         (
+            "feedbax.trajectory_3d",
+            "trace",
+            _trajectory_3d,
+            Trajectory3DParams,
+            "3D trajectory traces for a scene panel.",
+        ),
+        (
             "feedbax.endpoint_markers",
             "trace",
             _endpoint_markers,
@@ -1280,8 +1548,8 @@ def register_default_figure_constructors() -> None:
         "feedbax.endpoint_markers": "v3",
         "feedbax.hline": "v2",
         "feedbax.vrect": "v3",
-        "feedbax.comparison_grid": "v3",
-        "feedbax.grid_figure": "v4",
+        "feedbax.comparison_grid": "v4",
+        "feedbax.grid_figure": "v5",
     }
     for key, tier, constructor, params_model, description in defaults:
         register_figure_constructor(
