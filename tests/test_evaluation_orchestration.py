@@ -333,7 +333,11 @@ def test_insufficient_disk_fails_before_run_output_root(
         disk_paths.append(Path(path))
         return SimpleNamespace(free=649)
 
-    monkeypatch.setattr(assembly_module.shutil, "disk_usage", disk_usage)
+    monkeypatch.setattr(
+        assembly_module,
+        "shutil",
+        SimpleNamespace(disk_usage=disk_usage),
+    )
     run_set_id = "disk-refusal"
     output_root = Path(request.orchestration_root) / run_set_id
     registries = new_application_registry_bundle(local_component_source=None)
@@ -413,7 +417,11 @@ def test_stage_engine_reuses_the_pre_root_capacity_decision_inside_the_lock(
             raise AssertionError("disk capacity was re-observed after the output root existed")
         return SimpleNamespace(free=10_000)
 
-    monkeypatch.setattr(assembly_module.shutil, "disk_usage", disk_usage)
+    monkeypatch.setattr(
+        assembly_module,
+        "shutil",
+        SimpleNamespace(disk_usage=disk_usage),
+    )
     run_set_id = "single-pre-root-decision"
     registries = new_application_registry_bundle(local_component_source=None)
     engine = StageEngine.from_request(

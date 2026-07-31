@@ -2393,7 +2393,7 @@ class RunPodOrchestrationDriver:
             "pod_id": pod_id if isinstance(pod_id, str) else None,
             "resource_id": pod_id if isinstance(pod_id, str) else None,
             "endpoint": (
-                f"ssh://{self._endpoint.host}:{self._endpoint.port}"
+                f"ssh://{self._endpoint.ip}:{self._endpoint.port}"
                 if self._endpoint is not None
                 else None
             ),
