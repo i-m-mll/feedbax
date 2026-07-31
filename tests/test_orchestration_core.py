@@ -143,6 +143,7 @@ from feedbax.orchestration.stages import (
     run_preflight_checks,
 )
 from feedbax.orchestration.state import (
+    ControlFilesystemPreflightError,
     RUN_SET_STATE_SCHEMA_ID,
     RUN_SET_STATE_SCHEMA_VERSION,
     RUN_SET_STATE_SCHEMA_VERSION_V1,
@@ -1427,6 +1428,26 @@ def test_stage_retry_accounting_and_abort_teardown(tmp_path: Path) -> None:
     assert failed_state.stage("REALIZE_ENV").attempts == 3
     assert failed_state.stage("TEARDOWN").status == "completed"
     assert "teardown" in failing_driver.calls
+
+
+def test_control_storage_preflight_fails_before_state_or_driver_action(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    driver = FakeDriver()
+
+    def fail_preflight() -> None:
+        raise ControlFilesystemPreflightError("control storage unavailable")
+
+    monkeypatch.setattr(store, "preflight_and_reserve", fail_preflight)
+
+    with pytest.raises(ControlFilesystemPreflightError, match="control storage unavailable"):
+        StageEngine(bundle=bundle, driver=driver, store=store).run()
+
+    assert not store.path.exists()
+    assert driver.calls == []
 
 
 @pytest.mark.parametrize(

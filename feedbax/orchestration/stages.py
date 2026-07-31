@@ -419,6 +419,7 @@ class StageEngine:
         later local process or operator must reconcile it.
         """
         self._preflight_request_before_output()
+        self.store.preflight_and_reserve()
         initial = self._initial_state()
         with _ScopedSignalSupervisor() as signal_supervisor:
             self._signal_supervisor = signal_supervisor
