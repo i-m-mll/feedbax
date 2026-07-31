@@ -145,6 +145,7 @@ def test_run_subcommand_loads_installed_plugin_before_recipe_execution(
         PluginDeclaration(
             "tests.installed_direct_plugin",
             "1",
+            1,
             families=(FamilyRequirement(ANALYSIS_RECIPES.family),),
         ),
         lambda context: context.registry(ANALYSIS_RECIPES).register(analysis_type, recipe),
@@ -183,7 +184,7 @@ def test_run_subcommand_fails_before_spec_when_plugin_registration_fails(
         raise RuntimeError("plugin registration exploded")
 
     registration = PluginRegistration(
-        PluginDeclaration("tests.broken_analysis", "1"),
+        PluginDeclaration("tests.broken_analysis", "1", 1),
         fail_registration,
     )
     entry_point = SimpleNamespace(

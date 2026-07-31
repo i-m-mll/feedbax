@@ -355,6 +355,7 @@ def test_preflight_loads_non_builtin_training_method_entry_point_before_matrix_a
         PluginDeclaration(
             "tests.orchestration_method",
             "1",
+            1,
             families=(FamilyRequirement("training_methods"),),
         ),
         lambda context: _register_orchestration_plugin_method(context.registry(TRAINING_METHODS)),

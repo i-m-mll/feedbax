@@ -832,6 +832,7 @@ PLUGIN_REGISTRATION = PluginRegistration(
     declaration=PluginDeclaration(
         plugin_id="tests.evaluation_plugin",
         version="1",
+        downstream_protocol_version=1,
         families=(
             FamilyRequirement(EVALUATION_RECIPES.family),
             FamilyRequirement(EVALUATION_BATCH_CONSUMERS.family),

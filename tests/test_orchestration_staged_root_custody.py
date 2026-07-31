@@ -543,6 +543,7 @@ PLUGIN_REGISTRATION = PluginRegistration(
     PluginDeclaration(
         "feedbax.test.staged_root_reclamation",
         "1",
+        1,
         families=(FamilyRequirement(EVALUATION_RECIPES.family),),
     ),
     register,

@@ -22,8 +22,13 @@ if TYPE_CHECKING:
 PLUGIN_ENTRY_POINT_GROUP = "feedbax.plugins"
 PLUGIN_PROTOCOL_VERSION = "feedbax.plugin.v1"
 PLUGIN_DECLARATION_SCHEMA_ID = "feedbax.plugin.declaration"
-PLUGIN_DECLARATION_SCHEMA_VERSION = "feedbax.plugin.declaration.v1"
+PLUGIN_DECLARATION_SCHEMA_VERSION_V1 = "feedbax.plugin.declaration.v1"
+PLUGIN_DECLARATION_SCHEMA_VERSION = "feedbax.plugin.declaration.v2"
 BOOTSTRAP_CONTEXT_VERSION = "feedbax.bootstrap.v1"
+DOWNSTREAM_INTERFACE_POLICY_ID = "feedbax.downstream-interface-stability.v1"
+DOWNSTREAM_PROTOCOL_CURRENT = 1
+DOWNSTREAM_PROTOCOL_MINIMUM = 1
+DOWNSTREAM_POLICY_EFFECTIVE_RELEASE = "0.2.0"
 
 T = TypeVar("T")
 _BOOTSTRAP_LINEAGE: ContextVar[frozenset[int]] = ContextVar(
@@ -51,6 +56,40 @@ class BootstrapError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.plugin_id = plugin_id
+
+
+class UnsupportedDownstreamProtocolVersion(BootstrapError):
+    """A plugin declared a numeric downstream protocol outside the supported window."""
+
+    def __init__(self, requested_version: object, *, plugin_id: str | None = None):
+        super().__init__(
+            BootstrapErrorCode.UNSUPPORTED_PROTOCOL,
+            f"plugin {plugin_id!r} declares unsupported downstream protocol "
+            f"{requested_version!r}; policy={DOWNSTREAM_INTERFACE_POLICY_ID!r}, "
+            f"supported={DOWNSTREAM_PROTOCOL_MINIMUM}..{DOWNSTREAM_PROTOCOL_CURRENT}, "
+            f"effective_release={DOWNSTREAM_POLICY_EFFECTIVE_RELEASE!r}",
+            plugin_id=plugin_id,
+        )
+        self.requested_version = requested_version
+        self.minimum_supported_version = DOWNSTREAM_PROTOCOL_MINIMUM
+        self.current_version = DOWNSTREAM_PROTOCOL_CURRENT
+        self.policy_id = DOWNSTREAM_INTERFACE_POLICY_ID
+
+
+def validate_downstream_protocol_version(
+    protocol_version: object,
+    *,
+    plugin_id: str | None = None,
+) -> int:
+    """Admit one explicitly declared numeric downstream protocol version."""
+
+    if (
+        isinstance(protocol_version, bool)
+        or not isinstance(protocol_version, int)
+        or not DOWNSTREAM_PROTOCOL_MINIMUM <= protocol_version <= DOWNSTREAM_PROTOCOL_CURRENT
+    ):
+        raise UnsupportedDownstreamProtocolVersion(protocol_version, plugin_id=plugin_id)
+    return protocol_version
 
 
 @dataclass(frozen=True)
@@ -98,6 +137,7 @@ class PluginDeclaration:
 
     plugin_id: str
     version: str
+    downstream_protocol_version: int
     schema_id: str = PLUGIN_DECLARATION_SCHEMA_ID
     schema_version: str = PLUGIN_DECLARATION_SCHEMA_VERSION
     plugin_protocol_version: str = PLUGIN_PROTOCOL_VERSION
@@ -152,6 +192,7 @@ class PluginSource:
 class PluginProvenance:
     plugin_id: str
     plugin_version: str
+    downstream_protocol_version: int
     distribution: str | None
     distribution_version: str | None
     fingerprint: str
@@ -340,6 +381,10 @@ def _validated_order(
                 f"plugin {plugin_id!r} has an unsupported declaration or protocol version",
                 plugin_id=plugin_id,
             )
+        validate_downstream_protocol_version(
+            declaration.downstream_protocol_version,
+            plugin_id=plugin_id,
+        )
         existing = by_id.get(plugin_id)
         if existing is not None and existing.registration is source.registration:
             continue
@@ -469,6 +514,7 @@ async def _execute(
                 PluginProvenance(
                     declaration.plugin_id,
                     declaration.version,
+                    declaration.downstream_protocol_version,
                     source.distribution,
                     source.distribution_version,
                     source.fingerprint or _fingerprint(source.entry_point_value),

@@ -773,6 +773,7 @@ def _descriptor_registration(
         PluginDeclaration(
             plugin_id,
             "1",
+            1,
             families=(
                 FamilyRequirement("training_methods"),
                 FamilyRequirement("row_lowerers"),
@@ -1044,6 +1045,7 @@ PLUGIN_REGISTRATION = PluginRegistration(
     PluginDeclaration(
         "tests.fresh",
         "1",
+        1,
         families=(FamilyRequirement("training_methods"), FamilyRequirement("row_lowerers")),
     ),
     register,

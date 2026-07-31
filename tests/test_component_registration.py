@@ -213,6 +213,7 @@ def test_entry_point_component_registration_records_package_provenance() -> None
                 PluginDeclaration(
                     "feedbax.test.components",
                     "1",
+                    1,
                     families=(FamilyRequirement(COMPONENTS.family),),
                 ),
                 registrar,

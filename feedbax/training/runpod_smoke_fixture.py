@@ -101,6 +101,7 @@ PLUGIN_REGISTRATION = PluginRegistration(
     PluginDeclaration(
         "feedbax.validation.native_smoke",
         "1",
+        1,
         families=(
             FamilyRequirement("training_methods"),
             FamilyRequirement("execution_preparations"),

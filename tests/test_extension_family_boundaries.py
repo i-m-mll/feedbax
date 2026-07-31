@@ -66,6 +66,7 @@ def _descriptor_plugin() -> PluginRegistration:
         PluginDeclaration(
             "tests.external_descriptor",
             "1",
+            1,
             families=(
                 FamilyRequirement(TRAINING_METHODS.family),
                 FamilyRequirement(ROW_LOWERERS.family),
@@ -107,6 +108,7 @@ def _finalizer_plugin(plugin_id: str) -> PluginRegistration:
         PluginDeclaration(
             plugin_id,
             "1",
+            1,
             families=(FamilyRequirement(EVALUATION_PRODUCT_UNION_FINALIZERS.family),),
         ),
         lambda context: context.registry(EVALUATION_PRODUCT_UNION_FINALIZERS).register(

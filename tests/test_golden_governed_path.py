@@ -182,6 +182,7 @@ def _write_plugin(path: Path) -> None:
             PluginDeclaration(
                 "tests.golden",
                 "1.0",
+                1,
                 families=(FamilyRequirement("training_methods"), FamilyRequirement("execution_preparations"), FamilyRequirement("row_lowerers")),
             ),
             register,

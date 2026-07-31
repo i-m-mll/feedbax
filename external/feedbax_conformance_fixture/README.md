@@ -42,7 +42,12 @@ case, and shipped v9 lacks the dynamic-port case, so all reject rather than
 acquiring synthetic evidence. The `dynamic_component_ports` case proves an
 external policy-bearing component through unified bootstrap, deterministic
 materialization, GraphSpec build, runtime execution, and fail-closed mismatch.
-The `current` and `minimum` protocol role slots remain required and None-only
-until owner ratification. Version 1 can normalize to v2 only when the later role
-field is absent, then rejects for the same missing current evidence. Unknown,
+The versioned `policy_manifest.v1.json` maps every ratification policy row to
+its durable schemas and existing case IDs. It leaves terminal certification
+explicitly pending because v10 has no external case for that family. The
+`current` and `minimum` result slots remain None-only at this checkpoint: the
+exact integrated 690+b85 head owns the next result schema and the final
+driver/lifecycle/custody rows. This foundation does not publish a competing
+v11 or v12. Version 1 can normalize to v2 only when the later role field is
+absent, then rejects for the same missing current evidence. Unknown,
 ambiguous, versionless, and future versions reject.

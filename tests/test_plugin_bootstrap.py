@@ -86,6 +86,7 @@ def _plugin(
         PluginDeclaration(
             plugin_id,
             "1",
+            1,
             dependencies=dependencies,
             families=(FamilyRequirement(NAMES.family, family_version),),
         ),
@@ -162,6 +163,7 @@ def test_failed_bootstrap_seals_plugin_retained_registry() -> None:
         PluginDeclaration(
             "pkg.retain",
             "1",
+            1,
             families=(FamilyRequirement(COMPONENTS.family),),
         ),
         retain,
@@ -183,7 +185,7 @@ def test_failed_bootstrap_seals_plugin_retained_registry() -> None:
 
 def test_plugin_can_only_access_declared_families() -> None:
     plugin = PluginRegistration(
-        PluginDeclaration("pkg.undeclared", "1"),
+        PluginDeclaration("pkg.undeclared", "1", 1),
         lambda context: context.registry(NAMES).register("hidden"),
     )
     with pytest.raises(BootstrapError) as caught:
@@ -193,7 +195,7 @@ def test_plugin_can_only_access_declared_families() -> None:
 
 def test_declaration_rejects_malformed_nested_members() -> None:
     with pytest.raises(BootstrapError) as caught:
-        PluginDeclaration("pkg.bad", "1", dependencies=(object(),))  # type: ignore[arg-type]
+        PluginDeclaration("pkg.bad", "1", 1, dependencies=(object(),))  # type: ignore[arg-type]
     assert caught.value.code is BootstrapErrorCode.INVALID_REGISTRATION
 
 
@@ -445,6 +447,7 @@ def test_published_registry_metadata_is_detached() -> None:
         PluginDeclaration(
             "pkg.snapshots",
             "1",
+            1,
             families=tuple(
                 FamilyRequirement(key.family)
                 for key in (COMPONENTS, EXPERIMENT_PACKAGES, FIGURES, EVALUATION_RECIPES)
@@ -487,6 +490,7 @@ def test_component_and_plugin_namespace_collisions_are_typed() -> None:
         PluginDeclaration(
             "pkg.component",
             "1",
+            1,
             families=(FamilyRequirement(COMPONENTS.family),),
         ),
         lambda context: context.registry(COMPONENTS).register_component_type(
@@ -502,6 +506,7 @@ def test_component_and_plugin_namespace_collisions_are_typed() -> None:
             PluginDeclaration(
                 plugin_id,
                 "1",
+                1,
                 families=(FamilyRequirement(EXPERIMENT_PACKAGES.family),),
             ),
             lambda context: context.registry(EXPERIMENT_PACKAGES).register_package(
@@ -533,6 +538,7 @@ def test_row_lowerer_authority_collision_is_typed_namespace_failure() -> None:
             PluginDeclaration(
                 plugin_id,
                 "1",
+                1,
                 families=(FamilyRequirement(ROW_LOWERERS.family),),
             ),
             lambda context: context.registry(ROW_LOWERERS).register(registration),

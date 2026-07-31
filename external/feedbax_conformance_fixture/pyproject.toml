@@ -3,7 +3,7 @@ name = "feedbax-external-conformance"
 version = "0.1.0"
 description = "Clean-installed downstream conformance fixture for Feedbax"
 requires-python = ">=3.12"
-dependencies = ["feedbax[analysis]==0.1.2"]
+dependencies = ["feedbax[analysis]==0.2.0"]
 
 [project.scripts]
 feedbax-external-conformance = "feedbax_external_conformance.__main__:main"

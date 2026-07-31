@@ -1,0 +1,115 @@
+{
+  "schema_id": "feedbax.external_conformance.policy_manifest",
+  "schema_version": "feedbax.external_conformance.policy_manifest.v1",
+  "policy_id": "feedbax.downstream-interface-stability.v1",
+  "effective_release": "0.2.0",
+  "protocol": {
+    "current": 1,
+    "minimum": 1
+  },
+  "guaranteed_rows": [
+    {
+      "row_id": "plugin-bootstrap",
+      "case_ids": ["unified_plugin_bootstrap"],
+      "schemas": {
+        "current": ["feedbax.plugin.declaration.v2"],
+        "migrated": [],
+        "rejected": ["feedbax.plugin.declaration.v1"]
+      },
+      "coverage_status": "covered"
+    },
+    {
+      "row_id": "ordered-lowering",
+      "case_ids": ["ordered_registration"],
+      "schemas": {"current": [], "migrated": [], "rejected": []},
+      "coverage_status": "covered"
+    },
+    {
+      "row_id": "component-registration",
+      "case_ids": ["component_registration_and_migration", "dynamic_component_ports"],
+      "schemas": {"current": [], "migrated": [], "rejected": []},
+      "coverage_status": "covered"
+    },
+    {
+      "row_id": "structured-migrations",
+      "case_ids": ["component_registration_and_migration", "component_param_array_values"],
+      "schemas": {"current": [], "migrated": [], "rejected": []},
+      "coverage_status": "covered"
+    },
+    {
+      "row_id": "graph-spec",
+      "case_ids": ["component_param_array_values"],
+      "schemas": {
+        "current": ["feedbax.spec.graph.v5"],
+        "migrated": [
+          "1.0.0",
+          "feedbax.spec.graph.v2",
+          "feedbax.spec.graph.v3",
+          "feedbax.spec.graph.v4"
+        ],
+        "rejected": ["unknown"]
+      },
+      "coverage_status": "covered"
+    },
+    {
+      "row_id": "value-identity",
+      "case_ids": ["value_identity"],
+      "schemas": {
+        "current": ["feedbax.value_identity.v1"],
+        "migrated": [],
+        "rejected": ["feedbax.value_identity.v0", "unknown"]
+      },
+      "coverage_status": "covered"
+    },
+    {
+      "row_id": "material-admission",
+      "case_ids": ["material_dependencies"],
+      "schemas": {
+        "current": [
+          "feedbax.spec.material_dependencies.v1",
+          "feedbax.spec.admission_waiver.v1"
+        ],
+        "migrated": [],
+        "rejected": [
+          "feedbax.spec.material_dependencies.v0",
+          "feedbax.spec.admission_waiver.v0",
+          "unknown"
+        ]
+      },
+      "coverage_status": "covered"
+    },
+    {
+      "row_id": "terminal-certification",
+      "case_ids": [],
+      "schemas": {
+        "current": ["feedbax.manifest.training_run_certification.v1"],
+        "migrated": ["absent completed", "absent cancelled"],
+        "rejected": ["feedbax.manifest.training_run_certification.v0", "absent failed"]
+      },
+      "coverage_status": "pending-final-sync"
+    },
+    {
+      "row_id": "array-values",
+      "case_ids": ["component_param_array_values"],
+      "schemas": {
+        "current": ["feedbax.spec.component_param.array_value.v1"],
+        "migrated": [],
+        "rejected": ["partial tags", "unknown"]
+      },
+      "coverage_status": "covered"
+    },
+    {
+      "row_id": "dynamic-component-definition",
+      "case_ids": ["dynamic_component_ports"],
+      "schemas": {
+        "current": ["feedbax.spec.component_definition.v3"],
+        "migrated": [
+          "feedbax.spec.component_definition.v1",
+          "feedbax.spec.component_definition.v2"
+        ],
+        "rejected": ["unknown"]
+      },
+      "coverage_status": "covered"
+    }
+  ]
+}

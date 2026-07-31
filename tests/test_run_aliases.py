@@ -66,6 +66,7 @@ def _analysis_state(analysis_type: str, recipe):
                     PluginDeclaration(
                         "tests.run_aliases",
                         "1",
+                        1,
                         families=(FamilyRequirement("analysis_recipes"),),
                     ),
                     register,
