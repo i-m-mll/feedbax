@@ -27,9 +27,6 @@ supplied at all.
 from __future__ import annotations
 
 import importlib.util
-import base64
-import hashlib
-import json
 import os
 import re
 import subprocess
@@ -39,13 +36,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import feedbax
+from feedbax._distribution_provenance import (
+    PROVENANCE_FILENAME,
+    SCHEMA_VERSION,
+    DistributionProvenanceError,
+    load_and_verify_provenance,
+)
 
 
 _GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
-FEEDBAX_DISTRIBUTION_PROVENANCE_SCHEMA_VERSION = (
-    "feedbax.distribution_provenance.v1"
-)
-_DISTRIBUTION_PROVENANCE_FILENAME = "_distribution_provenance.json"
+FEEDBAX_DISTRIBUTION_PROVENANCE_SCHEMA_VERSION = SCHEMA_VERSION
 
 _GIT_ENVIRONMENT = {
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -114,164 +114,15 @@ def _resolve_checkout_revision(package_root: Path) -> str | None:
     return revision
 
 
-def _git_object_id(kind: str, data: bytes) -> str:
-    return hashlib.sha1(f"{kind} {len(data)}\0".encode() + data).hexdigest()
-
-
-def _parse_tree(data: bytes) -> list[tuple[str, str, str]]:
-    entries: list[tuple[str, str, str]] = []
-    offset = 0
-    try:
-        while offset < len(data):
-            mode_end = data.index(b" ", offset)
-            name_end = data.index(b"\0", mode_end + 1)
-            oid_end = name_end + 21
-            if oid_end > len(data):
-                raise ValueError
-            mode = data[offset:mode_end].decode("ascii")
-            name = data[mode_end + 1 : name_end].decode("utf-8")
-            entries.append((mode, name, data[name_end + 1 : oid_end].hex()))
-            offset = oid_end
-    except (UnicodeDecodeError, ValueError) as exc:
-        raise FeedbaxRevisionError(
-            "installed Feedbax distribution provenance contains a malformed Git tree"
-        ) from exc
-    return entries
-
-
 def _load_distribution_revision(package_root: Path) -> str | None:
     """Load and verify the versioned provenance embedded in an installed wheel."""
-    provenance_path = package_root / _DISTRIBUTION_PROVENANCE_FILENAME
+    provenance_path = package_root / PROVENANCE_FILENAME
     if not provenance_path.exists():
         return None
     try:
-        payload = json.loads(provenance_path.read_bytes())
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise FeedbaxRevisionError(
-            "installed Feedbax distribution provenance is unreadable or malformed"
-        ) from exc
-    expected_keys = {"schema_version", "revision", "commit_object", "tree_objects"}
-    if not isinstance(payload, dict) or set(payload) != expected_keys:
-        raise FeedbaxRevisionError(
-            "installed Feedbax distribution provenance has an unsupported structure"
-        )
-    if payload["schema_version"] != FEEDBAX_DISTRIBUTION_PROVENANCE_SCHEMA_VERSION:
-        raise FeedbaxRevisionError(
-            "installed Feedbax distribution provenance schema is unsupported: "
-            f"observed={payload['schema_version']!r} "
-            f"expected={FEEDBAX_DISTRIBUTION_PROVENANCE_SCHEMA_VERSION!r}"
-        )
-    revision = payload["revision"]
-    if not isinstance(revision, str) or not _GIT_REVISION_RE.fullmatch(revision):
-        raise FeedbaxRevisionError(
-            "installed Feedbax distribution provenance has a malformed revision"
-        )
-    try:
-        commit_object = base64.b64decode(payload["commit_object"], validate=True)
-    except (TypeError, ValueError) as exc:
-        raise FeedbaxRevisionError(
-            "installed Feedbax distribution provenance has a malformed commit object"
-        ) from exc
-    if _git_object_id("commit", commit_object) != revision:
-        raise FeedbaxRevisionError(
-            "installed Feedbax distribution provenance commit identity is unverifiable"
-        )
-    try:
-        commit_tree_line = commit_object.splitlines()[0].decode("ascii")
-    except (IndexError, UnicodeDecodeError) as exc:
-        raise FeedbaxRevisionError(
-            "installed Feedbax distribution provenance commit object is malformed"
-        ) from exc
-    if not commit_tree_line.startswith("tree "):
-        raise FeedbaxRevisionError(
-            "installed Feedbax distribution provenance commit object has no tree"
-        )
-    tree_payload = payload["tree_objects"]
-    if not isinstance(tree_payload, dict) or not tree_payload:
-        raise FeedbaxRevisionError(
-            "installed Feedbax distribution provenance has no Git tree objects"
-        )
-    trees: dict[str, bytes] = {}
-    try:
-        for oid, encoded in tree_payload.items():
-            if not isinstance(oid, str) or not _GIT_REVISION_RE.fullmatch(oid):
-                raise ValueError
-            data = base64.b64decode(encoded, validate=True)
-            if _git_object_id("tree", data) != oid:
-                raise ValueError
-            trees[oid] = data
-    except (TypeError, ValueError) as exc:
-        raise FeedbaxRevisionError(
-            "installed Feedbax distribution provenance contains an unverifiable Git tree"
-        ) from exc
-
-    root_oid = commit_tree_line.removeprefix("tree ")
-    root = trees.get(root_oid)
-    if root is None:
-        raise FeedbaxRevisionError(
-            "installed Feedbax distribution provenance omits the commit's root tree"
-        )
-    package_entries = [
-        oid
-        for mode, name, oid in _parse_tree(root)
-        if mode == "40000" and name == "feedbax"
-    ]
-    if len(package_entries) != 1:
-        raise FeedbaxRevisionError(
-            "installed Feedbax distribution provenance does not identify one package tree"
-        )
-
-    visited = {root_oid}
-    expected_files: set[Path] = set()
-
-    def verify_tree(oid: str, relative: Path) -> None:
-        data = trees.get(oid)
-        if data is None:
-            raise FeedbaxRevisionError(
-                "installed Feedbax distribution provenance omits a package tree"
-            )
-        visited.add(oid)
-        for mode, name, child_oid in _parse_tree(data):
-            child = relative / name
-            if mode == "40000":
-                verify_tree(child_oid, child)
-                continue
-            if mode not in {"100644", "100755"}:
-                raise FeedbaxRevisionError(
-                    "installed Feedbax distribution provenance contains an unsupported "
-                    f"package entry mode: path={child} mode={mode}"
-                )
-            installed = package_root / child
-            try:
-                contents = installed.read_bytes()
-            except OSError as exc:
-                raise FeedbaxRevisionError(
-                    f"installed Feedbax distribution is missing committed file {child}"
-                ) from exc
-            if _git_object_id("blob", contents) != child_oid:
-                raise FeedbaxRevisionError(
-                    f"installed Feedbax distribution file does not match commit: {child}"
-                )
-            expected_files.add(child)
-
-    verify_tree(package_entries[0], Path())
-    if visited != set(trees):
-        raise FeedbaxRevisionError(
-            "installed Feedbax distribution provenance contains conflicting Git trees"
-        )
-    actual_files = {
-        path.relative_to(package_root)
-        for path in package_root.rglob("*")
-        if path.is_file()
-        and path.name != _DISTRIBUTION_PROVENANCE_FILENAME
-        and "__pycache__" not in path.parts
-    }
-    unexpected = sorted(actual_files - expected_files)
-    if unexpected:
-        raise FeedbaxRevisionError(
-            "installed Feedbax distribution contains files outside its commit identity: "
-            + ", ".join(map(str, unexpected))
-        )
+        _encoded, revision = load_and_verify_provenance(package_root)
+    except DistributionProvenanceError as exc:
+        raise FeedbaxRevisionError(f"installed {exc}") from exc
     return revision
 
 
