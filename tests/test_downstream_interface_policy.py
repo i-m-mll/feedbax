@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import importlib
 import importlib.util
 import json
@@ -28,65 +29,28 @@ from feedbax.plugins import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+POLICY_MANIFEST = (
+    ROOT
+    / "external"
+    / "feedbax_conformance_fixture"
+    / "src"
+    / "feedbax_external_conformance"
+    / "policy_manifest.v1.json"
+)
+_POLICY_PAYLOAD = json.loads(POLICY_MANIFEST.read_text(encoding="utf-8"))
+_PLUGIN_ROW = next(
+    row for row in _POLICY_PAYLOAD["guaranteed_rows"] if row["row_id"] == "plugin-bootstrap"
+)
+_PLUGIN_PUBLIC_NAMES = tuple(
+    next(
+        value["public_names"]
+        for value in _PLUGIN_ROW["plugin_api"]["namespaces"]
+        if value["namespace"] == "feedbax.plugins"
+    )
+)
 
 GUARANTEED_IMPORTS = {
-    "feedbax.plugins": (
-        "DOWNSTREAM_INTERFACE_POLICY_ID",
-        "DOWNSTREAM_PROTOCOL_CURRENT",
-        "DOWNSTREAM_PROTOCOL_MINIMUM",
-        "DOWNSTREAM_POLICY_EFFECTIVE_RELEASE",
-        "UnsupportedDownstreamProtocolVersion",
-        "validate_downstream_protocol_version",
-        "BootstrapError",
-        "BootstrapErrorCode",
-        "BootstrapState",
-        "FamilyRequirement",
-        "PluginDeclaration",
-        "PluginDependency",
-        "PluginProvenance",
-        "PluginRegistration",
-        "RegistrationContext",
-        "RegistryKey",
-        "bootstrap_application",
-        "discover_plugin_registrations",
-        "new_registration_context",
-        "DRIVERS",
-        "ApplicationRegistryBundle",
-        "APPLICATION_REGISTRY_KEYS",
-        "COMPONENTS",
-        "TRAINING_METHODS",
-        "ROW_LOWERERS",
-        "EXECUTION_PREPARATIONS",
-        "ANALYSIS_RECIPES",
-        "EVALUATION_RECIPES",
-        "EVALUATION_BATCH_CONSUMERS",
-        "EVALUATION_PRODUCT_UNION_FINALIZERS",
-        "TrainingMethodDescriptor",
-        "TrainingMethodRegistry",
-        "TrainingRowLowererRegistration",
-        "TrainingRowLowererRegistry",
-        "ExecutionPreparationProvider",
-        "ExecutionPreparationProviderRegistry",
-        "ExecutionPreparationRegistration",
-        "compile_training_method_authoring",
-        "AnalysisRecipe",
-        "AnalysisRecipeRegistry",
-        "AnalysisRecipeResult",
-        "AnalysisRecipeResultValidator",
-        "EvaluationRecipe",
-        "EvaluationRecipeRegistry",
-        "EvaluationRecipeResult",
-        "EvaluationBatchRecipe",
-        "EvaluationBatchConsumer",
-        "EvaluationBatchConsumerRegistry",
-        "EvaluationBatchConsumerInput",
-        "EvaluationBatchMergeInput",
-        "EvaluationBatchMergeState",
-        "EvaluationBatchFinalizeInput",
-        "EvaluationBatchFragment",
-        "EvaluationCompactProductUnionFinalizerRegistry",
-        "EvaluationCompactProductUnionInput",
-    ),
+    "feedbax.plugins": _PLUGIN_PUBLIC_NAMES,
     "feedbax.orchestration.drivers": (
         "DRIVER_CAPABILITIES_SCHEMA_ID",
         "DRIVER_CAPABILITIES_SCHEMA_VERSION",
@@ -355,6 +319,85 @@ def test_policy_checker_accepts_current_repository_contract() -> None:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.check_policy()
+
+
+def test_plugin_api_manifest_pins_all_direct_rlrmp_entrypoint_imports() -> None:
+    direct_imports = _PLUGIN_ROW["plugin_api"]["direct_entrypoint_imports"]
+    assert len(direct_imports) == len(set(direct_imports)) == 12
+    assert set(direct_imports).issubset(_PLUGIN_PUBLIC_NAMES)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    [
+        ("duplicate", "contains duplicates"),
+        ("unclassified", "unclassified facade name"),
+        ("method", "registry method.*is unavailable"),
+        ("consumer", "consumer.*is unavailable"),
+    ],
+)
+def test_plugin_api_checker_rejects_manifest_inventory_drift(
+    mutation: str,
+    match: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = ROOT / "scripts" / "check_downstream_interface_policy.py"
+    spec = importlib.util.spec_from_file_location(
+        f"check_downstream_interface_policy_{mutation}", script
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    row = copy.deepcopy(_PLUGIN_ROW)
+    plugin_api = row["plugin_api"]
+    if mutation == "duplicate":
+        plugin_api["direct_entrypoint_imports"].append(plugin_api["direct_entrypoint_imports"][0])
+    elif mutation == "unclassified":
+        plugin_api["direct_entrypoint_imports"].append("ACCIDENTAL_ENTRYPOINT_NAME")
+    elif mutation == "method":
+        plugin_api["families"][0]["registry_methods"].append("accidental_method")
+    else:
+        plugin_api["families"][0]["public_consumers"].append("feedbax.analysis:accidental_consumer")
+    monkeypatch.setattr(module, "_document_plugin_api", lambda _document: plugin_api)
+
+    with pytest.raises(ValueError, match=match):
+        module._check_plugin_api(row, "rendered inventory")
+
+
+@pytest.mark.parametrize("mutation", ["reordered", "extra"])
+def test_plugin_api_checker_rejects_facade_inventory_drift(
+    mutation: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = ROOT / "scripts" / "check_downstream_interface_policy.py"
+    spec = importlib.util.spec_from_file_location(
+        f"check_downstream_interface_policy_facade_{mutation}", script
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    plugin_api = copy.deepcopy(_PLUGIN_ROW["plugin_api"])
+    facade_path = ROOT / "feedbax" / "plugins" / "__init__.py"
+    original_literal_assignments = module._literal_assignments
+    facade_assignments = original_literal_assignments(facade_path)
+    facade_all = list(facade_assignments["__all__"])
+    if mutation == "reordered":
+        facade_all[0], facade_all[1] = facade_all[1], facade_all[0]
+    else:
+        facade_all.append("ACCIDENTAL_EXPORT")
+    facade_assignments["__all__"] = facade_all
+
+    monkeypatch.setattr(module, "_document_plugin_api", lambda _document: plugin_api)
+    monkeypatch.setattr(
+        module,
+        "_literal_assignments",
+        lambda path: facade_assignments
+        if path == facade_path
+        else original_literal_assignments(path),
+    )
+
+    with pytest.raises(ValueError, match="exact ordered inventory drifted"):
+        module._check_plugin_api(copy.deepcopy(_PLUGIN_ROW), "rendered inventory")
 
 
 def test_ratified_rows_bind_v12_and_have_no_pending_coverage() -> None:
