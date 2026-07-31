@@ -24,7 +24,7 @@ pytestmark = pytest.mark.feedbax_contract
 
 
 def _registry() -> ComponentRegistry:
-    return ComponentRegistry(load_user_components=False, discover_plugins=False)
+    return ComponentRegistry(load_user_components=False)
 
 
 def _report(graph: AcausalGraphSpec) -> DomainCompileReport:
@@ -134,9 +134,7 @@ def test_planar_multibody_reports_unanchored_chain() -> None:
     graph = graph.model_copy(
         update={
             "nodes": {
-                key: value
-                for key, value in graph.nodes.items()
-                if key not in {"world", "anchor"}
+                key: value for key, value in graph.nodes.items() if key not in {"world", "anchor"}
             }
         }
     )
@@ -285,8 +283,12 @@ def test_planar_multibody_reports_missing_muscle_path_frame() -> None:
                 physical_domain="translational",
                 nodes={
                     "wall": ComponentSpec(type="Ground"),
-                    "force_a": ComponentSpec(type="ActuationInput", params={"source_kind": "force"}),
-                    "force_b": ComponentSpec(type="ActuationInput", params={"source_kind": "force"}),
+                    "force_a": ComponentSpec(
+                        type="ActuationInput", params={"source_kind": "force"}
+                    ),
+                    "force_b": ComponentSpec(
+                        type="ActuationInput", params={"source_kind": "force"}
+                    ),
                 },
                 connections=[
                     {"a": ("wall", "flange"), "b": ("force_a", "flange")},
@@ -376,7 +378,12 @@ def test_graph_service_persists_report_and_derives_stale_status(tmp_path: Path) 
     record = service.create_graph(GraphSpec(), None)
     interior = _msd_interior()
 
-    report = service.compile_node(record.graph_id, node_path=["plant"], interior=interior)
+    report = service.compile_node(
+        record.graph_id,
+        node_path=["plant"],
+        interior=interior,
+        component_registry=_registry(),
+    )
     loaded = service.get_graph(record.graph_id).project
     cached = (loaded.compile_reports or {})["plant"]
 
@@ -389,10 +396,13 @@ def test_graph_service_persists_report_and_derives_stale_status(tmp_path: Path) 
         }
     )
     assert cached == report
-    assert derive_compile_status(
-        cached,
-        current_interior_hash=acausal_interior_content_hash(edited),
-    ) == "stale"
+    assert (
+        derive_compile_status(
+            cached,
+            current_interior_hash=acausal_interior_content_hash(edited),
+        )
+        == "stale"
+    )
 
 
 def test_internal_compile_exception_becomes_error_report(
@@ -422,22 +432,22 @@ def test_compile_endpoint_returns_report_and_malformed_body_422(
     record = service.create_graph(GraphSpec(), None)
     monkeypatch.setattr(graphs_api, "service", service)
 
-    client = TestClient(create_app())
-    response = client.post(
-        f"/api/graphs/{record.graph_id}/nodes/compile",
-        json={
-            "node_path": ["plant"],
-            "interior": _msd_interior().model_dump(mode="json"),
-        },
-    )
+    with TestClient(create_app()) as client:
+        response = client.post(
+            f"/api/graphs/{record.graph_id}/nodes/compile",
+            json={
+                "node_path": ["plant"],
+                "interior": _msd_interior().model_dump(mode="json"),
+            },
+        )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["status"] == "ok"
-    assert service.get_graph(record.graph_id).project.compile_reports is not None
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "ok"
+        assert service.get_graph(record.graph_id).project.compile_reports is not None
 
-    malformed = client.post(
-        f"/api/graphs/{record.graph_id}/nodes/compile",
-        json={"node_path": ["plant"]},
-    )
+        malformed = client.post(
+            f"/api/graphs/{record.graph_id}/nodes/compile",
+            json={"node_path": ["plant"]},
+        )
     assert malformed.status_code == 422

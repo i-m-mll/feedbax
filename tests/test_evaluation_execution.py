@@ -15,8 +15,6 @@ from feedbax.analysis.evaluation import (
     EvaluationRecipeExecutionError,
     load_evaluation_states,
     execute_evaluation_run_spec,
-    register_evaluation_recipe,
-    unregister_evaluation_recipe,
 )
 from feedbax.contracts.evaluation_states import (
     EVALUATION_STATES_ARTIFACT_ROLE,
@@ -76,7 +74,9 @@ def _assert_tree_arrays_equal(left, right) -> None:
     assert left == right
 
 
-def test_evaluation_run_spec_executes_headless_and_reuses_manifest_cache(tmp_path: Path):
+def test_evaluation_run_spec_executes_headless_and_reuses_manifest_cache(
+    tmp_path: Path, evaluation_registry
+):
     calls: list[str] = []
     parent = ParentRef(
         kind="TrainingRunManifest",
@@ -104,66 +104,67 @@ def test_evaluation_run_spec_executes_headless_and_reuses_manifest_cache(tmp_pat
             metadata={"states_path_seen": str(states_path)},
         )
 
-    register_evaluation_recipe("testpkg.toy_eval", recipe, replace=True)
-    try:
-        manifest, path = execute_evaluation_run_spec(
-            spec_path,
-            root=tmp_path,
-            issues=["8f40e2d"],
-        )
-        assert manifest.status == "completed"
-        assert path.exists()
-        assert manifest.id == evaluation_run_manifest_id(spec)
-        assert manifest.evaluation_spec.inline["evaluation_type"] == "testpkg.toy_eval"
-        assert manifest.input_training_runs == [parent]
-        assert manifest.provenance.parents == [parent]
-        assert manifest.provenance.issues == ["8f40e2d"]
-        assert manifest.summary_metrics["n_trials"] == 3
+    evaluation_registry.register("testpkg.toy_eval", recipe)
+    manifest, path = execute_evaluation_run_spec(
+        spec_path,
+        registry=evaluation_registry,
+        root=tmp_path,
+        issues=["8f40e2d"],
+    )
+    assert manifest.status == "completed"
+    assert path.exists()
+    assert manifest.id == evaluation_run_manifest_id(spec)
+    assert manifest.evaluation_spec.inline["evaluation_type"] == "testpkg.toy_eval"
+    assert manifest.input_training_runs == [parent]
+    assert manifest.provenance.parents == [parent]
+    assert manifest.provenance.issues == ["8f40e2d"]
+    assert manifest.summary_metrics["n_trials"] == 3
 
-        cache_path = evaluation_states_cache_path(manifest.id, root=tmp_path)
-        assert cache_path.exists()
-        assert manifest.metadata["cache"]["states_path"] == str(cache_path)
-        assert not [
-            artifact
-            for artifact in manifest.artifacts
-            if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
-        ]
+    cache_path = evaluation_states_cache_path(manifest.id, root=tmp_path)
+    assert cache_path.exists()
+    assert manifest.metadata["cache"]["states_path"] == str(cache_path)
+    assert not [
+        artifact
+        for artifact in manifest.artifacts
+        if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
+    ]
 
-        loaded = load_manifest(path)
-        assert loaded.id == manifest.id
+    loaded = load_manifest(path)
+    assert loaded.id == manifest.id
 
-        rerun_manifest, rerun_path = execute_evaluation_run_spec(spec, root=tmp_path)
-        assert rerun_path == path
-        assert rerun_manifest.id == manifest.id
-        assert rerun_manifest.summary_metrics["n_trials"] == 3
-        assert rerun_manifest.summary_metrics["input_training_runs"] == 1
-        assert "states_cache_hit" not in rerun_manifest.summary_metrics
-        assert rerun_manifest.metadata["cache"]["states_cache_hit"] is True
-        assert calls == [str(tmp_path)]
+    rerun_manifest, rerun_path = execute_evaluation_run_spec(
+        spec, registry=evaluation_registry, root=tmp_path
+    )
+    assert rerun_path == path
+    assert rerun_manifest.id == manifest.id
+    assert rerun_manifest.summary_metrics["n_trials"] == 3
+    assert rerun_manifest.summary_metrics["input_training_runs"] == 1
+    assert "states_cache_hit" not in rerun_manifest.summary_metrics
+    assert rerun_manifest.metadata["cache"]["states_cache_hit"] is True
+    assert calls == [str(tmp_path)]
 
-        index_path = rebuild_manifest_index(tmp_path)
-        with sqlite3.connect(index_path) as conn:
-            row = conn.execute(
-                "SELECT kind, status FROM manifests WHERE id = ?",
-                (manifest.id,),
-            ).fetchone()
-            edge = conn.execute(
-                """
-                SELECT parent_kind, parent_id, role
-                FROM lineage_edges
-                WHERE child_id = ?
-                """,
-                (manifest.id,),
-            ).fetchone()
-        assert row == ("EvaluationRunManifest", "completed")
-        assert edge == ("TrainingRunManifest", parent.id, "training_run")
-    finally:
-        unregister_evaluation_recipe("testpkg.toy_eval")
+    index_path = rebuild_manifest_index(tmp_path)
+    with sqlite3.connect(index_path) as conn:
+        row = conn.execute(
+            "SELECT kind, status FROM manifests WHERE id = ?",
+            (manifest.id,),
+        ).fetchone()
+        edge = conn.execute(
+            """
+            SELECT parent_kind, parent_id, role
+            FROM lineage_edges
+            WHERE child_id = ?
+            """,
+            (manifest.id,),
+        ).fetchone()
+    assert row == ("EvaluationRunManifest", "completed")
+    assert edge == ("TrainingRunManifest", parent.id, "training_run")
 
 
 def test_evaluation_recipe_receives_explicit_repo_root_outside_repository_cwd(
     tmp_path: Path,
     monkeypatch,
+    evaluation_registry,
 ) -> None:
     payload = {"bank": {"gain": 7}}
     repo_roots = [tmp_path / "repo-a", tmp_path / "repo-b"]
@@ -198,34 +199,33 @@ def test_evaluation_recipe_receives_explicit_repo_root_outside_repository_cwd(
     outside = tmp_path / "outside"
     outside.mkdir()
     monkeypatch.chdir(outside)
-    register_evaluation_recipe("testpkg.repo_root_eval", recipe, replace=True)
-    try:
-        with pytest.raises(EvaluationRecipeExecutionError) as exc_info:
-            execute_evaluation_run_spec(
-                spec,
-                root=tmp_path / "missing-authority",
-                force=True,
-            )
-        assert isinstance(exc_info.value.__cause__, ValueError)
-        assert "repo_root authority is required" in str(exc_info.value.__cause__)
+    evaluation_registry.register("testpkg.repo_root_eval", recipe)
+    with pytest.raises(EvaluationRecipeExecutionError) as exc_info:
+        execute_evaluation_run_spec(
+            spec,
+            registry=evaluation_registry,
+            root=tmp_path / "missing-authority",
+            force=True,
+        )
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "repo_root authority is required" in str(exc_info.value.__cause__)
 
-        manifests = [
-            execute_evaluation_run_spec(
-                spec,
-                root=tmp_path / f"output-{index}",
-                repo_root=repo_root,
-                force=True,
-            )[0]
-            for index, repo_root in enumerate(repo_roots)
-        ]
-    finally:
-        unregister_evaluation_recipe("testpkg.repo_root_eval")
+    manifests = [
+        execute_evaluation_run_spec(
+            spec,
+            registry=evaluation_registry,
+            root=tmp_path / f"output-{index}",
+            repo_root=repo_root,
+            force=True,
+        )[0]
+        for index, repo_root in enumerate(repo_roots)
+    ]
 
     assert seen_roots == [repo_root.resolve() for repo_root in repo_roots]
     assert manifests[0].id == manifests[1].id == evaluation_run_manifest_id(spec)
 
 
-def test_evaluation_states_durable_custody_round_trips(tmp_path: Path):
+def test_evaluation_states_durable_custody_round_trips(tmp_path: Path, evaluation_registry):
     expected_states = {
         "float_batch": np.asarray([[1.0, 2.0], [3.5, 4.5]], dtype=np.float32),
         "metadata": {
@@ -253,42 +253,39 @@ def test_evaluation_states_durable_custody_round_trips(tmp_path: Path):
     ) -> EvaluationRecipeResult:
         return EvaluationRecipeResult(states=expected_states)
 
-    register_evaluation_recipe("testpkg.durable_eval", recipe, replace=True)
-    try:
-        manifest, path = execute_evaluation_run_spec(spec, root=tmp_path)
+    evaluation_registry.register("testpkg.durable_eval", recipe)
+    manifest, path = execute_evaluation_run_spec(spec, registry=evaluation_registry, root=tmp_path)
 
-        assert path.exists()
-        artifacts = [
-            artifact
-            for artifact in manifest.artifacts
-            if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
-        ]
-        assert len(artifacts) == 1
-        artifact = artifacts[0]
-        assert artifact.media_type == EVALUATION_STATES_MEDIA_TYPE
-        artifact_path = tmp_path / artifact.metadata["relative_path"]
-        assert artifact.uri is None
-        assert artifact.sha256 == sha256_file(artifact_path)
-        assert artifact.size_bytes == artifact_path.stat().st_size
-        assert artifact.metadata["schema_version"] == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
+    assert path.exists()
+    artifacts = [
+        artifact
+        for artifact in manifest.artifacts
+        if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
+    ]
+    assert len(artifacts) == 1
+    artifact = artifacts[0]
+    assert artifact.media_type == EVALUATION_STATES_MEDIA_TYPE
+    artifact_path = tmp_path / artifact.metadata["relative_path"]
+    assert artifact.uri is None
+    assert artifact.sha256 == sha256_file(artifact_path)
+    assert artifact.size_bytes == artifact_path.stat().st_size
+    assert artifact.metadata["schema_version"] == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
 
-        loaded_states = load_evaluation_states(manifest, root=tmp_path)
-        _assert_tree_arrays_equal(expected_states, loaded_states)
+    loaded_states = load_evaluation_states(manifest, root=tmp_path)
+    _assert_tree_arrays_equal(expected_states, loaded_states)
 
-        loaded_manifest = load_manifest(path)
-        assert loaded_manifest.artifacts[0].sha256 == artifact.sha256
+    loaded_manifest = load_manifest(path)
+    assert loaded_manifest.artifacts[0].sha256 == artifact.sha256
 
-        data_a, payload_a = evaluation_states_container_bytes(expected_states)
-        data_b, payload_b = evaluation_states_container_bytes(expected_states)
-        assert payload_a.schema_version == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
-        assert payload_a.metadata_sha256 is not None
-        assert data_a == data_b
-        assert payload_a == payload_b
-    finally:
-        unregister_evaluation_recipe("testpkg.durable_eval")
+    data_a, payload_a = evaluation_states_container_bytes(expected_states)
+    data_b, payload_b = evaluation_states_container_bytes(expected_states)
+    assert payload_a.schema_version == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
+    assert payload_a.metadata_sha256 is not None
+    assert data_a == data_b
+    assert payload_a == payload_b
 
 
-def test_evaluation_states_tamper_fails_closed(tmp_path: Path):
+def test_evaluation_states_tamper_fails_closed(tmp_path: Path, evaluation_registry):
     spec = EvaluationRunSpec(
         evaluation_type="testpkg.tamper_eval",
         params={"states_custody": "durable"},
@@ -302,26 +299,21 @@ def test_evaluation_states_tamper_fails_closed(tmp_path: Path):
     ) -> EvaluationRecipeResult:
         return EvaluationRecipeResult(states={"value": np.asarray([1], dtype=np.int32)})
 
-    register_evaluation_recipe("testpkg.tamper_eval", recipe, replace=True)
-    try:
-        manifest, _path = execute_evaluation_run_spec(spec, root=tmp_path)
-        artifact = next(
-            artifact
-            for artifact in manifest.artifacts
-            if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
-        )
-        (tmp_path / artifact.metadata["relative_path"]).write_bytes(b"tampered")
+    evaluation_registry.register("testpkg.tamper_eval", recipe)
+    manifest, _path = execute_evaluation_run_spec(spec, registry=evaluation_registry, root=tmp_path)
+    artifact = next(
+        artifact
+        for artifact in manifest.artifacts
+        if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
+    )
+    (tmp_path / artifact.metadata["relative_path"]).write_bytes(b"tampered")
 
-        with pytest.raises(EvaluationStatesHashMismatch):
-            load_evaluation_states(manifest, root=tmp_path)
-    finally:
-        unregister_evaluation_recipe("testpkg.tamper_eval")
+    with pytest.raises(EvaluationStatesHashMismatch):
+        load_evaluation_states(manifest, root=tmp_path)
 
 
 def test_evaluation_states_unknown_container_version_rejected(tmp_path: Path):
-    data, _payload = evaluation_states_container_bytes(
-        {"value": np.asarray([1], dtype=np.int32)}
-    )
+    data, _payload = evaluation_states_container_bytes({"value": np.asarray([1], dtype=np.int32)})
     bad_data = _with_container_schema_version(
         data,
         "feedbax.manifest.evaluation_states_container.v0",
@@ -401,7 +393,9 @@ def test_evaluation_states_v1_loads_and_rejects_non_array_leaf_path() -> None:
     assert "str" in message
 
 
-def test_evaluation_states_durable_rejects_non_json_metadata_leaf_path(tmp_path: Path):
+def test_evaluation_states_durable_rejects_non_json_metadata_leaf_path(
+    tmp_path: Path, evaluation_registry
+):
     spec = EvaluationRunSpec(
         evaluation_type="testpkg.exotic_eval",
         params={"states_custody": "durable"},
@@ -420,19 +414,18 @@ def test_evaluation_states_durable_rejects_non_json_metadata_leaf_path(tmp_path:
             }
         )
 
-    register_evaluation_recipe("testpkg.exotic_eval", recipe, replace=True)
-    try:
-        with pytest.raises(EvaluationRecipeExecutionError) as excinfo:
-            execute_evaluation_run_spec(spec, root=tmp_path)
-        assert isinstance(excinfo.value.__cause__, EvaluationStatesLeafError)
-        message = str(excinfo.value.__cause__)
-        assert "['bad']" in message
-        assert "object" in message
-    finally:
-        unregister_evaluation_recipe("testpkg.exotic_eval")
+    evaluation_registry.register("testpkg.exotic_eval", recipe)
+    with pytest.raises(EvaluationRecipeExecutionError) as excinfo:
+        execute_evaluation_run_spec(spec, registry=evaluation_registry, root=tmp_path)
+    assert isinstance(excinfo.value.__cause__, EvaluationStatesLeafError)
+    message = str(excinfo.value.__cause__)
+    assert "['bad']" in message
+    assert "object" in message
 
 
-def test_evaluation_run_spec_copies_caller_provenance_before_stamping(tmp_path: Path):
+def test_evaluation_run_spec_copies_caller_provenance_before_stamping(
+    tmp_path: Path, evaluation_registry
+):
     parent = ParentRef(
         kind="TrainingRunManifest",
         id="feedbax-training-run:copy-provenance",
@@ -457,28 +450,28 @@ def test_evaluation_run_spec_copies_caller_provenance_before_stamping(tmp_path: 
     ) -> EvaluationRecipeResult:
         return EvaluationRecipeResult()
 
-    register_evaluation_recipe("testpkg.copy_provenance_eval", recipe, replace=True)
-    try:
-        manifest, _path = execute_evaluation_run_spec(
-            spec,
-            root=tmp_path,
-            provenance=caller_provenance,
-            issues=["new"],
-        )
+    evaluation_registry.register("testpkg.copy_provenance_eval", recipe)
+    manifest, _path = execute_evaluation_run_spec(
+        spec,
+        registry=evaluation_registry,
+        root=tmp_path,
+        provenance=caller_provenance,
+        issues=["new"],
+    )
 
-        assert manifest.provenance is not caller_provenance
-        assert manifest.provenance.source_commit == "abc123"
-        assert manifest.provenance.parents == [parent]
-        assert manifest.provenance.issues == ["existing", "new"]
-        assert manifest.provenance.entrypoint is not None
-        assert caller_provenance.parents == []
-        assert caller_provenance.issues == ["existing"]
-        assert caller_provenance.entrypoint is None
-    finally:
-        unregister_evaluation_recipe("testpkg.copy_provenance_eval")
+    assert manifest.provenance is not caller_provenance
+    assert manifest.provenance.source_commit == "abc123"
+    assert manifest.provenance.parents == [parent]
+    assert manifest.provenance.issues == ["existing", "new"]
+    assert manifest.provenance.entrypoint is not None
+    assert caller_provenance.parents == []
+    assert caller_provenance.issues == ["existing"]
+    assert caller_provenance.entrypoint is None
 
 
-def test_evaluation_failure_diagnostics_round_trip_with_recipe_provenance(tmp_path: Path):
+def test_evaluation_failure_diagnostics_round_trip_with_recipe_provenance(
+    tmp_path: Path, evaluation_registry
+):
     evaluation_type = "testpkg.diagnostic_eval"
     spec = EvaluationRunSpec(evaluation_type=evaluation_type)
 
@@ -492,47 +485,44 @@ def test_evaluation_failure_diagnostics_round_trip_with_recipe_provenance(tmp_pa
             },
         )
 
-    register_evaluation_recipe(evaluation_type, recipe, replace=True)
-    try:
-        with pytest.raises(EvaluationRecipeExecutionError) as excinfo:
-            execute_evaluation_run_spec(spec, root=tmp_path)
-        manifest = excinfo.value.manifest
-        diagnostics = manifest.metadata["error"]["diagnostics"]
-        assert diagnostics["schema_id"] == "testpkg.solver_failure"
-        assert diagnostics["schema_version"] == "testpkg.solver_failure.v1"
-        assert diagnostics["values"] == {"residual": 0.25, "iterations": 7}
-        assert diagnostics["recipe"] == {
-            "evaluation_type": evaluation_type,
-            "entrypoint": {
-                "kind": "feedbax-evaluation-recipe",
-                "name": evaluation_type,
-                "metadata": {},
-            },
-        }
-        assert load_manifest(excinfo.value.path).metadata["error"] == manifest.metadata["error"]
-    finally:
-        unregister_evaluation_recipe(evaluation_type)
+    evaluation_registry.register(evaluation_type, recipe)
+    with pytest.raises(EvaluationRecipeExecutionError) as excinfo:
+        execute_evaluation_run_spec(spec, registry=evaluation_registry, root=tmp_path)
+    manifest = excinfo.value.manifest
+    diagnostics = manifest.metadata["error"]["diagnostics"]
+    assert diagnostics["schema_id"] == "testpkg.solver_failure"
+    assert diagnostics["schema_version"] == "testpkg.solver_failure.v1"
+    assert diagnostics["values"] == {"residual": 0.25, "iterations": 7}
+    assert diagnostics["recipe"] == {
+        "evaluation_type": evaluation_type,
+        "entrypoint": {
+            "kind": "feedbax-evaluation-recipe",
+            "name": evaluation_type,
+            "metadata": {},
+        },
+    }
+    assert load_manifest(excinfo.value.path).metadata["error"] == manifest.metadata["error"]
 
 
-def test_evaluation_failure_without_diagnostics_keeps_ordinary_error(tmp_path: Path):
+def test_evaluation_failure_without_diagnostics_keeps_ordinary_error(
+    tmp_path: Path, evaluation_registry
+):
     evaluation_type = "testpkg.ordinary_failure"
 
     def recipe(*_args) -> EvaluationRecipeResult:
         raise RuntimeError("ordinary failure")
 
-    register_evaluation_recipe(evaluation_type, recipe, replace=True)
-    try:
-        with pytest.raises(EvaluationRecipeExecutionError) as excinfo:
-            execute_evaluation_run_spec(
-                EvaluationRunSpec(evaluation_type=evaluation_type),
-                root=tmp_path,
-            )
-        assert excinfo.value.manifest.metadata["error"] == {
-            "type": "RuntimeError",
-            "message": "ordinary failure",
-        }
-    finally:
-        unregister_evaluation_recipe(evaluation_type)
+    evaluation_registry.register(evaluation_type, recipe)
+    with pytest.raises(EvaluationRecipeExecutionError) as excinfo:
+        execute_evaluation_run_spec(
+            EvaluationRunSpec(evaluation_type=evaluation_type),
+            registry=evaluation_registry,
+            root=tmp_path,
+        )
+    assert excinfo.value.manifest.metadata["error"] == {
+        "type": "RuntimeError",
+        "message": "ordinary failure",
+    }
 
 
 @pytest.mark.parametrize(
@@ -560,27 +550,26 @@ def test_evaluation_failure_without_diagnostics_keeps_ordinary_error(tmp_path: P
 def test_invalid_evaluation_failure_diagnostics_are_rejected_safely(
     tmp_path: Path,
     diagnostics: dict[str, object],
+    evaluation_registry,
 ):
     evaluation_type = "testpkg.invalid_diagnostics"
 
     def recipe(*_args) -> EvaluationRecipeResult:
         raise EvaluationRecipeDiagnosticError("scientific failure", diagnostics)
 
-    register_evaluation_recipe(evaluation_type, recipe, replace=True)
-    try:
-        with pytest.raises(EvaluationRecipeExecutionError) as excinfo:
-            execute_evaluation_run_spec(
-                EvaluationRunSpec(evaluation_type=evaluation_type),
-                root=tmp_path,
-            )
-        error = excinfo.value.manifest.metadata["error"]
-        assert error == {
-            "type": "ValueError",
-            "message": "evaluation failure diagnostics payload is invalid",
-        }
-        assert "diagnostic-secret" not in excinfo.value.path.read_text(encoding="utf-8")
-    finally:
-        unregister_evaluation_recipe(evaluation_type)
+    evaluation_registry.register(evaluation_type, recipe)
+    with pytest.raises(EvaluationRecipeExecutionError) as excinfo:
+        execute_evaluation_run_spec(
+            EvaluationRunSpec(evaluation_type=evaluation_type),
+            registry=evaluation_registry,
+            root=tmp_path,
+        )
+    error = excinfo.value.manifest.metadata["error"]
+    assert error == {
+        "type": "ValueError",
+        "message": "evaluation failure diagnostics payload is invalid",
+    }
+    assert "diagnostic-secret" not in excinfo.value.path.read_text(encoding="utf-8")
 
 
 def _with_container_schema_version(data: bytes, schema_version: str) -> bytes:
@@ -592,9 +581,7 @@ def _with_container_schema_version(data: bytes, schema_version: str) -> bytes:
             if name == EVALUATION_STATES_METADATA_KEY:
                 payload = json.loads(member_data.decode("utf-8"))
                 payload["schema_version"] = schema_version
-                member_data = (
-                    json.dumps(payload, indent=2, sort_keys=True).encode("utf-8") + b"\n"
-                )
+                member_data = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8") + b"\n"
             info = zipfile.ZipInfo(filename=name, date_time=(1980, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             dest.writestr(info, member_data)

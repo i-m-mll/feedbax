@@ -386,7 +386,35 @@ class ReportRecipeResult:
 
 ReportRecipe = ReportRecipeProtocol
 
-_REPORT_RECIPES: dict[str, ReportRecipe] = {}
+
+class ReportRecipeRegistry:
+    """Isolated report recipe registry."""
+
+    def __init__(self) -> None:
+        self._sealed = False
+        self._recipes: dict[str, ReportRecipe] = {}
+
+    def register(self, report_type: str, recipe: ReportRecipe) -> None:
+        if self._sealed:
+            raise RuntimeError("report recipe registry is sealed")
+        report_type = validate_namespaced_type_key(report_type, field="report_type")
+        if report_type in self._recipes:
+            raise ValueError(f"Report recipe {report_type!r} is already registered")
+        self._recipes[report_type] = validate_report_recipe(report_type, recipe)
+
+    def keys(self) -> tuple[str, ...]:
+        return tuple(sorted(self._recipes))
+
+    def get(self, report_type: str) -> ReportRecipe:
+        try:
+            return self._recipes[report_type]
+        except KeyError as exc:
+            raise ValueError(
+                f"Report recipe {report_type!r} is not registered; available={list(self.keys())!r}"
+            ) from exc
+
+    def seal(self) -> None:
+        self._sealed = True
 
 
 class ReportRecipeExecutionError(RuntimeError):
@@ -399,41 +427,6 @@ class ReportRecipeExecutionError(RuntimeError):
         self.manifest = manifest
         self.path = path
         self.__cause__ = cause
-
-
-def register_report_recipe(
-    report_type: str,
-    recipe: ReportRecipe,
-    *,
-    replace: bool = False,
-) -> None:
-    """Register an executable report recipe by stable type key."""
-    report_type = validate_namespaced_type_key(report_type, field="report_type")
-    if report_type in _REPORT_RECIPES and not replace:
-        raise ValueError(f"Report recipe {report_type!r} is already registered")
-    _REPORT_RECIPES[report_type] = validate_report_recipe(report_type, recipe)
-
-
-def unregister_report_recipe(report_type: str) -> None:
-    """Remove a previously registered report recipe."""
-    _REPORT_RECIPES.pop(report_type, None)
-
-
-def registered_report_types() -> tuple[str, ...]:
-    """Return registered executable report type keys."""
-    return tuple(sorted(_REPORT_RECIPES))
-
-
-def get_report_recipe(report_type: str) -> ReportRecipe:
-    """Return a registered report recipe or raise a clear execution error."""
-    try:
-        return _REPORT_RECIPES[report_type]
-    except KeyError as exc:
-        available = ", ".join(registered_report_types()) or "none"
-        raise ValueError(
-            f"Report recipe {report_type!r} is not registered. "
-            f"Registered report recipes: {available}."
-        ) from exc
 
 
 def coerce_report_spec(value: ReportSpec | Mapping[str, Any] | Path | str) -> ReportSpec:
@@ -597,6 +590,7 @@ def resolve_report_scalar_projection(
 def execute_report_spec(
     spec: ReportSpec | Mapping[str, Any] | Path | str,
     *,
+    registry: ReportRecipeRegistry,
     root: Path | str | None = None,
     provenance: Provenance | None = None,
     issues: list[str] | None = None,
@@ -610,7 +604,7 @@ def execute_report_spec(
 ) -> tuple[ReportManifest, Path]:
     """Execute a serialized report spec and write a truthful manifest."""
     report_spec = coerce_report_spec(spec)
-    recipe = get_report_recipe(report_spec.report_type)
+    recipe = registry.get(report_spec.report_type)
     root_path = Path(root) if root is not None else default_manifest_root()
     manifest_id = report_manifest_id(report_spec)
     explicit_runtime = (
@@ -695,6 +689,7 @@ def execute_report_spec(
 def execute_authored_report_spec(
     spec: ReportSpec | Mapping[str, Any] | Path | str,
     *,
+    registry: ReportRecipeRegistry,
     exact_parents: StagedExactParents | Mapping[str, Any],
     root: Path | str,
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
@@ -719,9 +714,7 @@ def execute_authored_report_spec(
     root_path = Path(root)
 
     material_entries = [
-        entry.parent.id
-        for entry in exact.parents
-        if entry.material_dependencies is not None
+        entry.parent.id for entry in exact.parents if entry.material_dependencies is not None
     ]
     if material_entries:
         raise ValueError(
@@ -762,6 +755,7 @@ def execute_authored_report_spec(
     )
     return execute_report_spec(
         execution_spec,
+        registry=registry,
         root=root_path,
         execution_context=execution_context,
     )
@@ -1457,10 +1451,8 @@ def _markdown_report(
     return render_markdown_note(title=title, narrative=narrative, rows=rows)
 
 
-register_report_recipe(BUNDLE_SUMMARY_REPORT_TYPE, _bundle_summary_recipe, replace=True)
-register_report_recipe(STUDIO_REPORT_TYPE, _studio_report_recipe, replace=True)
-register_report_recipe(
-    ORDERED_FIGURE_REPORT_TYPE,
-    _ordered_figure_report_recipe,
-    replace=True,
-)
+def register_builtin_report_recipes(registry: ReportRecipeRegistry) -> None:
+    """Seed one fresh registry with Feedbax report recipes."""
+    registry.register(BUNDLE_SUMMARY_REPORT_TYPE, _bundle_summary_recipe)
+    registry.register(STUDIO_REPORT_TYPE, _studio_report_recipe)
+    registry.register(ORDERED_FIGURE_REPORT_TYPE, _ordered_figure_report_recipe)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import inspect
 import json
 from pathlib import Path
 
@@ -9,6 +8,7 @@ import pytest
 
 from feedbax.analysis.evaluation_compaction import (
     EvaluationBatchConsumerInput,
+    EvaluationBatchConsumerRegistry,
     EvaluationBatchFragment,
     EvaluationBatchMergeInput,
     EvaluationBatchMergeState,
@@ -16,13 +16,12 @@ from feedbax.analysis.evaluation_compaction import (
     merge_evaluation_batch_fragment,
     publish_evaluation_compaction_products,
     reclaim_evaluation_batch_caches,
-    register_evaluation_batch_consumer,
 )
 from feedbax.analysis.evaluation_product_union import (
     EvaluationCompactProductUnionBinding,
+    EvaluationCompactProductUnionFinalizerRegistry,
     EvaluationCompactProductUnionInput,
     finalize_evaluation_compact_product_union,
-    register_evaluation_compact_product_union_finalizer,
 )
 from feedbax.analysis.execution_context import EMPTY_STAGED_EXECUTION_CONTEXT
 from feedbax.contracts.evaluation_lifecycle import (
@@ -78,7 +77,9 @@ def _declaration() -> EvaluationBatchConsumerDeclaration:
     )
 
 
-def _register_consumers(union_calls: list[tuple[str, ...]]) -> None:
+def _register_consumers(
+    union_calls: list[tuple[str, ...]],
+) -> tuple[EvaluationBatchConsumerRegistry, EvaluationCompactProductUnionFinalizerRegistry]:
     declaration = _declaration()
 
     def compact(value: EvaluationBatchConsumerInput) -> EvaluationBatchFragment:
@@ -97,7 +98,8 @@ def _register_consumers(union_calls: list[tuple[str, ...]]) -> None:
             schema_version=declaration.merge_state_schema_version,
         )
 
-    register_evaluation_batch_consumer(
+    consumer_registry = EvaluationBatchConsumerRegistry()
+    consumer_registry.register(
         _CONSUMER_ID,
         _CONSUMER_VERSION,
         compact=compact,
@@ -108,7 +110,6 @@ def _register_consumers(union_calls: list[tuple[str, ...]]) -> None:
             schema_version=declaration.compact_product_schema_version,
             role=declaration.compact_product_role,
         ),
-        replace=True,
     )
 
     def finalize_union(value: EvaluationCompactProductUnionInput) -> EvaluationBatchFragment:
@@ -129,17 +130,19 @@ def _register_consumers(union_calls: list[tuple[str, ...]]) -> None:
             role=value.declaration.output_role,
         )
 
-    register_evaluation_compact_product_union_finalizer(
+    registry = EvaluationCompactProductUnionFinalizerRegistry()
+    registry.register(
         _CONSUMER_ID,
         _CONSUMER_VERSION,
-        finalize=finalize_union,
-        replace=True,
+        finalize_union,
     )
+    return consumer_registry, registry
 
 
 def _source_fixture(
     root: Path,
     *,
+    consumer_registry: EvaluationBatchConsumerRegistry,
     cohort_key: str,
     matrix_intent_hash: str,
     row_ids: tuple[str, ...],
@@ -192,62 +195,50 @@ def _source_fixture(
             )
         )
     custody_root = root / "custody"
-    consumer_input = {
-        "matrix_intent_hash": matrix_intent_hash,
-        "batch": batch,
-        "outcomes": tuple(outcomes),
-        "manifests": tuple(manifests),
-        "states": tuple({"row": row_id} for row_id in row_ids),
-        "parent_authorities": tuple(authorities),
-    }
-    if "parameters" in inspect.signature(EvaluationBatchConsumerInput).parameters:
-        consumer_input.update(
-            {
-                "parameters": declaration.parameters,
-                "execution_context": EMPTY_STAGED_EXECUTION_CONTEXT,
-            }
-        )
     fragment = compact_evaluation_batch(
         declaration,
-        EvaluationBatchConsumerInput(**consumer_input),
+        EvaluationBatchConsumerInput(
+            matrix_intent_hash=matrix_intent_hash,
+            batch=batch,
+            outcomes=tuple(outcomes),
+            manifests=tuple(manifests),
+            states=tuple({"row": row_id} for row_id in row_ids),
+            parent_authorities=tuple(authorities),
+            parameters=declaration.parameters,
+            execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+        ),
+        registry=consumer_registry,
         custody_root=custody_root,
     )
-    merge_kwargs = {
-        "matrix_intent_hash": matrix_intent_hash,
-        "batch": batch,
-        "parent_authorities": authorities,
-        "fragment": fragment,
-        "prior_merge_state": None,
-        "custody_root": custody_root,
-    }
-    if "execution_context" in inspect.signature(merge_evaluation_batch_fragment).parameters:
-        merge_kwargs["execution_context"] = EMPTY_STAGED_EXECUTION_CONTEXT
-    acknowledgement = merge_evaluation_batch_fragment(declaration, **merge_kwargs)
-    reclamation_kwargs = {
-        "matrix_intent_hash": matrix_intent_hash,
-        "batch_index": 0,
-        "outcomes": outcomes,
-        "acknowledgements": (acknowledgement,),
-        "custody_root": custody_root,
-    }
-    if "required_declarations" in inspect.signature(reclaim_evaluation_batch_caches).parameters:
-        reclamation_kwargs.update(
-            {
-                "required_declarations": (declaration,),
-                "execution_context": EMPTY_STAGED_EXECUTION_CONTEXT,
-            }
-        )
-    else:
-        reclamation_kwargs["required_leaf_ids"] = (_LEAF_ID,)
-    reclamation = reclaim_evaluation_batch_caches(batch, **reclamation_kwargs)
-    publication_kwargs = {"custody_root": custody_root}
-    if "execution_context" in inspect.signature(publish_evaluation_compaction_products).parameters:
-        publication_kwargs["execution_context"] = EMPTY_STAGED_EXECUTION_CONTEXT
+    acknowledgement = merge_evaluation_batch_fragment(
+        declaration,
+        registry=consumer_registry,
+        matrix_intent_hash=matrix_intent_hash,
+        batch=batch,
+        parent_authorities=authorities,
+        fragment=fragment,
+        prior_merge_state=None,
+        custody_root=custody_root,
+        execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+    )
+    reclamation = reclaim_evaluation_batch_caches(
+        batch,
+        registry=consumer_registry,
+        matrix_intent_hash=matrix_intent_hash,
+        batch_index=0,
+        outcomes=outcomes,
+        acknowledgements=(acknowledgement,),
+        required_declarations=(declaration,),
+        custody_root=custody_root,
+        execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+    )
     terminal_manifest = publish_evaluation_compaction_products(
         (declaration,),
         {_LEAF_ID: acknowledgement.merge_state},
         outcomes,
-        **publication_kwargs,
+        registry=consumer_registry,
+        custody_root=custody_root,
+        execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
     )[0]
     compaction = EvaluationBatchCompactionEvidence(
         matrix_intent_hash=matrix_intent_hash,
@@ -315,29 +306,35 @@ def _union(
 def _two_sources(
     tmp_path: Path,
     union_calls: list[tuple[str, ...]],
-) -> tuple[_SourceFixture, _SourceFixture]:
-    _register_consumers(union_calls)
-    return (
+) -> tuple[
+    tuple[_SourceFixture, _SourceFixture],
+    EvaluationCompactProductUnionFinalizerRegistry,
+]:
+    consumer_registry, finalizer_registry = _register_consumers(union_calls)
+    fixtures = (
         _source_fixture(
             tmp_path / "discrete",
+            consumer_registry=consumer_registry,
             cohort_key="discrete",
             matrix_intent_hash="a" * 64,
             row_ids=("d-0", "d-1"),
         ),
         _source_fixture(
             tmp_path / "continuous",
+            consumer_registry=consumer_registry,
             cohort_key="continuous",
             matrix_intent_hash="b" * 64,
             row_ids=("c-0", "c-1"),
         ),
     )
+    return fixtures, finalizer_registry
 
 
 def test_provider_free_shadow_unions_two_matrices_and_resumes_with_identical_terminal_bytes(
     tmp_path: Path,
 ) -> None:
     union_calls: list[tuple[str, ...]] = []
-    fixtures = _two_sources(tmp_path, union_calls)
+    fixtures, finalizer_registry = _two_sources(tmp_path, union_calls)
     declaration = _union(tuple(item.source for item in fixtures))
     bindings = tuple(item.binding for item in fixtures)
     custody_root = tmp_path / "union"
@@ -346,6 +343,7 @@ def test_provider_free_shadow_unions_two_matrices_and_resumes_with_identical_ter
         declaration,
         bindings,
         custody_root=custody_root,
+        finalizer_registry=finalizer_registry,
     )
     first_manifest_bytes = ImmutableArtifactBlobProvider(custody_root).get_bytes(
         first.terminal_manifest
@@ -358,11 +356,13 @@ def test_provider_free_shadow_unions_two_matrices_and_resumes_with_identical_ter
         declaration,
         bindings,
         custody_root=custody_root,
+        finalizer_registry=finalizer_registry,
     )
     resumed = finalize_evaluation_compact_product_union(
         declaration,
         bindings,
         custody_root=custody_root,
+        finalizer_registry=finalizer_registry,
     )
 
     assert first == recovered == resumed
@@ -398,7 +398,7 @@ def test_provider_free_shadow_unions_two_matrices_and_resumes_with_identical_ter
     ],
 )
 def test_union_runtime_revalidates_model_copy_bypasses(tmp_path: Path, invalid: str) -> None:
-    fixtures = _two_sources(tmp_path, [])
+    fixtures, finalizer_registry = _two_sources(tmp_path, [])
     sources = [item.source for item in fixtures]
     if invalid == "duplicate_matrix":
         sources[1] = sources[1].model_copy(
@@ -425,6 +425,7 @@ def test_union_runtime_revalidates_model_copy_bypasses(tmp_path: Path, invalid: 
             declaration,
             tuple(item.binding for item in fixtures),
             custody_root=tmp_path / "union",
+            finalizer_registry=finalizer_registry,
         )
 
 
@@ -443,7 +444,8 @@ def test_union_runtime_revalidates_model_copy_bypasses(tmp_path: Path, invalid: 
     ],
 )
 def test_union_sources_fail_closed(tmp_path: Path, failure: str, match: str) -> None:
-    fixtures = list(_two_sources(tmp_path, []))
+    source_fixtures, finalizer_registry = _two_sources(tmp_path, [])
+    fixtures = list(source_fixtures)
     sources = [item.source for item in fixtures]
     bindings = [item.binding for item in fixtures]
     if failure == "missing":
@@ -501,6 +503,7 @@ def test_union_sources_fail_closed(tmp_path: Path, failure: str, match: str) -> 
             _union(tuple(sources)),
             tuple(bindings),
             custody_root=tmp_path / "union",
+            finalizer_registry=finalizer_registry,
         )
 
 

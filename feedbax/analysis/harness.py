@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import nullcontext
 import json
@@ -12,7 +13,12 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+from feedbax.plugins.bootstrap import BootstrapState
+
+if TYPE_CHECKING:
+    from feedbax.plugins.application import ApplicationRegistryBundle
 
 from feedbax.analysis.rendering import render_markdown_note
 from feedbax.contracts.manifest import (
@@ -29,13 +35,6 @@ from feedbax.contracts.manifest import (
 
 CustodyMode = Literal["manifest", "content-addressed"]
 SUPPORTED_EXECUTION_POLICY_OVERRIDE_FLAG = "--allow-large-per-row"
-
-
-def _initialize_evaluation_batch_worker(plugins: tuple[str, ...]) -> None:
-    """Load evaluation plugins once per persistent worker process."""
-    from feedbax.plugins import load_training_method_plugins
-
-    load_training_method_plugins(modules=plugins)
 
 
 def _validate_evaluation_fragment_checkpoint(
@@ -59,7 +58,9 @@ def _validate_evaluation_fragment_checkpoint(
         raise ValueError("evaluation batch fragment checkpoint contract drifted") from exc
 
 
-def _execute_evaluation_batch_partition(task: Mapping[str, Any]) -> dict[str, Any]:
+def _execute_evaluation_batch_partition(
+    task: Mapping[str, Any], registries: ApplicationRegistryBundle
+) -> dict[str, Any]:
     """Execute and compact one authenticated batch in a persistent worker."""
     timing_origin_ns = int(task["timing_origin_ns"])
     started_offset_ns = time.monotonic_ns() - timing_origin_ns
@@ -164,6 +165,7 @@ def _execute_evaluation_batch_partition(task: Mapping[str, Any]) -> dict[str, An
         }
     result = execute_evaluation_run_matrix(
         payload,
+        registry=registries.evaluation_recipes,
         root=Path(task["manifest_root"]),
         repo_root=task["repo_root"],
         execution_context=execution_context,
@@ -223,6 +225,7 @@ def _execute_evaluation_batch_partition(task: Mapping[str, Any]) -> dict[str, An
                     parameters=json.loads(json.dumps(declaration.parameters)),
                     execution_context=execution_context,
                 ),
+                registry=registries.evaluation_batch_consumers,
                 custody_root=Path(task["compaction_root"]),
             )
         )
@@ -245,6 +248,16 @@ def _execute_evaluation_batch_partition(task: Mapping[str, Any]) -> dict[str, An
         "completed_offset_ns": completed_offset_ns,
         "duration_ns": completed_offset_ns - started_offset_ns,
     }
+
+
+def _execute_evaluation_batch_partition_group(
+    tasks: Sequence[Mapping[str, Any]], modules: tuple[str, ...]
+) -> tuple[dict[str, Any], ...]:
+    """Bootstrap once at process-worker startup, then execute assigned batches."""
+    from feedbax.plugins.composition import compose_application
+
+    state = asyncio.run(compose_application(modules=modules))
+    return tuple(_execute_evaluation_batch_partition(task, state.bundle) for task in tasks)
 
 
 @dataclass(frozen=True)
@@ -527,7 +540,9 @@ class MatrixMaterializerHarness:
         )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None, *, bootstrap_state: BootstrapState | None = None
+) -> int:
     """Materialize a serialized evaluation matrix through the standard harness."""
     parser = argparse.ArgumentParser(prog="feedbax matrix-harness")
     parser.add_argument(
@@ -576,9 +591,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
-    from feedbax.plugins import load_training_method_plugins
+    if bootstrap_state is None:
+        from feedbax.plugins.composition import compose_application
 
-    load_training_method_plugins(modules=args.plugin)
+        bootstrap_state = asyncio.run(compose_application(modules=tuple(args.plugin or ())))
     from feedbax.analysis.evaluation import (
         EvaluationBatchExecution,
         execute_evaluation_run_matrix,
@@ -626,10 +642,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             locked_payload = locked_document.get("evaluation_matrix", locked_document)
             locked_rows = materialize_evaluation_run_matrix(
                 locked_payload,
+                registry=bootstrap_state.bundle.evaluation_recipes,
                 repo_root=args.repo_root,
             )
             runtime_rows = materialize_evaluation_run_matrix(
                 payload,
+                registry=bootstrap_state.bundle.evaluation_recipes,
                 repo_root=args.repo_root,
             )
             locked_row_ids = tuple(row.row_id for row in locked_rows)
@@ -643,6 +661,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if runtime_rows is None:
                 runtime_rows = materialize_evaluation_run_matrix(
                     payload,
+                    registry=bootstrap_state.bundle.evaluation_recipes,
                     repo_root=args.repo_root,
                 )
             row_count = len(runtime_rows)
@@ -809,70 +828,73 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ]
                 with ProcessPoolExecutor(
                     max_workers=orchestration_worker_count,
-                    initializer=_initialize_evaluation_batch_worker,
-                    initargs=(tuple(args.plugin or ()),),
                     mp_context=multiprocessing.get_context("spawn"),
                 ) as pool:
+                    task_groups = tuple(
+                        tasks[index::orchestration_worker_count]
+                        for index in range(orchestration_worker_count)
+                    )
                     futures = [
-                        pool.submit(_execute_evaluation_batch_partition, task)
-                        for task in tasks[:orchestration_worker_count]
+                        pool.submit(
+                            _execute_evaluation_batch_partition_group,
+                            group,
+                            tuple(args.plugin or ()),
+                        )
+                        for group in task_groups
+                        if group
                     ]
-                    next_task_index = orchestration_worker_count
-                    for batch in orchestration_batch_plan.batches:
-                        future = futures.pop(0)
-                        completed_batch = future.result()
-                        completed_batches.append(completed_batch)
-                        outcomes_for_batch = tuple(
-                            EvaluationLifecycleRowOutcome.model_validate(item)
-                            for item in completed_batch["outcomes"]
+                    completed_batches.extend(
+                        completed for future in futures for completed in future.result()
+                    )
+                completed_batches.sort(key=lambda item: item["batch_index"])
+                for batch, completed_batch in zip(
+                    orchestration_batch_plan.batches, completed_batches, strict=True
+                ):
+                    outcomes_for_batch = tuple(
+                        EvaluationLifecycleRowOutcome.model_validate(item)
+                        for item in completed_batch["outcomes"]
+                    )
+                    acknowledgements = []
+                    applicable_declarations = tuple(
+                        declaration
+                        for declaration in orchestration_batch_plan.consumers
+                        if declaration.leaf_id in (batch.required_leaf_ids or ())
+                    )
+                    for declaration, fragment_value in zip(
+                        applicable_declarations,
+                        completed_batch["fragments"],
+                        strict=True,
+                    ):
+                        acknowledgement = merge_evaluation_batch_fragment(
+                            declaration,
+                            registry=bootstrap_state.bundle.evaluation_batch_consumers,
+                            matrix_intent_hash=orchestration_batch_plan.matrix_intent_hash,
+                            batch=batch,
+                            parent_authorities=tuple(
+                                ParentRef.model_validate(value)
+                                for value in completed_batch["parent_authorities"]
+                            ),
+                            fragment=ArtifactRef.model_validate(fragment_value),
+                            prior_merge_state=prior_states.get(declaration.leaf_id),
+                            custody_root=compaction_root,
+                            execution_context=resolved_context,
                         )
-                        acknowledgements = []
-                        applicable_declarations = tuple(
-                            declaration
-                            for declaration in orchestration_batch_plan.consumers
-                            if declaration.leaf_id in (batch.required_leaf_ids or ())
-                        )
-                        for declaration, fragment_value in zip(
-                            applicable_declarations,
-                            completed_batch["fragments"],
-                            strict=True,
-                        ):
-                            acknowledgement = merge_evaluation_batch_fragment(
-                                declaration,
+                        prior_states[declaration.leaf_id] = acknowledgement.merge_state
+                        acknowledgements.append(acknowledgement)
+                    if orchestration_batch_plan.consumers:
+                        reclamations.append(
+                            reclaim_evaluation_batch_caches(
+                                batch,
+                                registry=bootstrap_state.bundle.evaluation_batch_consumers,
                                 matrix_intent_hash=orchestration_batch_plan.matrix_intent_hash,
-                                batch=batch,
-                                parent_authorities=tuple(
-                                    ParentRef.model_validate(value)
-                                    for value in completed_batch["parent_authorities"]
-                                ),
-                                fragment=ArtifactRef.model_validate(fragment_value),
-                                prior_merge_state=prior_states.get(declaration.leaf_id),
+                                batch_index=completed_batch["batch_index"],
+                                outcomes=outcomes_for_batch,
+                                acknowledgements=acknowledgements,
+                                required_declarations=applicable_declarations,
                                 custody_root=compaction_root,
                                 execution_context=resolved_context,
                             )
-                            prior_states[declaration.leaf_id] = acknowledgement.merge_state
-                            acknowledgements.append(acknowledgement)
-                        if orchestration_batch_plan.consumers:
-                            reclamations.append(
-                                reclaim_evaluation_batch_caches(
-                                    batch,
-                                    matrix_intent_hash=orchestration_batch_plan.matrix_intent_hash,
-                                    batch_index=completed_batch["batch_index"],
-                                    outcomes=outcomes_for_batch,
-                                    acknowledgements=acknowledgements,
-                                    required_declarations=applicable_declarations,
-                                    custody_root=compaction_root,
-                                    execution_context=resolved_context,
-                                )
-                            )
-                        if next_task_index < len(tasks):
-                            futures.append(
-                                pool.submit(
-                                    _execute_evaluation_batch_partition,
-                                    tasks[next_task_index],
-                                )
-                            )
-                            next_task_index += 1
+                        )
                 outcomes = tuple(
                     EvaluationLifecycleRowOutcome.model_validate(outcome)
                     for batch in completed_batches
@@ -898,9 +920,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                     started_offset_ns=item["started_offset_ns"],
                                     completed_offset_ns=item["completed_offset_ns"],
                                     duration_ns=item["duration_ns"],
-                                    reused_verified_fragments=item[
-                                        "reused_verified_fragments"
-                                    ],
+                                    reused_verified_fragments=item["reused_verified_fragments"],
                                 )
                                 for item in completed_batches
                                 if item["pid"] == pid
@@ -927,6 +947,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             orchestration_batch_plan.consumers,
                             prior_states,
                             outcomes,
+                            registry=bootstrap_state.bundle.evaluation_batch_consumers,
                             custody_root=compaction_root,
                             execution_context=resolved_context,
                         )
@@ -952,6 +973,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 result = execute_evaluation_run_matrix(
                     payload,
+                    registry=bootstrap_state.bundle.evaluation_recipes,
                     root=args.manifest_root,
                     repo_root=args.repo_root,
                     escape_hatch_reason=args.escape_hatch_reason,

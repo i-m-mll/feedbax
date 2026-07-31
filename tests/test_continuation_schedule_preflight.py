@@ -35,6 +35,8 @@ from feedbax.contracts.training import (
     standard_supervised_method_contract,
     standard_supervised_method_payload,
     standard_supervised_method_ref,
+    default_training_method_registry,
+    resolve_training_run_spec,
 )
 from feedbax.orchestration.schedule_eval import (
     compare_continuation_schedule_projections,
@@ -99,8 +101,8 @@ def _run_spec(
 def _with_method_schedule(
     run_spec: TrainingRunSpec,
     values: tuple[float, float, float] | None,
-) -> TrainingRunSpec:
-    resolved = run_spec.resolved_method
+) -> object:
+    resolved = resolve_training_run_spec(run_spec, default_training_method_registry())
     assert resolved.descriptor is not None
     if values is None:
         projector = None
@@ -125,12 +127,12 @@ def _with_method_schedule(
             ),
         )
     descriptor = replace(resolved.descriptor, schedule_projector=projector)
-    run_spec._resolved_method = replace(resolved, descriptor=descriptor)
-    run_spec._resolved_method_cache_key = run_spec._method_resolution_cache_key()
-    return run_spec
+    return replace(resolved, descriptor=descriptor)
 
 
-def _source_manifest(*, boundary: int = 10, algorithm_version: str = "v4") -> CheckpointTransactionManifest:
+def _source_manifest(
+    *, boundary: int = 10, algorithm_version: str = "v4"
+) -> CheckpointTransactionManifest:
     return CheckpointTransactionManifest.model_construct(
         transaction_id="tx-source",
         segment_lineage=CheckpointSegmentLineage(
@@ -162,13 +164,15 @@ def _compare(
     continuation: CheckpointContinuationRequest | None = None,
 ) -> tuple[list[str], dict[str, object]]:
     request = continuation or _continuation()
+    source_run_spec = _run_spec()
+    target_run_spec = _run_spec(continuation=request)
     return compare_continuation_schedule_projections(
-        source_run_spec=_with_method_schedule(_run_spec(), source_values),
-        target_run_spec=_with_method_schedule(
-            _run_spec(continuation=request), target_values
-        ),
+        source_run_spec=source_run_spec,
+        target_run_spec=target_run_spec,
         source_manifest=_source_manifest(),
         continuation=request,
+        source_resolved_method=_with_method_schedule(source_run_spec, source_values),
+        target_resolved_method=_with_method_schedule(target_run_spec, target_values),
     )
 
 
@@ -191,15 +195,15 @@ def test_corrected_hold_at_one_projection_passes() -> None:
 
 def test_source_history_projection_accepts_continuation_bearing_run_spec() -> None:
     request = _continuation()
+    source_run_spec = _run_spec(continuation=request)
+    target_run_spec = _run_spec(continuation=request)
     failures, observed = compare_continuation_schedule_projections(
-        source_run_spec=_with_method_schedule(
-            _run_spec(continuation=request), (1.0, 1.0, 1.0)
-        ),
-        target_run_spec=_with_method_schedule(
-            _run_spec(continuation=request), (1.0, 1.0, 1.0)
-        ),
+        source_run_spec=source_run_spec,
+        target_run_spec=target_run_spec,
         source_manifest=_source_manifest(),
         continuation=request,
+        source_resolved_method=_with_method_schedule(source_run_spec, (1.0, 1.0, 1.0)),
+        target_resolved_method=_with_method_schedule(target_run_spec, (1.0, 1.0, 1.0)),
     )
 
     assert failures == []
@@ -209,19 +213,24 @@ def test_source_history_projection_accepts_continuation_bearing_run_spec() -> No
 def test_lineage_projector_uses_segment_origin_for_boundary_and_later_call() -> None:
     request = _continuation()
     run_spec = _run_spec(continuation=request)
-    resolved = run_spec.resolved_method
+    resolved = resolve_training_run_spec(run_spec, default_training_method_registry())
     assert resolved.descriptor is not None
 
     def project_segment_schedule(_payload, coordinates, lineage):
-        return ScheduleProjection(schedules={
-            RAMP_ID: GovernedScheduleProjection(
-                origin={"kind": "segment_start"},
-                samples=[ScheduleProjectionSample(
-                    coordinate=coordinate,
-                    value=float(coordinate - lineage.start_batch),
-                ) for coordinate in coordinates],
-            )
-        })
+        return ScheduleProjection(
+            schedules={
+                RAMP_ID: GovernedScheduleProjection(
+                    origin={"kind": "segment_start"},
+                    samples=[
+                        ScheduleProjectionSample(
+                            coordinate=coordinate,
+                            value=float(coordinate - lineage.start_batch),
+                        )
+                        for coordinate in coordinates
+                    ],
+                )
+            }
+        )
 
     descriptor = replace(
         resolved.descriptor,
@@ -231,8 +240,7 @@ def test_lineage_projector_uses_segment_origin_for_boundary_and_later_call() -> 
             lineage_projector=project_segment_schedule,
         ),
     )
-    run_spec._resolved_method = replace(resolved, descriptor=descriptor)
-    run_spec._resolved_method_cache_key = run_spec._method_resolution_cache_key()
+    resolved = replace(resolved, descriptor=descriptor)
     lineage = CheckpointSegmentLineage(
         parent_transaction_id="tx-source",
         start_batch=10,
@@ -240,9 +248,11 @@ def test_lineage_projector_uses_segment_origin_for_boundary_and_later_call() -> 
     )
 
     boundary = project_training_schedules(
-        run_spec, coordinates=(10, 11, 12), lineage=lineage
+        run_spec, coordinates=(10, 11, 12), lineage=lineage, resolved_method=resolved
     )
-    later = project_training_schedules(run_spec, coordinates=(12,), lineage=lineage)
+    later = project_training_schedules(
+        run_spec, coordinates=(12,), lineage=lineage, resolved_method=resolved
+    )
 
     assert [sample.coordinate for sample in boundary.schedules[RAMP_ID].samples] == [10, 11, 12]
     assert [sample.value for sample in boundary.schedules[RAMP_ID].samples] == [0.0, 1.0, 2.0]
@@ -268,9 +278,8 @@ def test_lineage_projector_rejects_missing_or_contradictory_origin() -> None:
     with pytest.raises(ValueError, match="requires CheckpointSegmentLineage"):
         projector.project(standard_supervised_method_payload().payload, (10,))
 
-    run_spec = _with_method_schedule(
-        _run_spec(continuation=_continuation()), (1.0, 1.0, 1.0)
-    )
+    run_spec = _run_spec(continuation=_continuation())
+    resolved = _with_method_schedule(run_spec, (1.0, 1.0, 1.0))
     with pytest.raises(ValueError, match="lineage contradicts continuation"):
         project_training_schedules(
             run_spec,
@@ -280,6 +289,7 @@ def test_lineage_projector_rejects_missing_or_contradictory_origin() -> None:
                 start_batch=9,
                 segment_batch_count=4,
             ),
+            resolved_method=resolved,
         )
 
 
@@ -292,28 +302,22 @@ def test_divergence_only_at_first_update_fails() -> None:
 
 def test_learning_rate_origin_mismatch_fails() -> None:
     request = _continuation()
-    source = _with_method_schedule(
-        _run_spec(
-            lr_schedule=LrScheduleSpec(
-                origin={"kind": "run_start"},
-                kind="delayed_cosine",
-                learning_rate_0=1e-3,
-                total_steps=20,
-            )
-        ),
-        (),
+    source = _run_spec(
+        lr_schedule=LrScheduleSpec(
+            origin={"kind": "run_start"},
+            kind="delayed_cosine",
+            learning_rate_0=1e-3,
+            total_steps=20,
+        )
     )
-    target = _with_method_schedule(
-        _run_spec(
-            continuation=request,
-            lr_schedule=LrScheduleSpec(
-                origin={"kind": "segment_start"},
-                kind="delayed_cosine",
-                learning_rate_0=1e-3,
-                total_steps=20,
-            ),
+    target = _run_spec(
+        continuation=request,
+        lr_schedule=LrScheduleSpec(
+            origin={"kind": "segment_start"},
+            kind="delayed_cosine",
+            learning_rate_0=1e-3,
+            total_steps=20,
         ),
-        (),
     )
 
     failures, _ = compare_continuation_schedule_projections(
@@ -321,6 +325,8 @@ def test_learning_rate_origin_mismatch_fails() -> None:
         target_run_spec=target,
         source_manifest=_source_manifest(),
         continuation=request,
+        source_resolved_method=_with_method_schedule(source, ()),
+        target_resolved_method=_with_method_schedule(target, ()),
     )
 
     assert len(failures) == 1
@@ -399,18 +405,22 @@ def test_method_descriptor_without_projector_fails_for_continuation() -> None:
     request = _continuation()
 
     with pytest.raises(ValueError, match="no complete schedule projector"):
+        source = _run_spec()
+        target = _run_spec(continuation=request)
         compare_continuation_schedule_projections(
-            source_run_spec=_with_method_schedule(_run_spec(), (1.0, 1.0, 1.0)),
-            target_run_spec=_with_method_schedule(
-                _run_spec(continuation=request), None
-            ),
+            source_run_spec=source,
+            target_run_spec=target,
             source_manifest=_source_manifest(),
             continuation=request,
+            source_resolved_method=_with_method_schedule(source, (1.0, 1.0, 1.0)),
+            target_resolved_method=_with_method_schedule(target, None),
         )
 
 
 def test_pre_v4_source_projection_fails_closed() -> None:
-    manifest = _source_manifest(algorithm_version="feedbax.training_checkpoint.run_contract_binding.v3")
+    manifest = _source_manifest(
+        algorithm_version="feedbax.training_checkpoint.run_contract_binding.v3"
+    )
 
     with pytest.raises(CheckpointCompatibilityError, match="algorithm v4"):
         authenticated_run_contract_source_projection(manifest)

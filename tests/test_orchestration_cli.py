@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import hashlib
 import sys
@@ -7,16 +8,17 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import ANY
 
 import pytest
 
 from feedbax.bin import orchestrate
-import feedbax.contracts.training as training_contracts
-import feedbax.plugins.discovery as plugin_discovery
+import feedbax.plugins.bootstrap as plugin_bootstrap
 from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
 )
+from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.contracts.studio_training import (
     StudioTrainingAssemblySpec,
     StudioTrainingIdentityAdapter,
@@ -33,6 +35,7 @@ from feedbax.contracts.training import (
     standard_supervised_method_descriptor,
     standard_supervised_method_payload,
     standard_supervised_method_ref,
+    default_training_method_registry,
 )
 from feedbax.orchestration import (
     AssemblyCompilerRegistry,
@@ -61,9 +64,19 @@ from feedbax.orchestration.drivers import runpod as runpod_driver_module
 from feedbax.orchestration.conformance import CheckRegistry, pass_check
 from feedbax.orchestration.drivers.runpod import RunPodOrchestrationDriver
 from feedbax.orchestration.stages import PreflightFailed
+from feedbax.plugins import (
+    TRAINING_METHODS,
+    BootstrapState,
+    FamilyRequirement,
+    PluginDeclaration,
+    PluginRegistration,
+    bootstrap_application,
+    new_registration_context,
+)
+from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.orchestration.state import RowState
-from feedbax.plugins.discovery import load_training_method_plugins
-from feedbax.training.preparation import ExecutionPreparationProviderRegistry
+from feedbax.training.row_lowering import TrainingRowLowererRegistry
+from feedbax.training.run_matrix import _validate_training_payload
 from feedbax.training.spec_storage import (
     TRAINING_RUN_MATRIX_COMPILER_ID,
     TRAINING_RUN_MATRIX_COMPILER_VERSION,
@@ -277,11 +290,17 @@ def _matrix_request(
     *,
     training_run_payload: dict[str, Any],
 ) -> tuple[RunAssemblyRequest, AssemblyCompilerRegistry]:
+    base_path = tmp_path / "training-base.json"
+    base_path.write_text(json.dumps(training_run_payload), encoding="utf-8")
     matrix = {
         "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
         "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
         "name": "orchestration plugin discovery",
-        "base": {"kind": "inline", "inline": training_run_payload},
+        "base": {
+            "kind": "authored_intent",
+            "ref": base_path.name,
+            "content_hash": training_spec_sha256(training_run_payload),
+        },
         "rows": [{"row_id": "plugin-row", "seed": 7}],
     }
     authored_bytes = json.dumps(matrix, sort_keys=True).encode("utf-8")
@@ -306,7 +325,15 @@ def _matrix_request(
         orchestration_root=str(tmp_path / "orchestration"),
     )
     registry = AssemblyCompilerRegistry()
-    register_training_run_matrix_compiler(registry, allow_inline_base=True)
+    method_registry = default_training_method_registry()
+    register_training_run_matrix_compiler(
+        registry,
+        method_registry=method_registry,
+        row_validator=lambda payload, row_id: _validate_training_payload(
+            payload, row_id=row_id, method_registry=method_registry
+        ),
+        row_lowerer=TrainingRowLowererRegistry().lower,
+    )
     return request, registry
 
 
@@ -324,45 +351,30 @@ def test_preflight_loads_non_builtin_training_method_entry_point_before_matrix_a
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    method_registry = training_contracts.DEFAULT_TRAINING_METHOD_REGISTRY
-    monkeypatch.setattr(
-        method_registry,
-        "_registrations",
-        method_registry._registrations.copy(),
+    registration = PluginRegistration(
+        PluginDeclaration(
+            "tests.orchestration_method",
+            "1",
+            families=(FamilyRequirement("training_methods"),),
+        ),
+        lambda context: _register_orchestration_plugin_method(context.registry(TRAINING_METHODS)),
     )
     monkeypatch.setattr(
-        method_registry,
-        "_descriptors",
-        method_registry._descriptors.copy(),
-    )
-    preparation_registry = ExecutionPreparationProviderRegistry()
-    plugin = SimpleNamespace(
-        register_feedbax_training_methods=_register_orchestration_plugin_method
-    )
-    monkeypatch.setattr(
-        orchestrate,
-        "load_training_method_plugins",
-        lambda **kwargs: load_training_method_plugins(
-            preparation_registry=preparation_registry,
-            entry_points=[SimpleNamespace(name="orchestration-method", load=lambda: plugin)],
-            **kwargs,
+        plugin_bootstrap,
+        "_installed_entry_points",
+        lambda _group: (
+            SimpleNamespace(
+                name="orchestration-method",
+                value="tests:PLUGIN_REGISTRATION",
+                load=lambda: registration,
+            ),
         ),
     )
-    request, assembly_registry = _plugin_matrix_request(tmp_path)
+    request, _ = _plugin_matrix_request(tmp_path)
     request_path = _write_request(request, tmp_path / "assembly-request.json")
-    monkeypatch.setattr(
-        orchestrate,
-        "build_default_assembly_registry",
-        lambda: assembly_registry,
-    )
-    monkeypatch.setattr(
-        orchestrate,
-        "build_default_check_registry",
-        lambda: CheckRegistry({"fixture_pass": lambda _row: pass_check("fixture_pass")}),
-    )
+    monkeypatch.chdir(tmp_path)
 
     assert orchestrate.main(["preflight", "--assembly-request", str(request_path)]) == 0
-    assert _PLUGIN_METHOD_REF in method_registry.available_keys()
 
 
 @pytest.mark.parametrize("command", ["preflight", "launch"])
@@ -373,13 +385,16 @@ def test_matrix_commands_load_training_plugins_before_request_validation(
 ) -> None:
     request, _ = _assembly_request(tmp_path)
     request_path = _write_request(request, tmp_path / "assembly-request.json")
-    events: list[tuple[str, bool] | str] = []
-
-    monkeypatch.setattr(
-        orchestrate,
-        "load_training_method_plugins",
-        lambda *, fail_on_load_error: events.append(("plugins", fail_on_load_error)),
+    events: list[str] = []
+    state = asyncio.run(
+        bootstrap_application(new_registration_context(local_component_source=None))
     )
+
+    async def compose() -> object:
+        events.append("bootstrap")
+        return state
+
+    monkeypatch.setattr(orchestrate, "compose_application", compose)
     monkeypatch.setattr(
         orchestrate,
         "_load_assembly_request",
@@ -402,7 +417,7 @@ def test_matrix_commands_load_training_plugins_before_request_validation(
     monkeypatch.setattr(orchestrate, "_request_engine", lambda *_args, **_kwargs: FakeEngine())
 
     assert orchestrate.main([command, "--assembly-request", str(request_path)]) == 0
-    assert events == [("plugins", True), "request"]
+    assert events == ["bootstrap", "request"]
 
 
 def test_shadow_launch_rejects_provider_capable_request_before_engine_construction(
@@ -411,7 +426,6 @@ def test_shadow_launch_rejects_provider_capable_request_before_engine_constructi
 ) -> None:
     request, _ = _assembly_request(tmp_path, driver="runpod")
     request_path = _write_request(request, tmp_path / "assembly-request.json")
-    monkeypatch.setattr(orchestrate, "load_training_method_plugins", lambda **_kwargs: None)
     monkeypatch.setattr(orchestrate, "_load_assembly_request", lambda _path: request)
     monkeypatch.setattr(
         orchestrate,
@@ -489,11 +503,12 @@ def test_broken_installed_plugin_fails_before_builtin_matrix_engine_or_provider(
     capsys: Any,
 ) -> None:
     monkeypatch.setattr(
-        plugin_discovery,
-        "feedbax_plugin_entry_points",
+        plugin_bootstrap,
+        "_installed_entry_points",
         lambda _group: [
             SimpleNamespace(
                 name="broken-orchestration-method",
+                value="broken.plugin:PLUGIN_REGISTRATION",
                 load=lambda: (_ for _ in ()).throw(RuntimeError("broken plugin")),
             )
         ],
@@ -518,10 +533,7 @@ def test_broken_installed_plugin_fails_before_builtin_matrix_engine_or_provider(
     assert (
         capsys.readouterr()
         .err.strip()
-        .endswith(
-            "Failed to load Feedbax training-method plugin "
-            "entry-point:broken-orchestration-method: broken plugin"
-        )
+        .endswith("failed to load 'broken-orchestration-method': broken plugin")
     )
 
 
@@ -704,19 +716,16 @@ def test_certify_explicitly_retries_a_completed_failed_certificate(
             },
         )
 
-    monkeypatch.setattr(
-        orchestrate,
-        "load_training_method_plugins",
-        lambda **kwargs: calls.append(("plugins", kwargs)),
-    )
     monkeypatch.setattr(orchestrate, "_run_existing", run_existing)
 
     assert orchestrate.main(["certify", "--run-set", "failed-certificate"]) == 0
     assert calls == [
-        ("plugins", {"fail_on_load_error": True}),
         (
             "run",
             {
+                "conformance_registry": ANY,
+                "training_method_registry": ANY,
+                "plugin_provenance": (),
                 "stop_after_stage": "CERTIFY",
                 "retry_failed_certification": True,
             },
@@ -781,12 +790,21 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
             type(self).seen_bindings = self.input_provider_bindings
 
     monkeypatch.setattr(orchestrate, "LocalOrchestrationDriver", FastLocalDriver)
-    monkeypatch.setattr(orchestrate, "build_default_assembly_registry", lambda: registry)
     monkeypatch.setattr(
         orchestrate,
-        "build_default_check_registry",
-        lambda: CheckRegistry({"fixture_pass": lambda _row: pass_check("fixture_pass")}),
+        "build_default_assembly_registry",
+        lambda **_kwargs: registry,
     )
+    bundle = replace(
+        new_application_registry_bundle(local_component_source=None),
+        conformance_checks=CheckRegistry({"fixture_pass": lambda _row: pass_check("fixture_pass")}),
+    )
+    bundle.seal()
+
+    async def compose() -> BootstrapState:
+        return BootstrapState(bundle=bundle, provenance=())
+
+    monkeypatch.setattr(orchestrate, "compose_application", compose)
 
     assert orchestrate.main(["preflight", "--assembly-request", str(request_path)]) == 0
     assert (
@@ -860,7 +878,11 @@ def test_runpod_driver_is_constructed_from_typed_deployment_policy(tmp_path: Pat
     )
 
     bindings = orchestrate._input_provider_bindings([f"checkpoint.inputs={tmp_path}"])
-    driver = orchestrate._driver_for_bundle(bundle, bindings)
+    driver = orchestrate._driver_for_bundle(
+        bundle,
+        bindings,
+        training_method_registry=default_training_method_registry(),
+    )
 
     assert isinstance(driver, RunPodOrchestrationDriver)
     assert driver.config.pod_id == "pod-123"
@@ -895,15 +917,19 @@ def test_certify_cli_accepts_input_provider_binding(tmp_path: Path) -> None:
     )
 
 
-def test_resume_loads_training_method_plugins_before_running(
+def test_resume_bootstraps_before_running(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, Any]] = []
-    monkeypatch.setattr(
-        orchestrate,
-        "load_training_method_plugins",
-        lambda **kwargs: calls.append(("plugins", kwargs)),
+    state = asyncio.run(
+        bootstrap_application(new_registration_context(local_component_source=None))
     )
+
+    async def compose() -> object:
+        calls.append(("bootstrap", {}))
+        return state
+
+    monkeypatch.setattr(orchestrate, "compose_application", compose)
     monkeypatch.setattr(
         orchestrate,
         "_run_existing",
@@ -917,7 +943,7 @@ def test_resume_loads_training_method_plugins_before_running(
     )
 
     assert orchestrate.main(["resume", "--run-set", "resumed"]) == 0
-    assert calls[0] == ("plugins", {"fail_on_load_error": True})
+    assert calls[0] == ("bootstrap", {})
     assert calls[1][0] == "run"
 
 
@@ -969,7 +995,6 @@ def test_launch_dry_run_binds_rows_without_credentials_or_stage_engine(
     path = _write_request(request, tmp_path / "assembly-request.json")
     bundle = _bundle(tmp_path / "bundle", driver="runpod")
     monkeypatch.setattr(orchestrate, "assemble_run_bundle", lambda *_args, **_kwargs: bundle)
-    monkeypatch.setattr(orchestrate, "load_training_method_plugins", lambda **_kwargs: None)
     monkeypatch.setattr(
         orchestrate,
         "load_runpod_api_key",

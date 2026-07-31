@@ -87,28 +87,32 @@ uv pip install -e /path/to/your-package
 
 Application packages register themselves with the feedbax plugin system via a
 `[project.entry-points."feedbax.plugins"]` section in `pyproject.toml` and a
-registration function that calls `register_package_from_module_info`.
+typed `PluginRegistration` object.
 
 **`pyproject.toml`:**
 
 ```toml
 [project.entry-points."feedbax.plugins"]
-rlrmp = "rlrmp:register_experiment_package"
+rlrmp = "rlrmp:PLUGIN_REGISTRATION"
 ```
 
 **`rlrmp/__init__.py`:**
 
 ```python
-from feedbax.plugins import EXPERIMENT_REGISTRY
-from feedbax.plugins.discovery import register_package_from_module_info
+from importlib import import_module
 
-def register_experiment_package(registry=None):
-    if registry is None:
-        registry = EXPERIMENT_REGISTRY
-    register_package_from_module_info(
-        registry,
-        package_name="rlrmp",
-        package_module_name="rlrmp",
+from feedbax.plugins import (
+    EXPERIMENT_PACKAGES,
+    FamilyRequirement,
+    PluginDeclaration,
+    PluginRegistration,
+)
+
+
+def _register(context):
+    context.registry(EXPERIMENT_PACKAGES).register_package(
+        name="rlrmp",
+        package_module=import_module("rlrmp"),
         parts=["part1", "part2", "part2_5"],
         analysis_module_root="modules.analysis",
         training_module_root="modules.training",
@@ -121,6 +125,16 @@ def register_experiment_package(registry=None):
             "create_symlink_in_spec_dir": True,
         },
     )
+
+
+PLUGIN_REGISTRATION = PluginRegistration(
+    declaration=PluginDeclaration(
+        plugin_id="rlrmp",
+        version="1.0.0",
+        families=(FamilyRequirement("experiment_packages"),),
+    ),
+    register=_register,
+)
 ```
 
 ### `figure_routing` config schema

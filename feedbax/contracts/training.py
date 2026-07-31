@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import numbers
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, Generic, List, Literal, Optional, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from feedbax.contracts.graph import GraphSpec, ParamValue, RetentionPolicySpec
 from feedbax.contracts.checkpoints import (
@@ -206,9 +205,7 @@ class ScheduleProjection(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_id: Literal["feedbax.spec.training.schedule_projection"] = (
-        SCHEDULE_PROJECTION_SCHEMA_ID
-    )
+    schema_id: Literal["feedbax.spec.training.schedule_projection"] = SCHEDULE_PROJECTION_SCHEMA_ID
     schema_version: Literal["feedbax.spec.training.schedule_projection.v1"] = (
         SCHEDULE_PROJECTION_SCHEMA_VERSION
     )
@@ -605,7 +602,9 @@ class TrainingMethodMetadataProjector(Generic[PayloadT]):
         if not isinstance(self.output_model, type) or not issubclass(self.output_model, BaseModel):
             raise TypeError("training method metadata projector output_model must extend BaseModel")
         if self.output_model.model_config.get("extra") != "forbid":
-            raise ValueError("training method metadata projector output_model must set extra='forbid'")
+            raise ValueError(
+                "training method metadata projector output_model must set extra='forbid'"
+            )
         if self.output_model.model_config.get("strict") is not True:
             raise ValueError("training method metadata projector output_model must set strict=True")
         if not callable(self.projector):
@@ -623,13 +622,16 @@ class TrainingMethodScheduleProjector(Generic[PayloadT]):
 
     projector_id: str
     projector_version: str
-    projector: Callable[
-        [PayloadT, Sequence[int]], ScheduleProjection | Mapping[str, Any]
-    ] | None = None
-    lineage_projector: Callable[
-        [PayloadT, Sequence[int], CheckpointSegmentLineage],
-        ScheduleProjection | Mapping[str, Any],
-    ] | None = None
+    projector: (
+        Callable[[PayloadT, Sequence[int]], ScheduleProjection | Mapping[str, Any]] | None
+    ) = None
+    lineage_projector: (
+        Callable[
+            [PayloadT, Sequence[int], CheckpointSegmentLineage],
+            ScheduleProjection | Mapping[str, Any],
+        ]
+        | None
+    ) = None
 
     def validate_structure(self) -> None:
         """Validate the stable projector identity and callable boundary."""
@@ -651,9 +653,7 @@ class TrainingMethodScheduleProjector(Generic[PayloadT]):
             )
         value = self.projector or self.lineage_projector
         if not callable(value):
-            raise TypeError(
-                f"training method schedule projector {configured[0]} must be callable"
-            )
+            raise TypeError(f"training method schedule projector {configured[0]} must be callable")
 
     def project(
         self,
@@ -803,6 +803,7 @@ class TrainingMethodRegistry:
     """Registry for method payloads and independent manifest projection governance."""
 
     def __init__(self) -> None:
+        self._sealed = False
         self._registrations: dict[str, TrainingMethodRegistration] = {}
         self._descriptors: dict[str, TrainingMethodDescriptor[Any]] = {}
         self._metadata_projection_registrations: dict[
@@ -811,6 +812,7 @@ class TrainingMethodRegistry:
 
     def register(self, registration: TrainingMethodRegistration) -> None:
         """Register one method payload governance row."""
+        self._require_mutable()
         if registration.method_ref in self._registrations:
             raise ValueError(f"training method already registered: {registration.method_ref!r}")
         producer_count = sum(
@@ -826,6 +828,7 @@ class TrainingMethodRegistry:
 
     def register_descriptor(self, descriptor: TrainingMethodDescriptor[Any]) -> None:
         """Atomically register one descriptor and its derived low-level row."""
+        self._require_mutable()
         required = {
             "method_ref": descriptor.method_ref,
             "payload_schema_id": descriptor.payload_schema_id,
@@ -1027,6 +1030,7 @@ class TrainingMethodRegistry:
         registration: TrainingManifestMetadataProjectionRegistration,
     ) -> None:
         """Register projection governance independently of training methods."""
+        self._require_mutable()
         required = {
             "source_payload_kind": registration.source_payload_kind,
             "source_payload_schema_id": registration.source_payload_schema_id,
@@ -1052,6 +1056,13 @@ class TrainingMethodRegistry:
                 f"identity={key!r}"
             )
         self._metadata_projection_registrations[key] = registration
+
+    def seal(self) -> None:
+        self._sealed = True
+
+    def _require_mutable(self) -> None:
+        if self._sealed:
+            raise RuntimeError("training method registry is sealed")
 
     def resolve_manifest_metadata_projection(
         self,
@@ -1294,9 +1305,6 @@ def default_training_method_registry() -> TrainingMethodRegistry:
     return registry
 
 
-DEFAULT_TRAINING_METHOD_REGISTRY = default_training_method_registry()
-
-
 class TrainingRunSpec(TrainingRunContractModel):
     """Public durable request contract for one Feedbax training run."""
 
@@ -1317,37 +1325,6 @@ class TrainingRunSpec(TrainingRunContractModel):
         default_factory=CheckpointProgressPolicySpec
     )
     metadata: dict[str, Any] = Field(default_factory=dict)
-    _resolved_method: ResolvedTrainingMethod[Any] | None = PrivateAttr(default=None)
-    _resolved_method_cache_key: tuple[str, str, str] | None = PrivateAttr(default=None)
-
-    def _method_resolution_cache_key(self) -> tuple[str, str, str]:
-        """Return a deterministic key for all method-resolution inputs."""
-
-        def canonical(value: BaseModel) -> str:
-            return json.dumps(
-                value.model_dump(mode="json"),
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-
-        return (
-            self.method_ref.key,
-            canonical(self.method_payload),
-            canonical(self.worker_execution),
-        )
-
-    @property
-    def resolved_method(self) -> ResolvedTrainingMethod[Any]:
-        """Lazily return the strict, validated runtime-only method projection."""
-        cache_key = self._method_resolution_cache_key()
-        if self._resolved_method is None or self._resolved_method_cache_key != cache_key:
-            self._resolved_method = DEFAULT_TRAINING_METHOD_REGISTRY.resolve_execution(
-                self.method_ref,
-                self.method_payload,
-                worker_execution=self.worker_execution,
-            )
-            self._resolved_method_cache_key = cache_key
-        return self._resolved_method
 
     @model_validator(mode="after")
     def _validate_contract(self) -> "TrainingRunSpec":
@@ -1362,15 +1339,6 @@ class TrainingRunSpec(TrainingRunContractModel):
                 f"{self.schema_version!r}; expected {TRAINING_RUN_SPEC_SCHEMA_VERSION!r}"
             )
 
-        DEFAULT_TRAINING_METHOD_REGISTRY.resolve(
-            self.method_ref,
-            path="/method_ref",
-        )
-        DEFAULT_TRAINING_METHOD_REGISTRY.validate_payload(
-            self.method_ref,
-            self.method_payload,
-            path="/method_payload",
-        )
         method_key = self.method_ref.key
         method_contract = self.worker_execution.method_contract
         effective_phase = self.worker_execution.effective_phase
@@ -1398,6 +1366,25 @@ class TrainingRunSpec(TrainingRunContractModel):
                 "/worker_execution/method_contract/state_slots must declare worker state slots"
             )
         return self
+
+
+def resolve_training_run_spec(
+    spec: TrainingRunSpec, registry: TrainingMethodRegistry
+) -> ResolvedTrainingMethod[Any]:
+    """Resolve registry-owned training semantics after structural parsing."""
+    return registry.resolve_execution(
+        spec.method_ref,
+        spec.method_payload,
+        worker_execution=spec.worker_execution,
+    )
+
+
+def validate_training_run_spec_semantics(
+    spec: TrainingRunSpec, registry: TrainingMethodRegistry
+) -> TrainingRunSpec:
+    """Validate registry-owned semantics at an explicit post-bootstrap boundary."""
+    resolve_training_run_spec(spec, registry)
+    return spec
 
 
 # Enable forward references

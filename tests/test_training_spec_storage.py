@@ -11,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID, GRAPH_SPEC_SCHEMA_VERSION_V3
+from feedbax.contracts.training import default_training_method_registry
 from feedbax.contracts.manifest import TrainingRunManifest, TrainingSweepAxis
 from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
@@ -36,6 +37,8 @@ from feedbax.training.spec_storage import (
     stamp_training_run_manifest_identities,
 )
 from feedbax.orchestration.bundle import DeploymentPolicy
+
+_METHOD_REGISTRY = default_training_method_registry()
 
 
 def _matrix(base: dict[str, object]) -> TrainingRunMatrixSpec:
@@ -74,10 +77,7 @@ def test_snapshot_decodes_with_pure_stdlib_decoder_alone() -> None:
     expected = {"rows": [{"x": 1.25}, {"x": 1.25}]}
     snapshot = build_resolved_semantics_snapshot(expected)
     decoder_path = (
-        Path(__file__).parents[1]
-        / "feedbax"
-        / "contracts"
-        / "resolved_snapshot_decoder.py"
+        Path(__file__).parents[1] / "feedbax" / "contracts" / "resolved_snapshot_decoder.py"
     )
     module_spec = importlib.util.spec_from_file_location(
         "standalone_snapshot_decoder", decoder_path
@@ -138,6 +138,7 @@ def test_emission_round_trip_is_stable_and_materializer_drift_is_visible(
     with pytest.raises(ValueError, match="tests/fixtures only"):
         emit_training_run_spec_storage(
             matrix,
+            method_registry=_METHOD_REGISTRY,
             repo_root=tmp_path,
             authored_path=tmp_path / "tracked" / "rejected.json",
             custody_root=tmp_path / "custody",
@@ -146,6 +147,7 @@ def test_emission_round_trip_is_stable_and_materializer_drift_is_visible(
         )
     first = emit_training_run_spec_storage(
         matrix,
+        method_registry=_METHOD_REGISTRY,
         repo_root=tmp_path,
         authored_path=tmp_path / "tracked" / "matrix.json",
         custody_root=tmp_path / "custody",
@@ -158,6 +160,7 @@ def test_emission_round_trip_is_stable_and_materializer_drift_is_visible(
     )
     second = emit_training_run_spec_storage(
         matrix,
+        method_registry=_METHOD_REGISTRY,
         repo_root=tmp_path,
         authored_path=tmp_path / "tracked" / "matrix-again.json",
         custody_root=tmp_path / "custody",
@@ -184,6 +187,7 @@ def test_emission_round_trip_is_stable_and_materializer_drift_is_visible(
 
     drifted = emit_training_run_spec_storage(
         matrix,
+        method_registry=_METHOD_REGISTRY,
         repo_root=tmp_path,
         authored_path=tmp_path / "tracked" / "matrix-drift.json",
         custody_root=tmp_path / "custody",
@@ -239,6 +243,7 @@ def test_snapshot_rows_are_complete_and_seed_changes_execution_identity(tmp_path
     def emit(payload, suffix):
         return emit_training_run_spec_storage(
             TrainingRunMatrixSpec.model_validate(payload),
+            method_registry=_METHOD_REGISTRY,
             repo_root=tmp_path,
             authored_path=tmp_path / f"authored-{suffix}.json",
             custody_root=tmp_path / "custody",
@@ -279,9 +284,7 @@ def test_typed_row_lowerer_is_authoritative_and_validation_cannot_mutate(
             lowerer_identities=[],
         )
     matrix_payload = _matrix({"compact": {"gain": 1}}).model_dump(mode="json")
-    matrix_payload["rows"][0]["overrides"] = [
-        {"path": "compact.gain", "op": "replace", "value": 2}
-    ]
+    matrix_payload["rows"][0]["overrides"] = [{"path": "compact.gain", "op": "replace", "value": 2}]
     matrix = TrainingRunMatrixSpec.model_validate(matrix_payload)
     seen = []
 
@@ -361,18 +364,12 @@ def test_planned_id_binds_complete_lowered_payload_and_ordered_authorship(
                     "schema_id": "example.execution",
                     "schema_version": "example.execution.v1",
                     "constant": True,
-                    **(
-                        {}
-                        if graph_value is None
-                        else {"graph_spec": {"signed_zero": graph_value}}
-                    ),
+                    **({} if graph_value is None else {"graph_spec": {"signed_zero": graph_value}}),
                     # This field is outside the historical graph/training/task projections.
                     "extension_payload": {"value": unprojected_value},
                 },
                 lowerer_identities=(
-                    list(reversed(lowerer_identities))
-                    if reverse_lowerers
-                    else lowerer_identities
+                    list(reversed(lowerer_identities)) if reverse_lowerers else lowerer_identities
                 ),
             )
 
@@ -408,15 +405,18 @@ def test_planned_id_binds_complete_lowered_payload_and_ordered_authorship(
 
     assert baseline.payload == changed_authored.payload == changed_lowerer.payload
     assert baseline.payload != changed_unprojected_execution.payload
-    assert len(
-        {
-            baseline.planned_run_id,
-            changed_authored.planned_run_id,
-            changed_lowerer.planned_run_id,
-            changed_unprojected_execution.planned_run_id,
-            reversed_lowerer_order.planned_run_id,
-        }
-    ) == 5
+    assert (
+        len(
+            {
+                baseline.planned_run_id,
+                changed_authored.planned_run_id,
+                changed_lowerer.planned_run_id,
+                changed_unprojected_execution.planned_run_id,
+                reversed_lowerer_order.planned_run_id,
+            }
+        )
+        == 5
+    )
     assert baseline.provenance.lowered_execution_payload_hash == training_spec_sha256(
         baseline.payload
     )
@@ -443,9 +443,10 @@ def test_planned_id_binds_complete_lowered_payload_and_ordered_authorship(
     )
     assert negative_zero_artifact.sha256 == positive_zero_artifact.sha256
     assert negative_zero.planned_run_id == positive_zero.planned_run_id
-    assert [
-        identity.lowerer_id for identity in baseline.provenance.lowerer_identities
-    ] == ["example.adapter", "example.science"]
+    assert [identity.lowerer_id for identity in baseline.provenance.lowerer_identities] == [
+        "example.adapter",
+        "example.science",
+    ]
 
 
 def test_sweep_planned_id_canonicalizes_payload_and_axis_coordinates(
@@ -529,6 +530,7 @@ def test_lowered_payload_and_provenance_drive_storage_and_assembly(tmp_path: Pat
     lock.write_text("lock", encoding="utf-8")
     storage = emit_training_run_spec_storage(
         matrix,
+        method_registry=_METHOD_REGISTRY,
         repo_root=tmp_path,
         authored_path=tmp_path / "authored.json",
         custody_root=tmp_path / "custody",
@@ -536,6 +538,7 @@ def test_lowered_payload_and_provenance_drive_storage_and_assembly(tmp_path: Pat
         dependency_lock_path=lock,
         allow_inline_base=True,
         row_lowerer=lower,
+        row_validator=lambda _payload, _row_id: None,
     )
     decoded = decode_resolved_snapshot(
         json.loads(Path(storage.snapshot_artifact.uri).read_text(encoding="utf-8"))
@@ -552,10 +555,12 @@ def test_lowered_payload_and_provenance_drive_storage_and_assembly(tmp_path: Pat
 
     compiled = compile_training_run_matrix(
         matrix,
+        method_registry=_METHOD_REGISTRY,
         run_set_id="run-set",
         context=SimpleNamespace(repo_root=tmp_path, resolved_inputs=()),
         allow_inline_base=True,
         row_lowerer=lower,
+        row_validator=lambda _payload, _row_id: None,
     )
     compiled_row = compiled.rows[0]
     assert compiled_row.payload == stored_row["payload"]
@@ -635,8 +640,10 @@ def test_assembled_bundle_carries_the_same_typed_row_provenance(tmp_path: Path) 
     registry = AssemblyCompilerRegistry()
     register_training_run_matrix_compiler(
         registry,
+        method_registry=_METHOD_REGISTRY,
         allow_inline_base=True,
         row_lowerer=lower,
+        row_validator=lambda _payload, _row_id: None,
     )
     bundle = assemble_run_bundle(
         request,
@@ -801,9 +808,7 @@ def test_v3_graph_base_is_migrated_before_row_validation(tmp_path: Path) -> None
         "derived_dimensions": [],
     }
     base_document = {"graph": {"kind": "GraphSpec", "inline": v3_graph}}
-    (tmp_path / "tracked-v3-base.json").write_bytes(
-        training_spec_canonical_bytes(base_document)
-    )
+    (tmp_path / "tracked-v3-base.json").write_bytes(training_spec_canonical_bytes(base_document))
     matrix_payload = _matrix({"unused": True}).model_dump(mode="json")
     matrix_payload["base"] = {
         "kind": "authored_intent",
@@ -817,7 +822,7 @@ def test_v3_graph_base_is_migrated_before_row_validation(tmp_path: Path) -> None
         repo_root=tmp_path,
         row_validator=lambda payload, _row_id: seen.append(payload) or None,
     )
-    assert seen[0]["graph"]["inline"]["schema_version"].endswith(".v4")
+    assert seen[0]["graph"]["inline"]["schema_version"].endswith(".v5")
 
 
 def test_intent_identity_excludes_symbolic_names_but_retains_pins() -> None:

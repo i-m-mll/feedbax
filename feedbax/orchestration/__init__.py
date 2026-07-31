@@ -127,7 +127,6 @@ __all__ = [
     "assemble_run_bundle",
     "assert_certificate_allows_completed_registration",
     "build_core_check_registry",
-    "build_default_check_registry",
     "build_default_assembly_registry",
     "MatrixAuthorityError",
     "build_training_run_matrix_authority",

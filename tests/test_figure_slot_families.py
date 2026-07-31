@@ -134,7 +134,7 @@ def test_slot_family_has_registered_versioned_identity_and_preserves_figure_iden
         )
 
 
-def test_public_resolution_matches_hand_enumerated_bindings() -> None:
+def test_public_resolution_matches_hand_enumerated_bindings(application_registry_bundle) -> None:
     template = _template()
     compact = FigureSpec(
         name="compact",
@@ -172,8 +172,12 @@ def test_public_resolution_matches_hand_enumerated_bindings() -> None:
         },
     )
 
-    compact_plans = resolve_figure_trace_bindings(compact, template)
-    enumerated_plans = resolve_figure_trace_bindings(enumerated, template)
+    compact_plans = resolve_figure_trace_bindings(
+        compact, template, registry=application_registry_bundle.figures
+    )
+    enumerated_plans = resolve_figure_trace_bindings(
+        enumerated, template, registry=application_registry_bundle.figures
+    )
     assert compact_plans == enumerated_plans
     assert [plan.binding.constructor for plan in compact_plans] == [
         "feedbax.scalar_scatter",
@@ -182,9 +186,11 @@ def test_public_resolution_matches_hand_enumerated_bindings() -> None:
     assert [plan.binding.params["marker_size"] for plan in compact_plans] == [9.0, 9.0]
 
 
-def test_slot_family_execution_equals_hand_enumerated_figure(tmp_path: Path) -> None:
+def test_slot_family_execution_equals_hand_enumerated_figure(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     template = _template()
-    register_figure_template(template, replace=True)
+    register_figure_template(template, registry=application_registry_bundle.figures)
     analysis = _analysis(tmp_path)
     common = {
         "template": template.name,
@@ -217,8 +223,12 @@ def test_slot_family_execution_equals_hand_enumerated_figure(tmp_path: Path) -> 
         **common,
     )
 
-    compact_manifest, _ = execute_figure_spec(compact, root=tmp_path)
-    enumerated_manifest, _ = execute_figure_spec(enumerated, root=tmp_path)
+    compact_manifest, _ = execute_figure_spec(
+        compact, root=tmp_path, registry=application_registry_bundle.figures
+    )
+    enumerated_manifest, _ = execute_figure_spec(
+        enumerated, root=tmp_path, registry=application_registry_bundle.figures
+    )
     compact_render = figure_manifest_plotly_json(compact_manifest)
     enumerated_render = figure_manifest_plotly_json(enumerated_manifest)
 
@@ -277,7 +287,9 @@ def test_slot_family_rejects_field_collisions() -> None:
         )
 
 
-def test_slot_family_slot_and_cardinality_validation_fail_closed() -> None:
+def test_slot_family_slot_and_cardinality_validation_fail_closed(
+    application_registry_bundle,
+) -> None:
     family = _family()
     with pytest.raises(ValueError, match="unknown template slots"):
         resolve_figure_trace_bindings(
@@ -287,11 +299,13 @@ def test_slot_family_slot_and_cardinality_validation_fail_closed() -> None:
                 slot_families=[family.model_copy(update={"slot": "unknown"})],
             ),
             _template(),
+            registry=application_registry_bundle.figures,
         )
     with pytest.raises(ValueError, match="requires exactly one TraceBinding"):
         resolve_figure_trace_bindings(
             FigureSpec(name="one", template="template", slot_families=[family]),
             _template(multiplicity="one"),
+            registry=application_registry_bundle.figures,
         )
     with pytest.raises(ValidationError, match="bound by both"):
         FigureSpec(
@@ -304,12 +318,15 @@ def test_slot_family_slot_and_cardinality_validation_fail_closed() -> None:
         )
 
 
-def test_required_slot_and_resolved_trace_name_collisions_fail_closed() -> None:
+def test_required_slot_and_resolved_trace_name_collisions_fail_closed(
+    application_registry_bundle,
+) -> None:
     template = _template()
     with pytest.raises(ValueError, match="missing required template slot"):
         resolve_figure_trace_bindings(
             FigureSpec(name="missing", template=template.name),
             template,
+            registry=application_registry_bundle.figures,
         )
     with pytest.raises(ValidationError, match="collides with other trace names"):
         FigureSpec(
@@ -320,13 +337,15 @@ def test_required_slot_and_resolved_trace_name_collisions_fail_closed() -> None:
         )
 
 
-def test_unknown_slot_execution_writes_failed_manifest(tmp_path: Path) -> None:
+def test_unknown_slot_execution_writes_failed_manifest(
+    tmp_path: Path, application_registry_bundle
+) -> None:
     template = _template()
-    register_figure_template(template, replace=True)
+    register_figure_template(template, registry=application_registry_bundle.figures)
     family = _family().model_copy(update={"slot": "unknown"})
     spec = FigureSpec(name="unknown", template=template.name, slot_families=[family])
 
     with pytest.raises(FigureSpecExecutionError) as exc_info:
-        execute_figure_spec(spec, root=tmp_path)
+        execute_figure_spec(spec, root=tmp_path, registry=application_registry_bundle.figures)
     assert isinstance(exc_info.value.__cause__, ValueError)
     assert "unknown template slots" in str(exc_info.value.__cause__)

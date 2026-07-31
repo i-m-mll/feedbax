@@ -106,7 +106,7 @@ def test_affine_feedback_controller_graph_spec_round_trips() -> None:
         output_bindings={"command": ("controller", "command")},
     )
 
-    graph = spec_to_graph(spec, {})
+    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
     assert isinstance(graph.nodes["controller"], AffineFeedbackController)
 
     state = init_state_from_component(graph)

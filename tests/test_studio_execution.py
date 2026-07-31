@@ -24,14 +24,12 @@ from feedbax.studio.execution import (
 )
 from feedbax.analysis.evaluation import (
     EvaluationRecipeResult,
-    register_evaluation_recipe,
-    unregister_evaluation_recipe,
 )
 from feedbax.analysis.specs import (
     AnalysisRecipeResult,
-    register_analysis_recipe,
-    unregister_analysis_recipe,
 )
+from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.contracts.manifest import (
     CheckpointSelectionManifest,
     EvaluationRunManifest,
@@ -78,7 +76,7 @@ def _graph() -> GraphSpec:
             name="Studio execution smoke",
             created_at="2026-05-18T00:00:00+00:00",
             updated_at="2026-05-18T00:00:00+00:00",
-        )
+        ),
     )
 
 
@@ -101,38 +99,40 @@ def _workspace():
         "type": "ReachingTask",
         "params": {"n_targets": 4, "target_radius": 0.02},
     }
-    scenario.task_binding_spec = StudioTaskBindingSpec.model_validate({
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
-        "exposed_data": [
-            {
-                "id": "inputs",
-                "label": "Inputs",
-                "kind": "signal",
-                "path": "inputs",
-                "bindable": True,
-                "metadata": {},
-            },
-            {
-                "id": "targets",
-                "label": "Targets",
-                "kind": "target",
-                "path": "targets",
-                "bindable": False,
-                "metadata": {},
-            },
-        ],
-        "bindings": [
-            {
-                "id": "task:inputs->network:input",
-                "source_data_id": "inputs",
-                "target_node_id": "network",
-                "target_port": "input",
-                "role": "model_input",
-                "metadata": {},
-            }
-        ],
-        "metadata": {},
-    })
+    scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
+        {
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "exposed_data": [
+                {
+                    "id": "inputs",
+                    "label": "Inputs",
+                    "kind": "signal",
+                    "path": "inputs",
+                    "bindable": True,
+                    "metadata": {},
+                },
+                {
+                    "id": "targets",
+                    "label": "Targets",
+                    "kind": "target",
+                    "path": "targets",
+                    "bindable": False,
+                    "metadata": {},
+                },
+            ],
+            "bindings": [
+                {
+                    "id": "task:inputs->network:input",
+                    "source_data_id": "inputs",
+                    "target_node_id": "network",
+                    "target_port": "input",
+                    "role": "model_input",
+                    "metadata": {},
+                }
+            ],
+            "metadata": {},
+        }
+    )
     workspace.stages.append(
         StudioStageSpec(
             id="stage:future-report-packaging",
@@ -156,7 +156,23 @@ def _workspace_with_analysis_type(analysis_type: str):
 
 
 @pytest.fixture
-def studio_default_eval_recipe():
+def registry_bundle():
+    return new_application_registry_bundle(local_component_source=None)
+
+
+@pytest.fixture
+def studio_client(registry_bundle, monkeypatch):
+    async def compose(*, modules=()):
+        assert modules == ()
+        return BootstrapState(registry_bundle, ())
+
+    monkeypatch.setattr("feedbax.web.app.compose_application", compose)
+    with TestClient(create_app()) as client:
+        yield client
+
+
+@pytest.fixture
+def studio_default_eval_recipe(registry_bundle):
     def recipe(
         spec: EvaluationRunSpec,
         root: Path,
@@ -180,15 +196,12 @@ def studio_default_eval_recipe():
             artifacts=[artifact],
         )
 
-    register_evaluation_recipe("feedbax.studio.default_eval", recipe, replace=True)
-    try:
-        yield
-    finally:
-        unregister_evaluation_recipe("feedbax.studio.default_eval")
+    registry_bundle.evaluation_recipes.register("feedbax.studio.default_eval", recipe)
+    yield
 
 
 @pytest.fixture
-def studio_default_analysis_recipe():
+def studio_default_analysis_recipe(registry_bundle):
     def recipe(spec, _root: Path, inputs, _execution_context) -> AnalysisRecipeResult:
         return AnalysisRecipeResult(
             analyses={"studio_summary": ToyAnalysis(variant="studio", cache_result=True)},
@@ -196,14 +209,11 @@ def studio_default_analysis_recipe():
             common_inputs={"studio": spec.params.get("stage_id")},
         )
 
-    register_analysis_recipe("feedbax.analysis.activity", recipe, replace=True)
-    try:
-        yield
-    finally:
-        unregister_analysis_recipe("feedbax.analysis.activity")
+    registry_bundle.analysis_recipes.register("feedbax.analysis.activity", recipe)
+    yield
 
 
-def test_prepare_studio_training_execution_lowers_workspace_to_provider_plan():
+def test_prepare_studio_training_execution_lowers_workspace_to_provider_plan(registry_bundle):
     request = StudioTrainingExecutionRequest(
         workspace=_workspace(),
         job_id="studio-plan",
@@ -211,7 +221,7 @@ def test_prepare_studio_training_execution_lowers_workspace_to_provider_plan():
         issues=["ddd3758"],
     )
 
-    prepared = prepare_studio_training_execution(request)
+    prepared = prepare_studio_training_execution(request, registry_bundle=registry_bundle)
 
     assert prepared.stage_id == "stage:train"
     assert prepared.scenario_id == "scenario:train"
@@ -268,8 +278,8 @@ def test_prepare_studio_training_execution_lowers_workspace_to_provider_plan():
     assert future_stage.metadata["later_product_surface"]["keep"] is True
 
 
-def test_studio_training_plan_endpoint_returns_updated_workspace():
-    client = TestClient(create_app())
+def test_studio_training_plan_endpoint_returns_updated_workspace(studio_client):
+    client = studio_client
 
     response = client.post(
         "/api/provider/studio/training/plan",
@@ -294,6 +304,7 @@ def test_studio_training_plan_endpoint_returns_updated_workspace():
 def test_prepare_studio_training_execution_writes_idempotent_pending_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    registry_bundle,
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     request = StudioTrainingExecutionRequest(
@@ -303,13 +314,15 @@ def test_prepare_studio_training_execution_writes_idempotent_pending_manifest(
         issues=["9aa8ff2"],
     )
 
-    first = prepare_studio_training_execution(request)
-    second = prepare_studio_training_execution(request)
+    first = prepare_studio_training_execution(request, registry_bundle=registry_bundle)
+    second = prepare_studio_training_execution(request, registry_bundle=registry_bundle)
 
     train_stage = next(stage for stage in first.workspace.stages if stage.kind == "train")
     training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
     training_collection = next(
-        collection for collection in train_stage.output_collections if collection.kind == "training_runs"
+        collection
+        for collection in train_stage.output_collections
+        if collection.kind == "training_runs"
     )
     second_ref = next(
         ref
@@ -332,6 +345,7 @@ def test_prepare_studio_training_execution_writes_idempotent_pending_manifest(
 def test_prepare_studio_training_execution_expands_sweep_matrix_to_pending_run_set(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    registry_bundle,
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     workspace = _workspace()
@@ -356,22 +370,22 @@ def test_prepare_studio_training_execution_expands_sweep_matrix_to_pending_run_s
         issues=["c199a9c"],
     )
 
-    prepared = prepare_studio_training_execution(request)
+    prepared = prepare_studio_training_execution(request, registry_bundle=registry_bundle)
 
     train_stage = next(stage for stage in prepared.workspace.stages if stage.kind == "train")
     run_set_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run_set")
     run_refs = [ref for ref in train_stage.manifest_refs if ref.role == "training_run"]
     training_collection = next(
-        collection for collection in train_stage.output_collections if collection.kind == "training_runs"
+        collection
+        for collection in train_stage.output_collections
+        if collection.kind == "training_runs"
     )
     run_set = load_manifest(run_set_ref.uri)
     runs = [load_manifest(ref.uri) for ref in run_refs]
 
     assert isinstance(run_set, TrainingRunSetManifest)
     assert run_set.name == "Loss weight sweep"
-    assert run_set.metadata["matrix_schema_version"] == (
-        "feedbax.spec.training_run_matrix.v1"
-    )
+    assert run_set.metadata["matrix_schema_version"] == ("feedbax.spec.training_run_matrix.v1")
     assert run_set.metadata["studio_legacy_adapter"] is True
     assert run_set.axes.axes[0].role == "authored_sweep"
     assert run_set.axes.axes[0].values == [0, 1e-5]
@@ -394,6 +408,7 @@ def test_prepare_studio_training_execution_expands_sweep_matrix_to_pending_run_s
 def test_prepare_studio_training_execution_uses_queue_subset_target_not_stale_stage_protocol(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    registry_bundle,
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     workspace = _workspace()
@@ -432,7 +447,8 @@ def test_prepare_studio_training_execution_uses_queue_subset_target_not_stale_st
             queue_target="runpod",
             queue_manifest_ids=["train:runpod"],
             issues=["12e49a2"],
-        )
+        ),
+        registry_bundle=registry_bundle,
     )
 
     prepared_train_stage = next(
@@ -449,6 +465,7 @@ def test_prepare_studio_training_execution_uses_queue_subset_target_not_stale_st
 def test_prepare_studio_training_execution_rejects_queue_subset_target_mismatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    registry_bundle,
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     workspace = _workspace()
@@ -476,7 +493,8 @@ def test_prepare_studio_training_execution_rejects_queue_subset_target_mismatch(
                 queue_target="runpod",
                 queue_manifest_ids=["train:gcp"],
                 issues=["12e49a2"],
-            )
+            ),
+            registry_bundle=registry_bundle,
         )
 
     assert not (tmp_path / "manifests").exists()
@@ -485,6 +503,7 @@ def test_prepare_studio_training_execution_rejects_queue_subset_target_mismatch(
 def test_prepare_studio_training_execution_rejects_invalid_expanded_sweep_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    registry_bundle,
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     workspace = _workspace()
@@ -508,7 +527,7 @@ def test_prepare_studio_training_execution_rejects_invalid_expanded_sweep_run(
     )
 
     with pytest.raises(StudioExecutionPreparationError, match="n_batches must be positive"):
-        prepare_studio_training_execution(request)
+        prepare_studio_training_execution(request, registry_bundle=registry_bundle)
 
     assert not (tmp_path / "manifests").exists()
 
@@ -516,6 +535,8 @@ def test_prepare_studio_training_execution_rejects_invalid_expanded_sweep_run(
 def test_prepare_studio_training_execution_restages_cancelled_deterministic_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    registry_bundle,
+    studio_client,
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     request = StudioTrainingExecutionRequest(
@@ -525,16 +546,16 @@ def test_prepare_studio_training_execution_restages_cancelled_deterministic_mani
         issues=["9aa8ff2"],
     )
 
-    first = prepare_studio_training_execution(request)
+    first = prepare_studio_training_execution(request, registry_bundle=registry_bundle)
     train_stage = next(stage for stage in first.workspace.stages if stage.kind == "train")
     training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
-    client = TestClient(create_app())
+    client = studio_client
 
     cancelled = client.post(f"/api/runs/training/{training_ref.id}/cancel")
     assert cancelled.status_code == 200
     assert load_manifest(training_ref.uri).status == "cancelled"
 
-    restaged = prepare_studio_training_execution(request)
+    restaged = prepare_studio_training_execution(request, registry_bundle=registry_bundle)
     restaged_stage = next(stage for stage in restaged.workspace.stages if stage.kind == "train")
     restaged_ref = next(ref for ref in restaged_stage.manifest_refs if ref.role == "training_run")
     restaged_manifest = load_manifest(restaged_ref.uri)
@@ -553,6 +574,7 @@ def test_prepare_studio_training_execution_restages_cancelled_deterministic_mani
 def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempotent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    registry_bundle,
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     training_request = StudioTrainingExecutionRequest(
@@ -560,8 +582,12 @@ def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempot
         job_id="studio-plan",
         issues=["717e8fb"],
     )
-    prepared_training = prepare_studio_training_execution(training_request)
-    train_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "train")
+    prepared_training = prepare_studio_training_execution(
+        training_request, registry_bundle=registry_bundle
+    )
+    train_stage = next(
+        stage for stage in prepared_training.workspace.stages if stage.kind == "train"
+    )
     training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
     eval_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "eval")
     eval_stage.input_collections = [
@@ -614,9 +640,10 @@ def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempot
         "objective": "minimize",
         "params": {},
     }
-    assert eval_manifest.provenance.parents == EvaluationRunSpec.model_validate(
-        eval_manifest.evaluation_spec.inline
-    ).inputs
+    assert (
+        eval_manifest.provenance.parents
+        == EvaluationRunSpec.model_validate(eval_manifest.evaluation_spec.inline).inputs
+    )
     assert first.manifest_refs[0].metadata["parent_refs"][0]["id"] == training_ref.id
     assert first.manifest_refs[0].metadata["spec_hashes"]["evaluation_spec"].startswith("fnv1a:")
     assert eval_manifest.provenance.metadata["checkpoint_policy"]["mode"] == "best-by-metric"
@@ -626,18 +653,18 @@ def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempot
 def test_studio_evaluation_preview_filters_stale_manifests_explicitly(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    registry_bundle,
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     prepared_training = prepare_studio_training_execution(
-        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan")
+        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan"),
+        registry_bundle=registry_bundle,
     )
     train_stage = next(
         stage for stage in prepared_training.workspace.stages if stage.kind == "train"
     )
     training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
-    eval_stage = next(
-        stage for stage in prepared_training.workspace.stages if stage.kind == "eval"
-    )
+    eval_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "eval")
     eval_stage.input_collections = [
         collection
         for collection in train_stage.output_collections
@@ -685,12 +712,16 @@ def test_studio_evaluation_run_local_reprocesses_stale_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     studio_default_eval_recipe,
+    registry_bundle,
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     prepared_training = prepare_studio_training_execution(
-        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan")
+        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan"),
+        registry_bundle=registry_bundle,
     )
-    train_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "train")
+    train_stage = next(
+        stage for stage in prepared_training.workspace.stages if stage.kind == "train"
+    )
     training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
     eval_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "eval")
     eval_stage.input_collections = [
@@ -721,7 +752,8 @@ def test_studio_evaluation_run_local_reprocesses_stale_manifest(
     write_manifest(stale_manifest, root=tmp_path)
 
     launched = run_studio_evaluation_local_execution(
-        request.model_copy(update={"reprocess": "stale"})
+        request.model_copy(update={"reprocess": "stale"}),
+        registry_bundle=registry_bundle,
     )
     launched_manifest = load_manifest(launched.manifest_refs[0].uri)
 
@@ -750,12 +782,16 @@ def test_studio_evaluation_run_local_preserves_skipped_failed_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     studio_default_eval_recipe,
+    registry_bundle,
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     prepared_training = prepare_studio_training_execution(
-        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan")
+        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan"),
+        registry_bundle=registry_bundle,
     )
-    train_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "train")
+    train_stage = next(
+        stage for stage in prepared_training.workspace.stages if stage.kind == "train"
+    )
     training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
     eval_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "eval")
     eval_stage.input_collections = [
@@ -777,7 +813,7 @@ def test_studio_evaluation_run_local_preserves_skipped_failed_status(
     failed_manifest = existing_manifest.model_copy(update={"status": "failed"})
     write_manifest(failed_manifest, root=tmp_path)
 
-    launched = run_studio_evaluation_local_execution(request)
+    launched = run_studio_evaluation_local_execution(request, registry_bundle=registry_bundle)
     launched_eval_stage = next(stage for stage in launched.workspace.stages if stage.kind == "eval")
 
     assert launched.completed_count == 0
@@ -800,12 +836,17 @@ def test_studio_evaluation_endpoints_preview_stage_and_run_local(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     studio_default_eval_recipe,
+    registry_bundle,
+    studio_client,
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     prepared_training = prepare_studio_training_execution(
-        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan")
+        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan"),
+        registry_bundle=registry_bundle,
     )
-    train_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "train")
+    train_stage = next(
+        stage for stage in prepared_training.workspace.stages if stage.kind == "train"
+    )
     training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
     eval_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "eval")
     eval_stage.input_collections = [
@@ -825,7 +866,7 @@ def test_studio_evaluation_endpoints_preview_stage_and_run_local(
         "issues": ["717e8fb"],
         "root": str(tmp_path),
     }
-    client = TestClient(create_app())
+    client = studio_client
 
     preview = client.post("/api/provider/studio/evaluation/preview", json=payload)
     staged = client.post("/api/provider/studio/evaluation/stage", json=payload)
@@ -841,12 +882,15 @@ def test_studio_evaluation_endpoints_preview_stage_and_run_local(
         stage for stage in launched.json()["workspace"]["stages"] if stage["kind"] == "eval"
     )
     assert eval_stage_payload["status"] == "completed"
-    assert eval_stage_payload["output_collections"][0]["item_refs"][0]["metadata"]["status"] == "completed"
+    assert (
+        eval_stage_payload["output_collections"][0]["item_refs"][0]["metadata"]["status"]
+        == "completed"
+    )
 
 
-def test_studio_training_plan_endpoint_rejects_missing_training_spec():
+def test_studio_training_plan_endpoint_rejects_missing_training_spec(studio_client):
     workspace = build_default_studio_workspace(label="Missing spec", graph=_graph())
-    client = TestClient(create_app())
+    client = studio_client
 
     response = client.post(
         "/api/provider/studio/training/plan",
@@ -859,44 +903,49 @@ def test_studio_training_plan_endpoint_rejects_missing_training_spec():
 
 def test_task_binding_spec_rejects_legacy_v1_contract():
     with pytest.raises(ValueError, match="task_bindings.v1.*exposed_data.*source_data_id"):
-        StudioTaskBindingSpec.model_validate({
-            "schema_version": "feedbax.studio.task_bindings.v1",
-            "exposed_outputs": [],
-            "bindings": [],
-            "metadata": {},
-        })
+        StudioTaskBindingSpec.model_validate(
+            {
+                "schema_version": "feedbax.studio.task_bindings.v1",
+                "exposed_outputs": [],
+                "bindings": [],
+                "metadata": {},
+            }
+        )
 
 
 def test_task_binding_spec_rejects_source_output_id():
     with pytest.raises(ValueError, match="source_output_id.*source_data_id"):
-        StudioTaskBindingSpec.model_validate({
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
-            "exposed_data": [
-                {
-                    "id": "inputs",
-                    "label": "Inputs",
-                    "kind": "signal",
-                    "path": "inputs",
-                    "bindable": True,
-                    "metadata": {},
-                },
-            ],
-            "bindings": [
-                {
-                    "id": "task:inputs->network:input",
-                    "source_output_id": "inputs",
-                    "target_node_id": "network",
-                    "target_port": "input",
-                    "role": "model_input",
-                    "metadata": {},
-                }
-            ],
-            "metadata": {},
-        })
+        StudioTaskBindingSpec.model_validate(
+            {
+                "schema_version": "feedbax.spec.studio.task_bindings.v2",
+                "exposed_data": [
+                    {
+                        "id": "inputs",
+                        "label": "Inputs",
+                        "kind": "signal",
+                        "path": "inputs",
+                        "bindable": True,
+                        "metadata": {},
+                    },
+                ],
+                "bindings": [
+                    {
+                        "id": "task:inputs->network:input",
+                        "source_output_id": "inputs",
+                        "target_node_id": "network",
+                        "target_port": "input",
+                        "role": "model_input",
+                        "metadata": {},
+                    }
+                ],
+                "metadata": {},
+            }
+        )
 
 
 def test_run_studio_training_local_execution_materializes_snapshot_and_refs(
     tmp_path: Path,
+    registry_bundle,
 ):
     result = run_studio_training_local_execution(
         StudioTrainingLocalRunRequest(
@@ -904,7 +953,8 @@ def test_run_studio_training_local_execution_materializes_snapshot_and_refs(
             job_id="studio-local-run",
             root=str(tmp_path),
             issues=["ff19bc8"],
-        )
+        ),
+        registry_bundle=registry_bundle,
     )
 
     snapshot_dir = Path(result.snapshot_dir)
@@ -934,9 +984,10 @@ def test_run_studio_training_local_execution_materializes_snapshot_and_refs(
     assert result.result.manifest_payload["kind"] == "TrainingRunManifest"
     assert result.result.manifest_payload["training_spec"]["inline"]["n_batches"] == 25
     assert result.result.manifest_payload["task_spec"]["inline"]["type"] == "ReachingTask"
-    assert result.result.manifest_payload["task_binding_spec"]["inline"]["bindings"][0][
-        "target_port"
-    ] == "input"
+    assert (
+        result.result.manifest_payload["task_binding_spec"]["inline"]["bindings"][0]["target_port"]
+        == "input"
+    )
     assert (
         result.result.manifest_payload["provenance"]["metadata"]["execution_metadata"]["studio"][
             "task_binding_spec"
@@ -951,11 +1002,15 @@ def test_run_studio_training_local_execution_materializes_snapshot_and_refs(
     assert any(ref.role == "execution_stdout" for ref in train_stage.artifact_refs)
     assert any(ref.role == "execution_input_snapshot" for ref in train_stage.artifact_refs)
     training_collection = next(
-        collection for collection in train_stage.output_collections if collection.kind == "training_runs"
+        collection
+        for collection in train_stage.output_collections
+        if collection.kind == "training_runs"
     )
     assert training_collection.item_refs[0].role == "training_run"
     workspace_training_collection = next(
-        collection for collection in result.workspace.collections if collection.kind == "training_runs"
+        collection
+        for collection in result.workspace.collections
+        if collection.kind == "training_runs"
     )
     assert workspace_training_collection.item_refs[0].role == "training_run"
 
@@ -965,8 +1020,8 @@ def test_run_studio_training_local_execution_materializes_snapshot_and_refs(
     assert future_stage.metadata["later_product_surface"]["keep"] is True
 
 
-def test_studio_training_run_local_endpoint_returns_execution_result(tmp_path: Path):
-    client = TestClient(create_app())
+def test_studio_training_run_local_endpoint_returns_execution_result(tmp_path: Path, studio_client):
+    client = studio_client
 
     response = client.post(
         "/api/provider/studio/training/run-local",
@@ -1036,14 +1091,17 @@ def test_studio_pipeline_materialize_training_writes_validation_only_artifact(
     assert "history" not in payload
 
 
-def test_materialize_studio_pipeline_requires_registered_eval_recipe(tmp_path: Path):
+def test_materialize_studio_pipeline_requires_registered_eval_recipe(
+    tmp_path: Path, registry_bundle
+):
     training = run_studio_training_local_execution(
         StudioTrainingLocalRunRequest(
             workspace=_workspace(),
             job_id="studio-pipeline-train-unregistered",
             root=str(tmp_path),
             issues=["d30d4c2"],
-        )
+        ),
+        registry_bundle=registry_bundle,
     )
 
     with pytest.raises(ValueError, match="feedbax\\.studio\\.default_eval.*not registered"):
@@ -1053,13 +1111,15 @@ def test_materialize_studio_pipeline_requires_registered_eval_recipe(tmp_path: P
                 job_id="studio-pipeline-unregistered",
                 root=str(tmp_path),
                 issues=["d30d4c2"],
-            )
+            ),
+            registry_bundle=registry_bundle,
         )
 
 
 def test_materialize_studio_pipeline_requires_explicit_analysis_type(
     tmp_path: Path,
     studio_default_eval_recipe,
+    registry_bundle,
 ):
     training = run_studio_training_local_execution(
         StudioTrainingLocalRunRequest(
@@ -1067,7 +1127,8 @@ def test_materialize_studio_pipeline_requires_explicit_analysis_type(
             job_id="studio-pipeline-train-no-analysis-type",
             root=str(tmp_path),
             issues=["d30d4c2"],
-        )
+        ),
+        registry_bundle=registry_bundle,
     )
 
     with pytest.raises(
@@ -1080,7 +1141,8 @@ def test_materialize_studio_pipeline_requires_explicit_analysis_type(
                 job_id="studio-pipeline-no-analysis-type",
                 root=str(tmp_path),
                 issues=["d30d4c2"],
-            )
+            ),
+            registry_bundle=registry_bundle,
         )
 
 
@@ -1088,6 +1150,7 @@ def test_materialize_studio_pipeline_consumes_stage_collections(
     tmp_path: Path,
     studio_default_eval_recipe,
     studio_default_analysis_recipe,
+    registry_bundle,
 ):
     training = run_studio_training_local_execution(
         StudioTrainingLocalRunRequest(
@@ -1095,7 +1158,8 @@ def test_materialize_studio_pipeline_consumes_stage_collections(
             job_id="studio-pipeline-train",
             root=str(tmp_path),
             issues=["d30d4c2"],
-        )
+        ),
+        registry_bundle=registry_bundle,
     )
 
     materialized = materialize_studio_pipeline(
@@ -1104,7 +1168,8 @@ def test_materialize_studio_pipeline_consumes_stage_collections(
             job_id="studio-pipeline",
             root=str(tmp_path),
             issues=["d30d4c2"],
-        )
+        ),
+        registry_bundle=registry_bundle,
     )
 
     assert materialized.stage_ids == ["stage:eval", "stage:analysis", "stage:report"]
@@ -1126,15 +1191,20 @@ def test_materialize_studio_pipeline_consumes_stage_collections(
     assert eval_stage.output_collections[0].item_refs[0].kind == "EvaluationRunManifest"
     assert analysis_stage.output_collections[0].item_refs[0].kind == "AnalysisRunManifest"
     assert report_stage.output_collections[0].item_refs[0].kind == "ReportManifest"
-    assert eval_stage.output_collections[0].item_refs[0].metadata["parent_refs"][0][
-        "id"
-    ].startswith("feedbax-training-run:")
-    assert analysis_stage.output_collections[0].item_refs[0].metadata["parent_refs"][0][
-        "id"
-    ] == eval_stage.output_collections[0].item_refs[0].id
-    assert report_stage.output_collections[0].item_refs[0].metadata["parent_refs"][0][
-        "id"
-    ] == analysis_stage.output_collections[0].item_refs[0].id
+    assert (
+        eval_stage.output_collections[0]
+        .item_refs[0]
+        .metadata["parent_refs"][0]["id"]
+        .startswith("feedbax-training-run:")
+    )
+    assert (
+        analysis_stage.output_collections[0].item_refs[0].metadata["parent_refs"][0]["id"]
+        == eval_stage.output_collections[0].item_refs[0].id
+    )
+    assert (
+        report_stage.output_collections[0].item_refs[0].metadata["parent_refs"][0]["id"]
+        == analysis_stage.output_collections[0].item_refs[0].id
+    )
 
     eval_scenario = materialized.workspace.scenarios["scenario:eval"]
     assert eval_scenario.parent_scenario_id == "scenario:train"
@@ -1143,9 +1213,7 @@ def test_materialize_studio_pipeline_consumes_stage_collections(
     assert len(materialized.workspace.manifest_refs) >= 4
     assert any(ref.role == "report" for ref in materialized.workspace.artifact_refs)
     eval_manifest = json.loads(Path(materialized.manifest_paths["stage:eval"]).read_text())
-    analysis_manifest = json.loads(
-        Path(materialized.manifest_paths["stage:analysis"]).read_text()
-    )
+    analysis_manifest = json.loads(Path(materialized.manifest_paths["stage:analysis"]).read_text())
     assert eval_manifest["status"] == "completed"
     assert eval_manifest["evaluation_spec"]["inline"]["evaluation_type"] == (
         "feedbax.studio.default_eval"
@@ -1174,6 +1242,7 @@ def test_materialize_studio_pipeline_carries_authored_evaluation_states_policy(
     tmp_path: Path,
     studio_default_eval_recipe,
     studio_default_analysis_recipe,
+    registry_bundle,
 ) -> None:
     workspace = _workspace_with_analysis_type("feedbax.analysis.activity")
     analysis_stage = next(stage for stage in workspace.stages if stage.kind == "analysis")
@@ -1188,7 +1257,8 @@ def test_materialize_studio_pipeline_carries_authored_evaluation_states_policy(
             job_id="studio-policy-train",
             root=str(tmp_path),
             issues=["b594b56"],
-        )
+        ),
+        registry_bundle=registry_bundle,
     )
 
     materialized = materialize_studio_pipeline(
@@ -1197,7 +1267,8 @@ def test_materialize_studio_pipeline_carries_authored_evaluation_states_policy(
             job_id="studio-policy",
             root=str(tmp_path),
             issues=["b594b56"],
-        )
+        ),
+        registry_bundle=registry_bundle,
     )
 
     evaluation = load_manifest(materialized.manifest_paths["stage:eval"])
@@ -1216,6 +1287,8 @@ def test_materialize_studio_pipeline_endpoint_returns_updated_workspace(
     tmp_path: Path,
     studio_default_eval_recipe,
     studio_default_analysis_recipe,
+    registry_bundle,
+    studio_client,
 ):
     training = run_studio_training_local_execution(
         StudioTrainingLocalRunRequest(
@@ -1223,11 +1296,11 @@ def test_materialize_studio_pipeline_endpoint_returns_updated_workspace(
             job_id="http-studio-pipeline-train",
             root=str(tmp_path),
             issues=["d30d4c2"],
-        )
+        ),
+        registry_bundle=registry_bundle,
     )
-    client = TestClient(create_app())
 
-    response = client.post(
+    response = studio_client.post(
         "/api/provider/studio/pipeline/materialize",
         json={
             "workspace": training.workspace.model_dump(mode="json", exclude_none=True),

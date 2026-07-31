@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from collections.abc import Mapping, Sequence
 import copy
 from dataclasses import dataclass
@@ -67,7 +68,6 @@ from feedbax.contracts.checkpoints import (
     CheckpointSegmentLineage,
 )
 from feedbax.contracts.training import (
-    DEFAULT_TRAINING_METHOD_REGISTRY,
     LrScheduleSpec,
     OptimizerSpec,
     TrainingMethodRegistry,
@@ -252,7 +252,9 @@ def _validate_typed_checkpoint_dependencies(
     plan: CheckpointForkPlan,
 ) -> None:
     try:
-        validate_checkpoint_fork_execution_dependencies(plan, spec.execution_dependencies, allow_task_identity=True)
+        validate_checkpoint_fork_execution_dependencies(
+            plan, spec.execution_dependencies, allow_task_identity=True
+        )
     except CheckpointCompatibilityError as exc:
         raise RunMatrixError(str(exc)) from exc
     for gate in (
@@ -283,16 +285,14 @@ def _validate_typed_checkpoint_dependencies(
 class TrainingRowLowerer(Protocol):
     """Public typed boundary from authored row intent to execution payload."""
 
-    def __call__(
-        self, row: AuthoredTrainingRow, context: Any
-    ) -> TrainingRowLoweringResult | None:
+    def __call__(self, row: AuthoredTrainingRow, context: Any) -> TrainingRowLoweringResult | None:
         """Lower one axis-patched authored row without mutating the input."""
 
 
 class StandardLrContinuationReporter:
     """Generic LR reporter for constant and declarative schedule optimizer specs."""
 
-    def __init__(self, registry: TrainingMethodRegistry = DEFAULT_TRAINING_METHOD_REGISTRY) -> None:
+    def __init__(self, registry: TrainingMethodRegistry) -> None:
         self.registry = registry
 
     def points(
@@ -371,7 +371,7 @@ def materialize_run_matrix(
     spec: TrainingRunMatrixSpec | Mapping[str, Any],
     *,
     repo_root: Path,
-    method_registry: TrainingMethodRegistry = DEFAULT_TRAINING_METHOD_REGISTRY,
+    method_registry: TrainingMethodRegistry,
     row_lowerer: TrainingRowLowerer | None = None,
 ) -> MaterializedRunMatrix:
     """Materialize a ``TrainingRunMatrixSpec`` into validated row specs."""
@@ -428,7 +428,9 @@ def _materialize_run_matrix(
         matrix = TrainingRunMatrixSpec.model_validate(migrated.payload)
     base_payload = _resolve_base_payload(matrix, repo_root=repo_root)
     source_context = (
-        load_expression_context(matrix.sources, repo_root) if matrix.sources else ExpressionContext()
+        load_expression_context(matrix.sources, repo_root)
+        if matrix.sources
+        else ExpressionContext()
     )
 
     if matrix.rows:
@@ -510,9 +512,7 @@ def write_materialized_matrix(
                 "planned_run_id": row.planned_run_id,
                 "payload_path": row_path.name,
                 "payload_sha256": sha256_bytes(row_bytes),
-                "row_provenance": row.provenance.model_dump(
-                    mode="json", exclude_none=True
-                ),
+                "row_provenance": row.provenance.model_dump(mode="json", exclude_none=True),
             }
         )
     manifest = {
@@ -531,7 +531,7 @@ def render_spec_lock_table(
     materialized: MaterializedRunMatrix,
     *,
     segment_lineages: Mapping[str, CheckpointSegmentLineage] | None = None,
-    method_registry: TrainingMethodRegistry = DEFAULT_TRAINING_METHOD_REGISTRY,
+    method_registry: TrainingMethodRegistry,
 ) -> str:
     """Render a Markdown spec-lock summary for reviewable launch plans."""
     override_paths = sorted(
@@ -553,8 +553,7 @@ def render_spec_lock_table(
         f"Base ref: {getattr(spec.base, 'ref', None) or '<inline>'}",
         "Base content hash: "
         + str(
-            getattr(spec.base, "content_hash", None)
-            or getattr(spec.base, "resolved_root_hash", "")
+            getattr(spec.base, "content_hash", None) or getattr(spec.base, "resolved_root_hash", "")
         ),
         "Fork source: "
         + next(
@@ -619,9 +618,7 @@ def _resolved_schedule_lines(
             allow_inert=schedule.allow_inert,
         )
         end = "ongoing" if window.end_batch is None else f"{window.end_batch:,}"
-        lines.append(
-            f"{row.row_id} LR schedule: batches {window.start_batch:,} -> {end}"
-        )
+        lines.append(f"{row.row_id} LR schedule: batches {window.start_batch:,} -> {end}")
     return lines
 
 
@@ -650,7 +647,7 @@ def fork_matrix_checkpoints(
     | None = None,
     skip_fork: bool = False,
     lr_reporter: LrContinuationReporter | None = None,
-    method_registry: TrainingMethodRegistry = DEFAULT_TRAINING_METHOD_REGISTRY,
+    method_registry: TrainingMethodRegistry,
     tool_version: str = "feedbax.run_matrix_fork.v1",
     _preflight_lr_points: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> dict[str, Any]:
@@ -719,9 +716,7 @@ def fork_matrix_checkpoints(
         target_only: dict[str, Mapping[str, Mapping[str, Any]]] = {}
         transform_meta: dict[str, Mapping[str, Any]] = {}
         common_slots = {
-            record.slot
-            for step in resolved_plan.source.transforms
-            for record in step.records
+            record.slot for step in resolved_plan.source.transforms for record in step.records
         }
         plan_sha256 = checkpoint_fork_plan_sha256(resolved_plan)
         for target in resolved_plan.targets:
@@ -872,9 +867,7 @@ def fork_matrix_checkpoints(
             source_manifest=source_manifest,
             target_manifest=target_manifest,
             expected_slots=spec.fork.expected_slots,
-            source_transformed_slots=tuple(
-                (row_slot_transforms or {}).get(row.row_id, {})
-            ),
+            source_transformed_slots=tuple((row_slot_transforms or {}).get(row.row_id, {})),
             source_transform_metadata={
                 slot: dict(metadata)
                 for slot, metadata in (row_transform_metadata or {}).get(row.row_id, {}).items()
@@ -987,9 +980,7 @@ def resolve_base_payload_with_attribution(
     spec: TrainingRunMatrixSpec, *, repo_root: Path
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Resolve composed intent and retain the last-writing layer for each patched path."""
-    resolved, attribution, _ = _resolve_composed_base(
-        spec, repo_root=repo_root, resolving=set()
-    )
+    resolved, attribution, _ = _resolve_composed_base(spec, repo_root=repo_root, resolving=set())
     graph_source = resolved.get("graph")
     if isinstance(graph_source, Mapping) and isinstance(graph_source.get("inline"), Mapping):
         migrated_graph = migrate_graph_spec(graph_source["inline"], path="graph.inline")
@@ -1183,9 +1174,7 @@ def _materialize_explicit_rows(
                     overrides=axis_coordinates["overrides"],
                     lowerer_identities=lowerer_identities,
                     parent_inputs=(
-                        []
-                        if row_lowering_context is None
-                        else row_lowering_context.provenance
+                        [] if row_lowering_context is None else row_lowering_context.provenance
                     ),
                 ),
                 coordinate=None,
@@ -1251,9 +1240,7 @@ def _materialize_sweep_rows(
             source_context=source_context,
             row_id=row_id,
         )
-        override_payloads = [
-            patch.model_dump(mode="json", exclude_none=True) for patch in patches
-        ]
+        override_payloads = [patch.model_dump(mode="json", exclude_none=True) for patch in patches]
         (
             payload,
             spec,
@@ -1304,9 +1291,7 @@ def _materialize_sweep_rows(
                     overrides=override_payloads,
                     lowerer_identities=lowerer_identities,
                     parent_inputs=(
-                        []
-                        if row_lowering_context is None
-                        else row_lowering_context.provenance
+                        [] if row_lowering_context is None else row_lowering_context.provenance
                     ),
                 ),
                 coordinate=coordinate,
@@ -1336,9 +1321,7 @@ def _apply_row_derivations(
     except RunMatrixError:
         raise
     except ValueError as exc:
-        raise RunMatrixError(
-            f"row {row_id!r} derivation failed: {exc}"
-        ) from exc
+        raise RunMatrixError(f"row {row_id!r} derivation failed: {exc}") from exc
 
 
 def _require_derivation_target_unset(payload: Mapping[str, Any], path: str) -> None:
@@ -1358,9 +1341,7 @@ def _require_derivation_target_unset(payload: Mapping[str, Any], path: str) -> N
             f"derivation output path cannot traverse non-object authored field: {path!r}"
         )
     if parts[-1] in current and current[parts[-1]] is not None:
-        raise RunMatrixError(
-            f"derivation cannot change authored non-null field: {path!r}"
-        )
+        raise RunMatrixError(f"derivation cannot change authored non-null field: {path!r}")
 
 
 def _lower_authored_row(
@@ -1414,9 +1395,7 @@ def _lower_authored_row(
             execution_payload = copy.deepcopy(result.execution_payload)
             lowerer_identities = list(result.lowerer_identities)
     spec = (
-        None
-        if row_validator is None
-        else row_validator(copy.deepcopy(execution_payload), row_id)
+        None if row_validator is None else row_validator(copy.deepcopy(execution_payload), row_id)
     )
     lowered_execution_payload_hash = training_spec_sha256(execution_payload)
     return (
@@ -1456,9 +1435,7 @@ def _planned_run_id(
     lowerer_identities: list[RowLowererIdentity],
 ) -> str:
     custody_payload = json.loads(training_spec_canonical_bytes(payload))
-    custody_axis_coordinates = json.loads(
-        training_spec_canonical_bytes(axis_coordinates)
-    )
+    custody_axis_coordinates = json.loads(training_spec_canonical_bytes(axis_coordinates))
     provenance_identity = TrainingRowPlanningProvenance(
         authored_payload_hash=authored_payload_hash,
         lowered_execution_payload_hash=lowered_execution_payload_hash,
@@ -1471,9 +1448,7 @@ def _planned_run_id(
         task_binding_spec=_identity_task_binding_spec(custody_payload),
         seed=seed,
         axis_coordinates=custody_axis_coordinates,
-        row_provenance_identity=provenance_identity.model_dump(
-            mode="json", exclude_none=True
-        ),
+        row_provenance_identity=provenance_identity.model_dump(mode="json", exclude_none=True),
     )
 
 
@@ -1598,9 +1573,7 @@ def _expand_group(
                 f"zip sweep group {group.id!r} has mismatched lengths {sorted(lengths)!r}"
             )
         return [{axis_id: index for axis_id in group.axes} for index in range(next(iter(lengths)))]
-    return ordered_index_product(
-        [(axis_id, axis_lengths[axis_id]) for axis_id in group.axes]
-    )
+    return ordered_index_product([(axis_id, axis_lengths[axis_id]) for axis_id in group.axes])
 
 
 def _validate_manual_coordinate(
@@ -1912,9 +1885,7 @@ def _preflight_lr_continuation_points(
     cached: dict[str, list[dict[str, Any]]] = {}
     for row in materialized.rows:
         if row.spec is None:
-            raise RunMatrixError(
-                f"row {row.row_id!r} does not contain a canonical TrainingRunSpec"
-            )
+            raise RunMatrixError(f"row {row.row_id!r} does not contain a canonical TrainingRunSpec")
         try:
             points = reporter.points(
                 source_manifest=source_manifest,
@@ -2131,14 +2102,24 @@ def main(argv: list[str] | None = None) -> int:
     fork_parser.add_argument("--parity-output", type=Path, required=True)
     fork_parser.add_argument("--skip-fork", action="store_true")
     args = parser.parse_args(argv)
-    if args.command == "materialize":
-        from feedbax.plugins import load_training_method_plugins
+    from feedbax.plugins.composition import compose_application
 
-        load_training_method_plugins(modules=args.plugin)
+    state = asyncio.run(compose_application(modules=tuple(getattr(args, "plugin", None) or ())))
     spec = _load_spec(args.spec)
-    materialized = materialize_run_matrix(spec, repo_root=args.repo_root)
+    materialized = materialize_run_matrix(
+        spec,
+        repo_root=args.repo_root,
+        method_registry=state.bundle.training_methods,
+        row_lowerer=state.bundle.row_lowerers.lower,
+    )
     if args.command == "render":
-        print(render_spec_lock_table(spec, materialized))
+        print(
+            render_spec_lock_table(
+                spec,
+                materialized,
+                method_registry=state.bundle.training_methods,
+            )
+        )
         return 0
     if args.command == "fork":
         try:
@@ -2149,6 +2130,7 @@ def main(argv: list[str] | None = None) -> int:
                 target_checkpoint_roots=_fork_target_roots(args.target),
                 parity_output_path=args.parity_output,
                 skip_fork=args.skip_fork,
+                method_registry=state.bundle.training_methods,
             )
         except ForkParityError as exc:
             print(str(exc), file=sys.stderr)

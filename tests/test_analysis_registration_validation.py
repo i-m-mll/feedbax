@@ -14,19 +14,15 @@ from feedbax.analysis import (
     validate_report_recipe,
 )
 from feedbax.analysis.evaluation import (
+    EvaluationRecipeRegistry,
     EvaluationRecipeResult,
-    register_evaluation_recipe,
-    unregister_evaluation_recipe,
 )
 from feedbax.analysis.specs import (
+    AnalysisRecipeRegistry,
     AnalysisRecipeResult,
-    register_analysis_recipe,
-    unregister_analysis_recipe,
 )
 from feedbax.analysis.reports import ReportRecipeResult
 from feedbax.contracts.manifest import AnalysisRunSpec, EvaluationRunSpec, ReportSpec
-from feedbax.plugins import discovery
-from feedbax.plugins.registry import ExperimentRegistry
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 
@@ -60,44 +56,42 @@ class CustomEvaluationRecipe:
 
 def test_valid_custom_evaluation_recipe_registers() -> None:
     recipe = CustomEvaluationRecipe(value=3)
+    registry = EvaluationRecipeRegistry()
 
-    register_evaluation_recipe("testpkg.custom_non_vmap_eval", recipe, replace=True)
-    try:
-        validated = validate_evaluation_recipe("testpkg.custom_non_vmap_eval", recipe)
-        assert validated is recipe
-    finally:
-        unregister_evaluation_recipe("testpkg.custom_non_vmap_eval")
+    registry.register("testpkg.custom_non_vmap_eval", recipe)
+    assert registry.get("testpkg.custom_non_vmap_eval") is recipe
 
 
 def test_recipe_type_keys_reject_bare_names() -> None:
     recipe = CustomEvaluationRecipe(value=3)
+    registry = EvaluationRecipeRegistry()
 
     with pytest.raises(RecipeValidationError, match="<package>\\.<name>"):
-        register_evaluation_recipe("custom_non_vmap_eval", recipe, replace=True)
+        registry.register("custom_non_vmap_eval", recipe)
 
 
 def test_recipe_type_keys_accept_feedbax_and_downstream_namespaces() -> None:
     recipe = CustomEvaluationRecipe(value=3)
+    registry = EvaluationRecipeRegistry()
 
-    register_evaluation_recipe("feedbax.custom_non_vmap_eval", recipe, replace=True)
-    register_evaluation_recipe("rlrmp.standard_matrix_evaluation", recipe, replace=True)
-    try:
-        assert validate_evaluation_recipe("feedbax.custom_non_vmap_eval", recipe) is recipe
-        assert validate_evaluation_recipe("rlrmp.standard_matrix_evaluation", recipe) is recipe
-    finally:
-        unregister_evaluation_recipe("feedbax.custom_non_vmap_eval")
-        unregister_evaluation_recipe("rlrmp.standard_matrix_evaluation")
+    registry.register("feedbax.custom_non_vmap_eval", recipe)
+    registry.register("rlrmp.standard_matrix_evaluation", recipe)
+    assert registry.get("feedbax.custom_non_vmap_eval") is recipe
+    assert registry.get("rlrmp.standard_matrix_evaluation") is recipe
 
 
 def test_evaluation_recipe_registration_rejects_non_callable_and_names_type() -> None:
+    registry = EvaluationRecipeRegistry()
     with pytest.raises(
         RecipeValidationError,
         match="Evaluation recipe 'testpkg.broken_eval'.*callable",
     ):
-        register_evaluation_recipe("testpkg.broken_eval", object(), replace=True)
+        registry.register("testpkg.broken_eval", object())
 
 
 def test_evaluation_recipe_registration_rejects_bad_signature_and_names_type() -> None:
+    registry = EvaluationRecipeRegistry()
+
     def recipe(_run_spec: EvaluationRunSpec) -> EvaluationRecipeResult:
         return EvaluationRecipeResult()
 
@@ -105,33 +99,21 @@ def test_evaluation_recipe_registration_rejects_bad_signature_and_names_type() -
         RecipeValidationError,
         match="Evaluation recipe 'testpkg.bad_eval'.*four positional arguments.*states_path",
     ):
-        register_evaluation_recipe("testpkg.bad_eval", recipe, replace=True)
+        registry.register("testpkg.bad_eval", recipe)
 
 
-def test_discovery_reraises_recipe_validation_with_package_and_type(monkeypatch) -> None:
-    class BrokenEntryPoint:
-        name = "broken_pkg"
-
-        def load(self):
-            def register(_registry: ExperimentRegistry) -> None:
-                register_evaluation_recipe("testpkg.broken_discovered_eval", object(), replace=True)
-
-            return register
-
-    monkeypatch.setattr(
-        discovery.importlib.metadata,
-        "entry_points",
-        lambda group: [BrokenEntryPoint()],
-    )
-
+def test_registry_preserves_recipe_validation_context() -> None:
+    registry = EvaluationRecipeRegistry()
     with pytest.raises(
-        RuntimeError,
-        match="broken_pkg.*Evaluation recipe 'testpkg.broken_discovered_eval'.*callable",
+        RecipeValidationError,
+        match="Evaluation recipe 'testpkg.broken_discovered_eval'.*callable",
     ):
-        discovery.discover_experiment_packages(registry=ExperimentRegistry())
+        registry.register("testpkg.broken_discovered_eval", object())
 
 
 def test_valid_analysis_recipe_registers() -> None:
+    registry = AnalysisRecipeRegistry()
+
     def recipe(
         _run_spec: AnalysisRunSpec,
         _root: Path,
@@ -143,23 +125,22 @@ def test_valid_analysis_recipe_registers() -> None:
             data=build_toy_analysis_data(value=1),
         )
 
-    register_analysis_recipe("testpkg.valid_analysis", recipe, replace=True)
-    try:
-        validated = validate_analysis_recipe("testpkg.valid_analysis", recipe)
-        assert validated is recipe
-    finally:
-        unregister_analysis_recipe("testpkg.valid_analysis")
+    registry.register("testpkg.valid_analysis", recipe)
+    assert registry.get("testpkg.valid_analysis") is recipe
 
 
 def test_analysis_recipe_registration_rejects_non_callable_and_names_type() -> None:
+    registry = AnalysisRecipeRegistry()
     with pytest.raises(
         RecipeValidationError,
         match="Analysis recipe 'testpkg.broken_analysis'.*callable",
     ):
-        register_analysis_recipe("testpkg.broken_analysis", object(), replace=True)
+        registry.register("testpkg.broken_analysis", object())
 
 
 def test_analysis_recipe_registration_rejects_bad_signature_and_names_type() -> None:
+    registry = AnalysisRecipeRegistry()
+
     def recipe(_run_spec: AnalysisRunSpec, _root: Path) -> AnalysisRecipeResult:
         return AnalysisRecipeResult(
             analyses={"toy": ToyAnalysis(variant="toy")},
@@ -170,7 +151,7 @@ def test_analysis_recipe_registration_rejects_bad_signature_and_names_type() -> 
         RecipeValidationError,
         match="Analysis recipe 'testpkg.bad_analysis'.*four positional arguments.*inputs",
     ):
-        register_analysis_recipe("testpkg.bad_analysis", recipe, replace=True)
+        registry.register("testpkg.bad_analysis", recipe)
 
 
 def test_valid_report_recipe_validates() -> None:

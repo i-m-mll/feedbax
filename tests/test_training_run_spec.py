@@ -28,6 +28,8 @@ from feedbax.contracts.training import (
     TrainingConfig,
     TrainingRunSpec,
     WorkerExecutionSpec,
+    default_training_method_registry,
+    resolve_training_run_spec,
     standard_supervised_effective_phase_spec,
     standard_supervised_method_contract,
     standard_supervised_method_payload,
@@ -221,7 +223,10 @@ def test_training_run_spec_v3_migration_rejects_invalid_removed_policy() -> None
 
 def test_standard_supervised_method_payload_validates_and_round_trips() -> None:
     payload = _training_run_payload()
-    result = validate_training_run_spec(payload)
+    result = validate_training_run_spec(
+        payload,
+        method_registry=default_training_method_registry(),
+    )
     method_payload = payload["method_payload"]
     method_result = default_spec_registry.migrate(
         "StandardSupervisedMethodPayload",
@@ -241,9 +246,12 @@ def test_standard_supervised_method_payload_validates_and_round_trips() -> None:
 def test_training_run_spec_unknown_method_ref_fails_with_available_registry_keys() -> None:
     payload = _training_run_payload()
     payload["method_ref"]["name"] = "unknown"
+    payload["worker_execution"]["method_contract"]["method_ref"] = "feedbax/unknown/v1"
+    payload["worker_execution"]["effective_phase"]["method_ref"] = "feedbax/unknown/v1"
 
-    with pytest.raises(ValidationError) as excinfo:
-        TrainingRunSpec.model_validate(payload)
+    spec = TrainingRunSpec.model_validate(payload)
+    with pytest.raises(ValueError) as excinfo:
+        resolve_training_run_spec(spec, default_training_method_registry())
 
     message = str(excinfo.value)
     assert "/method_ref" in message
@@ -253,12 +261,15 @@ def test_training_run_spec_unknown_method_ref_fails_with_available_registry_keys
 
 def test_training_run_spec_unsupported_method_payload_version_fails_closed() -> None:
     payload = _training_run_payload()
-    payload["method_payload"]["schema_version"] = (
-        "feedbax.spec.training_method.standard_supervised_payload.v0"
+    unsupported_version = "feedbax.spec.training_method.standard_supervised_payload.v0"
+    payload["method_payload"]["schema_version"] = unsupported_version
+    payload["worker_execution"]["method_contract"]["method_payload_schema_version"] = (
+        unsupported_version
     )
 
-    with pytest.raises(ValidationError) as excinfo:
-        TrainingRunSpec.model_validate(payload)
+    spec = TrainingRunSpec.model_validate(payload)
+    with pytest.raises(ValueError) as excinfo:
+        resolve_training_run_spec(spec, default_training_method_registry())
 
     message = str(excinfo.value)
     assert "/method_payload/schema_version" in message
@@ -317,20 +328,20 @@ def test_descriptor_rejects_embedded_contract_or_effective_phase_drift() -> None
     contract_spec = TrainingRunSpec.model_validate(contract_payload)
 
     with pytest.raises(ValueError, match="must exactly match.*payload-compiled"):
-        _ = contract_spec.resolved_method
+        resolve_training_run_spec(contract_spec, default_training_method_registry())
 
     phase_payload = _training_run_payload()
     phase_payload["worker_execution"]["effective_phase"]["axes"][0]["role"] = "environment"
     phase_spec = TrainingRunSpec.model_validate(phase_payload)
 
     with pytest.raises(ValueError, match="effective_phase must exactly match"):
-        _ = phase_spec.resolved_method
+        resolve_training_run_spec(phase_spec, default_training_method_registry())
 
 
-def test_method_resolution_cache_revalidates_model_copy_updates() -> None:
+def test_explicit_method_resolution_revalidates_model_copy_updates() -> None:
+    registry = default_training_method_registry()
     spec = TrainingRunSpec.model_validate(_training_run_payload())
-    original_resolution = spec.resolved_method
-    assert spec.resolved_method is original_resolution
+    original_resolution = resolve_training_run_spec(spec, registry)
 
     payload = spec.method_payload.model_copy(
         update={
@@ -342,19 +353,18 @@ def test_method_resolution_cache_revalidates_model_copy_updates() -> None:
     )
     changed = spec.model_copy(update={"method_payload": payload})
 
-    assert changed.resolved_method is not original_resolution
-    assert changed.resolved_method.payload.gradient_clip == 0.25
+    changed_resolution = resolve_training_run_spec(changed, registry)
+    assert changed_resolution is not original_resolution
+    assert changed_resolution.payload.gradient_clip == 0.25
 
     invalid_contract = spec.worker_execution.method_contract.model_copy(
         update={"method_ref": "feedbax/other/v1"}
     )
-    invalid_worker = spec.worker_execution.model_copy(
-        update={"method_contract": invalid_contract}
-    )
+    invalid_worker = spec.worker_execution.model_copy(update={"method_contract": invalid_contract})
     invalid = spec.model_copy(update={"worker_execution": invalid_worker})
 
     with pytest.raises(ValueError, match="method_contract/method_ref must match"):
-        _ = invalid.resolved_method
+        resolve_training_run_spec(invalid, registry)
 
 
 def test_provider_manifest_advertises_training_run_spec_as_execution_input() -> None:
