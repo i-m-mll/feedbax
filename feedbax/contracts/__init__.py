@@ -440,6 +440,15 @@ from feedbax.contracts.worker import (
     toy_adaptive_curriculum_method_contract,
     toy_minimax_method_contract,
 )
+from feedbax.contracts.value_identity import (
+    VALUE_IDENTITY_SCHEMA_ID,
+    VALUE_IDENTITY_SCHEMA_VERSION,
+    ValueIdentityRecord,
+    authored_value_sha256,
+    realization_value_sha256,
+    semantic_value_sha256,
+    value_identity_record,
+)
 from feedbax.contracts.workspace_replay import (
     WORKSPACE_REPLAY_SCHEMA_ID,
     WORKSPACE_REPLAY_SCHEMA_VERSION,
@@ -810,6 +819,9 @@ __all__ = [
     "ValidationError",
     "ValidationResult",
     "ValidationWarning",
+    "VALUE_IDENTITY_SCHEMA_ID",
+    "VALUE_IDENTITY_SCHEMA_VERSION",
+    "ValueIdentityRecord",
     "ValueExpr",
     "ValueQuery",
     "VARIABLE_DESCRIPTOR_SCHEMA_ID",
@@ -893,6 +905,10 @@ __all__ = [
     "verify_extraction_product",
     "verify_evaluation_manifest_provenance",
     "workspace_replay_metadata",
+    "authored_value_sha256",
+    "realization_value_sha256",
+    "semantic_value_sha256",
+    "value_identity_record",
     "STAGED_CHECKPOINT_CUSTODY_BACKEND",
     "STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID",
     "STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION",
