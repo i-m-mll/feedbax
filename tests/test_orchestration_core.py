@@ -569,29 +569,32 @@ def test_resolve_feedbax_revision_uses_imported_package_source_and_disables_git_
 
     def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0, stdout=f"{resolved_revision}\n", stderr="")
+        if command[-1] == "--show-toplevel":
+            stdout = f"{source.parent.parent}\n"
+        elif "ls-files" in command:
+            stdout = "feedbax/__init__.py\n"
+        else:
+            stdout = f"{resolved_revision}\n"
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
 
     source = Path(revision.feedbax.__file__).resolve()
     monkeypatch.setattr(revision.subprocess, "run", fake_run)
 
     assert revision.resolve_feedbax_revision() == resolved_revision
-    assert calls == [
-        (
-            ["git", "-C", str(source.parent), "rev-parse", "--verify", "HEAD^{commit}"],
-            {
-                "capture_output": True,
-                "check": True,
-                "env": {
-                    "GIT_CONFIG_GLOBAL": os.devnull,
-                    "GIT_CONFIG_NOSYSTEM": "1",
-                    "GIT_OPTIONAL_LOCKS": "0",
-                    "LC_ALL": "C",
-                    "PATH": os.defpath,
-                },
-                "text": True,
-            },
-        )
+    assert [call[0] for call in calls] == [
+        ["git", "-C", str(source.parent), "rev-parse", "--show-toplevel"],
+        [
+            "git",
+            "-C",
+            str(source.parent.parent),
+            "ls-files",
+            "--error-unmatch",
+            "feedbax/__init__.py",
+        ],
+        ["git", "-C", str(source.parent), "rev-parse", "--verify", "HEAD^{commit}"],
     ]
+    assert all(call[1]["env"]["GIT_OPTIONAL_LOCKS"] == "0" for call in calls)
+    assert all(call[1]["env"]["GIT_CONFIG_GLOBAL"] == os.devnull for call in calls)
 
 
 def test_run_bundle_v8_requires_feedbax_revision_pin(tmp_path: Path) -> None:
