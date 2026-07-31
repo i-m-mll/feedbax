@@ -2556,8 +2556,11 @@ def test_production_stage_engine_call_sites_supply_nonempty_registry() -> None:
                 ),
                 None,
             )
-            assert isinstance(registry, ast.Attribute), f"{relative}:{call.lineno}"
-            assert registry.attr == "conformance_checks", f"{relative}:{call.lineno}"
+            assert isinstance(registry, (ast.Attribute, ast.Name)), f"{relative}:{call.lineno}"
+            if isinstance(registry, ast.Attribute):
+                assert registry.attr == "conformance_checks", f"{relative}:{call.lineno}"
+            else:
+                assert registry.id == "conformance_registry", f"{relative}:{call.lineno}"
 
 
 def test_conformance_discovery_prefers_typed_diagnostics_over_manifest_metrics(
@@ -3476,7 +3479,7 @@ def test_resolve_science_repo_import_revisions_excludes_feedbax_checkout() -> No
     # Feedbax itself publishes no ``feedbax.plugins`` entry points and its own
     # checkout is always excluded, so resolution is a well-typed no-op here and
     # never reports the host revision as an imported science revision.
-    resolved = revision.resolve_science_repo_import_revisions()
+    resolved = revision.resolve_science_repo_import_revisions(())
     assert isinstance(resolved, dict)
     feedbax_root = str(revision._git_toplevel(revision._feedbax_package_root()))
     assert feedbax_root not in resolved
@@ -3528,7 +3531,7 @@ def test_stage_certify_refuses_mismatched_science_repo_revision(
     monkeypatch.setattr(
         stages,
         "resolve_science_repo_import_revisions",
-        lambda: {"/imported/rlrmp2": "d" * 40},
+        lambda _plugin_provenance: {"/imported/rlrmp2": "d" * 40},
     )
     with pytest.raises(
         revision.FeedbaxRevisionError,
@@ -3543,7 +3546,7 @@ def test_stage_certify_refuses_mismatched_science_repo_revision(
     monkeypatch.setattr(
         stages,
         "resolve_science_repo_import_revisions",
-        lambda: {"/imported/rlrmp2": "c" * 40},
+        lambda _plugin_provenance: {"/imported/rlrmp2": "c" * 40},
     )
     _proceeded, outputs = engine._stage_certify(store.load())
     assert outputs["overall"] == "pass"

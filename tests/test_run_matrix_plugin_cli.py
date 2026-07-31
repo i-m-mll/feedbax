@@ -131,6 +131,15 @@ def test_materialize_cli_loads_repeated_plugins_before_spec(
 
 def test_top_level_harness_cli_forwards_plugins_lazily(monkeypatch, tmp_path: Path) -> None:
     calls: list[list[str]] = []
+    state = _bootstrap_state()
+    captured_modules: list[tuple[str, ...]] = []
+
+    async def capture_compose_application(*, modules=(), **_kwargs):
+        plugin_modules = tuple(modules)
+        captured_modules.append(plugin_modules)
+        return state
+
+    monkeypatch.setattr(feedbax_main, "compose_application", capture_compose_application)
     monkeypatch.setattr(harness, "main", lambda argv, **_kwargs: calls.append(argv) or 0)
 
     result = feedbax_main.main(
@@ -145,6 +154,7 @@ def test_top_level_harness_cli_forwards_plugins_lazily(monkeypatch, tmp_path: Pa
     )
 
     assert result == 0
+    assert captured_modules == [("downstream.recipes",)]
     assert calls == [
         [
             str(tmp_path / "matrix.json"),
