@@ -1791,6 +1791,7 @@ def test_plugin_check_discovery_and_failure_propagation() -> None:
                 PluginDeclaration(
                     "tests.conformance",
                     "1",
+                    1,
                     families=(FamilyRequirement("conformance_checks"),),
                 ),
                 lambda context: context.registry(CONFORMANCE_CHECKS).register(

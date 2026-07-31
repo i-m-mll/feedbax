@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -70,7 +71,14 @@ def _load_installed_result(
     return validated["payload"], tuple(validated["required_case_ids"])
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--result-out",
+        type=Path,
+        help="Persist the validated machine-readable result after the clean-wheel run.",
+    )
+    args = parser.parse_args(argv)
     with tempfile.TemporaryDirectory(prefix="feedbax-external-conformance-") as raw:
         work = Path(raw)
         dist = work / "dist"
@@ -160,8 +168,10 @@ def main() -> int:
             cwd=work,
             env=execution_env,
         )
-        if payload["schema_version"] != "feedbax.external_conformance.result.v11":
+        if payload["schema_version"] != "feedbax.external_conformance.result.v12":
             raise RuntimeError("external conformance result schema drifted")
+        if payload["protocol_roles"] != {"current": 1, "minimum": 1}:
+            raise RuntimeError("external conformance protocol roles drifted")
         if payload["status"] != "pass":
             raise RuntimeError("clean-wheel external conformance did not pass")
         if payload["lifecycle"]["status"] != "pass":
@@ -170,6 +180,12 @@ def main() -> int:
             raise RuntimeError("external conformance required case set drifted")
         if any(type(value) is not bool or not value for value in payload["cases"].values()):
             raise RuntimeError("one or more external conformance cases failed")
+        if args.result_out is not None:
+            args.result_out.parent.mkdir(parents=True, exist_ok=True)
+            args.result_out.write_text(
+                json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
         print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 

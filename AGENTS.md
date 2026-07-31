@@ -46,9 +46,25 @@ Corollaries that must be respected without exception:
 - **Absence of a subgraph is an error, not a condition to work around.** If a composite node has not had its subgraph populated (e.g., the user has never opened it in Studio), that is an incomplete model state. Raise a clear error rather than falling back to outer params or synthesising a default subgraph.
 - **"Just for now" workarounds are bugs.** Temporary shims, display-only nodes that shadow real architectural choices, and fallback paths that substitute stale values silently are all bugs regardless of how they are labelled in the code.
 
-## Backward Compatibility
+<!-- feedbax-downstream-stability:start -->
+## Backward Compatibility and Downstream Stability
 
-**Backward compatibility is not a concern.** There is a single developer. When the architecture improves, old saved graphs are expected to be re-created from Studio. We do not maintain legacy code paths, fallback logic, or compatibility shims for older graph formats. When something is wrong, raise a clear error rather than silently substituting a stale value.
+Internal and unregistered helpers are free to change; compatibility aliases and
+silent legacy fallbacks are not maintained. The owner-ratified stable downstream
+contract is `feedbax.downstream-interface-stability.v1` in
+`docs/design/downstream_interface_stability.md`: extension protocol current
+version `1`, minimum supported version `1`, effective Feedbax release `0.2.0`.
+Only the import paths, behavior, and durable schemas enumerated there are
+guaranteed.
+
+Supported protocol versions coexist or migrate at an explicit version boundary.
+Unknown, removed, unsafe, or otherwise unsupported versions fail closed with an
+actionable error; never infer a version or retry through a compatibility shim.
+GraphSpec, Studio-persisted state, manifests, checkpoints, and emitted specs
+remain governed by explicit schema identity plus tested migration or explicit
+rejection. A breaking change follows the policy's deprecation, duration,
+release, external-fixture, and owner-ratification gates.
+<!-- feedbax-downstream-stability:end -->
 
 ## Artifact Schema And Migrations
 

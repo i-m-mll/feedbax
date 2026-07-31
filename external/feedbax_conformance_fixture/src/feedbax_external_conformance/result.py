@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 
 RESULT_SCHEMA_ID = "feedbax.external_conformance.result"
@@ -14,7 +22,8 @@ RESULT_SCHEMA_VERSION_V7 = f"{RESULT_SCHEMA_ID}.v7"
 RESULT_SCHEMA_VERSION_V8 = f"{RESULT_SCHEMA_ID}.v8"
 RESULT_SCHEMA_VERSION_V9 = f"{RESULT_SCHEMA_ID}.v9"
 RESULT_SCHEMA_VERSION_V10 = f"{RESULT_SCHEMA_ID}.v10"
-RESULT_SCHEMA_VERSION = f"{RESULT_SCHEMA_ID}.v11"
+RESULT_SCHEMA_VERSION_V11 = f"{RESULT_SCHEMA_ID}.v11"
+RESULT_SCHEMA_VERSION = f"{RESULT_SCHEMA_ID}.v12"
 REJECTED_UNSHIPPED_SCHEMA_VERSIONS = (
     f"{RESULT_SCHEMA_ID}.v3",
     f"{RESULT_SCHEMA_ID}.v4",
@@ -30,6 +39,33 @@ V2_REQUIRED_CASE_IDS = (
     "public_lifecycle_recovery",
 )
 V2_REQUIRED_CASE_ID_SET = frozenset(V2_REQUIRED_CASE_IDS)
+V10_REQUIRED_CASE_IDS = (
+    "ordered_registration",
+    "unified_plugin_bootstrap",
+    "component_registration_and_migration",
+    "dynamic_component_ports",
+    "value_identity",
+    "component_param_array_values",
+    "material_dependencies",
+    "staged_exact_parent_migration",
+    "resolved_evaluation_row_projection",
+    "public_lifecycle_recovery",
+)
+V10_REQUIRED_CASE_ID_SET = frozenset(V10_REQUIRED_CASE_IDS)
+V11_REQUIRED_CASE_IDS = (
+    "ordered_registration",
+    "unified_plugin_bootstrap",
+    "external_driver_plugin",
+    "component_registration_and_migration",
+    "dynamic_component_ports",
+    "value_identity",
+    "component_param_array_values",
+    "material_dependencies",
+    "staged_exact_parent_migration",
+    "resolved_evaluation_row_projection",
+    "public_lifecycle_recovery",
+)
+V11_REQUIRED_CASE_ID_SET = frozenset(V11_REQUIRED_CASE_IDS)
 REQUIRED_CASE_IDS = (
     "ordered_registration",
     "unified_plugin_bootstrap",
@@ -42,6 +78,7 @@ REQUIRED_CASE_IDS = (
     "staged_exact_parent_migration",
     "resolved_evaluation_row_projection",
     "public_lifecycle_recovery",
+    "custody_persistence_recovery",
 )
 REQUIRED_CASE_ID_SET = frozenset(REQUIRED_CASE_IDS)
 RESULT_SCHEMA_MIGRATION_TABLE = {
@@ -62,16 +99,27 @@ RESULT_SCHEMA_MIGRATION_TABLE = {
     RESULT_SCHEMA_VERSION_V8: ("reject; shipped v8 contains no unified_plugin_bootstrap evidence"),
     RESULT_SCHEMA_VERSION_V9: ("reject; shipped v9 contains no dynamic_component_ports evidence"),
     RESULT_SCHEMA_VERSION_V10: ("reject; shipped v10 contains no external_driver_plugin evidence"),
+    RESULT_SCHEMA_VERSION_V11: (
+        "reject; shipped v11 contains no custody_persistence_recovery evidence and its "
+        "protocol roles are unbound"
+    ),
 }
 
 
 class ProtocolRoleSlots(BaseModel):
-    """Unratified slots reserved for later stability-policy bindings."""
+    """Ratified numeric downstream-protocol roles authenticated by this result."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    current: Literal[None]
-    minimum: Literal[None]
+    current: StrictInt
+    minimum: StrictInt
+
+    @field_validator("current", "minimum")
+    @classmethod
+    def _require_protocol_one(cls, value: int) -> int:
+        if value != 1:
+            raise ValueError("protocol role must be the integer 1")
+        return value
 
 
 class LifecycleResult(BaseModel):
@@ -89,7 +137,7 @@ class ConformanceResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_id: Literal["feedbax.external_conformance.result"] = RESULT_SCHEMA_ID
-    schema_version: Literal["feedbax.external_conformance.result.v11"] = RESULT_SCHEMA_VERSION
+    schema_version: Literal["feedbax.external_conformance.result.v12"] = RESULT_SCHEMA_VERSION
     status: Literal["pass", "blocked"]
     feedbax_version: str = Field(min_length=1)
     feedbax_install_root: str = Field(min_length=1)
@@ -103,7 +151,7 @@ class ConformanceResult(BaseModel):
         observed = frozenset(self.cases)
         if observed != REQUIRED_CASE_ID_SET:
             raise ValueError(
-                "external conformance cases must exactly match the v11 contract: "
+                "external conformance cases must exactly match the v12 contract: "
                 f"missing={sorted(REQUIRED_CASE_ID_SET - observed)!r}, "
                 f"extra={sorted(observed - REQUIRED_CASE_ID_SET)!r}"
             )
@@ -119,7 +167,7 @@ class ConformanceResult(BaseModel):
 
 
 def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResult:
-    """Load v11 while preserving explicit decisions for older incomplete evidence."""
+    """Load v12 while preserving explicit decisions for older incomplete evidence."""
 
     if isinstance(payload, ConformanceResult):
         return ConformanceResult.model_validate(payload.model_dump(mode="json"))
@@ -140,7 +188,7 @@ def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResul
         version = RESULT_SCHEMA_VERSION_V2
     if version == RESULT_SCHEMA_VERSION_V2:
         raise ValueError(
-            "external conformance result v2 cannot migrate to v11: protected v2 "
+            "external conformance result v2 cannot migrate to v12: protected v2 "
             "contains neither resolved_evaluation_row_projection, "
             "component_param_array_values, nor unified_plugin_bootstrap evidence"
         )
@@ -151,23 +199,28 @@ def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResul
         )
     if version == RESULT_SCHEMA_VERSION_V7:
         raise ValueError(
-            "external conformance result v7 cannot migrate to v11: v7 contains no "
+            "external conformance result v7 cannot migrate to v12: v7 contains no "
             "component_param_array_values evidence"
         )
     if version == RESULT_SCHEMA_VERSION_V8:
         raise ValueError(
-            "external conformance result v8 cannot migrate to v11: v8 contains no "
+            "external conformance result v8 cannot migrate to v12: v8 contains no "
             "unified_plugin_bootstrap evidence"
         )
     if version == RESULT_SCHEMA_VERSION_V9:
         raise ValueError(
-            "external conformance result v9 cannot migrate to v11: v9 contains no "
+            "external conformance result v9 cannot migrate to v12: v9 contains no "
             "dynamic_component_ports evidence"
         )
     if version == RESULT_SCHEMA_VERSION_V10:
         raise ValueError(
-            "external conformance result v10 cannot migrate to v11: v10 contains no "
+            "external conformance result v10 cannot migrate to v12: v10 contains no "
             "external_driver_plugin evidence"
+        )
+    if version == RESULT_SCHEMA_VERSION_V11:
+        raise ValueError(
+            "external conformance result v11 cannot migrate to v12: v11 contains no "
+            "custody_persistence_recovery evidence and its protocol roles are unbound"
         )
     if version != RESULT_SCHEMA_VERSION:
         raise ValueError(
@@ -180,6 +233,8 @@ def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResul
 
 __all__ = [
     "ConformanceResult",
+    "LifecycleResult",
+    "ProtocolRoleSlots",
     "REJECTED_UNSHIPPED_SCHEMA_VERSIONS",
     "REQUIRED_CASE_IDS",
     "REQUIRED_CASE_ID_SET",
@@ -191,6 +246,11 @@ __all__ = [
     "RESULT_SCHEMA_VERSION_V8",
     "RESULT_SCHEMA_VERSION_V9",
     "RESULT_SCHEMA_VERSION_V10",
+    "RESULT_SCHEMA_VERSION_V11",
+    "V10_REQUIRED_CASE_IDS",
+    "V10_REQUIRED_CASE_ID_SET",
+    "V11_REQUIRED_CASE_IDS",
+    "V11_REQUIRED_CASE_ID_SET",
     "V2_REQUIRED_CASE_IDS",
     "V2_REQUIRED_CASE_ID_SET",
     "load_result",

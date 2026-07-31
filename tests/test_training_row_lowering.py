@@ -96,6 +96,7 @@ def _lowerer_plugin(plugin_id: str = "tests.downstream") -> PluginRegistration:
         PluginDeclaration(
             plugin_id,
             "1",
+            1,
             families=(FamilyRequirement("row_lowerers"),),
         ),
         lambda context: context.registry(ROW_LOWERERS).register(_registration()),
@@ -680,6 +681,7 @@ PLUGIN_REGISTRATION = PluginRegistration(
     PluginDeclaration(
         "tests.downstream_row",
         "1",
+        1,
         families=(FamilyRequirement("row_lowerers"),),
     ),
     register,

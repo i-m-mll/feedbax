@@ -8,6 +8,7 @@ import jax.numpy as jnp
 from feedbax import Component
 from feedbax.plugins import (
     COMPONENTS,
+    DOWNSTREAM_PROTOCOL_CURRENT,
     DRIVERS,
     FamilyRequirement,
     PluginDeclaration,
@@ -162,6 +163,7 @@ FOUNDATION_PLUGIN_REGISTRATION = PluginRegistration(
     declaration=PluginDeclaration(
         plugin_id=_FOUNDATION_PLUGIN_ID,
         version="1",
+        downstream_protocol_version=DOWNSTREAM_PROTOCOL_CURRENT,
         families=(
             FamilyRequirement(COMPONENTS.family),
             FamilyRequirement(FIXTURE_RECORDS.family),
@@ -175,6 +177,7 @@ DEPENDENT_PLUGIN_REGISTRATION = PluginRegistration(
     declaration=PluginDeclaration(
         plugin_id=_DEPENDENT_PLUGIN_ID,
         version="1",
+        downstream_protocol_version=DOWNSTREAM_PROTOCOL_CURRENT,
         dependencies=(PluginDependency(_FOUNDATION_PLUGIN_ID, "1"),),
         families=(FamilyRequirement(FIXTURE_RECORDS.family),),
     ),

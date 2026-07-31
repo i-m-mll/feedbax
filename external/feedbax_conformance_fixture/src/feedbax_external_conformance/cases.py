@@ -150,6 +150,7 @@ def _fixture_plugin(
         declaration=PluginDeclaration(
             plugin_id=plugin_id,
             version="1",
+            downstream_protocol_version=1,
             dependencies=dependencies,
             families=(FamilyRequirement(FIXTURE_RECORDS.family),),
         ),

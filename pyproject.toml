@@ -1,6 +1,6 @@
 [project]
 name = "feedbax"
-version = "0.1.2"
+version = "0.2.0"
 description = "Optimal feedback control + interventions in JAX."
 # url = ""
 authors = [

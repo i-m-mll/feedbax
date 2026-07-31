@@ -215,6 +215,7 @@ def test_entry_point_can_register_training_method() -> None:
             PluginDeclaration(
                 "tests.dummy_training_method",
                 "1",
+                1,
                 families=(FamilyRequirement("training_methods"),),
             ),
             lambda context: _register_dummy_training_method(context.registry(TRAINING_METHODS)),
@@ -227,7 +228,7 @@ def test_entry_point_can_register_training_method() -> None:
 def test_distinct_plugins_cannot_claim_the_same_training_method() -> None:
     plugins = tuple(
         PluginRegistration(
-            PluginDeclaration(name, "1", families=(FamilyRequirement("training_methods"),)),
+            PluginDeclaration(name, "1", 1, families=(FamilyRequirement("training_methods"),)),
             lambda context: _register_dummy_training_method(context.registry(TRAINING_METHODS)),
         )
         for name in ("first-training-method", "second-training-method")
@@ -390,6 +391,7 @@ def test_execute_cli_routes_resume_to_zero_level_plan(monkeypatch, tmp_path, cap
             PluginDeclaration(
                 "tests.zero_level_cli",
                 "1",
+                1,
                 families=(FamilyRequirement("execution_preparations"),),
             ),
             lambda context: context.registry(EXECUTION_PREPARATIONS).register(
@@ -497,6 +499,7 @@ def test_typed_plugin_registers_method_and_preparation_families_explicitly() -> 
             PluginDeclaration(
                 "tests.descriptor",
                 "1",
+                1,
                 families=(
                     FamilyRequirement("training_methods"),
                     FamilyRequirement("execution_preparations"),
@@ -700,6 +703,7 @@ def test_descriptor_rejects_invalid_runtime_mapping_before_preparation(
             PluginDeclaration(
                 "tests.invalid_descriptor",
                 "1",
+                1,
                 families=(
                     FamilyRequirement("training_methods"),
                     FamilyRequirement("execution_preparations"),
@@ -757,6 +761,7 @@ def test_entry_point_can_register_execution_preparation() -> None:
             PluginDeclaration(
                 "tests.dummy_preparation",
                 "1",
+                1,
                 families=(
                     FamilyRequirement("training_methods"),
                     FamilyRequirement("execution_preparations"),
@@ -783,7 +788,7 @@ def test_execution_preparation_registry_rejects_duplicate_and_mismatched_provide
     with pytest.raises(BootstrapError) as excinfo:
         _bootstrap(
             PluginRegistration(
-                PluginDeclaration("tests.mismatched", "1", families=()),
+                PluginDeclaration("tests.mismatched", "1", 1, families=()),
                 lambda context: context.registry(EXECUTION_PREPARATIONS).register(registration),
             )
         )
@@ -951,6 +956,7 @@ def test_checkpoint_fork_deduplicates_installed_and_explicit_plugin_module(
                 PluginDeclaration(
                     "tests.dummy_training",
                     "1.0",
+                    1,
                     families=(FamilyRequirement("training_methods"),),
                 ),
                 register,
@@ -1139,6 +1145,7 @@ def test_execute_cli_descriptor_plugin_prepares_typed_runtime_objects(tmp_path: 
                 PluginDeclaration(
                     "tests.dummy_execution",
                     "1",
+                    1,
                     families=(
                         FamilyRequirement("training_methods"),
                         FamilyRequirement("execution_preparations"),
@@ -1238,6 +1245,7 @@ def test_execute_cli_descriptor_plugin_prepares_typed_runtime_objects(tmp_path: 
                 PluginDeclaration(
                     "tests.missing_preparation",
                     "1",
+                    1,
                     families=(FamilyRequirement("training_methods"),),
                 ),
                 register,
@@ -1365,6 +1373,7 @@ def test_native_cli_plugin_projects_governed_training_manifest_metadata(
                 PluginDeclaration(
                     "tests.projection",
                     "1",
+                    1,
                     families=(FamilyRequirement("training_methods"),),
                 ),
                 register,

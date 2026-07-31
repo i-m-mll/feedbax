@@ -564,6 +564,7 @@ PLUGIN_REGISTRATION = PluginRegistration(
     PluginDeclaration(
         "feedbax.test.lifecycle",
         "1",
+        1,
         families=(FamilyRequirement(EVALUATION_RECIPES.family),),
     ),
     register,

@@ -10,6 +10,7 @@ import sys
 from types import ModuleType
 
 import feedbax
+from feedbax.plugins import DOWNSTREAM_PROTOCOL_CURRENT, DOWNSTREAM_PROTOCOL_MINIMUM
 
 from .cases import (
     check_component_registration_and_migration,
@@ -23,7 +24,7 @@ from .cases import (
     check_unified_plugin_bootstrap,
     check_value_identity,
 )
-from .lifecycle import check_public_lifecycle_recovery
+from .lifecycle import check_custody_persistence_recovery, check_public_lifecycle_recovery
 from .result import ConformanceResult, LifecycleResult
 
 
@@ -117,6 +118,7 @@ def run_fixture(*, source_root: Path | None = None) -> ConformanceResult:
         "staged_exact_parent_migration": check_exact_parent_migration(),
         "resolved_evaluation_row_projection": check_resolved_evaluation_row_projection(),
         "public_lifecycle_recovery": check_public_lifecycle_recovery(),
+        "custody_persistence_recovery": check_custody_persistence_recovery(),
     }
 
     _require_loaded_feedbax_modules_under(feedbax_root)
@@ -125,7 +127,10 @@ def run_fixture(*, source_root: Path | None = None) -> ConformanceResult:
         feedbax_version=importlib.metadata.version("feedbax"),
         feedbax_install_root=str(feedbax_root),
         fixture_install_root=str(fixture_root),
-        protocol_roles={"current": None, "minimum": None},
+        protocol_roles={
+            "current": DOWNSTREAM_PROTOCOL_CURRENT,
+            "minimum": DOWNSTREAM_PROTOCOL_MINIMUM,
+        },
         cases=cases,
         lifecycle=LifecycleResult(status="pass"),
     )
