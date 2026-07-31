@@ -11,6 +11,11 @@ from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, PENZAI_DOMAIN_ID
 from feedbax.contracts.graphs.mechanics_templates import point_mass_template_graph
 from feedbax.contracts.graph import ParamSchema
+from feedbax.contracts.array_values import (
+    ARRAY_VALUE_SCHEMA_ID,
+    ARRAY_VALUE_SCHEMA_VERSION,
+    SparseCooArrayValueSpec,
+)
 from feedbax.contracts.graphs.penzai_compiler import penzai_builder_options
 from feedbax.contracts.migrations import ComponentMigration
 from feedbax.contracts.representation import RepresentationSpec
@@ -42,6 +47,18 @@ class _Registry(Protocol):
     def register(self, meta: ComponentMeta) -> None: ...
 
     def register_migration(self, migration: ComponentMigration) -> None: ...
+
+
+_DEFAULT_STRUCTURAL_DELTA_A = SparseCooArrayValueSpec(
+    schema_id=ARRAY_VALUE_SCHEMA_ID,
+    schema_version=ARRAY_VALUE_SCHEMA_VERSION,
+    encoding="sparse_coo",
+    shape=(4, 4),
+    dtype="float32",
+    nonfinite="forbid",
+    fill=0.0,
+    entries=(),
+).model_dump(mode="json")
 
 
 def _migrate_threshold_latched_force_v1(params: dict[str, Any]) -> dict[str, Any]:
@@ -1807,10 +1824,10 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParamSchema(
                     name='delta_A',
                     type='object',
-                    default={'shape': [4, 4], 'entries': []},
+                    default=_DEFAULT_STRUCTURAL_DELTA_A,
                     description=(
-                        'Sparse shape/entries object with row, column, and value fields; '
-                        'dense square arrays remain accepted.'
+                        'Versioned sparse COO or constant array declaration; dense square '
+                        'arrays remain accepted.'
                     ),
                     required=True,
                 ),

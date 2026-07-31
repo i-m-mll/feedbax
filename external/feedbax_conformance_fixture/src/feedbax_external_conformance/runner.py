@@ -13,6 +13,7 @@ import feedbax
 
 from .cases import (
     check_component_registration_and_migration,
+    check_component_param_array_values,
     check_exact_parent_migration,
     check_material_dependencies,
     check_ordered_registration,
@@ -103,6 +104,7 @@ def run_fixture(*, source_root: Path | None = None) -> ConformanceResult:
         "ordered_registration": check_ordered_registration(),
         "component_registration_and_migration": check_component_registration_and_migration(),
         "value_identity": check_value_identity(),
+        "component_param_array_values": check_component_param_array_values(),
         "material_dependencies": check_material_dependencies(),
         "staged_exact_parent_migration": check_exact_parent_migration(),
         "resolved_evaluation_row_projection": check_resolved_evaluation_row_projection(),

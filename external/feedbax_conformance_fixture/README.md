@@ -28,11 +28,12 @@ therefore authenticates installed-wheel provenance at both execution
 boundaries. The deployment policy is explicitly local and cloud-unauthorized;
 all custody, orchestration, and cache paths are unique temporary directories.
 
-The result schema is `feedbax.external_conformance.result.v7`. Its evidence map
-has exactly seven strict-boolean cases, including the narrow resolver-handle
-evaluation-row projection. V2 remains the protected exact six-case foundation
-and rejects rather than pretending it measured the new case. Unshipped v3-v6
-results reject explicitly and carry no maintained per-version case scaffolding.
+The result schema is `feedbax.external_conformance.result.v8`. Its evidence map
+has exactly eight strict-boolean cases, including the narrow resolver-handle
+evaluation-row projection and public component-param array declarations. V2
+remains the protected exact six-case foundation and rejects rather than
+pretending it measured either later case. Unshipped v3-v6 results reject
+explicitly; shipped v7 also rejects because it lacks the array-value case.
 The `current` and `minimum` protocol role slots remain required and None-only
 until owner ratification. Version 1 can normalize to v2 only when the later role
 field is absent, then rejects for the same missing current evidence. Unknown,

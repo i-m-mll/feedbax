@@ -114,6 +114,11 @@ from feedbax.contracts.graph import (
     ValidationWarning,
     WireSpec,
 )
+from feedbax.contracts.array_values import (
+    ConstantArrayValueSpec,
+    SparseCooArrayValueSpec,
+    SparseCooEntrySpec,
+)
 from feedbax.contracts.studio_api import (
     AnalysisBundleDryRunPayload,
     AnalysisBundleDryRunRequest,
@@ -257,6 +262,9 @@ OUTPUT = REPO_ROOT / "web" / "src" / "generated" / "studioContracts.ts"
 NONE_TYPE = type(None)
 
 MODEL_TYPES: list[type[BaseModel]] = [
+    SparseCooEntrySpec,
+    SparseCooArrayValueSpec,
+    ConstantArrayValueSpec,
     ParamSchema,
     ComponentSpec,
     AcausalConnectionSpec,

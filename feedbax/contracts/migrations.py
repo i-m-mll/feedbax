@@ -214,6 +214,7 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_VERSION_V2,
     GRAPH_SPEC_SCHEMA_VERSION_V3,
+    GRAPH_SPEC_SCHEMA_VERSION_V4,
     LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     STUDIO_BIOMECHANICS_SCHEMA_ID,
@@ -221,6 +222,12 @@ from feedbax.contracts.graph import (
     STUDIO_SCENARIO_SCHEMA_VERSION,
     STUDIO_SCENARIO_SCHEMA_VERSION_V1,
     GraphSpec,
+)
+from feedbax.contracts.array_values import (
+    ARRAY_VALUE_SCHEMA_ID,
+    ARRAY_VALUE_SCHEMA_VERSION,
+    SparseCooArrayValueSpec,
+    SparseCooEntrySpec,
 )
 from feedbax.contracts.acausal import (
     ACAUSAL_GRAPH_SCHEMA_ID,
@@ -1532,6 +1539,64 @@ def _migrate_graph_spec_v3_to_v4_payload(payload: dict[str, Any]) -> dict[str, A
     return migrated
 
 
+def _migrate_graph_spec_v4_to_v5_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Tag only the legacy StructuralLinearStateSpace sparse delta_A form."""
+    migrated = dict(payload)
+    migrated.setdefault("schema_id", GRAPH_SPEC_SCHEMA_ID)
+    raw_nodes = migrated.get("nodes")
+    if not isinstance(raw_nodes, Mapping):
+        return migrated
+
+    nodes = dict(raw_nodes)
+    for node_id, raw_node in raw_nodes.items():
+        if (
+            not isinstance(raw_node, Mapping)
+            or raw_node.get("type") != "StructuralLinearStateSpace"
+        ):
+            continue
+        raw_params = raw_node.get("params")
+        if not isinstance(raw_params, Mapping):
+            continue
+        raw_delta = raw_params.get("delta_A")
+        if not isinstance(raw_delta, Mapping) or set(raw_delta) != {"shape", "entries"}:
+            continue
+        raw_entries = raw_delta.get("entries")
+        if not isinstance(raw_entries, list | tuple):
+            raise TypeError("legacy StructuralLinearStateSpace delta_A.entries must be a sequence")
+        entries: list[SparseCooEntrySpec] = []
+        for index, raw_entry in enumerate(raw_entries):
+            if isinstance(raw_entry, Mapping) and set(raw_entry) == {"row", "column", "value"}:
+                row, column, value = (
+                    raw_entry["row"],
+                    raw_entry["column"],
+                    raw_entry["value"],
+                )
+            elif isinstance(raw_entry, list | tuple) and len(raw_entry) == 3:
+                row, column, value = raw_entry
+            else:
+                raise ValueError(
+                    "legacy StructuralLinearStateSpace "
+                    f"delta_A.entries[{index}] must contain row, column, and value"
+                )
+            entries.append(SparseCooEntrySpec(coordinate=(row, column), value=value))
+        tagged = SparseCooArrayValueSpec(
+            schema_id=ARRAY_VALUE_SCHEMA_ID,
+            schema_version=ARRAY_VALUE_SCHEMA_VERSION,
+            encoding="sparse_coo",
+            shape=raw_delta.get("shape"),
+            dtype="float64",
+            nonfinite="forbid",
+            fill=0.0,
+            entries=entries,
+        ).model_dump(mode="json")
+        nodes[str(node_id)] = {
+            **raw_node,
+            "params": {**raw_params, "delta_A": tagged},
+        }
+    migrated["nodes"] = nodes
+    return migrated
+
+
 def _migrate_studio_task_binding_v1_payload(payload: dict[str, Any]) -> dict[str, Any]:
     migrated = dict(payload)
     if "exposed_outputs" in migrated and "exposed_data" not in migrated:
@@ -2724,6 +2789,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
                 GRAPH_SPEC_SCHEMA_VERSION_V2,
                 GRAPH_SPEC_SCHEMA_VERSION_V3,
+                GRAPH_SPEC_SCHEMA_VERSION_V4,
             ),
             rejected_old_versions=(),
             required_tests=("tests/test_graphspec_schema_migrations.py",),
@@ -5657,10 +5723,23 @@ default_spec_registry.register_migration(
     "GraphSpec",
     SchemaMigration(
         source_version=GRAPH_SPEC_SCHEMA_VERSION_V3,
-        target_version=GRAPH_SPEC_SCHEMA_VERSION,
+        target_version=GRAPH_SPEC_SCHEMA_VERSION_V4,
         migration_id="graph-spec-v3-to-v4-discriminated-subgraphs",
         migrate=_migrate_graph_spec_v3_to_v4_payload,
         description="Allow discriminated causal/acausal subgraph payloads.",
+    ),
+)
+default_spec_registry.register_migration(
+    "GraphSpec",
+    SchemaMigration(
+        source_version=GRAPH_SPEC_SCHEMA_VERSION_V4,
+        target_version=GRAPH_SPEC_SCHEMA_VERSION,
+        migration_id="graph-spec-v4-to-v5-component-param-array-values",
+        migrate=_migrate_graph_spec_v4_to_v5_payload,
+        description=(
+            "Tag the legacy StructuralLinearStateSpace sparse delta_A form while "
+            "leaving dense and unrelated component parameters unchanged."
+        ),
     ),
 )
 default_spec_registry.register_migration(

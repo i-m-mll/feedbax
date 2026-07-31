@@ -52,7 +52,8 @@ example and vertical extension of this kit. It is separately packaged and
 keeps fixture-specific builders private to that package. The fixture reuses
 `check_material_dependency_contract` rather than copying its admission
 canaries, and exercises public ordered registration, component migration,
-value identity, material dependencies, and exact-parent migration.
+value identity, component-param array declarations, material dependencies, and
+exact-parent migration.
 
 `uv run --no-sync python scripts/run_external_conformance.py` builds Feedbax
 and the fixture as wheels, installs both non-editably into a fresh environment,
@@ -65,15 +66,15 @@ lifecycle child is separately fixed and asserted as a print-only Python
 command.
 
 The versioned machine result is
-`feedbax.external_conformance.result.v7`. V2 remains the frozen exact six-case
-foundation and rejects because it contains no
-`resolved_evaluation_row_projection` evidence. V1 can be deterministically
+`feedbax.external_conformance.result.v8`. V2 remains the frozen exact six-case
+foundation and rejects because it contains neither current projection nor
+component-param array-value evidence. V1 can be deterministically
 normalized to v2 by adding separate unbound `current` and `minimum` protocol
 role slots, then rejects for the same missing evidence. Intervening unshipped
 v3-v6 results reject explicitly; they are not reinterpreted as proof of the
-narrowed v7 contract. Only the protected v2 and current v7 case sets are
-maintained. The role slots remain None-only until the owner-ratified policy
-exists.
+narrowed v7 resolver contract. Shipped v7 also rejects for missing array-value
+evidence. Only the protected v2 and current v8 case sets are maintained. The
+role slots remain None-only until the owner-ratified policy exists.
 
 The evaluation-row case uses only public clean-wheel imports. It resolves
 durable states through `resolve_analysis_inputs`, receives an exact

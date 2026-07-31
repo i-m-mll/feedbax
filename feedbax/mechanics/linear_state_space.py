@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-import math
-from numbers import Integral, Real
-from typing import Any
+from collections.abc import Sequence
 
 from equinox import Module, field
 from equinox.nn import State, StateIndex
@@ -15,87 +12,19 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.runtime.graph import Component
 from feedbax.runtime.state import CartesianState
+from feedbax.contracts.array_values import (
+    ARRAY_VALUE_SCHEMA_ID,
+    ARRAY_VALUE_SCHEMA_VERSION,
+    ArrayValueSpec,
+    SparseCooArrayValueSpec,
+    SparseCooEntrySpec,
+    materialize_array_value,
+)
 
 
 STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION = (
     "feedbax.component.structural_linear_state_space.v1"
 )
-
-
-def _structural_delta_a_from_entries(
-    shape: Sequence[int],
-    entries: Sequence[Mapping[str, Any] | Sequence[Any]],
-) -> tuple[Array, tuple[tuple[int, int, float], ...]]:
-    if (
-        not isinstance(shape, Sequence)
-        or isinstance(shape, str | bytes)
-        or len(shape) != 2
-        or any(not isinstance(size, Integral) or isinstance(size, bool) for size in shape)
-    ):
-        raise TypeError("delta_A.shape must contain exactly two integer dimensions.")
-    normalized_shape = tuple(int(size) for size in shape)
-    if normalized_shape[0] <= 0 or normalized_shape[0] != normalized_shape[1]:
-        raise ValueError("delta_A.shape must describe a non-empty square matrix.")
-    if not isinstance(entries, Sequence) or isinstance(entries, str | bytes):
-        raise TypeError("delta_A.entries must be a sequence.")
-
-    normalized_entries: list[tuple[int, int, float]] = []
-    occupied: set[tuple[int, int]] = set()
-    for index, entry in enumerate(entries):
-        if isinstance(entry, Mapping):
-            if set(entry) != {"row", "column", "value"}:
-                raise ValueError(
-                    "delta_A entry mappings must contain exactly row, column, and value."
-                )
-            row, column, value = entry["row"], entry["column"], entry["value"]
-        elif (
-            isinstance(entry, Sequence)
-            and not isinstance(entry, str | bytes)
-            and len(entry) == 3
-        ):
-            row, column, value = entry
-        else:
-            raise TypeError(
-                f"delta_A.entries[{index}] must be a (row, column, value) entry."
-            )
-        if (
-            not isinstance(row, Integral)
-            or isinstance(row, bool)
-            or not isinstance(column, Integral)
-            or isinstance(column, bool)
-        ):
-            raise TypeError("delta_A entry row and column must be integers.")
-        coordinate = (int(row), int(column))
-        if not (0 <= coordinate[0] < normalized_shape[0]) or not (
-            0 <= coordinate[1] < normalized_shape[1]
-        ):
-            raise ValueError(
-                f"delta_A entry coordinate {coordinate} is outside shape {normalized_shape}."
-            )
-        if coordinate in occupied:
-            raise ValueError(f"delta_A entry coordinate {coordinate} is duplicated.")
-        if not isinstance(value, Real) or isinstance(value, bool):
-            raise TypeError("delta_A entry value must be a real number.")
-        normalized_value = float(value)
-        if not math.isfinite(normalized_value):
-            raise ValueError("delta_A entry value must be finite.")
-        occupied.add(coordinate)
-        normalized_entries.append((*coordinate, normalized_value))
-
-    normalized_entries.sort(key=lambda item: (item[0], item[1]))
-    dense = jnp.zeros(normalized_shape)
-    if normalized_entries:
-        rows, columns, values = zip(*normalized_entries)
-        dense = dense.at[jnp.asarray(rows), jnp.asarray(columns)].set(jnp.asarray(values))
-    return dense, tuple(normalized_entries)
-
-
-def _structural_delta_a_from_param(
-    value: Mapping[str, Any],
-) -> tuple[Array, tuple[tuple[int, int, float], ...]]:
-    if set(value) != {"shape", "entries"}:
-        raise ValueError("sparse delta_A must contain exactly shape and entries.")
-    return _structural_delta_a_from_entries(value["shape"], value["entries"])
 
 
 class StructuralLinearDynamicsPerturbation(Module):
@@ -135,15 +64,27 @@ class StructuralLinearDynamicsPerturbation(Module):
     def from_entries(
         cls,
         shape: Sequence[int],
-        entries: Sequence[Mapping[str, Any] | Sequence[Any]],
+        entries: Sequence[tuple[int, int, float]],
         *,
         scale: float | Array = 1.0,
         active: bool | Array = True,
     ) -> StructuralLinearDynamicsPerturbation:
         """Construct a dense runtime perturbation from sparse authored entries."""
 
-        delta_A, _ = _structural_delta_a_from_entries(shape, entries)
-        return cls(delta_A, scale=scale, active=active)
+        declaration = SparseCooArrayValueSpec(
+            schema_id=ARRAY_VALUE_SCHEMA_ID,
+            schema_version=ARRAY_VALUE_SCHEMA_VERSION,
+            encoding="sparse_coo",
+            shape=tuple(shape),
+            dtype="float32",
+            nonfinite="forbid",
+            fill=0.0,
+            entries=tuple(
+                SparseCooEntrySpec(coordinate=(row, column), value=value)
+                for row, column, value in entries
+            ),
+        )
+        return cls(materialize_array_value(declaration), scale=scale, active=active)
 
     def effective_transition(self, transition: Array) -> Array:
         """Return the transition matrix with this structural change applied."""
@@ -316,9 +257,7 @@ class StructuralLinearStateSpace(LinearStateSpace):
 
     structural_params_index: StateIndex
     initial_delta_A: tuple[tuple[float, ...], ...] = field(static=True)
-    initial_delta_A_entries: tuple[tuple[int, int, float], ...] | None = field(
-        static=True
-    )
+    initial_delta_A_value_spec: ArrayValueSpec | None = field(static=True)
     initial_scale: float = field(static=True)
     initial_active: bool = field(static=True)
     label: str = field(static=True)
@@ -328,7 +267,8 @@ class StructuralLinearStateSpace(LinearStateSpace):
         A: Array,
         B: Array,
         *,
-        delta_A: Array | Mapping[str, Any],
+        delta_A: Array,
+        authored_delta_A_value_spec: ArrayValueSpec | None = None,
         B_w: Array | None = None,
         dt: float = 1.0,
         initial_state: Array | None = None,
@@ -347,15 +287,8 @@ class StructuralLinearStateSpace(LinearStateSpace):
             pos_slice=pos_slice,
             vel_slice=vel_slice,
         )
-        initial_delta_A_entries = None
-        if isinstance(delta_A, Mapping):
-            dense_delta_A, initial_delta_A_entries = _structural_delta_a_from_param(
-                delta_A
-            )
-        else:
-            dense_delta_A = delta_A
         params = StructuralLinearDynamicsPerturbation(
-            delta_A=jnp.asarray(dense_delta_A, dtype=self.A.dtype),
+            delta_A=jnp.asarray(delta_A, dtype=self.A.dtype),
             scale=scale,
             active=active,
         )
@@ -365,7 +298,7 @@ class StructuralLinearStateSpace(LinearStateSpace):
             tuple(float(value) for value in row)
             for row in params.delta_A.tolist()
         )
-        self.initial_delta_A_entries = initial_delta_A_entries
+        self.initial_delta_A_value_spec = authored_delta_A_value_spec
         self.initial_scale = float(params.scale)
         self.initial_active = bool(params.active)
         self.structural_params_index = StateIndex(params)

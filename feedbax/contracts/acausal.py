@@ -8,6 +8,11 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from feedbax.contracts.array_values import (
+    ARRAY_VALUE_SCHEMA_VERSION,
+    _parse_array_value_payload,
+)
+
 if TYPE_CHECKING:
     from feedbax.contracts.graph import ComponentSpec, GraphMetadata
 
@@ -97,6 +102,29 @@ class AcausalGraphSpec(BaseModel):
                 )
             subgraphs[str(node_id)] = AcausalGraphSpec.model_validate(raw_subgraph)
         return {**data, "subgraphs": subgraphs}
+
+    @model_validator(mode="after")
+    def reject_component_param_array_values(self) -> "AcausalGraphSpec":
+        for node_id, node in self.nodes.items():
+            for param_name, value in node.params.items():
+                if _contains_array_value(value):
+                    raise ValueError(
+                        "AcausalGraphSpec does not support component-param array value "
+                        f"schema {ARRAY_VALUE_SCHEMA_VERSION!r}: "
+                        f"nodes[{node_id!r}].params[{param_name!r}]. The acausal compiler "
+                        "must define a separate materialization boundary before adopting it."
+                    )
+        return self
+
+
+def _contains_array_value(value: Any) -> bool:
+    if _parse_array_value_payload(value) is not None:
+        return True
+    if isinstance(value, dict):
+        return any(_contains_array_value(item) for item in value.values())
+    if isinstance(value, list | tuple):
+        return any(_contains_array_value(item) for item in value)
+    return False
 
 
 def canonical_acausal_graph_payload(graph: AcausalGraphSpec) -> dict[str, Any]:

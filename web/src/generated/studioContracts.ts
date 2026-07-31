@@ -6,6 +6,32 @@ import { z } from 'zod';
 export type JsonPrimitive = string | number | boolean | null;
 export type ParamValue = JsonPrimitive | unknown[] | Record<string, unknown>;
 
+export interface SparseCooEntrySpec {
+  coordinate: unknown[];
+  value: unknown | "nan" | "+inf" | "-inf";
+}
+
+export interface SparseCooArrayValueSpec {
+  schema_id: "feedbax.spec.component_param.array_value";
+  schema_version: "feedbax.spec.component_param.array_value.v1";
+  shape: unknown[];
+  dtype: "bool" | "int8" | "int16" | "int32" | "int64" | "uint8" | "uint16" | "uint32" | "uint64" | "float16" | "float32" | "float64";
+  nonfinite: "forbid" | "allow";
+  encoding: "sparse_coo";
+  fill: unknown | "nan" | "+inf" | "-inf";
+  entries: SparseCooEntrySpec[];
+}
+
+export interface ConstantArrayValueSpec {
+  schema_id: "feedbax.spec.component_param.array_value";
+  schema_version: "feedbax.spec.component_param.array_value.v1";
+  shape: unknown[];
+  dtype: "bool" | "int8" | "int16" | "int32" | "int64" | "uint8" | "uint16" | "uint32" | "uint64" | "float16" | "float32" | "float64";
+  nonfinite: "forbid" | "allow";
+  encoding: "constant";
+  value: unknown | "nan" | "+inf" | "-inf";
+}
+
 export interface ParamSchema {
   name: string;
   type: "int" | "float" | "bool" | "str" | "enum" | "array" | "object" | "bounds2d";
@@ -238,7 +264,7 @@ export interface GraphMetadata {
 
 export interface GraphSpec {
   schema_id?: "feedbax.spec.graph";
-  schema_version?: "feedbax.spec.graph.v4";
+  schema_version?: "feedbax.spec.graph.v5";
   nodes?: Record<string, ComponentSpec>;
   wires?: WireSpec[];
   additive_channel_adapters?: AdditiveGraphChannelAdapterSpec[];
@@ -1827,6 +1853,44 @@ export interface InspectionStatusResponse {
   treescope_version?: string | null;
 }
 
+export const SparseCooEntrySpecSchema: z.ZodType<SparseCooEntrySpec> = z.lazy(() =>
+  z
+    .object({
+      "coordinate": z.array(z.unknown()),
+      "value": z.union([z.unknown(), z.unknown(), z.unknown(), z.union([z.literal("nan"), z.literal("+inf"), z.literal("-inf")])]),
+    })
+    .strict()
+) as unknown as z.ZodType<SparseCooEntrySpec>;
+
+export const SparseCooArrayValueSpecSchema: z.ZodType<SparseCooArrayValueSpec> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.component_param.array_value"),
+      "schema_version": z.literal("feedbax.spec.component_param.array_value.v1"),
+      "shape": z.array(z.unknown()),
+      "dtype": z.union([z.literal("bool"), z.literal("int8"), z.literal("int16"), z.literal("int32"), z.literal("int64"), z.literal("uint8"), z.literal("uint16"), z.literal("uint32"), z.literal("uint64"), z.literal("float16"), z.literal("float32"), z.literal("float64")]),
+      "nonfinite": z.union([z.literal("forbid"), z.literal("allow")]),
+      "encoding": z.literal("sparse_coo"),
+      "fill": z.union([z.unknown(), z.unknown(), z.unknown(), z.union([z.literal("nan"), z.literal("+inf"), z.literal("-inf")])]),
+      "entries": z.array(SparseCooEntrySpecSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<SparseCooArrayValueSpec>;
+
+export const ConstantArrayValueSpecSchema: z.ZodType<ConstantArrayValueSpec> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.component_param.array_value"),
+      "schema_version": z.literal("feedbax.spec.component_param.array_value.v1"),
+      "shape": z.array(z.unknown()),
+      "dtype": z.union([z.literal("bool"), z.literal("int8"), z.literal("int16"), z.literal("int32"), z.literal("int64"), z.literal("uint8"), z.literal("uint16"), z.literal("uint32"), z.literal("uint64"), z.literal("float16"), z.literal("float32"), z.literal("float64")]),
+      "nonfinite": z.union([z.literal("forbid"), z.literal("allow")]),
+      "encoding": z.literal("constant"),
+      "value": z.union([z.unknown(), z.unknown(), z.unknown(), z.union([z.literal("nan"), z.literal("+inf"), z.literal("-inf")])]),
+    })
+    .strict()
+) as unknown as z.ZodType<ConstantArrayValueSpec>;
+
 export const ParamSchemaSchema: z.ZodType<ParamSchema> = z.lazy(() =>
   z
     .object({
@@ -2165,7 +2229,7 @@ export const GraphSpecSchema: z.ZodType<GraphSpec> = z.lazy(() =>
   z
     .object({
       "schema_id": z.literal("feedbax.spec.graph").optional(),
-      "schema_version": z.literal("feedbax.spec.graph.v4").optional(),
+      "schema_version": z.literal("feedbax.spec.graph.v5").optional(),
       "nodes": z.record(z.string(), ComponentSpecSchema).optional(),
       "wires": z.array(WireSpecSchema).optional(),
       "additive_channel_adapters": z.array(AdditiveGraphChannelAdapterSpecSchema).optional(),

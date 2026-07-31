@@ -16,6 +16,7 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_VERSION_V2,
     GRAPH_SPEC_SCHEMA_VERSION_V3,
+    GRAPH_SPEC_SCHEMA_VERSION_V4,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     ComponentSpec,
     GraphMetadata,
@@ -23,6 +24,10 @@ from feedbax.contracts.graph import (
     GraphSpec,
     ParamSchema,
     WireSpec,
+)
+from feedbax.contracts.array_values import (
+    ARRAY_VALUE_SCHEMA_ID,
+    ARRAY_VALUE_SCHEMA_VERSION,
 )
 from feedbax.contracts.manifest import (
     ArtifactMigrationRecord,
@@ -44,14 +49,16 @@ from feedbax.integrations.provider import validate_graph_spec_manifest, validate
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.graph_spec_contract, pytest.mark.migration_contract]
 
-GRAPH_V1_TO_V4_MIGRATIONS = [
+GRAPH_V1_TO_V5_MIGRATIONS = [
     "graph-spec-legacy-v1-to-v2",
     "graph-spec-v2-to-v3-derived-dimensions",
     "graph-spec-v3-to-v4-discriminated-subgraphs",
+    "graph-spec-v4-to-v5-component-param-array-values",
 ]
-GRAPH_V2_TO_V4_MIGRATIONS = [
+GRAPH_V2_TO_V5_MIGRATIONS = [
     "graph-spec-v2-to-v3-derived-dimensions",
     "graph-spec-v3-to-v4-discriminated-subgraphs",
+    "graph-spec-v4-to-v5-component-param-array-values",
 ]
 
 
@@ -319,7 +326,7 @@ def test_legacy_graph_spec_migration_records_builtin_rewrites() -> None:
     assert result.payload["wires"][0]["source_port"] == "input"
     assert result.payload["wires"][0]["target_port"] == "input"
     assert result.payload["input_bindings"]["target"] == ("network", "input")
-    assert [record.migration_id for record in result.migration_records] == GRAPH_V1_TO_V4_MIGRATIONS
+    assert [record.migration_id for record in result.migration_records] == GRAPH_V1_TO_V5_MIGRATIONS
     assert result.migration_records[0].metadata["graph_path"] == "graph"
     assert result.payload["derived_dimensions"] == []
 
@@ -336,7 +343,36 @@ def test_graph_spec_v2_migration_adds_derived_dimensions_field() -> None:
 
     assert result.payload["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
     assert result.payload["derived_dimensions"] == []
-    assert [record.migration_id for record in result.migration_records] == GRAPH_V2_TO_V4_MIGRATIONS
+    assert [record.migration_id for record in result.migration_records] == GRAPH_V2_TO_V5_MIGRATIONS
+
+
+def test_graph_spec_v4_migration_preserves_dense_and_unrelated_shape_entry_dicts() -> None:
+    dense = [[0.0, 0.25], [0.0, 0.0]]
+    unrelated = {"shape": [2, 2], "entries": [{"label": "not structural sparse"}]}
+    result = migrate_graph_spec(
+        {
+            "schema_id": GRAPH_SPEC_SCHEMA_ID,
+            "schema_version": GRAPH_SPEC_SCHEMA_VERSION_V4,
+            "nodes": {
+                "plant": {
+                    "type": "StructuralLinearStateSpace",
+                    "params": {"delta_A": dense},
+                    "input_ports": [],
+                    "output_ports": [],
+                },
+                "other": {
+                    "type": "fixture.Component",
+                    "params": {"configuration": unrelated},
+                    "input_ports": [],
+                    "output_ports": [],
+                },
+            },
+            "wires": [],
+        }
+    )
+
+    assert result.payload["nodes"]["plant"]["params"]["delta_A"] == dense
+    assert result.payload["nodes"]["other"]["params"]["configuration"] == unrelated
 
 
 def test_nested_graph_spec_migration_is_recursive_and_ordered() -> None:
@@ -374,6 +410,8 @@ def test_nested_graph_spec_migration_is_recursive_and_ordered() -> None:
         "graph",
         "graph",
         "graph",
+        "graph",
+        "graph.subgraphs['network']",
         "graph.subgraphs['network']",
         "graph.subgraphs['network']",
         "graph.subgraphs['network']",
@@ -396,6 +434,23 @@ def test_unknown_graph_spec_schema_version_reports_available_migrations() -> Non
     assert "graph-spec-legacy-v1-to-v2" in message
     assert "graph-spec-v2-to-v3-derived-dimensions" in message
     assert "graph-spec-v3-to-v4-discriminated-subgraphs" in message
+    assert "graph-spec-v4-to-v5-component-param-array-values" in message
+
+
+def test_acausal_interior_rejects_component_param_array_values_at_typed_boundary() -> None:
+    payload = _acausal_graph_payload()
+    payload["nodes"]["mass"]["params"]["matrix"] = {
+        "schema_id": ARRAY_VALUE_SCHEMA_ID,
+        "schema_version": ARRAY_VALUE_SCHEMA_VERSION,
+        "encoding": "constant",
+        "shape": [2, 2],
+        "dtype": "float32",
+        "nonfinite": "forbid",
+        "value": 0.0,
+    }
+
+    with pytest.raises(ValidationError, match="AcausalGraphSpec does not support"):
+        AcausalGraphSpec.model_validate(payload)
 
 
 def test_graph_spec_manifest_load_attaches_feedbax_migration_records() -> None:
@@ -416,7 +471,7 @@ def test_graph_spec_manifest_load_attaches_feedbax_migration_records() -> None:
         result.payload,
     ).sha256
     assert [record.migration_id for record in result.applied_migration_records] == (
-        GRAPH_V1_TO_V4_MIGRATIONS
+        GRAPH_V1_TO_V5_MIGRATIONS
     )
     assert result.migration_records == loaded_manifest.migration_records
 
@@ -480,7 +535,7 @@ def test_provider_validation_reports_manifest_migration_custody_states() -> None
     )
     assert migrated.valid
     assert migrated.migration_status == "feedbax_migrated"
-    assert [record.migration_id for record in migrated.migration_records] == GRAPH_V1_TO_V4_MIGRATIONS
+    assert [record.migration_id for record in migrated.migration_records] == GRAPH_V1_TO_V5_MIGRATIONS
     routed = validate_spec(
         "graph_manifest",
         GraphSpecManifest(

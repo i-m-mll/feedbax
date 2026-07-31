@@ -32,16 +32,25 @@ from feedbax.component_registry import (
     ComponentRegistry,
 )
 from feedbax.contracts import (
+    ARRAY_VALUE_SCHEMA_ID,
+    ARRAY_VALUE_SCHEMA_VERSION,
     MATERIAL_DEPENDENCIES_SCHEMA_ID,
     MATERIAL_DEPENDENCIES_SCHEMA_VERSION,
     MaterialDependency,
     MaterialDependencyObservation,
     MaterialDependencySet,
+    ComponentSpec,
+    ConstantArrayValueSpec,
+    GraphSpec,
+    SparseCooArrayValueSpec,
+    SparseCooEntrySpec,
     ValueIdentityRecord,
     authored_value_sha256,
+    materialize_array_value,
     semantic_value_sha256,
     value_identity_record,
 )
+from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
 from feedbax.contracts.manifest import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
@@ -209,6 +218,77 @@ def check_value_identity() -> bool:
         pass
     else:
         raise AssertionError("old value-identity schema was accepted")
+    return True
+
+
+def check_component_param_array_values() -> bool:
+    """Exercise the public typed array contract through GraphSpec execution."""
+    sparse = SparseCooArrayValueSpec(
+        schema_id=ARRAY_VALUE_SCHEMA_ID,
+        schema_version=ARRAY_VALUE_SCHEMA_VERSION,
+        encoding="sparse_coo",
+        shape=(2, 2),
+        dtype="float32",
+        nonfinite="forbid",
+        fill=0.0,
+        entries=(SparseCooEntrySpec(coordinate=(0, 1), value=0.5),),
+    )
+    constant = ConstantArrayValueSpec(
+        schema_id=ARRAY_VALUE_SCHEMA_ID,
+        schema_version=ARRAY_VALUE_SCHEMA_VERSION,
+        encoding="constant",
+        shape=(2, 2),
+        dtype="float32",
+        nonfinite="forbid",
+        value=0.5,
+    )
+    dense_sparse = np.asarray([[0.0, 0.5], [0.0, 0.0]], dtype=np.float32)
+    dense_constant = np.full((2, 2), 0.5, dtype=np.float32)
+    if semantic_value_sha256(
+        materialize_array_value(sparse), dtype="float32"
+    ) != semantic_value_sha256(dense_sparse, dtype="float32"):
+        raise AssertionError("sparse component-param materialization changed semantics")
+    if semantic_value_sha256(
+        materialize_array_value(constant), dtype="float32"
+    ) != semantic_value_sha256(dense_constant, dtype="float32"):
+        raise AssertionError("constant component-param materialization changed semantics")
+
+    graph_spec = GraphSpec(
+        nodes={
+            "plant": ComponentSpec(
+                type="StructuralLinearStateSpace",
+                params={
+                    "A": [[1.0, 0.0], [0.0, 1.0]],
+                    "B": [[0.0], [0.0]],
+                    "B_w": [[0.0], [0.0]],
+                    "delta_A": sparse.model_dump(mode="json"),
+                    "initial_state": [0.0, 0.0],
+                    "pos_slice": [0, 1],
+                    "vel_slice": [1, 2],
+                },
+                param_schema_version="feedbax.component.structural_linear_state_space.v1",
+                input_ports=["force", "epsilon"],
+                output_ports=["effector", "state"],
+            )
+        }
+    )
+    runtime = spec_to_graph(graph_spec)
+    if runtime.nodes["plant"].initial_delta_A != ((0.0, 0.5), (0.0, 0.0)):
+        raise AssertionError("GraphSpec did not materialize sparse component params")
+    if graph_to_spec(runtime).nodes["plant"].params["delta_A"] != sparse.model_dump(mode="json"):
+        raise AssertionError("runtime round-trip lost authored sparse array identity")
+
+    try:
+        ComponentSpec.model_validate(
+            {
+                "type": "fixture.Component",
+                "params": {"value": {"schema_id": ARRAY_VALUE_SCHEMA_ID}},
+            }
+        )
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("partial component-param array tags were accepted")
     return True
 
 
@@ -448,6 +528,7 @@ def check_resolved_evaluation_row_projection() -> bool:
 
 __all__ = [
     "check_component_registration_and_migration",
+    "check_component_param_array_values",
     "check_exact_parent_migration",
     "check_material_dependencies",
     "check_ordered_registration",
