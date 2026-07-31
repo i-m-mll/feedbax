@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 
 import pytest
 
 from feedbax.orchestration.drivers.capabilities import (
     DRIVER_CAPABILITIES_SCHEMA_ID,
     DRIVER_CAPABILITIES_SCHEMA_VERSION,
+    DRIVER_CAPABILITIES_SCHEMA_VERSION_V2,
     AcquisitionSemantics,
     AuthorizationSemantics,
     CustodySemantics,
-    DriverCapabilities,
+    DriverCapabilityEnvelope,
+    DriverCapabilityFacts,
     DriverConstructionContext,
     DriverHook,
     DriverRegistration,
@@ -19,6 +22,7 @@ from feedbax.orchestration.drivers.capabilities import (
     DriverVenue,
     EnvironmentSemantics,
     MonitoringSemantics,
+    RealizedDriverCapabilities,
     RecoverySemantics,
     ResourceSemantics,
     RetrySemantics,
@@ -29,9 +33,9 @@ from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
 from feedbax.web.services.worker_driver import WorkerHttpDriver
 
 
-def _fixture_capabilities(name: str = "fixture:driver") -> DriverCapabilities:
-    return DriverCapabilities(
-        driver_name=name,
+def _local_facts(variant_id: str = "local") -> DriverCapabilityFacts:
+    return DriverCapabilityFacts(
+        variant_id=variant_id,
         venue=DriverVenue.LOCAL_PROCESS,
         resources=ResourceSemantics.LOCAL_PROCESS,
         spend=SpendSemantics.NONE,
@@ -46,69 +50,175 @@ def _fixture_capabilities(name: str = "fixture:driver") -> DriverCapabilities:
     )
 
 
-def test_capability_contract_has_stable_schema_identity_and_core_stages() -> None:
-    capabilities = _fixture_capabilities()
+def _conditional_envelope() -> DriverCapabilityEnvelope:
+    external = DriverCapabilityFacts(
+        variant_id="external",
+        venue=DriverVenue.CLOUD_RESOURCE,
+        resources=ResourceSemantics.EXTERNALLY_MANAGED,
+        spend=SpendSemantics.EXTERNALLY_MANAGED,
+        authorization=AuthorizationSemantics.OPTIONAL_CALLER_CREDENTIAL,
+        environment=EnvironmentSemantics.REMOTE_REALIZATION,
+        monitoring=MonitoringSemantics.PROVIDER_INVENTORY,
+        recovery=RecoverySemantics.DURABLE_REMOTE,
+        retry=RetrySemantics.NONE,
+        acquisition=AcquisitionSemantics.EXTERNALLY_PROVIDED,
+        teardown=TeardownSemantics.EXTERNAL_RESOURCES_PRESERVED,
+        custody=CustodySemantics.EPHEMERAL_REMOTE_RESOURCE,
+    )
+    acquired = DriverCapabilityFacts(
+        variant_id="acquired",
+        venue=DriverVenue.CLOUD_RESOURCE,
+        resources=ResourceSemantics.DRIVER_OWNED,
+        spend=SpendSemantics.DRIVER_OBSERVED,
+        authorization=AuthorizationSemantics.CLOUD_AND_SPEND_REQUIRED,
+        environment=EnvironmentSemantics.REMOTE_REALIZATION,
+        monitoring=MonitoringSemantics.PROVIDER_INVENTORY,
+        recovery=RecoverySemantics.DURABLE_REMOTE,
+        retry=RetrySemantics.NONE,
+        acquisition=AcquisitionSemantics.ENGINE_GOVERNED,
+        teardown=TeardownSemantics.VERIFIED_RESOURCE_ABSENCE,
+        custody=CustodySemantics.EPHEMERAL_REMOTE_RESOURCE,
+        optional_hooks=frozenset({DriverHook.ENGINE_ACQUISITION}),
+    )
+    return DriverCapabilityEnvelope(
+        driver_name="fixture:conditional",
+        variants={external.variant_id: external, acquired.variant_id: acquired},
+    )
 
-    assert capabilities.schema_id == DRIVER_CAPABILITIES_SCHEMA_ID
-    assert capabilities.schema_version == DRIVER_CAPABILITIES_SCHEMA_VERSION
-    assert capabilities.stages == frozenset(DriverStage)
-    assert not capabilities.supports(DriverHook.REMOTE_SMOKE)
+
+def test_capability_envelope_has_stable_v2_identity_and_core_stages() -> None:
+    facts = _local_facts()
+    envelope = DriverCapabilityEnvelope.single("fixture:driver", facts)
+    realized = envelope.realize("local")
+
+    assert envelope.schema_id == DRIVER_CAPABILITIES_SCHEMA_ID
+    assert envelope.schema_version == DRIVER_CAPABILITIES_SCHEMA_VERSION_V2
+    assert DRIVER_CAPABILITIES_SCHEMA_VERSION == DRIVER_CAPABILITIES_SCHEMA_VERSION_V2
+    assert facts.stages == frozenset(DriverStage)
+    assert realized.driver_name == "fixture:driver"
+    assert realized.variant_id == "local"
+    assert envelope.supports(realized)
 
 
-def test_capability_contract_rejects_incomplete_or_contradictory_facts() -> None:
-    capabilities = _fixture_capabilities()
+def test_capability_facts_reject_incomplete_or_contradictory_variants() -> None:
+    facts = _local_facts()
 
-    with pytest.raises(ValueError, match="omits core stages: teardown"):
-        replace(capabilities, stages=frozenset(set(DriverStage) - {DriverStage.TEARDOWN}))
+    with pytest.raises(ValueError, match="omit core stages: teardown"):
+        replace(facts, stages=frozenset(set(DriverStage) - {DriverStage.TEARDOWN}))
     with pytest.raises(ValueError, match="engine-governed acquisition requires"):
         replace(
-            capabilities,
+            facts,
             resources=ResourceSemantics.DRIVER_OWNED,
             acquisition=AcquisitionSemantics.ENGINE_GOVERNED,
         )
     with pytest.raises(ValueError, match="unsupported driver capability schema version"):
-        replace(capabilities, schema_version="2")
+        RealizedDriverCapabilities(
+            driver_name="fixture:driver",
+            facts=facts,
+            schema_version="1",
+        )
 
 
-def test_registry_constructs_from_immutable_typed_context() -> None:
-    capabilities = _fixture_capabilities()
-    supplied_configuration = {"value": 3}
-    observed_contexts: list[DriverConstructionContext] = []
+def test_registry_realizes_external_and_acquired_contexts_without_name_branching() -> None:
+    envelope = _conditional_envelope()
 
-    class FixtureDriver:
-        def __init__(self, context: DriverConstructionContext) -> None:
-            self.capabilities = capabilities
-            observed_contexts.append(context)
+    class ConditionalDriver:
+        def __init__(
+            self,
+            _context: DriverConstructionContext,
+            realized: RealizedDriverCapabilities,
+        ) -> None:
+            self.realized_capabilities = realized
+
+    def resolve(context: DriverConstructionContext) -> RealizedDriverCapabilities:
+        mode = context.configuration["resource_mode"]
+        assert isinstance(mode, str)
+        return envelope.realize(mode)
 
     registry = DriverRegistry(
         (
             DriverRegistration(
-                name=capabilities.driver_name,
-                capabilities=capabilities,
-                factory=FixtureDriver,
+                name=envelope.driver_name,
+                supported_capabilities=envelope,
+                resolve_capabilities=resolve,
+                factory=ConditionalDriver,
             ),
         )
     )
-    context = DriverConstructionContext(configuration=supplied_configuration)
-    supplied_configuration["value"] = 4
 
-    driver = registry.construct("fixture:driver", context)
+    external = registry.construct(
+        envelope.driver_name,
+        DriverConstructionContext(configuration={"resource_mode": "external"}),
+    )
+    acquired = registry.construct(
+        envelope.driver_name,
+        DriverConstructionContext(configuration={"resource_mode": "acquired"}),
+    )
 
-    assert isinstance(driver, FixtureDriver)
-    assert observed_contexts == [context]
-    assert context.configuration == {"value": 3}
-    with pytest.raises(TypeError):
-        context.configuration["value"] = 5  # type: ignore[index]
+    assert external.realized_capabilities.facts.resources is ResourceSemantics.EXTERNALLY_MANAGED
+    assert (
+        external.realized_capabilities.facts.teardown
+        is TeardownSemantics.EXTERNAL_RESOURCES_PRESERVED
+    )
+    assert acquired.realized_capabilities.facts.resources is ResourceSemantics.DRIVER_OWNED
+    assert acquired.realized_capabilities.facts.acquisition is AcquisitionSemantics.ENGINE_GOVERNED
+    assert (
+        acquired.realized_capabilities.facts.teardown is TeardownSemantics.VERIFIED_RESOURCE_ABSENCE
+    )
 
 
-def test_registry_fails_closed_and_lists_registered_drivers() -> None:
-    capabilities = _fixture_capabilities()
+def test_registry_rejects_unsupported_context_realization() -> None:
+    envelope = DriverCapabilityEnvelope.single("fixture:driver", _local_facts())
+    unsupported = RealizedDriverCapabilities(
+        driver_name=envelope.driver_name,
+        facts=_local_facts("other"),
+    )
     registry = DriverRegistry(
         (
             DriverRegistration(
-                name=capabilities.driver_name,
-                capabilities=capabilities,
-                factory=lambda _context: object(),  # type: ignore[arg-type,return-value]
+                name=envelope.driver_name,
+                supported_capabilities=envelope,
+                resolve_capabilities=lambda _context: unsupported,
+                factory=lambda _context, realized: _FixtureDriver(realized),
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError, match="selected unsupported facts"):
+        registry.construct(envelope.driver_name, DriverConstructionContext())
+
+
+def test_registry_rejects_factory_realization_drift() -> None:
+    envelope = DriverCapabilityEnvelope.single("fixture:driver", _local_facts())
+    expected = envelope.realize("local")
+    drifted = RealizedDriverCapabilities(
+        driver_name=envelope.driver_name,
+        facts=_local_facts("other"),
+    )
+    registry = DriverRegistry(
+        (
+            DriverRegistration(
+                name=envelope.driver_name,
+                supported_capabilities=envelope,
+                resolve_capabilities=lambda _context: expected,
+                factory=lambda _context, _realized: _FixtureDriver(drifted),
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError, match="do not match the context selection"):
+        registry.construct(envelope.driver_name, DriverConstructionContext())
+
+
+def test_registry_fails_closed_and_lists_registered_drivers() -> None:
+    envelope = DriverCapabilityEnvelope.single("fixture:driver", _local_facts())
+    registry = DriverRegistry(
+        (
+            DriverRegistration(
+                name=envelope.driver_name,
+                supported_capabilities=envelope,
+                resolve_capabilities=lambda _context: envelope.realize("local"),
+                factory=lambda _context, realized: _FixtureDriver(realized),
             ),
         )
     )
@@ -120,68 +230,73 @@ def test_registry_fails_closed_and_lists_registered_drivers() -> None:
         registry.resolve("missing")
 
 
-def test_registry_rejects_duplicate_and_mismatched_declarations() -> None:
-    capabilities = _fixture_capabilities()
-    registration = DriverRegistration(
-        name=capabilities.driver_name,
-        capabilities=capabilities,
-        factory=lambda _context: object(),  # type: ignore[arg-type,return-value]
-    )
-    registry = DriverRegistry((registration,))
-
-    with pytest.raises(ValueError, match="already registered"):
-        registry.register(registration)
-    with pytest.raises(ValueError, match="name must match"):
-        DriverRegistration(
-            name="different",
-            capabilities=capabilities,
-            factory=lambda _context: object(),  # type: ignore[arg-type,return-value]
-        )
-
-
-def test_registry_rejects_factory_capability_drift() -> None:
-    capabilities = _fixture_capabilities()
-
-    class DriftedDriver:
-        capabilities = _fixture_capabilities("fixture:other")
-
-    registry = DriverRegistry(
-        (
-            DriverRegistration(
-                name=capabilities.driver_name,
-                capabilities=capabilities,
-                factory=lambda _context: DriftedDriver(),  # type: ignore[arg-type,return-value]
-            ),
-        )
+def test_construction_context_deep_detaches_and_freezes_nested_inputs() -> None:
+    configuration = {
+        "nested": {"items": [1, {"enabled": True}]},
+        "box": _MutableBox(values=[2, 3]),
+    }
+    runtime_bindings = {"roots": [{"path": "/before"}]}
+    recovery_inputs = {"attempts": [{"records": ["first"]}]}
+    credentials = {"token": "before"}
+    context = DriverConstructionContext(
+        configuration=configuration,
+        runtime_bindings=runtime_bindings,
+        credentials=credentials,
+        recovery_inputs=recovery_inputs,
     )
 
-    with pytest.raises(ValueError, match="does not match its registry"):
-        registry.construct(capabilities.driver_name, DriverConstructionContext())
+    configuration["nested"]["items"][1]["enabled"] = False  # type: ignore[index]
+    configuration["box"].values.append(4)  # type: ignore[union-attr]
+    runtime_bindings["roots"][0]["path"] = "/after"  # type: ignore[index]
+    recovery_inputs["attempts"][0]["records"].append("second")  # type: ignore[index,union-attr]
+    credentials["token"] = "after"
+
+    snapshot = context.configuration
+    nested = snapshot["nested"]
+    assert isinstance(nested, Mapping)
+    assert nested["items"] == (1, {"enabled": True})
+    assert context.runtime_bindings["roots"] == ({"path": "/before"},)
+    assert context.recovery_inputs["attempts"] == ({"records": ("first",)},)
+    assert context.credentials == {"token": "before"}
+    box = snapshot["box"]
+    assert isinstance(box, _MutableBox)
+    assert box.values == [2, 3]
+
+    box.values.append(99)
+    assert context.configuration["box"].values == [2, 3]  # type: ignore[union-attr]
+    with pytest.raises(TypeError):
+        nested["new"] = "value"  # type: ignore[index]
 
 
-def test_local_driver_declares_only_implemented_optional_hooks() -> None:
-    capabilities = LocalOrchestrationDriver.capabilities
+def test_local_driver_has_one_truthful_realized_variant() -> None:
+    envelope = LocalOrchestrationDriver.capability_envelope
+    realized = LocalOrchestrationDriver.realized_capabilities
 
-    assert capabilities.driver_name == "local"
-    assert capabilities.venue is DriverVenue.LOCAL_PROCESS
-    assert capabilities.spend is SpendSemantics.NONE
-    assert capabilities.custody is CustodySemantics.LOCAL_RUN_SET
-    assert capabilities.optional_hooks == frozenset(
-        {
-            DriverHook.PREFLIGHT_CHECKS,
-            DriverHook.CHECKPOINT_STOP,
-        }
+    assert envelope.supports(realized)
+    assert realized.driver_name == "local"
+    assert realized.facts.resources is ResourceSemantics.LOCAL_PROCESS
+    assert realized.facts.optional_hooks == frozenset(
+        {DriverHook.PREFLIGHT_CHECKS, DriverHook.CHECKPOINT_STOP}
     )
 
 
-def test_worker_http_declares_external_ownership_and_no_optional_hooks() -> None:
-    capabilities = WorkerHttpDriver.capabilities
+def test_worker_http_has_one_truthful_external_service_variant() -> None:
+    envelope = WorkerHttpDriver.capability_envelope
+    realized = WorkerHttpDriver.realized_capabilities
 
-    assert capabilities.driver_name == "worker-http"
-    assert capabilities.venue is DriverVenue.REMOTE_SERVICE
-    assert capabilities.resources is ResourceSemantics.EXTERNALLY_MANAGED
-    assert capabilities.spend is SpendSemantics.EXTERNALLY_MANAGED
-    assert capabilities.acquisition is AcquisitionSemantics.EXTERNALLY_PROVIDED
-    assert capabilities.teardown is TeardownSemantics.EXTERNAL_RESOURCES_PRESERVED
-    assert capabilities.custody is CustodySemantics.EXTERNAL_SERVICE
-    assert capabilities.optional_hooks == frozenset()
+    assert envelope.supports(realized)
+    assert realized.driver_name == "worker-http"
+    assert realized.facts.resources is ResourceSemantics.EXTERNALLY_MANAGED
+    assert realized.facts.acquisition is AcquisitionSemantics.EXTERNALLY_PROVIDED
+    assert realized.facts.teardown is TeardownSemantics.EXTERNAL_RESOURCES_PRESERVED
+    assert realized.facts.optional_hooks == frozenset()
+
+
+@dataclass
+class _MutableBox:
+    values: list[int]
+
+
+class _FixtureDriver:
+    def __init__(self, realized: RealizedDriverCapabilities) -> None:
+        self.realized_capabilities = realized

@@ -36,7 +36,8 @@ from feedbax.orchestration.drivers.capabilities import (
     AcquisitionSemantics,
     AuthorizationSemantics,
     CustodySemantics,
-    DriverCapabilities,
+    DriverCapabilityEnvelope,
+    DriverCapabilityFacts,
     DriverHook,
     DriverVenue,
     EnvironmentSemantics,
@@ -102,26 +103,30 @@ print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
 class LocalOrchestrationDriver:
     """Run orchestration rows as local subprocesses under the run-set directory."""
 
-    capabilities = DriverCapabilities(
-        driver_name="local",
-        venue=DriverVenue.LOCAL_PROCESS,
-        resources=ResourceSemantics.LOCAL_PROCESS,
-        spend=SpendSemantics.NONE,
-        authorization=AuthorizationSemantics.NONE,
-        environment=EnvironmentSemantics.LOCAL_INVENTORY,
-        monitoring=MonitoringSemantics.ROW_POLL,
-        recovery=RecoverySemantics.PROCESS_LOCAL,
-        retry=RetrySemantics.NONE,
-        acquisition=AcquisitionSemantics.NONE,
-        teardown=TeardownSemantics.LOCAL_PROCESS_STOP,
-        custody=CustodySemantics.LOCAL_RUN_SET,
-        optional_hooks=frozenset(
-            {
-                DriverHook.PREFLIGHT_CHECKS,
-                DriverHook.CHECKPOINT_STOP,
-            }
+    capability_envelope = DriverCapabilityEnvelope.single(
+        "local",
+        DriverCapabilityFacts(
+            variant_id="local",
+            venue=DriverVenue.LOCAL_PROCESS,
+            resources=ResourceSemantics.LOCAL_PROCESS,
+            spend=SpendSemantics.NONE,
+            authorization=AuthorizationSemantics.NONE,
+            environment=EnvironmentSemantics.LOCAL_INVENTORY,
+            monitoring=MonitoringSemantics.ROW_POLL,
+            recovery=RecoverySemantics.PROCESS_LOCAL,
+            retry=RetrySemantics.NONE,
+            acquisition=AcquisitionSemantics.NONE,
+            teardown=TeardownSemantics.LOCAL_PROCESS_STOP,
+            custody=CustodySemantics.LOCAL_RUN_SET,
+            optional_hooks=frozenset(
+                {
+                    DriverHook.PREFLIGHT_CHECKS,
+                    DriverHook.CHECKPOINT_STOP,
+                }
+            ),
         ),
     )
+    realized_capabilities = capability_envelope.realize("local")
 
     def __init__(
         self,
@@ -420,11 +425,9 @@ class LocalOrchestrationDriver:
             source_path = Path(source)
             if not source_path.is_absolute():
                 source_path = paths["row_dir"] / source_path
-            if (
-                bundle.execution_family == "evaluation-matrix"
-                and os.path.abspath(source_path)
-                == os.path.abspath(paths["row_dir"] / "evaluation")
-            ):
+            if bundle.execution_family == "evaluation-matrix" and os.path.abspath(
+                source_path
+            ) == os.path.abspath(paths["row_dir"] / "evaluation"):
                 # Compact products supersede this raw working store. Older
                 # bundles may still declare it, but collection must not create
                 # a second terminal copy.
@@ -551,10 +554,7 @@ def _terminal_staged_root_reclamation_allowed(
     if state.stage("STAGE_INPUTS").status != "completed":
         return False
     if row_statuses == {"completed"}:
-        if any(
-            state.stage(stage_id).status != "completed"
-            for stage_id in ("COLLECT", "CERTIFY")
-        ):
+        if any(state.stage(stage_id).status != "completed" for stage_id in ("COLLECT", "CERTIFY")):
             return False
     elif state.stage("COLLECT").status not in {"completed", "failed"}:
         return False
@@ -572,9 +572,7 @@ def _reclaim_successful_evaluation_stores(
     """Reclaim raw evaluation stores after their compact terminal custody is certified."""
     if bundle.execution_family != "evaluation-matrix":
         return []
-    completed_rows = [
-        row for row in bundle.rows if state.rows.get(row.row_id, None) is not None
-    ]
+    completed_rows = [row for row in bundle.rows if state.rows.get(row.row_id, None) is not None]
     if (
         len(completed_rows) != len(bundle.rows)
         or any(state.rows[row.row_id].status != "completed" for row in completed_rows)
@@ -695,10 +693,9 @@ def _verify_successful_evaluation_terminal_custody(
         raise LocalDriverError(
             "evaluation reclamation requires a valid passing certificate"
         ) from exc
-    if (
-        certificate.run_set_id != bundle.run_set_id
-        or set(certificate.rows) != {row.row_id for row in bundle.rows}
-    ):
+    if certificate.run_set_id != bundle.run_set_id or set(certificate.rows) != {
+        row.row_id for row in bundle.rows
+    }:
         raise LocalDriverError("evaluation reclamation certificate authority drifted")
 
 
@@ -745,9 +742,7 @@ def _reclaim_successful_evaluation_store(
         )
     record: dict[str, Any] | None = None
     if record_path.is_symlink():
-        raise LocalDriverError(
-            f"raw evaluation reclamation record is unsafe for {row.row_id!r}"
-        )
+        raise LocalDriverError(f"raw evaluation reclamation record is unsafe for {row.row_id!r}")
     if record_path.is_file():
         try:
             loaded = json.loads(record_path.read_text(encoding="utf-8"))
@@ -769,9 +764,7 @@ def _reclaim_successful_evaluation_store(
             or not isinstance(record.get("reclaimed_bytes"), int)
             or record["reclaimed_bytes"] < 0
         ):
-            raise LocalDriverError(
-                f"raw evaluation reclamation record drifted for {row.row_id!r}"
-            )
+            raise LocalDriverError(f"raw evaluation reclamation record drifted for {row.row_id!r}")
         if record["status"] == "completed":
             if os.path.lexists(raw_root) or os.path.lexists(isolated):
                 raise LocalDriverError(
@@ -844,9 +837,7 @@ def _atomic_write_local_json(path: Path, payload: Mapping[str, Any]) -> None:
         os.replace(temporary, path)
         directory_fd = os.open(
             path.parent,
-            os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
         )
         try:
             os.fsync(directory_fd)
@@ -886,9 +877,7 @@ def _terminate_process_group(
         try:
             process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired as exc:
-            raise LocalDriverError(
-                f"local row process group {pid} did not terminate"
-            ) from exc
+            raise LocalDriverError(f"local row process group {pid} did not terminate") from exc
     deadline = time.monotonic() + timeout_seconds
     while _process_group_alive(pid) and time.monotonic() < deadline:
         time.sleep(0.01)

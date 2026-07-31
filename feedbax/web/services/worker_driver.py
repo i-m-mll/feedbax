@@ -20,7 +20,8 @@ from feedbax.orchestration.drivers.capabilities import (
     AcquisitionSemantics,
     AuthorizationSemantics,
     CustodySemantics,
-    DriverCapabilities,
+    DriverCapabilityEnvelope,
+    DriverCapabilityFacts,
     DriverVenue,
     EnvironmentSemantics,
     MonitoringSemantics,
@@ -37,20 +38,24 @@ from feedbax.orchestration.state import RunSetState
 class WorkerHttpDriver:
     """Drive one Studio training worker through the orchestration interface."""
 
-    capabilities = DriverCapabilities(
-        driver_name="worker-http",
-        venue=DriverVenue.REMOTE_SERVICE,
-        resources=ResourceSemantics.EXTERNALLY_MANAGED,
-        spend=SpendSemantics.EXTERNALLY_MANAGED,
-        authorization=AuthorizationSemantics.OPTIONAL_CALLER_CREDENTIAL,
-        environment=EnvironmentSemantics.OPAQUE_DRIVER_IDENTITY,
-        monitoring=MonitoringSemantics.EVENT_STREAM_AND_ROW_POLL,
-        recovery=RecoverySemantics.NONE,
-        retry=RetrySemantics.NONE,
-        acquisition=AcquisitionSemantics.EXTERNALLY_PROVIDED,
-        teardown=TeardownSemantics.EXTERNAL_RESOURCES_PRESERVED,
-        custody=CustodySemantics.EXTERNAL_SERVICE,
+    capability_envelope = DriverCapabilityEnvelope.single(
+        "worker-http",
+        DriverCapabilityFacts(
+            variant_id="external-service",
+            venue=DriverVenue.REMOTE_SERVICE,
+            resources=ResourceSemantics.EXTERNALLY_MANAGED,
+            spend=SpendSemantics.EXTERNALLY_MANAGED,
+            authorization=AuthorizationSemantics.OPTIONAL_CALLER_CREDENTIAL,
+            environment=EnvironmentSemantics.OPAQUE_DRIVER_IDENTITY,
+            monitoring=MonitoringSemantics.EVENT_STREAM_AND_ROW_POLL,
+            recovery=RecoverySemantics.NONE,
+            retry=RetrySemantics.NONE,
+            acquisition=AcquisitionSemantics.EXTERNALLY_PROVIDED,
+            teardown=TeardownSemantics.EXTERNAL_RESOURCES_PRESERVED,
+            custody=CustodySemantics.EXTERNAL_SERVICE,
+        ),
     )
+    realized_capabilities = capability_envelope.realize("external-service")
 
     def __init__(
         self,

@@ -1,7 +1,8 @@
-"""Versioned capability and construction contracts for orchestration drivers."""
+"""Versioned support, realization, and construction contracts for drivers."""
 
 from __future__ import annotations
 
+import copy
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -15,9 +16,10 @@ if TYPE_CHECKING:
 
 DRIVER_CAPABILITIES_SCHEMA_ID = "feedbax.orchestration.driver-capabilities"
 DRIVER_CAPABILITIES_SCHEMA_VERSION_V1 = "1"
-DRIVER_CAPABILITIES_SCHEMA_VERSION = DRIVER_CAPABILITIES_SCHEMA_VERSION_V1
+DRIVER_CAPABILITIES_SCHEMA_VERSION_V2 = "2"
+DRIVER_CAPABILITIES_SCHEMA_VERSION = DRIVER_CAPABILITIES_SCHEMA_VERSION_V2
 
-_DRIVER_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]*(?::[a-z0-9][a-z0-9._-]*)*")
+_IDENTITY_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]*(?::[a-z0-9][a-z0-9._-]*)*")
 
 
 class DriverStage(StrEnum):
@@ -67,7 +69,7 @@ class DriverVenue(StrEnum):
 
 
 class ResourceSemantics(StrEnum):
-    """Ownership of execution resources visible to the driver."""
+    """Ownership of execution resources in one realized variant."""
 
     LOCAL_PROCESS = "local-process"
     EXTERNALLY_MANAGED = "externally-managed"
@@ -75,7 +77,7 @@ class ResourceSemantics(StrEnum):
 
 
 class SpendSemantics(StrEnum):
-    """How spend is created and observed by this driver."""
+    """How spend is created and observed in one realized variant."""
 
     NONE = "none"
     EXTERNALLY_MANAGED = "externally-managed"
@@ -83,7 +85,7 @@ class SpendSemantics(StrEnum):
 
 
 class AuthorizationSemantics(StrEnum):
-    """Authority required before the driver may use its execution venue."""
+    """Authority required before using one realized venue."""
 
     NONE = "none"
     OPTIONAL_CALLER_CREDENTIAL = "optional-caller-credential"
@@ -99,7 +101,7 @@ class EnvironmentSemantics(StrEnum):
 
 
 class MonitoringSemantics(StrEnum):
-    """Strongest monitoring mechanism implemented by the driver."""
+    """Strongest monitoring mechanism in one realized variant."""
 
     ROW_POLL = "row-poll"
     EVENT_STREAM_AND_ROW_POLL = "event-stream-and-row-poll"
@@ -122,7 +124,7 @@ class RetrySemantics(StrEnum):
 
 
 class AcquisitionSemantics(StrEnum):
-    """How execution resources are acquired."""
+    """How execution resources are acquired in one realized variant."""
 
     NONE = "none"
     EXTERNALLY_PROVIDED = "externally-provided"
@@ -130,7 +132,7 @@ class AcquisitionSemantics(StrEnum):
 
 
 class TeardownSemantics(StrEnum):
-    """Guarantee made by a successful driver teardown call."""
+    """Guarantee made by successful teardown in one realized variant."""
 
     LOCAL_PROCESS_STOP = "local-process-stop"
     EXTERNAL_RESOURCES_PRESERVED = "external-resources-preserved"
@@ -138,7 +140,7 @@ class TeardownSemantics(StrEnum):
 
 
 class CustodySemantics(StrEnum):
-    """Custody location for outputs before orchestration collection."""
+    """Custody location before orchestration collection."""
 
     LOCAL_RUN_SET = "local-run-set"
     EXTERNAL_SERVICE = "external-service"
@@ -146,10 +148,10 @@ class CustodySemantics(StrEnum):
 
 
 @dataclass(frozen=True)
-class DriverCapabilities:
-    """Versioned, immutable facts used to reason about a driver without its name."""
+class DriverCapabilityFacts:
+    """Immutable semantic facts for one supported or realized driver variant."""
 
-    driver_name: str
+    variant_id: str
     venue: DriverVenue
     resources: ResourceSemantics
     spend: SpendSemantics
@@ -163,20 +165,10 @@ class DriverCapabilities:
     custody: CustodySemantics
     stages: frozenset[DriverStage] = CORE_DRIVER_STAGES
     optional_hooks: frozenset[DriverHook] = frozenset()
-    schema_id: str = DRIVER_CAPABILITIES_SCHEMA_ID
-    schema_version: str = DRIVER_CAPABILITIES_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        """Reject malformed or internally contradictory declarations."""
-        if self.schema_id != DRIVER_CAPABILITIES_SCHEMA_ID:
-            raise ValueError(f"unsupported driver capability schema id: {self.schema_id!r}")
-        if self.schema_version != DRIVER_CAPABILITIES_SCHEMA_VERSION:
-            raise ValueError(
-                "unsupported driver capability schema version: "
-                f"{self.schema_version!r}; expected {DRIVER_CAPABILITIES_SCHEMA_VERSION!r}"
-            )
-        if _DRIVER_NAME_PATTERN.fullmatch(self.driver_name) is None:
-            raise ValueError(f"invalid orchestration driver name: {self.driver_name!r}")
+        """Reject malformed or internally contradictory facts."""
+        _validate_identity(self.variant_id, field_name="driver capability variant id")
         enum_fields = (
             ("venue", self.venue, DriverVenue),
             ("resources", self.resources, ResourceSemantics),
@@ -200,7 +192,7 @@ class DriverCapabilities:
         missing = CORE_DRIVER_STAGES - self.stages
         if missing:
             names = ", ".join(stage.value for stage in sorted(missing, key=str))
-            raise ValueError(f"driver capability declaration omits core stages: {names}")
+            raise ValueError(f"driver capability facts omit core stages: {names}")
         if not isinstance(self.optional_hooks, frozenset) or not all(
             isinstance(hook, DriverHook) for hook in self.optional_hooks
         ):
@@ -235,14 +227,91 @@ class DriverCapabilities:
             raise ValueError("verified resource absence requires driver-owned resources")
 
     def supports(self, hook: DriverHook) -> bool:
-        """Return whether this declaration includes one optional hook."""
+        """Return whether this variant includes one optional hook."""
         return hook in self.optional_hooks
 
 
-class DriverCapabilityProvider(Protocol):
-    """Object that exposes an explicit versioned capability declaration."""
+@dataclass(frozen=True)
+class RealizedDriverCapabilities:
+    """Per-instance selection of one exact supported capability variant."""
 
-    capabilities: DriverCapabilities
+    driver_name: str
+    facts: DriverCapabilityFacts
+    schema_id: str = DRIVER_CAPABILITIES_SCHEMA_ID
+    schema_version: str = DRIVER_CAPABILITIES_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        _validate_schema(self.schema_id, self.schema_version)
+        _validate_identity(self.driver_name, field_name="orchestration driver name")
+        if not isinstance(self.facts, DriverCapabilityFacts):
+            raise TypeError("realized driver facts must be DriverCapabilityFacts")
+
+    @property
+    def variant_id(self) -> str:
+        """Return the selected supported variant identity."""
+        return self.facts.variant_id
+
+
+@dataclass(frozen=True)
+class DriverCapabilityEnvelope:
+    """Versioned set of variants a registered driver knows how to realize."""
+
+    driver_name: str
+    variants: Mapping[str, DriverCapabilityFacts]
+    schema_id: str = DRIVER_CAPABILITIES_SCHEMA_ID
+    schema_version: str = DRIVER_CAPABILITIES_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        _validate_schema(self.schema_id, self.schema_version)
+        _validate_identity(self.driver_name, field_name="orchestration driver name")
+        if not isinstance(self.variants, Mapping) or not self.variants:
+            raise ValueError("driver capability envelope requires at least one variant")
+        copied = dict(self.variants)
+        for variant_id, facts in copied.items():
+            if not isinstance(facts, DriverCapabilityFacts):
+                raise TypeError("driver capability variants must be DriverCapabilityFacts")
+            if variant_id != facts.variant_id:
+                raise ValueError(
+                    "driver capability variant key must match its facts: "
+                    f"{variant_id!r} != {facts.variant_id!r}"
+                )
+        object.__setattr__(self, "variants", MappingProxyType(copied))
+
+    @classmethod
+    def single(
+        cls,
+        driver_name: str,
+        facts: DriverCapabilityFacts,
+    ) -> DriverCapabilityEnvelope:
+        """Build an envelope for a driver with one context-invariant variant."""
+        return cls(driver_name=driver_name, variants={facts.variant_id: facts})
+
+    def realize(self, variant_id: str) -> RealizedDriverCapabilities:
+        """Select one supported variant or fail closed with available variants."""
+        try:
+            facts = self.variants[variant_id]
+        except KeyError as exc:
+            available = ", ".join(repr(item) for item in sorted(self.variants))
+            raise ValueError(
+                f"unsupported capability variant {variant_id!r} for driver "
+                f"{self.driver_name!r}; supported variants: {available}"
+            ) from exc
+        return RealizedDriverCapabilities(driver_name=self.driver_name, facts=facts)
+
+    def supports(self, realized: RealizedDriverCapabilities) -> bool:
+        """Return whether ``realized`` is an exact variant in this envelope."""
+        return (
+            realized.driver_name == self.driver_name
+            and self.variants.get(realized.variant_id) == realized.facts
+            and realized.schema_id == self.schema_id
+            and realized.schema_version == self.schema_version
+        )
+
+
+class DriverCapabilityProvider(Protocol):
+    """Constructed driver exposing its exact per-instance capability state."""
+
+    realized_capabilities: RealizedDriverCapabilities
 
 
 @dataclass(frozen=True)
@@ -265,52 +334,103 @@ class DriverAuthority:
             raise TypeError("credential_names must be a frozenset of non-empty names")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class DriverConstructionContext:
-    """Explicit inputs available to a registered driver factory."""
+    """Deep-detached inputs available to capability resolvers and factories."""
 
-    configuration: Mapping[str, object] = field(default_factory=dict)
-    runtime_bindings: Mapping[str, object] = field(default_factory=dict)
-    credentials: Mapping[str, str] = field(default_factory=dict, repr=False)
-    authority: DriverAuthority = field(default_factory=DriverAuthority)
-    recovery_inputs: Mapping[str, object] = field(default_factory=dict)
+    _configuration: Mapping[str, object] = field(repr=False)
+    _runtime_bindings: Mapping[str, object] = field(repr=False)
+    _credentials: Mapping[str, str] = field(repr=False)
+    _authority: DriverAuthority = field(repr=False)
+    _recovery_inputs: Mapping[str, object] = field(repr=False)
 
-    def __post_init__(self) -> None:
-        """Snapshot mappings so later caller mutation cannot change factory inputs."""
-        object.__setattr__(self, "configuration", _frozen_mapping(self.configuration))
-        object.__setattr__(self, "runtime_bindings", _frozen_mapping(self.runtime_bindings))
-        object.__setattr__(self, "credentials", _frozen_string_mapping(self.credentials))
-        object.__setattr__(self, "recovery_inputs", _frozen_mapping(self.recovery_inputs))
+    def __init__(
+        self,
+        *,
+        configuration: Mapping[str, object] | None = None,
+        runtime_bindings: Mapping[str, object] | None = None,
+        credentials: Mapping[str, str] | None = None,
+        authority: DriverAuthority | None = None,
+        recovery_inputs: Mapping[str, object] | None = None,
+    ) -> None:
+        object.__setattr__(self, "_configuration", _snapshot_mapping(configuration or {}))
+        object.__setattr__(self, "_runtime_bindings", _snapshot_mapping(runtime_bindings or {}))
+        object.__setattr__(self, "_credentials", _snapshot_credentials(credentials or {}))
+        resolved_authority = authority or DriverAuthority()
+        if not isinstance(resolved_authority, DriverAuthority):
+            raise TypeError("driver authority must be a DriverAuthority")
+        object.__setattr__(self, "_authority", copy.deepcopy(resolved_authority))
+        object.__setattr__(self, "_recovery_inputs", _snapshot_mapping(recovery_inputs or {}))
+
+    @property
+    def configuration(self) -> Mapping[str, object]:
+        """Return a detached immutable view of driver configuration."""
+        return _detached_mapping(self._configuration)
+
+    @property
+    def runtime_bindings(self) -> Mapping[str, object]:
+        """Return a detached immutable view of runtime bindings."""
+        return _detached_mapping(self._runtime_bindings)
+
+    @property
+    def credentials(self) -> Mapping[str, str]:
+        """Return a detached immutable view of credential values."""
+        return MappingProxyType(dict(self._credentials))
+
+    @property
+    def authority(self) -> DriverAuthority:
+        """Return detached construction authority."""
+        return copy.deepcopy(self._authority)
+
+    @property
+    def recovery_inputs(self) -> Mapping[str, object]:
+        """Return a detached immutable view of recovery inputs."""
+        return _detached_mapping(self._recovery_inputs)
+
+
+class DriverCapabilityResolver(Protocol):
+    """Select truthful per-instance facts from explicit construction inputs."""
+
+    def __call__(self, context: DriverConstructionContext) -> RealizedDriverCapabilities:
+        """Resolve one supported variant for ``context``."""
+        ...
 
 
 class DriverFactory(Protocol):
-    """Construct one driver from explicit configuration and runtime authority."""
+    """Construct one driver with registry-validated realized capabilities."""
 
-    def __call__(self, context: DriverConstructionContext) -> OrchestrationDriver:
+    def __call__(
+        self,
+        context: DriverConstructionContext,
+        realized: RealizedDriverCapabilities,
+    ) -> OrchestrationDriver:
         """Construct one driver instance."""
         ...
 
 
 @dataclass(frozen=True)
 class DriverRegistration:
-    """One exact driver name, capability declaration, and factory."""
+    """One driver support envelope, realization resolver, and factory."""
 
     name: str
-    capabilities: DriverCapabilities
+    supported_capabilities: DriverCapabilityEnvelope
+    resolve_capabilities: DriverCapabilityResolver
     factory: DriverFactory
 
     def __post_init__(self) -> None:
-        if self.name != self.capabilities.driver_name:
+        if self.name != self.supported_capabilities.driver_name:
             raise ValueError(
-                "driver registration name must match its capability declaration: "
-                f"{self.name!r} != {self.capabilities.driver_name!r}"
+                "driver registration name must match its capability envelope: "
+                f"{self.name!r} != {self.supported_capabilities.driver_name!r}"
             )
+        if not callable(self.resolve_capabilities):
+            raise TypeError(f"driver capability resolver for {self.name!r} must be callable")
         if not callable(self.factory):
             raise TypeError(f"driver factory for {self.name!r} must be callable")
 
 
 class DriverRegistry:
-    """Injected, deterministic registry for capability-aware driver construction."""
+    """Injected registry for context-aware capability realization and construction."""
 
     def __init__(self, registrations: tuple[DriverRegistration, ...] = ()) -> None:
         self._registrations: dict[str, DriverRegistration] = {}
@@ -344,32 +464,81 @@ class DriverRegistry:
         name: str,
         context: DriverConstructionContext,
     ) -> OrchestrationDriver:
-        """Construct a driver and verify its declaration matches the registry."""
+        """Resolve supported facts, construct, and verify instance realization."""
         if not isinstance(context, DriverConstructionContext):
             raise TypeError("driver construction context must be a DriverConstructionContext")
         registration = self.resolve(name)
-        driver = registration.factory(context)
-        declared = driver.capabilities
-        if declared != registration.capabilities:
+        realized = registration.resolve_capabilities(context)
+        if not isinstance(realized, RealizedDriverCapabilities):
+            raise TypeError(
+                f"capability resolver for driver {name!r} must return RealizedDriverCapabilities"
+            )
+        if not registration.supported_capabilities.supports(realized):
+            raise ValueError(f"capability resolver for driver {name!r} selected unsupported facts")
+        driver = registration.factory(context, realized)
+        if driver.realized_capabilities != realized:
             raise ValueError(
-                f"constructed driver {name!r} capability declaration does not match its registry"
+                f"constructed driver {name!r} realized capabilities do not match "
+                "the context selection"
             )
         return driver
 
 
-def _frozen_mapping(values: Mapping[str, object]) -> Mapping[str, object]:
+def _validate_schema(schema_id: str, schema_version: str) -> None:
+    if schema_id != DRIVER_CAPABILITIES_SCHEMA_ID:
+        raise ValueError(f"unsupported driver capability schema id: {schema_id!r}")
+    if schema_version != DRIVER_CAPABILITIES_SCHEMA_VERSION:
+        raise ValueError(
+            "unsupported driver capability schema version: "
+            f"{schema_version!r}; expected {DRIVER_CAPABILITIES_SCHEMA_VERSION!r}"
+        )
+
+
+def _validate_identity(value: str, *, field_name: str) -> None:
+    if not isinstance(value, str) or _IDENTITY_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"invalid {field_name}: {value!r}")
+
+
+def _snapshot_mapping(values: Mapping[str, object]) -> Mapping[str, object]:
     if not isinstance(values, Mapping):
         raise TypeError("driver construction inputs must be mappings")
-    copied = dict(values)
-    if not all(isinstance(key, str) for key in copied):
+    if not all(isinstance(key, str) for key in values):
         raise TypeError("driver construction input keys must be strings")
-    return MappingProxyType(copied)
+    return MappingProxyType({key: _freeze_nested(value) for key, value in values.items()})
 
 
-def _frozen_string_mapping(values: Mapping[str, str]) -> Mapping[str, str]:
+def _snapshot_credentials(values: Mapping[str, str]) -> Mapping[str, str]:
     if not isinstance(values, Mapping):
         raise TypeError("driver credentials must be a mapping")
     copied = dict(values)
     if not all(isinstance(key, str) and isinstance(value, str) for key, value in copied.items()):
         raise TypeError("driver credential names and values must be strings")
     return MappingProxyType(copied)
+
+
+def _freeze_nested(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {copy.deepcopy(key): _freeze_nested(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_nested(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_freeze_nested(item) for item in value)
+    return copy.deepcopy(value)
+
+
+def _detached_mapping(values: Mapping[str, object]) -> Mapping[str, object]:
+    return MappingProxyType({key: _detach_nested(value) for key, value in values.items()})
+
+
+def _detach_nested(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {copy.deepcopy(key): _detach_nested(item) for key, item in value.items()}
+        )
+    if isinstance(value, tuple):
+        return tuple(_detach_nested(item) for item in value)
+    if isinstance(value, frozenset):
+        return frozenset(_detach_nested(item) for item in value)
+    return copy.deepcopy(value)

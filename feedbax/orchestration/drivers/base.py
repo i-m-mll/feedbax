@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from feedbax.orchestration.bundle import RunBundle, RunRowSpec
-from feedbax.orchestration.drivers.capabilities import DriverCapabilities
+from feedbax.orchestration.drivers.capabilities import RealizedDriverCapabilities
 from feedbax.orchestration.state import RunSetState
 
 
@@ -72,7 +72,7 @@ class AcquisitionCreateError(RuntimeError):
 class OrchestrationDriver(Protocol):
     """Synchronous idempotent driver interface used by the stage engine."""
 
-    capabilities: DriverCapabilities
+    realized_capabilities: RealizedDriverCapabilities
 
     def provision(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Provision driver resources."""
