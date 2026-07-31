@@ -789,7 +789,10 @@ def test_bundle_loading_predicates_and_per_run_grouped_expansion(
     )
     _write_bundle_package(tmp_path, monkeypatch, application_registry_bundle.experiment_packages)
 
-    bundle = load_analysis_bundle("toy/matrix", registry=registry)
+    bundle = load_analysis_bundle(
+        "toy/matrix",
+        registry=application_registry_bundle.experiment_packages,
+    )
     assert bundle.schema_version == ANALYSIS_BUNDLE_SCHEMA_VERSION
     matched = select_bundle_manifests(bundle, tmp_path)
     matched_ids = [manifest.id for manifest in matched]
@@ -803,7 +806,10 @@ def test_bundle_loading_predicates_and_per_run_grouped_expansion(
         )
     ] == [first.id]
 
-    params_bundle = load_analysis_bundle("toy/params_match", registry=registry)
+    params_bundle = load_analysis_bundle(
+        "toy/params_match",
+        registry=application_registry_bundle.experiment_packages,
+    )
     assert [
         manifest.id
         for manifest in select_bundle_manifests(
@@ -2035,7 +2041,10 @@ def test_analysis_bundle_fails_on_unknown_requested_output(
         application_registry_bundle=application_registry_bundle,
     )
     _write_bundle_package(tmp_path, monkeypatch, application_registry_bundle.experiment_packages)
-    bundle = load_analysis_bundle("toy/missing_output", registry=registry)
+    bundle = load_analysis_bundle(
+        "toy/missing_output",
+        registry=application_registry_bundle.experiment_packages,
+    )
 
     with pytest.raises(AnalysisRecipeExecutionError) as excinfo:
         execute_analysis_bundle(

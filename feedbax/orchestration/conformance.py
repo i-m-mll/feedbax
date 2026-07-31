@@ -1,11 +1,9 @@
 """Spec-conformance certificates for completed training run sets.
 
-Project plugins may publish additional checks through the existing
-``feedbax.plugins`` entry-point group. A plugin can expose either
-``register_feedbax_conformance_checks(registry)`` or
-``feedbax_conformance_checks()``, where each yielded item is a
-``(check_id, callable)`` pair. The callable receives a
-``ConformanceRowArtifacts`` instance and returns a ``CheckEntry``.
+Project plugins may publish additional checks through the ``feedbax.plugins``
+entry-point group. A typed ``PluginRegistration`` declares the conformance
+family and registers checks through its ``RegistrationContext``. Each check
+receives a ``ConformanceRowArtifacts`` instance and returns a ``CheckEntry``.
 """
 
 from __future__ import annotations
