@@ -6,9 +6,11 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+import jax
 import jax.tree_util as jtu
+import numpy as np
 from pydantic import ValidationError
 
 from feedbax.analysis.analysis import AbstractAnalysis
@@ -27,6 +29,8 @@ from feedbax.contracts.evaluation_states import (
     EvaluationStatesHashMismatch,
     EvaluationStatesProvenanceMismatch,
     EvaluationStatesSchemaMismatch,
+    _array_digest,
+    _treedef_structure_fingerprint,
     load_authenticated_evaluation_states_artifact,
 )
 from feedbax.analysis.execution_context import (
@@ -80,6 +84,10 @@ from feedbax.contracts.analysis_composition import (
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.run_aliases import RunAliasCatalog, resolve_run_aliases
 from feedbax.contracts.staged_execution import StagedExecutionDescriptor
+from feedbax.contracts.value_identity import (
+    authored_value_sha256,
+    semantic_value_sha256,
+)
 from feedbax.persistence.manifest_index import find_manifest_paths_by_id, iter_manifest_files
 from feedbax.analysis.types import AnalysisInputData
 
@@ -98,10 +106,210 @@ class ResolvedAnalysisInput:
     path: Path | None
     states: Any = None
     evaluation_state_source: AnalysisEvaluationStateSource | None = None
+    evaluation_state_receipt: EvaluationStateMaterializationReceipt | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     manifest_input: ResolvedManifestInput | None = field(
         default=None,
         repr=False,
         compare=False,
+    )
+
+
+_EVALUATION_STATE_RECEIPT_TOKEN = object()
+_EVALUATION_STATE_IDENTITY_SCHEMA_ID = "feedbax.runtime.evaluation_state_value"
+_EVALUATION_STATE_IDENTITY_SCHEMA_VERSION = f"{_EVALUATION_STATE_IDENTITY_SCHEMA_ID}.v1"
+_EVALUATION_SOURCE_IDENTITY_SCHEMA_ID = "feedbax.runtime.analysis_evaluation_state_source"
+_EVALUATION_SOURCE_IDENTITY_SCHEMA_VERSION = f"{_EVALUATION_SOURCE_IDENTITY_SCHEMA_ID}.v1"
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class EvaluationStateMaterializationReceipt:
+    """Resolver-issued runtime proof binding one state object to its source path.
+
+    ``proof_kind`` is deliberately truthful about the source mechanism:
+    durable artifacts are content-authenticated, evaluation caches are
+    manifest-keyed/versioned, and recomputed states carry an authenticated
+    resulting manifest. The receipt is runtime-only and is not a durable schema.
+    """
+
+    source: AnalysisEvaluationStateSource
+    proof_kind: Literal[
+        "authenticated_artifact",
+        "manifest_keyed_cache",
+        "authenticated_recompute",
+    ]
+    state_value_identity: str
+    source_value_identity: str
+    evaluation_manifest_authority: ParentRef
+    evaluation_manifest_authority_identity: str
+    _states: Any = field(repr=False, compare=False)
+    _capability: object = field(repr=False, compare=False)
+
+    def __init__(
+        self,
+        source: AnalysisEvaluationStateSource,
+        proof_kind: Literal[
+            "authenticated_artifact",
+            "manifest_keyed_cache",
+            "authenticated_recompute",
+        ],
+        states: Any,
+        *,
+        _token: object,
+    ) -> None:
+        if _token is not _EVALUATION_STATE_RECEIPT_TOKEN:
+            raise TypeError(
+                "EvaluationStateMaterializationReceipt is issued by resolve_analysis_inputs"
+            )
+        authority = source.evaluation_manifest_authority
+        if authority is None:
+            raise ValueError("resolver-issued state receipt requires evaluation manifest authority")
+        portable_authority = ParentRef.model_validate(
+            {
+                **authority.model_dump(mode="json"),
+                "uri": None,
+            }
+        )
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "proof_kind", proof_kind)
+        object.__setattr__(
+            self,
+            "state_value_identity",
+            _evaluation_state_value_identity(states),
+        )
+        object.__setattr__(
+            self,
+            "source_value_identity",
+            _evaluation_state_source_value_identity(source),
+        )
+        object.__setattr__(
+            self,
+            "evaluation_manifest_authority",
+            portable_authority,
+        )
+        object.__setattr__(
+            self,
+            "evaluation_manifest_authority_identity",
+            _evaluation_manifest_authority_value_identity(portable_authority),
+        )
+        object.__setattr__(self, "_states", states)
+        object.__setattr__(self, "_capability", _token)
+
+    def _is_resolver_issued(self) -> bool:
+        return self._capability is _EVALUATION_STATE_RECEIPT_TOKEN
+
+    def _matches_state_object(self, states: Any) -> bool:
+        return self._states is states
+
+    def _matches_state_value(self, states: Any) -> bool:
+        return self.state_value_identity == _evaluation_state_value_identity(states)
+
+    def _matches_source_object(self, source: AnalysisEvaluationStateSource) -> bool:
+        return self.source is source
+
+    def _matches_source_value(self, source: AnalysisEvaluationStateSource) -> bool:
+        return self.source_value_identity == _evaluation_state_source_value_identity(source)
+
+    def _matches_evaluation_manifest_authority(self, authority: ParentRef) -> bool:
+        portable_authority = authority.model_copy(update={"uri": None})
+        return self.evaluation_manifest_authority_identity == (
+            _evaluation_manifest_authority_value_identity(portable_authority)
+        )
+
+
+def _evaluation_state_value_identity(states: Any) -> str:
+    """Compose existing canonical value identities across one state PyTree."""
+
+    path_leaves, treedef = jtu.tree_flatten_with_path(states)
+    if not path_leaves:
+        raise ValueError("evaluation state value identity requires a non-empty PyTree")
+    leaves: list[dict[str, str]] = []
+    for path, leaf in path_leaves:
+        if isinstance(leaf, (jax.Array, np.ndarray)):
+            array = np.asarray(leaf)
+            dtype = str(array.dtype)
+            try:
+                identity = semantic_value_sha256(array, dtype=dtype)
+                identity_kind = "semantic"
+            except (TypeError, ValueError):
+                identity = authored_value_sha256(
+                    encoding_kind="evaluation_state_array_content",
+                    encoding_schema_id=_EVALUATION_STATE_IDENTITY_SCHEMA_ID,
+                    encoding_schema_version=_EVALUATION_STATE_IDENTITY_SCHEMA_VERSION,
+                    arguments={
+                        "dtype": dtype,
+                        "shape": [int(dimension) for dimension in array.shape],
+                    },
+                    content_pins={"array_sha256": _array_digest(array)},
+                )
+                identity_kind = "authored_array_content"
+        else:
+            identity = authored_value_sha256(
+                encoding_kind="json_metadata_leaf",
+                encoding_schema_id=_EVALUATION_STATE_IDENTITY_SCHEMA_ID,
+                encoding_schema_version=_EVALUATION_STATE_IDENTITY_SCHEMA_VERSION,
+                arguments={"value": leaf},
+            )
+            identity_kind = "authored"
+        leaves.append(
+            {
+                "path": jtu.keystr(path),
+                "identity_kind": identity_kind,
+                "value_identity": identity,
+            }
+        )
+    return authored_value_sha256(
+        encoding_kind="evaluation_state_pytree",
+        encoding_schema_id=_EVALUATION_STATE_IDENTITY_SCHEMA_ID,
+        encoding_schema_version=_EVALUATION_STATE_IDENTITY_SCHEMA_VERSION,
+        arguments={
+            "structure_fingerprint": _treedef_structure_fingerprint(treedef),
+            "leaves": leaves,
+        },
+    )
+
+
+def _evaluation_state_source_value_identity(
+    source: AnalysisEvaluationStateSource,
+) -> str:
+    """Hash the complete validated typed source through authored value identity."""
+
+    return authored_value_sha256(
+        encoding_kind="analysis_evaluation_state_source",
+        encoding_schema_id=_EVALUATION_SOURCE_IDENTITY_SCHEMA_ID,
+        encoding_schema_version=_EVALUATION_SOURCE_IDENTITY_SCHEMA_VERSION,
+        arguments=source.model_dump(mode="json"),
+    )
+
+
+def _evaluation_manifest_authority_value_identity(authority: ParentRef) -> str:
+    """Hash one portable requested evaluation-manifest authority."""
+
+    return authored_value_sha256(
+        encoding_kind="requested_evaluation_manifest_authority",
+        encoding_schema_id=_EVALUATION_SOURCE_IDENTITY_SCHEMA_ID,
+        encoding_schema_version=_EVALUATION_SOURCE_IDENTITY_SCHEMA_VERSION,
+        arguments=authority.model_dump(mode="json"),
+    )
+
+
+def _evaluation_state_receipt(
+    states: Any,
+    source: AnalysisEvaluationStateSource,
+) -> EvaluationStateMaterializationReceipt:
+    proof_kind = {
+        "durable": "authenticated_artifact",
+        "evaluation_cache": "manifest_keyed_cache",
+        "analysis_time_recompute": "authenticated_recompute",
+    }[source.source_kind]
+    return EvaluationStateMaterializationReceipt(
+        source,
+        proof_kind,
+        states,
+        _token=_EVALUATION_STATE_RECEIPT_TOKEN,
     )
 
 
@@ -383,6 +591,7 @@ def resolve_analysis_inputs(
                         path=manifest_path,
                         states=states,
                         evaluation_state_source=state_source,
+                        evaluation_state_receipt=_evaluation_state_receipt(states, state_source),
                         manifest_input=manifest_input,
                     )
                 )
@@ -462,6 +671,11 @@ def resolve_analysis_inputs(
                 path=manifest_path,
                 states=states,
                 evaluation_state_source=state_source,
+                evaluation_state_receipt=(
+                    _evaluation_state_receipt(states, state_source)
+                    if states is not None and state_source is not None
+                    else None
+                ),
                 manifest_input=manifest_input,
             )
         )

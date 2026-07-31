@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import hashlib
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
+import numpy as np
 from pydantic import ValidationError
 
 from feedbax import LowererRegistration, OrderedLowererRegistry
+from feedbax.analysis import (
+    EvaluationRowProjection,
+    EvaluationRowProjectionError,
+    EvaluationRowProjectionErrorReason,
+    ResolvedManifestInput,
+    project_verified_evaluation_rows,
+    require_exact_authored_cartesian_coverage,
+    resolve_analysis_inputs,
+)
 from feedbax.analysis.exact_parents import (
     STAGED_EXACT_PARENTS_SCHEMA_ID,
     STAGED_EXACT_PARENTS_SCHEMA_VERSION,
@@ -31,7 +44,18 @@ from feedbax.contracts import (
     semantic_value_sha256,
     value_identity_record,
 )
-from feedbax.contracts.manifest import ParentRef
+from feedbax.contracts.manifest import (
+    AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+    AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+    AnalysisRunSpec,
+    EntrypointRef,
+    EvaluationRunManifest,
+    EvaluationRunSpec,
+    ParentRef,
+    Provenance,
+    SpecPayload,
+)
+from feedbax.contracts.evaluation_states import store_evaluation_states_artifact
 from feedbax.testing import check_material_dependency_contract
 
 
@@ -294,10 +318,161 @@ def check_exact_parent_migration() -> bool:
     return True
 
 
+@dataclass(frozen=True)
+class _ProjectedParameters:
+    arm: str
+    target: int
+
+
+@dataclass(frozen=True)
+class _ProjectedMetadata:
+    states_schema: str
+
+
+def _authenticated_ref(
+    kind: str,
+    id_: str,
+    role: str,
+    raw_bytes: bytes,
+) -> ParentRef:
+    return ParentRef(
+        kind=kind,
+        id=id_,
+        role=role,
+        metadata={
+            "ref_schema_id": AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+            "ref_schema_version": AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+            "manifest_sha256": hashlib.sha256(raw_bytes).hexdigest(),
+            "size_bytes": len(raw_bytes),
+        },
+    )
+
+
+def _projection_input(root: Path, target: int) -> ResolvedManifestInput:
+    training = _authenticated_ref(
+        "TrainingRunManifest",
+        "fixture-training",
+        "training_run",
+        b"fixture-training",
+    )
+    run_spec = EvaluationRunSpec(
+        evaluation_type="fixture.row_projection",
+        inputs=[training],
+        params={"arm": "trained", "target": target},
+    )
+    states = {"sample": np.asarray(target)}
+    artifact = store_evaluation_states_artifact(
+        states,
+        root=root,
+        manifest_id=f"fixture-evaluation-{target}",
+    )
+    manifest = EvaluationRunManifest(
+        id=f"fixture-evaluation-{target}",
+        status="completed",
+        evaluation_spec=SpecPayload(
+            kind="EvaluationRunSpec",
+            schema_id="feedbax.spec.evaluation_run",
+            schema_version="feedbax.spec.evaluation_run.v1",
+            inline=run_spec.model_dump(mode="json"),
+        ),
+        input_training_runs=[training],
+        artifacts=[artifact],
+        metadata={"states_schema": "fixture.states.v1"},
+        provenance=Provenance(
+            entrypoint=EntrypointRef(
+                kind="feedbax-evaluation-recipe",
+                name=run_spec.evaluation_type,
+            ),
+            parents=[training],
+        ),
+    )
+    raw_bytes = (manifest.model_dump_json(indent=2, exclude_none=True) + "\n").encode()
+    authority = _authenticated_ref(
+        "EvaluationRunManifest",
+        manifest.id,
+        "evaluation_run",
+        raw_bytes,
+    )
+    return ResolvedManifestInput(
+        ref=authority,
+        manifest=manifest,
+        path=Path(f"/fixture/{manifest.id}.json"),
+        raw_bytes=raw_bytes,
+    )
+
+
+def check_typed_evaluation_row_projection() -> bool:
+    """Exercise resolver-bound projection and exact row coverage from a clean wheel."""
+
+    def project(facts):
+        params = _ProjectedParameters(**facts.parameters)
+        metadata = _ProjectedMetadata(**facts.metadata)
+        if metadata.states_schema != "fixture.states.v1":
+            raise ValueError("unexpected state schema")
+        return EvaluationRowProjection(
+            row_key=(params.arm, params.target),
+            state=int(facts.states["sample"]),
+            parameters=params,
+            metadata=metadata,
+        )
+
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        manifest_inputs = [_projection_input(root, target) for target in (0, 1)]
+        inputs = resolve_analysis_inputs(
+            AnalysisRunSpec(
+                analysis_type="fixture.row_projection.analysis",
+                inputs=[item.ref for item in manifest_inputs],
+                evaluation_states_policy="require_durable",
+            ),
+            root=root,
+            authenticated_inputs=dict(enumerate(manifest_inputs)),
+        )
+        projected = project_verified_evaluation_rows(inputs, project=project)
+        keys = tuple(row.row_key for row in projected)
+        expected = require_exact_authored_cartesian_coverage(
+            keys,
+            axes={"arm": ("trained",), "target": (0, 1)},
+            row_key=lambda coordinate: (coordinate["arm"], coordinate["target"]),
+        )
+        if keys != expected or tuple(row.state for row in projected) != (0, 1):
+            raise AssertionError("typed evaluation row projection drifted")
+        spliced = replace(
+            inputs[0],
+            ref=inputs[1].ref,
+            manifest_input=inputs[1].manifest_input,
+        )
+        try:
+            project_verified_evaluation_rows([spliced], project=project)
+        except EvaluationRowProjectionError as exc:
+            if (
+                exc.reason
+                is not EvaluationRowProjectionErrorReason.MANIFEST_RECEIPT_AUTHORITY_MISMATCH
+            ):
+                raise AssertionError("row projection returned the wrong splice reason") from exc
+        else:
+            raise AssertionError("row projection accepted a cross-authority splice")
+        inputs[0].manifest.evaluation_spec.inline["params"]["target"] = 99
+        inputs[0].manifest.metadata["states_schema"] = "mutated"
+        authority_row = project_verified_evaluation_rows([inputs[0]], project=project)[0]
+        if authority_row.row_key != ("trained", 0):
+            raise AssertionError("projection trusted a mutable manifest alias")
+        inputs[0].states["sample"][...] = 99
+        try:
+            project_verified_evaluation_rows([inputs[0]], project=project)
+        except EvaluationRowProjectionError as exc:
+            if exc.reason is not EvaluationRowProjectionErrorReason.STATE_VALUE_IDENTITY_MISMATCH:
+                raise AssertionError("row projection returned the wrong reason code") from exc
+        else:
+            raise AssertionError("row projection accepted mutated state values")
+    return True
+
+
 __all__ = [
     "check_component_registration_and_migration",
     "check_exact_parent_migration",
     "check_material_dependencies",
     "check_ordered_registration",
+    "check_typed_evaluation_row_projection",
     "check_value_identity",
 ]

@@ -160,7 +160,7 @@ def main() -> int:
             cwd=work,
             env=execution_env,
         )
-        if payload["schema_version"] != "feedbax.external_conformance.result.v2":
+        if payload["schema_version"] != "feedbax.external_conformance.result.v6":
             raise RuntimeError("external conformance result schema drifted")
         if payload["status"] != "pass":
             raise RuntimeError("clean-wheel external conformance did not pass")
@@ -169,7 +169,7 @@ def main() -> int:
         if set(payload["cases"]) != set(required_case_ids):
             raise RuntimeError("external conformance required case set drifted")
         if any(type(value) is not bool or not value for value in payload["cases"].values()):
-            raise RuntimeError("one or more external conformance foundation cases failed")
+            raise RuntimeError("one or more external conformance cases failed")
         print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 
