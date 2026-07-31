@@ -566,8 +566,13 @@ def test_multi_root_runtime_bindings_preserve_authored_figure_identity(
     assert manifest.figure_spec.inline["input_authorities"] == []
     assert manifest.resolved_inputs == parents
     assert manifest.regeneration_specs[0].kind == "FigureRuntimeBindingSpec"
-    assert manifest.regeneration_specs[0].inline["authored_figure_spec_sha256"] == (
+    assert manifest.regeneration_specs[0].inline["authored_figure_source_sha256"] == (
         authored_payload.sha256
+    )
+    assert manifest.regeneration_specs[0].inline["resolved_figure_spec_sha256"] == sha256_bytes(
+        canonical_json_bytes(
+            FigureSpec.model_validate(authored).model_dump(mode="json", exclude_none=True)
+        )
     )
     assert manifest.regeneration_specs[0].inline["inputs"] == [
         parent.model_dump(mode="json", exclude_none=True) for parent in parents
@@ -1019,7 +1024,8 @@ def test_staged_figure_resolves_prior_stage_output_through_executor_context(
         for payload in staged_manifest.regeneration_specs
         if payload.kind == "FigureRuntimeBindingSpec"
     )
-    assert runtime_binding.inline["authored_figure_spec_sha256"] == authored_payload.sha256
+    assert runtime_binding.inline["authored_figure_source_sha256"] == authored_payload.sha256
+    assert runtime_binding.inline["resolved_figure_spec_sha256"] == authored_payload.sha256
     assert runtime_binding.inline["inputs"] == [
         parent.model_dump(mode="json", exclude_none=True)
         for parent in [*authored_figure.inputs, produced_parent]

@@ -3,6 +3,11 @@
 These models describe figure provenance and construction inputs. Plotly JSON is
 the rendered product; these contracts are the durable source of truth.
 
+Additive changelog, 2026-07-31: ``FigureCompositionSpec`` content-pins a direct
+figure or another composition envelope and applies the existing ordered
+``MatrixCompositionDelta`` language. It resolves to the unchanged ordinary
+``FigureSpec`` v2 contract; authored lineage is kept outside resolved semantics.
+
 Additive changelog, 2026-07-24: ``FigureSpec`` accepts optional
 ``trace_families``. A family declares one trace plus an ordered index set and
 expands to the traces an equivalent hand-enumerated spec declares. The field is
@@ -76,12 +81,25 @@ from typing import Any, Literal, TypeAlias
 from pydantic import BaseModel, Field, model_validator
 
 from feedbax.contracts.expressions import Expr, ValueExpr
-from feedbax.contracts.manifest import ArtifactRef, ParentRef, SpecPayload, StrictModel
+from feedbax.contracts.manifest import (
+    ArtifactRef,
+    ParentRef,
+    SpecPayload,
+    StrictModel,
+    canonical_json_bytes,
+    sha256_bytes,
+)
+from feedbax.contracts.matrix_core import ContentPinnedJsonBase, SourceDocumentInheritance
+from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.selection import ManifestPredicate
 
 
 FIGURE_SPEC_SCHEMA_ID = "feedbax.spec.figure"
 FIGURE_SPEC_SCHEMA_VERSION = "feedbax.spec.figure.v2"
+FIGURE_COMPOSITION_SPEC_SCHEMA_ID = "feedbax.spec.figure_composition"
+FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION = "feedbax.spec.figure_composition.v1"
+FIGURE_COMPOSITION_PROVENANCE_SCHEMA_ID = "feedbax.spec.figure_composition_provenance"
+FIGURE_COMPOSITION_PROVENANCE_SCHEMA_VERSION = "feedbax.spec.figure_composition_provenance.v1"
 FIGURE_INPUT_AUTHORITY_SCHEMA_ID = "feedbax.spec.figure_input_authority"
 FIGURE_INPUT_AUTHORITY_SCHEMA_VERSION = "feedbax.spec.figure_input_authority.v1"
 FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID = "feedbax.spec.figure_input_role_authority"
@@ -105,7 +123,8 @@ EQUAL_DATA_ASPECT_SCHEMA_VERSION = "feedbax.spec.equal_data_aspect.v1"
 SCENE_CAMERA_SCHEMA_ID = "feedbax.spec.scene_camera"
 SCENE_CAMERA_SCHEMA_VERSION = "feedbax.spec.scene_camera.v1"
 FIGURE_RUNTIME_BINDING_SCHEMA_ID = "feedbax.spec.figure_runtime_binding"
-FIGURE_RUNTIME_BINDING_SCHEMA_VERSION = "feedbax.spec.figure_runtime_binding.v1"
+FIGURE_RUNTIME_BINDING_SCHEMA_VERSION_V1 = "feedbax.spec.figure_runtime_binding.v1"
+FIGURE_RUNTIME_BINDING_SCHEMA_VERSION = "feedbax.spec.figure_runtime_binding.v2"
 FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID = "feedbax.spec.figure_data_product_payload"
 FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION = "feedbax.spec.figure_data_product_payload.v1"
 
@@ -1079,7 +1098,9 @@ class FigureRuntimeBindingSpec(StrictModel):
 
     schema_id: str = FIGURE_RUNTIME_BINDING_SCHEMA_ID
     schema_version: str = FIGURE_RUNTIME_BINDING_SCHEMA_VERSION
-    authored_figure_spec_sha256: str
+    authored_figure_source_sha256: str | None
+    authored_identity_unavailable_reason: Literal["v1_recorded_resolved_hash_only"] | None = None
+    resolved_figure_spec_sha256: str
     inputs: list[ParentRef]
     input_authorities: list[FigureInputAuthoritySpec]
     runtime_metadata: dict[str, Any] = Field(default_factory=dict)
@@ -1096,10 +1117,17 @@ class FigureRuntimeBindingSpec(StrictModel):
                 "unsupported FigureRuntimeBindingSpec schema_version: "
                 f"{self.schema_version!r}"
             )
-        if not re.fullmatch(r"[0-9a-f]{64}", self.authored_figure_spec_sha256):
+        if (self.authored_figure_source_sha256 is None) != (
+            self.authored_identity_unavailable_reason is not None
+        ):
             raise ValueError(
-                "FigureRuntimeBindingSpec authored_figure_spec_sha256 must be lowercase sha256"
+                "FigureRuntimeBindingSpec authored identity hash and unavailable reason "
+                "must be declared exclusively"
             )
+        for field_name in ("authored_figure_source_sha256", "resolved_figure_spec_sha256"):
+            value = getattr(self, field_name)
+            if value is not None and not re.fullmatch(r"[0-9a-f]{64}", value):
+                raise ValueError(f"FigureRuntimeBindingSpec {field_name} must be lowercase sha256")
         input_keys = {
             parent.model_dump_json(exclude_none=False) for parent in self.inputs
         }
@@ -1367,3 +1395,188 @@ class FigureSpec(StrictModel):
                 f"FigureSpec colorbar trace family {family.name!r} enumerates one index, "
                 "which spans no range for a colorbar to key"
             )
+
+
+class FigureCompositionSpec(StrictModel):
+    """Authored ordered deltas over one content-pinned figure document.
+
+    The parent may be an ordinary :class:`FigureSpec` or another composition
+    envelope. Resolution applies the shared matrix-delta language root-to-leaf
+    and always produces an ordinary current :class:`FigureSpec`.
+    """
+
+    schema_id: str = FIGURE_COMPOSITION_SPEC_SCHEMA_ID
+    schema_version: str = FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION
+    parent: ContentPinnedJsonBase
+    deltas: list[MatrixCompositionDelta] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_composition(self) -> "FigureCompositionSpec":
+        if self.schema_id != FIGURE_COMPOSITION_SPEC_SCHEMA_ID:
+            raise ValueError(f"unsupported FigureCompositionSpec schema_id: {self.schema_id!r}")
+        if self.schema_version != FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported FigureCompositionSpec schema_version: {self.schema_version!r}"
+            )
+        layer_ids = [delta.layer_id for delta in self.deltas]
+        if len(layer_ids) != len(set(layer_ids)):
+            raise ValueError("FigureCompositionSpec deltas layer_id values must be unique")
+        return self
+
+    def identity_envelope(self) -> dict[str, Any]:
+        """Return authored identity bytes with the readable parent locator removed."""
+        parent = self.parent.model_dump(mode="json", exclude_none=True)
+        parent.pop("ref", None)
+        return {
+            "schema_id": self.schema_id,
+            "schema_version": self.schema_version,
+            "parent": parent,
+            "deltas": [
+                delta.model_dump(mode="json", exclude_none=True) for delta in self.deltas
+            ],
+        }
+
+    def identity_sha256(self) -> str:
+        """Return deterministic authored identity for this composition envelope."""
+        return sha256_bytes(canonical_json_bytes(self.identity_envelope()))
+
+
+class FigureCompositionLayer(StrictModel):
+    """One resolved composition envelope and its content-pinned parent."""
+
+    envelope_sha256: str
+    parent_ref: str
+    parent_sha256: str
+    layer_ids: list[str]
+    qualified_layer_ids: list[str]
+    parent_payload_path: tuple[str, ...] | None = None
+
+    @model_validator(mode="after")
+    def _validate_layer(self) -> "FigureCompositionLayer":
+        if not re.fullmatch(r"[0-9a-f]{64}", self.envelope_sha256):
+            raise ValueError("FigureCompositionLayer envelope_sha256 must be lowercase sha256")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.parent_sha256):
+            raise ValueError("FigureCompositionLayer parent_sha256 must be lowercase sha256")
+        if not self.layer_ids or any(not layer_id for layer_id in self.layer_ids):
+            raise ValueError("FigureCompositionLayer layer_ids must be nonempty")
+        expected = [f"{self.envelope_sha256}:{layer_id}" for layer_id in self.layer_ids]
+        if self.qualified_layer_ids != expected:
+            raise ValueError("FigureCompositionLayer qualified_layer_ids disagree with layer_ids")
+        if len(expected) != len(set(expected)):
+            raise ValueError("FigureCompositionLayer qualified_layer_ids must be unique")
+        return self
+
+
+class FigureCompositionDocument(StrictModel):
+    """One source document retained in root-to-leaf regeneration order."""
+
+    order: int = Field(ge=0)
+    role: Literal[
+        "root_figure",
+        "composition_envelope",
+        "authored_leaf",
+        "inherited_source",
+    ]
+    ref: str
+    sha256: str
+    payload_path: tuple[str, ...] | None = None
+    selected_sha256: str
+    inline: dict[str, Any]
+    selected_inline: dict[str, Any]
+
+    @model_validator(mode="after")
+    def _validate_document(self) -> "FigureCompositionDocument":
+        if not self.ref:
+            raise ValueError("FigureCompositionDocument ref must be nonempty")
+        for field_name in ("sha256", "selected_sha256"):
+            if not re.fullmatch(r"[0-9a-f]{64}", getattr(self, field_name)):
+                raise ValueError(f"FigureCompositionDocument {field_name} must be lowercase sha256")
+        if sha256_bytes(canonical_json_bytes(self.inline)) != self.sha256:
+            raise ValueError("FigureCompositionDocument sha256 disagrees with inline document")
+        if sha256_bytes(canonical_json_bytes(self.selected_inline)) != self.selected_sha256:
+            raise ValueError(
+                "FigureCompositionDocument selected_sha256 disagrees with selected_inline"
+            )
+        return self
+
+
+class FigureCompositionProvenance(StrictModel):
+    """Lineage joining authored composition identity to resolved semantics."""
+
+    schema_id: str = FIGURE_COMPOSITION_PROVENANCE_SCHEMA_ID
+    schema_version: str = FIGURE_COMPOSITION_PROVENANCE_SCHEMA_VERSION
+    authored_envelope_sha256: str
+    root_figure: ContentPinnedJsonBase
+    layers: list[FigureCompositionLayer] = Field(min_length=1)
+    documents: list[FigureCompositionDocument] = Field(min_length=2)
+    inherited_documents: list[FigureCompositionDocument] = Field(default_factory=list)
+    attribution: dict[str, str]
+    resolved_figure_spec_sha256: str
+    source_inheritance: SourceDocumentInheritance | None = None
+
+    @model_validator(mode="after")
+    def _validate_schema_identity(self) -> "FigureCompositionProvenance":
+        if self.schema_id != FIGURE_COMPOSITION_PROVENANCE_SCHEMA_ID:
+            raise ValueError(
+                f"unsupported FigureCompositionProvenance schema_id: {self.schema_id!r}"
+            )
+        if self.schema_version != FIGURE_COMPOSITION_PROVENANCE_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported FigureCompositionProvenance schema_version: {self.schema_version!r}"
+            )
+        for field_name in ("authored_envelope_sha256", "resolved_figure_spec_sha256"):
+            if not re.fullmatch(r"[0-9a-f]{64}", getattr(self, field_name)):
+                raise ValueError(
+                    f"FigureCompositionProvenance {field_name} must be lowercase sha256"
+                )
+        if [document.order for document in self.documents] != list(range(len(self.documents))):
+            raise ValueError("FigureCompositionProvenance documents must have contiguous order")
+        if self.documents[0].role != "root_figure" or self.documents[-1].role != "authored_leaf":
+            raise ValueError(
+                "FigureCompositionProvenance documents must run from root_figure to authored_leaf"
+            )
+        if [document.order for document in self.inherited_documents] != list(
+            range(len(self.inherited_documents))
+        ) or any(
+            document.role != "inherited_source" for document in self.inherited_documents
+        ):
+            raise ValueError(
+                "FigureCompositionProvenance inherited documents must be ordered sources"
+            )
+        qualified = [qualified for layer in self.layers for qualified in layer.qualified_layer_ids]
+        if len(qualified) != len(set(qualified)):
+            raise ValueError("FigureCompositionProvenance qualified layer ids must be unique")
+        if any(value not in set(qualified) for value in self.attribution.values()):
+            raise ValueError("FigureCompositionProvenance attribution names an unknown layer")
+        if self.authored_envelope_sha256 != self.layers[-1].envelope_sha256:
+            raise ValueError("FigureCompositionProvenance authored hash disagrees with leaf layer")
+        if self.documents[0].sha256 != self.root_figure.sha256:
+            raise ValueError("FigureCompositionProvenance root document disagrees with root pin")
+        for index, layer in enumerate(self.layers):
+            parent = self.documents[index]
+            if (
+                layer.parent_ref != parent.ref
+                or layer.parent_sha256 != parent.sha256
+                or layer.parent_payload_path != parent.payload_path
+            ):
+                raise ValueError(
+                    "FigureCompositionProvenance layer parent disagrees with document custody"
+                )
+            envelope_document = self.documents[index + 1]
+            envelope = FigureCompositionSpec.model_validate(envelope_document.selected_inline)
+            if envelope.identity_sha256() != layer.envelope_sha256:
+                raise ValueError(
+                    "FigureCompositionProvenance envelope hash disagrees with document custody"
+                )
+        return self
+
+
+class ResolvedFigureSpec(StrictModel):
+    """Public resolution result with distinct authored and semantic identities."""
+
+    authored: dict[str, Any]
+    authored_schema_id: str
+    authored_identity_sha256: str
+    resolved_identity_sha256: str
+    figure_spec: FigureSpec
+    composition: FigureCompositionProvenance | None = None
