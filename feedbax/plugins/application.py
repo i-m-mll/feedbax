@@ -15,6 +15,8 @@ from feedbax.analysis.reports import ReportRecipeRegistry, register_builtin_repo
 from feedbax.analysis.specs import AnalysisRecipeRegistry
 from feedbax.contracts.training import TrainingMethodRegistry, default_training_method_registry
 from feedbax.orchestration.conformance import CheckRegistry, build_core_check_registry
+from feedbax.orchestration.drivers.builtins import build_builtin_driver_registry
+from feedbax.orchestration.drivers.capabilities import DriverRegistry
 from feedbax.plot.constructors import FigureRegistry, register_default_figure_constructors
 from feedbax.training.preparation import ExecutionPreparationProviderRegistry
 from feedbax.training.row_lowering import TrainingRowLowererRegistry
@@ -39,6 +41,7 @@ class ApplicationRegistryBundle:
     report_recipes: ReportRecipeRegistry
     figures: FigureRegistry
     conformance_checks: CheckRegistry
+    drivers: DriverRegistry
 
     def seal(self) -> None:
         self.components.seal()
@@ -53,6 +56,7 @@ class ApplicationRegistryBundle:
         self.report_recipes.seal()
         self.figures.seal()
         self.conformance_checks.seal()
+        self.drivers.seal()
 
 
 COMPONENTS = RegistryKey(
@@ -121,6 +125,12 @@ CONFORMANCE_CHECKS = RegistryKey(
     CheckRegistry,
     registered_keys=lambda value: (key for key, _check in value.items()),
 )
+DRIVERS = RegistryKey(
+    "drivers",
+    "drivers",
+    DriverRegistry,
+    registered_keys=lambda value: value.registered_names(),
+)
 
 APPLICATION_REGISTRY_KEYS = (
     COMPONENTS,
@@ -135,6 +145,7 @@ APPLICATION_REGISTRY_KEYS = (
     REPORT_RECIPES,
     FIGURES,
     CONFORMANCE_CHECKS,
+    DRIVERS,
 )
 
 
@@ -162,6 +173,7 @@ def new_application_registry_bundle(
         report_recipes=reports,
         figures=figures,
         conformance_checks=build_core_check_registry(),
+        drivers=build_builtin_driver_registry(),
     )
 
 

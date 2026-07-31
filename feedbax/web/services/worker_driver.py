@@ -16,12 +16,48 @@ from feedbax.orchestration.bundle import RunBundle, RunRowSpec
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.studio_training import StudioTrainingAssemblySpec
 from feedbax.orchestration.drivers.base import DriverRowProbe
+from feedbax.orchestration.drivers.capabilities import (
+    AcquisitionSemantics,
+    AuthorizationSemantics,
+    CustodySemantics,
+    DriverCapabilityEnvelope,
+    DriverCapabilityFacts,
+    DriverConstructionContext,
+    DriverRegistration,
+    DriverVenue,
+    EnvironmentSemantics,
+    MonitoringSemantics,
+    RecoverySemantics,
+    ResourceSemantics,
+    RetrySemantics,
+    SpendSemantics,
+    TeardownSemantics,
+)
 from feedbax.orchestration.events import RUN_EVENT_TERMINAL_TYPES, RunEvent
 from feedbax.orchestration.state import RunSetState
 
 
 class WorkerHttpDriver:
     """Drive one Studio training worker through the orchestration interface."""
+
+    capability_envelope = DriverCapabilityEnvelope.single(
+        "worker-http",
+        DriverCapabilityFacts(
+            variant_id="external-service",
+            venue=DriverVenue.REMOTE_SERVICE,
+            resources=ResourceSemantics.EXTERNALLY_MANAGED,
+            spend=SpendSemantics.EXTERNALLY_MANAGED,
+            authorization=AuthorizationSemantics.OPTIONAL_CALLER_CREDENTIAL,
+            environment=EnvironmentSemantics.OPAQUE_DRIVER_IDENTITY,
+            monitoring=MonitoringSemantics.EVENT_STREAM_AND_ROW_POLL,
+            recovery=RecoverySemantics.NONE,
+            retry=RetrySemantics.NONE,
+            acquisition=AcquisitionSemantics.EXTERNALLY_PROVIDED,
+            teardown=TeardownSemantics.EXTERNAL_RESOURCES_PRESERVED,
+            custody=CustodySemantics.EXTERNAL_SERVICE,
+        ),
+    )
+    realized_capabilities = capability_envelope.realize("external-service")
 
     def __init__(
         self,
@@ -214,6 +250,38 @@ class WorkerHttpDriver:
             return DriverRowProbe(status="running")
         error = self._stream_errors.get(row_id) or detail or "worker row is no longer reachable"
         return DriverRowProbe(status="failed", detail=f"orphaned: {error}")
+
+
+def worker_http_driver_registration() -> DriverRegistration:
+    """Return the built-in context-aware Studio worker driver registration."""
+
+    def resolve(context: DriverConstructionContext):
+        del context
+        return WorkerHttpDriver.realized_capabilities
+
+    def factory(context: DriverConstructionContext, realized):
+        configuration = context.configuration
+        base_url = configuration.get("base_url")
+        if not isinstance(base_url, str) or not base_url.strip():
+            raise ValueError("worker-http driver configuration requires a non-empty base_url")
+        request_timeout = configuration.get("request_timeout", 10.0)
+        if not isinstance(request_timeout, (int, float)):
+            raise TypeError("worker-http request_timeout must be numeric")
+        driver = WorkerHttpDriver(
+            base_url=base_url,
+            auth_token=context.credentials.get("worker_http_token"),
+            request_timeout=float(request_timeout),
+        )
+        if driver.realized_capabilities != realized:
+            raise ValueError("worker-http factory received inconsistent realized capabilities")
+        return driver
+
+    return DriverRegistration(
+        name="worker-http",
+        supported_capabilities=WorkerHttpDriver.capability_envelope,
+        resolve_capabilities=resolve,
+        factory=factory,
+    )
 
 
 def _worker_start_body(bundle: RunBundle, row: RunRowSpec) -> dict[str, Any]:
