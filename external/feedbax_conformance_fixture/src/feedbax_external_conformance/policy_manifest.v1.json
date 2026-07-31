@@ -493,6 +493,8 @@
           {
             "namespace": "feedbax.contracts.figures",
             "public_names": [
+              "FigureCompositionDelta",
+              "SameSchemaStructuralAddition",
               "FigureCompositionSpec",
               "FigureCompositionProvenance",
               "FigureCompositionSourceRecord",
@@ -545,18 +547,21 @@
         "FigureRuntimeBindingSpec v2 separates authored_figure_source_sha256 from resolved_figure_spec_sha256",
         "Studio rejects composition without a server-owned root using figure_composition_not_supported_in_studio",
         "ContentPinnedJsonBase payload_path and SourceDocumentInheritance share canonical list-index rules and graft only absent targets",
-        "MatrixCompositionDelta acknowledgement must overlap both the ancestor-written path and the current patch path"
+        "MatrixCompositionDelta acknowledgement must overlap both the ancestor-written path and the current patch path",
+        "FigureCompositionSpec v2 owns FigureCompositionDelta structural declarations and migrates v1 without changing resolved semantics",
+        "SameSchemaStructuralAddition declarations must exactly cover every typed path introduced by an add subtree; feedbax.spec.figure_panel.v1 is declaration-side identity only and never changes resolved PanelSpec bytes"
       ],
       "schemas": {
         "current": [
           "feedbax.spec.figure.v2",
-          "feedbax.spec.figure_composition.v1",
+          "feedbax.spec.figure_composition.v2",
           "feedbax.spec.figure_composition_provenance.v1",
           "feedbax.spec.figure_runtime_binding.v2",
           "feedbax.spec.analysis_bundle.v6",
           "feedbax.spec.source_document_inheritance.v1"
         ],
         "migrated": [
+          "feedbax.spec.figure_composition.v1",
           "feedbax.spec.figure_runtime_binding.v1",
           "feedbax.spec.analysis_bundle.v5"
         ],

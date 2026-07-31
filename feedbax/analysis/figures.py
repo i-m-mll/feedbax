@@ -34,7 +34,10 @@ from feedbax.contracts.expressions import (
 )
 from feedbax.contracts.figures import (
     FIGURE_COMPOSITION_SPEC_SCHEMA_ID,
+    FIGURE_PANEL_SCHEMA_ID,
+    FIGURE_PANEL_SCHEMA_VERSION,
     FIGURE_SPEC_SCHEMA_ID,
+    FIGURE_SPEC_SCHEMA_VERSION,
     FigureColorbar,
     FigureCompositionDocument,
     FigureCompositionLayer,
@@ -47,9 +50,11 @@ from feedbax.contracts.figures import (
     FigureRuntimeBindingSpec,
     FigureSpec,
     FigureTemplate,
+    PanelSpec,
     ResolvedFigureSpec,
     TraceBinding,
     TraceFamily,
+    figure_composition_payload_identity_sha256,
     substitute_index,
 )
 from feedbax.contracts.matrix_core import (
@@ -231,12 +236,30 @@ def _figure_authored_ref(value: FigureSpecInput) -> str:
 
 def figure_composition_envelope(spec: FigureCompositionSpec) -> dict[str, Any]:
     """Return the canonical authored identity envelope, excluding the parent locator."""
-    return spec.identity_envelope()
+    return _raw_figure_composition_envelope(
+        spec.model_dump(mode="json", exclude_none=True)
+    )
 
 
 def figure_composition_envelope_hash(spec: FigureCompositionSpec) -> str:
     """Return deterministic authored identity for one composition envelope."""
     return spec.identity_sha256()
+
+
+def _raw_figure_composition_envelope(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return identity bytes from one exact authored v1 or v2 envelope."""
+    parent = deepcopy(dict(payload["parent"]))
+    parent.pop("ref", None)
+    return {
+        "schema_id": payload["schema_id"],
+        "schema_version": payload["schema_version"],
+        "parent": parent,
+        "deltas": deepcopy(payload["deltas"]),
+    }
+
+
+def _raw_figure_composition_envelope_hash(payload: Mapping[str, Any]) -> str:
+    return figure_composition_payload_identity_sha256(payload)
 
 
 def _current_figure_spec(payload: Mapping[str, Any]) -> FigureSpec:
@@ -251,6 +274,13 @@ def _current_figure_spec(payload: Mapping[str, Any]) -> FigureSpec:
         assume_current="schema_version" not in payload,
     ).payload
     return FigureSpec.model_validate(migrated)
+
+
+def _current_figure_composition_spec(
+    payload: Mapping[str, Any],
+) -> FigureCompositionSpec:
+    migrated = default_spec_registry.migrate("FigureCompositionSpec", payload).payload
+    return FigureCompositionSpec.model_validate(migrated)
 
 
 def resolve_figure_spec(
@@ -289,29 +319,30 @@ def resolve_figure_spec(
             figure_spec=figure_spec,
         )
 
-    spec = FigureCompositionSpec.model_validate(authored)
-    chain: list[tuple[str, FigureCompositionSpec]] = []
+    spec = _current_figure_composition_spec(authored)
+    chain: list[tuple[str, FigureCompositionSpec, dict[str, Any]]] = []
     loaded_documents: list[tuple[dict[str, Any], dict[str, Any], Any]] = []
     first_seen: dict[str, int] = {}
     parent_first_seen: dict[tuple[str, tuple[str, ...] | None], int] = {}
     current = spec
+    current_authored = authored
     while True:
         if len(chain) >= MAX_FIGURE_COMPOSITION_DEPTH:
-            path = " -> ".join(node.parent.ref for _, node in chain)
+            path = " -> ".join(node.parent.ref for _, node, _ in chain)
             raise ValueError(
                 f"figure composition exceeds maximum depth {MAX_FIGURE_COMPOSITION_DEPTH}: {path}"
             )
-        digest = figure_composition_envelope_hash(current)
+        digest = _raw_figure_composition_envelope_hash(current_authored)
         if digest in first_seen:
             cycle_start = first_seen[digest]
-            cycle = [node.parent.ref for _, node in chain[cycle_start:]]
+            cycle = [node.parent.ref for _, node, _ in chain[cycle_start:]]
             raise ValueError(f"figure composition cycle detected: {' -> '.join(cycle)}")
         first_seen[digest] = len(chain)
-        chain.append((digest, current))
+        chain.append((digest, current, current_authored))
         parent_key = (current.parent.ref, current.parent.payload_path)
         if parent_key in parent_first_seen:
             cycle_start = parent_first_seen[parent_key]
-            cycle = [node.parent.ref for _, node in chain[cycle_start:]]
+            cycle = [node.parent.ref for _, node, _ in chain[cycle_start:]]
             raise ValueError(f"figure composition cycle detected: {' -> '.join(cycle)}")
         parent_first_seen[parent_key] = len(chain) - 1
         parent_document, parent_payload = load_content_pinned_json_document(
@@ -324,7 +355,8 @@ def resolve_figure_spec(
         loaded_documents.append((parent_document, parent_payload, current.parent))
         parent_schema_id = parent_payload.get("schema_id", FIGURE_SPEC_SCHEMA_ID)
         if parent_schema_id == FIGURE_COMPOSITION_SPEC_SCHEMA_ID:
-            current = FigureCompositionSpec.model_validate(parent_payload)
+            current_authored = deepcopy(parent_payload)
+            current = _current_figure_composition_spec(parent_payload)
             continue
         if parent_schema_id != FIGURE_SPEC_SCHEMA_ID:
             raise ValueError(
@@ -351,12 +383,41 @@ def resolve_figure_spec(
     attribution: dict[str, str] = {}
     written: set[str] = set()
     layers: list[FigureCompositionLayer] = []
-    for digest, node in reversed(chain):
-        payload, local_attribution, written = apply_composition_deltas(
-            payload,
-            node.deltas,
-            ancestor_written_paths=written,
-        )
+    for digest, node, _raw_node in reversed(chain):
+        local_attribution: dict[str, str] = {}
+        for delta in node.deltas:
+            before = deepcopy(payload)
+            declared = {
+                addition.path: (addition.schema_id, addition.schema_version)
+                for addition in (delta.same_schema_structural_additions or [])
+            }
+            payload, delta_attribution, written = apply_composition_deltas(
+                payload,
+                [delta.matrix_delta()],
+                ancestor_written_paths=written,
+                allowed_same_schema_structural_additions_by_layer={
+                    delta.layer_id: declared
+                },
+            )
+            added = _figure_added_structural_identities(before, payload)
+            if declared != added:
+                missing = {
+                    path: identity
+                    for path, identity in added.items()
+                    if declared.get(path) != identity
+                }
+                invalid = {
+                    path: identity
+                    for path, identity in declared.items()
+                    if added.get(path) != identity
+                }
+                raise ValueError(
+                    f"/deltas/{delta.layer_id} same-schema structural additions must "
+                    "exactly qualify the complete added typed structure; "
+                    f"unqualified_or_mismatched={missing!r}, "
+                    f"declared_but_absent_or_invalid={invalid!r}"
+                )
+            local_attribution.update(delta_attribution)
         qualified = {
             path: f"{digest}:{layer_id}" for path, layer_id in local_attribution.items()
         }
@@ -424,7 +485,7 @@ def resolve_figure_spec(
             )
         )
     provenance = FigureCompositionProvenance(
-        authored_envelope_sha256=figure_composition_envelope_hash(spec),
+        authored_envelope_sha256=_raw_figure_composition_envelope_hash(authored),
         root_figure=root_parent,
         layers=layers,
         documents=custody_documents,
@@ -442,6 +503,63 @@ def resolve_figure_spec(
         figure_spec=figure_spec,
         composition=provenance,
     )
+
+
+def _figure_added_structural_identities(
+    before: dict[str, Any], after: dict[str, Any]
+) -> dict[str, tuple[str, str]]:
+    """Return every typed path introduced by one figure delta."""
+    before_identities = _figure_structural_identities(before)
+    after_identities = _figure_structural_identities(after)
+    return {
+        path: identity
+        for path, identity in after_identities.items()
+        if path not in before_identities
+    }
+
+
+def _figure_structural_identities(
+    payload: dict[str, Any],
+) -> dict[str, tuple[str, str]]:
+    identities: dict[str, tuple[str, str]] = {}
+
+    def visit(value: Any, path: str = "") -> None:
+        if isinstance(value, dict):
+            if isinstance(value.get("schema_id"), str) and isinstance(
+                value.get("schema_version"), str
+            ):
+                identities[path or "/"] = (
+                    value["schema_id"],
+                    value["schema_version"],
+                )
+            if (
+                value.get("schema_id") == FIGURE_SPEC_SCHEMA_ID
+                and value.get("schema_version") == FIGURE_SPEC_SCHEMA_VERSION
+            ):
+                panels = value.get("panels", [])
+                if not isinstance(panels, list):
+                    raise ValueError("FigureSpec panels must remain a list during composition")
+                panel_prefix = f"{path}.panels" if path else "panels"
+                for index, panel in enumerate(panels):
+                    try:
+                        PanelSpec.model_validate(panel)
+                    except ValidationError as error:
+                        raise ValueError(
+                            f"same-schema structural addition "
+                            f"'{panel_prefix}.{index}' is not a valid PanelSpec: {error}"
+                        ) from error
+                    identities[f"{panel_prefix}.{index}"] = (
+                        FIGURE_PANEL_SCHEMA_ID,
+                        FIGURE_PANEL_SCHEMA_VERSION,
+                    )
+            for key, child in value.items():
+                visit(child, f"{path}.{key}" if path else str(key))
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                visit(child, f"{path}.{index}" if path else str(index))
+
+    visit(payload)
+    return identities
 
 
 def _validate_resolved_template(

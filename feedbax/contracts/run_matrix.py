@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 import re
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, Literal, Mapping, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
 
@@ -724,6 +724,9 @@ def apply_composition_deltas(
     deltas: list[MatrixCompositionDelta],
     *,
     ancestor_written_paths: set[str] | None = None,
+    allowed_same_schema_structural_additions_by_layer: (
+        Mapping[str, Mapping[str, tuple[str, str]]] | None
+    ) = None,
 ) -> tuple[dict[str, Any], dict[str, str], set[str]]:
     """Apply ordered layers and fail closed on unacknowledged ancestor overrides."""
     result = deepcopy(payload)
@@ -758,6 +761,21 @@ def apply_composition_deltas(
             attribution[patch.path] = delta.layer_id
         resulting_schema = _payload_schema_identity(result)
         resulting_identities = _schema_identities(result)
+        declared_additions = dict(
+            (allowed_same_schema_structural_additions_by_layer or {}).get(
+                delta.layer_id, {}
+            )
+        )
+        added_identities = {
+            path: identity
+            for path, identity in resulting_identities.items()
+            if path not in prior_identities
+        }
+        changed_or_removed_identities = {
+            path: (identity, resulting_identities.get(path))
+            for path, identity in prior_identities.items()
+            if resulting_identities.get(path) != identity
+        }
         if declared_boundary != (None, None):
             if declared_boundary == current_schema:
                 raise ValueError(
@@ -768,6 +786,47 @@ def apply_composition_deltas(
                 raise ValueError(
                     f"/deltas/{delta.layer_id} declares schema boundary {declared_boundary!r} "
                     f"but flattened payload has identity {resulting_schema!r}"
+                )
+        elif declared_additions:
+            if resulting_schema != current_schema:
+                raise ValueError(
+                    f"/deltas/{delta.layer_id} same-schema structural additions change "
+                    f"the active root identity from {current_schema!r} to "
+                    f"{resulting_schema!r}"
+                )
+            if changed_or_removed_identities:
+                raise ValueError(
+                    f"/deltas/{delta.layer_id} same-schema structural additions change or "
+                    f"remove existing schema identities {changed_or_removed_identities!r}"
+                )
+            required_additions = added_identities
+            unqualified = {
+                path: identity
+                for path, identity in required_additions.items()
+                if declared_additions.get(path) != identity
+            }
+            stale_or_invalid = {
+                path: identity
+                for path, identity in declared_additions.items()
+                if path in added_identities and added_identities.get(path) != identity
+            }
+            if unqualified or stale_or_invalid:
+                raise ValueError(
+                    f"/deltas/{delta.layer_id} same-schema structural additions must exactly "
+                    "qualify every added schema identity; "
+                    f"unqualified_or_mismatched={unqualified!r}, "
+                    f"declared_but_absent_or_invalid={stale_or_invalid!r}"
+                )
+            add_patch_paths = [patch.path for patch in delta.patches if patch.op == "add"]
+            not_added = sorted(
+                path
+                for path in declared_additions
+                if not any(_path_contains(patch_path, path) for patch_path in add_patch_paths)
+            )
+            if not_added:
+                raise ValueError(
+                    f"/deltas/{delta.layer_id} same-schema structural additions are not "
+                    f"introduced by an absent-only add patch: {not_added!r}"
                 )
         elif resulting_identities != prior_identities:
             raise ValueError(
@@ -782,6 +841,11 @@ def apply_composition_deltas(
 def _paths_overlap(left: str, right: str) -> bool:
     """Return whether either dotted path denotes the other's subtree."""
     return left == right or left.startswith(f"{right}.") or right.startswith(f"{left}.")
+
+
+def _path_contains(parent: str, child: str) -> bool:
+    """Return whether ``parent`` denotes ``child`` or one of its ancestors."""
+    return parent == child or child.startswith(f"{parent}.")
 
 
 def _payload_schema_identity(payload: dict[str, Any]) -> tuple[Any, Any]:

@@ -41,10 +41,14 @@ import json
 from pathlib import Path
 
 from feedbax.analysis.figures import resolve_figure_spec
-from feedbax.contracts.figures import FigureCompositionSpec, FigureSpec, PanelSpec
+from feedbax.contracts.figures import (
+    FigureCompositionDelta,
+    FigureCompositionSpec,
+    FigureSpec,
+    PanelSpec,
+)
 from feedbax.contracts.manifest import OverridePatch, canonical_json_bytes, sha256_bytes
 from feedbax.contracts.matrix_core import ContentPinnedJsonBase
-from feedbax.contracts.run_matrix import MatrixCompositionDelta
 
 root = Path("figure-example")
 root.mkdir(exist_ok=True)
@@ -64,7 +68,7 @@ composed = FigureCompositionSpec(
         sha256=sha256_bytes(canonical_json_bytes(base_payload)),
     ),
     deltas=[
-        MatrixCompositionDelta(
+        FigureCompositionDelta(
             layer_id="velocity",
             patches=[
                 OverridePatch(op="replace", path="name", value="velocity"),
@@ -91,6 +95,19 @@ change any top-level or nested self-versioned schema identity without the
 shared delta mechanism's explicit schema-boundary contract. Figure composition
 does not silently repair an invalid nested schema.
 
+An absent-only structural extension under the same root schema uses the
+figure-specific `FigureCompositionDelta.same_schema_structural_additions`.
+Each entry is a `SameSchemaStructuralAddition` naming the exact added dotted
+path and the exact `schema_id`/`schema_version` carried there or assigned to
+that typed path by the figure resolver. The declarations must match the
+complete set of identities introduced by that layer, and every declaration
+must lie under an `add` patch. Added panels declare the stable
+`feedbax.spec.figure_panel.v1` identity in the delta; the resolver validates the
+added value through `PanelSpec`, while the resolved panel remains byte-shape
+compatible and carries no new fields. Replacements, missing or
+invalid identities, sibling paths, undeclared nested identities, and root
+schema drift fail closed.
+
 ## Supported authoring roots
 
 Composition is supported by `resolve_figure_spec`, `coerce_figure_spec`,
@@ -109,9 +126,11 @@ ordinary FigureSpec v2 and never accepts a client-controlled filesystem root.
 
 - `feedbax.spec.figure.v2` remains the unchanged ordinary resolved schema, with
   its existing validation, migration, and rejection policy.
-- `feedbax.spec.figure_composition.v1` is authored lineage, not resolved figure
-  semantics. Its identity excludes the readable parent `ref`; the content hash
-  is authoritative.
+- `feedbax.spec.figure_composition.v2` is authored lineage, not resolved figure
+  semantics. Its v1 predecessor migrates without semantic change to v2, which
+  scopes structural addition declarations to `FigureCompositionDelta`.
+  Composition identity excludes the readable parent `ref`; the content hash is
+  authoritative.
 - The resolved identity is the canonical hash of the ordinary current
   FigureSpec only. Two envelopes that resolve to identical semantics therefore
   share a resolved identity even if their authored lineage differs.
