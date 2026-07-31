@@ -391,6 +391,8 @@ from feedbax.orchestration.staged_root_custody import (
     STAGED_ROOT_CUSTODY_SCHEMA_VERSION,
 )
 from feedbax.orchestration.state import (
+    EMERGENCY_RUN_SET_RECORD_SCHEMA_ID,
+    EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION,
     RUN_SET_STATE_SCHEMA_ID,
     RUN_SET_STATE_SCHEMA_VERSION,
     RUN_SET_STATE_SCHEMA_VERSION_V1,
@@ -3602,6 +3604,20 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             rejected_old_versions=(f"{REPO_REALIZATION_PLAN_SCHEMA_ID}.v0",),
             required_tests=(
                 "tests/test_repo_realization.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "EmergencyRunSetRecord",
+            EMERGENCY_RUN_SET_RECORD_SCHEMA_ID,
+            EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.state",
+            emitted_by=("feedbax.orchestration.state.RunSetStateStore.save_emergency",),
+            consumed_by=("feedbax.orchestration.state.RunSetStateStore.load_emergency",),
+            description="Bounded fail-closed recovery record for control-state failures.",
+            rejected_old_versions=(f"{EMERGENCY_RUN_SET_RECORD_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_orchestration_state_persistence.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),
