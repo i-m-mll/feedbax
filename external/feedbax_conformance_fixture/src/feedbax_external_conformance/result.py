@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 
 RESULT_SCHEMA_ID = "feedbax.external_conformance.result"
@@ -103,8 +111,15 @@ class ProtocolRoleSlots(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    current: Literal[1]
-    minimum: Literal[1]
+    current: StrictInt
+    minimum: StrictInt
+
+    @field_validator("current", "minimum")
+    @classmethod
+    def _require_protocol_one(cls, value: int) -> int:
+        if value != 1:
+            raise ValueError("protocol role must be the integer 1")
+        return value
 
 
 class LifecycleResult(BaseModel):

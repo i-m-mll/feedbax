@@ -402,7 +402,7 @@ def test_result_v12_case_values_are_strict_booleans(fixture_package) -> None:
 
 
 @pytest.mark.parametrize("slot", ["current", "minimum"])
-@pytest.mark.parametrize("unsupported", [None, 0, 2, "1"])
+@pytest.mark.parametrize("unsupported", [None, 0, 2, "1", True, 1.0])
 def test_result_v12_protocol_roles_are_bound_to_one(
     fixture_package, slot: str, unsupported: object
 ) -> None:
