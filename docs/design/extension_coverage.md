@@ -5,7 +5,9 @@ and test evidence below was audited at commit
 `4876398564463dc83ab13bbd96807415fc3426eb`. The snapshot describes what an
 installed external package can do through Feedbax's public mechanisms; an
 in-repository built-in is not evidence that the corresponding extension seam is
-open.
+open. Incremental witnesses `E17` and `E18` were reconciled on the umbrella
+integration branch after the baseline audit; they do not silently reclassify
+unrelated cells.
 
 ## Cell semantics
 
@@ -55,8 +57,9 @@ Lifecycle abbreviations:
 | `E13` | `feedbax/studio/schema.py:enumerate_studio_schema_registry`, `feedbax/studio/schema.py:validate_graph_connection_schema`, `feedbax/web/api/analysis.py:_run_analysis_sync` | `tests/test_studio_api_contracts.py:test_component_api_serves_representation_contract`, `tests/test_studio_analysis_jobs.py:test_studio_analysis_job_routes_eval_run_through_executable_spec` | Studio renders registered component metadata and runs analysis contracts, but not every extension family is bootstrapped or projected into authoring UI. |
 | `E14` | `feedbax/testing/suite.py:load_suite_manifest`, `feedbax/orchestration/conformance.py:CheckRegistry`, `feedbax/orchestration/conformance.py:build_default_check_registry` | `tests/test_run_conformance.py:test_plugin_check_discovery_and_failure_propagation`, `tests/test_component_registration.py:test_absent_downstream_owner_fails_with_actionable_message` | In-repo and downstream-kit checks exist, but there is no clean-installed external fixture proving each seam and supported version window. |
 | `E15` | `feedbax/orchestration/state.py:RunSetStateStore`, `feedbax/orchestration/stages.py:StageEngine`, `feedbax/orchestration/collection_recovery.py:recover_collected_outputs` | `tests/test_orchestration_cli.py:test_watch_exits_after_all_rows_terminal`, `tests/test_orchestration_cli.py:test_collect_and_teardown_are_idempotent_after_completed_run` | The governed run lifecycle supplies progress, persisted state, collection recovery, and idempotent teardown for admitted families/drivers. |
-| `E16` | `feedbax/analysis/evaluation_inputs.py:resolve_evaluation_inputs`, `feedbax/analysis/execution_context.py:StagedExecutionContext`, `feedbax/orchestration/staged_root_custody.py:StagedRootCustody` | `tests/test_evaluation_orchestration.py:test_matrix_staged_parents_require_and_bind_exact_governed_root_custody`, `tests/test_figure_input_authority.py:test_role_authority_rejects_missing_ambiguous_or_duplicate_selectors` | Exact parents and staged authorities fail closed, while typed downstream row projection and material-dependency-scoped admission remain incomplete. |
+| `E16` | `feedbax/analysis/evaluation_inputs.py:resolve_evaluation_inputs`, `feedbax/analysis/execution_context.py:StagedExecutionContext`, `feedbax/orchestration/staged_root_custody.py:StagedRootCustody` | `tests/test_evaluation_orchestration.py:test_matrix_staged_parents_require_and_bind_exact_governed_root_custody`, `tests/test_figure_input_authority.py:test_role_authority_rejects_missing_ambiguous_or_duplicate_selectors` | Exact parents and staged authorities fail closed. Typed downstream row projection remains incomplete; material-dependency-scoped admission is the separate `E18` seam. |
 | `E17` | `feedbax/contracts/value_identity.py:ValueIdentityRecord`, `feedbax/contracts/value_identity.py:authored_value_sha256`, `feedbax/contracts/value_identity.py:semantic_value_sha256`, `feedbax/contracts/value_identity.py:realization_value_sha256` | `tests/test_value_identity.py:test_cross_encoding_semantic_equality_and_authored_inequality`, `tests/test_value_identity.py:test_expected_semantic_mismatch_fails_closed_and_chain_is_preserved`, `tests/test_value_identity.py:test_realization_uses_only_explicit_fingerprints` | The public v1 contract separates authored, exact normalized semantic, and explicit runtime realization identity. Existing durable envelopes do not embed it yet; their owning consumers retain their migration responsibility. |
+| `E18` | `feedbax/contracts/material_dependencies.py:MaterialDependencySet`, `feedbax/contracts/material_dependencies.py:validate_material_dependency_admission`, `feedbax/contracts/manifest.py:TrainingRunCertification`, `feedbax/analysis/bundles.py:_preflight_staged_exact_parents`, `feedbax/testing/material_dependencies.py:check_material_dependency_contract` | `tests/test_material_dependencies.py:test_identity_projects_refs_and_values_to_material_identity`, `tests/test_staged_exact_parents.py:test_diverged_run_admits_certified_checkpoint_and_scopes_evaluation_identity`, `tests/test_staged_exact_parents.py:test_material_dependency_admission_rejects_before_outputs`, `tests/test_report_execution.py:test_authored_report_rejects_unhandled_material_dependencies_before_outputs` | Versioned declarations scope identity to material content or semantic value identity, authenticate certified dependency bytes through existing custody/provider authority, and permit only an exact authored incidental-check waiver. Ambiguous legacy failed manifests reject; authored reports fail closed unless parents first pass the shared bundle preflight. |
 
 ## Coverage matrix
 
@@ -82,9 +85,9 @@ Lifecycle abbreviations:
 |---|---|---|---|---|---|
 | Component | `O E1` | `—` | `O E1` | `—` | `—` |
 | Task | `P E3 / D-TASK` | `—` | `P E3 / D-TASK` | `—` | `—` |
-| Analysis recipe | `O E4` | `P E16 / 8ca2ade, 43891d0` | `O E4` | `—` | `O E4` |
+| Analysis recipe | `O E4` | `P E16, E18 / 8ca2ade` | `O E4` | `—` | `O E4` |
 | Figure | `O E5` | `O E16` | `P E5 / 301dce2` | `—` | `O E5` |
-| Value encoding | `P E6 / 9757814` | `P E17 / 43891d0` | `P E6 / 9757814` | `—` | `P E6 / 9757814` |
+| Value encoding | `P E6 / 9757814` | `P E17, E18 / 9757814` | `P E6 / 9757814` | `—` | `P E6 / 9757814` |
 | Run kind | `P E7 / D-RUN` | `P E7 / D-RUN` | `P E7 / D-RUN` | `P E15 / D-RUN` | `P E7 / D-RUN` |
 | Driver | `P E8 / 69034e6` | `P E8 / 69034e6` | `P E8 / 69034e6` | `P E15 / 69034e6` | `P E8 / 69034e6` |
 | Custody provider | `P E9 / D-CUSTODY` | `P E9 / D-CUSTODY` | `P E9 / D-CUSTODY` | `—` | `O E9` |
@@ -123,7 +126,8 @@ those issues beyond their recorded bodies:
 - `69034e6`: orchestration-driver capability contract and registry.
 - `9ac21f2`: component dynamic-port definition, validation, and Studio authoring.
 - `8ca2ade`: typed authenticated evaluation-row projection.
-- `43891d0`: material-dependency-scoped identity and admission.
+- `43891d0`: delivered material-dependency-scoped identity, byte-authenticated
+  admission, exact waiver semantics, and terminal/certified-prefix separation.
 - `46aeab1`: typed analysis-recipe parameter model.
 - `6b6a44b`: public authoring/provider projection from `SpecSchemaRegistry`.
 - `0491f60`: deferred Studio-launchable training-method extension point.
@@ -182,9 +186,10 @@ The ca09544 assessment and current downstream candidates use four bins:
 The two-independent-consumer rule applies to general abstractions. A clear
 boundary defect does not wait for a second consumer; untyped authenticated
 metadata access and admission/identity keyed to non-dependencies are such
-defects. The active `rlrmp2/e786cb7` work is provisional and unmerged: its
-failed-manifest/checkpoint waiver and comparator-authority compensation route to
-`43891d0` and `rlrmp2/2440ab1`, while its row-specific scientific delta remains
+defects. The active `rlrmp2/e786cb7` work is provisional and unmerged. Its
+failed-manifest/checkpoint compensation now has the integrated upstream `E18`
+replacement and routes to `rlrmp2/2440ab1` for adoption and deletion; its
+comparator-authority reconciliation and row-specific scientific delta remain
 downstream absent a second independent consumer. This does not advance the
 ca09544 baseline recorded by `5262573`.
 
