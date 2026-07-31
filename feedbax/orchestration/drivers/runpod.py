@@ -74,6 +74,7 @@ from feedbax.orchestration.drivers.capabilities import (
     EnvironmentSemantics,
     MonitoringSemantics,
     RecoverySemantics,
+    RealizedDriverCapabilities,
     ResourceSemantics,
     RetrySemantics,
     SpendSemantics,
@@ -616,6 +617,14 @@ class RunPodOrchestrationDriver:
             DriverHook.DRY_RUN_LAUNCH,
         }
     )
+    _ACQUISITION_HOOKS = frozenset(
+        {
+            DriverHook.HAS_PENDING_OWNED_RESOURCE,
+            DriverHook.GOVERN_PROVISIONING_RETRIES,
+            DriverHook.ENGINE_ACQUISITION,
+            DriverHook.PROVISION_RETRY_DELAY,
+        }
+    )
     capability_envelope = DriverCapabilityEnvelope(
         driver_name="runpod",
         variants={
@@ -630,7 +639,7 @@ class RunPodOrchestrationDriver:
                 recovery=RecoverySemantics.DURABLE_REMOTE,
                 retry=RetrySemantics.NONE,
                 acquisition=AcquisitionSemantics.EXTERNALLY_PROVIDED,
-                teardown=TeardownSemantics.EXTERNAL_RESOURCES_PRESERVED,
+                teardown=TeardownSemantics.RESOURCES_PRESERVED,
                 custody=CustodySemantics.EPHEMERAL_REMOTE_RESOURCE,
                 optional_hooks=_COMMON_HOOKS,
             ),
@@ -648,22 +657,33 @@ class RunPodOrchestrationDriver:
                 teardown=TeardownSemantics.VERIFIED_RESOURCE_ABSENCE,
                 custody=CustodySemantics.EPHEMERAL_REMOTE_RESOURCE,
                 optional_hooks=_COMMON_HOOKS
-                | frozenset(
-                    {
-                        DriverHook.HAS_PENDING_OWNED_RESOURCE,
-                        DriverHook.GOVERN_PROVISIONING_RETRIES,
-                        DriverHook.ENGINE_ACQUISITION,
-                        DriverHook.PROVISION_RETRY_DELAY,
-                        DriverHook.GLOBAL_RESOURCE_INVENTORY,
-                    }
-                ),
+                | _ACQUISITION_HOOKS
+                | frozenset({DriverHook.GLOBAL_RESOURCE_INVENTORY}),
+            ),
+            "engine-acquired-preserved": DriverCapabilityFacts(
+                variant_id="engine-acquired-preserved",
+                venue=DriverVenue.CLOUD_RESOURCE,
+                resources=ResourceSemantics.DRIVER_OWNED,
+                spend=SpendSemantics.DRIVER_OBSERVED,
+                authorization=AuthorizationSemantics.CLOUD_AND_SPEND_REQUIRED,
+                environment=EnvironmentSemantics.REMOTE_REALIZATION,
+                monitoring=MonitoringSemantics.PROVIDER_INVENTORY,
+                recovery=RecoverySemantics.DURABLE_REMOTE,
+                retry=RetrySemantics.DRIVER_GOVERNED,
+                acquisition=AcquisitionSemantics.ENGINE_GOVERNED,
+                teardown=TeardownSemantics.RESOURCES_PRESERVED,
+                custody=CustodySemantics.EPHEMERAL_REMOTE_RESOURCE,
+                optional_hooks=_COMMON_HOOKS | _ACQUISITION_HOOKS,
             ),
         },
     )
 
     poll_interval_seconds = 5.0
-    govern_provisioning_retries = True
     driver_name = "runpod"
+
+    def govern_provisioning_retries(self) -> bool:
+        """Confirm that this variant supplies governed provisioning retry hooks."""
+        return True
 
     def engine_acquisition_required(self) -> bool:
         """Return whether the engine must run the create WAL protocol."""
@@ -851,6 +871,7 @@ class RunPodOrchestrationDriver:
         staged_root_bindings: Sequence[StagedRootSnapshotBinding] = (),
         collection_recovery_bindings: Sequence[CollectionRecoveryBinding] = (),
         training_method_registry: TrainingMethodRegistry | None = None,
+        realized_capabilities: RealizedDriverCapabilities | None = None,
     ) -> None:
         self.config = config or RunPodDriverConfig()
         self.transport = transport or SubprocessRunPodTransport(
@@ -870,10 +891,17 @@ class RunPodOrchestrationDriver:
         self._pod_id = self.config.pod_id
         self._provided_pod = self.config.pod_id is not None
         self._provided_endpoint = bool(self.config.ssh_host and self.config.ssh_port)
-        self.realized_capabilities = self.capability_envelope.realize(
+        default_variant = (
             "externally-managed"
             if self._provided_endpoint or self._provided_pod
-            else "engine-acquired"
+            else (
+                "engine-acquired"
+                if self.config.auto_teardown
+                else "engine-acquired-preserved"
+            )
+        )
+        self.realized_capabilities = realized_capabilities or self.capability_envelope.realize(
+            default_variant
         )
         self._endpoint: EndpointClassification | None = (
             EndpointClassification("ssh_object", self.config.ssh_host, self.config.ssh_port)
@@ -918,6 +946,10 @@ class RunPodOrchestrationDriver:
     @property
     def provision_retry_delay_seconds(self) -> float:
         """Configured positive delay between governed acquisition attempts."""
+        return self.config.poll_seconds
+
+    def provision_retry_delay(self) -> float:
+        """Return the configured positive delay between provisioning attempts."""
         return self.config.poll_seconds
 
     def preflight_checks(self, bundle: RunBundle) -> list[PreflightCheckEntry]:
@@ -2234,6 +2266,13 @@ class RunPodOrchestrationDriver:
 
     def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Boundedly remove a run-owned pod or record why it remains unresolved."""
+        if self.realized_capabilities.facts.teardown is TeardownSemantics.RESOURCES_PRESERVED:
+            return {
+                "driver": "runpod",
+                "teardown": "skipped",
+                "skip_reason": "realized-capability-preserves-resources",
+                "capability_variant": self.realized_capabilities.variant_id,
+            }
         ownership = self.teardown_ownership(state)
         if not ownership["owned_by_run"]:
             return {
@@ -2459,6 +2498,14 @@ class RunPodOrchestrationDriver:
             "pod_ids": [record.pod_id for record in records],
         }
         return records, evidence
+
+    def observe_global_resource_inventory(
+        self,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> tuple[tuple[ProviderPodInventoryRecord, ...], Mapping[str, Any]]:
+        """Observe the provider-wide inventory through the generic capability hook."""
+        return self.observe_pod_inventory(timeout_seconds=timeout_seconds)
 
     def _wait_for_pod_absence(
         self, pod_id: str, *, deadline: float | None = None
@@ -3955,15 +4002,24 @@ def runpod_driver_registration() -> DriverRegistration:
 
     def resolve(context: DriverConstructionContext):
         config = config_for(context)
-        variant = (
-            "externally-managed"
-            if config.pod_id is not None or (config.ssh_host is not None and config.ssh_port)
-            else "engine-acquired"
-        )
+        preserve_policy = context.configuration.get("preserve_owned_resources", False)
+        if not isinstance(preserve_policy, bool):
+            raise TypeError("preserve_owned_resources must be a bool")
+        preserve_owned = not config.auto_teardown or preserve_policy
+        if config.pod_id is not None or (config.ssh_host is not None and config.ssh_port):
+            variant = "externally-managed"
+        elif preserve_owned:
+            variant = "engine-acquired-preserved"
+        else:
+            variant = "engine-acquired"
         return RunPodOrchestrationDriver.capability_envelope.realize(variant)
 
     def factory(context: DriverConstructionContext, realized):
         runtime = context.runtime_bindings
+        if runtime.get("native_update_budget") is not None:
+            raise ValueError(
+                "remote capability variants do not support a local native update budget"
+            )
         driver = RunPodOrchestrationDriver(
             config=config_for(context),
             transport=runtime.get("transport"),
@@ -3973,6 +4029,7 @@ def runpod_driver_registration() -> DriverRegistration:
             staged_root_bindings=runtime.get("staged_root_bindings", ()),
             collection_recovery_bindings=runtime.get("collection_recovery_bindings", ()),
             training_method_registry=runtime.get("training_method_registry"),
+            realized_capabilities=realized,
         )
         if driver.realized_capabilities != realized:
             raise ValueError("RunPod factory realized a variant inconsistent with its context")

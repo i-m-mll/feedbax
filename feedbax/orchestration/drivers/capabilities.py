@@ -17,7 +17,8 @@ if TYPE_CHECKING:
 DRIVER_CAPABILITIES_SCHEMA_ID = "feedbax.orchestration.driver-capabilities"
 DRIVER_CAPABILITIES_SCHEMA_VERSION_V1 = "1"
 DRIVER_CAPABILITIES_SCHEMA_VERSION_V2 = "2"
-DRIVER_CAPABILITIES_SCHEMA_VERSION = DRIVER_CAPABILITIES_SCHEMA_VERSION_V2
+DRIVER_CAPABILITIES_SCHEMA_VERSION_V3 = "3"
+DRIVER_CAPABILITIES_SCHEMA_VERSION = DRIVER_CAPABILITIES_SCHEMA_VERSION_V3
 
 _IDENTITY_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]*(?::[a-z0-9][a-z0-9._-]*)*")
 
@@ -137,7 +138,7 @@ class TeardownSemantics(StrEnum):
     """Guarantee made by successful teardown in one realized variant."""
 
     LOCAL_PROCESS_STOP = "local-process-stop"
-    EXTERNAL_RESOURCES_PRESERVED = "external-resources-preserved"
+    RESOURCES_PRESERVED = "resources-preserved"
     VERIFIED_RESOURCE_ABSENCE = "verified-resource-absence"
 
 
@@ -316,6 +317,39 @@ class DriverCapabilityProvider(Protocol):
     realized_capabilities: RealizedDriverCapabilities
 
 
+class CoreDriverImplementation(DriverCapabilityProvider, Protocol):
+    """Callable implementation surface required for every constructed driver."""
+
+    def provision(self, bundle: object, state: object) -> Mapping[str, object]: ...
+    def realize_env(self, bundle: object, state: object) -> str: ...
+    def stage_inputs(self, bundle: object, state: object) -> Mapping[str, object]: ...
+    def launch_row(self, bundle: object, row: object, state: object) -> Mapping[str, object]: ...
+    def probe(self, bundle: object, row: object, state: object) -> object: ...
+    def stop_row(self, bundle: object, row: object, state: object) -> Mapping[str, object]: ...
+    def collect(self, bundle: object, row: object, state: object) -> Mapping[str, str]: ...
+    def teardown(self, bundle: object, state: object) -> Mapping[str, object]: ...
+
+
+class EngineAcquisitionImplementation(Protocol):
+    """Complete callable group required by engine-governed acquisition."""
+
+    def acquisition_candidates(self, bundle: object) -> tuple[str | None, ...]: ...
+    def acquisition_pod_name(self, intent_id: str) -> str: ...
+    def acquisition_config_identity(self, bundle: object) -> str: ...
+    def create_pod_once(self, bundle: object, candidate: str | None, intent_id: str) -> object: ...
+    def finish_acquired_pod(self, bundle: object, acquisition: object, intent_id: str) -> Mapping[str, object]: ...
+    def acquisition_failure_evidence(self) -> Mapping[str, object]: ...
+    def observe_pod_inventory(self, **kwargs: object) -> object: ...
+    def adopt_owned_pod(self, pod_id: str, **kwargs: object) -> None: ...
+    def adopted_provision_record(self, intent_id: str) -> Mapping[str, object]: ...
+
+
+class GlobalResourceInventoryImplementation(Protocol):
+    """Callable group required by provider-wide inventory declarations."""
+
+    def observe_global_resource_inventory(self, **kwargs: object) -> object: ...
+
+
 @dataclass(frozen=True)
 class DriverAuthority:
     """Caller-granted authority available during driver construction."""
@@ -485,12 +519,74 @@ class DriverRegistry:
         if not registration.supported_capabilities.supports(realized):
             raise ValueError(f"capability resolver for driver {name!r} selected unsupported facts")
         driver = registration.factory(context, realized)
+        _validate_driver_implementation(driver, realized)
         if driver.realized_capabilities != realized:
             raise ValueError(
                 f"constructed driver {name!r} realized capabilities do not match "
                 "the context selection"
             )
         return driver
+
+
+_CORE_DRIVER_MEMBERS = (
+    "provision",
+    "realize_env",
+    "stage_inputs",
+    "launch_row",
+    "probe",
+    "stop_row",
+    "collect",
+    "teardown",
+)
+_HOOK_MEMBERS: Mapping[DriverHook, tuple[str, ...]] = MappingProxyType(
+    {
+        DriverHook.HAS_PENDING_OWNED_RESOURCE: ("has_pending_owned_resource",),
+        DriverHook.RESTORE_FROM_PROVISION_RECORD: ("restore_from_provision_record",),
+        DriverHook.GOVERN_PROVISIONING_RETRIES: ("govern_provisioning_retries",),
+        DriverHook.RESTORE_COMPLETED_PREFLIGHT: ("restore_completed_preflight",),
+        DriverHook.STATIC_PREFLIGHT_CHECKS: ("static_preflight_checks",),
+        DriverHook.PREFLIGHT_CHECKS: ("preflight_checks",),
+        DriverHook.REPO_REALIZATION_PLAN: ("repo_realization_plan",),
+        DriverHook.PREFLIGHT_EVIDENCE: ("preflight_evidence",),
+        DriverHook.ENGINE_ACQUISITION: (
+            "acquisition_candidates",
+            "acquisition_pod_name",
+            "acquisition_config_identity",
+            "create_pod_once",
+            "finish_acquired_pod",
+            "acquisition_failure_evidence",
+            "observe_pod_inventory",
+            "adopt_owned_pod",
+            "adopted_provision_record",
+        ),
+        DriverHook.PROVISION_RETRY_DELAY: ("provision_retry_delay",),
+        DriverHook.REMOTE_SMOKE: ("smoke_row",),
+        DriverHook.SMOKE_FAILURE_EVIDENCE: ("smoke_failure_evidence",),
+        DriverHook.COLLECTION_RECOVERY_EVIDENCE: ("collection_recovery_evidence",),
+        DriverHook.COLLECT_FAILURE_LOGS: ("collect_failure_logs",),
+        DriverHook.TEARDOWN_OWNERSHIP: ("teardown_ownership",),
+        DriverHook.BATCH_PROBE: ("probe_rows",),
+        DriverHook.CHECKPOINT_STOP: ("request_stop_at_checkpoint",),
+        DriverHook.GLOBAL_RESOURCE_INVENTORY: ("observe_global_resource_inventory",),
+        DriverHook.DRY_RUN_LAUNCH: ("dry_run_launch",),
+    }
+)
+
+
+def _validate_driver_implementation(
+    driver: object,
+    realized: RealizedDriverCapabilities,
+) -> None:
+    required = [*_CORE_DRIVER_MEMBERS]
+    for hook in sorted(realized.facts.optional_hooks, key=str):
+        required.extend(_HOOK_MEMBERS[hook])
+    missing = tuple(name for name in dict.fromkeys(required) if not callable(getattr(driver, name, None)))
+    if missing:
+        rendered = ", ".join(repr(name) for name in missing)
+        raise TypeError(
+            f"constructed driver {realized.driver_name!r} capability variant "
+            f"{realized.variant_id!r} lacks callable members: {rendered}"
+        )
 
 
 def _validate_schema(schema_id: str, schema_version: str) -> None:

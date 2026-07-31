@@ -40,6 +40,8 @@ from feedbax.orchestration.state import RunSetState
 class WorkerHttpDriver:
     """Drive one Studio training worker through the orchestration interface."""
 
+    poll_interval_seconds = 0.05
+
     capability_envelope = DriverCapabilityEnvelope.single(
         "worker-http",
         DriverCapabilityFacts(
@@ -53,7 +55,7 @@ class WorkerHttpDriver:
             recovery=RecoverySemantics.NONE,
             retry=RetrySemantics.NONE,
             acquisition=AcquisitionSemantics.EXTERNALLY_PROVIDED,
-            teardown=TeardownSemantics.EXTERNAL_RESOURCES_PRESERVED,
+            teardown=TeardownSemantics.RESOURCES_PRESERVED,
             custody=CustodySemantics.EXTERNAL_SERVICE,
         ),
     )
@@ -261,6 +263,8 @@ def worker_http_driver_registration() -> DriverRegistration:
 
     def factory(context: DriverConstructionContext, realized):
         configuration = context.configuration
+        if context.recovery_inputs:
+            raise ValueError("worker-http capability variant does not support recovery inputs")
         base_url = configuration.get("base_url")
         if not isinstance(base_url, str) or not base_url.strip():
             raise ValueError("worker-http driver configuration requires a non-empty base_url")
