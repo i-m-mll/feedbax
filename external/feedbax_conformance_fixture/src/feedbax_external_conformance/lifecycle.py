@@ -35,7 +35,7 @@ from feedbax.orchestration import (
 )
 from feedbax.orchestration.drivers import DriverConstructionContext
 from feedbax.orchestration.revision import resolve_feedbax_revision
-from feedbax.plugins import new_application_registry_bundle
+from feedbax.plugins.application import new_application_registry_bundle
 
 
 _COMPILER_ID = "feedbax-external-conformance.local-lifecycle"

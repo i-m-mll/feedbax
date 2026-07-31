@@ -659,7 +659,11 @@ def test_local_lifecycle_uses_clean_interpreter_distribution_inventory(
     tmp_path: Path,
 ) -> None:
     lifecycle = importlib.import_module(f"{fixture_package.__name__}.lifecycle")
-    driver = lifecycle._driver(tmp_path, None)
+    registries = lifecycle.new_application_registry_bundle(local_component_source=None)
+    driver = registries.drivers.construct(
+        "local",
+        lifecycle._driver_context(tmp_path, None),
+    )
 
     assert driver.python_executable == sys.executable
     assert driver.freeze_lines is None
