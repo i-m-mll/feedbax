@@ -2438,22 +2438,22 @@ class StageEngine:
         return state.stage(STAGE_COLLECT).status == "completed"
 
     def _resource_requires_recovery_record(self, state: RunSetState) -> bool:
-        facts = self._driver_facts()
         if self._provision_completed(state):
             return True
-        if not facts.supports(DriverHook.HAS_PENDING_OWNED_RESOURCE):
-            return False
-        pending = getattr(self.driver, DriverHook.HAS_PENDING_OWNED_RESOURCE.value, None)
-        assert callable(pending)
-        return bool(pending())
+        pending = self._driver_hook(
+            DriverHook.HAS_PENDING_OWNED_RESOURCE,
+            "has_pending_owned_resource",
+        )
+        return bool(pending()) if pending is not None else False
 
     def _emergency_provider_identity(self, state: RunSetState) -> EmergencyProviderIdentity:
         realized = self._realized_driver_capabilities()
-        facts = realized.facts
         ownership: Mapping[str, Any] = {}
-        if facts.supports(DriverHook.TEARDOWN_OWNERSHIP):
-            describe = getattr(self.driver, DriverHook.TEARDOWN_OWNERSHIP.value, None)
-            assert callable(describe)
+        describe = self._driver_hook(
+            DriverHook.TEARDOWN_OWNERSHIP,
+            "teardown_ownership",
+        )
+        if describe is not None:
             ownership = dict(describe(state))
         resource_id = ownership.get("resource_id")
         if not isinstance(resource_id, str) or not resource_id:

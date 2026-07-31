@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import errno
 import hashlib
 import json
 from pathlib import Path
@@ -29,11 +30,32 @@ from feedbax.orchestration import (
     LaunchPolicy,
     RowLaunchSpec,
     RunAssemblyRequest,
+    RunSetState,
     RunSetStateStore,
     SchemaArtifactRef,
     StageEngine,
 )
-from feedbax.orchestration.drivers import DriverConstructionContext
+from feedbax.orchestration.drivers import (
+    AcquisitionSemantics,
+    AuthorizationSemantics,
+    CustodySemantics,
+    DriverCapabilityEnvelope,
+    DriverCapabilityFacts,
+    DriverConstructionContext,
+    DriverHook,
+    DriverRegistration,
+    DriverRegistry,
+    DriverRowProbe,
+    DriverVenue,
+    EnvironmentSemantics,
+    MonitoringSemantics,
+    RealizedDriverCapabilities,
+    RecoverySemantics,
+    ResourceSemantics,
+    RetrySemantics,
+    SpendSemantics,
+    TeardownSemantics,
+)
 from feedbax.orchestration.revision import resolve_feedbax_revision
 from feedbax.plugins.application import new_application_registry_bundle
 
@@ -75,7 +97,11 @@ class _LocalLifecycleCompiler:
         )
 
 
-def _request(root: Path) -> tuple[RunAssemblyRequest, AssemblyContext, AssemblyCompilerRegistry]:
+def _request(
+    root: Path,
+    *,
+    driver: str = "local",
+) -> tuple[RunAssemblyRequest, AssemblyContext, AssemblyCompilerRegistry]:
     authored = {
         "schema_id": STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
         "schema_version": STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,
@@ -102,7 +128,7 @@ def _request(root: Path) -> tuple[RunAssemblyRequest, AssemblyContext, AssemblyC
             "compiler_version": _COMPILER_VERSION,
         },
         deployment_policy=DeploymentPolicy(
-            driver="local",
+            driver=driver,
             venue="local",
             cloud_authorized=False,
             review_required=False,
@@ -124,6 +150,114 @@ def _request(root: Path) -> tuple[RunAssemblyRequest, AssemblyContext, AssemblyC
         identity_adapter=StudioTrainingIdentityAdapter(),
     )
     return request, AssemblyContext(custody_root=root / "custody"), registry
+
+
+class _MonitorEnospcStore(RunSetStateStore):
+    """Inject one primary-state ENOSPC after a resource has been launched."""
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self.primary_failed = False
+
+    def _save(self, state: RunSetState, *, crash_before_replace: bool = False) -> Path:
+        if (
+            not self.primary_failed
+            and state.current_stage == "MONITOR"
+            and state.stage("MONITOR").status == "running"
+        ):
+            self.primary_failed = True
+            raise OSError(errno.ENOSPC, "external fixture primary state ENOSPC")
+        return super()._save(state, crash_before_replace=crash_before_replace)
+
+
+class _CustodyDriver:
+    """Allocation-free destructive fixture governed by realized capability facts."""
+
+    poll_interval_seconds = 0.01
+    capability_envelope = DriverCapabilityEnvelope.single(
+        "fixture:custody",
+        DriverCapabilityFacts(
+            variant_id="destructive-ephemeral",
+            venue=DriverVenue.LOCAL_PROCESS,
+            resources=ResourceSemantics.DRIVER_OWNED,
+            spend=SpendSemantics.NONE,
+            authorization=AuthorizationSemantics.NONE,
+            environment=EnvironmentSemantics.LOCAL_INVENTORY,
+            monitoring=MonitoringSemantics.ROW_POLL,
+            recovery=RecoverySemantics.NONE,
+            retry=RetrySemantics.NONE,
+            acquisition=AcquisitionSemantics.EXTERNALLY_PROVIDED,
+            teardown=TeardownSemantics.VERIFIED_RESOURCE_ABSENCE,
+            custody=CustodySemantics.EPHEMERAL_REMOTE_RESOURCE,
+            optional_hooks=frozenset({DriverHook.TEARDOWN_OWNERSHIP}),
+        ),
+    )
+
+    def __init__(
+        self,
+        realized: RealizedDriverCapabilities,
+        *,
+        fail_collect: bool = False,
+    ) -> None:
+        self.realized_capabilities = realized
+        self.fail_collect = fail_collect
+        self.delete_calls = 0
+
+    def provision(self, *_args: object) -> dict[str, object]:
+        return {"driver": "fixture:custody", "resource_id": "fixture-resource"}
+
+    def realize_env(self, *_args: object) -> str:
+        return "fixture-custody-environment"
+
+    def stage_inputs(self, *_args: object) -> dict[str, object]:
+        return {}
+
+    def launch_row(self, *_args: object) -> dict[str, object]:
+        return {"pid": 1}
+
+    def probe(self, *_args: object) -> DriverRowProbe:
+        return DriverRowProbe(status="completed")
+
+    def stop_row(self, *_args: object) -> dict[str, object]:
+        return {}
+
+    def collect(self, *_args: object) -> dict[str, str]:
+        if self.fail_collect:
+            raise RuntimeError("fixture collection interrupted before custody")
+        return {}
+
+    def teardown_ownership(self, _state: RunSetState) -> dict[str, object]:
+        return {
+            "kind": "fixture-created",
+            "owned_by_run": True,
+            "teardown_allowed": True,
+            "resource_id": "fixture-resource",
+        }
+
+    def teardown(self, *_args: object) -> dict[str, object]:
+        self.delete_calls += 1
+        return {"teardown": "removed", "resource_id": "fixture-resource"}
+
+
+def _custody_driver(*, fail_collect: bool = False) -> _CustodyDriver:
+    return _CustodyDriver(
+        _CustodyDriver.capability_envelope.realize("destructive-ephemeral"),
+        fail_collect=fail_collect,
+    )
+
+
+def _custody_driver_registry(driver: _CustodyDriver) -> DriverRegistry:
+    envelope = _CustodyDriver.capability_envelope
+    return DriverRegistry(
+        (
+            DriverRegistration(
+                name="fixture:custody",
+                supported_capabilities=envelope,
+                resolve_capabilities=lambda _context: driver.realized_capabilities,
+                factory=lambda _context, _realized: driver,
+            ),
+        )
+    )
 
 
 def _driver_context(root: Path, bundle: object) -> DriverConstructionContext:
@@ -209,4 +343,103 @@ def check_public_lifecycle_recovery() -> bool:
     return True
 
 
-__all__ = ["check_public_lifecycle_recovery"]
+def check_custody_persistence_recovery() -> bool:
+    """Prove primary ENOSPC survives restart and gates deletion until custody."""
+    with tempfile.TemporaryDirectory(prefix="feedbax-custody-conformance-") as temporary:
+        root = Path(temporary).resolve()
+        request, context, registry = _request(root, driver="fixture:custody")
+        state_path = root / "orchestration" / _RUN_SET_ID / "state.json"
+        store = _MonitorEnospcStore(state_path)
+        checks = CheckRegistry(
+            {
+                "external_fixture": lambda _row: CheckEntry(
+                    check_id="external_fixture",
+                    status="pass",
+                )
+            }
+        )
+
+        initial_driver = _custody_driver()
+        try:
+            StageEngine.from_request(
+                request,
+                context=context,
+                registry=registry,
+                driver_registry=_custody_driver_registry(initial_driver),
+                driver_context=lambda bundle: _driver_context(root, bundle),
+                run_set_id=_RUN_SET_ID,
+                store=store,
+                conformance_registry=checks,
+            ).run()
+        except Exception as exc:
+            if exc.__class__.__name__ != "PrimaryStatePersistenceError" or "ENOSPC" not in str(exc):
+                raise
+        else:
+            raise AssertionError("primary ENOSPC did not interrupt the installed lifecycle")
+
+        emergency = store.load_emergency()
+        if (
+            emergency.provider_identity.provider != "fixture:custody"
+            or emergency.provider_identity.resource_id != "fixture-resource"
+            or emergency.preservation_state != "preserve-required"
+            or emergency.custody_complete
+        ):
+            raise AssertionError("primary ENOSPC emergency evidence was incomplete")
+        if initial_driver.delete_calls:
+            raise AssertionError("primary persistence failure reached destructive teardown")
+
+        restarted_store = RunSetStateStore(state_path)
+        restarted_store.preflight_and_reserve()
+        blocked_driver = _custody_driver(fail_collect=True)
+        try:
+            StageEngine.from_request(
+                request,
+                context=context,
+                registry=registry,
+                driver_registry=_custody_driver_registry(blocked_driver),
+                driver_context=lambda bundle: _driver_context(root, bundle),
+                run_set_id=_RUN_SET_ID,
+                store=restarted_store,
+                conformance_registry=checks,
+            ).run()
+        except Exception as exc:
+            if exc.__class__.__name__ != "CustodyPreservationRequired" or (
+                "requires custody first" not in str(exc)
+            ):
+                raise
+        else:
+            raise AssertionError("restart deletion was not blocked before custody")
+        if blocked_driver.delete_calls:
+            raise AssertionError("restart invoked delete before custody")
+        if restarted_store.load_emergency().preservation_state != "preserve-required":
+            raise AssertionError("blocked restart weakened emergency preservation state")
+
+        restarted_store.preflight_and_reserve()
+        release_driver = _custody_driver()
+        released = StageEngine.from_request(
+            request,
+            context=context,
+            registry=registry,
+            driver_registry=_custody_driver_registry(release_driver),
+            driver_context=lambda bundle: _driver_context(root, bundle),
+            run_set_id=_RUN_SET_ID,
+            store=restarted_store,
+            conformance_registry=checks,
+        ).run(stop_after_stage="TEARDOWN")
+        row_id = f"{_RUN_SET_ID}-row"
+        if released.rows[row_id].status != "completed":
+            raise AssertionError("restarted row did not reach collected custody")
+        if released.stage("COLLECT").status != "completed":
+            raise AssertionError("restarted lifecycle did not persist completed custody")
+        if release_driver.delete_calls != 1:
+            raise AssertionError("destructive teardown did not occur exactly once after custody")
+        released_emergency = restarted_store.load_emergency()
+        if (
+            released_emergency.preservation_state != "release-authorized"
+            or not released_emergency.custody_complete
+        ):
+            raise AssertionError("post-custody emergency evidence did not authorize release")
+    return True
+
+
+__all__ = ["check_custody_persistence_recovery", "check_public_lifecycle_recovery"]

@@ -220,6 +220,7 @@ _REMOTE_FAKE_DRIVER_ENVELOPE = DriverCapabilityEnvelope.single(
 class FakeDriver:
     realized_capabilities = _FAKE_DRIVER_ENVELOPE.realize("local-stop")
     poll_interval_seconds = 0.05
+
     def __init__(self, *, fail: dict[str, int] | None = None) -> None:
         self.calls: list[str] = []
         self.fail = dict(fail or {})
@@ -267,9 +268,22 @@ class FakeDriver:
 class CapabilityFakeDriver(FakeDriver):
     def __init__(self, variant_id: str) -> None:
         super().__init__()
-        self.realized_capabilities = RunPodOrchestrationDriver.capability_envelope.realize(
-            variant_id
+        facts = replace(
+            RunPodOrchestrationDriver.capability_envelope.realize(variant_id).facts,
+            retry=RetrySemantics.NONE,
+            acquisition=AcquisitionSemantics.EXTERNALLY_PROVIDED,
+            optional_hooks=frozenset(
+                {
+                    DriverHook.COLLECT_FAILURE_LOGS,
+                    DriverHook.HAS_PENDING_OWNED_RESOURCE,
+                    DriverHook.TEARDOWN_OWNERSHIP,
+                }
+            ),
         )
+        self.realized_capabilities = DriverCapabilityEnvelope.single(
+            "runpod",
+            facts,
+        ).realize(variant_id)
         self.delete_calls = 0
 
     def provision(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:

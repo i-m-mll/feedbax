@@ -669,6 +669,12 @@ def test_local_lifecycle_uses_clean_interpreter_distribution_inventory(
     assert driver.freeze_lines is None
 
 
+def test_custody_persistence_case_uses_public_installed_contract(fixture_package) -> None:
+    lifecycle = importlib.import_module(f"{fixture_package.__name__}.lifecycle")
+
+    assert lifecycle.check_custody_persistence_recovery()
+
+
 def test_local_lifecycle_child_is_fixed_print_only(fixture_package) -> None:
     lifecycle = importlib.import_module(f"{fixture_package.__name__}.lifecycle")
     compiled = lifecycle._LocalLifecycleCompiler().compile(
