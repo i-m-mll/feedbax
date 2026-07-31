@@ -4,7 +4,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from feedbax.contracts.component import ComponentIdentity, ComponentMigrationInfo, PortTypeSpec
+from feedbax.contracts.component import (
+    ComponentIdentity,
+    ComponentMigrationInfo,
+    DynamicPortPolicy,
+    PortTypeSpec,
+)
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.graph import GraphSpec, GraphUIState, NodeUIState, ParamSchema
@@ -33,6 +38,7 @@ class ComponentMeta:
     output_ports: List[str]
     icon: str = "box"
     port_types: Optional[PortTypeSpec] = None
+    dynamic_port_policy: Optional[DynamicPortPolicy] = None
     domain: str = CAUSAL_DOMAIN_ID
     interior_domain: Optional[str] = None
     is_composite: bool = False

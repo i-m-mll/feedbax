@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -14,8 +14,12 @@ from feedbax.contracts.representation import RepresentationSpec
 
 COMPONENT_DEFINITION_SCHEMA_ID = "feedbax.spec.component_definition"
 COMPONENT_DEFINITION_SCHEMA_VERSION_V1 = "feedbax.spec.component_definition.v1"
-COMPONENT_DEFINITION_SCHEMA_VERSION = "feedbax.spec.component_definition.v2"
+COMPONENT_DEFINITION_SCHEMA_VERSION_V2 = "feedbax.spec.component_definition.v2"
+COMPONENT_DEFINITION_SCHEMA_VERSION = "feedbax.spec.component_definition.v3"
 COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID = "component-definition-v1-to-v2-port-kind"
+COMPONENT_DEFINITION_DYNAMIC_PORT_POLICY_MIGRATION_ID = (
+    "component-definition-v2-to-v3-dynamic-port-policy"
+)
 
 
 def _migrate_port_type_payload(payload: Any) -> Any:
@@ -26,16 +30,15 @@ def _migrate_port_type_payload(payload: Any) -> Any:
     return {**payload, "kind": "signal"}
 
 
-def migrate_component_definition_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Migrate legacy component definitions to the conserving-port schema."""
+def migrate_component_definition_v1_to_v2_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Migrate legacy component definitions to explicit port kinds."""
 
     schema_version = payload.get("schema_version")
     if schema_version not in {None, COMPONENT_DEFINITION_SCHEMA_VERSION_V1}:
         return dict(payload)
-
     migrated = dict(payload)
     migrated.setdefault("schema_id", COMPONENT_DEFINITION_SCHEMA_ID)
-    migrated["schema_version"] = COMPONENT_DEFINITION_SCHEMA_VERSION
+    migrated["schema_version"] = COMPONENT_DEFINITION_SCHEMA_VERSION_V2
     port_types = migrated.get("port_types")
     if isinstance(port_types, dict):
         migrated["port_types"] = {
@@ -50,6 +53,24 @@ def migrate_component_definition_payload(payload: Dict[str, Any]) -> Dict[str, A
             },
         }
     return migrated
+
+
+def migrate_component_definition_v2_to_v3_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Add the optional declarative dynamic-port policy field."""
+
+    if payload.get("schema_version") != COMPONENT_DEFINITION_SCHEMA_VERSION_V2:
+        return dict(payload)
+    migrated = dict(payload)
+    migrated["schema_version"] = COMPONENT_DEFINITION_SCHEMA_VERSION
+    migrated.setdefault("dynamic_port_policy", None)
+    return migrated
+
+
+def migrate_component_definition_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Migrate legacy component definitions to the current schema."""
+
+    migrated = migrate_component_definition_v1_to_v2_payload(payload)
+    return migrate_component_definition_v2_to_v3_payload(migrated)
 
 
 class PortType(BaseModel):
@@ -78,6 +99,105 @@ class PortTypeSpec(BaseModel):
 
     inputs: Dict[str, PortType] = Field(default_factory=dict)
     outputs: Dict[str, PortType] = Field(default_factory=dict)
+
+
+class DynamicPortPolicy(BaseModel):
+    """Declarative policy for ports whose arity is derived from parameters."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    count_param: str = Field(min_length=1)
+    count_mode: Literal["integer", "sequence_length"]
+    direction: Literal["input", "output"]
+    fixed_input_ports: List[str] = Field(default_factory=list)
+    fixed_output_ports: List[str] = Field(default_factory=list)
+    generated_name_template: str = Field(min_length=1)
+    generated_index_origin: int = 0
+    minimum_count: int = Field(default=1, ge=0)
+    dynamic_port_type: PortType
+
+    @model_validator(mode="after")
+    def validate_generated_name_template(self) -> "DynamicPortPolicy":
+        if "{index}" not in self.generated_name_template:
+            raise ValueError("generated_name_template must contain '{index}'")
+        try:
+            self.generated_name_template.format(index=self.generated_index_origin)
+        except (IndexError, KeyError, ValueError) as exc:
+            raise ValueError("generated_name_template may only format the index field") from exc
+        return self
+
+
+class DynamicPortLayout(BaseModel):
+    """Derived input and output port names for one component instance."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    input_ports: List[str]
+    output_ports: List[str]
+
+
+def derive_dynamic_port_count(
+    policy: DynamicPortPolicy,
+    params: Mapping[str, Any],
+) -> int:
+    """Derive and validate a dynamic port count without component-type branching."""
+
+    if policy.count_param not in params:
+        raise ValueError(f"missing dynamic-port parameter {policy.count_param!r}")
+    value = params[policy.count_param]
+    if policy.count_mode == "integer":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"dynamic-port parameter {policy.count_param!r} must be an integer")
+        count = value
+    else:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"dynamic-port parameter {policy.count_param!r} must be a sequence")
+        count = len(value)
+    if count < policy.minimum_count:
+        raise ValueError(
+            f"dynamic-port parameter {policy.count_param!r} derives {count} ports; "
+            f"minimum is {policy.minimum_count}"
+        )
+    return count
+
+
+def derive_dynamic_port_layout(
+    policy: DynamicPortPolicy,
+    params: Mapping[str, Any],
+) -> DynamicPortLayout:
+    """Derive the complete port layout declared by ``policy``."""
+
+    count = derive_dynamic_port_count(policy, params)
+    generated = [
+        policy.generated_name_template.format(index=policy.generated_index_origin + offset)
+        for offset in range(count)
+    ]
+    input_ports = list(policy.fixed_input_ports)
+    output_ports = list(policy.fixed_output_ports)
+    if policy.direction == "input":
+        input_ports.extend(generated)
+    else:
+        output_ports.extend(generated)
+    return DynamicPortLayout(input_ports=input_ports, output_ports=output_ports)
+
+
+def validate_dynamic_port_layout(
+    policy: DynamicPortPolicy,
+    params: Mapping[str, Any],
+    *,
+    input_ports: List[str],
+    output_ports: List[str],
+) -> DynamicPortLayout:
+    """Return the expected layout or fail when declared ports do not match it."""
+
+    expected = derive_dynamic_port_layout(policy, params)
+    if input_ports != expected.input_ports or output_ports != expected.output_ports:
+        raise ValueError(
+            "dynamic port layout mismatch: "
+            f"declared inputs={input_ports!r}, outputs={output_ports!r}; "
+            f"expected inputs={expected.input_ports!r}, outputs={expected.output_ports!r}"
+        )
+    return expected
 
 
 class ComponentIdentity(BaseModel):
@@ -122,6 +242,7 @@ class ComponentDefinition(BaseModel):
     icon: str = "box"
     default_params: Dict[str, ParamValue] = Field(default_factory=dict)
     port_types: Optional[PortTypeSpec] = None
+    dynamic_port_policy: Optional[DynamicPortPolicy] = None
     domain: str = CAUSAL_DOMAIN_ID
     interior_domain: Optional[str] = None
     is_composite: bool = False
