@@ -195,6 +195,7 @@ from feedbax.contracts.figures import (
     FIGURE_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
     FIGURE_COMPOSITION_SPEC_SCHEMA_ID,
     FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION,
+    FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION_V1,
     FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID,
     FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION,
     FIGURE_RUNTIME_BINDING_SCHEMA_ID,
@@ -2944,6 +2945,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "feedbax.analysis.figures.execute_figure_spec",
             ),
             description="Content-pinned ordered composition envelope for FigureSpec.",
+            stance="migrate",
+            supported_old_versions=(FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION_V1,),
             rejected_old_versions=("feedbax.spec.figure_composition.v0",),
             required_tests=("tests/test_figure_composition.py",),
         ),
@@ -5051,6 +5054,13 @@ def _migrate_analysis_bundle_v5_to_v6_payload(payload: dict[str, Any]) -> dict[s
     return migrated
 
 
+def _migrate_figure_composition_v1_to_v2_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve v1 deltas while moving figure-only structure into v2 deltas."""
+    return dict(payload)
+
+
 def _migrate_figure_runtime_binding_v1_to_v2_payload(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -5415,6 +5425,18 @@ default_spec_registry.register_migration(
         description=(
             "Preserve envelopes from compiler families that predate typed training-row "
             "provenance and mark that provenance explicitly unavailable."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "FigureCompositionSpec",
+    SchemaMigration(
+        source_version=FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION_V1,
+        target_version=FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION,
+        migration_id="figure-composition-v1-to-v2-figure-specific-structural-additions",
+        migrate=_migrate_figure_composition_v1_to_v2_payload,
+        description=(
+            "Preserve v1 patch semantics while admitting figure-scoped typed additions."
         ),
     ),
 )

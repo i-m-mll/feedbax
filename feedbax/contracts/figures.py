@@ -76,9 +76,10 @@ import math
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from typing import Any, Literal, TypeAlias
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from feedbax.contracts.expressions import Expr, ValueExpr
 from feedbax.contracts.manifest import (
@@ -97,7 +98,8 @@ from feedbax.contracts.selection import ManifestPredicate
 FIGURE_SPEC_SCHEMA_ID = "feedbax.spec.figure"
 FIGURE_SPEC_SCHEMA_VERSION = "feedbax.spec.figure.v2"
 FIGURE_COMPOSITION_SPEC_SCHEMA_ID = "feedbax.spec.figure_composition"
-FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION = "feedbax.spec.figure_composition.v1"
+FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.figure_composition.v1"
+FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION = "feedbax.spec.figure_composition.v2"
 FIGURE_COMPOSITION_PROVENANCE_SCHEMA_ID = "feedbax.spec.figure_composition_provenance"
 FIGURE_COMPOSITION_PROVENANCE_SCHEMA_VERSION = "feedbax.spec.figure_composition_provenance.v1"
 FIGURE_INPUT_AUTHORITY_SCHEMA_ID = "feedbax.spec.figure_input_authority"
@@ -122,6 +124,11 @@ EQUAL_DATA_ASPECT_SCHEMA_ID = "feedbax.spec.equal_data_aspect"
 EQUAL_DATA_ASPECT_SCHEMA_VERSION = "feedbax.spec.equal_data_aspect.v1"
 SCENE_CAMERA_SCHEMA_ID = "feedbax.spec.scene_camera"
 SCENE_CAMERA_SCHEMA_VERSION = "feedbax.spec.scene_camera.v1"
+# Declaration-side identity for PanelSpec objects added beneath FigureSpec v2.
+# It is intentionally not emitted inside PanelSpec: doing so would mutate the
+# durable FigureSpec v2 payload shape under an unchanged root schema identity.
+FIGURE_PANEL_SCHEMA_ID = "feedbax.spec.figure_panel"
+FIGURE_PANEL_SCHEMA_VERSION = "feedbax.spec.figure_panel.v1"
 FIGURE_RUNTIME_BINDING_SCHEMA_ID = "feedbax.spec.figure_runtime_binding"
 FIGURE_RUNTIME_BINDING_SCHEMA_VERSION_V1 = "feedbax.spec.figure_runtime_binding.v1"
 FIGURE_RUNTIME_BINDING_SCHEMA_VERSION = "feedbax.spec.figure_runtime_binding.v2"
@@ -1397,6 +1404,57 @@ class FigureSpec(StrictModel):
             )
 
 
+class SameSchemaStructuralAddition(StrictModel):
+    """Exact identity of one typed object added beneath an unchanged figure root."""
+
+    path: str
+    schema_id: str
+    schema_version: str
+
+    @model_validator(mode="after")
+    def _validate_addition(self) -> "SameSchemaStructuralAddition":
+        if not self.path.strip() or any(not part for part in self.path.split(".")):
+            raise ValueError(
+                "FigureCompositionDelta same-schema addition path must be dotted-path-like"
+            )
+        if not self.schema_id.strip() or not self.schema_version.strip():
+            raise ValueError(
+                "FigureCompositionDelta same-schema addition identity must be nonempty"
+            )
+        return self
+
+
+class FigureCompositionDelta(MatrixCompositionDelta):
+    """Figure-only delta admitting exact typed additions below a stable root."""
+
+    same_schema_structural_additions: list[SameSchemaStructuralAddition] | None = None
+
+    @model_validator(mode="after")
+    def _validate_structural_additions(self) -> "FigureCompositionDelta":
+        paths = [
+            addition.path for addition in (self.same_schema_structural_additions or [])
+        ]
+        if len(paths) != len(set(paths)):
+            raise ValueError(
+                "FigureCompositionDelta same-schema structural addition paths must be unique"
+            )
+        if self.same_schema_structural_additions and self.schema_id is not None:
+            raise ValueError(
+                "FigureCompositionDelta same-schema additions cannot declare a root boundary"
+            )
+        return self
+
+    def matrix_delta(self) -> MatrixCompositionDelta:
+        """Return the unchanged shared delta projection used by the patch engine."""
+        return MatrixCompositionDelta.model_validate(
+            self.model_dump(
+                mode="json",
+                exclude_none=True,
+                exclude={"same_schema_structural_additions"},
+            )
+        )
+
+
 class FigureCompositionSpec(StrictModel):
     """Authored ordered deltas over one content-pinned figure document.
 
@@ -1408,7 +1466,20 @@ class FigureCompositionSpec(StrictModel):
     schema_id: str = FIGURE_COMPOSITION_SPEC_SCHEMA_ID
     schema_version: str = FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION
     parent: ContentPinnedJsonBase
-    deltas: list[MatrixCompositionDelta] = Field(min_length=1)
+    deltas: list[FigureCompositionDelta] = Field(min_length=1)
+
+    @field_validator("deltas", mode="before")
+    @classmethod
+    def _coerce_shared_delta_instances(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        return [
+            delta.model_dump(mode="json", exclude_none=True)
+            if isinstance(delta, MatrixCompositionDelta)
+            and not isinstance(delta, FigureCompositionDelta)
+            else delta
+            for delta in value
+        ]
 
     @model_validator(mode="after")
     def _validate_composition(self) -> "FigureCompositionSpec":
@@ -1439,6 +1510,42 @@ class FigureCompositionSpec(StrictModel):
     def identity_sha256(self) -> str:
         """Return deterministic authored identity for this composition envelope."""
         return sha256_bytes(canonical_json_bytes(self.identity_envelope()))
+
+
+def figure_composition_payload_identity_sha256(payload: Mapping[str, Any]) -> str:
+    """Hash exact authored v1/v2 envelope bytes while excluding only parent ``ref``."""
+    if payload.get("schema_id") != FIGURE_COMPOSITION_SPEC_SCHEMA_ID:
+        raise ValueError("figure composition payload has unsupported schema_id")
+    version = payload.get("schema_version")
+    if version == FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION:
+        FigureCompositionSpec.model_validate(payload)
+    elif version == FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION_V1:
+        unexpected = set(payload) - {"schema_id", "schema_version", "parent", "deltas"}
+        if unexpected:
+            raise ValueError(
+                f"FigureCompositionSpec v1 has unexpected fields: {sorted(unexpected)}"
+            )
+        ContentPinnedJsonBase.model_validate(payload.get("parent"))
+        deltas = [
+            MatrixCompositionDelta.model_validate(delta)
+            for delta in payload.get("deltas", [])
+        ]
+        if not deltas:
+            raise ValueError("FigureCompositionSpec v1 deltas must be nonempty")
+        layer_ids = [delta.layer_id for delta in deltas]
+        if len(layer_ids) != len(set(layer_ids)):
+            raise ValueError("FigureCompositionSpec v1 deltas layer_id values must be unique")
+    else:
+        raise ValueError(f"unsupported FigureCompositionSpec schema_version: {version!r}")
+    parent = deepcopy(dict(payload["parent"]))
+    parent.pop("ref", None)
+    envelope = {
+        "schema_id": payload["schema_id"],
+        "schema_version": payload["schema_version"],
+        "parent": parent,
+        "deltas": deepcopy(payload["deltas"]),
+    }
+    return sha256_bytes(canonical_json_bytes(envelope))
 
 
 class FigureCompositionLayer(StrictModel):
@@ -1568,8 +1675,12 @@ class FigureCompositionProvenance(StrictModel):
                     "FigureCompositionProvenance layer parent disagrees with document custody"
                 )
             envelope_document = self.documents[index + 1]
-            envelope = FigureCompositionSpec.model_validate(envelope_document.selected_inline)
-            if envelope.identity_sha256() != layer.envelope_sha256:
+            if (
+                figure_composition_payload_identity_sha256(
+                    envelope_document.selected_inline
+                )
+                != layer.envelope_sha256
+            ):
                 raise ValueError(
                     "FigureCompositionProvenance envelope hash disagrees with document custody"
                 )

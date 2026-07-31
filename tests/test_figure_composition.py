@@ -13,18 +13,28 @@ import pytest
 from feedbax.analysis import figures as figure_execution
 from feedbax.analysis.figures import coerce_figure_spec, execute_figure_spec, resolve_figure_spec
 from feedbax.contracts.figures import (
+    FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID,
+    FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION,
+    FIGURE_PANEL_SCHEMA_ID,
+    FIGURE_PANEL_SCHEMA_VERSION,
+    FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION_V1,
     FIGURE_SPEC_SCHEMA_ID,
     FIGURE_SPEC_SCHEMA_VERSION,
+    FIGURE_TRACE_FAMILY_SCHEMA_ID,
+    FIGURE_TRACE_FAMILY_SCHEMA_VERSION,
+    FigureCompositionDelta,
     FigureCompositionProvenance,
     FigureCompositionSpec,
     FigureSpec,
     PanelSpec,
+    SameSchemaStructuralAddition,
     TraceBinding,
     TraceFamily,
     TraceFamilyIndex,
 )
 from feedbax.contracts.manifest import (
     OverridePatch,
+    ParentRef,
     canonical_json_bytes,
     figure_manifest_id,
     sha256_bytes,
@@ -76,16 +86,38 @@ def _write_payload(root: Path, name: str, payload: dict[str, Any]) -> ContentPin
 
 def _composition(
     parent: ContentPinnedJsonBase,
-    *deltas: MatrixCompositionDelta,
+    *deltas: FigureCompositionDelta,
 ) -> FigureCompositionSpec:
     return FigureCompositionSpec(parent=parent, deltas=list(deltas))
 
 
 def _replace(layer: str, path: str, value: Any, *, acknowledges: list[str] | None = None):
-    return MatrixCompositionDelta(
+    return FigureCompositionDelta(
         layer_id=layer,
         patches=[OverridePatch(op="replace", path=path, value=value)],
         acknowledges_ancestor_paths=acknowledges or [],
+    )
+
+
+def _add_structure(
+    layer: str,
+    path: str,
+    value: dict[str, Any],
+    *identities: tuple[str, str, str],
+    acknowledges: list[str] | None = None,
+) -> FigureCompositionDelta:
+    return FigureCompositionDelta(
+        layer_id=layer,
+        patches=[OverridePatch(op="add", path=path, value=value)],
+        acknowledges_ancestor_paths=acknowledges or [],
+        same_schema_structural_additions=[
+            SameSchemaStructuralAddition(
+                path=identity_path,
+                schema_id=schema_id,
+                schema_version=schema_version,
+            )
+            for identity_path, schema_id, schema_version in identities
+        ],
     )
 
 
@@ -100,6 +132,25 @@ def test_ordinary_figure_v2_is_unchanged_and_composition_v0_rejects() -> None:
     assert resolve_figure_spec(current).figure_spec.model_dump(
         mode="json", exclude_none=True
     ) == current
+    assert "schema_id" not in current["panels"][0]
+    assert "schema_version" not in current["panels"][0]
+    assert "same_schema_structural_additions" not in MatrixCompositionDelta.model_fields
+    current_composition = _composition(
+        ContentPinnedJsonBase(ref="base.json", sha256="0" * 64),
+        _replace("name", "name", "migrated"),
+    ).model_dump(mode="json", exclude_none=True)
+    legacy_composition = {
+        **current_composition,
+        "schema_version": FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION_V1,
+    }
+    migrated_composition = default_spec_registry.migrate(
+        "FigureCompositionSpec", legacy_composition
+    )
+    assert migrated_composition.target_version == "feedbax.spec.figure_composition.v2"
+    assert [record.migration_id for record in migrated_composition.migration_records] == [
+        "figure-composition-v1-to-v2-figure-specific-structural-additions"
+    ]
+    assert "same_schema_structural_additions" not in migrated_composition.payload["deltas"][0]
     with pytest.raises(UnsupportedSpecVersion):
         default_spec_registry.migrate(
             "FigureSpec", {**current, "schema_version": "feedbax.spec.figure.v0"}
@@ -167,6 +218,307 @@ def test_composition_reaches_panels_and_trace_families_with_ordered_precedence(
     assert resolved.composition.attribution["panels.0.title"].endswith(
         ":publication-title"
     )
+
+
+def test_two_row_same_root_composition_adds_qualified_panel_authority_and_family(
+    tmp_path: Path,
+) -> None:
+    base = _base_spec().model_copy(
+        update={
+            "inputs": [ParentRef(kind="AnalysisRunManifest", id="source", role="source")]
+        }
+    )
+    root_ref = _write_payload(
+        tmp_path,
+        "one-row.json",
+        base.model_dump(mode="json", exclude_none=True),
+    )
+    panel = PanelSpec(name="detail", title="Detail", row=1, col=0).model_dump(
+        mode="json", exclude_none=True
+    )
+    authority = {
+        "schema_id": FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID,
+        "schema_version": FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION,
+        "input_role": "source",
+        "artifact_payloads": [],
+    }
+    family = _family().model_copy(update={"name": "detail-profiles"}).model_dump(
+        mode="json", exclude_none=True
+    )
+    family["trace"]["name"] = "detail-profile-{index}"
+    family["trace"]["panel"] = "detail"
+    parent = _composition(
+        root_ref,
+        _replace("two-rows", "assembler_params.rows", 2),
+        _add_structure(
+            "detail-panel",
+            "panels.1",
+            panel,
+            ("panels.1", FIGURE_PANEL_SCHEMA_ID, FIGURE_PANEL_SCHEMA_VERSION),
+        ),
+    )
+    parent_ref = _write_payload(
+        tmp_path,
+        "two-row-parent.json",
+        parent.model_dump(mode="json", exclude_none=True),
+    )
+    child = _composition(
+        parent_ref,
+        _add_structure(
+            "source-authority",
+            "input_authorities.0",
+            authority,
+            (
+                "input_authorities.0",
+                FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID,
+                FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION,
+            ),
+        ),
+        _add_structure(
+            "detail-family",
+            "trace_families.1",
+            family,
+            (
+                "trace_families.1",
+                FIGURE_TRACE_FAMILY_SCHEMA_ID,
+                FIGURE_TRACE_FAMILY_SCHEMA_VERSION,
+            ),
+        ),
+    )
+
+    resolved = resolve_figure_spec(child, repo_root=tmp_path)
+
+    assert resolved.figure_spec.schema_version == FIGURE_SPEC_SCHEMA_VERSION
+    assert resolved.figure_spec.assembler_params["rows"] == 2
+    assert [panel.name for panel in resolved.figure_spec.panels] == ["main", "detail"]
+    assert resolved.figure_spec.input_authorities[0].input_role == "source"
+    assert resolved.figure_spec.trace_families is not None
+    assert [family.name for family in resolved.figure_spec.trace_families] == [
+        "profiles",
+        "detail-profiles",
+    ]
+    assert resolved.composition is not None
+    assert len(resolved.composition.layers) == 2
+    assert resolved.authored_identity_sha256 != resolved.resolved_identity_sha256
+    resolved_panel = resolved.figure_spec.model_dump(mode="json", exclude_none=True)["panels"][1]
+    assert "schema_id" not in resolved_panel
+    assert "schema_version" not in resolved_panel
+
+
+def test_v1_migration_preserves_raw_authored_identity_and_custody(tmp_path: Path) -> None:
+    root_ref = _write_payload(
+        tmp_path,
+        "root.json",
+        _base_spec().model_dump(mode="json", exclude_none=True),
+    )
+    current = _composition(root_ref, _replace("name", "name", "migrated")).model_dump(
+        mode="json", exclude_none=True
+    )
+    legacy = {**current, "schema_version": FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION_V1}
+    migrated = default_spec_registry.migrate("FigureCompositionSpec", legacy).payload
+    raw_identity_envelope = json.loads(json.dumps(legacy))
+    raw_identity_envelope["parent"].pop("ref")
+    expected_authored_hash = sha256_bytes(canonical_json_bytes(raw_identity_envelope))
+
+    legacy_resolution = resolve_figure_spec(legacy, repo_root=tmp_path)
+    current_resolution = resolve_figure_spec(migrated, repo_root=tmp_path)
+
+    assert legacy_resolution.authored == legacy
+    assert legacy_resolution.authored_identity_sha256 == expected_authored_hash
+    assert legacy_resolution.resolved_identity_sha256 == current_resolution.resolved_identity_sha256
+    assert legacy_resolution.composition is not None
+    assert legacy_resolution.composition.layers[0].envelope_sha256 == expected_authored_hash
+    authored_leaf = legacy_resolution.composition.documents[-1]
+    assert authored_leaf.role == "authored_leaf"
+    assert authored_leaf.inline == legacy
+    assert authored_leaf.selected_inline == legacy
+    assert authored_leaf.sha256 == sha256_bytes(canonical_json_bytes(legacy))
+
+
+@pytest.mark.parametrize(
+    ("case", "mutate", "message"),
+    [
+        (
+            "unqualified",
+            lambda delta: delta.model_copy(update={"same_schema_structural_additions": []}),
+            "unqualified_or_mismatched",
+        ),
+        (
+            "invalid-panel-shape",
+            lambda delta: delta.model_copy(
+                update={
+                    "patches": [
+                        OverridePatch(
+                            op="add",
+                            path="panels.1",
+                            value={"row": 1, "col": 0},
+                        )
+                    ]
+                }
+            ),
+            "not a valid PanelSpec",
+        ),
+        (
+            "sibling-acknowledgement",
+            lambda delta: delta.model_copy(
+                update={
+                    "same_schema_structural_additions": [
+                        SameSchemaStructuralAddition(
+                            path="panels.0",
+                            schema_id=FIGURE_PANEL_SCHEMA_ID,
+                            schema_version=FIGURE_PANEL_SCHEMA_VERSION,
+                        )
+                    ]
+                }
+            ),
+            "absent-only add patch",
+        ),
+        (
+            "replace-is-not-absent-only",
+            lambda delta: delta.model_copy(
+                update={
+                    "patches": [
+                        OverridePatch(op="replace", path="panels.0", value=delta.patches[0].value)
+                    ],
+                    "same_schema_structural_additions": [
+                        SameSchemaStructuralAddition(
+                            path="panels.0",
+                            schema_id=FIGURE_PANEL_SCHEMA_ID,
+                            schema_version=FIGURE_PANEL_SCHEMA_VERSION,
+                        )
+                    ],
+                }
+            ),
+            "absent-only add patch",
+        ),
+    ],
+)
+def test_same_root_structural_additions_fail_closed(
+    tmp_path: Path,
+    case: str,
+    mutate,
+    message: str,
+) -> None:
+    del case
+    root_ref = _write_payload(
+        tmp_path,
+        "root.json",
+        _base_spec().model_dump(mode="json", exclude_none=True),
+    )
+    panel = PanelSpec(name="detail", row=1, col=0).model_dump(
+        mode="json", exclude_none=True
+    )
+    valid = _add_structure(
+        "panel",
+        "panels.1",
+        panel,
+        ("panels.1", FIGURE_PANEL_SCHEMA_ID, FIGURE_PANEL_SCHEMA_VERSION),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        resolve_figure_spec(_composition(root_ref, mutate(valid)), repo_root=tmp_path)
+
+
+def test_same_root_structural_addition_rejects_invalid_identity_and_root_drift(
+    tmp_path: Path,
+) -> None:
+    root_ref = _write_payload(
+        tmp_path,
+        "root.json",
+        _base_spec().model_dump(mode="json", exclude_none=True),
+    )
+    panel = PanelSpec(name="detail", row=1, col=0).model_dump(
+        mode="json", exclude_none=True
+    )
+    with pytest.raises(ValueError, match="declared_but_absent_or_invalid"):
+        resolve_figure_spec(
+            _composition(
+                root_ref,
+                _add_structure(
+                    "invalid-panel",
+                    "panels.1",
+                    panel,
+                    (
+                        "panels.1",
+                        FIGURE_PANEL_SCHEMA_ID,
+                        "feedbax.spec.figure_panel.v0",
+                    ),
+                ),
+            ),
+            repo_root=tmp_path,
+        )
+
+    missing_authority_identity = {
+        "schema_id": FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID,
+        "input_role": "source",
+        "artifact_payloads": [],
+    }
+    with pytest.raises(ValueError, match="unqualified_or_mismatched"):
+        resolve_figure_spec(
+            _composition(
+                root_ref,
+                _add_structure(
+                    "missing-authority-identity",
+                    "input_authorities.0",
+                    missing_authority_identity,
+                    (
+                        "input_authorities.0",
+                        FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID,
+                        FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION,
+                    ),
+                ),
+            ),
+            repo_root=tmp_path,
+        )
+
+    valid_panel = panel
+    structural_delta = _add_structure(
+        "root-drift",
+        "panels.1",
+        valid_panel,
+        ("panels.1", FIGURE_PANEL_SCHEMA_ID, FIGURE_PANEL_SCHEMA_VERSION),
+    )
+    drift = structural_delta.model_copy(
+        update={
+            "patches": [
+                OverridePatch(
+                    op="replace",
+                    path="schema_version",
+                    value="feedbax.spec.figure.v3",
+                ),
+                *structural_delta.patches,
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="active root identity"):
+        resolve_figure_spec(_composition(root_ref, drift), repo_root=tmp_path)
+
+
+def test_container_add_rejects_undeclared_typed_panel_sibling(tmp_path: Path) -> None:
+    root_ref = _write_payload(
+        tmp_path,
+        "root.json",
+        _base_spec().model_dump(mode="json", exclude_none=True),
+    )
+    inset = FigureSpec(
+        name="inset",
+        assembler="feedbax.grid_figure",
+        panels=[PanelSpec(name="left"), PanelSpec(name="right")],
+    ).model_dump(mode="json", exclude_none=True)
+    incomplete = _add_structure(
+        "nested-figure",
+        "metadata.inset",
+        inset,
+        ("metadata.inset", FIGURE_SPEC_SCHEMA_ID, FIGURE_SPEC_SCHEMA_VERSION),
+        (
+            "metadata.inset.panels.0",
+            FIGURE_PANEL_SCHEMA_ID,
+            FIGURE_PANEL_SCHEMA_VERSION,
+        ),
+    )
+
+    with pytest.raises(ValueError, match=r"metadata\.inset\.panels\.1"):
+        resolve_figure_spec(_composition(root_ref, incomplete), repo_root=tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -431,11 +783,27 @@ def test_execution_manifest_uses_the_same_resolved_semantics_as_display(
     tmp_path: Path,
     application_registry_bundle,
 ) -> None:
-    direct = FigureSpec(name="base", assembler="feedbax.grid_figure")
+    direct = FigureSpec(
+        name="base",
+        assembler="feedbax.grid_figure",
+        panels=[PanelSpec(name="main")],
+    )
     parent = _write_payload(
         tmp_path, "base.json", direct.model_dump(mode="json", exclude_none=True)
     )
-    composed = _composition(parent, _replace("name", "name", "composed"))
+    added_panel = PanelSpec(name="detail", row=1, col=0).model_dump(
+        mode="json", exclude_none=True
+    )
+    composed = _composition(
+        parent,
+        _replace("name", "name", "composed"),
+        _add_structure(
+            "detail-panel",
+            "panels.1",
+            added_panel,
+            ("panels.1", FIGURE_PANEL_SCHEMA_ID, FIGURE_PANEL_SCHEMA_VERSION),
+        ),
+    )
     displayed = resolve_figure_spec(
         composed,
         repo_root=tmp_path,
@@ -455,6 +823,7 @@ def test_execution_manifest_uses_the_same_resolved_semantics_as_display(
     assert FigureSpec.model_validate(manifest.figure_spec.inline) == displayed.figure_spec
     assert manifest.figure_spec.sha256 == displayed.resolved_identity_sha256
     assert manifest.id == figure_manifest_id(displayed.figure_spec)
+    assert manifest.figure_spec.inline["panels"][1] == added_panel
     assert [payload.kind for payload in manifest.regeneration_specs[:2]] == [
         "FigureCompositionSpec",
         "FigureCompositionProvenance",
@@ -742,11 +1111,27 @@ def test_figure_cli_resolve_prints_ordinary_spec_and_optional_lineage(
     parent = _write_payload(
         tmp_path,
         "base.json",
-        FigureSpec(name="base", assembler="feedbax.grid_figure").model_dump(
+        FigureSpec(
+            name="base",
+            assembler="feedbax.grid_figure",
+            panels=[PanelSpec(name="main")],
+        ).model_dump(
             mode="json", exclude_none=True
         ),
     )
-    composed = _composition(parent, _replace("name", "name", "displayed"))
+    added_panel = PanelSpec(name="detail", row=1, col=0).model_dump(
+        mode="json", exclude_none=True
+    )
+    composed = _composition(
+        parent,
+        _replace("name", "name", "displayed"),
+        _add_structure(
+            "detail-panel",
+            "panels.1",
+            added_panel,
+            ("panels.1", FIGURE_PANEL_SCHEMA_ID, FIGURE_PANEL_SCHEMA_VERSION),
+        ),
+    )
     source = tmp_path / "composed.json"
     source.write_text(
         json.dumps(composed.model_dump(mode="json", exclude_none=True)), encoding="utf-8"
@@ -756,6 +1141,7 @@ def test_figure_cli_resolve_prints_ordinary_spec_and_optional_lineage(
     ordinary = json.loads(capsys.readouterr().out)
     assert ordinary["schema_id"] == FIGURE_SPEC_SCHEMA_ID
     assert ordinary["name"] == "displayed"
+    assert ordinary["panels"][1] == added_panel
     assert "composition" not in ordinary
 
     assert (
@@ -789,6 +1175,9 @@ def test_composition_authoring_reference_is_indexed_and_names_public_surfaces() 
         "figure_composition_not_supported_in_studio",
         "feedbax.spec.figure_runtime_binding.v2",
         "MatrixCompositionDelta",
+        "FigureCompositionDelta",
+        "SameSchemaStructuralAddition",
+        "feedbax.spec.figure_panel.v1",
         "feedbax.spec.figure.v2",
     ):
         assert public_surface in docs
