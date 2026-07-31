@@ -65,14 +65,23 @@ lifecycle child is separately fixed and asserted as a print-only Python
 command.
 
 The versioned machine result is
-`feedbax.external_conformance.result.v2`; v1 migrates by adding separate
-unbound `current` and `minimum` protocol role slots, while other versions are
-rejected. Those slots are not stability guarantees and remain unbound until
-the owner-ratified policy exists. V2 requires the exact six foundation case
-IDs with strict boolean values and requires both None-valued role slots to be
-present explicitly. Adding or removing a case, binding a protocol role, or
-changing required evidence fields requires a deliberate schema version and
-migration rather than silently changing durable evidence.
+`feedbax.external_conformance.result.v3`. V2 remains the frozen exact six-case
+foundation result; it rejects rather than migrating because it contains no
+evidence for the required `typed_evaluation_row_projection` case. V1 can be
+deterministically normalized to v2 by adding separate unbound `current` and
+`minimum` protocol role slots, but then rejects for the same missing v3
+evidence. V3 requires the exact seven case IDs with strict boolean values and
+requires both None-valued role slots explicitly. Those slots are not stability
+guarantees and remain unbound until the owner-ratified policy exists. Adding or
+removing a case, binding a protocol role, or changing required evidence fields
+requires another deliberate schema version and migration or rejection decision.
+
+The typed evaluation-row case uses only public clean-wheel imports. It projects
+durable `ResolvedAnalysisInput` rows through downstream-owned state, parameter,
+metadata, and row-key types after Feedbax authenticates the exact manifest,
+producer/source provenance, and state authority. It also proves structured
+error categories and exact authored-Cartesian coverage without embedding
+conditioning, target, replicate, or mixed-authority scientific policy.
 
 The production lifecycle case uses the installed-wheel
 `StageEngine`/`LocalOrchestrationDriver` path with one deterministic local row.

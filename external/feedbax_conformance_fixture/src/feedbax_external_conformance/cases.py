@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import hashlib
+from pathlib import Path
 
 from pydantic import ValidationError
 
 from feedbax import LowererRegistration, OrderedLowererRegistry
+from feedbax.analysis import (
+    EvaluationRowProjectionError,
+    EvaluationRowProjectionErrorCategory,
+    EvaluationRowProjector,
+    ResolvedAnalysisInput,
+    ResolvedManifestInput,
+    project_authenticated_evaluation_rows,
+    require_exact_authored_cartesian_coverage,
+)
 from feedbax.analysis.exact_parents import (
     STAGED_EXACT_PARENTS_SCHEMA_ID,
     STAGED_EXACT_PARENTS_SCHEMA_VERSION,
@@ -31,7 +42,18 @@ from feedbax.contracts import (
     semantic_value_sha256,
     value_identity_record,
 )
-from feedbax.contracts.manifest import ParentRef
+from feedbax.contracts.manifest import (
+    AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+    AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+    AnalysisEvaluationStateSource,
+    ArtifactRef,
+    EntrypointRef,
+    EvaluationRunManifest,
+    EvaluationRunSpec,
+    ParentRef,
+    Provenance,
+    SpecPayload,
+)
 from feedbax.testing import check_material_dependency_contract
 
 
@@ -294,10 +316,148 @@ def check_exact_parent_migration() -> bool:
     return True
 
 
+@dataclass(frozen=True)
+class _ProjectedParameters:
+    arm: str
+    target: int
+
+
+@dataclass(frozen=True)
+class _ProjectedMetadata:
+    states_schema: str
+
+
+def _authenticated_ref(
+    kind: str,
+    id_: str,
+    role: str,
+    raw_bytes: bytes,
+) -> ParentRef:
+    return ParentRef(
+        kind=kind,
+        id=id_,
+        role=role,
+        metadata={
+            "ref_schema_id": AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+            "ref_schema_version": AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+            "manifest_sha256": hashlib.sha256(raw_bytes).hexdigest(),
+            "size_bytes": len(raw_bytes),
+        },
+    )
+
+
+def _projection_input(target: int) -> ResolvedAnalysisInput:
+    training = _authenticated_ref(
+        "TrainingRunManifest",
+        "fixture-training",
+        "training_run",
+        b"fixture-training",
+    )
+    run_spec = EvaluationRunSpec(
+        evaluation_type="fixture.row_projection",
+        inputs=[training],
+        params={"arm": "trained", "target": target},
+    )
+    states_bytes = f"states:{target}".encode()
+    states_sha256 = hashlib.sha256(states_bytes).hexdigest()
+    artifact = ArtifactRef(
+        role="evaluation_states",
+        logical_name=f"states-{target}",
+        artifact_id=f"artifact://sha256/{states_sha256}",
+        sha256=states_sha256,
+        size_bytes=len(states_bytes),
+        storage_backend="fixture",
+        uri=f"artifact://sha256/{states_sha256}",
+    )
+    manifest = EvaluationRunManifest(
+        id=f"fixture-evaluation-{target}",
+        status="completed",
+        evaluation_spec=SpecPayload(
+            kind="EvaluationRunSpec",
+            schema_id="feedbax.spec.evaluation_run",
+            schema_version="feedbax.spec.evaluation_run.v1",
+            inline=run_spec.model_dump(mode="json"),
+        ),
+        input_training_runs=[training],
+        artifacts=[artifact],
+        metadata={"states_schema": "fixture.states.v1"},
+        provenance=Provenance(
+            entrypoint=EntrypointRef(
+                kind="feedbax-evaluation-recipe",
+                name=run_spec.evaluation_type,
+            ),
+            parents=[training],
+        ),
+    )
+    raw_bytes = (manifest.model_dump_json(indent=2, exclude_none=True) + "\n").encode()
+    authority = _authenticated_ref(
+        "EvaluationRunManifest",
+        manifest.id,
+        "evaluation_run",
+        raw_bytes,
+    )
+    source = AnalysisEvaluationStateSource(
+        source_kind="durable",
+        requested_evaluation_manifest_id=manifest.id,
+        evaluation_manifest_authority=authority,
+        supplying_evaluation_manifest_id=manifest.id,
+        artifact_id=artifact.artifact_id,
+        artifact_sha256=artifact.sha256,
+        artifact_size_bytes=artifact.size_bytes,
+        artifact_storage_backend=artifact.storage_backend,
+        container_schema_id="feedbax.manifest.evaluation_states_container",
+        container_schema_version="feedbax.manifest.evaluation_states_container.v3",
+        container_storage_backend="npz.v3",
+    )
+    return ResolvedAnalysisInput(
+        ref=authority,
+        manifest=manifest,
+        path=Path(f"/fixture/{manifest.id}.json"),
+        states={"sample": target},
+        evaluation_state_source=source,
+        manifest_input=ResolvedManifestInput(
+            ref=authority,
+            manifest=manifest,
+            path=Path(f"/fixture/{manifest.id}.json"),
+            raw_bytes=raw_bytes,
+        ),
+    )
+
+
+def check_typed_evaluation_row_projection() -> bool:
+    """Exercise public typed projection, categories, and exact row coverage."""
+    projector = EvaluationRowProjector(
+        state=lambda row: int(row.states["sample"]),
+        parameters=lambda row: _ProjectedParameters(**row.parameters),
+        metadata=lambda row: _ProjectedMetadata(**row.metadata),
+        row_key=lambda _row, _state, params, _metadata: (params.arm, params.target),
+    )
+    inputs = [_projection_input(0), _projection_input(1)]
+    projected = project_authenticated_evaluation_rows(inputs, projector=projector)
+    keys = tuple(row.row_key for row in projected)
+    expected = require_exact_authored_cartesian_coverage(
+        keys,
+        axes={"arm": ("trained",), "target": (0, 1)},
+        row_key=lambda coordinate: (coordinate["arm"], coordinate["target"]),
+    )
+    if keys != expected or tuple(row.state for row in projected) != (0, 1):
+        raise AssertionError("typed evaluation row projection drifted")
+    invalid = replace(inputs[0], evaluation_state_source=None)
+    try:
+        project_authenticated_evaluation_rows([invalid], projector=projector)
+    except EvaluationRowProjectionError as exc:
+        if exc.category is not EvaluationRowProjectionErrorCategory.STATE_AUTHORITY:
+            raise AssertionError("row projection returned the wrong structured category") from exc
+    else:
+        raise AssertionError("row projection accepted missing state authority")
+    return True
+
+
 __all__ = [
     "check_component_registration_and_migration",
     "check_exact_parent_migration",
     "check_material_dependencies",
     "check_ordered_registration",
+    "check_typed_evaluation_row_projection",
     "check_value_identity",
 ]

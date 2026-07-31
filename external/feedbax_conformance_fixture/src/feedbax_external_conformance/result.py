@@ -9,8 +9,9 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 RESULT_SCHEMA_ID = "feedbax.external_conformance.result"
 RESULT_SCHEMA_VERSION_V1 = f"{RESULT_SCHEMA_ID}.v1"
-RESULT_SCHEMA_VERSION = f"{RESULT_SCHEMA_ID}.v2"
-REQUIRED_CASE_IDS = (
+RESULT_SCHEMA_VERSION_V2 = f"{RESULT_SCHEMA_ID}.v2"
+RESULT_SCHEMA_VERSION = f"{RESULT_SCHEMA_ID}.v3"
+V2_REQUIRED_CASE_IDS = (
     "ordered_registration",
     "component_registration_and_migration",
     "value_identity",
@@ -18,7 +19,21 @@ REQUIRED_CASE_IDS = (
     "staged_exact_parent_migration",
     "public_lifecycle_recovery",
 )
+REQUIRED_CASE_IDS = (
+    *V2_REQUIRED_CASE_IDS[:-1],
+    "typed_evaluation_row_projection",
+    V2_REQUIRED_CASE_IDS[-1],
+)
 _REQUIRED_CASE_ID_SET = frozenset(REQUIRED_CASE_IDS)
+RESULT_SCHEMA_MIGRATION_TABLE = {
+    RESULT_SCHEMA_VERSION_V1: (
+        f"migrate to {RESULT_SCHEMA_VERSION_V2} by adding unbound protocol role slots; "
+        f"then reject for {RESULT_SCHEMA_VERSION}"
+    ),
+    RESULT_SCHEMA_VERSION_V2: (
+        "reject; v2 contains no typed_evaluation_row_projection evidence"
+    ),
+}
 
 
 class ProtocolRoleSlots(BaseModel):
@@ -45,7 +60,7 @@ class ConformanceResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_id: Literal["feedbax.external_conformance.result"] = RESULT_SCHEMA_ID
-    schema_version: Literal["feedbax.external_conformance.result.v2"] = RESULT_SCHEMA_VERSION
+    schema_version: Literal["feedbax.external_conformance.result.v3"] = RESULT_SCHEMA_VERSION
     status: Literal["pass", "blocked"]
     feedbax_version: str = Field(min_length=1)
     feedbax_install_root: str = Field(min_length=1)
@@ -59,7 +74,7 @@ class ConformanceResult(BaseModel):
         observed = frozenset(self.cases)
         if observed != _REQUIRED_CASE_ID_SET:
             raise ValueError(
-                "external conformance cases must exactly match the v2 contract: "
+                "external conformance cases must exactly match the v3 contract: "
                 f"missing={sorted(_REQUIRED_CASE_ID_SET - observed)!r}, "
                 f"extra={sorted(observed - _REQUIRED_CASE_ID_SET)!r}"
             )
@@ -75,7 +90,7 @@ class ConformanceResult(BaseModel):
 
 
 def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResult:
-    """Load v2 or migrate a v1 result; reject every other version."""
+    """Load v3; reject v2 because its exact evidence set cannot prove the new case."""
     if isinstance(payload, ConformanceResult):
         return ConformanceResult.model_validate(payload.model_dump(mode="json"))
     data = dict(payload)
@@ -90,13 +105,19 @@ def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResul
                 "external conformance result v1 did not define protocol_roles; "
                 "remove the ambiguous field before migration"
             )
-        data["schema_version"] = RESULT_SCHEMA_VERSION
+        data["schema_version"] = RESULT_SCHEMA_VERSION_V2
         data["protocol_roles"] = {"current": None, "minimum": None}
-    elif version != RESULT_SCHEMA_VERSION:
+        version = RESULT_SCHEMA_VERSION_V2
+    if version == RESULT_SCHEMA_VERSION_V2:
+        raise ValueError(
+            "external conformance result v2 cannot migrate to v3: "
+            "v2 contains no typed_evaluation_row_projection evidence"
+        )
+    if version != RESULT_SCHEMA_VERSION:
         raise ValueError(
             "unsupported external conformance result schema_version: "
             f"{version!r}; expected {RESULT_SCHEMA_VERSION!r}; "
-            f"migration table={{{RESULT_SCHEMA_VERSION_V1!r}: {RESULT_SCHEMA_VERSION!r}}}"
+            f"migration table={RESULT_SCHEMA_MIGRATION_TABLE!r}"
         )
     return ConformanceResult.model_validate(data)
 
@@ -105,7 +126,10 @@ __all__ = [
     "RESULT_SCHEMA_ID",
     "RESULT_SCHEMA_VERSION",
     "RESULT_SCHEMA_VERSION_V1",
+    "RESULT_SCHEMA_VERSION_V2",
+    "RESULT_SCHEMA_MIGRATION_TABLE",
     "REQUIRED_CASE_IDS",
+    "V2_REQUIRED_CASE_IDS",
     "ConformanceResult",
     "LifecycleResult",
     "ProtocolRoleSlots",

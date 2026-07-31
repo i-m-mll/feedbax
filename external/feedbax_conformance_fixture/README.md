@@ -28,10 +28,11 @@ therefore authenticates installed-wheel provenance at both execution
 boundaries. The deployment policy is explicitly local and cloud-unauthorized;
 all custody, orchestration, and cache paths are unique temporary directories.
 
-The result schema is `feedbax.external_conformance.result.v2`. Its evidence map
-has exactly the six current case IDs with strict boolean values; changing that
-set requires a new schema version and explicit migration. The `current` and
-`minimum` protocol role slots are both explicitly required and None-only until
-owner ratification; v2 never fills an omitted role object or member. Version 1
-results migrate only when the later role field is absent, adding both explicit
-null slots. Unknown, ambiguous, versionless, and future versions are rejected.
+The result schema is `feedbax.external_conformance.result.v3`. Its evidence map
+has exactly seven case IDs with strict boolean values, including typed
+authenticated evaluation-row projection. V2 remains the exact six-case
+foundation and rejects rather than pretending it measured the new case. The
+`current` and `minimum` protocol role slots remain explicitly required and
+None-only until owner ratification. Version 1 can normalize to v2 only when the
+later role field is absent, then rejects for the same missing v3 evidence.
+Unknown, ambiguous, versionless, and future versions are rejected.

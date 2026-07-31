@@ -2,8 +2,11 @@
 
 from .result import (
     REQUIRED_CASE_IDS,
+    RESULT_SCHEMA_MIGRATION_TABLE,
     RESULT_SCHEMA_ID,
     RESULT_SCHEMA_VERSION,
+    RESULT_SCHEMA_VERSION_V2,
+    V2_REQUIRED_CASE_IDS,
     ConformanceResult,
     load_result,
 )
@@ -23,7 +26,10 @@ def run_fixture(*, source_root: Path | None = None) -> ConformanceResult:
 __all__ = [
     "RESULT_SCHEMA_ID",
     "RESULT_SCHEMA_VERSION",
+    "RESULT_SCHEMA_VERSION_V2",
+    "RESULT_SCHEMA_MIGRATION_TABLE",
     "REQUIRED_CASE_IDS",
+    "V2_REQUIRED_CASE_IDS",
     "ConformanceResult",
     "load_result",
     "run_fixture",
