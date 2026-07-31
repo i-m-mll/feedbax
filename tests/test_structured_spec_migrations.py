@@ -113,6 +113,9 @@ from feedbax.contracts.evaluation_preflight import (
     EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
     EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID,
     EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION,
+    EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,
+    EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V2,
+    EvaluationOutputPreflightPolicy,
 )
 from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
@@ -444,7 +447,6 @@ def test_default_registry_registers_assemble_contract_families(
         if kind
         in {
             "RunAssemblyRequest",
-            "EvaluationOutputPreflightPolicy",
             "EvaluationOutputPreflightEvidence",
         }
         else "reject"
@@ -492,6 +494,34 @@ def test_default_registry_registers_assemble_contract_families(
                 {
                     "schema_id": schema_id,
                     "schema_version": previous_terminal_identity_versions[kind],
+                },
+            )
+
+
+def test_evaluation_output_policy_v3_requires_reauthoring_v1_and_v2() -> None:
+    policy = EvaluationOutputPreflightPolicy(
+        expected_resolved_row_count=2,
+        retained_bytes_per_resolved_row=100,
+        retained_bytes_per_resolved_row_source="measured fixture",
+        planned_repetitions=1,
+        storage_mode="retain_all",
+        required_free_space_reserve_bytes=0,
+    )
+
+    assert policy.schema_version == EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION
+    for old_version in (
+        EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,
+        EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V2,
+    ):
+        with pytest.raises(
+            UnsupportedSpecVersion,
+            match="migration_intentionally_absent=yes",
+        ):
+            default_spec_registry.migrate(
+                "EvaluationOutputPreflightPolicy",
+                {
+                    "schema_id": EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID,
+                    "schema_version": old_version,
                 },
             )
 
