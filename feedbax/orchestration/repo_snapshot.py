@@ -23,9 +23,24 @@ REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION = (
     "feedbax.orchestration.repo_snapshot_manifest.v1"
 )
 
+REPO_SNAPSHOT_CACHE_DIR_ENV = "FEEDBAX_REPO_SNAPSHOT_CACHE_DIR"
+
+_PUBLISH_ATTEMPTS = 8
+
 
 class RepoSnapshotError(RuntimeError):
     """Raised when governed repository bytes cannot be sealed safely."""
+
+
+class RepoSnapshotCacheFault(RepoSnapshotError):
+    """Raised when sealed cache bytes disagree with the content address holding them.
+
+    A content-addressed cache path asserts the digest of the bytes stored under it, so
+    disagreement there means the cache entry is damaged — truncated, emptied by an
+    operating-system temporary-file reaper, or otherwise mutated. It is never evidence
+    that the caller's own content differs, which is what `RepoSnapshotError` reports for
+    a tree verified against a recorded manifest authority.
+    """
 
 
 class RepoSnapshotRecord(StrictModel):
@@ -73,6 +88,34 @@ class _TrackedEntry:
     @property
     def path(self) -> Path:
         return Path(os.fsdecode(self.path_bytes))
+
+
+def default_repo_snapshot_cache_dir() -> Path:
+    """Return the per-checkout parent directory for sealed repo-snapshot bytes.
+
+    The sealed cache is a durable content-addressed store, so it must not live in the
+    machine-global temporary directory: every checkout, worktree, test worker, and
+    unrelated process on the host would share one tree, and the operating system's
+    periodic temporary-file reaper is entitled to delete files out of it while leaving
+    the read-only entry directories behind.
+
+    Resolution follows the persistent JAX compilation cache: an explicit
+    `FEEDBAX_REPO_SNAPSHOT_CACHE_DIR` override first, then the Git common directory of
+    the running Feedbax checkout, which keeps sibling checkouts apart while letting
+    worktrees of one checkout share. When Feedbax is not installed from a Git checkout
+    there is no common directory, so the fall-back is a per-installation namespace under
+    the user cache directory.
+    """
+    override = os.environ.get(REPO_SNAPSHOT_CACHE_DIR_ENV)
+    if override:
+        return Path(override).expanduser()
+    package_root = Path(__file__).resolve().parents[2]
+    common_dir = _git_common_dir(package_root)
+    if common_dir is not None:
+        return common_dir / "feedbax_repo_snapshots"
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME") or "~/.cache").expanduser()
+    namespace = hashlib.sha256(os.fsencode(package_root)).hexdigest()[:16]
+    return cache_home / "feedbax" / "repo-snapshots" / namespace
 
 
 def seal_repo_snapshots(
@@ -143,28 +186,7 @@ def seal_repo_snapshot(
         name_key = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
         staging_root = parent / name_key / content_sha256
         staging_root.parent.mkdir(parents=True, exist_ok=True)
-        if staging_root.exists():
-            existing_sha256, existing_count = _snapshot_tree_identity(staging_root)
-            if existing_sha256 != content_sha256 or existing_count != file_count:
-                raise RepoSnapshotError(
-                    f"content-addressed snapshot path is inconsistent: {staging_root}"
-                )
-            _seal_tree_modes(staging_root)
-            _remove_tree(build_root)
-        else:
-            try:
-                os.replace(build_root, staging_root)
-            except OSError:
-                if not staging_root.exists():
-                    raise
-                existing_sha256, existing_count = _snapshot_tree_identity(staging_root)
-                if existing_sha256 != content_sha256 or existing_count != file_count:
-                    raise RepoSnapshotError(
-                        f"content-addressed snapshot path is inconsistent: {staging_root}"
-                    )
-                _remove_tree(build_root)
-            else:
-                _seal_tree_modes(staging_root)
+        _publish_sealed_snapshot(build_root, staging_root, content_sha256, file_count)
         record = RepoSnapshotRecord(
             commit=commit,
             dirty=dirty,
@@ -199,13 +221,12 @@ def restore_repo_snapshots(
         name_key = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
         staging_root = parent / name_key / record.content_sha256
         if not staging_root.is_dir():
-            raise RepoSnapshotError(f"sealed repo snapshot is unavailable: {staging_root}")
-        observed_sha256, observed_count = _snapshot_tree_identity(staging_root)
-        if (
-            observed_sha256 != record.content_sha256
-            or observed_count != record.file_count
-        ):
-            raise RepoSnapshotError(f"sealed repo snapshot digest mismatch: {staging_root}")
+            raise RepoSnapshotCacheFault(f"sealed repo snapshot is unavailable: {staging_root}")
+        if not _cache_entry_matches(staging_root, record.content_sha256, record.file_count):
+            raise RepoSnapshotCacheFault(
+                "sealed snapshot cache entry is damaged: its bytes no longer match the "
+                f"content address holding them: {staging_root}"
+            )
         _seal_tree_modes(staging_root)
         snapshots[name] = SealedRepoSnapshot(
             name=name,
@@ -228,10 +249,41 @@ def verify_repo_snapshot(
     content_sha256: str,
     file_count: int,
 ) -> None:
-    """Fail closed unless a staging root still matches its sealed identity."""
+    """Fail closed unless a transferred tree still matches its recorded sealed identity.
+
+    This checks arbitrary bytes — typically a transfer destination — against a recorded
+    manifest authority, so a mismatch is a genuine content mismatch and never a local
+    cache fault. Sealed cache entries are checked against the content address holding
+    them instead, and report `RepoSnapshotCacheFault`.
+    """
     observed_sha256, observed_count = _snapshot_tree_identity(Path(root))
     if observed_sha256 != content_sha256 or observed_count != file_count:
         raise RepoSnapshotError(f"sealed repo snapshot digest mismatch: {root}")
+
+
+def _git_common_dir(root: Path) -> Path | None:
+    """Return the Git common directory of a checkout, or None when there is no checkout."""
+    try:
+        result = subprocess_run(
+            [
+                "git",
+                "-C",
+                os.fspath(root),
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            check=False,
+            stdout=PIPE,
+            stderr=PIPE,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    common_dir = os.fsdecode(result.stdout).strip()
+    return Path(common_dir).resolve() if common_dir else None
 
 
 def _git(root: Path, *args: str) -> bytes:
@@ -279,15 +331,96 @@ def _hash_field(digest: Any, value: bytes) -> None:
     digest.update(value)
 
 
-def _seal_tree_modes(root: Path) -> None:
+def _publish_sealed_snapshot(
+    build_root: Path,
+    staging_root: Path,
+    content_sha256: str,
+    file_count: int,
+) -> None:
+    """Publish a verified build tree atomically at its content-addressed path.
+
+    The tree is sealed read-only before it is published, so the rename makes an already
+    final tree visible in one step and a concurrent reader can never observe a tree
+    mid-seal. Sealing the top-level directory is the one exception: a directory whose own
+    mode lacks write permission cannot be renamed, so it is sealed immediately after
+    publication. That trailing chmod changes neither the tree digest, which encodes only
+    the executable bit, nor its readability.
+
+    A published entry whose bytes disagree with the content address holding them is a
+    damaged cache entry rather than a content mismatch, so it is quarantined and replaced
+    with the freshly verified tree instead of failing the run.
+    """
+    _seal_tree_modes(build_root, include_root=False)
+    build_root.chmod(0o755)
+    for _attempt in range(_PUBLISH_ATTEMPTS):
+        try:
+            os.replace(build_root, staging_root)
+        except OSError:
+            if not staging_root.exists():
+                raise
+        else:
+            staging_root.chmod(0o555)
+            return
+        if _cache_entry_matches(staging_root, content_sha256, file_count):
+            try:
+                _seal_tree_modes(staging_root)
+            except FileNotFoundError:
+                # A concurrent repair replaced the entry between the check and the seal.
+                continue
+            _remove_tree(build_root)
+            return
+        _quarantine_cache_entry(staging_root)
+    raise RepoSnapshotCacheFault(
+        f"sealed snapshot cache entry could not be repaired after "
+        f"{_PUBLISH_ATTEMPTS} attempts: {staging_root}"
+    )
+
+
+def _cache_entry_matches(root: Path, content_sha256: str, file_count: int) -> bool:
+    """Report whether a cache entry still holds the bytes its path claims."""
+    try:
+        observed_sha256, observed_count = _snapshot_tree_identity(root)
+    except (OSError, RepoSnapshotError):
+        return False
+    return observed_sha256 == content_sha256 and observed_count == file_count
+
+
+def _quarantine_cache_entry(staging_root: Path) -> None:
+    """Move a damaged cache entry aside so a verified tree can take its place."""
+    quarantine = Path(
+        tempfile.mkdtemp(prefix=f".damaged-{staging_root.name}-", dir=staging_root.parent)
+    )
+    try:
+        staging_root.chmod(0o755)
+        os.replace(staging_root, quarantine)
+    except FileNotFoundError:
+        # A concurrent sealer already repaired the entry; the caller retries.
+        quarantine.rmdir()
+        return
+    except OSError as exc:
+        quarantine.rmdir()
+        raise RepoSnapshotCacheFault(
+            f"damaged sealed snapshot cache entry cannot be quarantined: {staging_root}"
+        ) from exc
+    try:
+        _remove_tree(quarantine)
+    except OSError:
+        # The entry is already out of the content-addressed namespace and inert; leaving
+        # the quarantined bytes behind must not fail the run that repaired the cache.
+        pass
+
+
+def _seal_tree_modes(root: Path, *, include_root: bool = True) -> None:
     """Remove write permission from the content-addressed authority tree."""
+    root_key = os.path.normpath(os.fspath(root))
     for directory, _subdirs, files in os.walk(root):
         directory_path = Path(directory)
         for filename in files:
             path = directory_path / filename
             if not path.is_symlink():
                 path.chmod(0o555 if path.stat().st_mode & 0o111 else 0o444)
-        directory_path.chmod(0o555)
+        if include_root or os.path.normpath(directory) != root_key:
+            directory_path.chmod(0o555)
 
 
 def _remove_tree(root: Path) -> None:
