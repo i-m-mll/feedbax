@@ -189,6 +189,7 @@ def test_result_v2_protocol_roles_remain_unbound(fixture_package, slot: str) -> 
     ],
 )
 def test_private_feedbax_import_guard_rejects_imported_symbols(
+    fixture_package,
     tmp_path: Path,
     source: str,
     qualified_name: str,
@@ -196,14 +197,14 @@ def test_private_feedbax_import_guard_rejects_imported_symbols(
     fixture_root = tmp_path / "fixture"
     fixture_root.mkdir()
     (fixture_root / "candidate.py").write_text(source, encoding="utf-8")
-    runner = importlib.import_module("feedbax_external_conformance.runner")
+    runner = importlib.import_module(f"{fixture_package.__name__}.runner")
 
     with pytest.raises(AssertionError, match=qualified_name):
         runner._require_no_private_feedbax_imports(fixture_root)
 
 
-def test_network_denial_rejects_promised_runner_tcp_apis() -> None:
-    network = importlib.import_module("feedbax_external_conformance.network")
+def test_network_denial_rejects_promised_runner_tcp_apis(fixture_package) -> None:
+    network = importlib.import_module(f"{fixture_package.__name__}.network")
 
     with network.network_denied():
         network._assert_outbound_tcp_denied()
@@ -379,16 +380,19 @@ def test_clean_wheel_wrapper_rejects_malformed_result(
         )
 
 
-def test_local_lifecycle_uses_clean_interpreter_distribution_inventory(tmp_path: Path) -> None:
-    lifecycle = importlib.import_module("feedbax_external_conformance.lifecycle")
+def test_local_lifecycle_uses_clean_interpreter_distribution_inventory(
+    fixture_package,
+    tmp_path: Path,
+) -> None:
+    lifecycle = importlib.import_module(f"{fixture_package.__name__}.lifecycle")
     driver = lifecycle._driver(tmp_path, None)
 
     assert driver.python_executable == sys.executable
     assert driver.freeze_lines is None
 
 
-def test_local_lifecycle_child_is_fixed_print_only() -> None:
-    lifecycle = importlib.import_module("feedbax_external_conformance.lifecycle")
+def test_local_lifecycle_child_is_fixed_print_only(fixture_package) -> None:
+    lifecycle = importlib.import_module(f"{fixture_package.__name__}.lifecycle")
     compiled = lifecycle._LocalLifecycleCompiler().compile(
         authored={
             "schema_id": "feedbax.spec.studio.training_assembly",
