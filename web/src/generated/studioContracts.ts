@@ -7,29 +7,29 @@ export type JsonPrimitive = string | number | boolean | null;
 export type ParamValue = JsonPrimitive | unknown[] | Record<string, unknown>;
 
 export interface SparseCooEntrySpec {
-  coordinate: unknown[];
-  value: unknown | "nan" | "+inf" | "-inf";
+  coordinate: number[];
+  value: boolean | number | "nan" | "+inf" | "-inf";
 }
 
 export interface SparseCooArrayValueSpec {
   schema_id: "feedbax.spec.component_param.array_value";
   schema_version: "feedbax.spec.component_param.array_value.v1";
-  shape: unknown[];
+  shape: number[];
   dtype: "bool" | "int8" | "int16" | "int32" | "int64" | "uint8" | "uint16" | "uint32" | "uint64" | "float16" | "float32" | "float64";
   nonfinite: "forbid" | "allow";
   encoding: "sparse_coo";
-  fill: unknown | "nan" | "+inf" | "-inf";
+  fill: boolean | number | "nan" | "+inf" | "-inf";
   entries: SparseCooEntrySpec[];
 }
 
 export interface ConstantArrayValueSpec {
   schema_id: "feedbax.spec.component_param.array_value";
   schema_version: "feedbax.spec.component_param.array_value.v1";
-  shape: unknown[];
+  shape: number[];
   dtype: "bool" | "int8" | "int16" | "int32" | "int64" | "uint8" | "uint16" | "uint32" | "uint64" | "float16" | "float32" | "float64";
   nonfinite: "forbid" | "allow";
   encoding: "constant";
-  value: unknown | "nan" | "+inf" | "-inf";
+  value: boolean | number | "nan" | "+inf" | "-inf";
 }
 
 export interface ParamSchema {
@@ -1856,8 +1856,8 @@ export interface InspectionStatusResponse {
 export const SparseCooEntrySpecSchema: z.ZodType<SparseCooEntrySpec> = z.lazy(() =>
   z
     .object({
-      "coordinate": z.array(z.unknown()),
-      "value": z.union([z.unknown(), z.unknown(), z.unknown(), z.union([z.literal("nan"), z.literal("+inf"), z.literal("-inf")])]),
+      "coordinate": z.array(z.number().int()),
+      "value": z.union([z.boolean(), z.number().int(), z.number(), z.union([z.literal("nan"), z.literal("+inf"), z.literal("-inf")])]),
     })
     .strict()
 ) as unknown as z.ZodType<SparseCooEntrySpec>;
@@ -1867,11 +1867,11 @@ export const SparseCooArrayValueSpecSchema: z.ZodType<SparseCooArrayValueSpec> =
     .object({
       "schema_id": z.literal("feedbax.spec.component_param.array_value"),
       "schema_version": z.literal("feedbax.spec.component_param.array_value.v1"),
-      "shape": z.array(z.unknown()),
+      "shape": z.array(z.number().int()),
       "dtype": z.union([z.literal("bool"), z.literal("int8"), z.literal("int16"), z.literal("int32"), z.literal("int64"), z.literal("uint8"), z.literal("uint16"), z.literal("uint32"), z.literal("uint64"), z.literal("float16"), z.literal("float32"), z.literal("float64")]),
       "nonfinite": z.union([z.literal("forbid"), z.literal("allow")]),
       "encoding": z.literal("sparse_coo"),
-      "fill": z.union([z.unknown(), z.unknown(), z.unknown(), z.union([z.literal("nan"), z.literal("+inf"), z.literal("-inf")])]),
+      "fill": z.union([z.boolean(), z.number().int(), z.number(), z.union([z.literal("nan"), z.literal("+inf"), z.literal("-inf")])]),
       "entries": z.array(SparseCooEntrySpecSchema),
     })
     .strict()
@@ -1882,11 +1882,11 @@ export const ConstantArrayValueSpecSchema: z.ZodType<ConstantArrayValueSpec> = z
     .object({
       "schema_id": z.literal("feedbax.spec.component_param.array_value"),
       "schema_version": z.literal("feedbax.spec.component_param.array_value.v1"),
-      "shape": z.array(z.unknown()),
+      "shape": z.array(z.number().int()),
       "dtype": z.union([z.literal("bool"), z.literal("int8"), z.literal("int16"), z.literal("int32"), z.literal("int64"), z.literal("uint8"), z.literal("uint16"), z.literal("uint32"), z.literal("uint64"), z.literal("float16"), z.literal("float32"), z.literal("float64")]),
       "nonfinite": z.union([z.literal("forbid"), z.literal("allow")]),
       "encoding": z.literal("constant"),
-      "value": z.union([z.unknown(), z.unknown(), z.unknown(), z.union([z.literal("nan"), z.literal("+inf"), z.literal("-inf")])]),
+      "value": z.union([z.boolean(), z.number().int(), z.number(), z.union([z.literal("nan"), z.literal("+inf"), z.literal("-inf")])]),
     })
     .strict()
 ) as unknown as z.ZodType<ConstantArrayValueSpec>;

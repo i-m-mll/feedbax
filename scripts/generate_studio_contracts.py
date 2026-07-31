@@ -8,7 +8,7 @@ import json
 import sys
 import types
 from pathlib import Path
-from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 
@@ -555,9 +555,16 @@ def _literal_value(value: Any) -> str:
     return json.dumps(value)
 
 
+def _unwrap_annotated(annotation: Any) -> Any:
+    while get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    return annotation
+
+
 def ts_type(annotation: Any) -> str:
     """Return a TypeScript type expression for a Python annotation."""
 
+    annotation = _unwrap_annotated(annotation)
     if annotation is Any:
         return "unknown"
     if annotation is NONE_TYPE:
@@ -597,6 +604,7 @@ def ts_type(annotation: Any) -> str:
 def zod_schema(annotation: Any) -> str:
     """Return a zod expression for a Python annotation."""
 
+    annotation = _unwrap_annotated(annotation)
     if annotation is Any:
         return "z.unknown()"
     if annotation is NONE_TYPE:
