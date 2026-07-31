@@ -191,10 +191,15 @@ from feedbax.contracts.figures import (
     COLORBAR_PANEL_PLACEMENT_SCHEMA_VERSION,
     EQUAL_DATA_ASPECT_SCHEMA_ID,
     EQUAL_DATA_ASPECT_SCHEMA_VERSION,
+    FIGURE_COMPOSITION_PROVENANCE_SCHEMA_ID,
+    FIGURE_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
+    FIGURE_COMPOSITION_SPEC_SCHEMA_ID,
+    FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION,
     FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID,
     FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION,
     FIGURE_RUNTIME_BINDING_SCHEMA_ID,
     FIGURE_RUNTIME_BINDING_SCHEMA_VERSION,
+    FIGURE_RUNTIME_BINDING_SCHEMA_VERSION_V1,
     FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID,
     FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION,
     FIGURE_PIECE_SCHEMA_ID,
@@ -2837,6 +2842,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Runtime figure inputs, authorities, execution metadata, and exact-parent "
                 "provider aliases."
             ),
+            stance="migrate",
+            supported_old_versions=(FIGURE_RUNTIME_BINDING_SCHEMA_VERSION_V1,),
+            rejected_old_versions=("feedbax.spec.figure_runtime_binding.v0",),
             required_tests=("tests/test_figure_input_authority.py",),
         ),
         _family(
@@ -2919,10 +2927,36 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Executable declarative figure specification.",
             rejected_old_versions=("feedbax.spec.figure.v1",),
             required_tests=(
+                "tests/test_figure_composition.py",
                 "tests/test_declarative_figures.py",
                 "tests/test_figure_trace_families.py",
                 "tests/test_figure_colorbar.py",
             ),
+        ),
+        _family(
+            "FigureCompositionSpec",
+            FIGURE_COMPOSITION_SPEC_SCHEMA_ID,
+            FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("feedbax-figure resolve",),
+            consumed_by=(
+                "feedbax.analysis.figures.resolve_figure_spec",
+                "feedbax.analysis.figures.execute_figure_spec",
+            ),
+            description="Content-pinned ordered composition envelope for FigureSpec.",
+            rejected_old_versions=("feedbax.spec.figure_composition.v0",),
+            required_tests=("tests/test_figure_composition.py",),
+        ),
+        _family(
+            "FigureCompositionProvenance",
+            FIGURE_COMPOSITION_PROVENANCE_SCHEMA_ID,
+            FIGURE_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("feedbax.analysis.figures.resolve_figure_spec",),
+            consumed_by=("figure manifest and resolution inspection",),
+            description="Authored-to-resolved FigureSpec identity and delta lineage.",
+            rejected_old_versions=("feedbax.spec.figure_composition_provenance.v0",),
+            required_tests=("tests/test_figure_composition.py",),
         ),
         _family(
             "FigureTemplate",
@@ -4011,7 +4045,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         _family(
             "AnalysisBundleSpec",
             "feedbax.spec.analysis_bundle",
-            "feedbax.spec.analysis_bundle.v5",
+            "feedbax.spec.analysis_bundle.v6",
             owner_module="feedbax.analysis.bundles",
             emitted_by=("analysis bundle YAML", "StagedAnalysisBundleExecution"),
             consumed_by=("feedbax.analysis.bundles", "downstream bundle consumers"),
@@ -4024,6 +4058,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "feedbax.spec.analysis_bundle.v2",
                 "feedbax.spec.analysis_bundle.v3",
                 "feedbax.spec.analysis_bundle.v4",
+                "feedbax.spec.analysis_bundle.v5",
             ),
             rejected_old_versions=("feedbax.spec.analysis_bundle.v1",),
             required_tests=(
@@ -4994,6 +5029,41 @@ def _migrate_analysis_bundle_v4_to_v5_payload(payload: dict[str, Any]) -> dict[s
     return migrated
 
 
+def _migrate_analysis_bundle_v5_to_v6_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Admit FigureCompositionSpec at figure stages without changing v5 plans."""
+    migrated = dict(payload)
+    raw_stages = migrated.get("stages", [])
+    if isinstance(raw_stages, list):
+        stages: list[Any] = []
+        for raw_stage in raw_stages:
+            if not isinstance(raw_stage, Mapping):
+                stages.append(raw_stage)
+                continue
+            stage = dict(raw_stage)
+            raw_figure = stage.get("figure")
+            if isinstance(raw_figure, Mapping):
+                figure = dict(raw_figure)
+                figure.setdefault("schema_id", FIGURE_SPEC_SCHEMA_ID)
+                figure.setdefault("schema_version", FIGURE_SPEC_SCHEMA_VERSION)
+                stage["figure"] = figure
+            stages.append(stage)
+        migrated["stages"] = stages
+    return migrated
+
+
+def _migrate_figure_runtime_binding_v1_to_v2_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Split the v1 resolved hash without silently changing its old meaning."""
+    migrated = dict(payload)
+    resolved = migrated.pop("authored_figure_spec_sha256")
+    migrated["authored_figure_source_sha256"] = None
+    migrated["authored_identity_unavailable_reason"] = "v1_recorded_resolved_hash_only"
+    migrated["resolved_figure_spec_sha256"] = resolved
+    migrated["schema_version"] = FIGURE_RUNTIME_BINDING_SCHEMA_VERSION
+    return migrated
+
+
 def _migrate_staged_analysis_bundle_execution_v1_to_v2_payload(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -5345,6 +5415,32 @@ default_spec_registry.register_migration(
         description=(
             "Preserve envelopes from compiler families that predate typed training-row "
             "provenance and mark that provenance explicitly unavailable."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "FigureRuntimeBindingSpec",
+    SchemaMigration(
+        source_version=FIGURE_RUNTIME_BINDING_SCHEMA_VERSION_V1,
+        target_version=FIGURE_RUNTIME_BINDING_SCHEMA_VERSION,
+        migration_id="figure-runtime-binding-v1-to-v2-distinct-source-and-resolved-identities",
+        migrate=_migrate_figure_runtime_binding_v1_to_v2_payload,
+        description=(
+            "Preserve the v1 field's resolved-figure meaning while introducing explicit "
+            "authored-source and resolved-FigureSpec identity fields."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "AnalysisBundleSpec",
+    SchemaMigration(
+        source_version="feedbax.spec.analysis_bundle.v5",
+        target_version="feedbax.spec.analysis_bundle.v6",
+        migration_id="analysis-bundle-v5-to-v6-composable-figure-stage",
+        migrate=_migrate_analysis_bundle_v5_to_v6_payload,
+        description=(
+            "Preserve v5 bundle behavior while admitting FigureCompositionSpec at figure "
+            "stages resolved beneath the staged execution trusted repository root."
         ),
     ),
 )

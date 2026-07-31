@@ -13,7 +13,7 @@ import {
 } from '@/utils/selectionSpec';
 
 export const ANALYSIS_BUNDLE_SCHEMA_ID = 'feedbax.spec.analysis_bundle';
-export const ANALYSIS_BUNDLE_SCHEMA_VERSION = 'feedbax.spec.analysis_bundle.v5';
+export const ANALYSIS_BUNDLE_SCHEMA_VERSION = 'feedbax.spec.analysis_bundle.v6';
 
 export type AnalysisBundleStageStatus =
   | 'would_run'
@@ -196,17 +196,19 @@ function coerceBundle(value: unknown): AnalysisBundleSpecWire | null {
   const record = recordValue(value);
   if (!record || typeof record.name !== 'string') return null;
   const schemaVersion = stringValue(record.schema_version) ?? 'feedbax.spec.analysis_bundle.v2';
-  const isCurrent = schemaVersion === ANALYSIS_BUNDLE_SCHEMA_VERSION;
+  const usesCurrentPolicyShape =
+    schemaVersion === ANALYSIS_BUNDLE_SCHEMA_VERSION ||
+    schemaVersion === 'feedbax.spec.analysis_bundle.v5';
   return {
     schema_id: stringValue(record.schema_id) ?? ANALYSIS_BUNDLE_SCHEMA_ID,
     schema_version: schemaVersion,
     name: record.name,
     description: typeof record.description === 'string' ? record.description : null,
     predicate: manifestPredicateValue(record.predicate),
-    templates: isCurrent
+    templates: usesCurrentPolicyShape
       ? arrayValue(record.templates).map(stampAnalysisPolicy)
       : arrayValue(record.templates),
-    stages: isCurrent
+    stages: usesCurrentPolicyShape
       ? arrayValue(record.stages).filter(isRecord).map(stampStageAnalysisPolicy)
       : arrayValue(record.stages).filter(isRecord),
     params_base: recordValue(record.params_base) ?? undefined,

@@ -906,11 +906,11 @@ def test_simple_bundle_rejects_explicit_unsupported_old_schema_version() -> None
         )
 
 
-def test_studio_synthesized_v5_bundle_payload_validates_current_stage_shape() -> None:
+def test_studio_synthesized_v6_bundle_payload_validates_current_stage_shape() -> None:
     bundle = AnalysisBundleSpec.model_validate(
         {
             "schema_id": "feedbax.spec.analysis_bundle",
-            "schema_version": "feedbax.spec.analysis_bundle.v5",
+            "schema_version": "feedbax.spec.analysis_bundle.v6",
             "name": "studio-analysis-dag",
             "predicate": {"manifest_kind": "EvaluationRunManifest", "run_ids": ["eval-a"]},
             "templates": [],

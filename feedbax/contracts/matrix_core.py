@@ -251,6 +251,20 @@ def load_content_pinned_json_base(
     repo_root: Path | str | None,
 ) -> dict[str, Any]:
     """Load and verify one canonical-JSON content-pinned object."""
+    _document, selected = load_content_pinned_json_document(base, repo_root=repo_root)
+    return selected
+
+
+def load_content_pinned_json_document(
+    base: ContentPinnedJsonBase,
+    *,
+    repo_root: Path | str | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Load one verified whole document and its selected object.
+
+    The whole document is returned for durable custody; the selected object is
+    exactly the value returned by :func:`load_content_pinned_json_base`.
+    """
     if repo_root is None:
         raise ValueError("content-pinned JSON base requires repo_root")
     root = Path(repo_root).resolve()
@@ -272,16 +286,18 @@ def load_content_pinned_json_base(
             f"content-pinned JSON base hash mismatch for {base.ref!r}: "
             f"expected {base.sha256}, got {actual_sha256}"
         )
-    if base.payload_path is None:
-        return payload
-    selected = _select_payload_sub_document(payload, base.payload_path, base.ref)
+    selected = (
+        payload
+        if base.payload_path is None
+        else _select_payload_sub_document(payload, base.payload_path, base.ref)
+    )
     if not isinstance(selected, dict):
         raise ValueError(
             f"content-pinned JSON base {base.ref!r} payload_path "
             f"{list(base.payload_path)!r} must select a JSON object, got "
             f"{type(selected).__name__}"
         )
-    return selected
+    return payload, selected
 
 
 def _select_payload_sub_document(
@@ -386,16 +402,32 @@ def materialize_inherited_document(
     Fails closed on digest mismatch, missing or invalid ``payload_path``, and any
     collision where an inherited subtree would land on a locally-present key.
     """
+    effective, _custody = materialize_inherited_document_with_custody(
+        document, repo_root=repo_root
+    )
+    return effective
+
+
+def materialize_inherited_document_with_custody(
+    document: Any,
+    *,
+    repo_root: Path | str | None,
+) -> tuple[Any, list[tuple[ContentPinnedJsonBase, dict[str, Any], dict[str, Any]]]]:
+    """Materialize inheritance and return every verified whole/selected parent."""
     if not isinstance(document, dict) or SOURCE_DOCUMENT_INHERITANCE_KEY not in document:
-        return document
+        return document, []
     declaration = SourceDocumentInheritance.model_validate(
         document[SOURCE_DOCUMENT_INHERITANCE_KEY]
     )
     effective = deepcopy(document)
+    custody: list[tuple[ContentPinnedJsonBase, dict[str, Any], dict[str, Any]]] = []
     for entry in declaration.inherit:
-        sub_document = load_content_pinned_json_base(entry.parent, repo_root=repo_root)
+        whole_document, sub_document = load_content_pinned_json_document(
+            entry.parent, repo_root=repo_root
+        )
         _graft_absent_target(effective, entry.target, sub_document)
-    return effective
+        custody.append((entry.parent, whole_document, sub_document))
+    return effective, custody
 
 
 def _graft_absent_target(root: dict[str, Any], target: str, value: Any) -> None:
@@ -403,14 +435,34 @@ def _graft_absent_target(root: dict[str, Any], target: str, value: Any) -> None:
     parts = target.split(".")
     node: Any = root
     for depth, part in enumerate(parts[:-1]):
-        if part not in node:
-            node[part] = {}
-        node = node[part]
-        if not isinstance(node, dict):
-            traversed = ".".join(parts[: depth + 1])
-            raise ValueError(
-                f"inherited target {target!r} traverses non-object segment {traversed!r}"
-            )
+        traversed = ".".join(parts[: depth + 1])
+        if isinstance(node, dict):
+            if part not in node:
+                node[part] = {}
+            node = node[part]
+            continue
+        if isinstance(node, list):
+            if not _ARRAY_INDEX_RE.fullmatch(part):
+                raise ValueError(
+                    f"inherited target {target!r} segment {traversed!r} must be a "
+                    "canonical non-negative decimal array index"
+                )
+            index = int(part)
+            if index >= len(node):
+                raise ValueError(
+                    f"inherited target {target!r} segment {traversed!r} array index "
+                    f"out of range for length {len(node)}"
+                )
+            node = node[index]
+            continue
+        raise ValueError(
+            f"inherited target {target!r} traverses scalar segment {traversed!r}"
+        )
+    if not isinstance(node, dict):
+        traversed = ".".join(parts[:-1])
+        raise ValueError(
+            f"inherited target {target!r} leaf parent {traversed!r} is not an object"
+        )
     leaf = parts[-1]
     if leaf in node:
         raise ValueError(
@@ -697,7 +749,9 @@ __all__ = [
     "expand_axis_value_generator",
     "expand_matrix_axes",
     "load_content_pinned_json_base",
+    "load_content_pinned_json_document",
     "materialize_inherited_document",
+    "materialize_inherited_document_with_custody",
     "materialize_matrix_rows",
     "ordered_index_product",
 ]

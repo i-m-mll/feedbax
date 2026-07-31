@@ -29,7 +29,7 @@ from feedbax.analysis.execution_context import (
     with_staged_repo_root,
 )
 from feedbax.analysis.exact_parents import StagedExactParents, migrate_staged_exact_parents
-from feedbax.analysis.figures import FIGURE_RENDER_ROLE, execute_figure_spec
+from feedbax.analysis.figures import FIGURE_RENDER_ROLE, execute_figure_spec, resolve_figure_spec
 from feedbax.analysis.materialization import ContextMaterializer
 from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
 from feedbax.analysis.manifest_inputs import is_authenticated_manifest_ref, resolve_manifest_input
@@ -47,7 +47,7 @@ from feedbax.contracts.expressions import (
     canonical_expression_json,
     evaluate_expr,
 )
-from feedbax.contracts.figures import FigureInputAuthority, FigureSpec
+from feedbax.contracts.figures import FigureCompositionSpec, FigureInputAuthority, FigureSpec
 from feedbax.contracts.analysis_bundle_composition import (
     AnalysisBundleDeltaSpec,
     FlattenedAnalysisBundle,
@@ -118,7 +118,8 @@ ANALYSIS_BUNDLE_SCHEMA_ID = "feedbax.spec.analysis_bundle"
 ANALYSIS_BUNDLE_SCHEMA_VERSION_V2 = "feedbax.spec.analysis_bundle.v2"
 ANALYSIS_BUNDLE_SCHEMA_VERSION_V3 = "feedbax.spec.analysis_bundle.v3"
 ANALYSIS_BUNDLE_SCHEMA_VERSION_V4 = "feedbax.spec.analysis_bundle.v4"
-ANALYSIS_BUNDLE_SCHEMA_VERSION = "feedbax.spec.analysis_bundle.v5"
+ANALYSIS_BUNDLE_SCHEMA_VERSION_V5 = "feedbax.spec.analysis_bundle.v5"
+ANALYSIS_BUNDLE_SCHEMA_VERSION = "feedbax.spec.analysis_bundle.v6"
 ANALYSIS_BUNDLE_EXECUTION_SCHEMA_ID = "feedbax.manifest.analysis_bundle_execution"
 ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION_V1 = "feedbax.manifest.analysis_bundle_execution.v1"
 ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION = "feedbax.manifest.analysis_bundle_execution.v2"
@@ -204,7 +205,7 @@ class BundleStageSpec(StrictModel):
     include_bundle_inputs: bool = False
     evaluation_type: str | None = None
     analysis_type: str | None = None
-    figure: FigureSpec | None = None
+    figure: FigureSpec | FigureCompositionSpec | None = None
     report_type: str | None = None
     params_patches: list[OverridePatch] = Field(default_factory=list)
     local_params: dict[str, Any] | None = None
@@ -217,6 +218,20 @@ class BundleStageSpec(StrictModel):
     not_applicable_reason: str | None = None
     run_condition: Expr | None = None
     prerequisite_bindings: list[BundlePerInputPrerequisiteBinding] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _require_durable_figure_identity(cls, value: Any) -> Any:
+        if isinstance(value, Mapping) and isinstance(value.get("figure"), Mapping):
+            figure = value["figure"]
+            missing = [
+                field for field in ("schema_id", "schema_version") if field not in figure
+            ]
+            if missing:
+                raise ValueError(
+                    "bundle figure authoring must explicitly declare " + ", ".join(missing)
+                )
+        return value
 
     @model_validator(mode="after")
     def _validate_stage_payload(self) -> "BundleStageSpec":
@@ -344,7 +359,7 @@ def resolve_analysis_bundle_authoring(
     *,
     repo_root: Path | str | None = None,
 ) -> tuple[AnalysisBundleSpec, FlattenedAnalysisBundle | None]:
-    """Resolve direct or delta-authored input to one validated v5 bundle."""
+    """Resolve direct or delta-authored input to one validated v6 bundle."""
     if isinstance(bundle, AnalysisBundleSpec):
         return bundle, None
     if isinstance(bundle, AnalysisBundleDeltaSpec) or is_analysis_bundle_delta_payload(bundle):
@@ -1846,9 +1861,15 @@ def _execute_figure_stage(
     products: list[StageMaterialization] = []
     if stage.figure is None:
         raise ValueError(f"figure bundle stage {stage.name!r} requires figure")
+    resolution = resolve_figure_spec(
+        stage.figure,
+        repo_root=execution_context.repo_root,
+        registry=registries.figures,
+    )
+    authored_figure = resolution.figure_spec
     for index, inputs in enumerate(input_groups):
-        runtime_inputs = [*stage.figure.inputs, *inputs]
-        runtime_input_authorities = list(stage.figure.input_authorities)
+        runtime_inputs = [*authored_figure.inputs, *inputs]
+        runtime_input_authorities = list(authored_figure.input_authorities)
         runtime_metadata = {
             "bundle": {
                 "name": bundle.name,
@@ -1898,8 +1919,9 @@ def _execute_figure_stage(
             provider_bindings,
         )
         manifest, path = execute_figure_spec(
-            stage.figure,
+            resolution,
             registry=registries.figures,
+            repo_root=execution_context.repo_root,
             runtime_inputs=runtime_inputs,
             runtime_input_authorities=runtime_input_authorities,
             runtime_metadata=runtime_metadata,

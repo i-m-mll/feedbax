@@ -125,7 +125,7 @@ describe('analysis bundle UI helpers', () => {
       { evaluation_states_policy: 'recompute' },
     ]);
     expect(synthesized[0].bundle).toMatchObject({
-      schema_version: 'feedbax.spec.analysis_bundle.v5',
+      schema_version: 'feedbax.spec.analysis_bundle.v6',
       name: 'studio-analysis-dag',
       predicate: { run_ids: ['eval-a'] },
       params_base: { params: {} },

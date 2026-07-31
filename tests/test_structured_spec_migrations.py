@@ -111,6 +111,7 @@ from feedbax.contracts.figures import (
     FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION,
     FIGURE_RUNTIME_BINDING_SCHEMA_ID,
     FIGURE_RUNTIME_BINDING_SCHEMA_VERSION,
+    FIGURE_RUNTIME_BINDING_SCHEMA_VERSION_V1,
 )
 from feedbax.contracts.evaluation_preflight import (
     EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID,
@@ -996,13 +997,26 @@ def test_default_registry_registers_figure_data_product_payload_family() -> None
         )
 
 
-def test_default_registry_rejects_old_figure_runtime_binding_version() -> None:
+def test_default_registry_migrates_figure_runtime_binding_v1_and_rejects_v0() -> None:
     family = default_spec_registry.resolve("FigureRuntimeBindingSpec")
 
     assert family.identity == FIGURE_RUNTIME_BINDING_SCHEMA_ID
     assert family.current_version == FIGURE_RUNTIME_BINDING_SCHEMA_VERSION
     assert family.policy is not None
-    assert family.policy.stance == "reject"
+    assert family.policy.stance == "migrate"
+    migrated = default_spec_registry.migrate(
+        "FigureRuntimeBindingSpec",
+        {
+            "schema_id": FIGURE_RUNTIME_BINDING_SCHEMA_ID,
+            "schema_version": FIGURE_RUNTIME_BINDING_SCHEMA_VERSION_V1,
+            "authored_figure_spec_sha256": "a" * 64,
+        },
+    ).payload
+    assert migrated["authored_figure_source_sha256"] is None
+    assert migrated["authored_identity_unavailable_reason"] == (
+        "v1_recorded_resolved_hash_only"
+    )
+    assert migrated["resolved_figure_spec_sha256"] == "a" * 64
     with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
         default_spec_registry.migrate(
             "FigureRuntimeBindingSpec",
@@ -1068,7 +1082,7 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
         == "feedbax.spec.training_method.standard_supervised_payload"
     )
     assert families["AnalysisBundleSpec"].identity == "feedbax.spec.analysis_bundle"
-    assert families["AnalysisBundleSpec"].current_version == "feedbax.spec.analysis_bundle.v5"
+    assert families["AnalysisBundleSpec"].current_version == "feedbax.spec.analysis_bundle.v6"
     assert families["PathExpression"].identity == PATH_EXPRESSION_SCHEMA_ID
     assert families["PathExpression"].current_version == PATH_EXPRESSION_SCHEMA_VERSION
     assert families["ExtractionProductSpec"].identity == EXTRACTION_PRODUCT_SPEC_SCHEMA_ID
@@ -1207,7 +1221,7 @@ def test_analysis_bundle_old_version_chain_stamps_recompute_policy(
         },
     )
 
-    assert result.target_version == "feedbax.spec.analysis_bundle.v5"
+    assert result.target_version == "feedbax.spec.analysis_bundle.v6"
     assert result.payload["templates"][0]["evaluation_states_policy"] == "recompute"
     assert result.payload["stages"][0]["evaluation_states_policy"] == "recompute"
 

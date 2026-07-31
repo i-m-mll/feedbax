@@ -147,4 +147,5 @@ nav:
     - 'api/serialisation.md'
     - Analysis and visualisation:
       - 'api/plot.md'
+      - Composable figure specifications: 'api/figures.md'
       - 'api/dimred.md'

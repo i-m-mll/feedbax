@@ -79,6 +79,26 @@ def _strip_provenance(document: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in document.items() if k != SOURCE_DOCUMENT_INHERITANCE_KEY}
 
 
+def _list_child(sha: str, target: str = "trace_families.0.index") -> dict[str, Any]:
+    return {
+        "trace_families": [{"name": "family"}],
+        SOURCE_DOCUMENT_INHERITANCE_KEY: {
+            "schema_id": "feedbax.spec.source_document_inheritance",
+            "schema_version": "feedbax.spec.source_document_inheritance.v1",
+            "inherit": [
+                {
+                    "target": target,
+                    "parent": {
+                        "ref": "parent.json",
+                        "sha256": sha,
+                        "payload_path": ["harmonized_task", "target_support"],
+                    },
+                }
+            ],
+        },
+    }
+
+
 def test_effective_document_matches_physically_duplicated_equivalent(tmp_path: Path) -> None:
     sha = _write(tmp_path, "parent.json", _PARENT)
     effective = materialize_inherited_document(
@@ -114,6 +134,55 @@ def test_provenance_records_pinned_parent_and_pointer(tmp_path: Path) -> None:
             },
         }
     ]
+
+
+def test_canonical_list_index_target_preserves_pin_and_lineage(tmp_path: Path) -> None:
+    sha = _write(tmp_path, "parent.json", _PARENT)
+    child = _list_child(sha)
+    declaration = canonical_json_bytes(child[SOURCE_DOCUMENT_INHERITANCE_KEY])
+
+    effective = materialize_inherited_document(child, repo_root=tmp_path)
+
+    assert effective["trace_families"][0]["index"] == _PARENT["harmonized_task"][
+        "target_support"
+    ]
+    assert canonical_json_bytes(effective[SOURCE_DOCUMENT_INHERITANCE_KEY]) == declaration
+    assert effective[SOURCE_DOCUMENT_INHERITANCE_KEY]["inherit"][0]["parent"][
+        "sha256"
+    ] == sha
+
+
+@pytest.mark.parametrize(
+    ("target", "message"),
+    [
+        ("trace_families.00.index", "canonical non-negative decimal array index"),
+        ("trace_families.-1.index", "canonical non-negative decimal array index"),
+        ("trace_families.1.index", "array index out of range for length 1"),
+    ],
+)
+def test_invalid_list_index_target_fails_closed(
+    tmp_path: Path,
+    target: str,
+    message: str,
+) -> None:
+    sha = _write(tmp_path, "parent.json", _PARENT)
+    with pytest.raises(ValueError, match=message):
+        materialize_inherited_document(_list_child(sha, target), repo_root=tmp_path)
+
+
+def test_list_target_traversal_into_scalar_fails_closed(tmp_path: Path) -> None:
+    sha = _write(tmp_path, "parent.json", _PARENT)
+    child = _list_child(sha, "trace_families.0.name.value.index")
+    with pytest.raises(ValueError, match="traverses scalar segment"):
+        materialize_inherited_document(child, repo_root=tmp_path)
+
+
+def test_list_target_cannot_overwrite_existing_leaf(tmp_path: Path) -> None:
+    sha = _write(tmp_path, "parent.json", _PARENT)
+    child = _list_child(sha)
+    child["trace_families"][0]["index"] = {"local": True}
+    with pytest.raises(ValueError, match="collides with a locally-present key"):
+        materialize_inherited_document(child, repo_root=tmp_path)
 
 
 def test_digest_mismatch_fails_closed(tmp_path: Path) -> None:

@@ -735,10 +735,20 @@ def apply_composition_deltas(
         declared_boundary = (delta.schema_id, delta.schema_version)
         prior_identities = _schema_identities(result)
         for patch in delta.patches:
-            if patch.path in written and patch.path not in acknowledged:
+            conflicts = sorted(path for path in written if _paths_overlap(path, patch.path))
+            unacknowledged = [
+                path
+                for path in conflicts
+                if not any(
+                    _paths_overlap(path, acknowledgement)
+                    and _paths_overlap(patch.path, acknowledgement)
+                    for acknowledgement in acknowledged
+                )
+            ]
+            if unacknowledged:
                 raise ValueError(
-                    f"/deltas/{delta.layer_id}/{patch.path} overrides an ancestor-written "
-                    "path without explicit acknowledgement"
+                    f"/deltas/{delta.layer_id}/{patch.path} overlaps ancestor-written "
+                    f"paths {unacknowledged!r} without explicit acknowledgement"
                 )
             try:
                 _apply_patch(result, patch)
@@ -767,6 +777,11 @@ def apply_composition_deltas(
             )
         current_schema = resulting_schema
     return result, attribution, written
+
+
+def _paths_overlap(left: str, right: str) -> bool:
+    """Return whether either dotted path denotes the other's subtree."""
+    return left == right or left.startswith(f"{right}.") or right.startswith(f"{left}.")
 
 
 def _payload_schema_identity(payload: dict[str, Any]) -> tuple[Any, Any]:

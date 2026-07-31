@@ -23,7 +23,7 @@ from feedbax.contracts.studio_api import (
     GenerateAnalysisRequest,
     GenerateAnalysisResponse,
 )
-from feedbax.contracts.figures import FigureSpec
+from feedbax.contracts.figures import FIGURE_COMPOSITION_SPEC_SCHEMA_ID, FigureSpec
 from feedbax.contracts.manifest import (
     AnalysisRunSpec,
     ArtifactRef,
@@ -114,11 +114,22 @@ def _spec_for_analysis_request(
 
 
 def _figure_spec_for_request(payload: GenerateAnalysisRequest) -> FigureSpec:
-    """Build the executable figure spec demanded by the Studio request."""
+    """Build a direct figure spec without accepting client-controlled source roots."""
     if payload.figure_spec is None:
         raise HTTPException(
             status_code=400,
             detail="figure_spec is required when job_kind='figure'",
+        )
+    if payload.figure_spec.get("schema_id") == FIGURE_COMPOSITION_SPEC_SCHEMA_ID:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "figure_composition_not_supported_in_studio",
+                "message": (
+                    "Studio accepts resolved FigureSpec v2 only; server-owned composition "
+                    "source roots are not configured for this endpoint"
+                ),
+            },
         )
     spec = FigureSpec.model_validate(payload.figure_spec)
     if payload.eval_run_id and not spec.inputs:
