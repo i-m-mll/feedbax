@@ -9,6 +9,7 @@ from feedbax.orchestration.drivers.capabilities import (
     DRIVER_CAPABILITIES_SCHEMA_ID,
     DRIVER_CAPABILITIES_SCHEMA_VERSION,
     DRIVER_CAPABILITIES_SCHEMA_VERSION_V2,
+    DRIVER_CAPABILITIES_SCHEMA_VERSION_V3,
     AcquisitionSemantics,
     AuthorizationSemantics,
     CustodySemantics,
@@ -64,7 +65,7 @@ def _conditional_envelope() -> DriverCapabilityEnvelope:
         recovery=RecoverySemantics.DURABLE_REMOTE,
         retry=RetrySemantics.NONE,
         acquisition=AcquisitionSemantics.EXTERNALLY_PROVIDED,
-        teardown=TeardownSemantics.EXTERNAL_RESOURCES_PRESERVED,
+        teardown=TeardownSemantics.RESOURCES_PRESERVED,
         custody=CustodySemantics.EPHEMERAL_REMOTE_RESOURCE,
     )
     acquired = DriverCapabilityFacts(
@@ -88,14 +89,71 @@ def _conditional_envelope() -> DriverCapabilityEnvelope:
     )
 
 
-def test_capability_envelope_has_stable_v2_identity_and_core_stages() -> None:
+class _CoreOnlyDriverMethods:
+    def provision(self, *_args):
+        return {}
+
+    def realize_env(self, *_args):
+        return "fixture"
+
+    def stage_inputs(self, *_args):
+        return {}
+
+    def launch_row(self, *_args):
+        return {}
+
+    def probe(self, *_args):
+        return object()
+
+    def stop_row(self, *_args):
+        return {}
+
+    def collect(self, *_args):
+        return {}
+
+    def teardown(self, *_args):
+        return {}
+
+
+class _CoreDriverMethods(_CoreOnlyDriverMethods):
+
+    def acquisition_candidates(self, *_args):
+        return (None,)
+
+    def acquisition_pod_name(self, *_args):
+        return "fixture"
+
+    def acquisition_config_identity(self, *_args):
+        return "fixture"
+
+    def create_pod_once(self, *_args):
+        return object()
+
+    def finish_acquired_pod(self, *_args):
+        return {}
+
+    def acquisition_failure_evidence(self, *_args):
+        return {}
+
+    def observe_pod_inventory(self, *_args, **_kwargs):
+        return (), {}
+
+    def adopt_owned_pod(self, *_args, **_kwargs):
+        return None
+
+    def adopted_provision_record(self, *_args):
+        return {}
+
+
+def test_capability_envelope_has_stable_v3_identity_and_core_stages() -> None:
     facts = _local_facts()
     envelope = DriverCapabilityEnvelope.single("fixture:driver", facts)
     realized = envelope.realize("local")
 
     assert envelope.schema_id == DRIVER_CAPABILITIES_SCHEMA_ID
-    assert envelope.schema_version == DRIVER_CAPABILITIES_SCHEMA_VERSION_V2
-    assert DRIVER_CAPABILITIES_SCHEMA_VERSION == DRIVER_CAPABILITIES_SCHEMA_VERSION_V2
+    assert DRIVER_CAPABILITIES_SCHEMA_VERSION_V2 == "2"
+    assert envelope.schema_version == DRIVER_CAPABILITIES_SCHEMA_VERSION_V3
+    assert DRIVER_CAPABILITIES_SCHEMA_VERSION == DRIVER_CAPABILITIES_SCHEMA_VERSION_V3
     assert facts.stages == frozenset(DriverStage)
     assert realized.driver_name == "fixture:driver"
     assert realized.variant_id == "local"
@@ -124,7 +182,7 @@ def test_capability_facts_reject_incomplete_or_contradictory_variants() -> None:
 def test_registry_realizes_external_and_acquired_contexts_without_name_branching() -> None:
     envelope = _conditional_envelope()
 
-    class ConditionalDriver:
+    class ConditionalDriver(_CoreDriverMethods):
         def __init__(
             self,
             _context: DriverConstructionContext,
@@ -160,7 +218,7 @@ def test_registry_realizes_external_and_acquired_contexts_without_name_branching
     assert external.realized_capabilities.facts.resources is ResourceSemantics.EXTERNALLY_MANAGED
     assert (
         external.realized_capabilities.facts.teardown
-        is TeardownSemantics.EXTERNAL_RESOURCES_PRESERVED
+        is TeardownSemantics.RESOURCES_PRESERVED
     )
     assert acquired.realized_capabilities.facts.resources is ResourceSemantics.DRIVER_OWNED
     assert acquired.realized_capabilities.facts.acquisition is AcquisitionSemantics.ENGINE_GOVERNED
@@ -181,7 +239,7 @@ def test_registry_rejects_unsupported_context_realization() -> None:
                 name=envelope.driver_name,
                 supported_capabilities=envelope,
                 resolve_capabilities=lambda _context: unsupported,
-                factory=lambda _context, realized: _FixtureDriver(realized),
+                factory=lambda _context, realized: _CoreOnlyFixtureDriver(realized),
             ),
         )
     )
@@ -270,12 +328,13 @@ def test_construction_context_deep_detaches_and_freezes_nested_inputs() -> None:
         nested["new"] = "value"  # type: ignore[index]
 
 
-def test_local_driver_has_one_truthful_realized_variant() -> None:
+def test_local_driver_default_realizes_stop_variant() -> None:
     envelope = LocalOrchestrationDriver.capability_envelope
     realized = LocalOrchestrationDriver.realized_capabilities
 
     assert envelope.supports(realized)
     assert realized.driver_name == "local"
+    assert realized.variant_id == "local-stop"
     assert realized.facts.resources is ResourceSemantics.LOCAL_PROCESS
     assert realized.facts.optional_hooks == frozenset(
         {DriverHook.PREFLIGHT_CHECKS, DriverHook.CHECKPOINT_STOP}
@@ -290,7 +349,7 @@ def test_worker_http_has_one_truthful_external_service_variant() -> None:
     assert realized.driver_name == "worker-http"
     assert realized.facts.resources is ResourceSemantics.EXTERNALLY_MANAGED
     assert realized.facts.acquisition is AcquisitionSemantics.EXTERNALLY_PROVIDED
-    assert realized.facts.teardown is TeardownSemantics.EXTERNAL_RESOURCES_PRESERVED
+    assert realized.facts.teardown is TeardownSemantics.RESOURCES_PRESERVED
     assert realized.facts.optional_hooks == frozenset()
 
 
@@ -318,7 +377,7 @@ def test_builtin_registry_realizes_runpod_ownership_from_construction_context() 
     assert external.realized_capabilities.facts.resources is ResourceSemantics.EXTERNALLY_MANAGED
     assert (
         external.realized_capabilities.facts.teardown
-        is TeardownSemantics.EXTERNAL_RESOURCES_PRESERVED
+        is TeardownSemantics.RESOURCES_PRESERVED
     )
     assert external.realized_capabilities.facts.spend is SpendSemantics.EXTERNALLY_MANAGED
     assert acquired.realized_capabilities.variant_id == "engine-acquired"
@@ -327,6 +386,122 @@ def test_builtin_registry_realizes_runpod_ownership_from_construction_context() 
     assert acquired.realized_capabilities.facts.recovery is RecoverySemantics.DURABLE_REMOTE
     assert acquired.realized_capabilities.facts.supports(DriverHook.ENGINE_ACQUISITION)
     assert acquired.realized_capabilities.facts.supports(DriverHook.GLOBAL_RESOURCE_INVENTORY)
+
+
+def test_runpod_auto_teardown_false_realizes_owned_resource_preservation() -> None:
+    registry = new_application_registry_bundle(local_component_source=None).drivers
+
+    driver = registry.construct(
+        "runpod",
+        DriverConstructionContext(
+            configuration={"driver_config": RunPodDriverConfig(auto_teardown=False)}
+        ),
+    )
+
+    assert driver.realized_capabilities.variant_id == "engine-acquired-preserved"
+    assert driver.realized_capabilities.facts.resources is ResourceSemantics.DRIVER_OWNED
+    assert driver.realized_capabilities.facts.teardown is TeardownSemantics.RESOURCES_PRESERVED
+    assert not driver.realized_capabilities.facts.supports(
+        DriverHook.GLOBAL_RESOURCE_INVENTORY
+    )
+
+
+def test_keep_alive_context_realizes_preservation_for_local_and_owned_runpod() -> None:
+    registry = new_application_registry_bundle(local_component_source=None).drivers
+
+    local = registry.construct(
+        "local",
+        DriverConstructionContext(configuration={"preserve_owned_resources": True}),
+    )
+    runpod = registry.construct(
+        "runpod",
+        DriverConstructionContext(
+            configuration={
+                "driver_config": RunPodDriverConfig(),
+                "preserve_owned_resources": True,
+            }
+        ),
+    )
+
+    assert local.realized_capabilities.variant_id == "local-preserved"
+    assert local.realized_capabilities.facts.teardown is TeardownSemantics.RESOURCES_PRESERVED
+    assert runpod.realized_capabilities.variant_id == "engine-acquired-preserved"
+    assert runpod.realized_capabilities.facts.teardown is TeardownSemantics.RESOURCES_PRESERVED
+
+
+def test_registry_rejects_missing_core_and_advertised_hook_members() -> None:
+    core_envelope = DriverCapabilityEnvelope.single("fixture:core", _local_facts())
+    missing_core = DriverRegistry(
+        (
+            DriverRegistration(
+                name="fixture:core",
+                supported_capabilities=core_envelope,
+                resolve_capabilities=lambda _context: core_envelope.realize("local"),
+                factory=lambda _context, realized: type(
+                    "MissingCore", (), {"realized_capabilities": realized}
+                )(),
+            ),
+        )
+    )
+    hook_facts = replace(
+        _local_facts(),
+        optional_hooks=frozenset({DriverHook.PREFLIGHT_CHECKS}),
+    )
+    hook_envelope = DriverCapabilityEnvelope.single("fixture:hook", hook_facts)
+    missing_hook = DriverRegistry(
+        (
+            DriverRegistration(
+                name="fixture:hook",
+                supported_capabilities=hook_envelope,
+                resolve_capabilities=lambda _context: hook_envelope.realize("local"),
+                factory=lambda _context, realized: _FixtureDriver(realized),
+            ),
+        )
+    )
+
+    with pytest.raises(TypeError, match="lacks callable members: 'provision'"):
+        missing_core.construct("fixture:core", DriverConstructionContext())
+    with pytest.raises(TypeError, match="'preflight_checks'"):
+        missing_hook.construct("fixture:hook", DriverConstructionContext())
+
+
+@pytest.mark.parametrize(
+    ("name", "facts", "missing_member"),
+    [
+        (
+            "fixture:acquisition-group",
+            _conditional_envelope().variants["acquired"],
+            "acquisition_candidates",
+        ),
+        (
+            "fixture:inventory-group",
+            replace(
+                _local_facts(),
+                optional_hooks=frozenset({DriverHook.GLOBAL_RESOURCE_INVENTORY}),
+            ),
+            "observe_global_resource_inventory",
+        ),
+    ],
+)
+def test_group_hooks_require_their_complete_callable_surface(
+    name: str,
+    facts: DriverCapabilityFacts,
+    missing_member: str,
+) -> None:
+    envelope = DriverCapabilityEnvelope.single(name, facts)
+    registry = DriverRegistry(
+        (
+            DriverRegistration(
+                name=name,
+                supported_capabilities=envelope,
+                resolve_capabilities=lambda _context: envelope.realize(facts.variant_id),
+                factory=lambda _context, realized: _CoreOnlyFixtureDriver(realized),
+            ),
+        )
+    )
+
+    with pytest.raises(TypeError, match=missing_member):
+        registry.construct(name, DriverConstructionContext())
 
 
 def test_application_driver_registry_is_fresh_and_sealed_with_builtins() -> None:
@@ -345,6 +520,11 @@ class _MutableBox:
     values: list[int]
 
 
-class _FixtureDriver:
+class _FixtureDriver(_CoreDriverMethods):
+    def __init__(self, realized: RealizedDriverCapabilities) -> None:
+        self.realized_capabilities = realized
+
+
+class _CoreOnlyFixtureDriver(_CoreOnlyDriverMethods):
     def __init__(self, realized: RealizedDriverCapabilities) -> None:
         self.realized_capabilities = realized

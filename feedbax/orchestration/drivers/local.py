@@ -45,6 +45,7 @@ from feedbax.orchestration.drivers.capabilities import (
     EnvironmentSemantics,
     MonitoringSemantics,
     RecoverySemantics,
+    RealizedDriverCapabilities,
     ResourceSemantics,
     RetrySemantics,
     SpendSemantics,
@@ -105,10 +106,13 @@ print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
 class LocalOrchestrationDriver:
     """Run orchestration rows as local subprocesses under the run-set directory."""
 
-    capability_envelope = DriverCapabilityEnvelope.single(
-        "local",
-        DriverCapabilityFacts(
-            variant_id="local",
+    poll_interval_seconds = 0.05
+
+    capability_envelope = DriverCapabilityEnvelope(
+        driver_name="local",
+        variants={
+            "local-stop": DriverCapabilityFacts(
+            variant_id="local-stop",
             venue=DriverVenue.LOCAL_PROCESS,
             resources=ResourceSemantics.LOCAL_PROCESS,
             spend=SpendSemantics.NONE,
@@ -126,9 +130,25 @@ class LocalOrchestrationDriver:
                     DriverHook.CHECKPOINT_STOP,
                 }
             ),
-        ),
+            ),
+            "local-preserved": DriverCapabilityFacts(
+                variant_id="local-preserved",
+                venue=DriverVenue.LOCAL_PROCESS,
+                resources=ResourceSemantics.LOCAL_PROCESS,
+                spend=SpendSemantics.NONE,
+                authorization=AuthorizationSemantics.NONE,
+                environment=EnvironmentSemantics.LOCAL_INVENTORY,
+                monitoring=MonitoringSemantics.ROW_POLL,
+                recovery=RecoverySemantics.PROCESS_LOCAL,
+                retry=RetrySemantics.NONE,
+                acquisition=AcquisitionSemantics.NONE,
+                teardown=TeardownSemantics.RESOURCES_PRESERVED,
+                custody=CustodySemantics.LOCAL_RUN_SET,
+                optional_hooks=frozenset({DriverHook.PREFLIGHT_CHECKS}),
+            ),
+        },
     )
-    realized_capabilities = capability_envelope.realize("local")
+    realized_capabilities = capability_envelope.realize("local-stop")
 
     def __init__(
         self,
@@ -139,7 +159,9 @@ class LocalOrchestrationDriver:
         input_provider_bindings: Sequence[InputProviderRootBinding] = (),
         staged_root_bindings: Sequence[StagedRootSnapshotBinding] = (),
         update_budget: int | None = None,
+        realized_capabilities: RealizedDriverCapabilities | None = None,
     ) -> None:
+        self.realized_capabilities = realized_capabilities or type(self).realized_capabilities
         self.cwd = Path(cwd or Path.cwd())
         self.python_executable = python_executable or sys.executable
         self.freeze_lines = tuple(freeze_lines) if freeze_lines is not None else None
@@ -1122,11 +1144,22 @@ def local_driver_registration() -> DriverRegistration:
     """Return the built-in context-aware local driver registration."""
 
     def resolve(context: DriverConstructionContext):
-        del context
-        return LocalOrchestrationDriver.realized_capabilities
+        preserve = context.configuration.get("preserve_owned_resources", False)
+        if not isinstance(preserve, bool):
+            raise TypeError("preserve_owned_resources must be a bool")
+        variant = (
+            "local-preserved"
+            if preserve
+            else "local-stop"
+        )
+        return LocalOrchestrationDriver.capability_envelope.realize(variant)
 
     def factory(context: DriverConstructionContext, realized):
         runtime = context.runtime_bindings
+        if runtime.get("collection_recovery_bindings"):
+            raise ValueError(
+                "local capability variant does not support durable remote collection recovery"
+            )
         driver = LocalOrchestrationDriver(
             cwd=runtime.get("cwd"),
             python_executable=_optional_runtime_string(runtime, "python_executable"),
@@ -1134,6 +1167,7 @@ def local_driver_registration() -> DriverRegistration:
             input_provider_bindings=runtime.get("input_provider_bindings", ()),
             staged_root_bindings=runtime.get("staged_root_bindings", ()),
             update_budget=_optional_runtime_int(runtime, "native_update_budget"),
+            realized_capabilities=realized,
         )
         if driver.realized_capabilities != realized:
             raise ValueError("local driver factory received inconsistent realized capabilities")
