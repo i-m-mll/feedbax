@@ -42,6 +42,7 @@ from feedbax.contracts.training import (
     TrainingConfig,
     TrainingRunSpec,
     WorkerExecutionSpec,
+    default_training_method_registry,
     standard_supervised_effective_phase_spec,
     standard_supervised_method_contract,
     standard_supervised_method_payload,
@@ -580,6 +581,7 @@ def test_assembly_supplies_exact_composition_parents_and_binds_provenance(
     registry = AssemblyCompilerRegistry()
     register_training_run_matrix_compiler(
         registry,
+        method_registry=default_training_method_registry(),
         row_lowerer=lowerers.lower,
         row_validator=lambda payload, _row_id: TrainingRunSpec.model_validate(payload),
     )
@@ -714,6 +716,7 @@ bundle = assemble_run_bundle(
     registry=build_default_assembly_registry(
         method_registry=state.bundle.training_methods,
         row_lowerer_registry=state.bundle.row_lowerers,
+        evaluation_registry=state.bundle.evaluation_recipes,
     ),
 )
 row = bundle.rows[0]

@@ -1812,8 +1812,10 @@ def test_plugin_check_discovery_and_failure_propagation() -> None:
     )
 
     assert certificate.overall == "fail"
-    assert certificate.rows["row-a"].checks[0].check_id == "project_check"
-    assert certificate.rows["row-a"].checks[0].status == "fail"
+    project_check = next(
+        check for check in certificate.rows["row-a"].checks if check.check_id == "project_check"
+    )
+    assert project_check.status == "fail"
 
 
 def test_conformance_plugin_discovery_rejects_legacy_registrars() -> None:

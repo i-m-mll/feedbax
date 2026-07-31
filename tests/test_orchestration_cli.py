@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import ANY
 
 import pytest
 
@@ -17,6 +18,7 @@ from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
 )
+from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.contracts.studio_training import (
     StudioTrainingAssemblySpec,
     StudioTrainingIdentityAdapter,
@@ -288,11 +290,17 @@ def _matrix_request(
     *,
     training_run_payload: dict[str, Any],
 ) -> tuple[RunAssemblyRequest, AssemblyCompilerRegistry]:
+    base_path = tmp_path / "training-base.json"
+    base_path.write_text(json.dumps(training_run_payload), encoding="utf-8")
     matrix = {
         "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
         "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
         "name": "orchestration plugin discovery",
-        "base": {"kind": "inline", "inline": training_run_payload},
+        "base": {
+            "kind": "authored_intent",
+            "ref": base_path.name,
+            "content_hash": training_spec_sha256(training_run_payload),
+        },
         "rows": [{"row_id": "plugin-row", "seed": 7}],
     }
     authored_bytes = json.dumps(matrix, sort_keys=True).encode("utf-8")
@@ -320,7 +328,7 @@ def _matrix_request(
     method_registry = default_training_method_registry()
     register_training_run_matrix_compiler(
         registry,
-        allow_inline_base=True,
+        method_registry=method_registry,
         row_validator=lambda payload, row_id: _validate_training_payload(
             payload, row_id=row_id, method_registry=method_registry
         ),
@@ -364,6 +372,7 @@ def test_preflight_loads_non_builtin_training_method_entry_point_before_matrix_a
     )
     request, _ = _plugin_matrix_request(tmp_path)
     request_path = _write_request(request, tmp_path / "assembly-request.json")
+    monkeypatch.chdir(tmp_path)
 
     assert orchestrate.main(["preflight", "--assembly-request", str(request_path)]) == 0
 
@@ -714,6 +723,9 @@ def test_certify_explicitly_retries_a_completed_failed_certificate(
         (
             "run",
             {
+                "conformance_registry": ANY,
+                "training_method_registry": ANY,
+                "plugin_provenance": (),
                 "stop_after_stage": "CERTIFY",
                 "retry_failed_certification": True,
             },
@@ -778,7 +790,11 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
             type(self).seen_bindings = self.input_provider_bindings
 
     monkeypatch.setattr(orchestrate, "LocalOrchestrationDriver", FastLocalDriver)
-    monkeypatch.setattr(orchestrate, "build_default_assembly_registry", lambda: registry)
+    monkeypatch.setattr(
+        orchestrate,
+        "build_default_assembly_registry",
+        lambda **_kwargs: registry,
+    )
     bundle = replace(
         new_application_registry_bundle(local_component_source=None),
         conformance_checks=CheckRegistry({"fixture_pass": lambda _row: pass_check("fixture_pass")}),
@@ -862,7 +878,11 @@ def test_runpod_driver_is_constructed_from_typed_deployment_policy(tmp_path: Pat
     )
 
     bindings = orchestrate._input_provider_bindings([f"checkpoint.inputs={tmp_path}"])
-    driver = orchestrate._driver_for_bundle(bundle, bindings)
+    driver = orchestrate._driver_for_bundle(
+        bundle,
+        bindings,
+        training_method_registry=default_training_method_registry(),
+    )
 
     assert isinstance(driver, RunPodOrchestrationDriver)
     assert driver.config.pod_id == "pod-123"
