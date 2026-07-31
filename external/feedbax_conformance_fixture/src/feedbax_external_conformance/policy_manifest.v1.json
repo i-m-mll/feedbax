@@ -13,6 +13,205 @@
       "case_ids": [
         "unified_plugin_bootstrap"
       ],
+      "plugin_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.plugins",
+            "public_names": [
+              "DOWNSTREAM_INTERFACE_POLICY_ID",
+              "DOWNSTREAM_PROTOCOL_CURRENT",
+              "DOWNSTREAM_PROTOCOL_MINIMUM",
+              "DOWNSTREAM_POLICY_EFFECTIVE_RELEASE",
+              "UnsupportedDownstreamProtocolVersion",
+              "validate_downstream_protocol_version",
+              "BootstrapError",
+              "BootstrapErrorCode",
+              "BootstrapState",
+              "FamilyRequirement",
+              "PluginDeclaration",
+              "PluginDependency",
+              "PluginProvenance",
+              "PluginRegistration",
+              "RegistrationContext",
+              "RegistryKey",
+              "bootstrap_application",
+              "discover_plugin_registrations",
+              "new_registration_context",
+              "DRIVERS",
+              "APPLICATION_REGISTRY_KEYS",
+              "ApplicationRegistryBundle",
+              "COMPONENTS",
+              "TRAINING_METHODS",
+              "ROW_LOWERERS",
+              "EXECUTION_PREPARATIONS",
+              "ANALYSIS_RECIPES",
+              "EVALUATION_RECIPES",
+              "EVALUATION_BATCH_CONSUMERS",
+              "EVALUATION_PRODUCT_UNION_FINALIZERS",
+              "TrainingMethodDescriptor",
+              "TrainingMethodRegistry",
+              "TrainingRowLowererRegistration",
+              "TrainingRowLowererRegistry",
+              "TrainingRowLoweringContext",
+              "TrainingRowLoweringResult",
+              "ExecutionPreparationProvider",
+              "ExecutionPreparationProviderRegistry",
+              "ExecutionPreparationRegistration",
+              "ExecutionPreparationRequest",
+              "ExecutionPreparationResult",
+              "ExecutionPreparationPlan",
+              "compile_training_method_authoring",
+              "training_method_row_lowerer_registration",
+              "AnalysisRecipe",
+              "AnalysisRecipeRegistry",
+              "AnalysisRecipeResult",
+              "EvaluationRecipe",
+              "EvaluationRecipeRegistry",
+              "EvaluationRecipeResult",
+              "EvaluationBatchRecipe",
+              "EvaluationAuthoringSchema",
+              "EvaluationBatchItem",
+              "EvaluationBatchRowError",
+              "EvaluationStatesStructureProviderProtocol",
+              "StagedExecutionContext",
+              "EMPTY_STAGED_EXECUTION_CONTEXT",
+              "EvaluationBatchConsumer",
+              "EvaluationBatchConsumerRegistry",
+              "EvaluationBatchConsumerInput",
+              "EvaluationBatchMergeInput",
+              "EvaluationBatchMergeState",
+              "EvaluationBatchFinalizeInput",
+              "EvaluationBatchFragment",
+              "EvaluationCompactProductUnionFinalizerRegistry",
+              "EvaluationCompactProductUnionInput"
+            ]
+          }
+        ],
+        "direct_entrypoint_imports": [
+          "EVALUATION_RECIPES",
+          "FamilyRequirement",
+          "PluginDeclaration",
+          "PluginDependency",
+          "PluginRegistration",
+          "RegistrationContext",
+          "ANALYSIS_RECIPES",
+          "EVALUATION_BATCH_CONSUMERS",
+          "EVALUATION_PRODUCT_UNION_FINALIZERS",
+          "EXECUTION_PREPARATIONS",
+          "ROW_LOWERERS",
+          "TRAINING_METHODS"
+        ],
+        "families": [
+          {
+            "key": "training_methods",
+            "registry_type": "TrainingMethodRegistry",
+            "registry_methods": [
+              "register_descriptor",
+              "resolve",
+              "validate_payload",
+              "resolve_execution"
+            ],
+            "callback_types": ["TrainingMethodDescriptor"],
+            "support_types": [],
+            "public_consumers": [
+              "feedbax.training.authoring:compile_training_method_authoring"
+            ]
+          },
+          {
+            "key": "row_lowerers",
+            "registry_type": "TrainingRowLowererRegistry",
+            "registry_methods": ["register", "lower"],
+            "callback_types": ["TrainingRowLowererRegistration"],
+            "support_types": [
+              "TrainingRowLoweringContext",
+              "TrainingRowLoweringResult"
+            ],
+            "public_consumers": [
+              "feedbax.training.authoring:training_method_row_lowerer_registration"
+            ]
+          },
+          {
+            "key": "execution_preparations",
+            "registry_type": "ExecutionPreparationProviderRegistry",
+            "registry_methods": ["register", "get", "prepare"],
+            "callback_types": ["ExecutionPreparationProvider"],
+            "support_types": [
+              "ExecutionPreparationRegistration",
+              "ExecutionPreparationRequest",
+              "ExecutionPreparationResult",
+              "ExecutionPreparationPlan"
+            ],
+            "public_consumers": []
+          },
+          {
+            "key": "analysis_recipes",
+            "registry_type": "AnalysisRecipeRegistry",
+            "registry_methods": ["register", "get", "structure_provider"],
+            "callback_types": ["AnalysisRecipe"],
+            "support_types": [
+              "AnalysisRecipeResult",
+              "EvaluationStatesStructureProviderProtocol"
+            ],
+            "public_consumers": [
+              "feedbax.analysis:resolve_analysis_inputs",
+              "feedbax.analysis:execute_analysis_run_spec"
+            ]
+          },
+          {
+            "key": "evaluation_recipes",
+            "registry_type": "EvaluationRecipeRegistry",
+            "registry_methods": [
+              "register",
+              "register_authoring_schema",
+              "get",
+              "batch"
+            ],
+            "callback_types": ["EvaluationRecipe", "EvaluationBatchRecipe"],
+            "support_types": [
+              "EvaluationRecipeResult",
+              "EvaluationAuthoringSchema",
+              "EvaluationBatchItem",
+              "EvaluationBatchRowError",
+              "StagedExecutionContext",
+              "EMPTY_STAGED_EXECUTION_CONTEXT"
+            ],
+            "public_consumers": [
+              "feedbax.analysis.evaluation:compile_evaluation_run_matrix",
+              "feedbax.analysis.evaluation:execute_evaluation_run_matrix",
+              "feedbax.analysis.evaluation:execute_evaluation_run_spec"
+            ]
+          },
+          {
+            "key": "evaluation_batch_consumers",
+            "registry_type": "EvaluationBatchConsumerRegistry",
+            "registry_methods": ["register", "get"],
+            "callback_types": ["EvaluationBatchConsumer"],
+            "support_types": [
+              "EvaluationBatchConsumerInput",
+              "EvaluationBatchMergeInput",
+              "EvaluationBatchMergeState",
+              "EvaluationBatchFinalizeInput",
+              "EvaluationBatchFragment"
+            ],
+            "public_consumers": [
+              "feedbax.analysis.evaluation_compaction:compact_evaluation_batch",
+              "feedbax.analysis.evaluation_compaction:merge_evaluation_batch_fragment",
+              "feedbax.analysis.evaluation_compaction:reclaim_evaluation_batch_caches",
+              "feedbax.analysis.evaluation_compaction:publish_evaluation_compaction_products"
+            ]
+          },
+          {
+            "key": "evaluation_product_union_finalizers",
+            "registry_type": "EvaluationCompactProductUnionFinalizerRegistry",
+            "registry_methods": ["register", "get"],
+            "callback_types": [],
+            "support_types": ["EvaluationCompactProductUnionInput"],
+            "public_consumers": [
+              "feedbax.analysis.evaluation_product_union:finalize_evaluation_compact_product_union"
+            ]
+          }
+        ]
+      },
       "schemas": {
         "current": [
           "feedbax.plugin.declaration.v2"

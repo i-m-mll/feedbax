@@ -310,7 +310,7 @@ def test_compile_authoring_projects_once_and_returns_canonical_contracts(
     compiled = compile_training_method_authoring(
         row,
         method_ref=METHOD_REF,
-        _registry=_registry,
+        registry=_registry,
     )
 
     assert holder["projector_calls"] == {
@@ -362,7 +362,7 @@ def test_compile_authoring_carries_one_mapping_level_without_row_compiler(
     compiled = compile_training_method_authoring(
         _authored_row(),
         method_ref=METHOD_REF,
-        _registry=_registry,
+        registry=_registry,
     )
 
     assert compiled.worker_execution.mapping_levels == mapping_levels
@@ -383,7 +383,7 @@ def test_compile_authoring_preserves_empty_mapping_as_scalar(authoring_registry)
     compiled = compile_training_method_authoring(
         _authored_row(),
         method_ref=METHOD_REF,
-        _registry=_registry,
+        registry=_registry,
     )
 
     assert compiled.worker_execution.mapping_levels == []
@@ -406,7 +406,7 @@ def test_compile_authoring_leaves_mapping_validation_to_worker_contract(
     compiled = compile_training_method_authoring(
         _authored_row(),
         method_ref=METHOD_REF,
-        _registry=_registry,
+        registry=_registry,
     )
 
     with pytest.raises(WorkerContractValidationError, match="exactly one mapping level"):
@@ -419,7 +419,7 @@ def test_compile_authoring_owns_scientific_policies_only(authoring_registry) -> 
     defaulted = compile_training_method_authoring(
         _authored_row(),
         method_ref=METHOD_REF,
-        _registry=registry,
+        registry=registry,
     )
 
     assert "execution" not in TrainingRunSpec.model_fields
@@ -435,7 +435,7 @@ def test_compile_authoring_owns_scientific_policies_only(authoring_registry) -> 
         method_ref=METHOD_REF,
         artifacts=artifacts,
         risk_aggregation=risk,
-        _registry=registry,
+        registry=registry,
     )
 
     assert explicit.run_spec.artifacts == artifacts
@@ -461,7 +461,7 @@ def test_compiler_result_is_consumed_as_an_ordinary_row_lowerer(
     lowerer = partial(
         compile_training_method_authoring,
         method_ref=METHOD_REF,
-        _registry=registry,
+        registry=registry,
     )
 
     materialized = materialize_adapted_run_matrix(
@@ -493,7 +493,7 @@ def test_authoring_rejects_missing_schema_low_level_and_missing_hook() -> None:
         compile_training_method_authoring(
             _authored_row(),
             method_ref=METHOD_REF,
-            _registry=low_level,
+            registry=low_level,
         )
 
     row_compiler_only = TrainingMethodRegistry()
@@ -524,7 +524,7 @@ def test_authoring_rejects_missing_schema_low_level_and_missing_hook() -> None:
         compile_training_method_authoring(
             _authored_row(),
             method_ref=METHOD_REF,
-            _registry=row_compiler_only,
+            registry=row_compiler_only,
         )
     assert row_compiler_calls == 0
 
@@ -551,7 +551,7 @@ def test_authoring_rejects_projector_and_reserved_domain_errors(
         compile_training_method_authoring(
             _authored_row(),
             method_ref=METHOD_REF,
-            _registry=candidate,
+            registry=candidate,
         )
 
     candidate = install(graph=lambda _payload: {"inline": {"nodes": "invalid"}})
@@ -559,7 +559,7 @@ def test_authoring_rejects_projector_and_reserved_domain_errors(
         compile_training_method_authoring(
             _authored_row(),
             method_ref=METHOD_REF,
-            _registry=candidate,
+            registry=candidate,
         )
 
 
@@ -572,7 +572,7 @@ def test_authoring_rejects_hook_mutation_and_untyped_contribution(
         compile_training_method_authoring(
             _authored_row(),
             method_ref=METHOD_REF,
-            _registry=registry,
+            registry=registry,
         )
     assert holder["authoring_calls"] == 1
     assert holder["row_compiler_calls"] == 0
@@ -586,7 +586,7 @@ def test_authoring_rejects_hook_mutation_and_untyped_contribution(
         compile_training_method_authoring(
             _authored_row(),
             method_ref=METHOD_REF,
-            _registry=registry,
+            registry=registry,
         )
     assert holder["authoring_calls"] == 2
     assert holder["row_compiler_calls"] == 0
@@ -611,7 +611,7 @@ def test_invalid_contribution_fails_before_matrix_materialization_writes(
     lowerer = partial(
         compile_training_method_authoring,
         method_ref=METHOD_REF,
-        _registry=registry,
+        registry=registry,
     )
 
     with pytest.raises(TrainingMethodAuthoringError, match="exact.*Contribution"):
@@ -631,7 +631,7 @@ def test_authoring_rejects_invalid_method_payload_before_projectors(authoring_re
         compile_training_method_authoring(
             _authored_row({"gain": "3", "task_name": "reach"}),
             method_ref=METHOD_REF,
-            _registry=registry,
+            registry=registry,
         )
 
     assert holder["projector_calls"] == {}
@@ -644,7 +644,7 @@ def test_authoring_rejects_continuation_batch_drift(authoring_registry) -> None:
             _authored_row(),
             method_ref=METHOD_REF,
             continuation={"source_completed_batches": 4, "additional_batches": 3},
-            _registry=registry,
+            registry=registry,
         )
 
 
@@ -654,7 +654,7 @@ def test_authoring_accepts_matching_continuation(authoring_registry) -> None:
         _authored_row(),
         method_ref=METHOD_REF,
         continuation={"source_completed_batches": 6, "additional_batches": 4},
-        _registry=registry,
+        registry=registry,
     )
 
     assert compiled.run_spec.checkpoint_progress.continuation is not None
@@ -670,7 +670,7 @@ def test_authoring_rejects_noncanonical_authored_payload_hash(authoring_registry
         compile_training_method_authoring(
             row,
             method_ref=METHOD_REF,
-            _registry=registry,
+            registry=registry,
         )
 
 
@@ -708,7 +708,7 @@ def test_authoring_rejects_reserved_duplicate_hook_identity_before_callback() ->
         compile_training_method_authoring(
             _authored_row(),
             method_ref=METHOD_REF,
-            _registry=registry,
+            registry=registry,
         )
     assert calls == 0
 
@@ -744,12 +744,12 @@ def test_authoring_identity_and_canonical_payload_are_deterministic(
     first = compile_training_method_authoring(
         _authored_row(),
         method_ref=METHOD_REF,
-        _registry=registry,
+        registry=registry,
     )
     second = compile_training_method_authoring(
         _authored_row(),
         method_ref={"package": "example", "name": "typed", "version": "v1"},
-        _registry=registry,
+        registry=registry,
     )
 
     assert first.lowering_result == second.lowering_result
@@ -983,7 +983,7 @@ def test_descriptor_authoring_rejects_dispatch_schema_mismatch(
         compile_training_method_authoring(
             _authored_row(payload),
             method_ref=METHOD_REF,
-            _registry=registry,
+            registry=registry,
         )
 
 

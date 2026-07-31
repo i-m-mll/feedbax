@@ -3,19 +3,24 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import json
 from pathlib import Path
 import re
+import sys
 import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 POLICY_ID = "feedbax.downstream-interface-stability.v1"
 POLICY_SCHEMA = "feedbax.external_conformance.policy_manifest.v1"
 START = "<!-- feedbax-downstream-stability:start -->"
 END = "<!-- feedbax-downstream-stability:end -->"
 GUARANTEE_START = "<!-- policy-guarantees:start -->"
 GUARANTEE_END = "<!-- policy-guarantees:end -->"
+PLUGIN_API_START = "<!-- plugin-api-inventory:start -->"
+PLUGIN_API_END = "<!-- plugin-api-inventory:end -->"
 INSTRUCTION_FILES = (ROOT / "AGENTS.md", ROOT / "CLAUDE.md")
 POLICY_DOCUMENT = ROOT / "docs" / "design" / "downstream_interface_stability.md"
 FIXTURE_ROOT = ROOT / "external" / "feedbax_conformance_fixture"
@@ -86,6 +91,167 @@ def _document_rows(text: str) -> dict[str, tuple[str, ...]]:
         columns = tuple(column.strip() for column in line.strip().strip("|").split("|"))
         rows[match.group(1)] = tuple(re.findall(r"`([^`]+)`", columns[-1]))
     return rows
+
+
+def _unique_strings(values: object, *, field: str) -> tuple[str, ...]:
+    if not isinstance(values, list) or any(
+        not isinstance(value, str) or not value for value in values
+    ):
+        raise ValueError(f"plugin API {field} must be a list of non-empty strings")
+    if len(values) != len(set(values)):
+        raise ValueError(f"plugin API {field} contains duplicates")
+    return tuple(values)
+
+
+def _validated_plugin_api(row: dict[str, object]) -> dict[str, object]:
+    plugin_api = row.get("plugin_api")
+    if not isinstance(plugin_api, dict) or set(plugin_api) != {
+        "namespaces",
+        "direct_entrypoint_imports",
+        "families",
+    }:
+        raise ValueError("plugin-bootstrap.plugin_api has an invalid shape")
+    namespaces = plugin_api["namespaces"]
+    if not isinstance(namespaces, list) or not namespaces:
+        raise ValueError("plugin API namespaces must be a non-empty list")
+    namespace_names = []
+    public_names: dict[str, tuple[str, ...]] = {}
+    for index, value in enumerate(namespaces):
+        if not isinstance(value, dict) or set(value) != {"namespace", "public_names"}:
+            raise ValueError(f"plugin API namespace {index} has an invalid shape")
+        namespace = value["namespace"]
+        if not isinstance(namespace, str) or not namespace:
+            raise ValueError(f"plugin API namespace {index} has an invalid name")
+        namespace_names.append(namespace)
+        public_names[namespace] = _unique_strings(
+            value["public_names"], field=f"namespace {namespace} public_names"
+        )
+    if len(namespace_names) != len(set(namespace_names)):
+        raise ValueError("plugin API namespaces contain duplicates")
+    _unique_strings(plugin_api["direct_entrypoint_imports"], field="direct_entrypoint_imports")
+    families = plugin_api["families"]
+    if not isinstance(families, list) or not families:
+        raise ValueError("plugin API families must be a non-empty list")
+    expected_fields = {
+        "key",
+        "registry_type",
+        "registry_methods",
+        "callback_types",
+        "support_types",
+        "public_consumers",
+    }
+    family_keys = []
+    for index, family in enumerate(families):
+        if not isinstance(family, dict) or set(family) != expected_fields:
+            raise ValueError(f"plugin API family {index} has an invalid shape")
+        for field in ("key", "registry_type"):
+            if not isinstance(family[field], str) or not family[field]:
+                raise ValueError(f"plugin API family {index} has an invalid {field}")
+        family_keys.append(family["key"])
+        for field in (
+            "registry_methods",
+            "callback_types",
+            "support_types",
+            "public_consumers",
+        ):
+            _unique_strings(family[field], field=f"family {family['key']} {field}")
+    if len(family_keys) != len(set(family_keys)):
+        raise ValueError("plugin API family keys contain duplicates")
+    return plugin_api
+
+
+def _document_plugin_api(text: str) -> dict[str, object]:
+    block = _marked_block(POLICY_DOCUMENT, PLUGIN_API_START, PLUGIN_API_END)
+    namespace_line = next(
+        (line for line in block.splitlines() if line.startswith("Namespace `")), None
+    )
+    direct_line = next(
+        (line for line in block.splitlines() if line.startswith("Direct RLRMP")), None
+    )
+    if namespace_line is None or direct_line is None:
+        raise ValueError("policy document omits the rendered plugin namespace or direct imports")
+    namespace_tokens = re.findall(r"`([^`]+)`", namespace_line)
+    families = []
+    for line in block.splitlines():
+        if not line.startswith("| `"):
+            continue
+        columns = [column.strip() for column in line.strip().strip("|").split("|")]
+        if len(columns) != 6:
+            raise ValueError("policy document plugin family row has the wrong column count")
+        tokens = [re.findall(r"`([^`]+)`", column) for column in columns]
+        if len(tokens[0]) != 1 or len(tokens[1]) != 1:
+            raise ValueError("policy document plugin family identity is malformed")
+        families.append(
+            {
+                "key": tokens[0][0],
+                "registry_type": tokens[1][0],
+                "registry_methods": tokens[2],
+                "callback_types": tokens[3],
+                "support_types": tokens[4],
+                "public_consumers": tokens[5],
+            }
+        )
+    return {
+        "namespaces": [{"namespace": namespace_tokens[0], "public_names": namespace_tokens[1:]}],
+        "direct_entrypoint_imports": re.findall(r"`([^`]+)`", direct_line),
+        "families": families,
+    }
+
+
+def _check_plugin_api(row: dict[str, object], document: str) -> None:
+    plugin_api = _validated_plugin_api(row)
+    if _document_plugin_api(document) != plugin_api:
+        raise ValueError("policy document plugin API inventory drifted from the manifest")
+
+    declared_by_namespace = {
+        value["namespace"]: tuple(value["public_names"]) for value in plugin_api["namespaces"]
+    }
+    facade_names = declared_by_namespace.get("feedbax.plugins")
+    if facade_names is None:
+        raise ValueError("plugin API must declare the feedbax.plugins facade")
+    facade_assignments = _literal_assignments(ROOT / "feedbax" / "plugins" / "__init__.py")
+    facade_all = tuple(facade_assignments["__all__"])
+    non_guaranteed = tuple(facade_assignments["_NON_GUARANTEED_PLUGIN_EXPORTS"])
+    if len(non_guaranteed) != len(set(non_guaranteed)) or set(facade_names) & set(non_guaranteed):
+        raise ValueError("feedbax.plugins non-guaranteed export inventory is invalid")
+    if facade_all != (*facade_names, *non_guaranteed):
+        raise ValueError("feedbax.plugins __all__ exact ordered inventory drifted")
+    facade = importlib.import_module("feedbax.plugins")
+    for name in facade_names:
+        if name not in facade_all or not hasattr(facade, name):
+            raise ValueError(f"feedbax.plugins does not export declared name {name!r}")
+    direct_imports = tuple(plugin_api["direct_entrypoint_imports"])
+    if any(name not in facade_names for name in direct_imports):
+        raise ValueError("direct RLRMP imports contain an unclassified facade name")
+
+    keys = {key.family: key for key in facade.APPLICATION_REGISTRY_KEYS}
+    classified_types = set()
+    for family in plugin_api["families"]:
+        key = keys.get(family["key"])
+        if key is None:
+            raise ValueError(f"plugin API declares unknown registry family {family['key']!r}")
+        registry_type = getattr(facade, family["registry_type"], None)
+        if registry_type is not key.expected_type:
+            raise ValueError(f"plugin API registry type drifted for {family['key']!r}")
+        classified_types.add(family["registry_type"])
+        for method in family["registry_methods"]:
+            if not callable(getattr(registry_type, method, None)):
+                raise ValueError(
+                    f"plugin API registry method {family['registry_type']}.{method} is unavailable"
+                )
+        for name in (*family["callback_types"], *family["support_types"]):
+            classified_types.add(name)
+            if name not in facade_names or not hasattr(facade, name):
+                raise ValueError(f"plugin API family type {name!r} is unclassified or unavailable")
+        for consumer in family["public_consumers"]:
+            if consumer.count(":") != 1:
+                raise ValueError(f"plugin API consumer {consumer!r} has an invalid public path")
+            namespace, name = consumer.split(":")
+            if not callable(getattr(importlib.import_module(namespace), name, None)):
+                raise ValueError(f"plugin API consumer {consumer!r} is unavailable")
+    accidental = classified_types - set(facade_names)
+    if accidental:
+        raise ValueError(f"plugin API family inventory contains accidental names {accidental!r}")
 
 
 def check_policy() -> None:
@@ -180,6 +346,7 @@ def check_policy() -> None:
         raise ValueError("driver policy row must preserve the reviewed v11 external case")
     if driver_row.get("schemas") != DRIVER_POLICY_SCHEMAS:
         raise ValueError("driver policy schema and migration mapping drifted")
+    _check_plugin_api(manifest_rows["plugin-bootstrap"], document)
     for row_id in (
         "orchestration-lifecycle",
         "custody-persistence",

@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 import hashlib
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -19,9 +20,30 @@ from feedbax.analysis import (
     EvaluationRowProjectionError,
     EvaluationRowProjectionErrorCode,
     ResolvedManifestInput,
+    authenticated_manifest_ref,
+    execute_analysis_run_spec,
     project_evaluation_rows,
     resolve_analysis_inputs,
 )
+from feedbax.analysis.evaluation import (
+    EvaluationBatchExecution,
+    EvaluationRunMatrixSpec,
+    compile_evaluation_run_matrix,
+    execute_evaluation_run_matrix,
+    execute_evaluation_run_spec,
+)
+from feedbax.analysis.evaluation_compaction import (
+    EvaluationBatchConsumerInput,
+    compact_evaluation_batch,
+    merge_evaluation_batch_fragment,
+    publish_evaluation_compaction_products,
+    reclaim_evaluation_batch_caches,
+)
+from feedbax.analysis.evaluation_product_union import (
+    EvaluationCompactProductUnionBinding,
+    finalize_evaluation_compact_product_union,
+)
+from feedbax.analysis.execution_context import EMPTY_STAGED_EXECUTION_CONTEXT
 from feedbax.analysis.exact_parents import (
     STAGED_EXACT_PARENTS_SCHEMA_ID,
     STAGED_EXACT_PARENTS_SCHEMA_VERSION,
@@ -66,11 +88,45 @@ from feedbax.contracts.manifest import (
     ParentRef,
     Provenance,
     SpecPayload,
+    canonical_json_bytes,
+    load_manifest,
+    sha256_bytes,
+    write_manifest,
 )
+from feedbax.contracts.evaluation_lifecycle import (
+    EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID,
+    EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION,
+    EvaluationBatchCompactionEvidence,
+    EvaluationBatchConsumerDeclaration,
+    EvaluationLifecycleRowOutcome,
+    EvaluationMatrixBatchUnit,
+)
+from feedbax.contracts.evaluation_product_union import (
+    EvaluationCompactProductUnion,
+    EvaluationCompactProductUnionSource,
+)
+from feedbax.contracts.run_matrix import (
+    AuthoredTrainingRow,
+    TRAINING_ROW_LOWERER_REF_FIELD,
+    TrainingRowLowererRef,
+)
+from feedbax.contracts.spec_storage import training_spec_sha256
+from feedbax.contracts.training import MethodPayloadEnvelope, MethodRefSpec
+from feedbax.training.authoring import compile_training_method_authoring
+from feedbax.training.preparation import ExecutionPreparationRequest
+from feedbax.training.row_lowering import TrainingRowLoweringContext
 from feedbax.contracts.evaluation_states import store_evaluation_states_artifact
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins import (
     COMPONENTS,
     DRIVERS,
+    ANALYSIS_RECIPES,
+    EVALUATION_BATCH_CONSUMERS,
+    EVALUATION_PRODUCT_UNION_FINALIZERS,
+    EVALUATION_RECIPES,
+    EXECUTION_PREPARATIONS,
+    ROW_LOWERERS,
+    TRAINING_METHODS,
     BootstrapError,
     BootstrapErrorCode,
     FamilyRequirement,
@@ -171,21 +227,413 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
     ):
         raise AssertionError("installed feedbax.plugins discovery inventory drifted")
 
-    states = []
-    for shuffled in (sources, tuple(reversed(sources))):
-        states.append(
-            asyncio.run(
-                bootstrap_application(
-                    new_fixture_registration_context(),
-                    registrations=shuffled,
-                )
+    state = asyncio.run(
+        bootstrap_application(
+            new_fixture_registration_context(),
+            registrations=sources if entry_points is not None else None,
+        )
+    )
+    temporary_parent = "/private/tmp" if Path("/private/tmp").is_dir() else None
+    with TemporaryDirectory(dir=temporary_parent) as temporary:
+        root = Path(temporary)
+        registry = state.registry(FIXTURE_RECORDS)
+        # Static availability is intentionally shallow here. The installed
+        # package lifecycle below proves the callback behavior through public
+        # consumers rather than by calling resolved callbacks directly.
+        if (
+            state.registry(TRAINING_METHODS).descriptor("feedbax_external_conformance/training/v1")
+            is None
+        ):
+            raise AssertionError("external training descriptor was not registered")
+        if not state.registry(ROW_LOWERERS).available_keys():
+            raise AssertionError("external row lowerer was not registered")
+        if (
+            state.registry(EXECUTION_PREPARATIONS).get("feedbax_external_conformance/training/v1")
+            is None
+        ):
+            raise AssertionError("external execution preparation was not registered")
+        if not callable(
+            state.registry(ANALYSIS_RECIPES).get("feedbax_external_conformance.analysis")
+        ):
+            raise AssertionError("external analysis recipe was not resolved")
+        if not callable(
+            state.registry(EVALUATION_RECIPES).get("feedbax_external_conformance.evaluation")
+        ):
+            raise AssertionError("external evaluation recipe was not resolved")
+        if not callable(
+            state.registry(EVALUATION_RECIPES).batch("feedbax_external_conformance.evaluation")
+        ):
+            raise AssertionError("external evaluation batch recipe was not resolved")
+        if (
+            state.registry(EVALUATION_BATCH_CONSUMERS)
+            .get("feedbax_external_conformance.consumer", "v1")
+            .compact
+            is None
+        ):
+            raise AssertionError("external batch consumer was not resolved")
+        if not callable(
+            state.registry(EVALUATION_PRODUCT_UNION_FINALIZERS).get(
+                "feedbax_external_conformance.consumer", "v1"
+            )
+        ):
+            raise AssertionError("external product-union finalizer was not resolved")
+        method_ref = MethodRefSpec(
+            package="feedbax_external_conformance", name="training", version="v1"
+        )
+        payload = MethodPayloadEnvelope(
+            schema_id="feedbax_external_conformance.training",
+            schema_version="feedbax_external_conformance.training.v1",
+            payload={"gain": 3},
+        )
+        resolved = state.registry(TRAINING_METHODS).resolve_execution(method_ref, payload)
+        if resolved.contract.method_ref != "feedbax_external_conformance/training/v1":
+            raise AssertionError("external training resolution lost its method authority")
+        authored_payload = {"gain": 3}
+        row = AuthoredTrainingRow(
+            row_id="fixture",
+            row_index=0,
+            payload=authored_payload,
+            payload_hash=training_spec_sha256(authored_payload),
+            axis_coordinates={},
+        )
+        compiled = compile_training_method_authoring(
+            row, method_ref=method_ref, registry=state.registry(TRAINING_METHODS)
+        )
+        if compiled.run_spec.metadata != {"fixture_gain": 3}:
+            raise AssertionError("external training authoring did not invoke its typed hook")
+        lowerer = state.registry(ROW_LOWERERS)
+        from .plugin import FIXTURE_LOWERER_IMPLEMENTATION_SHA256
+
+        registration = next(iter(lowerer.available_keys()))
+        lowerer_payload = {
+            "gain": 4,
+            "schema_id": registration[0],
+            "schema_version": registration[1],
+            TRAINING_ROW_LOWERER_REF_FIELD: TrainingRowLowererRef(
+                lowerer_id=registration[2],
+                lowerer_version=registration[3],
+                implementation_sha256=FIXTURE_LOWERER_IMPLEMENTATION_SHA256,
+            ).model_dump(mode="json"),
+        }
+        lowered = lowerer.lower(
+            AuthoredTrainingRow(
+                row_id="lower",
+                row_index=0,
+                payload=lowerer_payload,
+                payload_hash=training_spec_sha256(lowerer_payload),
+                axis_coordinates={},
+            ),
+            TrainingRowLoweringContext(),
+        )
+        if lowered is None or lowered.execution_payload != {"fixture_lowered_gain": 4}:
+            raise AssertionError("external row lowerer was not invoked")
+        prepared = state.registry(EXECUTION_PREPARATIONS).prepare(
+            ExecutionPreparationRequest(
+                run_spec=compiled.run_spec,
+                method_payload=resolved.payload,
+                method_contract=resolved.contract,
+                effective_phase=resolved.effective_phase,
             )
         )
-    if entry_points is None:
-        states.append(asyncio.run(bootstrap_application(new_fixture_registration_context())))
+        if prepared.kernel_context != {"fixture": True}:
+            raise AssertionError("external execution preparation was not invoked")
 
-    for state in states:
-        registry = state.registry(FIXTURE_RECORDS)
+        authored_evaluation = compile_evaluation_run_matrix(
+            {
+                "base": {
+                    "ref": "fixture_evaluation_base.json",
+                    "sha256": "f65f9ae128d0b8361e5064b729c9078dec516d5cf7ca47e2aa65eab9c71a7195",
+                },
+                "axes": [{"id": "fixture", "values": [{"id": "one", "deltas": []}]}],
+            },
+            repo_root=Path(__file__).parent,
+            registry=state.registry(EVALUATION_RECIPES),
+        )
+        if authored_evaluation.base.params != {"gain": 3} or [
+            row.row_id for row in authored_evaluation.rows
+        ] != ["fixture-one"]:
+            raise AssertionError("external evaluation authoring schema was not consumed")
+
+        scalar, scalar_path = execute_evaluation_run_spec(
+            EvaluationRunSpec(
+                evaluation_type="feedbax_external_conformance.evaluation",
+                params={"gain": 3, "states_custody": "durable"},
+            ),
+            registry=state.registry(EVALUATION_RECIPES),
+            root=root / "scalar",
+        )
+        if scalar.status != "completed" or load_manifest(scalar_path) != scalar:
+            raise AssertionError("public scalar evaluation did not publish its manifest")
+
+        matrix = EvaluationRunMatrixSpec.model_validate(
+            {
+                "base": {
+                    "ref": "fixture_evaluation_base.json",
+                    "sha256": "f65f9ae128d0b8361e5064b729c9078dec516d5cf7ca47e2aa65eab9c71a7195",
+                },
+                "axes": [
+                    {
+                        "id": "fixture",
+                        "values": [
+                            {
+                                "id": cohort,
+                                "deltas": [
+                                    {"path": "params.gain", "value": index + 1},
+                                    {
+                                        "path": "params.states_custody",
+                                        "value": "durable",
+                                        "op": "add",
+                                    },
+                                ],
+                            }
+                            for index, cohort in enumerate(("left", "right"))
+                        ],
+                    }
+                ],
+            }
+        )
+        batch_root = root / "batch"
+        executed = execute_evaluation_run_matrix(
+            matrix,
+            root=batch_root,
+            repo_root=Path(__file__).parent,
+            batch=EvaluationBatchExecution(),
+            registry=state.registry(EVALUATION_RECIPES),
+        )
+        if tuple(row.row_id for row in executed.rows) != ("fixture-left", "fixture-right"):
+            raise AssertionError("public batch evaluation lost authored row order")
+
+        authority = authenticated_manifest_ref(
+            executed.rows[0].result,
+            executed.rows[0].manifest_path,
+            "evaluation_run",
+        )
+        analysis_spec = AnalysisRunSpec(
+            analysis_type="feedbax_external_conformance.analysis",
+            inputs=[authority],
+            evaluation_states_policy="require_durable",
+            params={"requested_outputs": ["fixture"]},
+        )
+        resolved_inputs = resolve_analysis_inputs(
+            analysis_spec,
+            root=batch_root,
+            evaluation_registry=state.registry(EVALUATION_RECIPES),
+            registry=state.registry(ANALYSIS_RECIPES),
+        )
+        if resolved_inputs[0].states.value.tolist() != [1, 2]:
+            raise AssertionError("typed durable evaluation states did not round-trip")
+
+        analysis_root = root / "analysis"
+        relocated_states = store_evaluation_states_artifact(
+            resolved_inputs[0].states,
+            root=analysis_root,
+            manifest_id=executed.rows[0].result.id,
+        )
+        original_states = next(
+            artifact
+            for artifact in executed.rows[0].result.artifacts
+            if artifact.role == "evaluation_states"
+        )
+        if relocated_states.sha256 != original_states.sha256:
+            raise AssertionError("public state custody relocation changed authenticated bytes")
+        relocated_manifest_path = write_manifest(
+            executed.rows[0].result,
+            root=analysis_root,
+            index=False,
+        )
+        analysis_authority = authenticated_manifest_ref(
+            executed.rows[0].result,
+            relocated_manifest_path,
+            "evaluation_run",
+        )
+        analysis_manifest, analysis_path = execute_analysis_run_spec(
+            analysis_spec.model_copy(update={"inputs": [analysis_authority]}),
+            registry=state.registry(ANALYSIS_RECIPES),
+            evaluation_registry=state.registry(EVALUATION_RECIPES),
+            experiment_registry=state.bundle.experiment_packages,
+            root=analysis_root,
+            fig_dump_formats=(),
+        )
+        if analysis_manifest.status != "completed" or load_manifest(analysis_path) != (
+            analysis_manifest
+        ):
+            raise AssertionError("public analysis execution did not publish its manifest")
+
+        declaration = EvaluationBatchConsumerDeclaration(
+            leaf_id="fixture",
+            consumer_id="feedbax_external_conformance.consumer",
+            consumer_version="v1",
+            terminal_analysis_type="feedbax_external_conformance.analysis",
+            accepted_evaluation_state_schema_ids=("feedbax_external_conformance.states.v1",),
+            compact_product_schema_id="feedbax_external_conformance.batch",
+            compact_product_schema_version="feedbax_external_conformance.batch.v1",
+            compact_product_role="compact",
+            merge_state_schema_id="feedbax_external_conformance.merge",
+            merge_state_schema_version="feedbax_external_conformance.merge.v1",
+        )
+        union_sources = []
+        union_bindings = []
+        for cohort_key, executed_row in zip(("left", "right"), executed.rows, strict=True):
+            outcome = EvaluationLifecycleRowOutcome(
+                row_id=executed_row.row_id,
+                manifest_id=executed_row.result.id,
+                manifest_path=str(executed_row.manifest_path),
+                diagnostic_schema_ids=(executed_row.result.metadata["states_schema"],),
+            )
+            cohort_batch = EvaluationMatrixBatchUnit(
+                batch_id=f"{cohort_key}-batch",
+                ordered_row_ids=(executed_row.row_id,),
+                required_leaf_ids=(declaration.leaf_id,),
+            )
+            cohort_hash = sha256_bytes(
+                canonical_json_bytes(
+                    {
+                        "matrix": matrix.model_dump(mode="json"),
+                        "cohort_row_id": executed_row.row_id,
+                    }
+                )
+            )
+            cohort_authority = authenticated_manifest_ref(
+                executed_row.result,
+                executed_row.manifest_path,
+                "evaluation_run",
+            )
+            cohort_root = batch_root / "cohorts" / cohort_key
+            custody_root = cohort_root / "custody"
+            cohort_states = resolve_analysis_inputs(
+                AnalysisRunSpec(
+                    analysis_type="feedbax_external_conformance.analysis",
+                    inputs=[cohort_authority],
+                    evaluation_states_policy="require_durable",
+                ),
+                root=batch_root,
+                evaluation_registry=state.registry(EVALUATION_RECIPES),
+                registry=state.registry(ANALYSIS_RECIPES),
+            )[0].states
+            fragment = compact_evaluation_batch(
+                declaration,
+                EvaluationBatchConsumerInput(
+                    matrix_intent_hash=cohort_hash,
+                    batch=cohort_batch,
+                    outcomes=(outcome,),
+                    manifests=(executed_row.result.model_dump(mode="json"),),
+                    states=(cohort_states,),
+                    parent_authorities=(cohort_authority,),
+                    parameters=declaration.parameters,
+                    execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+                ),
+                registry=state.registry(EVALUATION_BATCH_CONSUMERS),
+                custody_root=custody_root,
+            )
+            acknowledgement = merge_evaluation_batch_fragment(
+                declaration,
+                registry=state.registry(EVALUATION_BATCH_CONSUMERS),
+                matrix_intent_hash=cohort_hash,
+                batch=cohort_batch,
+                parent_authorities=(cohort_authority,),
+                fragment=fragment,
+                prior_merge_state=None,
+                custody_root=custody_root,
+                execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+            )
+            reclamation = reclaim_evaluation_batch_caches(
+                cohort_batch,
+                registry=state.registry(EVALUATION_BATCH_CONSUMERS),
+                matrix_intent_hash=cohort_hash,
+                batch_index=0,
+                outcomes=(outcome,),
+                acknowledgements=(acknowledgement,),
+                required_declarations=(declaration,),
+                custody_root=custody_root,
+                execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+            )
+            (terminal_manifest,) = publish_evaluation_compaction_products(
+                (declaration,),
+                {declaration.leaf_id: acknowledgement.merge_state},
+                (outcome,),
+                registry=state.registry(EVALUATION_BATCH_CONSUMERS),
+                custody_root=custody_root,
+                execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+            )
+            compaction = EvaluationBatchCompactionEvidence(
+                matrix_intent_hash=cohort_hash,
+                ordered_batch_ids=(cohort_batch.batch_id,),
+                declared_leaf_ids=(declaration.leaf_id,),
+                required_leaf_ids_by_batch={cohort_batch.batch_id: (declaration.leaf_id,)},
+                reclamations=(reclamation,),
+                terminal_products=(terminal_manifest,),
+            )
+            compaction_path = cohort_root / "evaluation-batch-compaction.json"
+            compaction_path.parent.mkdir(parents=True, exist_ok=True)
+            compaction_path.write_bytes(canonical_json_bytes(compaction.model_dump(mode="json")))
+            checkpoint_path = (
+                custody_root
+                / "merge-checkpoints"
+                / declaration.leaf_id
+                / f"{cohort_batch.batch_id}.json"
+            )
+            terminal_manifest_value = load_manifest(
+                ImmutableArtifactBlobProvider(custody_root).materialize(
+                    terminal_manifest, cohort_root / "terminal-manifest.json"
+                )
+            )
+            terminal_product = terminal_manifest_value.produced_data[0].artifacts[0]
+            union_sources.append(
+                EvaluationCompactProductUnionSource(
+                    cohort_key=cohort_key,
+                    matrix_intent_hash=cohort_hash,
+                    consumer_id=declaration.consumer_id,
+                    consumer_version=declaration.consumer_version,
+                    leaf_id=declaration.leaf_id,
+                    compact_product_schema_id=declaration.compact_product_schema_id,
+                    compact_product_schema_version=declaration.compact_product_schema_version,
+                    compact_product_role=declaration.compact_product_role,
+                    ordered_row_ids=(executed_row.row_id,),
+                    compaction_evidence_sha256=sha256_bytes(compaction_path.read_bytes()),
+                    terminal_checkpoint_schema_id=EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID,
+                    terminal_checkpoint_schema_version=(
+                        EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION
+                    ),
+                    terminal_checkpoint_sha256=sha256_bytes(checkpoint_path.read_bytes()),
+                    terminal_manifest_sha256=terminal_manifest.sha256,
+                    terminal_product_sha256=terminal_product.sha256,
+                )
+            )
+            union_bindings.append(
+                EvaluationCompactProductUnionBinding(
+                    cohort_key=cohort_key,
+                    custody_root=custody_root,
+                    compaction_evidence_path=compaction_path,
+                    terminal_checkpoint_path=checkpoint_path,
+                    terminal_manifest=terminal_manifest,
+                )
+            )
+
+        union_declaration = EvaluationCompactProductUnion(
+            consumer_id="feedbax_external_conformance.consumer",
+            consumer_version="v1",
+            output_schema_id="feedbax_external_conformance.union",
+            output_schema_version="feedbax_external_conformance.union.v1",
+            output_role="union",
+            output_logical_name="fixture-union",
+            sources=tuple(union_sources),
+        )
+        union_result = finalize_evaluation_compact_product_union(
+            union_declaration,
+            tuple(union_bindings),
+            custody_root=root / "union",
+            finalizer_registry=state.registry(EVALUATION_PRODUCT_UNION_FINALIZERS),
+        )
+        union_payload = json.loads(
+            ImmutableArtifactBlobProvider(root / "union" / "analysis").get_bytes(
+                union_result.terminal_product
+            )
+        )
+        if [item["cohort_key"] for item in union_payload["cohorts"]] != ["left", "right"]:
+            raise AssertionError("public compact-product union lost authored cohort order")
+        if union_result.completed_stages != ("UNION", "COLLECT", "CERTIFY", "TEARDOWN"):
+            raise AssertionError("public compact-product union omitted terminal evidence")
+
         if registry.keys() != ("foundation", "dependent"):
             raise AssertionError("plugin dependency result depends on discovery order")
         provenance = state.provenance
@@ -198,6 +646,18 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
                 COMPONENTS.family: (EXTERNAL_DYNAMIC_COMPONENT,),
                 DRIVERS.family: ("fixture:driver",),
                 FIXTURE_RECORDS.family: ("foundation",),
+                TRAINING_METHODS.family: ("feedbax_external_conformance/training/v1",),
+                ROW_LOWERERS.family: (
+                    "('feedbax_external_conformance.training', 'v1', "
+                    "'feedbax_external_conformance.lowerer', 'v1')",
+                ),
+                EXECUTION_PREPARATIONS.family: ("feedbax_external_conformance/training/v1",),
+                ANALYSIS_RECIPES.family: ("feedbax_external_conformance.analysis",),
+                EVALUATION_RECIPES.family: ("feedbax_external_conformance.evaluation",),
+                EVALUATION_BATCH_CONSUMERS.family: ("feedbax_external_conformance.consumer@v1",),
+                EVALUATION_PRODUCT_UNION_FINALIZERS.family: (
+                    "feedbax_external_conformance.consumer@v1",
+                ),
             },
             {FIXTURE_RECORDS.family: ("dependent",)},
         ):
@@ -207,6 +667,13 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
                 COMPONENTS.family: "1",
                 DRIVERS.family: "1",
                 FIXTURE_RECORDS.family: "1",
+                TRAINING_METHODS.family: "1",
+                ROW_LOWERERS.family: "1",
+                EXECUTION_PREPARATIONS.family: "1",
+                ANALYSIS_RECIPES.family: "1",
+                EVALUATION_RECIPES.family: "1",
+                EVALUATION_BATCH_CONSUMERS.family: "1",
+                EVALUATION_PRODUCT_UNION_FINALIZERS.family: "1",
             },
             {FIXTURE_RECORDS.family: "1"},
         )
@@ -229,13 +696,6 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
                 raise
         else:
             raise AssertionError("published external registry remained mutable")
-
-    if any(
-        left.registry(FIXTURE_RECORDS) is right.registry(FIXTURE_RECORDS)
-        for index, left in enumerate(states)
-        for right in states[index + 1 :]
-    ):
-        raise AssertionError("fresh bootstrap contexts shared an external registry")
 
     retained: list[FixtureRecordRegistry] = []
 
