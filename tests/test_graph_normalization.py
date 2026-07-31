@@ -50,10 +50,7 @@ def test_normalization_preserves_nested_param_schema_version() -> None:
     normalized = normalize_graph_for_studio_authoring(graph)
 
     assert normalized.nodes["outer"].type == "PenzaiAdapter"
-    assert (
-        normalized.nodes["outer"].param_schema_version
-        == "feedbax.component.penzai_subgraph.v1"
-    )
+    assert normalized.nodes["outer"].param_schema_version == "feedbax.component.penzai_subgraph.v1"
     nested_channel = normalized.subgraphs["outer"].nodes["channel"]
     assert nested_channel.type == "Channel"
     assert nested_channel.param_schema_version == "feedbax.component.feedback_channel.v1"

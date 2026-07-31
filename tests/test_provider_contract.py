@@ -1794,9 +1794,7 @@ def test_studio_schema_materializes_external_dynamic_policy_without_type_branchi
 
     assert not any(issue.severity == "error" for issue in schema.issues)
     dynamic_outputs = [
-        port
-        for port in schema.ports
-        if port.node_id == "external" and port.direction == "output"
+        port for port in schema.ports if port.node_id == "external" and port.direction == "output"
     ]
     assert [port.port for port in dynamic_outputs] == ["result_0", "result_1", "result_2"]
     assert [port.value_schema.dtype for port in dynamic_outputs] == ["vector"] * 3

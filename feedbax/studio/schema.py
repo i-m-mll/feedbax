@@ -865,7 +865,9 @@ def _dynamic_port_arity_issues(
                         f"requires input_ports {list(expected.input_ports)!r} and "
                         f"output_ports {list(expected.output_ports)!r}"
                     ),
-                    location={"path": f"{base_path}/nodes/{node_id}/{meta.dynamic_port_policy.direction}_ports"},
+                    location={
+                        "path": f"{base_path}/nodes/{node_id}/{meta.dynamic_port_policy.direction}_ports"
+                    },
                 )
             )
         if meta.dynamic_port_policy.direction == "input":
