@@ -34,6 +34,9 @@ jobs:
       - name: Check lockfile
         run: uv lock --check
 
+      - name: Run clean-wheel external conformance foundation
+        run: uv run --no-sync python scripts/run_external_conformance.py
+
       - name: Check generated Studio contracts
         run: |
           uv run python scripts/generate_studio_contracts.py

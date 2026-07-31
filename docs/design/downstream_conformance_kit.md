@@ -44,3 +44,42 @@ ratchet, closing the same-cardinality replacement hole in the reference JSON
 writer. Generic TOML baselines are read-only because rewriting TOML without a
 format-preserving editor would destroy downstream comments; downstream code
 edits the list explicitly after inspecting the ratchet diff.
+
+## Clean-installed external fixture
+
+`external/feedbax_conformance_fixture` is the repo-owned downstream-author
+example and vertical extension of this kit. It is separately packaged and
+keeps fixture-specific builders private to that package. The fixture reuses
+`check_material_dependency_contract` rather than copying its admission
+canaries, and exercises public ordered registration, component migration,
+value identity, material dependencies, and exact-parent migration.
+
+`uv run --no-sync python scripts/run_external_conformance.py` builds Feedbax
+and the fixture as wheels, installs both non-editably into a fresh environment,
+and executes away from this checkout with `PYTHONPATH` removed. The installed
+fixture rejects private Feedbax imports, verifies all loaded Feedbax modules
+come from the wheel, uses unique runtime cache and custody roots, and denies
+runner-process outbound TCP connects before importing the Feedbax execution
+stack. This is not a general DNS, UDP, or child-process sandbox; the bounded
+lifecycle child is separately fixed and asserted as a print-only Python
+command.
+
+The versioned machine result is
+`feedbax.external_conformance.result.v2`; v1 migrates by adding separate
+unbound `current` and `minimum` protocol role slots, while other versions are
+rejected. Those slots are not stability guarantees and remain unbound until
+the owner-ratified policy exists. V2 requires the exact six foundation case
+IDs with strict boolean values and requires both None-valued role slots to be
+present explicitly. Adding or removing a case, binding a protocol role, or
+changing required evidence fields requires a deliberate schema version and
+migration rather than silently changing durable evidence.
+
+The production lifecycle case uses the installed-wheel
+`StageEngine`/`LocalOrchestrationDriver` path with one deterministic local row.
+It persists through PREFLIGHT, reconstructs the engine over the same
+`RunSetStateStore`, and completes LAUNCH and the remaining local lifecycle.
+Assertions prove that ASSEMBLE and PREFLIGHT were consumed from persisted
+state rather than rerun, and that the exact revision gate observed the
+authenticated wheel commit. The fixture-owned compiler and builders remain
+incubated here; lifecycle sequencing, state recovery, subprocess execution,
+and revision enforcement are all Feedbax production implementations.
