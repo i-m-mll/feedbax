@@ -373,6 +373,7 @@ from feedbax.orchestration.events import (
 from feedbax.orchestration.bundle import (
     DEPLOYMENT_POLICY_SCHEMA_ID,
     DEPLOYMENT_POLICY_SCHEMA_VERSION,
+    DEPLOYMENT_POLICY_SCHEMA_VERSION_V1,
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION,
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1,
@@ -388,6 +389,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V8,
     RUN_BUNDLE_SCHEMA_VERSION_V9,
     RUN_BUNDLE_SCHEMA_VERSION_V10,
+    RUN_BUNDLE_SCHEMA_VERSION_V11,
 )
 from feedbax.orchestration.staged_root_custody import (
     STAGED_ROOT_CUSTODY_SCHEMA_ID,
@@ -426,7 +428,8 @@ RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1 = "feedbax.spec.run_assembly_request.v1"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V2 = "feedbax.spec.run_assembly_request.v2"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3 = "feedbax.spec.run_assembly_request.v3"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4 = "feedbax.spec.run_assembly_request.v4"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v5"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5 = "feedbax.spec.run_assembly_request.v5"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v6"
 EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_ID = (
     "feedbax.manifest.evaluation_matrix_execution_capsule"
 )
@@ -2563,6 +2566,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "orchestration CLI",
             ),
             description="Requested venue, launch authorization, and resource policy.",
+            stance="migrate",
+            supported_old_versions=(DEPLOYMENT_POLICY_SCHEMA_VERSION_V1,),
             rejected_old_versions=(f"{DEPLOYMENT_POLICY_SCHEMA_ID}.v0",),
         ),
         _family(
@@ -2577,6 +2582,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             supported_old_versions=(
                 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3,
                 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4,
+                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5,
             ),
             rejected_old_versions=(
                 f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v0",
@@ -3545,6 +3551,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "orchestration CLI",
             ),
             description="Durable run-set orchestration request bundle.",
+            stance="migrate",
+            supported_old_versions=(RUN_BUNDLE_SCHEMA_VERSION_V11,),
             rejected_old_versions=(
                 "feedbax.orchestration.run_bundle.v0",
                 RUN_BUNDLE_SCHEMA_VERSION_V1,
@@ -5045,8 +5053,40 @@ def _migrate_run_assembly_request_v4_to_v5_payload(
     """Preserve v4 behavior with no evaluation output preflight policy."""
     migrated = dict(payload)
     migrated["schema_id"] = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
-    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION
+    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5
     migrated.setdefault("evaluation_output_preflight", None)
+    return migrated
+
+
+def _migrate_deployment_policy_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Preserve policy intent while moving driver semantics to registry validation."""
+    migrated = dict(payload)
+    migrated["schema_id"] = DEPLOYMENT_POLICY_SCHEMA_ID
+    migrated["schema_version"] = DEPLOYMENT_POLICY_SCHEMA_VERSION
+    return migrated
+
+
+def _migrate_run_assembly_request_v5_to_v6_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Lift the nested deployment policy to the registry-resolved schema."""
+    migrated = dict(payload)
+    migrated["schema_id"] = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
+    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION
+    policy = migrated.get("deployment_policy")
+    if isinstance(policy, Mapping):
+        migrated["deployment_policy"] = _migrate_deployment_policy_v1_to_v2_payload(dict(policy))
+    return migrated
+
+
+def _migrate_run_bundle_v11_to_v12_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Lift the nested deployment policy to the registry-resolved schema."""
+    migrated = dict(payload)
+    migrated["schema_id"] = RUN_BUNDLE_SCHEMA_ID
+    migrated["schema_version"] = RUN_BUNDLE_SCHEMA_VERSION
+    policy = migrated.get("deployment_policy")
+    if isinstance(policy, Mapping):
+        migrated["deployment_policy"] = _migrate_deployment_policy_v1_to_v2_payload(dict(policy))
     return migrated
 
 
@@ -5202,10 +5242,40 @@ default_spec_registry.register_migration(
     "RunAssemblyRequest",
     SchemaMigration(
         source_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4,
-        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION,
+        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5,
         migration_id="run-assembly-request-v4-to-v5-evaluation-output-preflight",
         migrate=_migrate_run_assembly_request_v4_to_v5_payload,
         description=("Preserve existing requests with no evaluation output preflight policy."),
+    ),
+)
+default_spec_registry.register_migration(
+    "DeploymentPolicy",
+    SchemaMigration(
+        source_version=DEPLOYMENT_POLICY_SCHEMA_VERSION_V1,
+        target_version=DEPLOYMENT_POLICY_SCHEMA_VERSION,
+        migration_id="deployment-policy-v1-to-v2-registry-driver",
+        migrate=_migrate_deployment_policy_v1_to_v2_payload,
+        description="Preserve policy intent while delegating driver semantics to its registry.",
+    ),
+)
+default_spec_registry.register_migration(
+    "RunAssemblyRequest",
+    SchemaMigration(
+        source_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5,
+        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION,
+        migration_id="run-assembly-request-v5-to-v6-registry-driver",
+        migrate=_migrate_run_assembly_request_v5_to_v6_payload,
+        description="Lift the nested deployment policy to its registry-resolved schema.",
+    ),
+)
+default_spec_registry.register_migration(
+    "RunBundle",
+    SchemaMigration(
+        source_version=RUN_BUNDLE_SCHEMA_VERSION_V11,
+        target_version=RUN_BUNDLE_SCHEMA_VERSION,
+        migration_id="run-bundle-v11-to-v12-registry-driver",
+        migrate=_migrate_run_bundle_v11_to_v12_payload,
+        description="Lift the nested deployment policy to its registry-resolved schema.",
     ),
 )
 default_spec_registry.register_migration(

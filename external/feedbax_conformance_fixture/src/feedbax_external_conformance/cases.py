@@ -70,6 +70,7 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.evaluation_states import store_evaluation_states_artifact
 from feedbax.plugins import (
     COMPONENTS,
+    DRIVERS,
     BootstrapError,
     BootstrapErrorCode,
     FamilyRequirement,
@@ -79,6 +80,11 @@ from feedbax.plugins import (
     RegistrationContext,
     bootstrap_application,
     discover_plugin_registrations,
+)
+from feedbax.orchestration.drivers import (
+    DriverConstructionContext,
+    ResourceSemantics,
+    TeardownSemantics,
 )
 from feedbax.testing import check_material_dependency_contract
 
@@ -190,13 +196,18 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
         if tuple(item.registered_keys for item in provenance) != (
             {
                 COMPONENTS.family: (EXTERNAL_DYNAMIC_COMPONENT,),
+                DRIVERS.family: ("fixture:driver",),
                 FIXTURE_RECORDS.family: ("foundation",),
             },
             {FIXTURE_RECORDS.family: ("dependent",)},
         ):
             raise AssertionError("plugin provenance registered-key attribution drifted")
         expected_family_protocols = (
-            {COMPONENTS.family: "1", FIXTURE_RECORDS.family: "1"},
+            {
+                COMPONENTS.family: "1",
+                DRIVERS.family: "1",
+                FIXTURE_RECORDS.family: "1",
+            },
             {FIXTURE_RECORDS.family: "1"},
         )
         for item, family_protocols in zip(
@@ -396,6 +407,21 @@ def check_dynamic_component_ports(*, entry_points: Iterable[object] | None = Non
             raise
     else:
         raise AssertionError("external dynamic namespace mismatch was accepted")
+    return True
+
+
+def check_external_driver_plugin() -> bool:
+    """Construct an installed external driver through unified plugin bootstrap."""
+    state = asyncio.run(bootstrap_application(new_fixture_registration_context()))
+    driver = state.registry(DRIVERS).construct(
+        "fixture:driver",
+        DriverConstructionContext(configuration={"nested": {"source": "external-wheel"}}),
+    )
+    facts = driver.realized_capabilities.facts
+    if facts.resources is not ResourceSemantics.EXTERNALLY_MANAGED:
+        raise AssertionError("external driver resource ownership facts drifted")
+    if facts.teardown is not TeardownSemantics.RESOURCES_PRESERVED:
+        raise AssertionError("external driver teardown preservation facts drifted")
     return True
 
 

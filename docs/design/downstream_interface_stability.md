@@ -6,7 +6,7 @@
 | Status | Ratification-ready; approval and merge of the final protected Feedbax auth ratifies this policy |
 | Effective release | Feedbax `0.2.0` |
 | Extension protocol | current `1`, minimum supported `1` |
-| Evidence head | `015a4b20c1661880fce91e64b2cec5d4e23501b6` plus this issue's adoption delta |
+| Evidence head | `ed8d702f11d1f467a20f3602fa997d728156b086` plus this issue's adoption delta |
 | Decision owner | Feedbax owner |
 
 This policy becomes effective only when the single final protected Feedbax auth
@@ -56,6 +56,7 @@ explicitly.
 | Row ID | Stable namespace | Stable public names | Durable schemas and behavior | External case IDs |
 |---|---|---|---|---|
 | `plugin-bootstrap` | `feedbax.plugins` | `DOWNSTREAM_INTERFACE_POLICY_ID`, `DOWNSTREAM_PROTOCOL_CURRENT`, `DOWNSTREAM_PROTOCOL_MINIMUM`, `DOWNSTREAM_POLICY_EFFECTIVE_RELEASE`, `UnsupportedDownstreamProtocolVersion`, `validate_downstream_protocol_version`, `BootstrapError`, `BootstrapErrorCode`, `BootstrapState`, `FamilyRequirement`, `PluginDeclaration`, `PluginDependency`, `PluginProvenance`, `PluginRegistration`, `RegistrationContext`, `RegistryKey`, `bootstrap_application`, `discover_plugin_registrations`, `new_registration_context` | Numeric protocol admission is explicit at the one unified bootstrap. `feedbax.plugin.declaration.v2` requires the numeric declaration; `feedbax.plugin.declaration.v1` and unknown schema versions reject. The existing string `feedbax.plugin.v1` and context `feedbax.bootstrap.v1` remain separate schema/procedure identities, not numeric compatibility declarations. Bootstrap remains isolated, transactional, sealed, and caller-owned. | `unified_plugin_bootstrap` |
+| `orchestration-driver` | `feedbax.orchestration.drivers`; `feedbax.plugins`; `feedbax.orchestration.bundle`; `feedbax.orchestration.assembly` | `DRIVER_CAPABILITIES_SCHEMA_ID`, `DRIVER_CAPABILITIES_SCHEMA_VERSION`, `DRIVER_CAPABILITIES_SCHEMA_VERSION_V1`, `DRIVER_CAPABILITIES_SCHEMA_VERSION_V2`, `DRIVER_CAPABILITIES_SCHEMA_VERSION_V3`, `DriverAuthority`, `DriverCapabilityEnvelope`, `DriverCapabilityFacts`, `DriverConstructionContext`, `DriverHook`, `DriverRegistration`, `DriverRegistry`, `DriverStage`, `DriverVenue`, `RealizedDriverCapabilities`; `DRIVERS`, `ApplicationRegistryBundle`; `DEPLOYMENT_POLICY_SCHEMA_ID`, `DEPLOYMENT_POLICY_SCHEMA_VERSION`, `DEPLOYMENT_POLICY_SCHEMA_VERSION_V1`, `RUN_BUNDLE_SCHEMA_ID`, `RUN_BUNDLE_SCHEMA_VERSION`, `RUN_BUNDLE_SCHEMA_VERSION_V11`, `DeploymentPolicy`, `RunBundle`; `RUN_ASSEMBLY_REQUEST_SCHEMA_ID`, `RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION`, `RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5`, `RunAssemblyRequest` | Driver capability envelopes and realized facts accept only schema ID `feedbax.orchestration.driver-capabilities` at version `3`; capability versions `1` and `2` reject rather than being reinterpreted. The unified application bootstrap owns the injected, sealed `DRIVERS` registry and has no process-global or compatibility registry. `feedbax.spec.deployment_policy.v1` migrates to v2; `feedbax.spec.run_assembly_request.v5` migrates to v6 while migrating its nested policy; `feedbax.orchestration.run_bundle.v11` migrates to v12 while migrating its nested policy. Older unsupported request and bundle versions reject. Registry construction validates the realized variant and every declared required callable before publication. | `external_driver_plugin` |
 | `ordered-lowering` | `feedbax.lowering` and the same root exports at `feedbax` | `LowererRegistration`, `LoweredContribution`, `LowererExecutionError`, `OrderedLowererRegistry` | Duplicate IDs reject; order is `(order, lowerer_id)`; inactive contributions return `None`; failures identify lowerer and owner; no merge policy is invented. | `ordered_registration` |
 | `component-registration` | `feedbax.component_registry` | `ComponentBuilder`, `ComponentMeta`, `ComponentResolution`, `ComponentRegistry`, `ComponentMigration`, `ComponentMigrationPack` | Namespaced component registration, owner-matched migration packs, deterministic resolution, and the stable methods `ComponentRegistry.register_component_type`, `register_migration`, `register_migration_pack`, and `resolve_component_spec`. There is no guaranteed module-level `register_component_type` facade. | `component_registration_and_migration`, `dynamic_component_ports` |
 | `structured-migrations` | `feedbax.contracts.migrations` | `SchemaMigration`, `SpecSchemaFamily`, `SpecFamilyMigrationPolicy`, `SpecMigrationResult`, `SpecSchemaRegistry`, `UnknownSpecFamily`, `UnsupportedMigrationPath`, `UnsupportedSpecVersion`, `MissingComponentOwner`, `UnsupportedComponentMigration`, `default_spec_registry`, `migrate_structured_spec_payload`, `migrate_graph_spec` | Versionless input rejects unless the caller deliberately selects `assume_current`; deterministic migration records retain source and target identities; unsupported paths fail closed. | `component_registration_and_migration`, `component_param_array_values` |
@@ -63,18 +64,22 @@ explicitly.
 | `value-identity` | `feedbax.contracts.value_identity` and the same names at `feedbax.contracts` | `VALUE_IDENTITY_SCHEMA_ID`, `VALUE_IDENTITY_SCHEMA_VERSION`, `ValueIdentityRecord`, `authored_value_sha256`, `semantic_value_sha256`, `realization_value_sha256`, `value_identity_record` | `feedbax.value_identity.v1` is the only accepted record. Authored identity follows canonical declared encoding, semantic identity follows normalized exact numeric meaning, and realization identity additionally binds layout and backend. Other versions reject. | `value_identity` |
 | `material-admission` | `feedbax.contracts.material_dependencies` and the same names at `feedbax.contracts` | `ADMISSION_WAIVER_SCHEMA_ID`, `ADMISSION_WAIVER_SCHEMA_VERSION`, `MATERIAL_DEPENDENCIES_SCHEMA_ID`, `MATERIAL_DEPENDENCIES_SCHEMA_VERSION`, `AdmissionWaiver`, `IncidentalAdmissionFailure`, `MaterialDependency`, `MaterialDependencyAdmission`, `MaterialDependencyObservation`, `MaterialDependencySet`, `MaterialDependencyValue`, `dependency_value_sha256`, `material_dependency_identity_sha256`, `validate_material_dependency_admission` | Material dependencies use `feedbax.spec.material_dependencies.v1`; the exact narrow waiver uses `feedbax.spec.admission_waiver.v1`. Versionless and other versions reject. Material identity excludes incidental provenance and declaration order; a waiver binds exactly one declared dependency and never bypasses material authenticity. | `material_dependencies` |
 | `terminal-certification` | `feedbax.contracts.manifest` and the same names at `feedbax.contracts` | `TRAINING_RUN_CERTIFICATION_SCHEMA_ID`, `TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION`, `TRAINING_RUN_CERTIFICATION_MIGRATION_TABLE`, `TrainingRunCertification`, `training_run_certification` | `feedbax.manifest.training_run_certification.v1` is current; v0 is rejected. Legacy completed/cancelled manifests project deterministically, legacy failed and nonterminal manifests reject because their terminal meaning is ambiguous. | pending final combined lifecycle fixture |
+| `custody-persistence` | Pending final b85 head | No public names ratified at this checkpoint | The final b85 head must provide the exact durable custody schema, migration or rejection facts, and real external case before this row can become covered. | pending final b85 sync |
+| `emergency-persistence` | Pending final b85 head | No public names ratified at this checkpoint | The final b85 head must provide the exact emergency-persistence schema, migration or rejection facts, and real external case before this row can become covered. | pending final b85 sync |
+| `result-role-binding` | Pending final b85 head | No public names ratified at this checkpoint | The external result remains v11 with None-only protocol roles. The final b85 v12 head must supply exact result-role schema semantics and a real case; policy metadata alone cannot advance it. | pending final b85 sync |
 | `array-values` | `feedbax.contracts.array_values` and the same names at `feedbax.contracts` | `ARRAY_VALUE_SCHEMA_ID`, `ARRAY_VALUE_SCHEMA_VERSION`, `ArrayValueSpec`, `ConstantArrayValueSpec`, `SparseCooArrayValueSpec`, `SparseCooEntrySpec`, `materialize_array_value` | `feedbax.spec.component_param.array_value.v1` is current. Partial tags and unknown versions reject; canonical sparse COO and constant declarations materialize deterministically. | `component_param_array_values` |
 | `dynamic-component-definition` | `feedbax.contracts.component` | `COMPONENT_DEFINITION_SCHEMA_ID`, `COMPONENT_DEFINITION_SCHEMA_VERSION`, `COMPONENT_DEFINITION_SCHEMA_VERSION_V1`, `COMPONENT_DEFINITION_SCHEMA_VERSION_V2`, `ComponentDefinition`, `DynamicPortLayout`, `DynamicPortPolicy`, `DynamicPortPolicyError`, `derive_dynamic_port_count`, `derive_dynamic_port_layout`, `validate_dynamic_port_layout`, `migrate_component_definition_payload`, `migrate_component_definition_v1_to_v2_payload`, `migrate_component_definition_v2_to_v3_payload` | `feedbax.spec.component_definition.v3` is current. v1 migrates to v2 port kinds; v2 migrates to v3 dynamic-port policy. Dynamic layouts derive only from declared policy and parameters and reject mismatches. | `dynamic_component_ports` |
 <!-- policy-guarantees:end -->
 
 The versioned fixture-policy manifest is
 `external/feedbax_conformance_fixture/src/feedbax_external_conformance/policy_manifest.v1.json`.
-It is the machine-readable mapping of these row IDs to schemas and existing
-case IDs. The terminal-certification row is deliberately marked pending rather
-than pretending the current external lifecycle case exercises that schema.
-The final 690+b85 sync must supply the real combined lifecycle case and then
-advance the externally owned conformance result version; this checkpoint does
-not publish a competing v11 or v12.
+It is the machine-readable mapping of these row IDs to schemas and real case
+IDs. The driver row maps to the reviewed v11 `external_driver_plugin` evidence,
+and the dynamic-component row preserves the evidence added in v10. The
+terminal-certification row is deliberately marked pending rather than
+pretending the current external lifecycle case exercises that schema. Final
+custody, emergency-persistence, and result-role rows also await b85 v12; policy
+metadata alone does not advance the externally owned v11 result.
 
 ## Pins and migration rules
 
@@ -105,7 +110,8 @@ owner gate is satisfied.
 
 The existing clean-wheel runner remains the only runner. CI invokes
 `scripts/run_external_conformance.py`, persists its validated machine-readable
-result, and uploads that result as an artifact. The final integrated 690+b85
-head owns the next result schema and the exact driver/bootstrap/lifecycle and
-custody rows. This issue will sync that exact head once; it does not pre-guess
-their public names, case IDs, or v11/v12 payloads.
+result, and uploads that result as an artifact. The reviewed 690 head owns the
+v11 driver evidence recorded here. The final b85 head owns the next result
+schema and exact custody, emergency-persistence, result-role, and combined
+lifecycle rows. This issue will sync that exact head once; it does not pre-guess
+b85 public names, case IDs, or v12 payloads.

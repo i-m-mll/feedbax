@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from feedbax.orchestration.bundle import RunBundle, RunRowSpec
+from feedbax.orchestration.drivers.capabilities import RealizedDriverCapabilities
 from feedbax.orchestration.state import RunSetState
 
 
@@ -71,6 +72,9 @@ class AcquisitionCreateError(RuntimeError):
 class OrchestrationDriver(Protocol):
     """Synchronous idempotent driver interface used by the stage engine."""
 
+    realized_capabilities: RealizedDriverCapabilities
+    poll_interval_seconds: float
+
     def provision(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Provision driver resources."""
 
@@ -79,14 +83,6 @@ class OrchestrationDriver(Protocol):
 
     def stage_inputs(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Stage immutable inputs required by rows."""
-
-    def smoke_row(
-        self,
-        bundle: RunBundle,
-        row: RunRowSpec,
-        state: RunSetState,
-    ) -> Mapping[str, Any]:
-        """Run one bounded pre-launch remote smoke execution."""
 
     def launch_row(
         self,

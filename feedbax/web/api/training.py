@@ -84,6 +84,7 @@ async def start_training(payload: TrainingRequest, request: Request) -> Training
         task_binding_spec=payload.task_binding_spec,
         graph_spec=payload.graph_spec,
         conformance_registry=request.app.state.bootstrap_state.bundle.conformance_checks,
+        driver_registry=request.app.state.bootstrap_state.bundle.drivers,
         plugin_provenance=request.app.state.bootstrap_state.provenance,
     )
     return TrainingStartResponse(data={"job_id": job_id})

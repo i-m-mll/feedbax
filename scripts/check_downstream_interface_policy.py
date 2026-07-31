@@ -20,6 +20,30 @@ INSTRUCTION_FILES = (ROOT / "AGENTS.md", ROOT / "CLAUDE.md")
 POLICY_DOCUMENT = ROOT / "docs" / "design" / "downstream_interface_stability.md"
 FIXTURE_ROOT = ROOT / "external" / "feedbax_conformance_fixture"
 POLICY_MANIFEST = FIXTURE_ROOT / "src" / "feedbax_external_conformance" / "policy_manifest.v1.json"
+DRIVER_POLICY_SCHEMAS = {
+    "current": [
+        "feedbax.orchestration.driver-capabilities version 3",
+        "feedbax.spec.deployment_policy.v2",
+        "feedbax.spec.run_assembly_request.v6",
+        "feedbax.orchestration.run_bundle.v12",
+    ],
+    "migrated": [
+        "feedbax.spec.deployment_policy.v1",
+        "feedbax.spec.run_assembly_request.v5",
+        "feedbax.orchestration.run_bundle.v11",
+    ],
+    "rejected": [
+        "feedbax.orchestration.driver-capabilities version 1",
+        "feedbax.orchestration.driver-capabilities version 2",
+        "older unsupported request and bundle versions",
+        "unknown",
+    ],
+}
+PENDING_B85_ROWS = {
+    "custody-persistence",
+    "emergency-persistence",
+    "result-role-binding",
+}
 
 
 def _marked_block(path: Path, start_marker: str, end_marker: str) -> str:
@@ -141,7 +165,27 @@ def check_policy() -> None:
     result_values = _literal_assignments(
         FIXTURE_ROOT / "src" / "feedbax_external_conformance" / "result.py"
     )
+    result_source = (FIXTURE_ROOT / "src" / "feedbax_external_conformance" / "result.py").read_text(
+        encoding="utf-8"
+    )
+    if 'Literal["feedbax.external_conformance.result.v11"]' not in result_source:
+        raise ValueError("policy metadata must not advance the reviewed v11 result")
     case_ids = frozenset(result_values["REQUIRED_CASE_IDS"])
+    driver_row = manifest_rows.get("orchestration-driver")
+    if driver_row is None:
+        raise ValueError("fixture policy manifest omits the orchestration-driver row")
+    if driver_row.get("case_ids") != ["external_driver_plugin"]:
+        raise ValueError("driver policy row must preserve the reviewed v11 external case")
+    if driver_row.get("schemas") != DRIVER_POLICY_SCHEMAS:
+        raise ValueError("driver policy schema and migration mapping drifted")
+    for row_id in PENDING_B85_ROWS:
+        row = manifest_rows.get(row_id)
+        if row is None:
+            raise ValueError(f"fixture policy manifest omits pending b85 row {row_id!r}")
+        if row.get("coverage_status") != "pending-final-sync" or row.get("case_ids"):
+            raise ValueError(f"pending b85 row {row_id!r} acquired premature coverage")
+        if row.get("schemas") != {"current": [], "migrated": [], "rejected": []}:
+            raise ValueError(f"pending b85 row {row_id!r} pre-guesses final schemas")
     for row_id, row in manifest_rows.items():
         cases = tuple(row.get("case_ids", ()))
         if tuple(document_rows[row_id]) != cases:

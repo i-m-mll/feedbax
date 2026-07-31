@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,41 @@ GUARANTEED_IMPORTS = {
         "bootstrap_application",
         "discover_plugin_registrations",
         "new_registration_context",
+        "DRIVERS",
+        "ApplicationRegistryBundle",
+    ),
+    "feedbax.orchestration.drivers": (
+        "DRIVER_CAPABILITIES_SCHEMA_ID",
+        "DRIVER_CAPABILITIES_SCHEMA_VERSION",
+        "DRIVER_CAPABILITIES_SCHEMA_VERSION_V1",
+        "DRIVER_CAPABILITIES_SCHEMA_VERSION_V2",
+        "DRIVER_CAPABILITIES_SCHEMA_VERSION_V3",
+        "DriverAuthority",
+        "DriverCapabilityEnvelope",
+        "DriverCapabilityFacts",
+        "DriverConstructionContext",
+        "DriverHook",
+        "DriverRegistration",
+        "DriverRegistry",
+        "DriverStage",
+        "DriverVenue",
+        "RealizedDriverCapabilities",
+    ),
+    "feedbax.orchestration.bundle": (
+        "DEPLOYMENT_POLICY_SCHEMA_ID",
+        "DEPLOYMENT_POLICY_SCHEMA_VERSION",
+        "DEPLOYMENT_POLICY_SCHEMA_VERSION_V1",
+        "RUN_BUNDLE_SCHEMA_ID",
+        "RUN_BUNDLE_SCHEMA_VERSION",
+        "RUN_BUNDLE_SCHEMA_VERSION_V11",
+        "DeploymentPolicy",
+        "RunBundle",
+    ),
+    "feedbax.orchestration.assembly": (
+        "RUN_ASSEMBLY_REQUEST_SCHEMA_ID",
+        "RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION",
+        "RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5",
+        "RunAssemblyRequest",
     ),
     "feedbax.lowering": (
         "LowererRegistration",
@@ -191,6 +227,20 @@ def test_policy_constants_bind_effective_release_and_numeric_window() -> None:
     assert DOWNSTREAM_PROTOCOL_CURRENT == 1
 
 
+def test_driver_policy_schema_heads_match_reviewed_690_contract() -> None:
+    drivers = importlib.import_module("feedbax.orchestration.drivers")
+    bundle = importlib.import_module("feedbax.orchestration.bundle")
+    assembly = importlib.import_module("feedbax.orchestration.assembly")
+
+    assert drivers.DRIVER_CAPABILITIES_SCHEMA_ID == "feedbax.orchestration.driver-capabilities"
+    assert drivers.DRIVER_CAPABILITIES_SCHEMA_VERSION == "3"
+    assert drivers.DRIVER_CAPABILITIES_SCHEMA_VERSION_V1 == "1"
+    assert drivers.DRIVER_CAPABILITIES_SCHEMA_VERSION_V2 == "2"
+    assert bundle.DEPLOYMENT_POLICY_SCHEMA_VERSION == "feedbax.spec.deployment_policy.v2"
+    assert bundle.RUN_BUNDLE_SCHEMA_VERSION == "feedbax.orchestration.run_bundle.v12"
+    assert assembly.RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION == "feedbax.spec.run_assembly_request.v6"
+
+
 def test_current_downstream_protocol_is_admitted_by_unified_bootstrap() -> None:
     assert validate_downstream_protocol_version(DOWNSTREAM_PROTOCOL_CURRENT) == 1
     _bootstrap_protocol(DOWNSTREAM_PROTOCOL_CURRENT)
@@ -242,6 +292,25 @@ def test_policy_checker_accepts_current_repository_contract() -> None:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.check_policy()
+
+
+def test_b85_rows_remain_schema_and_case_free_while_result_stays_v11() -> None:
+    fixture = ROOT / "external" / "feedbax_conformance_fixture"
+    manifest = json.loads(
+        (fixture / "src/feedbax_external_conformance/policy_manifest.v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    rows = {row["row_id"]: row for row in manifest["guaranteed_rows"]}
+    for row_id in ("custody-persistence", "emergency-persistence", "result-role-binding"):
+        assert rows[row_id]["coverage_status"] == "pending-final-sync"
+        assert rows[row_id]["case_ids"] == []
+        assert rows[row_id]["schemas"] == {"current": [], "migrated": [], "rejected": []}
+
+    result_source = (fixture / "src/feedbax_external_conformance/result.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'Literal["feedbax.external_conformance.result.v11"]' in result_source
 
 
 def test_policy_does_not_promote_runtime_namespace() -> None:

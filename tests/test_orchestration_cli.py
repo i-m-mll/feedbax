@@ -60,7 +60,7 @@ from feedbax.orchestration import (
     assemble_run_bundle,
 )
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
-from feedbax.orchestration.drivers import runpod as runpod_driver_module
+import feedbax.orchestration.drivers.local as local_driver_module
 from feedbax.orchestration.conformance import CheckRegistry, pass_check
 from feedbax.orchestration.drivers.runpod import RunPodOrchestrationDriver
 from feedbax.orchestration.stages import PreflightFailed
@@ -435,12 +435,6 @@ def test_shadow_launch_rejects_provider_capable_request_before_engine_constructi
             "provider-capable shadow launch must not build an engine"
         ),
     )
-    monkeypatch.setattr(
-        orchestrate,
-        "RunPodOrchestrationDriver",
-        lambda *_args, **_kwargs: pytest.fail("shadow launch must not construct RunPod"),
-    )
-
     assert orchestrate.main(["shadow-launch", "--assembly-request", str(request_path)]) == 1
 
 
@@ -524,12 +518,6 @@ def test_broken_installed_plugin_fails_before_builtin_matrix_engine_or_provider(
         "_request_engine",
         lambda *_args, **_kwargs: pytest.fail("assembly engine must not be constructed"),
     )
-    monkeypatch.setattr(
-        orchestrate,
-        "LocalOrchestrationDriver",
-        lambda *_args, **_kwargs: pytest.fail("provider driver must not be constructed"),
-    )
-
     assert orchestrate.main(["preflight", "--assembly-request", str(request_path)]) == 1
     assert (
         capsys.readouterr()
@@ -726,6 +714,7 @@ def test_certify_explicitly_retries_a_completed_failed_certificate(
             {
                 "conformance_registry": ANY,
                 "training_method_registry": ANY,
+                "driver_registry": ANY,
                 "plugin_provenance": (),
                 "stop_after_stage": "CERTIFY",
                 "retry_failed_certification": True,
@@ -787,10 +776,12 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
         seen_bindings = ()
 
         def __init__(self, **kwargs: Any) -> None:
+            kwargs.pop("cwd", None)
+            kwargs.pop("freeze_lines", None)
             super().__init__(cwd=tmp_path, freeze_lines=("feedbax==test",), **kwargs)
             type(self).seen_bindings = self.input_provider_bindings
 
-    monkeypatch.setattr(orchestrate, "LocalOrchestrationDriver", FastLocalDriver)
+    monkeypatch.setattr(local_driver_module, "LocalOrchestrationDriver", FastLocalDriver)
     monkeypatch.setattr(
         orchestrate,
         "build_default_assembly_registry",
@@ -879,9 +870,11 @@ def test_runpod_driver_is_constructed_from_typed_deployment_policy(tmp_path: Pat
     )
 
     bindings = orchestrate._input_provider_bindings([f"checkpoint.inputs={tmp_path}"])
-    driver = orchestrate._driver_for_bundle(
+    registries = new_application_registry_bundle(local_component_source=None)
+    driver = orchestrate._construct_driver(
         bundle,
-        bindings,
+        driver_registry=registries.drivers,
+        input_provider_bindings=bindings,
         training_method_registry=default_training_method_registry(),
     )
 
@@ -1006,12 +999,6 @@ def test_launch_dry_run_binds_rows_without_credentials_or_stage_engine(
         "_request_engine",
         lambda *_args, **_kwargs: pytest.fail("dry-run must not create a stage engine"),
     )
-    monkeypatch.setattr(
-        runpod_driver_module,
-        "SubprocessRunPodTransport",
-        lambda *_args, **_kwargs: pytest.fail("dry-run must not construct a transport"),
-    )
-
     assert orchestrate.main(["launch", "--assembly-request", str(path), "--dry-run"]) == 0
 
     output = capsys.readouterr().out

@@ -60,6 +60,16 @@ from feedbax.orchestration.drivers.base import (
     OrchestrationDriver,
     ProvisioningAttemptError,
 )
+from feedbax.orchestration.drivers.capabilities import (
+    AcquisitionSemantics,
+    AuthorizationSemantics,
+    DriverConstructionContext,
+    DriverHook,
+    DriverRegistry,
+    DriverVenue,
+    RealizedDriverCapabilities,
+    RetrySemantics,
+)
 from feedbax.orchestration.drivers.native_execution import (
     NATIVE_TRAINING_COLLECTION_OUTPUTS,
     missing_native_training_collection_outputs,
@@ -324,7 +334,8 @@ class StageEngine:
         request: RunAssemblyRequest | None = None,
         assembly_context: AssemblyContext | None = None,
         assembly_registry: AssemblyCompilerRegistry | None = None,
-        driver_factory: Callable[[RunBundle], OrchestrationDriver] | None = None,
+        driver_registry: DriverRegistry | None = None,
+        driver_context: Callable[[RunBundle], DriverConstructionContext] | None = None,
         run_set_id: str | None = None,
         store: RunSetStateStore | None = None,
         conformance_registry: CheckRegistry | None = None,
@@ -342,17 +353,21 @@ class StageEngine:
         if bundle is not None and driver is None:
             raise ValueError("bundle-based StageEngine construction requires driver")
         if request is not None and (
-            assembly_context is None or assembly_registry is None or driver_factory is None
+            assembly_context is None
+            or assembly_registry is None
+            or driver_registry is None
+            or driver_context is None
         ):
             raise ValueError(
                 "request-based StageEngine construction requires assembly_context, "
-                "assembly_registry, and driver_factory"
+                "assembly_registry, driver_registry, and driver_context"
             )
         self.bundle = bundle
         self.request = request
         self.assembly_context = assembly_context
         self.assembly_registry = assembly_registry
-        self.driver_factory = driver_factory
+        self.driver_registry = driver_registry
+        self.driver_context = driver_context
         self.run_set_id = (
             bundle.run_set_id if bundle is not None else (run_set_id or mint_run_set_id())
         )
@@ -369,11 +384,12 @@ class StageEngine:
             for row_id, inputs in (row_conformance_inputs or {}).items()
         }
         self._poll_interval_explicit = poll_interval_seconds is not None
-        self.poll_interval_seconds = (
-            float(getattr(driver, "poll_interval_seconds", 0.05))
-            if poll_interval_seconds is None
-            else poll_interval_seconds
-        )
+        if poll_interval_seconds is None:
+            self.poll_interval_seconds = (
+                float(driver.poll_interval_seconds) if driver is not None else 0.05
+            )
+        else:
+            self.poll_interval_seconds = poll_interval_seconds
         self._sleep = sleep
         self._monotonic = monotonic
         self._wall_time = wall_time
@@ -389,7 +405,8 @@ class StageEngine:
         *,
         context: AssemblyContext,
         registry: AssemblyCompilerRegistry,
-        driver_factory: Callable[[RunBundle], OrchestrationDriver],
+        driver_registry: DriverRegistry,
+        driver_context: Callable[[RunBundle], DriverConstructionContext],
         run_set_id: str | None = None,
         **kwargs: Any,
     ) -> "StageEngine":
@@ -398,7 +415,8 @@ class StageEngine:
             request=request,
             assembly_context=context,
             assembly_registry=registry,
-            driver_factory=driver_factory,
+            driver_registry=driver_registry,
+            driver_context=driver_context,
             run_set_id=run_set_id,
             **kwargs,
         )
@@ -455,7 +473,10 @@ class StageEngine:
                         and (
                             self._provision_completed(latest)
                             or bool(
-                                getattr(self.driver, "has_pending_owned_resource", lambda: False)()
+                                self._call_driver_hook(
+                                    DriverHook.HAS_PENDING_OWNED_RESOURCE,
+                                    "has_pending_owned_resource",
+                                )
                             )
                         )
                     ):
@@ -731,8 +752,11 @@ class StageEngine:
         """Rehydrate process-local remote identity before any resumed stage runs."""
         if state.provision_record is None:
             return
-        restore = getattr(self.driver, "restore_from_provision_record", None)
-        if callable(restore):
+        restore = self._driver_hook(
+            DriverHook.RESTORE_FROM_PROVISION_RECORD,
+            "restore_from_provision_record",
+        )
+        if restore is not None:
             restore(state.provision_record)
 
     def _run_stage(self, stage_id: str, state: RunSetState) -> RunSetState:
@@ -763,7 +787,7 @@ class StageEngine:
                 state = state.with_stage(stage_id, failed)
                 self.store.save(state)
                 governed_provision = stage_id == STAGE_PROVISION and bool(
-                    getattr(self.driver, "govern_provisioning_retries", False)
+                    self.driver.realized_capabilities.facts.retry is RetrySemantics.DRIVER_GOVERNED
                 )
                 if (
                     isinstance(exc, (_PrimaryExecutorFailure, BudgetExceeded))
@@ -805,12 +829,9 @@ class StageEngine:
                 )
                 self._prepared_request = None
             request_sha256 = persist_assembly_request(self.request, request_path)
-            assert self.driver_factory is not None
-            self.driver = self.driver_factory(self.bundle)
+            self.driver = self._construct_driver(self.bundle)
             if not self._poll_interval_explicit:
-                self.poll_interval_seconds = float(
-                    getattr(self.driver, "poll_interval_seconds", 0.05)
-                )
+                self.poll_interval_seconds = float(self.driver.poll_interval_seconds)
             state = state.model_copy(
                 update={
                     "rows": {row.row_id: RowState() for row in self.bundle.rows},
@@ -880,16 +901,26 @@ class StageEngine:
                 f"persisted ASSEMBLE bundle hash mismatch: expected={expected!r} actual={actual!r}"
             )
         self.bundle = RunBundle.model_validate_json(data)
-        assert self.driver_factory is not None
-        self.driver = self.driver_factory(self.bundle)
+        self.driver = self._construct_driver(self.bundle)
         return state
+
+    def _construct_driver(self, bundle: RunBundle) -> OrchestrationDriver:
+        assert self.driver_registry is not None
+        assert self.driver_context is not None
+        return self.driver_registry.construct(
+            bundle.deployment_policy.driver,
+            self.driver_context(bundle),
+        )
 
     def _restore_completed_driver_preflight(self, state: RunSetState) -> RunSetState:
         """Restore driver-local preflight authority before skipping a completed stage."""
         if state.stage(STAGE_PREFLIGHT).status != "completed":
             return state
-        restore = getattr(self.driver, "restore_completed_preflight", None)
-        if callable(restore):
+        restore = self._driver_hook(
+            DriverHook.RESTORE_COMPLETED_PREFLIGHT,
+            "restore_completed_preflight",
+        )
+        if restore is not None:
             try:
                 reusable = restore(self.bundle, state)
             except Exception as exc:
@@ -922,14 +953,17 @@ class StageEngine:
         return state
 
     def _stage_preflight(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
-        checks = run_preflight_checks(self.bundle)
+        checks = run_preflight_checks(self.bundle, self.driver.realized_capabilities)
         stage = state.stage(STAGE_PREFLIGHT).model_copy(update={"checks": checks})
         state = state.with_stage(STAGE_PREFLIGHT, stage)
         self.store.save(state)
         failed = [check for check in checks if check.status == "fail"]
         if failed:
-            driver_static_preflight = getattr(self.driver, "static_preflight_checks", None)
-            if callable(driver_static_preflight):
+            driver_static_preflight = self._driver_hook(
+                DriverHook.STATIC_PREFLIGHT_CHECKS,
+                "static_preflight_checks",
+            )
+            if driver_static_preflight is not None:
                 checks.extend(
                     driver_static_preflight(
                         self.bundle,
@@ -941,11 +975,14 @@ class StageEngine:
                 self.store.save(state)
                 failed = [check for check in checks if check.status == "fail"]
             raise PreflightFailed(_format_preflight_failures(failed))
-        driver_preflight = getattr(self.driver, "preflight_checks", None)
-        if callable(driver_preflight):
+        driver_preflight = self._driver_hook(DriverHook.PREFLIGHT_CHECKS, "preflight_checks")
+        if driver_preflight is not None:
             checks.extend(driver_preflight(self.bundle))
-        realization_plan = getattr(self.driver, "repo_realization_plan", None)
-        if callable(realization_plan):
+        realization_plan = self._driver_hook(
+            DriverHook.REPO_REALIZATION_PLAN,
+            "repo_realization_plan",
+        )
+        if realization_plan is not None:
             plan = realization_plan()
             if plan is not None:
                 state = state.model_copy(
@@ -963,16 +1000,20 @@ class StageEngine:
                 row.row_id: row.execution.payload.sha256 for row in self.bundle.rows
             },
         }
-        evidence = getattr(self.driver, "preflight_evidence", None)
-        if callable(evidence):
+        evidence = self._driver_hook(DriverHook.PREFLIGHT_EVIDENCE, "preflight_evidence")
+        if evidence is not None:
             outputs["driver_evidence"] = dict(evidence(self.bundle, state, checks))
         if state.repo_realization_plan is not None:
             outputs["repo_realization_plan"] = state.repo_realization_plan.model_dump(mode="json")
         return state, outputs
 
     def _uses_engine_acquisition(self) -> bool:
-        required = getattr(self.driver, "engine_acquisition_required", None)
-        return bool(callable(required) and required())
+        if self.driver is None:
+            return False
+        return (
+            self.driver.realized_capabilities.facts.acquisition
+            is AcquisitionSemantics.ENGINE_GOVERNED
+        )
 
     def _replace_acquisition_intent(
         self,
@@ -1149,14 +1190,12 @@ class StageEngine:
         ]
         if not pending:
             return state
-        timeout = float(getattr(self.driver, "reconciliation_timeout_seconds", 60.0))
+        timeout = float(self.driver.reconciliation_timeout_seconds)
         deadline = self._monotonic() + timeout
         records, inventory_evidence = self.driver.observe_pod_inventory(
             timeout_seconds=max(0.0, deadline - self._monotonic())
         )
-        pod_name = getattr(self.driver, "acquisition_pod_name", None)
-        if not callable(pod_name):
-            raise OrchestrationStageError("acquisition driver does not expose intent pod names")
+        pod_name = self.driver.acquisition_pod_name
         for original in pending:
             expected_name = pod_name(original.intent_id)
             matches = [record for record in records if record.name == expected_name]
@@ -1249,7 +1288,7 @@ class StageEngine:
 
     def _stage_provision(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         """Provision RunPod through one durable, budget-governed retry authority."""
-        if not getattr(self.driver, "govern_provisioning_retries", False):
+        if self.driver.realized_capabilities.facts.retry is not RetrySemantics.DRIVER_GOVERNED:
             outputs = dict(self.driver.provision(self.bundle, state))
             state = state.model_copy(update={"provision_record": outputs, "updated_at": utc_now()})
             return state, outputs
@@ -1324,11 +1363,11 @@ class StageEngine:
                 if self._wall_time() >= deadline:
                     self._stop_provisioning(state, attempts, "wall-clock-exceeded")
                     raise BudgetExceeded("provisioning exceeded its wall-clock boundary") from exc
-                delay = float(getattr(self.driver, "provision_retry_delay_seconds", 0.0))
+                delay = float(self.driver.provision_retry_delay())
                 if delay <= 0.0:
                     self._stop_provisioning(state, attempts, "invalid-retry-delay")
                     raise OrchestrationStageError(
-                        "RunPod provisioning retry delay must be positive"
+                        "driver provisioning retry delay must be positive"
                     )
                 self._sleep(min(delay, max(0.0, deadline - self._wall_time())))
                 continue
@@ -1459,8 +1498,8 @@ class StageEngine:
             )
             return state, evidence.model_dump(mode="json")
 
-        smoke_row = getattr(self.driver, "smoke_row", None)
-        if not callable(smoke_row):
+        smoke_row = self._driver_hook(DriverHook.REMOTE_SMOKE, "smoke_row")
+        if smoke_row is None:
             evidence = RemoteSmokeEvidence(
                 run_set_id=self.bundle.run_set_id,
                 bundle_sha256=canonical_run_bundle_sha256(self.bundle),
@@ -1491,8 +1530,11 @@ class StageEngine:
                 if isinstance(raw_evidence, Mapping):
                     evidence = dict(raw_evidence)
                 else:
-                    fallback_evidence = getattr(self.driver, "smoke_failure_evidence", None)
-                    if not callable(fallback_evidence):
+                    fallback_evidence = self._driver_hook(
+                        DriverHook.SMOKE_FAILURE_EVIDENCE,
+                        "smoke_failure_evidence",
+                    )
+                    if fallback_evidence is None:
                         raise
                     evidence = dict(fallback_evidence(self.bundle, row, state, exc))
                 rows.append(evidence)
@@ -1690,8 +1732,11 @@ class StageEngine:
                         }
                     )
             collected[row.row_id] = outputs
-            recovery_evidence = getattr(self.driver, "collection_recovery_evidence", None)
-            if callable(recovery_evidence):
+            recovery_evidence = self._driver_hook(
+                DriverHook.COLLECTION_RECOVERY_EVIDENCE,
+                "collection_recovery_evidence",
+            )
+            if recovery_evidence is not None:
                 row_recovery = recovery_evidence(row.row_id)
                 if row_recovery is not None:
                     collection_recovery[row.row_id] = dict(row_recovery)
@@ -2077,8 +2122,8 @@ class StageEngine:
                 "REGISTER state run_set_id does not match the assembled bundle"
             )
         final_pod_inventory: Mapping[str, Any] | None = None
-        if self.bundle.deployment_policy.driver == "runpod":
-            final_pod_inventory = self._require_globally_empty_runpod_inventory(state)
+        if self._driver_supports(DriverHook.GLOBAL_RESOURCE_INVENTORY):
+            final_pod_inventory = self._require_globally_empty_resource_inventory(state)
         certify_stage = state.stage(STAGE_CERTIFY)
         certified_ref = certify_stage.outputs.get("certificate_ref")
         if (
@@ -2168,10 +2213,10 @@ class StageEngine:
         return state, payload
 
     @staticmethod
-    def _require_globally_empty_runpod_inventory(
+    def _require_globally_empty_resource_inventory(
         state: RunSetState,
     ) -> Mapping[str, Any]:
-        """Require verified provider-wide RunPod absence before registration."""
+        """Require verified provider-wide resource absence before registration."""
         teardown = state.stage(STAGE_TEARDOWN)
         inventory = teardown.outputs.get("final_pod_inventory")
         valid = (
@@ -2179,7 +2224,6 @@ class StageEngine:
             and isinstance(inventory, Mapping)
             and inventory.get("scope") == "provider-account"
             and inventory.get("verified") is True
-            and inventory.get("observation_basis") == "runpodctl pod list --output json"
             and inventory.get("outcome") == "empty"
             and type(inventory.get("pod_count")) is int
             and inventory.get("pod_count") == 0
@@ -2190,10 +2234,34 @@ class StageEngine:
         if not valid:
             raise OrchestrationStageError(
                 "REGISTER requires TEARDOWN evidence proving a globally empty "
-                "RunPod provider inventory"
+                "provider resource inventory"
             )
         assert isinstance(inventory, Mapping)
         return inventory
+
+    def _driver_supports(self, hook: DriverHook) -> bool:
+        """Return whether the constructed driver's realized variant declares a hook."""
+        if self.driver is None:
+            return False
+        return self.driver.realized_capabilities.facts.supports(hook)
+
+    def _driver_hook(self, hook: DriverHook, attribute: str) -> Callable[..., Any] | None:
+        """Resolve one capability-declared hook and reject declaration drift."""
+        if not self._driver_supports(hook):
+            return None
+        assert self.driver is not None
+        value = getattr(self.driver, attribute, None)
+        if not callable(value):
+            raise OrchestrationStageError(
+                f"driver {self.driver.realized_capabilities.driver_name!r} declares hook "
+                f"{hook.value!r} but does not implement {attribute!r}"
+            )
+        return value
+
+    def _call_driver_hook(self, hook: DriverHook, attribute: str, *args: Any) -> Any:
+        """Call one declared hook, returning false only when it is unsupported."""
+        implementation = self._driver_hook(hook, attribute)
+        return False if implementation is None else implementation(*args)
 
     def _write_or_verify_registration(
         self,
@@ -2293,7 +2361,10 @@ class StageEngine:
             return state
         failure_log_collection: dict[str, Any] | None = None
         if abort:
-            collect_failure_logs = getattr(self.driver, "collect_failure_logs", None)
+            collect_failure_logs = self._driver_hook(
+                DriverHook.COLLECT_FAILURE_LOGS,
+                "collect_failure_logs",
+            )
             if collect_failure_logs is not None:
                 try:
                     diagnostic_outputs = dict(collect_failure_logs(self.bundle, state))
@@ -2306,7 +2377,10 @@ class StageEngine:
                     # the error that caused abort teardown.
                     failure_log_collection = {"status": "failed", "error": str(exc)}
         if self.bundle.keep_alive:
-            describe_ownership = getattr(self.driver, "teardown_ownership", None)
+            describe_ownership = self._driver_hook(
+                DriverHook.TEARDOWN_OWNERSHIP,
+                "teardown_ownership",
+            )
             ownership = dict(describe_ownership(state)) if describe_ownership else {}
             outputs = {
                 "teardown": "skipped",
@@ -2433,8 +2507,8 @@ class StageEngine:
         if not unfinished:
             self.store.save(state)
             return state
-        probe_rows = getattr(self.driver, "probe_rows", None)
-        if callable(probe_rows):
+        probe_rows = self._driver_hook(DriverHook.BATCH_PROBE, "probe_rows")
+        if probe_rows is not None:
             probes = dict(probe_rows(self.bundle, unfinished, state))
         else:
             probes = {row.row_id: self.driver.probe(self.bundle, row, state) for row in unfinished}
@@ -2540,8 +2614,11 @@ class StageEngine:
                     ),
                 )
                 continue
-            request_stop = getattr(self.driver, "request_stop_at_checkpoint", None)
-            if callable(request_stop):
+            request_stop = self._driver_hook(
+                DriverHook.CHECKPOINT_STOP,
+                "request_stop_at_checkpoint",
+            )
+            if request_stop is not None:
                 request_stop(self.bundle, row, state)
             else:
                 self.driver.stop_row(self.bundle, row, state)
@@ -2690,10 +2767,14 @@ def _read_collected_regular_file(path: str | Path, *, context: str) -> bytes:
             os.close(parent_descriptor)
 
 
-def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
+def run_preflight_checks(
+    bundle: RunBundle,
+    realized_capabilities: RealizedDriverCapabilities,
+) -> list[PreflightCheckEntry]:
     """Run static preflight checks without driver calls or resource mutation."""
     return _run_static_preflight_checks(
         bundle,
+        realized_capabilities=realized_capabilities,
         include_deployment_policy=True,
         include_manifest_payload_normalization=True,
     )
@@ -2703,6 +2784,7 @@ def run_authority_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntr
     """Run provider-neutral checks for an already assembled authority bundle."""
     return _run_static_preflight_checks(
         bundle,
+        realized_capabilities=None,
         include_deployment_policy=False,
         include_manifest_payload_normalization=False,
     )
@@ -2711,6 +2793,7 @@ def run_authority_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntr
 def _run_static_preflight_checks(
     bundle: RunBundle,
     *,
+    realized_capabilities: RealizedDriverCapabilities | None,
     include_deployment_policy: bool,
     include_manifest_payload_normalization: bool,
 ) -> list[PreflightCheckEntry]:
@@ -2742,19 +2825,23 @@ def _run_static_preflight_checks(
             detail=None if budget_present else "budget.max_wall_clock_seconds must be positive",
         )
     )
-    driver_supported = bundle.deployment_policy.driver in {"local", "worker-http", "runpod"}
-    checks.append(
-        _check(
-            "driver-preconditions",
-            driver_supported,
-            detail=(
-                None
-                if driver_supported
-                else f"unsupported deployment driver: {bundle.deployment_policy.driver!r}"
-            ),
-            observed=bundle.deployment_policy.driver,
+    if include_deployment_policy:
+        driver_supported = (
+            realized_capabilities is not None
+            and realized_capabilities.driver_name == bundle.deployment_policy.driver
         )
-    )
+        checks.append(
+            _check(
+                "driver-preconditions",
+                driver_supported,
+                detail=(
+                    None
+                    if driver_supported
+                    else "constructed driver capability identity does not match deployment policy"
+                ),
+                observed=bundle.deployment_policy.driver,
+            )
+        )
     env_complete = bool(bundle.environment.python_version)
     checks.append(
         _check(
@@ -2779,7 +2866,11 @@ def _run_static_preflight_checks(
     )
 
     if include_deployment_policy:
-        policy_failures, policy_observed = _preflight_deployment_policy(bundle)
+        assert realized_capabilities is not None
+        policy_failures, policy_observed = _preflight_deployment_policy(
+            bundle,
+            realized_capabilities,
+        )
         checks.append(
             _check(
                 "deployment-policy",
@@ -2892,20 +2983,31 @@ def _run_static_preflight_checks(
 
 def _preflight_deployment_policy(
     bundle: RunBundle,
+    realized_capabilities: RealizedDriverCapabilities,
 ) -> tuple[list[str], dict[str, Any]]:
     """Validate only the orchestration-owned deployment policy."""
     policy = bundle.deployment_policy
     failures: list[str] = []
-    expected_venue = "local" if policy.driver == "local" else "remote"
+    facts = realized_capabilities.facts
+    expected_venue = "local" if facts.venue is DriverVenue.LOCAL_PROCESS else "remote"
     if policy.venue != expected_venue:
         failures.append(
             f"driver {policy.driver!r} requires venue={expected_venue!r}, observed {policy.venue!r}"
         )
-    if policy.driver == "runpod" and not policy.cloud_authorized:
-        failures.append("runpod deployment requires explicit cloud authorization")
+    if (
+        facts.authorization is AuthorizationSemantics.CLOUD_AND_SPEND_REQUIRED
+        and not policy.cloud_authorized
+    ):
+        failures.append(
+            f"driver capability variant {realized_capabilities.variant_id!r} requires "
+            "explicit cloud and spend authorization"
+        )
     if policy.review_required and not policy.review_authorized:
         failures.append("required deployment review has not been explicitly authorized")
-    return failures, policy.model_dump(mode="json")
+    return failures, {
+        **policy.model_dump(mode="json"),
+        "realized_driver_capability_variant": realized_capabilities.variant_id,
+    }
 
 
 def _row_payload(row: RunRowSpec) -> dict[str, Any] | None:

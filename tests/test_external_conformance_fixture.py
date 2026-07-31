@@ -30,6 +30,19 @@ def _protocol_roles() -> dict[str, None]:
     return {"current": None, "minimum": None}
 
 
+def test_fixture_driver_plugin_declares_current_numeric_protocol_v2(fixture_package) -> None:
+    from feedbax.plugins import (
+        DOWNSTREAM_PROTOCOL_CURRENT,
+        PLUGIN_DECLARATION_SCHEMA_VERSION,
+    )
+
+    plugin = importlib.import_module("feedbax_external_conformance.plugin")
+    declaration = plugin.FOUNDATION_PLUGIN_REGISTRATION.declaration
+
+    assert declaration.schema_version == PLUGIN_DECLARATION_SCHEMA_VERSION
+    assert declaration.downstream_protocol_version == DOWNSTREAM_PROTOCOL_CURRENT
+
+
 def test_result_v1_migrates_to_v2_then_rejects_missing_current_evidence(
     fixture_package,
 ) -> None:
@@ -48,7 +61,7 @@ def test_result_v1_migrates_to_v2_then_rejects_missing_current_evidence(
 
     with pytest.raises(
         ValueError,
-        match="v2 cannot migrate to v10.*resolved_evaluation_row_projection",
+        match="v2 cannot migrate to v11.*resolved_evaluation_row_projection",
     ):
         fixture_package.load_result(legacy)
 
@@ -86,7 +99,7 @@ def test_result_v2_rejects_because_the_new_case_was_not_measured(
 
     with pytest.raises(
         ValueError,
-        match="v2 cannot migrate to v10.*resolved_evaluation_row_projection",
+        match="v2 cannot migrate to v11.*resolved_evaluation_row_projection",
     ):
         fixture_package.load_result(payload)
 
@@ -129,7 +142,7 @@ def test_result_v7_rejects_because_array_value_case_was_not_measured(
     payload["schema_version"] = "feedbax.external_conformance.result.v7"
     payload["cases"].pop("component_param_array_values")
 
-    with pytest.raises(ValueError, match="v7 cannot migrate to v10.*array_values"):
+    with pytest.raises(ValueError, match="v7 cannot migrate to v11.*array_values"):
         fixture_package.load_result(payload)
 
 
@@ -148,7 +161,7 @@ def test_result_v8_rejects_because_unified_bootstrap_was_not_measured(
     payload["schema_version"] = "feedbax.external_conformance.result.v8"
     payload["cases"].pop("unified_plugin_bootstrap")
 
-    with pytest.raises(ValueError, match="v8 cannot migrate to v10.*unified_plugin_bootstrap"):
+    with pytest.raises(ValueError, match="v8 cannot migrate to v11.*unified_plugin_bootstrap"):
         fixture_package.load_result(payload)
 
 
@@ -167,13 +180,30 @@ def test_result_v9_rejects_because_dynamic_ports_were_not_measured(
     payload["schema_version"] = "feedbax.external_conformance.result.v9"
     payload["cases"].pop("dynamic_component_ports")
 
-    with pytest.raises(ValueError, match="v9 cannot migrate to v10.*dynamic_component_ports"):
+    with pytest.raises(ValueError, match="v9 cannot migrate to v11.*dynamic_component_ports"):
+        fixture_package.load_result(payload)
+
+
+def test_result_v10_rejects_unmeasured_external_driver_plugin(fixture_package) -> None:
+    payload = fixture_package.ConformanceResult(
+        status="pass",
+        feedbax_version="0.1.2",
+        feedbax_install_root="/installed/feedbax",
+        fixture_install_root="/installed/fixture",
+        protocol_roles=_protocol_roles(),
+        cases=_required_cases(fixture_package),
+        lifecycle={"status": "pass"},
+    ).model_dump(mode="json")
+    payload["schema_version"] = "feedbax.external_conformance.result.v10"
+    payload["cases"].pop("external_driver_plugin")
+
+    with pytest.raises(ValueError, match="v10 cannot migrate to v11.*external_driver_plugin"):
         fixture_package.load_result(payload)
 
 
 @pytest.mark.parametrize(
     "version",
-    [None, "feedbax.external_conformance.result.v0", "feedbax.external_conformance.result.v11"],
+    [None, "feedbax.external_conformance.result.v0", "feedbax.external_conformance.result.v12"],
 )
 def test_result_rejects_unsupported_versions(fixture_package, version: str | None) -> None:
     payload = {
@@ -240,7 +270,7 @@ def test_result_rejects_inconsistent_outcomes(
         )
 
 
-def test_result_v10_keeps_only_protected_v2_and_current_case_contracts(
+def test_result_v11_keeps_only_protected_v2_and_current_case_contracts(
     fixture_package,
 ) -> None:
     assert fixture_package.V2_REQUIRED_CASE_IDS == (
@@ -251,9 +281,10 @@ def test_result_v10_keeps_only_protected_v2_and_current_case_contracts(
         "staged_exact_parent_migration",
         "public_lifecycle_recovery",
     )
-    ten_case_contract = (
+    current_case_contract = (
         "ordered_registration",
         "unified_plugin_bootstrap",
+        "external_driver_plugin",
         "component_registration_and_migration",
         "dynamic_component_ports",
         "value_identity",
@@ -263,11 +294,11 @@ def test_result_v10_keeps_only_protected_v2_and_current_case_contracts(
         "resolved_evaluation_row_projection",
         "public_lifecycle_recovery",
     )
-    assert fixture_package.REQUIRED_CASE_IDS == ten_case_contract
+    assert fixture_package.REQUIRED_CASE_IDS == current_case_contract
     assert fixture_package.V2_REQUIRED_CASE_ID_SET == frozenset(
         fixture_package.V2_REQUIRED_CASE_IDS
     )
-    assert fixture_package.REQUIRED_CASE_ID_SET == frozenset(ten_case_contract)
+    assert fixture_package.REQUIRED_CASE_ID_SET == frozenset(current_case_contract)
     assert fixture_package.REJECTED_UNSHIPPED_SCHEMA_VERSIONS == tuple(
         f"feedbax.external_conformance.result.v{version}" for version in range(3, 7)
     )
@@ -288,7 +319,7 @@ def test_result_v10_keeps_only_protected_v2_and_current_case_contracts(
             fixture_package.ConformanceResult.model_validate({**valid, "cases": cases})
 
 
-def test_result_v10_case_values_are_strict_booleans(fixture_package) -> None:
+def test_result_v11_case_values_are_strict_booleans(fixture_package) -> None:
     cases = _required_cases(fixture_package)
     cases["public_lifecycle_recovery"] = "yes"
 
@@ -305,7 +336,7 @@ def test_result_v10_case_values_are_strict_booleans(fixture_package) -> None:
 
 
 @pytest.mark.parametrize("slot", ["current", "minimum"])
-def test_result_v10_protocol_roles_remain_unbound(fixture_package, slot: str) -> None:
+def test_result_v11_protocol_roles_remain_unbound(fixture_package, slot: str) -> None:
     roles: dict[str, object] = _protocol_roles()
     roles[slot] = "unratified"
     with pytest.raises(ValidationError):
@@ -325,13 +356,13 @@ def test_result_v10_protocol_roles_remain_unbound(fixture_package, slot: str) ->
     [None, {}, {"current": None}, {"minimum": None}],
     ids=["absent", "empty", "missing-minimum", "missing-current"],
 )
-def test_result_v10_requires_explicit_protocol_role_slots(
+def test_result_v11_requires_explicit_protocol_role_slots(
     fixture_package,
     protocol_roles: dict[str, None] | None,
 ) -> None:
     payload = {
         "schema_id": "feedbax.external_conformance.result",
-        "schema_version": "feedbax.external_conformance.result.v10",
+        "schema_version": "feedbax.external_conformance.result.v11",
         "status": "pass",
         "feedbax_version": "0.1.2",
         "feedbax_install_root": "/installed/feedbax",
@@ -613,7 +644,7 @@ def test_clean_wheel_wrapper_rejects_malformed_result(
     result_path.write_text(
         """{
   "schema_id": "feedbax.external_conformance.result",
-  "schema_version": "feedbax.external_conformance.result.v10",
+  "schema_version": "feedbax.external_conformance.result.v11",
   "status": "pass",
   "feedbax_version": "0.1.2",
   "feedbax_install_root": "/isolated/feedbax",
@@ -641,7 +672,11 @@ def test_local_lifecycle_uses_clean_interpreter_distribution_inventory(
     tmp_path: Path,
 ) -> None:
     lifecycle = importlib.import_module(f"{fixture_package.__name__}.lifecycle")
-    driver = lifecycle._driver(tmp_path, None)
+    registries = lifecycle.new_application_registry_bundle(local_component_source=None)
+    driver = registries.drivers.construct(
+        "local",
+        lifecycle._driver_context(tmp_path, None),
+    )
 
     assert driver.python_executable == sys.executable
     assert driver.freeze_lines is None

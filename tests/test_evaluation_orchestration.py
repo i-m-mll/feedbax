@@ -52,6 +52,7 @@ from feedbax.orchestration import (
     build_default_assembly_registry,
 )
 from feedbax.orchestration.assembly import _prepare_run_assembly
+from feedbax.orchestration.drivers.capabilities import DriverConstructionContext
 from feedbax.orchestration.staged_root_custody import (
     StagedRootSourceBinding,
     seal_staged_root,
@@ -335,6 +336,7 @@ def test_insufficient_disk_fails_before_run_output_root(
     monkeypatch.setattr(assembly_module.shutil, "disk_usage", disk_usage)
     run_set_id = "disk-refusal"
     output_root = Path(request.orchestration_root) / run_set_id
+    registries = new_application_registry_bundle(local_component_source=None)
     engine = StageEngine.from_request(
         request,
         context=AssemblyContext(
@@ -343,7 +345,8 @@ def test_insufficient_disk_fails_before_run_output_root(
             materializer_commit="d9e62cfd" + "0" * 32,
         ),
         registry=_assembly_registry(),
-        driver_factory=lambda _bundle: pytest.fail("driver constructed before disk refusal"),
+        driver_registry=registries.drivers,
+        driver_context=lambda _bundle: pytest.fail("driver constructed before disk refusal"),
         run_set_id=run_set_id,
     )
 
@@ -412,6 +415,7 @@ def test_stage_engine_reuses_the_pre_root_capacity_decision_inside_the_lock(
 
     monkeypatch.setattr(assembly_module.shutil, "disk_usage", disk_usage)
     run_set_id = "single-pre-root-decision"
+    registries = new_application_registry_bundle(local_component_source=None)
     engine = StageEngine.from_request(
         request,
         context=AssemblyContext(
@@ -420,7 +424,8 @@ def test_stage_engine_reuses_the_pre_root_capacity_decision_inside_the_lock(
             materializer_commit="d9e62cfd" + "0" * 32,
         ),
         registry=_assembly_registry(),
-        driver_factory=lambda _bundle: SimpleNamespace(),
+        driver_registry=registries.drivers,
+        driver_context=lambda bundle: DriverConstructionContext(configuration={"bundle": bundle}),
         run_set_id=run_set_id,
     )
 

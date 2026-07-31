@@ -32,6 +32,25 @@ from feedbax.orchestration.conformance import (
     assert_certificate_allows_completed_registration,
 )
 from feedbax.orchestration.drivers.base import DriverRowProbe
+from feedbax.orchestration.drivers.capabilities import (
+    AcquisitionSemantics,
+    AuthorizationSemantics,
+    CustodySemantics,
+    DriverCapabilityEnvelope,
+    DriverCapabilityFacts,
+    DriverConstructionContext,
+    DriverHook,
+    DriverRegistration,
+    DriverVenue,
+    EnvironmentSemantics,
+    MonitoringSemantics,
+    RecoverySemantics,
+    RealizedDriverCapabilities,
+    ResourceSemantics,
+    RetrySemantics,
+    SpendSemantics,
+    TeardownSemantics,
+)
 from feedbax.orchestration.drivers.native_execution import (
     native_resume_checkpoint_source,
     seed_authenticated_checkpoint,
@@ -87,6 +106,50 @@ print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
 class LocalOrchestrationDriver:
     """Run orchestration rows as local subprocesses under the run-set directory."""
 
+    poll_interval_seconds = 0.05
+
+    capability_envelope = DriverCapabilityEnvelope(
+        driver_name="local",
+        variants={
+            "local-stop": DriverCapabilityFacts(
+                variant_id="local-stop",
+                venue=DriverVenue.LOCAL_PROCESS,
+                resources=ResourceSemantics.LOCAL_PROCESS,
+                spend=SpendSemantics.NONE,
+                authorization=AuthorizationSemantics.NONE,
+                environment=EnvironmentSemantics.LOCAL_INVENTORY,
+                monitoring=MonitoringSemantics.ROW_POLL,
+                recovery=RecoverySemantics.PROCESS_LOCAL,
+                retry=RetrySemantics.NONE,
+                acquisition=AcquisitionSemantics.NONE,
+                teardown=TeardownSemantics.LOCAL_PROCESS_STOP,
+                custody=CustodySemantics.LOCAL_RUN_SET,
+                optional_hooks=frozenset(
+                    {
+                        DriverHook.PREFLIGHT_CHECKS,
+                        DriverHook.CHECKPOINT_STOP,
+                    }
+                ),
+            ),
+            "local-preserved": DriverCapabilityFacts(
+                variant_id="local-preserved",
+                venue=DriverVenue.LOCAL_PROCESS,
+                resources=ResourceSemantics.LOCAL_PROCESS,
+                spend=SpendSemantics.NONE,
+                authorization=AuthorizationSemantics.NONE,
+                environment=EnvironmentSemantics.LOCAL_INVENTORY,
+                monitoring=MonitoringSemantics.ROW_POLL,
+                recovery=RecoverySemantics.PROCESS_LOCAL,
+                retry=RetrySemantics.NONE,
+                acquisition=AcquisitionSemantics.NONE,
+                teardown=TeardownSemantics.RESOURCES_PRESERVED,
+                custody=CustodySemantics.LOCAL_RUN_SET,
+                optional_hooks=frozenset({DriverHook.PREFLIGHT_CHECKS}),
+            ),
+        },
+    )
+    realized_capabilities = capability_envelope.realize("local-stop")
+
     def __init__(
         self,
         *,
@@ -96,7 +159,9 @@ class LocalOrchestrationDriver:
         input_provider_bindings: Sequence[InputProviderRootBinding] = (),
         staged_root_bindings: Sequence[StagedRootSnapshotBinding] = (),
         update_budget: int | None = None,
+        realized_capabilities: RealizedDriverCapabilities | None = None,
     ) -> None:
+        self.realized_capabilities = realized_capabilities or type(self).realized_capabilities
         self.cwd = Path(cwd or Path.cwd())
         self.python_executable = python_executable or sys.executable
         self.freeze_lines = tuple(freeze_lines) if freeze_lines is not None else None
@@ -384,11 +449,9 @@ class LocalOrchestrationDriver:
             source_path = Path(source)
             if not source_path.is_absolute():
                 source_path = paths["row_dir"] / source_path
-            if (
-                bundle.execution_family == "evaluation-matrix"
-                and os.path.abspath(source_path)
-                == os.path.abspath(paths["row_dir"] / "evaluation")
-            ):
+            if bundle.execution_family == "evaluation-matrix" and os.path.abspath(
+                source_path
+            ) == os.path.abspath(paths["row_dir"] / "evaluation"):
                 # Compact products supersede this raw working store. Older
                 # bundles may still declare it, but collection must not create
                 # a second terminal copy.
@@ -417,6 +480,13 @@ class LocalOrchestrationDriver:
         return collected
 
     def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
+        if self.realized_capabilities.facts.teardown is TeardownSemantics.RESOURCES_PRESERVED:
+            return {
+                "driver": "local",
+                "teardown": "skipped",
+                "skip_reason": "realized-capability-preserves-resources",
+                "stopped_rows": [],
+            }
         stopped: list[str] = []
         for row in bundle.rows:
             probe = self.probe(bundle, row, state)
@@ -515,10 +585,7 @@ def _terminal_staged_root_reclamation_allowed(
     if state.stage("STAGE_INPUTS").status != "completed":
         return False
     if row_statuses == {"completed"}:
-        if any(
-            state.stage(stage_id).status != "completed"
-            for stage_id in ("COLLECT", "CERTIFY")
-        ):
+        if any(state.stage(stage_id).status != "completed" for stage_id in ("COLLECT", "CERTIFY")):
             return False
     elif state.stage("COLLECT").status not in {"completed", "failed"}:
         return False
@@ -536,9 +603,7 @@ def _reclaim_successful_evaluation_stores(
     """Reclaim raw evaluation stores after their compact terminal custody is certified."""
     if bundle.execution_family != "evaluation-matrix":
         return []
-    completed_rows = [
-        row for row in bundle.rows if state.rows.get(row.row_id, None) is not None
-    ]
+    completed_rows = [row for row in bundle.rows if state.rows.get(row.row_id, None) is not None]
     if (
         len(completed_rows) != len(bundle.rows)
         or any(state.rows[row.row_id].status != "completed" for row in completed_rows)
@@ -659,10 +724,9 @@ def _verify_successful_evaluation_terminal_custody(
         raise LocalDriverError(
             "evaluation reclamation requires a valid passing certificate"
         ) from exc
-    if (
-        certificate.run_set_id != bundle.run_set_id
-        or set(certificate.rows) != {row.row_id for row in bundle.rows}
-    ):
+    if certificate.run_set_id != bundle.run_set_id or set(certificate.rows) != {
+        row.row_id for row in bundle.rows
+    }:
         raise LocalDriverError("evaluation reclamation certificate authority drifted")
 
 
@@ -709,9 +773,7 @@ def _reclaim_successful_evaluation_store(
         )
     record: dict[str, Any] | None = None
     if record_path.is_symlink():
-        raise LocalDriverError(
-            f"raw evaluation reclamation record is unsafe for {row.row_id!r}"
-        )
+        raise LocalDriverError(f"raw evaluation reclamation record is unsafe for {row.row_id!r}")
     if record_path.is_file():
         try:
             loaded = json.loads(record_path.read_text(encoding="utf-8"))
@@ -733,9 +795,7 @@ def _reclaim_successful_evaluation_store(
             or not isinstance(record.get("reclaimed_bytes"), int)
             or record["reclaimed_bytes"] < 0
         ):
-            raise LocalDriverError(
-                f"raw evaluation reclamation record drifted for {row.row_id!r}"
-            )
+            raise LocalDriverError(f"raw evaluation reclamation record drifted for {row.row_id!r}")
         if record["status"] == "completed":
             if os.path.lexists(raw_root) or os.path.lexists(isolated):
                 raise LocalDriverError(
@@ -808,9 +868,7 @@ def _atomic_write_local_json(path: Path, payload: Mapping[str, Any]) -> None:
         os.replace(temporary, path)
         directory_fd = os.open(
             path.parent,
-            os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
         )
         try:
             os.fsync(directory_fd)
@@ -850,9 +908,7 @@ def _terminate_process_group(
         try:
             process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired as exc:
-            raise LocalDriverError(
-                f"local row process group {pid} did not terminate"
-            ) from exc
+            raise LocalDriverError(f"local row process group {pid} did not terminate") from exc
     deadline = time.monotonic() + timeout_seconds
     while _process_group_alive(pid) and time.monotonic() < deadline:
         time.sleep(0.01)
@@ -1090,3 +1146,54 @@ def _pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def local_driver_registration() -> DriverRegistration:
+    """Return the built-in context-aware local driver registration."""
+
+    def resolve(context: DriverConstructionContext):
+        preserve = context.configuration.get("preserve_owned_resources", False)
+        if not isinstance(preserve, bool):
+            raise TypeError("preserve_owned_resources must be a bool")
+        variant = "local-preserved" if preserve else "local-stop"
+        return LocalOrchestrationDriver.capability_envelope.realize(variant)
+
+    def factory(context: DriverConstructionContext, realized):
+        runtime = context.runtime_bindings
+        if runtime.get("collection_recovery_bindings"):
+            raise ValueError(
+                "local capability variant does not support durable remote collection recovery"
+            )
+        driver = LocalOrchestrationDriver(
+            cwd=runtime.get("cwd"),
+            python_executable=_optional_runtime_string(runtime, "python_executable"),
+            freeze_lines=runtime.get("freeze_lines"),
+            input_provider_bindings=runtime.get("input_provider_bindings", ()),
+            staged_root_bindings=runtime.get("staged_root_bindings", ()),
+            update_budget=_optional_runtime_int(runtime, "native_update_budget"),
+            realized_capabilities=realized,
+        )
+        if driver.realized_capabilities != realized:
+            raise ValueError("local driver factory received inconsistent realized capabilities")
+        return driver
+
+    return DriverRegistration(
+        name="local",
+        supported_capabilities=LocalOrchestrationDriver.capability_envelope,
+        resolve_capabilities=resolve,
+        factory=factory,
+    )
+
+
+def _optional_runtime_string(runtime: Mapping[str, object], key: str) -> str | None:
+    value = runtime.get(key)
+    if value is not None and not isinstance(value, str):
+        raise TypeError(f"local driver runtime binding {key!r} must be a string")
+    return value
+
+
+def _optional_runtime_int(runtime: Mapping[str, object], key: str) -> int | None:
+    value = runtime.get(key)
+    if value is not None and not isinstance(value, int):
+        raise TypeError(f"local driver runtime binding {key!r} must be an integer")
+    return value

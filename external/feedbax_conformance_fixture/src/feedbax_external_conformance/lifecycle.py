@@ -27,15 +27,15 @@ from feedbax.orchestration import (
     DeploymentPolicy,
     EnvironmentDeclaration,
     LaunchPolicy,
-    LocalOrchestrationDriver,
     RowLaunchSpec,
     RunAssemblyRequest,
-    RunBundle,
     RunSetStateStore,
     SchemaArtifactRef,
     StageEngine,
 )
+from feedbax.orchestration.drivers import DriverConstructionContext
 from feedbax.orchestration.revision import resolve_feedbax_revision
+from feedbax.plugins.application import new_application_registry_bundle
 
 
 _COMPILER_ID = "feedbax-external-conformance.local-lifecycle"
@@ -126,10 +126,13 @@ def _request(root: Path) -> tuple[RunAssemblyRequest, AssemblyContext, AssemblyC
     return request, AssemblyContext(custody_root=root / "custody"), registry
 
 
-def _driver(root: Path, _bundle: RunBundle) -> LocalOrchestrationDriver:
-    return LocalOrchestrationDriver(
-        cwd=root,
-        python_executable=sys.executable,
+def _driver_context(root: Path, bundle: object) -> DriverConstructionContext:
+    return DriverConstructionContext(
+        configuration={"bundle": bundle},
+        runtime_bindings={
+            "cwd": str(root),
+            "python_executable": sys.executable,
+        },
     )
 
 
@@ -147,11 +150,13 @@ def check_public_lifecycle_recovery() -> bool:
                 )
             }
         )
+        registries = new_application_registry_bundle(local_component_source=None)
         initial_engine = StageEngine.from_request(
             request,
             context=context,
             registry=registry,
-            driver_factory=lambda bundle: _driver(root, bundle),
+            driver_registry=registries.drivers,
+            driver_context=lambda bundle: _driver_context(root, bundle),
             run_set_id=_RUN_SET_ID,
             store=store,
             conformance_registry=checks,
@@ -183,7 +188,8 @@ def check_public_lifecycle_recovery() -> bool:
             request,
             context=context,
             registry=registry,
-            driver_factory=lambda bundle: _driver(root, bundle),
+            driver_registry=registries.drivers,
+            driver_context=lambda bundle: _driver_context(root, bundle),
             run_set_id=_RUN_SET_ID,
             store=store,
             conformance_registry=checks,

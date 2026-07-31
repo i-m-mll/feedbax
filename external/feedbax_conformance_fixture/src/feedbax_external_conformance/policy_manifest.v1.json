@@ -10,60 +10,127 @@
   "guaranteed_rows": [
     {
       "row_id": "plugin-bootstrap",
-      "case_ids": ["unified_plugin_bootstrap"],
+      "case_ids": [
+        "unified_plugin_bootstrap"
+      ],
       "schemas": {
-        "current": ["feedbax.plugin.declaration.v2"],
+        "current": [
+          "feedbax.plugin.declaration.v2"
+        ],
         "migrated": [],
-        "rejected": ["feedbax.plugin.declaration.v1"]
+        "rejected": [
+          "feedbax.plugin.declaration.v1"
+        ]
+      },
+      "coverage_status": "covered"
+    },
+    {
+      "row_id": "orchestration-driver",
+      "case_ids": [
+        "external_driver_plugin"
+      ],
+      "schemas": {
+        "current": [
+          "feedbax.orchestration.driver-capabilities version 3",
+          "feedbax.spec.deployment_policy.v2",
+          "feedbax.spec.run_assembly_request.v6",
+          "feedbax.orchestration.run_bundle.v12"
+        ],
+        "migrated": [
+          "feedbax.spec.deployment_policy.v1",
+          "feedbax.spec.run_assembly_request.v5",
+          "feedbax.orchestration.run_bundle.v11"
+        ],
+        "rejected": [
+          "feedbax.orchestration.driver-capabilities version 1",
+          "feedbax.orchestration.driver-capabilities version 2",
+          "older unsupported request and bundle versions",
+          "unknown"
+        ]
       },
       "coverage_status": "covered"
     },
     {
       "row_id": "ordered-lowering",
-      "case_ids": ["ordered_registration"],
-      "schemas": {"current": [], "migrated": [], "rejected": []},
+      "case_ids": [
+        "ordered_registration"
+      ],
+      "schemas": {
+        "current": [],
+        "migrated": [],
+        "rejected": []
+      },
       "coverage_status": "covered"
     },
     {
       "row_id": "component-registration",
-      "case_ids": ["component_registration_and_migration", "dynamic_component_ports"],
-      "schemas": {"current": [], "migrated": [], "rejected": []},
+      "case_ids": [
+        "component_registration_and_migration",
+        "dynamic_component_ports"
+      ],
+      "schemas": {
+        "current": [],
+        "migrated": [],
+        "rejected": []
+      },
       "coverage_status": "covered"
     },
     {
       "row_id": "structured-migrations",
-      "case_ids": ["component_registration_and_migration", "component_param_array_values"],
-      "schemas": {"current": [], "migrated": [], "rejected": []},
+      "case_ids": [
+        "component_registration_and_migration",
+        "component_param_array_values"
+      ],
+      "schemas": {
+        "current": [],
+        "migrated": [],
+        "rejected": []
+      },
       "coverage_status": "covered"
     },
     {
       "row_id": "graph-spec",
-      "case_ids": ["component_param_array_values"],
+      "case_ids": [
+        "component_param_array_values"
+      ],
       "schemas": {
-        "current": ["feedbax.spec.graph.v5"],
+        "current": [
+          "feedbax.spec.graph.v5"
+        ],
         "migrated": [
           "1.0.0",
           "feedbax.spec.graph.v2",
           "feedbax.spec.graph.v3",
           "feedbax.spec.graph.v4"
         ],
-        "rejected": ["unknown"]
+        "rejected": [
+          "unknown"
+        ]
       },
       "coverage_status": "covered"
     },
     {
       "row_id": "value-identity",
-      "case_ids": ["value_identity"],
+      "case_ids": [
+        "value_identity"
+      ],
       "schemas": {
-        "current": ["feedbax.value_identity.v1"],
+        "current": [
+          "feedbax.value_identity.v1"
+        ],
         "migrated": [],
-        "rejected": ["feedbax.value_identity.v0", "unknown"]
+        "rejected": [
+          "feedbax.value_identity.v0",
+          "unknown"
+        ]
       },
       "coverage_status": "covered"
     },
     {
       "row_id": "material-admission",
-      "case_ids": ["material_dependencies"],
+      "case_ids": [
+        "material_dependencies"
+      ],
       "schemas": {
         "current": [
           "feedbax.spec.material_dependencies.v1",
@@ -82,32 +149,83 @@
       "row_id": "terminal-certification",
       "case_ids": [],
       "schemas": {
-        "current": ["feedbax.manifest.training_run_certification.v1"],
-        "migrated": ["absent completed", "absent cancelled"],
-        "rejected": ["feedbax.manifest.training_run_certification.v0", "absent failed"]
+        "current": [
+          "feedbax.manifest.training_run_certification.v1"
+        ],
+        "migrated": [
+          "absent completed",
+          "absent cancelled"
+        ],
+        "rejected": [
+          "feedbax.manifest.training_run_certification.v0",
+          "absent failed"
+        ]
+      },
+      "coverage_status": "pending-final-sync"
+    },
+    {
+      "row_id": "custody-persistence",
+      "case_ids": [],
+      "schemas": {
+        "current": [],
+        "migrated": [],
+        "rejected": []
+      },
+      "coverage_status": "pending-final-sync"
+    },
+    {
+      "row_id": "emergency-persistence",
+      "case_ids": [],
+      "schemas": {
+        "current": [],
+        "migrated": [],
+        "rejected": []
+      },
+      "coverage_status": "pending-final-sync"
+    },
+    {
+      "row_id": "result-role-binding",
+      "case_ids": [],
+      "schemas": {
+        "current": [],
+        "migrated": [],
+        "rejected": []
       },
       "coverage_status": "pending-final-sync"
     },
     {
       "row_id": "array-values",
-      "case_ids": ["component_param_array_values"],
+      "case_ids": [
+        "component_param_array_values"
+      ],
       "schemas": {
-        "current": ["feedbax.spec.component_param.array_value.v1"],
+        "current": [
+          "feedbax.spec.component_param.array_value.v1"
+        ],
         "migrated": [],
-        "rejected": ["partial tags", "unknown"]
+        "rejected": [
+          "partial tags",
+          "unknown"
+        ]
       },
       "coverage_status": "covered"
     },
     {
       "row_id": "dynamic-component-definition",
-      "case_ids": ["dynamic_component_ports"],
+      "case_ids": [
+        "dynamic_component_ports"
+      ],
       "schemas": {
-        "current": ["feedbax.spec.component_definition.v3"],
+        "current": [
+          "feedbax.spec.component_definition.v3"
+        ],
         "migrated": [
           "feedbax.spec.component_definition.v1",
           "feedbax.spec.component_definition.v2"
         ],
-        "rejected": ["unknown"]
+        "rejected": [
+          "unknown"
+        ]
       },
       "coverage_status": "covered"
     }
