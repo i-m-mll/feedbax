@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Mapping, Optional
+from collections.abc import Mapping, Sequence
+from string import Formatter
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -101,6 +103,10 @@ class PortTypeSpec(BaseModel):
     outputs: Dict[str, PortType] = Field(default_factory=dict)
 
 
+class DynamicPortPolicyError(ValueError):
+    """Raised when a dynamic-port policy cannot produce an unambiguous layout."""
+
+
 class DynamicPortPolicy(BaseModel):
     """Declarative policy for ports whose arity is derived from parameters."""
 
@@ -109,21 +115,35 @@ class DynamicPortPolicy(BaseModel):
     count_param: str = Field(min_length=1)
     count_mode: Literal["integer", "sequence_length"]
     direction: Literal["input", "output"]
-    fixed_input_ports: List[str] = Field(default_factory=list)
-    fixed_output_ports: List[str] = Field(default_factory=list)
+    fixed_input_ports: tuple[str, ...] = ()
+    fixed_output_ports: tuple[str, ...] = ()
     generated_name_template: str = Field(min_length=1)
     generated_index_origin: int = 0
     minimum_count: int = Field(default=1, ge=0)
     dynamic_port_type: PortType
 
     @model_validator(mode="after")
-    def validate_generated_name_template(self) -> "DynamicPortPolicy":
-        if "{index}" not in self.generated_name_template:
-            raise ValueError("generated_name_template must contain '{index}'")
+    def validate_port_namespace(self) -> "DynamicPortPolicy":
+        _validate_fixed_port_names(self.fixed_input_ports, direction="input")
+        _validate_fixed_port_names(self.fixed_output_ports, direction="output")
+        template = self.generated_name_template
+        non_tokens = template.replace("{index}", "")
+        if "{" in non_tokens or "}" in non_tokens:
+            raise ValueError(_INVALID_GENERATED_NAME_TEMPLATE)
         try:
-            self.generated_name_template.format(index=self.generated_index_origin)
-        except (IndexError, KeyError, ValueError) as exc:
-            raise ValueError("generated_name_template may only format the index field") from exc
+            parsed = tuple(Formatter().parse(template))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(_INVALID_GENERATED_NAME_TEMPLATE) from exc
+        fields = [
+            (field_name, format_spec, conversion)
+            for _literal, field_name, format_spec, conversion in parsed
+            if field_name is not None
+        ]
+        if not fields or any(
+            field_name != "index" or format_spec != "" or conversion is not None
+            for field_name, format_spec, conversion in fields
+        ):
+            raise ValueError(_INVALID_GENERATED_NAME_TEMPLATE)
         return self
 
 
@@ -132,8 +152,28 @@ class DynamicPortLayout(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    input_ports: List[str]
-    output_ports: List[str]
+    input_ports: tuple[str, ...]
+    output_ports: tuple[str, ...]
+
+
+_INVALID_GENERATED_NAME_TEMPLATE = (
+    "generated_name_template must contain only unformatted '{index}' replacement fields"
+)
+
+
+def _validate_fixed_port_names(names: Sequence[str], *, direction: str) -> None:
+    if any(not name for name in names):
+        raise ValueError(f"fixed {direction} port names must be non-empty")
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ValueError(f"fixed {direction} port names must be unique: {duplicates!r}")
+
+
+def _format_generated_port_name(policy: DynamicPortPolicy, index: int) -> str:
+    try:
+        return policy.generated_name_template.format(index=index)
+    except Exception as exc:
+        raise DynamicPortPolicyError(_INVALID_GENERATED_NAME_TEMPLATE) from exc
 
 
 def derive_dynamic_port_count(
@@ -143,18 +183,22 @@ def derive_dynamic_port_count(
     """Derive and validate a dynamic port count without component-type branching."""
 
     if policy.count_param not in params:
-        raise ValueError(f"missing dynamic-port parameter {policy.count_param!r}")
+        raise DynamicPortPolicyError(f"missing dynamic-port parameter {policy.count_param!r}")
     value = params[policy.count_param]
     if policy.count_mode == "integer":
         if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError(f"dynamic-port parameter {policy.count_param!r} must be an integer")
+            raise DynamicPortPolicyError(
+                f"dynamic-port parameter {policy.count_param!r} must be an integer"
+            )
         count = value
     else:
         if not isinstance(value, (list, tuple)):
-            raise ValueError(f"dynamic-port parameter {policy.count_param!r} must be a sequence")
+            raise DynamicPortPolicyError(
+                f"dynamic-port parameter {policy.count_param!r} must be a sequence"
+            )
         count = len(value)
     if count < policy.minimum_count:
-        raise ValueError(
+        raise DynamicPortPolicyError(
             f"dynamic-port parameter {policy.count_param!r} derives {count} ports; "
             f"minimum is {policy.minimum_count}"
         )
@@ -168,16 +212,32 @@ def derive_dynamic_port_layout(
     """Derive the complete port layout declared by ``policy``."""
 
     count = derive_dynamic_port_count(policy, params)
-    generated = [
-        policy.generated_name_template.format(index=policy.generated_index_origin + offset)
+    generated = tuple(
+        _format_generated_port_name(policy, policy.generated_index_origin + offset)
         for offset in range(count)
-    ]
-    input_ports = list(policy.fixed_input_ports)
-    output_ports = list(policy.fixed_output_ports)
+    )
+    if any(not name for name in generated):
+        raise DynamicPortPolicyError("generated dynamic port names must be non-empty")
+    duplicate_generated = sorted({name for name in generated if generated.count(name) > 1})
+    if duplicate_generated:
+        raise DynamicPortPolicyError(
+            f"generated dynamic port names must be unique: {duplicate_generated!r}"
+        )
+    fixed_names = (
+        policy.fixed_input_ports if policy.direction == "input" else policy.fixed_output_ports
+    )
+    collisions = sorted(set(generated).intersection(fixed_names))
+    if collisions:
+        raise DynamicPortPolicyError(
+            f"generated dynamic port names collide with fixed {policy.direction} ports: "
+            f"{collisions!r}"
+        )
+    input_ports = policy.fixed_input_ports
+    output_ports = policy.fixed_output_ports
     if policy.direction == "input":
-        input_ports.extend(generated)
+        input_ports = (*input_ports, *generated)
     else:
-        output_ports.extend(generated)
+        output_ports = (*output_ports, *generated)
     return DynamicPortLayout(input_ports=input_ports, output_ports=output_ports)
 
 
@@ -185,16 +245,18 @@ def validate_dynamic_port_layout(
     policy: DynamicPortPolicy,
     params: Mapping[str, Any],
     *,
-    input_ports: List[str],
-    output_ports: List[str],
+    input_ports: Sequence[str],
+    output_ports: Sequence[str],
 ) -> DynamicPortLayout:
     """Return the expected layout or fail when declared ports do not match it."""
 
     expected = derive_dynamic_port_layout(policy, params)
-    if input_ports != expected.input_ports or output_ports != expected.output_ports:
-        raise ValueError(
+    declared_inputs = tuple(input_ports)
+    declared_outputs = tuple(output_ports)
+    if declared_inputs != expected.input_ports or declared_outputs != expected.output_ports:
+        raise DynamicPortPolicyError(
             "dynamic port layout mismatch: "
-            f"declared inputs={input_ports!r}, outputs={output_ports!r}; "
+            f"declared inputs={declared_inputs!r}, outputs={declared_outputs!r}; "
             f"expected inputs={expected.input_ports!r}, outputs={expected.output_ports!r}"
         )
     return expected
