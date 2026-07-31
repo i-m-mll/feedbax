@@ -18,6 +18,7 @@ from .cases import (
     check_material_dependencies,
     check_ordered_registration,
     check_resolved_evaluation_row_projection,
+    check_unified_plugin_bootstrap,
     check_value_identity,
 )
 from .lifecycle import check_public_lifecycle_recovery
@@ -99,9 +100,12 @@ def run_fixture(*, source_root: Path | None = None) -> ConformanceResult:
     _require_noneditable_distribution("feedbax")
     _require_noneditable_distribution("feedbax-external-conformance")
     _require_no_private_feedbax_imports(fixture_root)
+    if "feedbax_external_conformance.plugin" in sys.modules:
+        raise AssertionError("fixture plugin entry point loaded before explicit discovery")
 
     cases = {
         "ordered_registration": check_ordered_registration(),
+        "unified_plugin_bootstrap": check_unified_plugin_bootstrap(),
         "component_registration_and_migration": check_component_registration_and_migration(),
         "value_identity": check_value_identity(),
         "component_param_array_values": check_component_param_array_values(),

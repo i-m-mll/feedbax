@@ -11,7 +11,8 @@ RESULT_SCHEMA_ID = "feedbax.external_conformance.result"
 _RESULT_SCHEMA_VERSION_V1 = f"{RESULT_SCHEMA_ID}.v1"
 RESULT_SCHEMA_VERSION_V2 = f"{RESULT_SCHEMA_ID}.v2"
 RESULT_SCHEMA_VERSION_V7 = f"{RESULT_SCHEMA_ID}.v7"
-RESULT_SCHEMA_VERSION = f"{RESULT_SCHEMA_ID}.v8"
+RESULT_SCHEMA_VERSION_V8 = f"{RESULT_SCHEMA_ID}.v8"
+RESULT_SCHEMA_VERSION = f"{RESULT_SCHEMA_ID}.v9"
 REJECTED_UNSHIPPED_SCHEMA_VERSIONS = (
     f"{RESULT_SCHEMA_ID}.v3",
     f"{RESULT_SCHEMA_ID}.v4",
@@ -29,6 +30,7 @@ V2_REQUIRED_CASE_IDS = (
 V2_REQUIRED_CASE_ID_SET = frozenset(V2_REQUIRED_CASE_IDS)
 REQUIRED_CASE_IDS = (
     "ordered_registration",
+    "unified_plugin_bootstrap",
     "component_registration_and_migration",
     "value_identity",
     "component_param_array_values",
@@ -53,6 +55,7 @@ RESULT_SCHEMA_MIGRATION_TABLE = {
     RESULT_SCHEMA_VERSION_V7: (
         "reject; shipped v7 contains no component_param_array_values evidence"
     ),
+    RESULT_SCHEMA_VERSION_V8: ("reject; shipped v8 contains no unified_plugin_bootstrap evidence"),
 }
 
 
@@ -80,7 +83,7 @@ class ConformanceResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_id: Literal["feedbax.external_conformance.result"] = RESULT_SCHEMA_ID
-    schema_version: Literal["feedbax.external_conformance.result.v8"] = RESULT_SCHEMA_VERSION
+    schema_version: Literal["feedbax.external_conformance.result.v9"] = RESULT_SCHEMA_VERSION
     status: Literal["pass", "blocked"]
     feedbax_version: str = Field(min_length=1)
     feedbax_install_root: str = Field(min_length=1)
@@ -94,7 +97,7 @@ class ConformanceResult(BaseModel):
         observed = frozenset(self.cases)
         if observed != REQUIRED_CASE_ID_SET:
             raise ValueError(
-                "external conformance cases must exactly match the v8 contract: "
+                "external conformance cases must exactly match the v9 contract: "
                 f"missing={sorted(REQUIRED_CASE_ID_SET - observed)!r}, "
                 f"extra={sorted(observed - REQUIRED_CASE_ID_SET)!r}"
             )
@@ -110,7 +113,7 @@ class ConformanceResult(BaseModel):
 
 
 def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResult:
-    """Load v8 while preserving v2 and rejecting older incomplete evidence."""
+    """Load v9 while preserving explicit decisions for older incomplete evidence."""
 
     if isinstance(payload, ConformanceResult):
         return ConformanceResult.model_validate(payload.model_dump(mode="json"))
@@ -131,9 +134,9 @@ def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResul
         version = RESULT_SCHEMA_VERSION_V2
     if version == RESULT_SCHEMA_VERSION_V2:
         raise ValueError(
-            "external conformance result v2 cannot migrate to v8: protected v2 "
-            "contains neither resolved_evaluation_row_projection nor "
-            "component_param_array_values evidence"
+            "external conformance result v2 cannot migrate to v9: protected v2 "
+            "contains neither resolved_evaluation_row_projection, "
+            "component_param_array_values, nor unified_plugin_bootstrap evidence"
         )
     if version in REJECTED_UNSHIPPED_SCHEMA_VERSIONS:
         raise ValueError(
@@ -142,8 +145,13 @@ def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResul
         )
     if version == RESULT_SCHEMA_VERSION_V7:
         raise ValueError(
-            "external conformance result v7 cannot migrate to v8: v7 contains no "
+            "external conformance result v7 cannot migrate to v9: v7 contains no "
             "component_param_array_values evidence"
+        )
+    if version == RESULT_SCHEMA_VERSION_V8:
+        raise ValueError(
+            "external conformance result v8 cannot migrate to v9: v8 contains no "
+            "unified_plugin_bootstrap evidence"
         )
     if version != RESULT_SCHEMA_VERSION:
         raise ValueError(
@@ -164,6 +172,7 @@ __all__ = [
     "RESULT_SCHEMA_VERSION",
     "RESULT_SCHEMA_VERSION_V2",
     "RESULT_SCHEMA_VERSION_V7",
+    "RESULT_SCHEMA_VERSION_V8",
     "V2_REQUIRED_CASE_IDS",
     "V2_REQUIRED_CASE_ID_SET",
     "load_result",

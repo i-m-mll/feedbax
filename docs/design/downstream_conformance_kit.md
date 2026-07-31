@@ -66,15 +66,27 @@ lifecycle child is separately fixed and asserted as a print-only Python
 command.
 
 The versioned machine result is
-`feedbax.external_conformance.result.v8`. V2 remains the frozen exact six-case
+`feedbax.external_conformance.result.v9`. V2 remains the frozen exact six-case
 foundation and rejects because it contains neither current projection nor
-component-param array-value evidence. V1 can be deterministically
+component-param array-value or unified-bootstrap evidence. V1 can be deterministically
 normalized to v2 by adding separate unbound `current` and `minimum` protocol
 role slots, then rejects for the same missing evidence. Intervening unshipped
 v3-v6 results reject explicitly; they are not reinterpreted as proof of the
 narrowed v7 resolver contract. Shipped v7 also rejects for missing array-value
-evidence. Only the protected v2 and current v8 case sets are maintained. The
-role slots remain None-only until the owner-ratified policy exists.
+evidence. Shipped v8 rejects for missing `unified_plugin_bootstrap` evidence.
+Only the protected v2 and current v9 case sets are maintained. The role slots
+remain None-only until the owner-ratified policy exists.
+
+The v9 `unified_plugin_bootstrap` case discovers two typed registrations from
+the non-editable fixture wheel through the sole `feedbax.plugins` entry-point
+group. A fixture-owned `RegistryKey` extends the application bundle without a
+loader edit. Reversed discovery inputs still execute in declared dependency
+order; provenance attributes each registered key to the installed distribution;
+fresh contexts remain isolated after the entry-point module is cached; published
+registries are sealed; and partial failure, namespace collision, missing
+dependency, and registrar-only legacy values reject with typed errors without
+publishing state. Importing Feedbax or the fixture does not load the entry-point
+module; discovery remains an explicit bootstrap action.
 
 The evaluation-row case uses only public clean-wheel imports. It resolves
 durable states through `resolve_analysis_inputs`, receives an exact
