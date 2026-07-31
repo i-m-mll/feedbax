@@ -168,10 +168,10 @@ from .evaluation_compaction import (
 )
 from .evaluation_product_union import (
     EvaluationCompactProductUnionBinding,
+    EvaluationCompactProductUnionFinalizerRegistry,
     EvaluationCompactProductUnionInput,
     EvaluationCompactProductUnionValue,
     finalize_evaluation_compact_product_union,
-    register_evaluation_compact_product_union_finalizer,
 )
 from feedbax.contracts.manifest import EvaluationParamsBase, StagedEvaluationPrerequisite
 from .evaluation_inputs import (
@@ -267,6 +267,7 @@ __all__ = [
     "EvaluationStateIdentityMismatch",
     "EvaluationStateProvenance",
     "EvaluationCompactProductUnionBinding",
+    "EvaluationCompactProductUnionFinalizerRegistry",
     "EvaluationCompactProductUnionInput",
     "EvaluationCompactProductUnionValue",
     "compile_evaluation_run_matrix",
@@ -368,7 +369,6 @@ __all__ = [
     "materialization_metadata",
     "materialize_evaluation_run_matrix",
     "project_evaluation_rows",
-    "register_evaluation_compact_product_union_finalizer",
     "read_json_payload",
     "resolve_evaluation_inputs",
     "resolve_analysis_inputs",
