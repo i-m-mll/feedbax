@@ -10,8 +10,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-import httpx
-
 from feedbax.orchestration.bundle import RunBundle, RunRowSpec
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.studio_training import StudioTrainingAssemblySpec
@@ -100,6 +98,8 @@ class WorkerHttpDriver:
         row: RunRowSpec,
         state: RunSetState,
     ) -> Mapping[str, Any]:
+        import httpx
+
         del state
         paths = _row_paths(bundle, row.row_id)
         if paths["done"].exists():
@@ -129,6 +129,8 @@ class WorkerHttpDriver:
         row: RunRowSpec,
         state: RunSetState,
     ) -> DriverRowProbe:
+        import httpx
+
         del state
         paths = _row_paths(bundle, row.row_id)
         if paths["done"].exists():
@@ -168,6 +170,8 @@ class WorkerHttpDriver:
         row: RunRowSpec,
         state: RunSetState,
     ) -> Mapping[str, Any]:
+        import httpx
+
         del state
         try:
             httpx.post(
@@ -219,6 +223,8 @@ class WorkerHttpDriver:
         thread.start()
 
     def _stream_row_events(self, bundle: RunBundle, row: RunRowSpec) -> None:
+        import httpx
+
         paths = _row_paths(bundle, row.row_id)
         try:
             with httpx.stream(
