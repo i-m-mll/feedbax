@@ -95,7 +95,7 @@ def _child(parent_sha: str, *, layer_id: str = "continuous") -> dict[str, Any]:
 
 
 def test_matrix_level_delta_flattens_and_compiles_without_restating_parent(
-    tmp_path: Path,
+    tmp_path: Path, application_registry_bundle
 ) -> None:
     parent_sha = _write(tmp_path, "parent.json", _parent())
     child = _child(parent_sha)
@@ -110,8 +110,10 @@ def test_matrix_level_delta_flattens_and_compiles_without_restating_parent(
             resolved_inputs=(),
             training_row_lowering_context=None,
         ),
+        method_registry=application_registry_bundle.training_methods,
         allow_inline_base=True,
         row_validator=lambda _payload, _row_id: None,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
     )
 
     assert set(child) == {"schema_id", "schema_version", "parent", "deltas"}
@@ -224,7 +226,7 @@ def test_repeated_parent_document_is_rejected_as_a_cycle(
 
 
 def test_assembly_dispatch_retains_delta_artifact_and_authored_identity(
-    tmp_path: Path,
+    tmp_path: Path, application_registry_bundle
 ) -> None:
     parent_sha = _write(tmp_path, "parent.json", _parent())
     child = _child(parent_sha)
@@ -256,8 +258,10 @@ def test_assembly_dispatch_retains_delta_artifact_and_authored_identity(
     registry = AssemblyCompilerRegistry()
     register_training_run_matrix_compiler(
         registry,
+        method_registry=application_registry_bundle.training_methods,
         allow_inline_base=True,
         row_validator=lambda _payload, _row_id: None,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
     )
 
     bundle = assemble_run_bundle(
@@ -294,7 +298,7 @@ def test_assembly_dispatch_retains_delta_artifact_and_authored_identity(
 
 
 def test_public_emitter_and_schema_discovery_preserve_delta_authority(
-    tmp_path: Path,
+    tmp_path: Path, application_registry_bundle
 ) -> None:
     parent_sha = _write(tmp_path, "parent.json", _parent())
     child = _child(parent_sha)
@@ -309,8 +313,10 @@ def test_public_emitter_and_schema_discovery_preserve_delta_authority(
         custody_root=tmp_path / "custody",
         materializer_commit="abc",
         dependency_lock_path=lock,
+        method_registry=application_registry_bundle.training_methods,
         allow_inline_base=True,
         row_validator=lambda _payload, _row_id: None,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
     )
 
     assert json.loads(authored_path.read_text(encoding="utf-8")) == (

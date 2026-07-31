@@ -162,7 +162,9 @@ def test_product_identity_hash_covers_semantic_envelope_not_mutable_uri_or_label
     assert changed_semantics.product_identity_hash != product.product_identity_hash
 
 
-def test_analysis_data_product_requirement_validates_resolved_manifest_success() -> None:
+def test_analysis_data_product_requirement_validates_resolved_manifest_success(
+    application_registry_bundle,
+) -> None:
     product = _product()
     requirement = _requirement(product_identity_hash=product.product_identity_hash)
 
@@ -174,12 +176,16 @@ def test_analysis_data_product_requirement_validates_resolved_manifest_success()
                 "produced_data": [product.model_dump(mode="json", exclude_none=True)],
             }
         ],
+        component_registry=application_registry_bundle.components,
+        analysis_registry=application_registry_bundle.analysis_recipes,
     )
 
     assert result.valid is True
 
 
-def test_context_recorded_product_satisfies_public_consumer_requirement(tmp_path) -> None:
+def test_context_recorded_product_satisfies_public_consumer_requirement(
+    tmp_path, application_registry_bundle
+) -> None:
     context = AnalysisRunContext(
         spec=AnalysisRunSpec(analysis_type="downstream.scalar_projection"),
         root=tmp_path,
@@ -218,6 +224,8 @@ def test_context_recorded_product_satisfies_public_consumer_requirement(tmp_path
             ],
         },
         resolved_manifests=[manifest.model_dump(mode="json", exclude_none=True)],
+        component_registry=application_registry_bundle.components,
+        analysis_registry=application_registry_bundle.analysis_recipes,
     )
 
     assert result.valid is True
@@ -248,7 +256,9 @@ def test_context_recorded_product_satisfies_public_consumer_requirement(tmp_path
         ),
     ],
 )
-def test_named_negative_fixtures_fail_closed(name, product, expected_class) -> None:
+def test_named_negative_fixtures_fail_closed(
+    name, product, expected_class, application_registry_bundle
+) -> None:
     result = validate_analysis_spec(
         _analysis_payload(_requirement()),
         resolved_manifests=[
@@ -257,6 +267,8 @@ def test_named_negative_fixtures_fail_closed(name, product, expected_class) -> N
                 "produced_data": [product.model_dump(mode="json", exclude_none=True)],
             }
         ],
+        component_registry=application_registry_bundle.components,
+        analysis_registry=application_registry_bundle.analysis_recipes,
     )
 
     assert name
@@ -266,8 +278,15 @@ def test_named_negative_fixtures_fail_closed(name, product, expected_class) -> N
     assert result.errors[0].details["mismatch_class"] == expected_class
 
 
-def test_data_product_requirement_fails_closed_for_absence_and_incompatibility() -> None:
-    missing = validate_analysis_spec(_analysis_payload(_requirement()), resolved_manifests=[])
+def test_data_product_requirement_fails_closed_for_absence_and_incompatibility(
+    application_registry_bundle,
+) -> None:
+    missing = validate_analysis_spec(
+        _analysis_payload(_requirement()),
+        resolved_manifests=[],
+        component_registry=application_registry_bundle.components,
+        analysis_registry=application_registry_bundle.analysis_recipes,
+    )
     assert missing.valid is False
     assert missing.errors[0].type == "analysis_data_product_missing"
     assert missing.errors[0].details["kind"] == "Missing"
@@ -280,12 +299,16 @@ def test_data_product_requirement_fails_closed_for_absence_and_incompatibility()
                 "produced_data": [_product().model_dump(mode="json", exclude_none=True)],
             }
         ],
+        component_registry=application_registry_bundle.components,
+        analysis_registry=application_registry_bundle.analysis_recipes,
     )
     assert incompatible.valid is False
     assert incompatible.errors[0].details["mismatch_class"] == "artifact-byte-hash"
 
 
-def test_data_product_schema_version_range_and_old_version_rejection() -> None:
+def test_data_product_schema_version_range_and_old_version_rejection(
+    application_registry_bundle,
+) -> None:
     requirement = _requirement(
         exact_product_schema_version=None,
         min_product_schema_version="rlrmp.controller_feedback_scales.v1",
@@ -299,6 +322,8 @@ def test_data_product_schema_version_range_and_old_version_rejection() -> None:
                 "produced_data": [_product().model_dump(mode="json", exclude_none=True)],
             }
         ],
+        component_registry=application_registry_bundle.components,
+        analysis_registry=application_registry_bundle.analysis_recipes,
     )
     assert result.valid is True
 
@@ -310,6 +335,8 @@ def test_data_product_schema_version_range_and_old_version_rejection() -> None:
                 "produced_data": [_product().model_dump(mode="json", exclude_none=True)],
             }
         ],
+        component_registry=application_registry_bundle.components,
+        analysis_registry=application_registry_bundle.analysis_recipes,
     )
     assert incompatible.valid is False
     assert incompatible.errors[0].details["mismatch_class"] == "schema-version"

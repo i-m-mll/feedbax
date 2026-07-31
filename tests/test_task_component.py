@@ -343,7 +343,9 @@ def test_delayed_center_out_preset_exposes_timeline_and_catch_metadata():
     )
 
 
-def test_delayed_center_out_task_spec_materializes_from_compact_params():
+def test_delayed_center_out_task_spec_materializes_from_compact_params(
+    application_registry_bundle,
+):
     params = delayed_center_out_reaches_params(
         n_control_stages=8,
         workspace=[[-1.0, -1.0], [1.0, 1.0]],
@@ -351,7 +353,12 @@ def test_delayed_center_out_task_spec_materializes_from_compact_params():
         p_catch_trial=0.0,
     )
 
-    component = build_component("task", "DelayedReaches", params)
+    component = build_component(
+        "task",
+        "DelayedReaches",
+        params,
+        component_registry=application_registry_bundle.components,
+    )
     task = component.task
     trial = component.trial_spec
 
