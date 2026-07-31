@@ -52,6 +52,7 @@ from feedbax.training.checkpoint_custody import (
     _compatible_stored_canonical_projection,
 )
 from tests.test_checkpoint_custody import _minimax_slots, _run_spec
+from tests.checkpoint_minimax_plugin import PLUGIN_MODULE as CHECKPOINT_MINIMAX_PLUGIN
 
 pytestmark = pytest.mark.migration_contract
 
@@ -738,6 +739,7 @@ def test_cli_check_and_write_behaviors(tmp_path: Path, capsys: pytest.CaptureFix
     # --check reports drift and exits nonzero.
     exit_code = feedbax_main.main(
         ["checkpoint", "relock", "--plan", str(plan_path), "--bindings", str(bindings_path),
+         "--plugin", CHECKPOINT_MINIMAX_PLUGIN,
          "--check"]
     )
     assert exit_code == 1
@@ -748,6 +750,7 @@ def test_cli_check_and_write_behaviors(tmp_path: Path, capsys: pytest.CaptureFix
     # --write migrates the plan file in place.
     exit_code = feedbax_main.main(
         ["checkpoint", "relock", "--plan", str(plan_path), "--bindings", str(bindings_path),
+         "--plugin", CHECKPOINT_MINIMAX_PLUGIN,
          "--write", "--historical-evidence", str(evidence_path),
          "--requalification", "re-run rehearsal"]
     )
@@ -764,6 +767,7 @@ def test_cli_check_and_write_behaviors(tmp_path: Path, capsys: pytest.CaptureFix
     # A clean re-check exits zero.
     exit_code = feedbax_main.main(
         ["checkpoint", "relock", "--plan", str(plan_path), "--bindings", str(bindings_path),
+         "--plugin", CHECKPOINT_MINIMAX_PLUGIN,
          "--check"]
     )
     assert exit_code == 0
@@ -773,6 +777,7 @@ def test_cli_check_and_write_behaviors(tmp_path: Path, capsys: pytest.CaptureFix
     with pytest.raises(CheckpointCompatibilityError, match="nothing to migrate"):
         feedbax_main.main(
             ["checkpoint", "relock", "--plan", str(plan_path), "--bindings", str(bindings_path),
+             "--plugin", CHECKPOINT_MINIMAX_PLUGIN,
              "--write", "--requalification", "re-run rehearsal"]
         )
 
@@ -805,6 +810,7 @@ def test_cli_write_refuses_input_drift(tmp_path: Path, capsys: pytest.CaptureFix
     with pytest.raises(CheckpointCompatibilityError, match="input drift"):
         feedbax_main.main(
             ["checkpoint", "relock", "--plan", str(plan_path), "--bindings", str(bindings_path),
+             "--plugin", CHECKPOINT_MINIMAX_PLUGIN,
              "--write", "--historical-evidence", str(evidence_path),
              "--requalification", "re-run rehearsal"]
         )

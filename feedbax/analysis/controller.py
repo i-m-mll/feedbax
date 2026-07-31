@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import jax
 import jax.numpy as jnp
@@ -14,6 +14,9 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 from feedbax.contracts.graph import GraphSpec
 from feedbax.runtime.graph import Graph, GraphTraceRequest
 from feedbax.contracts.graphs.serialization import spec_to_graph
+
+if TYPE_CHECKING:
+    from feedbax.component_registry import ComponentRegistry
 
 GraphInputBuilder = Callable[[PyTree, int], Mapping[str, PyTree]]
 GraphOutputSelector = Callable[[Mapping[str, PyTree]], PyTree]
@@ -178,7 +181,7 @@ def graph_controller(
     graph: Graph | GraphSpec,
     *,
     key: PRNGKeyArray,
-    component_registry: Any | None = None,
+    component_registry: ComponentRegistry | None = None,
     input_port: str = "input",
     output_port: str | None = "output",
     static_inputs: Mapping[str, PyTree] | None = None,
@@ -195,7 +198,15 @@ def graph_controller(
     baking a task schema into the adapter. ``trace`` exposes retained graph
     boundary values through :meth:`GraphControllerAdapter.step_with_trace`.
     """
-    executable = spec_to_graph(graph, component_registry) if isinstance(graph, GraphSpec) else graph
+    if isinstance(graph, GraphSpec):
+        if component_registry is None:
+            raise ValueError(
+                "component_registry is required when graph_controller receives a GraphSpec; "
+                "pass an executable Graph to use the registry-free boundary"
+            )
+        executable = spec_to_graph(graph, component_registry)
+    else:
+        executable = graph
     if input_builder is None and input_port not in executable.input_ports:
         raise ValueError(f"Graph has no external input port {input_port!r}.")
     if output_selector is None and output_port is not None and output_port not in executable.output_ports:
@@ -228,7 +239,7 @@ def feedbax_graph_controller(
     graph: Graph | GraphSpec,
     *,
     key: PRNGKeyArray,
-    component_registry: Any | None = None,
+    component_registry: ComponentRegistry | None = None,
     input_port: str = "input",
     output_port: str | None = "output",
     static_inputs: Mapping[str, PyTree] | None = None,

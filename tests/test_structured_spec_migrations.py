@@ -1711,6 +1711,8 @@ def test_default_policy_matrix_exercises_accept_migrate_or_reject_behavior() -> 
                     payload.update({"mode": "constant", "value": 1, "metadata": {}})
                 if family.kind == "TrainingRunMatrixSpec":
                     payload["base"] = {"inline": {}}
+                if family.kind == "FigureRuntimeBindingSpec":
+                    payload["authored_figure_spec_sha256"] = "a" * 64
                 migrated = default_spec_registry.migrate(
                     family.kind,
                     payload,
