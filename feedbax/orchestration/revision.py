@@ -1,10 +1,20 @@
 """Resolve and enforce the provenance of the Feedbax package currently imported.
 
-``resolve_feedbax_revision``/``assert_feedbax_revision_pin`` are the original,
+``resolve_feedbax_revision``/``assert_feedbax_revision_exact`` are the original,
 already-wired execution-boundary check (Mandible-Issue 3149d58): they resolve the
 Git commit of the checkout that supplied ``import feedbax`` and fail closed on a
-locked-revision mismatch or an unresolvable source. They are kept exactly as
-shipped so existing PREFLIGHT/LAUNCH call sites and their tests are unaffected.
+locked-revision mismatch or an unresolvable source. Their behaviour is exactly as
+shipped, so the PREFLIGHT/LAUNCH call sites and their tests are unaffected.
+
+``assert_feedbax_revision_pin`` is the *authoring-time* half of that gate
+(Mandible-Issue 0c2b295). An authored spec or lock in a downstream science repo
+records the revision it was qualified against; that pin is a well-formedness and
+ancestry statement, not a live identity statement, because the run's actual
+provenance is minted per run set into ``RunBundle.feedbax_revision`` and asserted
+exactly at launch. Authoring-time therefore asserts that the pin is well formed
+and that the locked commit is an ancestor of the installed revision: it still
+fails on a fabricated pin and on a pin from an abandoned branch, but it does not
+fail merely because the dependency moved forward.
 
 ``resolve_feedbax_provenance``/``check_feedbax_provenance`` extend that surface
 (Mandible-Issue 7e7dac8) with working-tree cleanliness and an explicit,
@@ -21,7 +31,7 @@ import os
 import re
 import subprocess
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,6 +51,19 @@ _GIT_ENVIRONMENT = {
 
 class FeedbaxRevisionError(RuntimeError):
     """The loaded Feedbax package cannot satisfy a locked revision pin."""
+
+
+class FeedbaxRevisionAncestryWarning(UserWarning):
+    """Ancestry of a locked revision pin could not be determined either way.
+
+    Raised as a warning rather than an error because the authoring-time check is
+    advisory by construction: exact, fail-closed enforcement of the revision a
+    run actually executed against lives at the launch boundary, against the
+    per-run-set ``RunBundle.feedbax_revision``. Callers who want the
+    undeterminable case to be fatal can promote it with
+    ``warnings.simplefilter("error", FeedbaxRevisionAncestryWarning)`` or
+    ``-W error::feedbax.orchestration.revision.FeedbaxRevisionAncestryWarning``.
+    """
 
 
 def _feedbax_package_root() -> Path:
@@ -74,8 +97,14 @@ def resolve_feedbax_revision() -> str:
     return revision
 
 
-def assert_feedbax_revision_pin(locked_revision: str) -> str:
-    """Fail closed unless the imported Feedbax package matches ``locked_revision``."""
+def assert_feedbax_revision_exact(locked_revision: str) -> str:
+    """Fail closed unless the imported Feedbax package matches ``locked_revision``.
+
+    This is the launch-time boundary check. Callers pass the revision Feedbax
+    minted for the run set (``RunBundle.feedbax_revision``), so anything other
+    than exact identity means the code about to execute is not the code the run
+    was assembled from.
+    """
     if not _GIT_REVISION_RE.fullmatch(locked_revision):
         raise FeedbaxRevisionError(
             "locked Feedbax revision pin must be a full lowercase Git commit"
@@ -87,6 +116,147 @@ def assert_feedbax_revision_pin(locked_revision: str) -> str:
             f"locked={locked_revision} loaded={actual_revision}"
         )
     return actual_revision
+
+
+def _run_git(root: Path, args: Sequence[str]) -> subprocess.CompletedProcess[str] | None:
+    """Run a Git command in ``root``, returning ``None`` if Git cannot be invoked."""
+    try:
+        return subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            check=False,
+            env=_GIT_ENVIRONMENT,
+            text=True,
+        )
+    except OSError:
+        return None
+
+
+def _checkout_holds_complete_history(package_root: Path) -> bool:
+    """Return whether the checkout at ``package_root`` can hold every reachable object.
+
+    A shallow clone or a partial (promisor) clone may legitimately lack objects
+    that nonetheless exist upstream, so a missing object in such a checkout
+    proves nothing. In a complete checkout the absence of an object is decisive:
+    every ancestor of ``HEAD`` is necessarily present locally.
+    """
+    shallow = _run_git(package_root, ["rev-parse", "--is-shallow-repository"])
+    if shallow is None or shallow.returncode != 0 or shallow.stdout.strip() != "false":
+        return False
+    promisor = _run_git(package_root, ["config", "--get-regexp", r"^remote\..*\.promisor$"])
+    # Exit 1 is Git's "no matching configuration key", i.e. not a partial clone.
+    if promisor is None or promisor.returncode not in (0, 1):
+        return False
+    return not (promisor.returncode == 0 and promisor.stdout.strip())
+
+
+def _pin_ancestry_state(
+    package_root: Path, locked_revision: str, loaded_revision: str
+) -> tuple[str, str | None]:
+    """Classify ``locked_revision`` against ``loaded_revision`` in ``package_root``.
+
+    Returns:
+        ``("ancestor", None)``, ``("not-ancestor", reason)``, or
+        ``("undeterminable", reason)``. The three states are kept distinct here
+        so that "the checkout cannot answer" never reaches a caller looking like
+        "the answer is no".
+    """
+    if locked_revision == loaded_revision:
+        return "ancestor", None
+    known = _run_git(package_root, ["cat-file", "-e", f"{locked_revision}^{{commit}}"])
+    if known is None:
+        return "undeterminable", "Git could not be invoked for the supplying checkout"
+    if known.returncode != 0:
+        if _checkout_holds_complete_history(package_root):
+            return (
+                "not-ancestor",
+                "the locked commit is unknown to the complete checkout that supplied "
+                "the imported package, so it is not one of its ancestors",
+            )
+        return (
+            "undeterminable",
+            "the locked commit is absent from a shallow or partial checkout, which "
+            "cannot distinguish a nonexistent commit from an unfetched one",
+        )
+    ancestry = _run_git(
+        package_root, ["merge-base", "--is-ancestor", locked_revision, loaded_revision]
+    )
+    if ancestry is None:
+        return "undeterminable", "Git could not be invoked for the supplying checkout"
+    if ancestry.returncode == 0:
+        return "ancestor", None
+    if ancestry.returncode == 1:
+        return "not-ancestor", "the locked commit is not reachable from the loaded revision"
+    detail = ancestry.stderr.strip() or f"git merge-base exited {ancestry.returncode}"
+    return "undeterminable", f"the ancestry query failed: {detail}"
+
+
+def assert_feedbax_revision_pin(locked_revision: str) -> str:
+    """Fail closed unless an authored pin is well formed and an ancestor of the install.
+
+    This is the authoring-time gate for a revision recorded in a spec or lock: it
+    states which Feedbax the document was qualified against, not which Feedbax a
+    run executed (that is minted per run set and asserted exactly at launch by
+    ``assert_feedbax_revision_exact``). A pin therefore stays valid as the
+    dependency moves forward, while a fabricated commit or a commit from an
+    abandoned branch still fails, because neither is an ancestor of the install.
+
+    Three outcomes are distinguished, and each names itself in its message:
+
+    - **malformed** — the pin is not a full lowercase Git commit. Raises.
+    - **not-an-ancestor** — the pin is a real, decidable non-ancestor, including
+      a commit unknown to a complete checkout. Raises.
+    - **undeterminable** — the installed package has no resolvable Git history
+      (a wheel or other non-checkout install), or its checkout is shallow or
+      partial and lacks the object. Warns with
+      ``FeedbaxRevisionAncestryWarning`` and passes, never silently.
+
+    Failing closed on the undeterminable case would make the check unusable
+    wherever Feedbax is not installed from a checkout, and would be a check on
+    the installation rather than on the pin; passing it silently would weaken the
+    gate invisibly. The warning is the explicit, promotable middle.
+
+    Args:
+        locked_revision: The full lowercase Git commit recorded in the document.
+
+    Returns:
+        ``locked_revision``, so a caller can assert the pin round-trips.
+
+    Raises:
+        FeedbaxRevisionError: The pin is malformed or decidably not an ancestor.
+    """
+    if not _GIT_REVISION_RE.fullmatch(locked_revision):
+        raise FeedbaxRevisionError(
+            "locked Feedbax revision pin must be a full lowercase Git commit: "
+            f"locked={locked_revision!r}"
+        )
+    try:
+        loaded_revision = resolve_feedbax_revision()
+    except FeedbaxRevisionError as exc:
+        warnings.warn(
+            "Feedbax revision pin ancestry is undeterminable: "
+            f"locked={locked_revision} loaded=<unresolved>; {exc}. The imported "
+            "package has no resolvable Git history, so the authoring-time ancestry "
+            "check cannot run; launch-time enforcement is unaffected.",
+            FeedbaxRevisionAncestryWarning,
+            stacklevel=2,
+        )
+        return locked_revision
+    state, reason = _pin_ancestry_state(_feedbax_package_root(), locked_revision, loaded_revision)
+    if state == "not-ancestor":
+        raise FeedbaxRevisionError(
+            "Feedbax revision pin is not an ancestor of the loaded revision: "
+            f"locked={locked_revision} loaded={loaded_revision}; {reason}"
+        )
+    if state == "undeterminable":
+        warnings.warn(
+            "Feedbax revision pin ancestry is undeterminable: "
+            f"locked={locked_revision} loaded={loaded_revision}; {reason}. "
+            "Launch-time enforcement is unaffected.",
+            FeedbaxRevisionAncestryWarning,
+            stacklevel=2,
+        )
+    return locked_revision
 
 
 def resolve_repo_revision_at(source_root: Path) -> str:

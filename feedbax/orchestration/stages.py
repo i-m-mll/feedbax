@@ -75,7 +75,7 @@ from feedbax.orchestration.events import RunEventReader
 from feedbax.orchestration.input_materialization import preflight_resolved_inputs
 from feedbax.orchestration.revision import (
     FeedbaxRevisionError,
-    assert_feedbax_revision_pin,
+    assert_feedbax_revision_exact,
     assert_science_repo_revision_pin,
     resolve_science_repo_import_revisions,
 )
@@ -2378,7 +2378,7 @@ class StageEngine:
 
     def _launch_one(self, row: RunRowSpec, state: RunSetState) -> RunSetState:
         try:
-            assert_feedbax_revision_pin(self.bundle.feedbax_revision)
+            assert_feedbax_revision_exact(self.bundle.feedbax_revision)
         except FeedbaxRevisionError as exc:
             raise OrchestrationStageError(str(exc)) from exc
         outputs = self.driver.launch_row(self.bundle, row, state)
@@ -2726,7 +2726,7 @@ def _run_static_preflight_checks(
         )
     )
     try:
-        observed_revision = assert_feedbax_revision_pin(bundle.feedbax_revision)
+        observed_revision = assert_feedbax_revision_exact(bundle.feedbax_revision)
     except FeedbaxRevisionError as exc:
         checks.append(_check("feedbax-revision-pin", False, detail=str(exc)))
     else:
