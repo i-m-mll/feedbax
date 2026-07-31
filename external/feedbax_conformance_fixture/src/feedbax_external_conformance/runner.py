@@ -11,8 +11,6 @@ from types import ModuleType
 
 import feedbax
 
-from feedbax.orchestration.revision import FeedbaxRevisionError, resolve_feedbax_revision
-
 from .cases import (
     check_component_registration_and_migration,
     check_exact_parent_migration,
@@ -20,10 +18,8 @@ from .cases import (
     check_ordered_registration,
     check_value_identity,
 )
+from .lifecycle import check_public_lifecycle_recovery
 from .result import ConformanceResult, LifecycleResult
-
-
-_LIFECYCLE_BLOCKER = "feedbax-7e7dac8-wheel-provenance-unavailable"
 
 
 def _package_root(module: ModuleType) -> Path:
@@ -88,19 +84,6 @@ def _require_loaded_feedbax_modules_under(root: Path) -> None:
         raise AssertionError(f"Feedbax modules leaked outside installed wheel: {leaked!r}")
 
 
-def _wheel_revision_rejection() -> bool:
-    try:
-        resolve_feedbax_revision()
-    except FeedbaxRevisionError as exc:
-        if "cannot resolve the revision" not in str(exc):
-            raise
-        return True
-    raise AssertionError(
-        "wheel revision provenance is now resolvable; replace the blocker canary "
-        "with the production StageEngine recovery case"
-    )
-
-
 def run_fixture(*, source_root: Path | None = None) -> ConformanceResult:
     """Run bounded clean-installed foundation cases without network access."""
     import feedbax_external_conformance
@@ -121,20 +104,17 @@ def run_fixture(*, source_root: Path | None = None) -> ConformanceResult:
         "value_identity": check_value_identity(),
         "material_dependencies": check_material_dependencies(),
         "staged_exact_parent_migration": check_exact_parent_migration(),
-        "wheel_revision_gate_rejects_unverifiable_install": _wheel_revision_rejection(),
+        "public_lifecycle_recovery": check_public_lifecycle_recovery(),
     }
 
     _require_loaded_feedbax_modules_under(feedbax_root)
     return ConformanceResult(
-        status="blocked",
+        status="pass",
         feedbax_version=importlib.metadata.version("feedbax"),
         feedbax_install_root=str(feedbax_root),
         fixture_install_root=str(fixture_root),
         cases=cases,
-        lifecycle=LifecycleResult(
-            status="blocked",
-            reason_code=_LIFECYCLE_BLOCKER,
-        ),
+        lifecycle=LifecycleResult(status="pass"),
     )
 
 

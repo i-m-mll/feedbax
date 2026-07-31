@@ -58,8 +58,8 @@ value identity, material dependencies, and exact-parent migration.
 and the fixture as wheels, installs both non-editably into a fresh environment,
 and executes away from this checkout with `PYTHONPATH` removed. The installed
 fixture rejects private Feedbax imports, verifies all loaded Feedbax modules
-come from the wheel, uses unique runtime cache roots, creates no shared custody
-writes, and denies network access during execution.
+come from the wheel, uses unique runtime cache and custody roots, and denies
+network access during execution.
 
 The versioned machine result is
 `feedbax.external_conformance.result.v2`; v1 migrates by adding separate
@@ -67,10 +67,12 @@ unbound `current` and `minimum` protocol role slots, while other versions are
 rejected. Those slots are not stability guarantees and remain unbound until
 the owner-ratified policy exists.
 
-The production lifecycle case is currently reported as blocked rather than
-passed. Issue `7e7dac8` owns the non-Git wheel-provenance seam required by
-`StageEngine` preflight and launch and blocks issue `380f897`. The fixture
-asserts the current rejection as a negative canary. It must be replaced by the
-bounded `StageEngine`/`LocalOrchestrationDriver` persisted recovery case when
-that seam integrates; no copied lifecycle runner or revision bypass is
-permitted.
+The production lifecycle case uses the installed-wheel
+`StageEngine`/`LocalOrchestrationDriver` path with one deterministic local row.
+It persists through PREFLIGHT, reconstructs the engine over the same
+`RunSetStateStore`, and completes LAUNCH and the remaining local lifecycle.
+Assertions prove that ASSEMBLE and PREFLIGHT were consumed from persisted
+state rather than rerun, and that the exact revision gate observed the
+authenticated wheel commit. The fixture-owned compiler and builders remain
+incubated here; lifecycle sequencing, state recovery, subprocess execution,
+and revision enforcement are all Feedbax production implementations.

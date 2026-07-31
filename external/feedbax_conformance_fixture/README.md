@@ -17,12 +17,13 @@ non-editably into a fresh environment, changes away from the source checkout,
 removes `PYTHONPATH`, denies network access during execution, and verifies that
 all imported Feedbax modules come from the installed wheel.
 
-The current result is deliberately `blocked`, not `pass`: Feedbax issue
-`7e7dac8` owns the non-Git wheel-provenance seam required by orchestration
-preflight and launch. The fixture asserts the current fail-closed behavior as a
-negative canary. Once that issue integrates, the fixture can add the production
-`StageEngine`/`LocalOrchestrationDriver` recovery run without changing its
-package or result schema.
+The fixture runs the public production `StageEngine` with
+`LocalOrchestrationDriver` through a clean-wheel PREFLIGHT and LAUNCH. It stops
+at the persisted PREFLIGHT boundary, reconstructs the engine, and finishes the
+bounded local lifecycle from the stored public state. The exact revision gate
+therefore authenticates installed-wheel provenance at both execution
+boundaries. The deployment policy is explicitly local and cloud-unauthorized;
+all custody, orchestration, and cache paths are unique temporary directories.
 
 The result schema is `feedbax.external_conformance.result.v2`. Version 1 results
 migrate by adding explicit, unbound `current` and `minimum` protocol role slots.

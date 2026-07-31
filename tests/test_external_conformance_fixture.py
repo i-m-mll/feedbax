@@ -20,15 +20,12 @@ def fixture_package(monkeypatch: pytest.MonkeyPatch):
 
 def test_result_v1_migrates_with_unratified_role_slots(fixture_package) -> None:
     current = fixture_package.ConformanceResult(
-        status="blocked",
+        status="pass",
         feedbax_version="0.1.2",
         feedbax_install_root="/installed/feedbax",
         fixture_install_root="/installed/fixture",
         cases={"foundation": True},
-        lifecycle={
-            "status": "blocked",
-            "reason_code": "feedbax-7e7dac8-wheel-provenance-unavailable",
-        },
+        lifecycle={"status": "pass"},
     )
     legacy = current.model_dump(mode="json")
     legacy["schema_version"] = "feedbax.external_conformance.result.v1"

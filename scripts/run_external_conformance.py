@@ -104,8 +104,8 @@ def main() -> int:
         payload = json.loads(result.read_text(encoding="utf-8"))
         if payload["schema_version"] != "feedbax.external_conformance.result.v2":
             raise RuntimeError("external conformance result schema drifted")
-        if payload["status"] != "blocked":
-            raise RuntimeError("fixture must remain explicitly blocked until lifecycle is vertical")
+        if payload["status"] != "pass":
+            raise RuntimeError("clean-wheel external conformance did not pass")
         if not all(payload["cases"].values()):
             raise RuntimeError("one or more external conformance foundation cases failed")
         print(json.dumps(payload, indent=2, sort_keys=True))
