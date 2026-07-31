@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import shutil
+import stat
 import tempfile
 import time
 from collections.abc import Iterator
@@ -254,6 +255,7 @@ class RunSetStateStore:
         self.lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         self.control_reserve_path = self.path.with_suffix(self.path.suffix + ".reserve")
         self.emergency_path = self.path.with_suffix(self.path.suffix + ".emergency.json")
+        self.emergency_lock_path = self.path.with_suffix(self.path.suffix + ".emergency.lock")
         self.emergency_reserve_path = self.path.with_suffix(
             self.path.suffix + ".emergency.reserve"
         )
@@ -314,28 +316,28 @@ class RunSetStateStore:
         )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         _probe_directory_writable(self.path.parent, self.path.name)
-
-        requested_reserves = (
-            (self.control_reserve_path, control_reserve_bytes),
-            (self.emergency_reserve_path, emergency_reserve_bytes),
-        )
-        reserve_allocation_bytes = sum(
-            size
-            for path, size in requested_reserves
-            if not path.exists() or path.stat().st_size != size
-        )
-        required_free_bytes = reserve_allocation_bytes + state_update_bytes
-        observed_free_bytes = shutil.disk_usage(self.path.parent).free
-        if observed_free_bytes < required_free_bytes:
-            raise ControlFilesystemPreflightError(
-                "control filesystem capacity preflight failed: "
-                f"required_free_bytes={required_free_bytes} "
-                f"observed_free_bytes={observed_free_bytes} path={self.path.parent}"
+        with _emergency_channel_lock(self.emergency_lock_path, create=True):
+            requested_reserves = (
+                (self.control_reserve_path, control_reserve_bytes),
+                (self.emergency_reserve_path, emergency_reserve_bytes),
             )
+            reserve_allocation_bytes = sum(
+                size
+                for path, size in requested_reserves
+                if not path.exists() or path.stat().st_size != size
+            )
+            required_free_bytes = reserve_allocation_bytes + state_update_bytes
+            observed_free_bytes = shutil.disk_usage(self.path.parent).free
+            if observed_free_bytes < required_free_bytes:
+                raise ControlFilesystemPreflightError(
+                    "control filesystem capacity preflight failed: "
+                    f"required_free_bytes={required_free_bytes} "
+                    f"observed_free_bytes={observed_free_bytes} path={self.path.parent}"
+                )
 
-        for reserve_path, reserve_size in requested_reserves:
-            if not reserve_path.exists() or reserve_path.stat().st_size != reserve_size:
-                _reserve_file(reserve_path, reserve_size)
+            for reserve_path, reserve_size in requested_reserves:
+                if not reserve_path.exists() or reserve_path.stat().st_size != reserve_size:
+                    _reserve_file(reserve_path, reserve_size)
         return ControlFilesystemPreflight(
             filesystem_path=str(self.path.parent),
             observed_free_bytes=observed_free_bytes,
@@ -372,17 +374,18 @@ class RunSetStateStore:
                 "emergency run-set record exceeds bounded channel: "
                 f"bytes={len(encoded)} maximum={MAX_EMERGENCY_RECORD_BYTES}"
             )
-        if not self.emergency_reserve_path.exists():
-            raise ControlFilesystemPreflightError(
-                "emergency channel has no reserved inode; call preflight_and_reserve "
-                "before the first record and before each replacement"
-            )
+        with _emergency_channel_lock(self.emergency_lock_path, create=False):
+            if not self.emergency_reserve_path.exists():
+                raise ControlFilesystemPreflightError(
+                    "emergency channel has no reserved inode; call preflight_and_reserve "
+                    "before the first record and before each replacement"
+                )
 
-        _publish_reserved_emergency(
-            reserve_path=self.emergency_reserve_path,
-            destination_path=self.emergency_path,
-            payload=encoded,
-        )
+            _publish_reserved_emergency(
+                reserve_path=self.emergency_reserve_path,
+                destination_path=self.emergency_path,
+                payload=encoded,
+            )
         return self.emergency_path
 
     def initialize(self, state: RunSetState) -> RunSetState:
@@ -499,6 +502,48 @@ def _reserve_file(path: Path, size: int) -> None:
         tmp_path.unlink(missing_ok=True)
 
 
+@contextmanager
+def _emergency_channel_lock(path: Path, *, create: bool) -> Iterator[None]:
+    """Serialize reserve replenishment and publication through one stable inode."""
+    flags = os.O_RDWR | (os.O_CREAT if create else 0)
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except FileNotFoundError as exc:
+        raise ControlFilesystemPreflightError(
+            "emergency channel lock is absent; call preflight_and_reserve first"
+        ) from exc
+    except OSError as exc:
+        raise ControlFilesystemPreflightError(
+            f"unable to establish emergency channel lock at {path}: {exc}"
+        ) from exc
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        descriptor_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(descriptor_stat.st_mode):
+            raise ControlFilesystemPreflightError(
+                f"emergency channel lock is not a regular file: {path}"
+            )
+        try:
+            path_stat = path.stat()
+        except FileNotFoundError as exc:
+            raise ControlFilesystemPreflightError(
+                "emergency channel lock changed while acquiring ownership"
+            ) from exc
+        if (descriptor_stat.st_dev, descriptor_stat.st_ino) != (
+            path_stat.st_dev,
+            path_stat.st_ino,
+        ):
+            raise ControlFilesystemPreflightError(
+                "emergency channel lock pathname changed while acquiring ownership"
+            )
+        if create:
+            os.fsync(descriptor)
+            _fsync_directory(path.parent)
+        yield
+    finally:
+        os.close(descriptor)
+
+
 def _publish_reserved_emergency(
     *,
     reserve_path: Path,
@@ -514,7 +559,6 @@ def _publish_reserved_emergency(
             "if any, remains authoritative"
         ) from exc
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
         descriptor_stat = os.fstat(descriptor)
         try:
             reserve_stat = reserve_path.stat()
@@ -536,6 +580,20 @@ def _publish_reserved_emergency(
         _pwrite_all(descriptor, payload)
         os.ftruncate(descriptor, len(payload))
         os.fsync(descriptor)
+        try:
+            reserve_stat = reserve_path.stat()
+        except FileNotFoundError as exc:
+            raise ControlFilesystemPreflightError(
+                "emergency reserve changed before publication; refusing false success"
+            ) from exc
+        if (descriptor_stat.st_dev, descriptor_stat.st_ino) != (
+            reserve_stat.st_dev,
+            reserve_stat.st_ino,
+        ):
+            raise ControlFilesystemPreflightError(
+                "emergency reserve pathname no longer names the JSON-bearing inode; "
+                "refusing false success"
+            )
         os.replace(reserve_path, destination_path)
         _fsync_directory(destination_path.parent)
     finally:

@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event, Thread, current_thread
 from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
+from feedbax.orchestration import state as orchestration_state
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.orchestration.state import (
     EMERGENCY_RUN_SET_RECORD_SCHEMA_ID,
@@ -246,11 +249,17 @@ def test_emergency_record_replace_failure_preserves_previous_durable_record(
 def test_emergency_save_requires_reserved_capacity(tmp_path: Path) -> None:
     store = RunSetStateStore(tmp_path / "state.json")
 
-    with pytest.raises(ControlFilesystemPreflightError, match="no reserved inode"):
+    with pytest.raises(ControlFilesystemPreflightError, match="lock is absent"):
         store.save_emergency(_emergency_record())
 
     assert not store.emergency_path.exists()
 
+    store.preflight_and_reserve(
+        control_reserve_bytes=0,
+        emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
+        state_update_bytes=4096,
+    )
+    store.emergency_reserve_path.unlink()
     descriptor = os.open(store.emergency_reserve_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         os.ftruncate(descriptor, MAX_EMERGENCY_RECORD_BYTES)
@@ -285,3 +294,76 @@ def test_concurrent_first_emergency_publish_keeps_one_complete_record(tmp_path: 
     assert sum(isinstance(outcome, Path) for outcome in outcomes) == 1
     assert sum(isinstance(outcome, ControlFilesystemPreflightError) for outcome in outcomes) == 1
     assert store.load_emergency().next_recovery_action in {"recovery-0", "recovery-1"}
+
+
+def test_concurrent_publish_and_replenish_rename_the_json_bearing_inode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    store.preflight_and_reserve(
+        control_reserve_bytes=0,
+        emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
+        state_update_bytes=4096,
+    )
+    original_pwrite_all = orchestration_state._pwrite_all
+    original_flock = fcntl.flock
+    payload_written = Event()
+    allow_publish = Event()
+    replenisher_waiting = Event()
+    written_inode: list[int] = []
+    failures: list[BaseException] = []
+
+    def blocking_pwrite_all(descriptor: int, payload: bytes) -> None:
+        original_pwrite_all(descriptor, payload)
+        written_inode.append(os.fstat(descriptor).st_ino)
+        payload_written.set()
+        assert allow_publish.wait(timeout=5)
+
+    def recording_flock(descriptor: int, operation: int) -> None:
+        if current_thread().name == "replenisher":
+            replenisher_waiting.set()
+        original_flock(descriptor, operation)
+
+    monkeypatch.setattr(
+        "feedbax.orchestration.state._pwrite_all",
+        blocking_pwrite_all,
+    )
+    monkeypatch.setattr("feedbax.orchestration.state.fcntl.flock", recording_flock)
+
+    def publish() -> None:
+        try:
+            store.save_emergency(_emergency_record())
+        except BaseException as exc:
+            failures.append(exc)
+
+    def replenish() -> None:
+        try:
+            store.preflight_and_reserve(
+                control_reserve_bytes=0,
+                emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
+                state_update_bytes=4096,
+            )
+        except BaseException as exc:
+            failures.append(exc)
+
+    publisher = Thread(target=publish, name="publisher")
+    publisher.start()
+    assert payload_written.wait(timeout=5)
+    replenisher = Thread(target=replenish, name="replenisher")
+    replenisher.start()
+    assert replenisher_waiting.wait(timeout=5)
+    assert replenisher.is_alive()
+    allow_publish.set()
+    publisher.join(timeout=5)
+    replenisher.join(timeout=5)
+
+    assert not publisher.is_alive()
+    assert not replenisher.is_alive()
+    assert failures == []
+    assert store.emergency_path.stat().st_ino == written_inode[0]
+    assert store.emergency_reserve_path.stat().st_ino != written_inode[0]
+    assert store.emergency_reserve_path.stat().st_size == MAX_EMERGENCY_RECORD_BYTES
+    assert store.load_emergency().next_recovery_action == (
+        "collect remote outputs before authorizing teardown"
+    )
