@@ -391,6 +391,14 @@ def test_component_registration_case_uses_explicit_non_discovering_registry(
     assert cases.check_component_registration_and_migration()
 
 
+def test_resolved_projection_case_uses_explicit_bootstrap_registries(
+    fixture_package,
+) -> None:
+    cases = importlib.import_module(f"{fixture_package.__name__}.cases")
+
+    assert cases.check_resolved_evaluation_row_projection()
+
+
 def test_unified_bootstrap_case_uses_typed_plugin_registrations(
     fixture_package,
 ) -> None:

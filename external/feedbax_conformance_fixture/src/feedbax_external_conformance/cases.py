@@ -679,6 +679,9 @@ def check_resolved_evaluation_row_projection() -> bool:
 
     with TemporaryDirectory() as directory:
         root = Path(directory)
+        bootstrap_state = asyncio.run(
+            bootstrap_application(new_fixture_registration_context(), registrations=())
+        )
         manifest_inputs = [_projection_input(root, target) for target in (0, 1)]
         inputs = resolve_analysis_inputs(
             AnalysisRunSpec(
@@ -686,6 +689,8 @@ def check_resolved_evaluation_row_projection() -> bool:
                 inputs=[item.ref for item in manifest_inputs],
                 evaluation_states_policy="require_durable",
             ),
+            registry=bootstrap_state.bundle.analysis_recipes,
+            evaluation_registry=bootstrap_state.bundle.evaluation_recipes,
             root=root,
             authenticated_inputs=dict(enumerate(manifest_inputs)),
         )
