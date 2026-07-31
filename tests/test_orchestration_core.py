@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import errno
 import hashlib
 import json
 import os
@@ -136,6 +137,7 @@ from feedbax.orchestration.drivers.local import (
     compute_environment_fingerprint,
 )
 from feedbax.orchestration.drivers.runpod import (
+    RunPodOrchestrationDriver,
     _run_command,
     project_runpod_provision_facts,
 )
@@ -146,7 +148,9 @@ from feedbax.orchestration.repo_realization import (
 from feedbax.orchestration.repo_snapshot import RepoSnapshotManifest, RepoSnapshotRecord
 from feedbax.orchestration.stages import (
     STAGE_CERTIFY,
+    STAGE_COLLECT,
     STAGE_LAUNCH,
+    STAGE_MONITOR,
     STAGE_ORDER,
     STAGE_PREFLIGHT,
     STAGE_PROVISION,
@@ -155,6 +159,8 @@ from feedbax.orchestration.stages import (
     STAGE_STAGE_INPUTS,
     STAGE_TEARDOWN,
     OrchestrationStageError,
+    CustodyPreservationRequired,
+    EmergencyStatePersistenceError,
     PreflightFailed,
     StageEngine,
     _ScopedSignalSupervisor,
@@ -162,6 +168,8 @@ from feedbax.orchestration.stages import (
     run_preflight_checks,
 )
 from feedbax.orchestration.state import (
+    ControlFilesystemPreflightError,
+    PrimaryStatePersistenceError,
     RUN_SET_STATE_SCHEMA_ID,
     RUN_SET_STATE_SCHEMA_VERSION,
     RUN_SET_STATE_SCHEMA_VERSION_V1,
@@ -255,6 +263,83 @@ class FakeDriver:
     def teardown(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
         self._call("teardown")
         return {"torn_down": True}
+
+
+class CapabilityFakeDriver(FakeDriver):
+    def __init__(self, variant_id: str) -> None:
+        super().__init__()
+        facts = replace(
+            RunPodOrchestrationDriver.capability_envelope.realize(variant_id).facts,
+            retry=RetrySemantics.NONE,
+            acquisition=AcquisitionSemantics.EXTERNALLY_PROVIDED,
+            optional_hooks=frozenset(
+                {
+                    DriverHook.COLLECT_FAILURE_LOGS,
+                    DriverHook.HAS_PENDING_OWNED_RESOURCE,
+                    DriverHook.TEARDOWN_OWNERSHIP,
+                }
+            ),
+        )
+        self.realized_capabilities = DriverCapabilityEnvelope.single(
+            "runpod",
+            facts,
+        ).realize(variant_id)
+        self.delete_calls = 0
+
+    def provision(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
+        self._call("provision")
+        return {
+            "driver": self.realized_capabilities.driver_name,
+            "pod_id": "pod-emergency-test",
+            "ssh_host": "example.invalid",
+            "ssh_port": 22,
+        }
+
+    def teardown_ownership(self, state: RunSetState) -> dict[str, Any]:
+        del state
+        owned = self.realized_capabilities.variant_id == "engine-acquired"
+        return {
+            "kind": "orchestration_created" if owned else "provided_pod",
+            "owned_by_run": owned,
+            "teardown_allowed": owned,
+            "resource_id": "pod-emergency-test",
+            "endpoint": "ssh://example.invalid:22",
+        }
+
+    def has_pending_owned_resource(self) -> bool:
+        return self.realized_capabilities.variant_id == "engine-acquired"
+
+    def collect_failure_logs(
+        self,
+        bundle: RunBundle,
+        state: RunSetState,
+    ) -> dict[str, Any]:
+        del bundle, state
+        self._call("collect_failure_logs")
+        return {"logs": "preserved"}
+
+    def teardown(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
+        self._call("teardown")
+        if self.realized_capabilities.variant_id == "engine-acquired":
+            self.delete_calls += 1
+            return {"teardown": "removed", "resource_id": "pod-emergency-test"}
+        return {"teardown": "skipped", "skip_reason": "externally-managed"}
+
+
+class MonitorEnospcStore(RunSetStateStore):
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self.primary_failed = False
+
+    def _save(self, state: RunSetState, *, crash_before_replace: bool = False) -> Path:
+        if (
+            not self.primary_failed
+            and state.current_stage == STAGE_MONITOR
+            and state.stage(STAGE_MONITOR).status == "running"
+        ):
+            self.primary_failed = True
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return super()._save(state, crash_before_replace=crash_before_replace)
 
 
 def _registry_preflight(bundle: RunBundle):
@@ -1543,6 +1628,174 @@ def test_stage_retry_accounting_and_abort_teardown(tmp_path: Path) -> None:
     assert failed_state.stage("REALIZE_ENV").attempts == 3
     assert failed_state.stage("TEARDOWN").status == "completed"
     assert "teardown" in failing_driver.calls
+
+
+def test_control_storage_preflight_fails_before_state_or_driver_action(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    driver = FakeDriver()
+
+    def fail_preflight() -> None:
+        raise ControlFilesystemPreflightError("control storage unavailable")
+
+    monkeypatch.setattr(store, "preflight_and_reserve", fail_preflight)
+
+    with pytest.raises(ControlFilesystemPreflightError, match="control storage unavailable"):
+        StageEngine(bundle=bundle, driver=driver, store=store).run()
+
+    assert not store.path.exists()
+    assert driver.calls == []
+
+
+def test_primary_enospc_persists_emergency_and_blocks_delete_until_custody(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path, driver="runpod")
+    store = MonitorEnospcStore(bundle.run_set_dir / "state.json")
+    driver = CapabilityFakeDriver("engine-acquired")
+
+    with pytest.raises(PrimaryStatePersistenceError, match="No space left on device"):
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            conformance_registry=_fixture_pass_registry(),
+        ).run()
+
+    emergency = store.load_emergency()
+    assert emergency.run_set_id == bundle.run_set_id
+    assert emergency.provider_identity.provider == driver.realized_capabilities.driver_name
+    assert emergency.provider_identity.resource_id == "pod-emergency-test"
+    assert emergency.preservation_state == "preserve-required"
+    assert emergency.custody_complete is False
+    assert driver.delete_calls == 0
+    assert "teardown" not in driver.calls
+
+    restarted_store = RunSetStateStore(store.path)
+    restarted_store.preflight_and_reserve()
+    restarted_driver = CapabilityFakeDriver("engine-acquired")
+    restarted = StageEngine(
+        bundle=bundle,
+        driver=restarted_driver,
+        store=restarted_store,
+        conformance_registry=_fixture_pass_registry(),
+    )
+    durable = restarted_store.load()
+
+    with pytest.raises(CustodyPreservationRequired, match="requires custody first"):
+        restarted._run_teardown(durable, abort=True)
+
+    assert restarted_driver.delete_calls == 0
+    collected = durable.with_stage(STAGE_COLLECT, StageState(status="completed"))
+    restarted_store.preflight_and_reserve()
+    torn_down = restarted._run_teardown(collected, abort=True)
+
+    assert restarted_driver.delete_calls == 1
+    assert torn_down.stage(STAGE_TEARDOWN).status == "completed"
+    released = restarted_store.load_emergency()
+    assert released.preservation_state == "release-authorized"
+    assert released.custody_complete is True
+
+
+def test_primary_enospc_emergency_failure_still_blocks_delete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _bundle(tmp_path, driver="runpod")
+    store = MonitorEnospcStore(bundle.run_set_dir / "state.json")
+    driver = CapabilityFakeDriver("engine-acquired")
+
+    def fail_emergency(_record: object) -> Path:
+        raise OSError(errno.ENOSPC, "emergency reserve unavailable")
+
+    monkeypatch.setattr(store, "save_emergency", fail_emergency)
+
+    with pytest.raises(EmergencyStatePersistenceError, match="could not be published"):
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            conformance_registry=_fixture_pass_registry(),
+        ).run()
+
+    assert driver.delete_calls == 0
+    assert "teardown" not in driver.calls
+    assert not store.emergency_path.exists()
+
+
+def test_preserved_capability_never_enters_destructive_teardown_after_enospc(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path, driver="runpod")
+    store = MonitorEnospcStore(bundle.run_set_dir / "state.json")
+    driver = CapabilityFakeDriver("externally-managed")
+
+    with pytest.raises(PrimaryStatePersistenceError):
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            conformance_registry=_fixture_pass_registry(),
+        ).run()
+
+    emergency = store.load_emergency()
+    assert emergency.preservation_state == "preserved"
+    assert emergency.custody_complete is False
+    assert driver.delete_calls == 0
+
+    store.preflight_and_reserve()
+    state = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        store=store,
+        conformance_registry=_fixture_pass_registry(),
+    )._run_teardown(store.load(), abort=True)
+
+    assert state.stage(STAGE_TEARDOWN).outputs["teardown"] == "skipped"
+    assert driver.delete_calls == 0
+
+
+def test_keep_alive_preserves_injected_destructive_variant_after_primary_enospc(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path, driver="runpod").model_copy(update={"keep_alive": True})
+    store = MonitorEnospcStore(bundle.run_set_dir / "state.json")
+    driver = CapabilityFakeDriver("engine-acquired")
+
+    with pytest.raises(PrimaryStatePersistenceError):
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            conformance_registry=_fixture_pass_registry(),
+        ).run()
+
+    emergency = store.load_emergency()
+    assert emergency.preservation_state == "preserved"
+    assert emergency.custody_complete is False
+    assert driver.delete_calls == 0
+    assert "collect_failure_logs" not in driver.calls
+    assert "teardown" not in driver.calls
+
+    store.preflight_and_reserve()
+    state = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        store=store,
+        conformance_registry=_fixture_pass_registry(),
+    )._run_teardown(store.load(), abort=True)
+
+    teardown = state.stage(STAGE_TEARDOWN)
+    assert teardown.status == "completed"
+    assert teardown.outputs["teardown"] == "skipped"
+    assert teardown.outputs["skip_reason"] == "keep_alive"
+    assert store.load_emergency().preservation_state == "preserved"
+    assert driver.delete_calls == 0
+    assert "collect_failure_logs" not in driver.calls
+    assert "teardown" not in driver.calls
 
 
 @pytest.mark.parametrize(
@@ -4821,7 +5074,6 @@ class Driver:
         ),
     ).realize("local-stop")
     poll_interval_seconds = 0.05
-
     def provision(self, bundle, state):
         return {"driver": "fixture", "pod_id": "pod-signal"}
     def realize_env(self, bundle, state):

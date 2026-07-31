@@ -63,12 +63,17 @@ from feedbax.orchestration.drivers.base import (
 from feedbax.orchestration.drivers.capabilities import (
     AcquisitionSemantics,
     AuthorizationSemantics,
+    CustodySemantics,
     DriverConstructionContext,
+    DriverCapabilityFacts,
     DriverHook,
     DriverRegistry,
     DriverVenue,
     RealizedDriverCapabilities,
+    ResourceSemantics,
     RetrySemantics,
+    SpendSemantics,
+    TeardownSemantics,
 )
 from feedbax.orchestration.drivers.native_execution import (
     NATIVE_TRAINING_COLLECTION_OUTPUTS,
@@ -92,7 +97,10 @@ from feedbax.orchestration.revision import (
 from feedbax.orchestration import schedule_eval
 from feedbax.orchestration.state import (
     AcquisitionIntent,
+    EmergencyProviderIdentity,
+    EmergencyRunSetRecord,
     PreflightCheckEntry,
+    PrimaryStatePersistenceError,
     RegistrationHistory,
     RegistrationHistoryEntry,
     RowState,
@@ -239,6 +247,14 @@ class PreflightFailed(OrchestrationStageError):
 
 class BudgetExceeded(OrchestrationStageError):
     """Raised when a run-set budget guard aborts monitoring."""
+
+
+class CustodyPreservationRequired(OrchestrationStageError):
+    """Destructive teardown is blocked until remote custody is durable."""
+
+
+class EmergencyStatePersistenceError(OrchestrationStageError):
+    """The reserved emergency channel could not record a primary persistence failure."""
 
 
 class _PrimaryExecutorFailure(OrchestrationStageError):
@@ -437,6 +453,7 @@ class StageEngine:
         later local process or operator must reconcile it.
         """
         self._preflight_request_before_output()
+        self.store.preflight_and_reserve()
         initial = self._initial_state()
         with _ScopedSignalSupervisor() as signal_supervisor:
             self._signal_supervisor = signal_supervisor
@@ -465,8 +482,16 @@ class StageEngine:
                         if stop_after_stage == stage_id:
                             break
                     return state
-                except BaseException:
-                    latest = self.store.load() if self.store.path.exists() else state
+                except BaseException as exc:
+                    latest = self._last_durable_state(state)
+                    if isinstance(exc, PrimaryStatePersistenceError):
+                        self._record_primary_persistence_failure(latest, exc)
+                        raise
+                    if isinstance(
+                        exc,
+                        (CustodyPreservationRequired, EmergencyStatePersistenceError),
+                    ):
+                        raise
                     if (
                         self.bundle is not None
                         and self.driver is not None
@@ -483,6 +508,33 @@ class StageEngine:
                         with signal_supervisor.defer_signals():
                             self._run_teardown(latest, abort=True)
                     raise
+
+    def _last_durable_state(self, fallback: RunSetState) -> RunSetState:
+        if not self.store.path.exists():
+            return fallback
+        try:
+            return self.store.load()
+        except (OSError, ValueError):
+            return fallback
+
+    def _record_primary_persistence_failure(
+        self,
+        state: RunSetState,
+        failure: PrimaryStatePersistenceError,
+    ) -> EmergencyRunSetRecord | None:
+        if self.bundle is None or self.driver is None:
+            return None
+        if not self._resource_requires_recovery_record(state):
+            return None
+        try:
+            record = self._emergency_record(state, primary_failure=str(failure))
+            self.store.save_emergency(record)
+        except Exception as emergency_exc:
+            raise EmergencyStatePersistenceError(
+                "primary state persistence failed and the reserved emergency record "
+                f"could not be published: primary={failure}; emergency={emergency_exc}"
+            ) from emergency_exc
+        return record
 
     @staticmethod
     def _reset_failed_certification(state: RunSetState) -> RunSetState:
@@ -2355,27 +2407,157 @@ class StageEngine:
             if tmp_path.exists():
                 tmp_path.unlink()
 
+    def _realized_driver_capabilities(self) -> RealizedDriverCapabilities:
+        realized = self.driver.realized_capabilities
+        if not isinstance(realized, RealizedDriverCapabilities):
+            raise TypeError("driver must expose typed per-instance realized capabilities")
+        return realized
+
+    def _driver_facts(self) -> DriverCapabilityFacts:
+        return self._realized_driver_capabilities().facts
+
+    def _teardown_preserves_resources(self) -> bool:
+        return (
+            self.bundle.keep_alive
+            or self._driver_facts().teardown is TeardownSemantics.RESOURCES_PRESERVED
+        )
+
+    def _destructive_ephemeral_teardown(self) -> bool:
+        facts = self._driver_facts()
+        return (
+            not self._teardown_preserves_resources()
+            and facts.resources is ResourceSemantics.DRIVER_OWNED
+            and facts.teardown is TeardownSemantics.VERIFIED_RESOURCE_ABSENCE
+            and facts.custody is CustodySemantics.EPHEMERAL_REMOTE_RESOURCE
+        )
+
+    def _custody_complete(self, state: RunSetState) -> bool:
+        facts = self._driver_facts()
+        if facts.custody is not CustodySemantics.EPHEMERAL_REMOTE_RESOURCE:
+            return True
+        return state.stage(STAGE_COLLECT).status == "completed"
+
+    def _resource_requires_recovery_record(self, state: RunSetState) -> bool:
+        if self._provision_completed(state):
+            return True
+        pending = self._driver_hook(
+            DriverHook.HAS_PENDING_OWNED_RESOURCE,
+            "has_pending_owned_resource",
+        )
+        return bool(pending()) if pending is not None else False
+
+    def _emergency_provider_identity(self, state: RunSetState) -> EmergencyProviderIdentity:
+        realized = self._realized_driver_capabilities()
+        ownership: Mapping[str, Any] = {}
+        describe = self._driver_hook(
+            DriverHook.TEARDOWN_OWNERSHIP,
+            "teardown_ownership",
+        )
+        if describe is not None:
+            ownership = dict(describe(state))
+        resource_id = ownership.get("resource_id")
+        if not isinstance(resource_id, str) or not resource_id:
+            resource_id = state.run_set_id
+        endpoint = ownership.get("endpoint")
+        if not isinstance(endpoint, str) or not endpoint:
+            endpoint = None
+        return EmergencyProviderIdentity(
+            provider=realized.driver_name,
+            resource_id=resource_id,
+            endpoint=endpoint,
+        )
+
+    @staticmethod
+    def _bounded_emergency_text(value: str, *, maximum: int = 2048) -> str:
+        return value if len(value) <= maximum else value[: maximum - 3] + "..."
+
+    def _emergency_record(
+        self,
+        state: RunSetState,
+        *,
+        primary_failure: str,
+    ) -> EmergencyRunSetRecord:
+        facts = self._driver_facts()
+        custody_complete = self._custody_complete(state)
+        destructive = self._destructive_ephemeral_teardown()
+        if custody_complete:
+            preservation_state = "release-authorized"
+            next_action = "resume orchestration; custody permits capability-governed teardown"
+        elif destructive:
+            preservation_state = "preserve-required"
+            next_action = (
+                "recover primary control storage and collect all declared outputs before teardown"
+            )
+        else:
+            preservation_state = "preserved"
+            next_action = (
+                "recover primary control storage and resume collection; declared teardown "
+                "semantics preserve the resource"
+            )
+        if facts.resources is ResourceSemantics.DRIVER_OWNED:
+            lease_state = (
+                "driver-owned resource preserved; spend may continue"
+                if facts.spend is SpendSemantics.DRIVER_OBSERVED
+                else "driver-owned resource preserved"
+            )
+        elif facts.resources is ResourceSemantics.EXTERNALLY_MANAGED:
+            lease_state = "externally managed resource; orchestration deletion is not authorized"
+        else:
+            lease_state = "local process; no provider lease"
+        spend_boundary = json.dumps(
+            {
+                "semantics": facts.spend.value,
+                "max_spend_usd": self.bundle.budget.max_spend_usd,
+                "observed": state.budget_counters,
+            },
+            sort_keys=True,
+            default=str,
+        )
+        return EmergencyRunSetRecord(
+            run_set_id=state.run_set_id,
+            provider_identity=self._emergency_provider_identity(state),
+            preservation_state=preservation_state,
+            lease_state=self._bounded_emergency_text(lease_state),
+            custody_complete=custody_complete,
+            spend_boundary=self._bounded_emergency_text(spend_boundary),
+            primary_failure=self._bounded_emergency_text(primary_failure),
+            next_recovery_action=self._bounded_emergency_text(next_action),
+        )
+
+    def _prepare_emergency_for_teardown(self, state: RunSetState) -> None:
+        if not self.store.emergency_path.exists():
+            return
+        try:
+            existing = self.store.load_emergency()
+        except Exception as exc:
+            raise EmergencyStatePersistenceError(
+                f"emergency recovery record is unreadable; teardown blocked: {exc}"
+            ) from exc
+        if existing.run_set_id != state.run_set_id:
+            raise CustodyPreservationRequired(
+                "emergency recovery record belongs to a different run set; teardown blocked"
+            )
+        updated = self._emergency_record(
+            state,
+            primary_failure=existing.primary_failure,
+        )
+        try:
+            self.store.save_emergency(updated)
+        except Exception as exc:
+            raise EmergencyStatePersistenceError(
+                f"emergency recovery transition could not be published; teardown blocked: {exc}"
+            ) from exc
+        if self._destructive_ephemeral_teardown() and not updated.custody_complete:
+            raise CustodyPreservationRequired(
+                "destructive teardown blocked: emergency recovery record requires custody first"
+            )
+
     def _run_teardown(self, state: RunSetState, *, abort: bool) -> RunSetState:
+        self._prepare_emergency_for_teardown(state)
         stage = state.stage(STAGE_TEARDOWN)
         if stage.status == "completed":
             return state
         failure_log_collection: dict[str, Any] | None = None
-        if abort:
-            collect_failure_logs = self._driver_hook(
-                DriverHook.COLLECT_FAILURE_LOGS,
-                "collect_failure_logs",
-            )
-            if collect_failure_logs is not None:
-                try:
-                    diagnostic_outputs = dict(collect_failure_logs(self.bundle, state))
-                    failure_log_collection = {
-                        "status": "completed",
-                        "outputs": diagnostic_outputs,
-                    }
-                except Exception as exc:
-                    # Failure diagnostics are best-effort and must never mask
-                    # the error that caused abort teardown.
-                    failure_log_collection = {"status": "failed", "error": str(exc)}
         if self.bundle.keep_alive:
             describe_ownership = self._driver_hook(
                 DriverHook.TEARDOWN_OWNERSHIP,
@@ -2390,6 +2572,25 @@ class StageEngine:
             status = "completed"
             error = None
         else:
+            collect_failure_logs = (
+                self._driver_hook(
+                    DriverHook.COLLECT_FAILURE_LOGS,
+                    "collect_failure_logs",
+                )
+                if abort
+                else None
+            )
+            if collect_failure_logs is not None:
+                try:
+                    diagnostic_outputs = dict(collect_failure_logs(self.bundle, state))
+                    failure_log_collection = {
+                        "status": "completed",
+                        "outputs": diagnostic_outputs,
+                    }
+                except Exception as exc:
+                    # Failure diagnostics are best-effort and must never mask
+                    # the error that caused abort teardown.
+                    failure_log_collection = {"status": "failed", "error": str(exc)}
             try:
                 outputs = dict(self.driver.teardown(self.bundle, state))
                 status = "completed"
