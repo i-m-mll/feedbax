@@ -27,6 +27,9 @@ supplied at all.
 from __future__ import annotations
 
 import importlib.util
+import base64
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -39,6 +42,10 @@ import feedbax
 
 
 _GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
+FEEDBAX_DISTRIBUTION_PROVENANCE_SCHEMA_VERSION = (
+    "feedbax.distribution_provenance.v1"
+)
+_DISTRIBUTION_PROVENANCE_FILENAME = "_distribution_provenance.json"
 
 _GIT_ENVIRONMENT = {
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -74,9 +81,19 @@ def _feedbax_package_root() -> Path:
     return Path(source).resolve().parent
 
 
-def resolve_feedbax_revision() -> str:
-    """Return the full commit of the checkout that supplied the imported package."""
-    package_root = _feedbax_package_root()
+def _resolve_checkout_revision(package_root: Path) -> str | None:
+    """Return a revision only when Git owns this exact package directory."""
+    top_level = _run_git(package_root, ["rev-parse", "--show-toplevel"])
+    if top_level is None or top_level.returncode != 0:
+        return None
+    checkout_root = Path(top_level.stdout.strip()).resolve()
+    if package_root != checkout_root / "feedbax":
+        return None
+    tracked = _run_git(
+        checkout_root, ["ls-files", "--error-unmatch", "feedbax/__init__.py"]
+    )
+    if tracked is None or tracked.returncode != 0:
+        return None
     try:
         result = subprocess.run(
             ["git", "-C", str(package_root), "rev-parse", "--verify", "HEAD^{commit}"],
@@ -95,6 +112,189 @@ def resolve_feedbax_revision() -> str:
             "the imported Feedbax module source did not resolve to a full lowercase Git commit"
         )
     return revision
+
+
+def _git_object_id(kind: str, data: bytes) -> str:
+    return hashlib.sha1(f"{kind} {len(data)}\0".encode() + data).hexdigest()
+
+
+def _parse_tree(data: bytes) -> list[tuple[str, str, str]]:
+    entries: list[tuple[str, str, str]] = []
+    offset = 0
+    try:
+        while offset < len(data):
+            mode_end = data.index(b" ", offset)
+            name_end = data.index(b"\0", mode_end + 1)
+            oid_end = name_end + 21
+            if oid_end > len(data):
+                raise ValueError
+            mode = data[offset:mode_end].decode("ascii")
+            name = data[mode_end + 1 : name_end].decode("utf-8")
+            entries.append((mode, name, data[name_end + 1 : oid_end].hex()))
+            offset = oid_end
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise FeedbaxRevisionError(
+            "installed Feedbax distribution provenance contains a malformed Git tree"
+        ) from exc
+    return entries
+
+
+def _load_distribution_revision(package_root: Path) -> str | None:
+    """Load and verify the versioned provenance embedded in an installed wheel."""
+    provenance_path = package_root / _DISTRIBUTION_PROVENANCE_FILENAME
+    if not provenance_path.exists():
+        return None
+    try:
+        payload = json.loads(provenance_path.read_bytes())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise FeedbaxRevisionError(
+            "installed Feedbax distribution provenance is unreadable or malformed"
+        ) from exc
+    expected_keys = {"schema_version", "revision", "commit_object", "tree_objects"}
+    if not isinstance(payload, dict) or set(payload) != expected_keys:
+        raise FeedbaxRevisionError(
+            "installed Feedbax distribution provenance has an unsupported structure"
+        )
+    if payload["schema_version"] != FEEDBAX_DISTRIBUTION_PROVENANCE_SCHEMA_VERSION:
+        raise FeedbaxRevisionError(
+            "installed Feedbax distribution provenance schema is unsupported: "
+            f"observed={payload['schema_version']!r} "
+            f"expected={FEEDBAX_DISTRIBUTION_PROVENANCE_SCHEMA_VERSION!r}"
+        )
+    revision = payload["revision"]
+    if not isinstance(revision, str) or not _GIT_REVISION_RE.fullmatch(revision):
+        raise FeedbaxRevisionError(
+            "installed Feedbax distribution provenance has a malformed revision"
+        )
+    try:
+        commit_object = base64.b64decode(payload["commit_object"], validate=True)
+    except (TypeError, ValueError) as exc:
+        raise FeedbaxRevisionError(
+            "installed Feedbax distribution provenance has a malformed commit object"
+        ) from exc
+    if _git_object_id("commit", commit_object) != revision:
+        raise FeedbaxRevisionError(
+            "installed Feedbax distribution provenance commit identity is unverifiable"
+        )
+    try:
+        commit_tree_line = commit_object.splitlines()[0].decode("ascii")
+    except (IndexError, UnicodeDecodeError) as exc:
+        raise FeedbaxRevisionError(
+            "installed Feedbax distribution provenance commit object is malformed"
+        ) from exc
+    if not commit_tree_line.startswith("tree "):
+        raise FeedbaxRevisionError(
+            "installed Feedbax distribution provenance commit object has no tree"
+        )
+    tree_payload = payload["tree_objects"]
+    if not isinstance(tree_payload, dict) or not tree_payload:
+        raise FeedbaxRevisionError(
+            "installed Feedbax distribution provenance has no Git tree objects"
+        )
+    trees: dict[str, bytes] = {}
+    try:
+        for oid, encoded in tree_payload.items():
+            if not isinstance(oid, str) or not _GIT_REVISION_RE.fullmatch(oid):
+                raise ValueError
+            data = base64.b64decode(encoded, validate=True)
+            if _git_object_id("tree", data) != oid:
+                raise ValueError
+            trees[oid] = data
+    except (TypeError, ValueError) as exc:
+        raise FeedbaxRevisionError(
+            "installed Feedbax distribution provenance contains an unverifiable Git tree"
+        ) from exc
+
+    root_oid = commit_tree_line.removeprefix("tree ")
+    root = trees.get(root_oid)
+    if root is None:
+        raise FeedbaxRevisionError(
+            "installed Feedbax distribution provenance omits the commit's root tree"
+        )
+    package_entries = [
+        oid
+        for mode, name, oid in _parse_tree(root)
+        if mode == "40000" and name == "feedbax"
+    ]
+    if len(package_entries) != 1:
+        raise FeedbaxRevisionError(
+            "installed Feedbax distribution provenance does not identify one package tree"
+        )
+
+    visited = {root_oid}
+    expected_files: set[Path] = set()
+
+    def verify_tree(oid: str, relative: Path) -> None:
+        data = trees.get(oid)
+        if data is None:
+            raise FeedbaxRevisionError(
+                "installed Feedbax distribution provenance omits a package tree"
+            )
+        visited.add(oid)
+        for mode, name, child_oid in _parse_tree(data):
+            child = relative / name
+            if mode == "40000":
+                verify_tree(child_oid, child)
+                continue
+            if mode not in {"100644", "100755"}:
+                raise FeedbaxRevisionError(
+                    "installed Feedbax distribution provenance contains an unsupported "
+                    f"package entry mode: path={child} mode={mode}"
+                )
+            installed = package_root / child
+            try:
+                contents = installed.read_bytes()
+            except OSError as exc:
+                raise FeedbaxRevisionError(
+                    f"installed Feedbax distribution is missing committed file {child}"
+                ) from exc
+            if _git_object_id("blob", contents) != child_oid:
+                raise FeedbaxRevisionError(
+                    f"installed Feedbax distribution file does not match commit: {child}"
+                )
+            expected_files.add(child)
+
+    verify_tree(package_entries[0], Path())
+    if visited != set(trees):
+        raise FeedbaxRevisionError(
+            "installed Feedbax distribution provenance contains conflicting Git trees"
+        )
+    actual_files = {
+        path.relative_to(package_root)
+        for path in package_root.rglob("*")
+        if path.is_file()
+        and path.name != _DISTRIBUTION_PROVENANCE_FILENAME
+        and "__pycache__" not in path.parts
+    }
+    unexpected = sorted(actual_files - expected_files)
+    if unexpected:
+        raise FeedbaxRevisionError(
+            "installed Feedbax distribution contains files outside its commit identity: "
+            + ", ".join(map(str, unexpected))
+        )
+    return revision
+
+
+def resolve_feedbax_revision() -> str:
+    """Return the verified commit identity of the imported checkout or wheel."""
+    package_root = _feedbax_package_root()
+    checkout_revision = _resolve_checkout_revision(package_root)
+    distribution_revision = _load_distribution_revision(package_root)
+    if checkout_revision is not None and distribution_revision is not None:
+        if checkout_revision != distribution_revision:
+            raise FeedbaxRevisionError(
+                "conflicting Feedbax revision identities: "
+                f"checkout={checkout_revision} distribution={distribution_revision}"
+            )
+        return checkout_revision
+    if checkout_revision is not None:
+        return checkout_revision
+    if distribution_revision is not None:
+        return distribution_revision
+    raise FeedbaxRevisionError(
+        "cannot resolve a verified revision identity for the imported Feedbax package; "
+        "it is neither a Git-owned checkout nor a provenance-bearing wheel"
+    )
 
 
 def assert_feedbax_revision_exact(locked_revision: str) -> str:
@@ -410,9 +610,13 @@ def resolve_feedbax_provenance() -> FeedbaxProvenance:
     cleanliness of the supplying checkout cannot be resolved. Unverifiable
     provenance is never silently treated as clean or matching.
     """
-    revision = resolve_feedbax_revision()
     package_root = _feedbax_package_root()
-    dirty = _feedbax_tree_is_dirty(package_root)
+    revision = resolve_feedbax_revision()
+    dirty = (
+        _feedbax_tree_is_dirty(package_root)
+        if _resolve_checkout_revision(package_root) is not None
+        else False
+    )
     return FeedbaxProvenance(source_path=package_root, revision=revision, dirty=dirty)
 
 

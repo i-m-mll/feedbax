@@ -167,9 +167,10 @@ packages = ["feedbax"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["feedbax"]
+artifacts = ["feedbax/_distribution_provenance.json"]
 
-[tool.hatch.build.force-include]
-"feedbax/models" = "feedbax/models"
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
 
 [tool.pyright]
 include = ["feedbax", "tests"]
