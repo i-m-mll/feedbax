@@ -56,6 +56,7 @@ Lifecycle abbreviations:
 | `E14` | `feedbax/testing/suite.py:load_suite_manifest`, `feedbax/orchestration/conformance.py:CheckRegistry`, `feedbax/orchestration/conformance.py:build_default_check_registry` | `tests/test_run_conformance.py:test_plugin_check_discovery_and_failure_propagation`, `tests/test_component_registration.py:test_absent_downstream_owner_fails_with_actionable_message` | In-repo and downstream-kit checks exist, but there is no clean-installed external fixture proving each seam and supported version window. |
 | `E15` | `feedbax/orchestration/state.py:RunSetStateStore`, `feedbax/orchestration/stages.py:StageEngine`, `feedbax/orchestration/collection_recovery.py:recover_collected_outputs` | `tests/test_orchestration_cli.py:test_watch_exits_after_all_rows_terminal`, `tests/test_orchestration_cli.py:test_collect_and_teardown_are_idempotent_after_completed_run` | The governed run lifecycle supplies progress, persisted state, collection recovery, and idempotent teardown for admitted families/drivers. |
 | `E16` | `feedbax/analysis/evaluation_inputs.py:resolve_evaluation_inputs`, `feedbax/analysis/execution_context.py:StagedExecutionContext`, `feedbax/orchestration/staged_root_custody.py:StagedRootCustody` | `tests/test_evaluation_orchestration.py:test_matrix_staged_parents_require_and_bind_exact_governed_root_custody`, `tests/test_figure_input_authority.py:test_role_authority_rejects_missing_ambiguous_or_duplicate_selectors` | Exact parents and staged authorities fail closed, while typed downstream row projection and material-dependency-scoped admission remain incomplete. |
+| `E17` | `feedbax/contracts/value_identity.py:ValueIdentityRecord`, `feedbax/contracts/value_identity.py:authored_value_sha256`, `feedbax/contracts/value_identity.py:semantic_value_sha256`, `feedbax/contracts/value_identity.py:realization_value_sha256` | `tests/test_value_identity.py:test_cross_encoding_semantic_equality_and_authored_inequality`, `tests/test_value_identity.py:test_expected_semantic_mismatch_fails_closed_and_chain_is_preserved`, `tests/test_value_identity.py:test_realization_uses_only_explicit_fingerprints` | The public v1 contract separates authored, exact normalized semantic, and explicit runtime realization identity. Existing durable envelopes do not embed it yet; their owning consumers retain their migration responsibility. |
 
 ## Coverage matrix
 
@@ -67,7 +68,7 @@ Lifecycle abbreviations:
 | Task | `C D-TASK` | `P E3 / D-TASK` | `O E10` | `C D-TASK` | `P E3 / D-TASK` | `C D-TASK` |
 | Analysis recipe | `P E2 / 301dce2` | `O E4` | `O E10` | `P E4 / 301dce2` | `P E4 / 46aeab1` | `O E4` |
 | Figure | `C 301dce2` | `O E5` | `O E10` | `P E5 / 301dce2` | `O E5` | `O E5` |
-| Value encoding | `—` | `P E6 / 9757814` | `P E6 / cd43b83, 9757814` | `C c50193e` | `P E6 / 9757814` | `P E6 / 9757814` |
+| Value encoding | `—` | `P E6 / 9757814` | `P E6, E17 / 9757814` | `C c50193e` | `P E6 / 9757814` | `P E6 / 9757814` |
 | Run kind | `C D-RUN` | `P E7 / D-RUN` | `P E7 / D-RUN` | `C D-RUN` | `C D-RUN` | `P E7 / D-RUN` |
 | Driver | `C 301dce2, 69034e6` | `P E8 / 69034e6` | `P E8 / 69034e6` | `C 69034e6` | `C 69034e6` | `C 69034e6` |
 | Custody provider | `C D-CUSTODY` | `P E9 / D-CUSTODY` | `O E9` | `C D-CUSTODY` | `O E9` | `P E9 / D-CUSTODY` |
@@ -83,7 +84,7 @@ Lifecycle abbreviations:
 | Task | `P E3 / D-TASK` | `—` | `P E3 / D-TASK` | `—` | `—` |
 | Analysis recipe | `O E4` | `P E16 / 8ca2ade, 43891d0` | `O E4` | `—` | `O E4` |
 | Figure | `O E5` | `O E16` | `P E5 / 301dce2` | `—` | `O E5` |
-| Value encoding | `P E6 / 9757814` | `P E6 / cd43b83, 43891d0` | `P E6 / 9757814` | `—` | `P E6 / 9757814` |
+| Value encoding | `P E6 / 9757814` | `P E17 / 43891d0` | `P E6 / 9757814` | `—` | `P E6 / 9757814` |
 | Run kind | `P E7 / D-RUN` | `P E7 / D-RUN` | `P E7 / D-RUN` | `P E15 / D-RUN` | `P E7 / D-RUN` |
 | Driver | `P E8 / 69034e6` | `P E8 / 69034e6` | `P E8 / 69034e6` | `P E15 / 69034e6` | `P E8 / 69034e6` |
 | Custody provider | `P E9 / D-CUSTODY` | `P E9 / D-CUSTODY` | `P E9 / D-CUSTODY` | `—` | `O E9` |
