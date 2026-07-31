@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tarfile
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
@@ -47,45 +48,12 @@ def _run(
     )
 
 
-def _copy_source_checkout(destination: Path) -> str:
-    root = Path(__file__).resolve().parents[1]
-    required_roots = {
-        ".gitignore",
-        "feedbax",
-        "hatch_build.py",
-        "pyproject.toml",
-        "README.md",
-        "LICENSE",
-    }
-    listed = _run(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
-        cwd=root,
-    ).stdout.splitlines()
-    for relative_text in listed:
-        relative = Path(relative_text)
-        if relative.parts[0] not in required_roots:
-            continue
-        source = root / relative
-        if not source.is_file():
-            continue
-        target = destination / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-    _run(["git", "init", "--quiet", "--initial-branch=develop"], cwd=destination)
-    _run(["git", "config", "user.email", "wheel-test@example.com"], cwd=destination)
-    _run(["git", "config", "user.name", "Wheel Test"], cwd=destination)
-    _run(["git", "config", "commit.gpgsign", "false"], cwd=destination)
-    _run(["git", "add", "--force", "-A"], cwd=destination)
-    _run(["git", "commit", "--quiet", "-m", "wheel fixture"], cwd=destination)
-    return _run(["git", "rev-parse", "HEAD"], cwd=destination).stdout.strip()
-
-
 def _source_bytes(source: Path) -> dict[str, str]:
     tracked = _run(["git", "ls-files", "-z"], cwd=source).stdout.split("\0")
     return {
         relative: sha256((source / relative).read_bytes()).hexdigest()
         for relative in tracked
-        if relative
+        if relative and (source / relative).is_file()
     }
 
 
@@ -154,9 +122,9 @@ def installed_wheel(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> tuple[Path, Path, str]:
     root = tmp_path_factory.mktemp("feedbax-wheel-provenance")
-    source = root / "source"
-    source.mkdir()
-    revision_id = _copy_source_checkout(source)
+    source = Path(__file__).resolve().parents[1]
+    assert _run(["git", "status", "--porcelain=v1"], cwd=source).stdout == ""
+    revision_id = _run(["git", "rev-parse", "HEAD"], cwd=source).stdout.strip()
     before = _source_bytes(source)
     wheel_dir = root / "wheel"
     wheel_dir.mkdir()
@@ -171,7 +139,6 @@ def installed_wheel(
     )
     assert _source_bytes(source) == before
     assert _run(["git", "status", "--porcelain=v1"], cwd=source).stdout == ""
-    assert not (source / "feedbax" / "__pycache__").exists()
     assert not (source / "feedbax" / "_distribution_provenance.json").exists()
     return source, package_root, revision_id
 
@@ -339,6 +306,54 @@ def test_git_sdist_wheel_preserves_exact_verified_identity(
 
     assert payload["schema_version"] == FEEDBAX_DISTRIBUTION_PROVENANCE_SCHEMA_VERSION
     assert payload["revision"] == revision_id
+
+
+def test_real_checkout_wheel_contains_and_imports_public_models(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    assert _run(["git", "status", "--porcelain=v1"], cwd=root).stdout == ""
+    wheel_dir = tmp_path / "wheel"
+    wheel_dir.mkdir()
+    _build(
+        ["--wheel", "--directory", str(root), "--out-dir", str(wheel_dir)],
+        cwd=tmp_path,
+        cache=tmp_path / "uv-build-cache",
+    )
+    wheel = next(wheel_dir.glob("feedbax-*.whl"))
+    with zipfile.ZipFile(wheel) as archive:
+        members = set(archive.namelist())
+    assert {
+        "feedbax/models/feedback.py",
+        "feedbax/models/cde.py",
+    } <= members
+
+    environment = tmp_path / "environment"
+    _run(["uv", "venv", "--system-site-packages", str(environment)], cwd=tmp_path)
+    python = environment / "bin" / "python"
+    _run(
+        ["uv", "pip", "install", "--python", str(python), "--no-deps", str(wheel)],
+        cwd=tmp_path,
+        extra_env={"UV_CACHE_DIR": str(tmp_path / "uv-install-cache")},
+    )
+    dependency_site = Path(pytest.__file__).resolve().parent.parent
+    imported_paths = _run(
+        [
+            str(python),
+            "-c",
+            (
+                "import pathlib, sys; "
+                f"sys.path.append({str(dependency_site)!r}); "
+                "import feedbax.analysis.exact_parents; "
+                "import feedbax.models.cde as cde; "
+                "import feedbax.models.feedback as feedback; "
+                "print(pathlib.Path(cde.__file__).resolve()); "
+                "print(pathlib.Path(feedback.__file__).resolve())"
+            ),
+        ],
+        cwd=tmp_path,
+        extra_env={"PYTHONPATH": ""},
+    ).stdout.splitlines()
+    assert len(imported_paths) == 2
+    assert all(Path(path).is_relative_to(environment) for path in imported_paths)
 
 
 def _rewrite_sdist(

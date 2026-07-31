@@ -17,6 +17,8 @@ examples/markdown/
 
 # saved models
 models/
+!feedbax/models/
+!feedbax/models/**
 !feedbax/web/models/
 *.eqx
 
