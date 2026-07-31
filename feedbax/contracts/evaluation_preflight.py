@@ -10,11 +10,14 @@ from feedbax.contracts.manifest import StrictModel
 
 
 EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID = "feedbax.spec.evaluation_output_preflight_policy"
-EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION = (
-    "feedbax.spec.evaluation_output_preflight_policy.v2"
-)
 EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1 = (
     "feedbax.spec.evaluation_output_preflight_policy.v1"
+)
+EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V2 = (
+    "feedbax.spec.evaluation_output_preflight_policy.v2"
+)
+EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION = (
+    "feedbax.spec.evaluation_output_preflight_policy.v3"
 )
 EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID = (
     "feedbax.orchestration.evaluation_output_preflight_evidence"
@@ -36,7 +39,7 @@ class EvaluationOutputPreflightPolicy(StrictModel):
     retained_bytes_per_resolved_row: int = Field(ge=1, strict=True)
     retained_bytes_per_resolved_row_source: str = Field(min_length=1)
     planned_repetitions: int = Field(ge=1, strict=True)
-    storage_mode: Literal["retain_all", "batch_reclamation"] = "retain_all"
+    storage_mode: Literal["retain_all", "batch_reclamation"]
     estimated_compact_retained_bytes: int = Field(default=0, ge=0, strict=True)
     required_free_space_reserve_bytes: int = Field(ge=0, strict=True)
 
@@ -110,6 +113,7 @@ __all__ = [
     "EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID",
     "EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION",
     "EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1",
+    "EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V2",
     "EvaluationOutputPreflightEvidence",
     "EvaluationOutputPreflightPolicy",
 ]

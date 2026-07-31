@@ -583,10 +583,18 @@ def _preflight_evaluation_output(
 ) -> EvaluationOutputPreflightEvidence | None:
     """Refuse cardinality or disk-budget drift before compiled rows are persisted."""
     policy = request.evaluation_output_preflight
-    if policy is None:
-        return None
     execution_families = {row.execution_family for row in compiled.rows}
-    if execution_families != {"evaluation-matrix"} or len(compiled.rows) != 1:
+    if execution_families == {"evaluation-matrix"}:
+        if len(compiled.rows) != 1:
+            raise ValueError("evaluation output preflight requires one compiled evaluation matrix")
+        if policy is None:
+            raise ValueError(
+                "evaluation-matrix assembly requires authored evaluation_output_preflight "
+                "with an explicit storage_mode choice"
+            )
+    elif policy is None:
+        return None
+    else:
         raise ValueError(
             "evaluation_output_preflight is only valid for one compiled evaluation matrix"
         )
@@ -608,6 +616,11 @@ def _preflight_evaluation_output(
     active_batch_count = 0
     max_rows_per_active_batch = 0
     if policy.storage_mode == "batch_reclamation":
+        if request.evaluation_batch_plan is None:
+            raise ValueError(
+                "evaluation_batch_plan is required when "
+                "evaluation_output_preflight.storage_mode='batch_reclamation'"
+            )
         plan = EvaluationMatrixBatchPlan.model_validate(
             compiled.rows[0].launch.metadata.get("batch_plan")
         )

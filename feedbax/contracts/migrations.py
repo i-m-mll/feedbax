@@ -156,6 +156,7 @@ from feedbax.contracts.evaluation_preflight import (
     EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID,
     EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION,
     EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,
+    EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V2,
 )
 from feedbax.contracts.remote_smoke import (
     REMOTE_SMOKE_EVIDENCE_SCHEMA_ID,
@@ -3186,9 +3187,15 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description=(
                 "Authored resolved-cardinality expectation and retained-write budget inputs."
             ),
-            stance="migrate",
-            supported_old_versions=(EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,),
-            rejected_old_versions=(f"{EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID}.v0",),
+            rejected_old_versions=(
+                f"{EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID}.v0",
+                EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,
+                EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V2,
+            ),
+            notes=(
+                "v1 and v2 are rejected because absent storage_mode meant retain_all; "
+                "migration would infer the authored choice required by v3."
+            ),
             required_tests=("tests/test_evaluation_orchestration.py",),
         ),
         _family(
@@ -5041,18 +5048,6 @@ def _migrate_evaluation_batch_compaction_evidence_v1(
     return migrated
 
 
-def _migrate_evaluation_output_preflight_policy_v1(
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    """Preserve the v1 complete-matrix retained-storage estimate."""
-    migrated = dict(payload)
-    migrated["schema_id"] = EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID
-    migrated["schema_version"] = EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION
-    migrated.setdefault("storage_mode", "retain_all")
-    migrated.setdefault("estimated_compact_retained_bytes", 0)
-    return migrated
-
-
 def _migrate_evaluation_output_preflight_evidence_v1(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -5107,16 +5102,6 @@ default_spec_registry.register_migration(
         migration_id="evaluation-matrix-batch-plan-v2-to-v3-consumer-parameters",
         migrate=_migrate_evaluation_matrix_batch_plan_v2,
         description="Preserve v2 declarations as explicitly parameter-free consumers.",
-    ),
-)
-default_spec_registry.register_migration(
-    "EvaluationOutputPreflightPolicy",
-    SchemaMigration(
-        source_version=EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,
-        target_version=EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION,
-        migration_id="evaluation-output-preflight-policy-v1-to-v2-storage-mode",
-        migrate=_migrate_evaluation_output_preflight_policy_v1,
-        description="Preserve v1 complete-matrix retained-storage sizing.",
     ),
 )
 default_spec_registry.register_migration(

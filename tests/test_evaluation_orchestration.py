@@ -102,9 +102,9 @@ def _request(
     tmp_path: Path,
     authored: dict[str, Any],
     *,
+    output_preflight: EvaluationOutputPreflightPolicy | None,
     driver: str = "local",
     batch_plan: EvaluationMatrixBatchPlan | None = None,
-    output_preflight: EvaluationOutputPreflightPolicy | None = None,
 ) -> RunAssemblyRequest:
     authored_path = tmp_path / "matrix.json"
     authored_bytes = _write_json(authored_path, authored)
@@ -148,6 +148,7 @@ def _output_preflight(
         retained_bytes_per_resolved_row=bytes_per_row,
         retained_bytes_per_resolved_row_source="measured representative row fixture",
         planned_repetitions=repetitions,
+        storage_mode="retain_all",
         required_free_space_reserve_bytes=reserve_bytes,
     )
 
@@ -166,6 +167,14 @@ def test_evaluation_output_preflight_policy_rejects_boolean_integers(field: str)
     payload[field] = True
 
     with pytest.raises(ValidationError, match=field):
+        EvaluationOutputPreflightPolicy.model_validate(payload)
+
+
+def test_evaluation_output_preflight_policy_requires_explicit_storage_mode() -> None:
+    payload = _output_preflight(expected_rows=2).model_dump(mode="json")
+    del payload["storage_mode"]
+
+    with pytest.raises(ValidationError, match="storage_mode"):
         EvaluationOutputPreflightPolicy.model_validate(payload)
 
 
@@ -194,7 +203,12 @@ def test_authored_matrix_compiles_ordered_batches_under_one_matrix_identity(
             EvaluationMatrixBatchUnit(batch_id="0001", ordered_row_ids=("gain-b",)),
         ),
     )
-    request = _request(tmp_path, matrix, batch_plan=plan).model_copy(
+    request = _request(
+        tmp_path,
+        matrix,
+        batch_plan=plan,
+        output_preflight=_output_preflight(expected_rows=2),
+    ).model_copy(
         update={"launch_policy": LaunchPolicy(max_parallel_rows=4)}
     )
     bundle = _assemble(request, tmp_path)
@@ -235,7 +249,31 @@ def test_batch_plan_drift_is_rejected_during_assembly_before_launch(
         ),
     )
     with pytest.raises(ValueError, match="ordered union"):
-        _assemble(_request(tmp_path, matrix, batch_plan=plan), tmp_path)
+        _assemble(
+            _request(
+                tmp_path,
+                matrix,
+                batch_plan=plan,
+                output_preflight=_output_preflight(expected_rows=2),
+            ),
+            tmp_path,
+        )
+
+
+def test_evaluation_matrix_requires_authored_output_adequacy_before_outputs(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path, _matrix(), output_preflight=None)
+    output_root = Path(request.orchestration_root) / "missing-output-adequacy"
+
+    with pytest.raises(
+        ValueError,
+        match=r"evaluation_output_preflight.*explicit storage_mode choice",
+    ):
+        _assemble(request, tmp_path, run_set_id="missing-output-adequacy")
+
+    assert not output_root.exists()
+    assert not (tmp_path / "custody").exists()
 
 
 @pytest.mark.parametrize("driver", ["local", "runpod"])
@@ -517,6 +555,58 @@ def test_batch_reclamation_preflight_bounds_peak_before_any_output(
     assert bundle.rows[0].launch.metadata["batch_plan"]["consumers"][0]["leaf_id"] == "velocity"
 
 
+@pytest.mark.parametrize(
+    ("batch_plan", "message"),
+    [
+        (None, "evaluation_batch_plan is required"),
+        ("without-consumers", "declared terminal consumers"),
+    ],
+)
+def test_batch_reclamation_requires_authored_plan_and_terminal_consumers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    batch_plan: EvaluationMatrixBatchPlan | str | None,
+    message: str,
+) -> None:
+    from feedbax.orchestration import assembly as assembly_module
+
+    matrix = _matrix()
+    if batch_plan == "without-consumers":
+        batch_plan = EvaluationMatrixBatchPlan(
+            matrix_intent_hash=evaluation_matrix_intent_hash(matrix),
+            batches=(
+                EvaluationMatrixBatchUnit(
+                    batch_id="whole-matrix",
+                    ordered_row_ids=("gain-a", "gain-b"),
+                ),
+            ),
+        )
+    policy = EvaluationOutputPreflightPolicy(
+        expected_resolved_row_count=2,
+        retained_bytes_per_resolved_row=100,
+        retained_bytes_per_resolved_row_source="fixture",
+        planned_repetitions=1,
+        storage_mode="batch_reclamation",
+        required_free_space_reserve_bytes=0,
+    )
+    monkeypatch.setattr(
+        assembly_module.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(free=10_000),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        _assemble(
+            _request(
+                tmp_path,
+                matrix,
+                batch_plan=batch_plan,
+                output_preflight=policy,
+            ),
+            tmp_path,
+        )
+
+
 def test_content_pinned_delta_keeps_authored_payload_and_ordered_resolved_identity(
     tmp_path: Path,
 ) -> None:
@@ -537,7 +627,15 @@ def test_content_pinned_delta_keeps_authored_payload_and_ordered_resolved_identi
             }
         ],
     }
-    bundle = _assemble(_request(tmp_path, delta), tmp_path, run_set_id="delta")
+    bundle = _assemble(
+        _request(
+            tmp_path,
+            delta,
+            output_preflight=_output_preflight(expected_rows=2),
+        ),
+        tmp_path,
+        run_set_id="delta",
+    )
     row = bundle.rows[0]
     payload = json.loads(Path(row.execution.payload.uri).read_text(encoding="utf-8"))
     snapshot = decode_resolved_snapshot(
@@ -582,7 +680,11 @@ def test_matrix_staged_parents_require_and_bind_exact_governed_root_custody(
         "remote": remote,
     }
     matrix["staged_parents"] = {"local": local, "remote": remote}
-    request = _request(tmp_path, matrix)
+    request = _request(
+        tmp_path,
+        matrix,
+        output_preflight=_output_preflight(expected_rows=2),
+    )
     with pytest.raises(ValueError, match="lack governed staged-root custody"):
         _assemble(request, tmp_path)
 
@@ -808,7 +910,11 @@ def register_feedbax_analysis_recipes():
         )
         for leaf in ("trajectory", "velocity")
     )
-    request = _request(tmp_path, shadow_matrix).model_copy(
+    request = _request(
+        tmp_path,
+        shadow_matrix,
+        output_preflight=_output_preflight(expected_rows=8),
+    ).model_copy(
         update={
             "staged_roots": [item.custody for item in sealed],
             "evaluation_batch_plan": EvaluationMatrixBatchPlan(
@@ -943,11 +1049,22 @@ def test_runpod_dry_run_keeps_the_same_public_matrix_executor(
         ),
         consumers=(consumer,),
     )
-    request = _request(tmp_path, matrix, driver="runpod", batch_plan=plan)
+    request = _request(
+        tmp_path,
+        matrix,
+        driver="runpod",
+        batch_plan=plan,
+        output_preflight=_output_preflight(expected_rows=2),
+    )
     bundle = _assemble(request, tmp_path)
     (tmp_path / "local").mkdir()
     local_bundle = _assemble(
-        _request(tmp_path / "local", matrix, batch_plan=plan),
+        _request(
+            tmp_path / "local",
+            matrix,
+            batch_plan=plan,
+            output_preflight=_output_preflight(expected_rows=2),
+        ),
         tmp_path / "local",
     )
 
