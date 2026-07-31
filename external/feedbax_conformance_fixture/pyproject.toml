@@ -8,6 +8,10 @@ dependencies = ["feedbax[analysis]==0.1.2"]
 [project.scripts]
 feedbax-external-conformance = "feedbax_external_conformance.__main__:main"
 
+[project.entry-points."feedbax.plugins"]
+fixture-dependent = "feedbax_external_conformance.plugin:DEPENDENT_PLUGIN_REGISTRATION"
+fixture-foundation = "feedbax_external_conformance.plugin:FOUNDATION_PLUGIN_REGISTRATION"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

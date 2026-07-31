@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 import hashlib
 from pathlib import Path
@@ -63,7 +65,20 @@ from feedbax.contracts.manifest import (
     SpecPayload,
 )
 from feedbax.contracts.evaluation_states import store_evaluation_states_artifact
+from feedbax.plugins import (
+    BootstrapError,
+    BootstrapErrorCode,
+    FamilyRequirement,
+    PluginDeclaration,
+    PluginDependency,
+    PluginRegistration,
+    RegistrationContext,
+    bootstrap_application,
+    discover_plugin_registrations,
+)
 from feedbax.testing import check_material_dependency_contract
+
+from .family import FIXTURE_RECORDS, FixtureRecordRegistry, new_fixture_registration_context
 
 
 _CUSTOM_COMPONENT = "fixture.CurrentScale"
@@ -107,6 +122,175 @@ def check_ordered_registration() -> bool:
             raise
     else:
         raise AssertionError("duplicate ordered lowerer registration was accepted")
+    return True
+
+
+def _fixture_plugin(
+    plugin_id: str,
+    register,
+    *,
+    dependencies: tuple[PluginDependency, ...] = (),
+) -> PluginRegistration:
+    return PluginRegistration(
+        declaration=PluginDeclaration(
+            plugin_id=plugin_id,
+            version="1",
+            dependencies=dependencies,
+            families=(FamilyRequirement(FIXTURE_RECORDS.family),),
+        ),
+        register=register,
+    )
+
+
+def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = None) -> bool:
+    """Prove installed typed discovery and the transactional generic-family contract."""
+
+    sources = discover_plugin_registrations(entry_points=entry_points)
+    expected_plugins = (
+        "feedbax_external_conformance.foundation",
+        "feedbax_external_conformance.dependent",
+    )
+    if tuple(sorted(source.registration.declaration.plugin_id for source in sources)) != tuple(
+        sorted(expected_plugins)
+    ):
+        raise AssertionError("installed feedbax.plugins discovery inventory drifted")
+
+    states = []
+    for shuffled in (sources, tuple(reversed(sources))):
+        states.append(
+            asyncio.run(
+                bootstrap_application(
+                    new_fixture_registration_context(),
+                    registrations=shuffled,
+                )
+            )
+        )
+    if entry_points is None:
+        states.append(asyncio.run(bootstrap_application(new_fixture_registration_context())))
+
+    for state in states:
+        registry = state.registry(FIXTURE_RECORDS)
+        if registry.keys() != ("foundation", "dependent"):
+            raise AssertionError("plugin dependency result depends on discovery order")
+        provenance = state.provenance
+        if tuple(item.plugin_id for item in provenance) != expected_plugins:
+            raise AssertionError("plugin provenance order drifted")
+        if tuple(item.registration_order for item in provenance) != (0, 1):
+            raise AssertionError("plugin provenance registration order drifted")
+        if tuple(item.registered_keys for item in provenance) != (
+            {FIXTURE_RECORDS.family: ("foundation",)},
+            {FIXTURE_RECORDS.family: ("dependent",)},
+        ):
+            raise AssertionError("plugin provenance registered-key attribution drifted")
+        for item in provenance:
+            if (
+                item.distribution != "feedbax-external-conformance"
+                or item.distribution_version != "0.1.0"
+                or len(item.fingerprint) != 64
+                or item.family_protocols != {FIXTURE_RECORDS.family: "1"}
+            ):
+                raise AssertionError("installed plugin provenance is incomplete")
+        try:
+            registry.register("late")
+        except RuntimeError as exc:
+            if "sealed" not in str(exc):
+                raise
+        else:
+            raise AssertionError("published external registry remained mutable")
+
+    if any(
+        left.registry(FIXTURE_RECORDS) is right.registry(FIXTURE_RECORDS)
+        for index, left in enumerate(states)
+        for right in states[index + 1 :]
+    ):
+        raise AssertionError("fresh bootstrap contexts shared an external registry")
+
+    retained: list[FixtureRecordRegistry] = []
+
+    def fail_after_partial(context: RegistrationContext) -> None:
+        context.registry(FIXTURE_RECORDS).register("partial")
+        raise RuntimeError("fixture failure")
+
+    failure_context = new_fixture_registration_context(registry_sink=retained)
+    try:
+        asyncio.run(
+            bootstrap_application(
+                failure_context,
+                registrations=(_fixture_plugin("fixture.failure", fail_after_partial),),
+            )
+        )
+    except BootstrapError as exc:
+        if exc.code is not BootstrapErrorCode.REGISTRATION_FAILURE or exc.plugin_id != (
+            "fixture.failure"
+        ):
+            raise
+    else:
+        raise AssertionError("partial plugin failure published bootstrap state")
+    try:
+        retained[0].register("escaped")
+    except RuntimeError as exc:
+        if "sealed" not in str(exc):
+            raise
+    else:
+        raise AssertionError("failed bootstrap leaked a mutable retained registry")
+    empty = asyncio.run(bootstrap_application(new_fixture_registration_context(), registrations=()))
+    if empty.registry(FIXTURE_RECORDS).keys():
+        raise AssertionError("failed registration contaminated an isolated context")
+
+    first = _fixture_plugin(
+        "fixture.conflict.first",
+        lambda context: context.registry(FIXTURE_RECORDS).register("collision"),
+    )
+    second = _fixture_plugin(
+        "fixture.conflict.second",
+        lambda context: context.registry(FIXTURE_RECORDS).register("collision"),
+        dependencies=(PluginDependency("fixture.conflict.first", "1"),),
+    )
+    try:
+        asyncio.run(
+            bootstrap_application(new_fixture_registration_context(), registrations=(second, first))
+        )
+    except BootstrapError as exc:
+        if exc.code is not BootstrapErrorCode.NAMESPACE_COLLISION or exc.plugin_id != (
+            "fixture.conflict.second"
+        ):
+            raise
+    else:
+        raise AssertionError("namespace collision published bootstrap state")
+
+    missing = _fixture_plugin(
+        "fixture.missing",
+        lambda _context: None,
+        dependencies=(PluginDependency("fixture.absent", "1"),),
+    )
+    try:
+        asyncio.run(
+            bootstrap_application(new_fixture_registration_context(), registrations=(missing,))
+        )
+    except BootstrapError as exc:
+        if exc.code is not BootstrapErrorCode.MISSING_DEPENDENCY or exc.plugin_id != (
+            "fixture.missing"
+        ):
+            raise
+    else:
+        raise AssertionError("missing plugin dependency was accepted")
+
+    class LegacyRegistrarPoint:
+        name = "fixture-legacy"
+        value = "fixture_legacy:register"
+        dist = None
+
+        @staticmethod
+        def load():
+            return lambda _registry: None
+
+    try:
+        discover_plugin_registrations(entry_points=(LegacyRegistrarPoint(),))
+    except BootstrapError as exc:
+        if exc.code is not BootstrapErrorCode.INVALID_REGISTRATION:
+            raise
+    else:
+        raise AssertionError("legacy registrar-only entry point was accepted")
     return True
 
 
@@ -272,7 +456,7 @@ def check_component_param_array_values() -> bool:
             )
         }
     )
-    runtime = spec_to_graph(graph_spec)
+    runtime = spec_to_graph(graph_spec, ComponentRegistry(load_user_components=False))
     if runtime.nodes["plant"].initial_delta_A != ((0.0, 0.5), (0.0, 0.0)):
         raise AssertionError("GraphSpec did not materialize sparse component params")
     if graph_to_spec(runtime).nodes["plant"].params["delta_A"] != sparse.model_dump(mode="json"):
