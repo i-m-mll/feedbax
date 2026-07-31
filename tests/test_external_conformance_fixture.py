@@ -383,6 +383,14 @@ def test_component_param_array_value_case_uses_public_installed_contract(
     assert cases.check_component_param_array_values()
 
 
+def test_component_registration_case_uses_explicit_non_discovering_registry(
+    fixture_package,
+) -> None:
+    cases = importlib.import_module(f"{fixture_package.__name__}.cases")
+
+    assert cases.check_component_registration_and_migration()
+
+
 def test_unified_bootstrap_case_uses_typed_plugin_registrations(
     fixture_package,
 ) -> None:

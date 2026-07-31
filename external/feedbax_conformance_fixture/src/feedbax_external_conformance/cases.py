@@ -295,7 +295,7 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
 
 
 def _component_registry(*, migration_first: bool) -> ComponentRegistry:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry = ComponentRegistry(load_user_components=False)
     if registry.get(_CUSTOM_COMPONENT) is not None:
         raise AssertionError("fixture component appeared through import-time discovery")
     migration = ComponentMigration(
