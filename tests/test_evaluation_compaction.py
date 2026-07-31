@@ -200,6 +200,7 @@ def test_downstream_inventory_dag_covers_all_16200_rows_without_retained_authori
 def test_consumer_parameters_are_canonical_and_exactly_bound_to_callback_context(
     tmp_path: Path,
 ) -> None:
+    registry = EvaluationBatchConsumerRegistry()
     declaration = _declaration("velocity").model_copy(
         update={"parameters": {"projection": "velocity", "window": 12}}
     )
@@ -214,7 +215,7 @@ def test_consumer_parameters_are_canonical_and_exactly_bound_to_callback_context
             role=declaration.compact_product_role,
         )
 
-    register_evaluation_batch_consumer(
+    registry.register(
         declaration.consumer_id,
         declaration.consumer_version,
         compact=compact,
@@ -229,7 +230,6 @@ def test_consumer_parameters_are_canonical_and_exactly_bound_to_callback_context
             schema_version=declaration.compact_product_schema_version,
             role=declaration.compact_product_role,
         ),
-        replace=True,
     )
     batch = EvaluationMatrixBatchUnit(
         batch_id="binding",
@@ -256,6 +256,7 @@ def test_consumer_parameters_are_canonical_and_exactly_bound_to_callback_context
                 parameters=declaration.parameters,
                 execution_context=None,
             ),
+            registry=registry,
             custody_root=tmp_path / "wrong-context",
         )
     with pytest.raises(ValueError, match="parameters drifted"):
@@ -266,6 +267,7 @@ def test_consumer_parameters_are_canonical_and_exactly_bound_to_callback_context
                 parameters={"projection": "position", "window": 12},
                 execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
             ),
+            registry=registry,
             custody_root=tmp_path / "drift",
         )
     fragment = compact_evaluation_batch(
@@ -275,6 +277,7 @@ def test_consumer_parameters_are_canonical_and_exactly_bound_to_callback_context
             parameters=declaration.parameters,
             execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
         ),
+        registry=registry,
         custody_root=tmp_path / "custody",
     )
 
@@ -320,6 +323,7 @@ def test_consumer_parameters_are_canonical_and_exactly_bound_to_callback_context
 def test_consumer_callback_resolves_exact_authenticated_checkpoint_binding(
     tmp_path: Path,
 ) -> None:
+    registry = EvaluationBatchConsumerRegistry()
     from tests.test_checkpoint_custody import (
         _resolver_parent_ref,
         _write_resolver_checkpoint,
@@ -379,7 +383,7 @@ def test_consumer_callback_resolves_exact_authenticated_checkpoint_binding(
             role=declaration.compact_product_role,
         )
 
-    register_evaluation_batch_consumer(
+    registry.register(
         declaration.consumer_id,
         declaration.consumer_version,
         compact=compact,
@@ -394,7 +398,6 @@ def test_consumer_callback_resolves_exact_authenticated_checkpoint_binding(
             schema_version=declaration.compact_product_schema_version,
             role=declaration.compact_product_role,
         ),
-        replace=True,
     )
     batch = EvaluationMatrixBatchUnit(
         batch_id="checkpoint-binding",
@@ -421,6 +424,7 @@ def test_consumer_callback_resolves_exact_authenticated_checkpoint_binding(
     fragment = compact_evaluation_batch(
         declaration,
         consumer_input(declaration, context),
+        registry=registry,
         custody_root=tmp_path / "published",
     )
     assert observed_contexts == [context]
@@ -443,6 +447,7 @@ def test_consumer_callback_resolves_exact_authenticated_checkpoint_binding(
             compact_evaluation_batch(
                 configured,
                 consumer_input(configured, execution_context),
+                registry=registry,
                 custody_root=custody_root,
             )
         assert not custody_root.exists()
@@ -718,9 +723,10 @@ def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path
 
 
 def test_resume_reuses_verified_merge_checkpoint_without_double_application(tmp_path: Path) -> None:
+    registry = EvaluationBatchConsumerRegistry()
     declaration = _declaration("velocity")
     calls: list[str] = []
-    _register(declaration, calls)
+    _register(declaration, calls, registry)
     batch = EvaluationMatrixBatchUnit(
         batch_id="resume",
         ordered_row_ids=("row-a",),
@@ -739,10 +745,12 @@ def test_resume_reuses_verified_merge_checkpoint_without_double_application(tmp_
             parameters=declaration.parameters,
             execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
         ),
+        registry=registry,
         custody_root=tmp_path / "custody",
     )
     first = merge_evaluation_batch_fragment(
         declaration,
+        registry=registry,
         matrix_intent_hash="a" * 64,
         batch=batch,
         parent_authorities=_parent_authorities(outcomes),
@@ -759,6 +767,7 @@ def test_resume_reuses_verified_merge_checkpoint_without_double_application(tmp_
     with pytest.raises(ValueError, match="identity drifted"):
         merge_evaluation_batch_fragment(
             declaration,
+            registry=registry,
             matrix_intent_hash="a" * 64,
             batch=batch,
             parent_authorities=_parent_authorities(outcomes),
@@ -770,6 +779,7 @@ def test_resume_reuses_verified_merge_checkpoint_without_double_application(tmp_
     checkpoint_path.write_bytes(checkpoint_bytes)
     resumed = merge_evaluation_batch_fragment(
         declaration,
+        registry=registry,
         matrix_intent_hash="a" * 64,
         batch=batch,
         parent_authorities=_parent_authorities(outcomes),
@@ -786,6 +796,7 @@ def test_resume_reuses_verified_merge_checkpoint_without_double_application(tmp_
     with pytest.raises(ValueError, match="fragment identity drifted"):
         merge_evaluation_batch_fragment(
             changed,
+            registry=registry,
             matrix_intent_hash="a" * 64,
             batch=batch,
             parent_authorities=_parent_authorities(outcomes),
@@ -798,6 +809,7 @@ def test_resume_reuses_verified_merge_checkpoint_without_double_application(tmp_
     with pytest.raises(ValueError, match="fragment identity drifted"):
         merge_evaluation_batch_fragment(
             changed_parameters,
+            registry=registry,
             matrix_intent_hash="a" * 64,
             batch=batch,
             parent_authorities=_parent_authorities(outcomes),
@@ -812,6 +824,7 @@ def test_resume_reuses_verified_merge_checkpoint_without_double_application(tmp_
     with pytest.raises(ValueError, match="fragment identity drifted"):
         merge_evaluation_batch_fragment(
             changed_analysis,
+            registry=registry,
             matrix_intent_hash="a" * 64,
             batch=batch,
             parent_authorities=_parent_authorities(outcomes),
@@ -824,6 +837,7 @@ def test_resume_reuses_verified_merge_checkpoint_without_double_application(tmp_
     with pytest.raises(ValueError, match="checkpoint identity drifted"):
         merge_evaluation_batch_fragment(
             declaration,
+            registry=registry,
             matrix_intent_hash="a" * 64,
             batch=changed_batch,
             parent_authorities=_parent_authorities(outcomes),
@@ -843,6 +857,7 @@ def test_resume_reuses_verified_merge_checkpoint_without_double_application(tmp_
     with pytest.raises(ValueError, match="identity drifted"):
         merge_evaluation_batch_fragment(
             declaration,
+            registry=registry,
             matrix_intent_hash="a" * 64,
             batch=batch,
             parent_authorities=(changed_parent,),
@@ -857,9 +872,10 @@ def test_reclamation_restart_rejects_canonical_numeric_parameter_drift_before_de
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    registry = EvaluationBatchConsumerRegistry()
     declaration = _declaration("velocity").model_copy(update={"parameters": {"threshold": 1}})
     calls: list[str] = []
-    _register(declaration, calls)
+    _register(declaration, calls, registry)
     batch = EvaluationMatrixBatchUnit(
         batch_id="numeric-drift",
         ordered_row_ids=("row-a",),
@@ -878,10 +894,12 @@ def test_reclamation_restart_rejects_canonical_numeric_parameter_drift_before_de
             parameters=declaration.parameters,
             execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
         ),
+        registry=registry,
         custody_root=tmp_path / "custody",
     )
     acknowledgement = merge_evaluation_batch_fragment(
         declaration,
+        registry=registry,
         matrix_intent_hash="a" * 64,
         batch=batch,
         parent_authorities=_parent_authorities(outcomes),
@@ -894,6 +912,7 @@ def test_reclamation_restart_rejects_canonical_numeric_parameter_drift_before_de
     with pytest.raises(ValueError, match="identity drifted"):
         reclaim_evaluation_batch_caches(
             batch,
+            registry=registry,
             matrix_intent_hash="b" * 64,
             batch_index=0,
             outcomes=outcomes,
@@ -921,6 +940,7 @@ def test_reclamation_restart_rejects_canonical_numeric_parameter_drift_before_de
     with pytest.raises(RuntimeError, match="before deletion"):
         reclaim_evaluation_batch_caches(
             batch,
+            registry=registry,
             matrix_intent_hash="a" * 64,
             batch_index=0,
             outcomes=outcomes,
@@ -941,6 +961,7 @@ def test_reclamation_restart_rejects_canonical_numeric_parameter_drift_before_de
     with pytest.raises(ValueError, match="fragment identity drifted"):
         reclaim_evaluation_batch_caches(
             batch,
+            registry=registry,
             matrix_intent_hash="a" * 64,
             batch_index=0,
             outcomes=outcomes,
@@ -956,6 +977,7 @@ def test_reclamation_restart_rejects_canonical_numeric_parameter_drift_before_de
     with pytest.raises(ValueError, match="identity drifted"):
         reclaim_evaluation_batch_caches(
             batch,
+            registry=registry,
             matrix_intent_hash="a" * 64,
             batch_index=0,
             outcomes=outcomes,
@@ -969,6 +991,7 @@ def test_reclamation_restart_rejects_canonical_numeric_parameter_drift_before_de
 
 @pytest.mark.parametrize("failure", ["wrong_schema", "wrong_role", "tampered", "unmaterialized"])
 def test_fragment_failure_retains_raw_cache(tmp_path: Path, failure: str) -> None:
+    registry = EvaluationBatchConsumerRegistry()
     declaration = _declaration("velocity")
 
     def compact(_value: EvaluationBatchConsumerInput) -> EvaluationBatchFragment:
@@ -983,7 +1006,7 @@ def test_fragment_failure_retains_raw_cache(tmp_path: Path, failure: str) -> Non
             role="wrong" if failure == "wrong_role" else declaration.compact_product_role,
         )
 
-    register_evaluation_batch_consumer(
+    registry.register(
         declaration.consumer_id,
         declaration.consumer_version,
         compact=compact,
@@ -998,7 +1021,6 @@ def test_fragment_failure_retains_raw_cache(tmp_path: Path, failure: str) -> Non
             schema_version=declaration.compact_product_schema_version,
             role=declaration.compact_product_role,
         ),
-        replace=True,
     )
     batch = EvaluationMatrixBatchUnit(
         batch_id="failure",
@@ -1021,6 +1043,7 @@ def test_fragment_failure_retains_raw_cache(tmp_path: Path, failure: str) -> Non
                     parameters=declaration.parameters,
                     execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
                 ),
+                registry=registry,
                 custody_root=tmp_path / "custody",
             )
     else:
@@ -1036,6 +1059,7 @@ def test_fragment_failure_retains_raw_cache(tmp_path: Path, failure: str) -> Non
                 parameters=declaration.parameters,
                 execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
             ),
+            registry=registry,
             custody_root=tmp_path / "custody",
         )
         provider = ImmutableArtifactBlobProvider(tmp_path / "custody")
@@ -1047,6 +1071,7 @@ def test_fragment_failure_retains_raw_cache(tmp_path: Path, failure: str) -> Non
         with pytest.raises(Exception):
             merge_evaluation_batch_fragment(
                 declaration,
+                registry=registry,
                 matrix_intent_hash="a" * 64,
                 batch=batch,
                 parent_authorities=_parent_authorities(outcomes),

@@ -447,6 +447,7 @@ def test_compiler_result_is_consumed_as_an_ordinary_row_lowerer(
     authoring_registry,
     tmp_path,
 ) -> None:
+    registry, _holder = authoring_registry
     matrix = TrainingRunMatrixSpec.model_validate(
         {
             "name": "typed authoring",
@@ -460,6 +461,7 @@ def test_compiler_result_is_consumed_as_an_ordinary_row_lowerer(
     lowerer = partial(
         compile_training_method_authoring,
         method_ref=METHOD_REF,
+        _registry=registry,
     )
 
     materialized = materialize_adapted_run_matrix(
@@ -765,7 +767,7 @@ def _descriptor_registration(
         for descriptor in descriptors:
             methods.register_descriptor(descriptor)
             if descriptor.authoring_hook is not None:
-                lowerers.register(_training_method_row_lowerer_registration(descriptor))
+                lowerers.register(_training_method_row_lowerer_registration(descriptor, methods))
 
     return PluginRegistration(
         PluginDeclaration(
@@ -911,6 +913,7 @@ def test_default_matrix_compiler_reaches_descriptor_authoring(
     )
 
     compiled = TrainingRunMatrixCompiler(
+        method_registry=state.bundle.training_methods,
         allow_inline_base=True,
         row_validator=lambda payload, _row_id: TrainingRunSpec.model_validate(payload),
         row_lowerer=state.bundle.row_lowerers.lower,
@@ -1031,9 +1034,10 @@ DESCRIPTOR = TrainingMethodDescriptor(
     )
 
 def register(context):
-    context.registry(TRAINING_METHODS).register_descriptor(DESCRIPTOR)
+    methods = context.registry(TRAINING_METHODS)
+    methods.register_descriptor(DESCRIPTOR)
     context.registry(ROW_LOWERERS).register(
-        _training_method_row_lowerer_registration(DESCRIPTOR)
+        _training_method_row_lowerer_registration(DESCRIPTOR, methods)
     )
 
 PLUGIN_REGISTRATION = PluginRegistration(
