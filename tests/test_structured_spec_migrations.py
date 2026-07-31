@@ -80,6 +80,7 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_VERSION_V2,
     GRAPH_SPEC_SCHEMA_VERSION_V3,
+    GRAPH_SPEC_SCHEMA_VERSION_V4,
     LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     STUDIO_BIOMECHANICS_SCHEMA_ID,
@@ -1691,6 +1692,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
         LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
         GRAPH_SPEC_SCHEMA_VERSION_V2,
         GRAPH_SPEC_SCHEMA_VERSION_V3,
+        GRAPH_SPEC_SCHEMA_VERSION_V4,
     )
     assert component_definition_policy is not None
     assert component_definition_policy.stance == "migrate"
