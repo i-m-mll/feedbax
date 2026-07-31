@@ -37,9 +37,11 @@ RUN_BUNDLE_SCHEMA_VERSION_V7 = "feedbax.orchestration.run_bundle.v7"
 RUN_BUNDLE_SCHEMA_VERSION_V8 = "feedbax.orchestration.run_bundle.v8"
 RUN_BUNDLE_SCHEMA_VERSION_V9 = "feedbax.orchestration.run_bundle.v9"
 RUN_BUNDLE_SCHEMA_VERSION_V10 = "feedbax.orchestration.run_bundle.v10"
-RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v11"
+RUN_BUNDLE_SCHEMA_VERSION_V11 = "feedbax.orchestration.run_bundle.v11"
+RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v12"
 DEPLOYMENT_POLICY_SCHEMA_ID = "feedbax.spec.deployment_policy"
-DEPLOYMENT_POLICY_SCHEMA_VERSION = "feedbax.spec.deployment_policy.v1"
+DEPLOYMENT_POLICY_SCHEMA_VERSION_V1 = "feedbax.spec.deployment_policy.v1"
+DEPLOYMENT_POLICY_SCHEMA_VERSION = "feedbax.spec.deployment_policy.v2"
 EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID = "feedbax.spec.execution_identity_envelope"
 EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1 = "feedbax.spec.execution_identity_envelope.v1"
 EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION = "feedbax.spec.execution_identity_envelope.v2"
@@ -324,22 +326,13 @@ class DeploymentPolicy(StrictModel):
     """Versioned requested launch venue, authorization, and resource policy."""
 
     schema_id: Literal["feedbax.spec.deployment_policy"] = DEPLOYMENT_POLICY_SCHEMA_ID
-    schema_version: Literal["feedbax.spec.deployment_policy.v1"] = DEPLOYMENT_POLICY_SCHEMA_VERSION
-    driver: Literal["local", "worker-http", "runpod"]
+    schema_version: Literal["feedbax.spec.deployment_policy.v2"] = DEPLOYMENT_POLICY_SCHEMA_VERSION
+    driver: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9._-]*(?::[a-z0-9][a-z0-9._-]*)*$")
     venue: Literal["local", "remote"]
     cloud_authorized: bool
     review_required: bool
     review_authorized: bool
     resources: DeploymentResourceRequest = Field(default_factory=DeploymentResourceRequest)
-
-    @model_validator(mode="after")
-    def _validate_authority(self) -> "DeploymentPolicy":
-        expected_venue = "local" if self.driver == "local" else "remote"
-        if self.venue != expected_venue:
-            raise ValueError(f"deployment driver {self.driver!r} requires venue={expected_venue!r}")
-        if self.driver == "runpod" and not self.cloud_authorized:
-            raise ValueError("runpod deployment requires explicit cloud_authorized=true")
-        return self
 
 
 class LaunchPolicy(StrictModel):
@@ -489,7 +482,7 @@ class RunBundle(StrictModel):
     """Schema-versioned orchestration request for a run set."""
 
     schema_id: Literal["feedbax.orchestration.run_bundle"] = RUN_BUNDLE_SCHEMA_ID
-    schema_version: Literal["feedbax.orchestration.run_bundle.v11"] = RUN_BUNDLE_SCHEMA_VERSION
+    schema_version: Literal["feedbax.orchestration.run_bundle.v12"] = RUN_BUNDLE_SCHEMA_VERSION
     run_set_id: str = Field(default_factory=mint_run_set_id)
     feedbax_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     execution_family: ExecutionFamily = "native-training"
