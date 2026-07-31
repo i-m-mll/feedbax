@@ -2391,6 +2391,12 @@ class RunPodOrchestrationDriver:
             "owned_by_run": owned_by_run,
             "teardown_allowed": owned_by_run,
             "pod_id": pod_id if isinstance(pod_id, str) else None,
+            "resource_id": pod_id if isinstance(pod_id, str) else None,
+            "endpoint": (
+                f"ssh://{self._endpoint.host}:{self._endpoint.port}"
+                if self._endpoint is not None
+                else None
+            ),
         }
 
     def has_pending_owned_resource(self) -> bool:

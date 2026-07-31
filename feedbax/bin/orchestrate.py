@@ -33,6 +33,7 @@ from feedbax.orchestration import (
     STAGE_ORDER,
     MatrixAuthorityError,
     AssemblyContext,
+    EmergencyRunSetRecord,
     RunAssemblyRequest,
     RunBundle,
     RunEvent,
@@ -513,7 +514,13 @@ def cmd_describe(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    state = _load_state(args.run_set)
+    state = _load_status_state(args.run_set)
+    if isinstance(state, EmergencyRunSetRecord):
+        if args.json:
+            _write_json(state)
+        else:
+            print(_format_emergency_status(state))
+        return EXIT_OTHER
     if args.json:
         _write_json(state)
     else:
@@ -906,6 +913,32 @@ def _load_existing_bundle(run_set_id: str) -> RunBundle:
 
 def _load_state(run_set_id: str) -> RunSetState:
     return RunSetStateStore(_run_set_dir(run_set_id) / "state.json").load()
+
+
+def _load_status_state(run_set_id: str) -> RunSetState | EmergencyRunSetRecord:
+    store = RunSetStateStore(_run_set_dir(run_set_id) / "state.json")
+    emergency = store.load_emergency() if store.emergency_path.exists() else None
+    if emergency is not None and emergency.preservation_state != "release-authorized":
+        return emergency
+    try:
+        return store.load()
+    except (OSError, ValueError):
+        if emergency is not None:
+            return emergency
+        raise
+
+
+def _format_emergency_status(record: EmergencyRunSetRecord) -> str:
+    return " ".join(
+        (
+            f"run_set={record.run_set_id}",
+            f"recovery={record.preservation_state}",
+            f"provider={record.provider_identity.provider}",
+            f"resource_id={record.provider_identity.resource_id}",
+            f"custody_complete={str(record.custody_complete).lower()}",
+            "next_recovery_action=" + json.dumps(record.next_recovery_action),
+        )
+    )
 
 
 def _run_set_dir(run_set_id: str) -> Path:
