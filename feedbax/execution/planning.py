@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import shlex
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
@@ -37,6 +36,7 @@ from feedbax.execution.models import (
 from feedbax.orchestration.repo_snapshot import (
     SealedRepoSnapshot,
     SealedRepoSnapshots,
+    default_repo_snapshot_cache_dir,
     seal_repo_snapshots,
     snapshot_manifest_digest,
 )
@@ -665,10 +665,7 @@ def _seal_local_rsync_sources(spec: ExecutionSpec) -> SealedRepoSnapshots | None
     }
     if not repos:
         return None
-    return seal_repo_snapshots(
-        repos,
-        snapshot_parent=Path(tempfile.gettempdir()) / "feedbax-repo-snapshots",
-    )
+    return seal_repo_snapshots(repos, snapshot_parent=default_repo_snapshot_cache_dir())
 
 
 def _primary_repo(spec: ExecutionSpec) -> Optional[str]:

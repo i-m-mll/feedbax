@@ -2,10 +2,13 @@ from collections.abc import Iterator
 import hashlib
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
 import jax
 import pytest
+
+from feedbax.orchestration.repo_snapshot import REPO_SNAPSHOT_CACHE_DIR_ENV
 
 
 _CACHE_SOURCE_PATHS = ("feedbax", "tests", "pyproject.toml", "uv.lock")
@@ -102,6 +105,26 @@ def _configure_jax_persistent_cache() -> None:
 
 
 _configure_jax_persistent_cache()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_repo_snapshot_cache(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Keep sealed test snapshots out of the per-checkout production snapshot cache.
+
+    Tests that seal repo snapshots through a production entry point would otherwise share
+    one content-addressed tree with real runs and with every other worker on the machine.
+    Pytest's per-worker base temporary directory gives each xdist worker of each run its
+    own parent, and prunes it on later runs.
+    """
+    cache_dir = tmp_path_factory.mktemp("repo-snapshot-cache", numbered=False)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv(REPO_SNAPSHOT_CACHE_DIR_ENV, str(cache_dir))
+        yield
+    # Sealed snapshot directories are read-only by design, which defeats pytest's own
+    # temporary-directory pruning, so restore owner write permission before removal.
+    for directory, _subdirectories, _files in os.walk(cache_dir, topdown=True):
+        os.chmod(directory, 0o700)
+    shutil.rmtree(cache_dir, ignore_errors=True)
 
 
 @pytest.fixture
