@@ -46,7 +46,6 @@ from feedbax.contracts.manifest import ParentRef, TrainingRunManifest, load_mani
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.migrations import migrate_structured_spec_payload
 from feedbax.contracts.training import (
-    STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
     LossTermSpec,
     ObjectiveSlotSpec,
     TaskSpec,
@@ -60,11 +59,8 @@ from feedbax.contracts.training import (
 )
 from feedbax.contracts.worker import (
     CheckpointSlotSpec,
-    EffectivePhaseSpec,
     ProgressCoordinate,
     TrainingBatchProgressSpec,
-    derive_consistency_predicate,
-    toy_minimax_method_contract,
 )
 from feedbax.training.checkpoint_custody import (
     LEGACY_CHECKPOINT_ADOPTION_DOCS,
@@ -95,6 +91,13 @@ from feedbax.training.checkpoint_custody import (
     materialize_concatenated_checkpoint_histories,
     rebuild_checkpoint_fork_derived_digests,
     relock_checkpoint_fork_derived_digests,
+)
+from tests.checkpoint_minimax_plugin import (
+    PLUGIN_MODULE as CHECKPOINT_MINIMAX_PLUGIN,
+    checkpoint_minimax_effective_phase,
+    checkpoint_minimax_method_contract,
+    checkpoint_minimax_method_payload,
+    checkpoint_minimax_method_ref,
 )
 
 
@@ -130,28 +133,15 @@ def _minimal_graph() -> dict[str, object]:
 
 def _run_spec(*, minimax: bool = False) -> TrainingRunSpec:
     if minimax:
-        contract = toy_minimax_method_contract()
-        program = contract.phase_program.model_copy(deep=True)
-        program.checkpoint_barriers[0].metadata["consistency_mode"] = "population-barrier"
-        method_contract = contract.model_copy(
-            update={
-                "method_ref": "feedbax/standard_supervised/v1",
-                "method_payload_schema_version": (
-                    STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION
-                ),
-                "phase_program": program,
-            }
-        )
-        effective_phase = EffectivePhaseSpec(
-            method_ref="feedbax/standard_supervised/v1",
-            axes=method_contract.axes,
-            state_slots=method_contract.state_slots,
-            phase_program=program,
-            consistency_predicate=derive_consistency_predicate(program),
-        )
+        method_contract = checkpoint_minimax_method_contract()
+        effective_phase = checkpoint_minimax_effective_phase()
+        method_ref = checkpoint_minimax_method_ref()
+        method_payload = checkpoint_minimax_method_payload()
     else:
         method_contract = standard_supervised_method_contract()
         effective_phase = standard_supervised_effective_phase_spec()
+        method_ref = standard_supervised_method_ref()
+        method_payload = standard_supervised_method_payload()
 
     return TrainingRunSpec(
         graph={"inline": _minimal_graph()},
@@ -160,8 +150,8 @@ def _run_spec(*, minimax: bool = False) -> TrainingRunSpec:
         objective=ObjectiveSlotSpec(
             loss=LossTermSpec(type="target_state", label="target", selector="output")
         ),
-        method_ref=standard_supervised_method_ref(),
-        method_payload=standard_supervised_method_payload(),
+        method_ref=method_ref,
+        method_payload=method_payload,
         worker_execution=WorkerExecutionSpec(
             method_contract=method_contract,
             effective_phase=effective_phase,
@@ -2567,6 +2557,8 @@ def test_checkpoint_fork_cli_batch_smoke_partial_failure(tmp_path: Path) -> None
             "fork",
             "--source",
             str(source_root),
+            "--plugin",
+            CHECKPOINT_MINIMAX_PLUGIN,
             "--target",
             f"{good_spec}:{good_a}",
             "--target",
@@ -2641,6 +2633,7 @@ def test_checkpoint_fork_plan_cli_executes_from_fresh_process(tmp_path: Path) ->
     command = [sys.executable, "-m", "feedbax", "checkpoint", "fork-plan"]
     command += ["--plan", str(plan_path), "--bindings", str(bindings_path)]
     command += ["--dependencies", json.dumps(dependencies)]
+    command += ["--plugin", CHECKPOINT_MINIMAX_PLUGIN]
     completed = subprocess.run(command, check=False, cwd=Path(__file__).parents[1],
                                text=True, capture_output=True)
 

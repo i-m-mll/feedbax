@@ -20,6 +20,7 @@ from feedbax.contracts.component import (
     ComponentDefinition,
     ComponentIdentity,
     ComponentMigrationInfo,
+    DynamicPortPolicy,
     PortType,
     PortTypeSpec,
 )
@@ -217,6 +218,12 @@ from feedbax.web.api.training import (
     ValidateLossResponse,
     ValidationErrorResponse,
 )
+from feedbax.web.api.execution import (
+    SampledTaskTrial,
+    TaskTimelineCue,
+    TaskTrialSampleRequest,
+    TaskTrialSampleResponse,
+)
 from feedbax.web.api.runs import (
     CreateEvalRunRequest,
     EvalRunInfo,
@@ -331,6 +338,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     PortTypeSpec,
     ComponentIdentity,
     ComponentMigrationInfo,
+    DynamicPortPolicy,
     RepresentationParamPathBinding,
     RepresentationStateAnchorSelectorBinding,
     RepresentationTrialSpecPathBinding,
@@ -375,6 +383,10 @@ MODEL_TYPES: list[type[BaseModel]] = [
     TrainingSpec,
     TaskSpec,
     TrainingConfig,
+    TaskTimelineCue,
+    SampledTaskTrial,
+    TaskTrialSampleRequest,
+    TaskTrialSampleResponse,
     ParentRef,
     TopKByMetricPerGroup,
     ManifestPredicate,
@@ -533,6 +545,8 @@ CONTRACT_MODEL_NAMES = [
     "InspectionStatusResponse",
     "ProbeResponse",
     "ValidateLossResponse",
+    "TaskTrialSampleRequest",
+    "TaskTrialSampleResponse",
     "TrainingWebSocketEvent",
 ]
 

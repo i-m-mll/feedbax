@@ -652,6 +652,18 @@ export interface ComponentMigrationInfo {
   description?: string;
 }
 
+export interface DynamicPortPolicy {
+  count_param: string;
+  count_mode: "integer" | "sequence_length";
+  direction: "input" | "output";
+  fixed_input_ports?: string[];
+  fixed_output_ports?: string[];
+  generated_name_template: string;
+  generated_index_origin?: number;
+  minimum_count?: number;
+  dynamic_port_type: PortType;
+}
+
 export interface RepresentationParamPathBinding {
   kind?: "param_path";
   path: string;
@@ -949,7 +961,7 @@ export interface ResolvedWorkspaceReplayScene {
 
 export interface ComponentDefinition {
   schema_id?: "feedbax.spec.component_definition";
-  schema_version?: "feedbax.spec.component_definition.v2";
+  schema_version?: "feedbax.spec.component_definition.v3";
   name: string;
   category: string;
   description: string;
@@ -959,6 +971,7 @@ export interface ComponentDefinition {
   icon?: string;
   default_params?: Record<string, number | string | boolean | null | unknown[] | Record<string, unknown>>;
   port_types?: PortTypeSpec | null;
+  dynamic_port_policy?: DynamicPortPolicy | null;
   domain?: string;
   interior_domain?: string | null;
   is_composite?: boolean;
@@ -1059,6 +1072,36 @@ export interface TrainingConfig {
   n_reach_steps?: number;
   effort_weight?: number;
   snapshot_interval?: number;
+}
+
+export interface TaskTimelineCue {
+  label: string;
+  step: number;
+  kind: string;
+}
+
+export interface SampledTaskTrial {
+  id: string;
+  index: number;
+  start: number[];
+  goal: number[];
+  n_steps: number;
+  timeline?: TaskTimelineCue[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface TaskTrialSampleRequest {
+  task_spec: TaskSpec;
+  seed?: number;
+  count?: number;
+}
+
+export interface TaskTrialSampleResponse {
+  schema_version?: string;
+  task_type: string;
+  seed: number;
+  count: number;
+  trials: SampledTaskTrial[];
 }
 
 export interface ParentRef {
@@ -2775,6 +2818,22 @@ export const ComponentMigrationInfoSchema: z.ZodType<ComponentMigrationInfo> = z
     .strict()
 ) as unknown as z.ZodType<ComponentMigrationInfo>;
 
+export const DynamicPortPolicySchema: z.ZodType<DynamicPortPolicy> = z.lazy(() =>
+  z
+    .object({
+      "count_param": z.string(),
+      "count_mode": z.union([z.literal("integer"), z.literal("sequence_length")]),
+      "direction": z.union([z.literal("input"), z.literal("output")]),
+      "fixed_input_ports": z.array(z.string()).optional(),
+      "fixed_output_ports": z.array(z.string()).optional(),
+      "generated_name_template": z.string(),
+      "generated_index_origin": z.number().int().optional(),
+      "minimum_count": z.number().int().optional(),
+      "dynamic_port_type": PortTypeSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<DynamicPortPolicy>;
+
 export const RepresentationParamPathBindingSchema: z.ZodType<RepresentationParamPathBinding> = z.lazy(() =>
   z
     .object({
@@ -3210,7 +3269,7 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
   z
     .object({
       "schema_id": z.literal("feedbax.spec.component_definition").optional(),
-      "schema_version": z.literal("feedbax.spec.component_definition.v2").optional(),
+      "schema_version": z.literal("feedbax.spec.component_definition.v3").optional(),
       "name": z.string(),
       "category": z.string(),
       "description": z.string(),
@@ -3220,6 +3279,7 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
       "icon": z.string().optional(),
       "default_params": z.record(z.string(), z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
       "port_types": PortTypeSpecSchema.nullable().optional(),
+      "dynamic_port_policy": DynamicPortPolicySchema.nullable().optional(),
       "domain": z.string().optional(),
       "interior_domain": z.string().nullable().optional(),
       "is_composite": z.boolean().optional(),
@@ -3359,6 +3419,52 @@ export const TrainingConfigSchema: z.ZodType<TrainingConfig> = z.lazy(() =>
     })
     .strict()
 ) as unknown as z.ZodType<TrainingConfig>;
+
+export const TaskTimelineCueSchema: z.ZodType<TaskTimelineCue> = z.lazy(() =>
+  z
+    .object({
+      "label": z.string(),
+      "step": z.number().int(),
+      "kind": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<TaskTimelineCue>;
+
+export const SampledTaskTrialSchema: z.ZodType<SampledTaskTrial> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "index": z.number().int(),
+      "start": z.array(z.number()),
+      "goal": z.array(z.number()),
+      "n_steps": z.number().int(),
+      "timeline": z.array(TaskTimelineCueSchema).optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<SampledTaskTrial>;
+
+export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z.lazy(() =>
+  z
+    .object({
+      "task_spec": TaskSpecSchema,
+      "seed": z.number().int().optional(),
+      "count": z.number().int().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TaskTrialSampleRequest>;
+
+export const TaskTrialSampleResponseSchema: z.ZodType<TaskTrialSampleResponse> = z.lazy(() =>
+  z
+    .object({
+      "schema_version": z.string().optional(),
+      "task_type": z.string(),
+      "seed": z.number().int(),
+      "count": z.number().int(),
+      "trials": z.array(SampledTaskTrialSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TaskTrialSampleResponse>;
 
 export const ParentRefSchema: z.ZodType<ParentRef> = z.lazy(() =>
   z
@@ -4597,6 +4703,8 @@ export const contractSchemas = {
   InspectionStatusResponse: InspectionStatusResponseSchema,
   ProbeResponse: ProbeResponseSchema,
   ValidateLossResponse: ValidateLossResponseSchema,
+  TaskTrialSampleRequest: TaskTrialSampleRequestSchema,
+  TaskTrialSampleResponse: TaskTrialSampleResponseSchema,
   TrainingWebSocketEvent: TrainingWebSocketEventSchema,
 } as const;
 
@@ -4650,6 +4758,8 @@ export interface ContractTypeMap {
   InspectionStatusResponse: InspectionStatusResponse;
   ProbeResponse: ProbeResponse;
   ValidateLossResponse: ValidateLossResponse;
+  TaskTrialSampleRequest: TaskTrialSampleRequest;
+  TaskTrialSampleResponse: TaskTrialSampleResponse;
   TrainingWebSocketEvent: TrainingWebSocketEvent;
 }
 

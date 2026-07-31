@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.web.app import create_app
 
 
-def _client() -> TestClient:
-    return TestClient(create_app())
+@pytest.fixture
+def client():
+    with TestClient(create_app()) as test_client:
+        yield test_client
 
 
-def test_sample_task_trials_is_deterministic_for_simple_reaches() -> None:
-    client = _client()
+def test_sample_task_trials_is_deterministic_for_simple_reaches(client: TestClient) -> None:
     request = {
         "task_spec": {
             "type": "SimpleReaches",
@@ -39,8 +41,8 @@ def test_sample_task_trials_is_deterministic_for_simple_reaches() -> None:
     assert len(payload["trials"][0]["goal"]) == 2
 
 
-def test_sample_task_trials_accepts_reaching_task_registry_alias() -> None:
-    response = _client().post(
+def test_sample_task_trials_accepts_reaching_task_registry_alias(client: TestClient) -> None:
+    response = client.post(
         "/api/execution/task-trials/sample",
         json={
             "task_spec": {
@@ -56,9 +58,9 @@ def test_sample_task_trials_accepts_reaching_task_registry_alias() -> None:
     assert response.json()["task_type"] == "SimpleReaches"
 
 
-def test_sample_task_trials_supports_delayed_center_out_timeline_cues() -> None:
-    client = _client()
-
+def test_sample_task_trials_supports_delayed_center_out_timeline_cues(
+    client: TestClient,
+) -> None:
     response = client.post(
         "/api/execution/task-trials/sample",
         json={
@@ -84,8 +86,8 @@ def test_sample_task_trials_supports_delayed_center_out_timeline_cues() -> None:
     assert {"label": "go_cue", "step": 2, "kind": "event"} in trial["timeline"]
 
 
-def test_sample_task_trials_rejects_unsupported_task_type() -> None:
-    response = _client().post(
+def test_sample_task_trials_rejects_unsupported_task_type(client: TestClient) -> None:
+    response = client.post(
         "/api/execution/task-trials/sample",
         json={"task_spec": {"type": "Stabilization", "params": {}}, "seed": 0, "count": 1},
     )

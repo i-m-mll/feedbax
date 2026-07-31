@@ -94,6 +94,7 @@ def test_analysis_bundle_v2_migrates_stage_params_to_explicit_local_params() -> 
         "analysis-bundle-v2-to-v3-shared-params-base",
         "analysis-bundle-v3-to-v4-per-input-prerequisites",
         "analysis-bundle-v4-to-v5-evaluation-states-policy",
+        "analysis-bundle-v5-to-v6-composable-figure-stage",
     ]
     assert migrated.params_base.params == {}
     assert migrated.stages[0].local_params == {"window": 11}
@@ -118,6 +119,7 @@ def test_analysis_bundle_v3_migrates_with_empty_prerequisite_bindings() -> None:
     assert [record.migration_id for record in result.migration_records] == [
         "analysis-bundle-v3-to-v4-per-input-prerequisites",
         "analysis-bundle-v4-to-v5-evaluation-states-policy",
+        "analysis-bundle-v5-to-v6-composable-figure-stage",
     ]
 
 
@@ -150,7 +152,8 @@ stages:
         get_yaml_loader(typ="safe").load(payload),
     )
     assert [record.migration_id for record in migrated.migration_records] == [
-        "analysis-bundle-v4-to-v5-evaluation-states-policy"
+        "analysis-bundle-v4-to-v5-evaluation-states-policy",
+        "analysis-bundle-v5-to-v6-composable-figure-stage",
     ]
     loaded = AnalysisBundleSpec.model_validate(migrated.payload)
     round_tripped = AnalysisBundleSpec.model_validate_json(loaded.model_dump_json())

@@ -508,10 +508,10 @@ def test_recursive_parent_migrates_supported_older_direct_bundle(tmp_path: Path)
 
     resolved, flattening = resolve_analysis_bundle_authoring(child, repo_root=tmp_path)
 
-    assert resolved.schema_version == "feedbax.spec.analysis_bundle.v5"
+    assert resolved.schema_version == "feedbax.spec.analysis_bundle.v6"
     assert resolved.stages[0].local_params == {"window": 11}
     assert flattening is not None
-    assert flattening.payload["schema_version"] == "feedbax.spec.analysis_bundle.v5"
+    assert flattening.payload["schema_version"] == "feedbax.spec.analysis_bundle.v6"
 
 
 def test_provider_and_migration_registry_publish_separate_authoring_schema() -> None:
