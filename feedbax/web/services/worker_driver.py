@@ -16,12 +16,41 @@ from feedbax.orchestration.bundle import RunBundle, RunRowSpec
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.studio_training import StudioTrainingAssemblySpec
 from feedbax.orchestration.drivers.base import DriverRowProbe
+from feedbax.orchestration.drivers.capabilities import (
+    AcquisitionSemantics,
+    AuthorizationSemantics,
+    CustodySemantics,
+    DriverCapabilities,
+    DriverVenue,
+    EnvironmentSemantics,
+    MonitoringSemantics,
+    RecoverySemantics,
+    ResourceSemantics,
+    RetrySemantics,
+    SpendSemantics,
+    TeardownSemantics,
+)
 from feedbax.orchestration.events import RUN_EVENT_TERMINAL_TYPES, RunEvent
 from feedbax.orchestration.state import RunSetState
 
 
 class WorkerHttpDriver:
     """Drive one Studio training worker through the orchestration interface."""
+
+    capabilities = DriverCapabilities(
+        driver_name="worker-http",
+        venue=DriverVenue.REMOTE_SERVICE,
+        resources=ResourceSemantics.EXTERNALLY_MANAGED,
+        spend=SpendSemantics.EXTERNALLY_MANAGED,
+        authorization=AuthorizationSemantics.OPTIONAL_CALLER_CREDENTIAL,
+        environment=EnvironmentSemantics.OPAQUE_DRIVER_IDENTITY,
+        monitoring=MonitoringSemantics.EVENT_STREAM_AND_ROW_POLL,
+        recovery=RecoverySemantics.NONE,
+        retry=RetrySemantics.NONE,
+        acquisition=AcquisitionSemantics.EXTERNALLY_PROVIDED,
+        teardown=TeardownSemantics.EXTERNAL_RESOURCES_PRESERVED,
+        custody=CustodySemantics.EXTERNAL_SERVICE,
+    )
 
     def __init__(
         self,

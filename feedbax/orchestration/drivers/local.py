@@ -32,6 +32,21 @@ from feedbax.orchestration.conformance import (
     assert_certificate_allows_completed_registration,
 )
 from feedbax.orchestration.drivers.base import DriverRowProbe
+from feedbax.orchestration.drivers.capabilities import (
+    AcquisitionSemantics,
+    AuthorizationSemantics,
+    CustodySemantics,
+    DriverCapabilities,
+    DriverHook,
+    DriverVenue,
+    EnvironmentSemantics,
+    MonitoringSemantics,
+    RecoverySemantics,
+    ResourceSemantics,
+    RetrySemantics,
+    SpendSemantics,
+    TeardownSemantics,
+)
 from feedbax.orchestration.drivers.native_execution import (
     native_resume_checkpoint_source,
     seed_authenticated_checkpoint,
@@ -86,6 +101,27 @@ print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
 
 class LocalOrchestrationDriver:
     """Run orchestration rows as local subprocesses under the run-set directory."""
+
+    capabilities = DriverCapabilities(
+        driver_name="local",
+        venue=DriverVenue.LOCAL_PROCESS,
+        resources=ResourceSemantics.LOCAL_PROCESS,
+        spend=SpendSemantics.NONE,
+        authorization=AuthorizationSemantics.NONE,
+        environment=EnvironmentSemantics.LOCAL_INVENTORY,
+        monitoring=MonitoringSemantics.ROW_POLL,
+        recovery=RecoverySemantics.PROCESS_LOCAL,
+        retry=RetrySemantics.NONE,
+        acquisition=AcquisitionSemantics.NONE,
+        teardown=TeardownSemantics.LOCAL_PROCESS_STOP,
+        custody=CustodySemantics.LOCAL_RUN_SET,
+        optional_hooks=frozenset(
+            {
+                DriverHook.PREFLIGHT_CHECKS,
+                DriverHook.CHECKPOINT_STOP,
+            }
+        ),
+    )
 
     def __init__(
         self,
