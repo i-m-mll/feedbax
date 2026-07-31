@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import jax.tree_util as jtu
 from pydantic import ValidationError
@@ -98,10 +98,78 @@ class ResolvedAnalysisInput:
     path: Path | None
     states: Any = None
     evaluation_state_source: AnalysisEvaluationStateSource | None = None
+    evaluation_state_receipt: EvaluationStateMaterializationReceipt | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     manifest_input: ResolvedManifestInput | None = field(
         default=None,
         repr=False,
         compare=False,
+    )
+
+
+_EVALUATION_STATE_RECEIPT_TOKEN = object()
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class EvaluationStateMaterializationReceipt:
+    """Resolver-issued runtime proof binding one state object to its source path.
+
+    ``proof_kind`` is deliberately truthful about the source mechanism:
+    durable artifacts are content-authenticated, evaluation caches are
+    manifest-keyed/versioned, and recomputed states carry an authenticated
+    resulting manifest. The receipt is runtime-only and is not a durable schema.
+    """
+
+    source: AnalysisEvaluationStateSource
+    proof_kind: Literal[
+        "authenticated_artifact",
+        "manifest_keyed_cache",
+        "authenticated_recompute",
+    ]
+    _states: Any = field(repr=False, compare=False)
+
+    def __init__(
+        self,
+        source: AnalysisEvaluationStateSource,
+        proof_kind: Literal[
+            "authenticated_artifact",
+            "manifest_keyed_cache",
+            "authenticated_recompute",
+        ],
+        states: Any,
+        *,
+        _token: object,
+    ) -> None:
+        if _token is not _EVALUATION_STATE_RECEIPT_TOKEN:
+            raise TypeError(
+                "EvaluationStateMaterializationReceipt is issued by resolve_analysis_inputs"
+            )
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "proof_kind", proof_kind)
+        object.__setattr__(self, "_states", states)
+
+    def matches(self, states: Any, source: AnalysisEvaluationStateSource) -> bool:
+        """Return whether this receipt binds the exact resolved object and source."""
+        return self._states is states and self.source == source
+
+
+def _evaluation_state_receipt(
+    states: Any,
+    source: AnalysisEvaluationStateSource,
+) -> EvaluationStateMaterializationReceipt:
+    proof_kind = {
+        "durable": "authenticated_artifact",
+        "evaluation_cache": "manifest_keyed_cache",
+        "analysis_time_recompute": "authenticated_recompute",
+    }[source.source_kind]
+    return EvaluationStateMaterializationReceipt(
+        source,
+        proof_kind,
+        states,
+        _token=_EVALUATION_STATE_RECEIPT_TOKEN,
     )
 
 
@@ -383,6 +451,7 @@ def resolve_analysis_inputs(
                         path=manifest_path,
                         states=states,
                         evaluation_state_source=state_source,
+                        evaluation_state_receipt=_evaluation_state_receipt(states, state_source),
                         manifest_input=manifest_input,
                     )
                 )
@@ -462,6 +531,11 @@ def resolve_analysis_inputs(
                 path=manifest_path,
                 states=states,
                 evaluation_state_source=state_source,
+                evaluation_state_receipt=(
+                    _evaluation_state_receipt(states, state_source)
+                    if states is not None and state_source is not None
+                    else None
+                ),
                 manifest_input=manifest_input,
             )
         )

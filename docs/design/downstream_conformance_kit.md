@@ -65,21 +65,23 @@ lifecycle child is separately fixed and asserted as a print-only Python
 command.
 
 The versioned machine result is
-`feedbax.external_conformance.result.v3`. V2 remains the frozen exact six-case
+`feedbax.external_conformance.result.v4`. V2 remains the frozen exact six-case
 foundation result; it rejects rather than migrating because it contains no
 evidence for the required `typed_evaluation_row_projection` case. V1 can be
 deterministically normalized to v2 by adding separate unbound `current` and
 `minimum` protocol role slots, but then rejects for the same missing v3
-evidence. V3 requires the exact seven case IDs with strict boolean values and
-requires both None-valued role slots explicitly. Those slots are not stability
-guarantees and remain unbound until the owner-ratified policy exists. Adding or
-removing a case, binding a protocol role, or changing required evidence fields
-requires another deliberate schema version and migration or rejection decision.
+evidence. V3 rejects because its projection evidence did not require a
+resolver-issued state-materialization receipt. V4 requires the exact seven case
+IDs with strict boolean values and requires both None-valued role slots
+explicitly. Those slots are not stability guarantees and remain unbound until
+the owner-ratified policy exists. Adding or removing a case, binding a protocol
+role, or changing required evidence fields requires another deliberate schema
+version and migration or rejection decision.
 
-The typed evaluation-row case uses only public clean-wheel imports. It projects
-durable `ResolvedAnalysisInput` rows through downstream-owned state, parameter,
-metadata, and row-key types after Feedbax authenticates the exact manifest,
-producer/source provenance, and state authority. It also proves structured
+The typed evaluation-row case uses only public clean-wheel imports. It resolves
+durable states through `resolve_analysis_inputs`, then projects the
+resolver-receipted exact state object and verified manifest/producer provenance
+through one downstream-owned cross-field callback. It also proves structured
 error categories and exact authored-Cartesian coverage without embedding
 conditioning, target, replicate, or mixed-authority scientific policy.
 

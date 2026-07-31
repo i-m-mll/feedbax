@@ -10,39 +10,49 @@ from pydantic import BaseModel, ConfigDict
 
 from feedbax.analysis import (
     EvaluationRowCoverageError,
+    EvaluationRowProjection,
     EvaluationRowProjectionError,
     EvaluationRowProjectionErrorCategory,
-    EvaluationRowProjector,
+    EvaluationRowProjectionErrorReason,
+    EvaluationStateMaterializationReceipt,
     ResolvedAnalysisInput,
-    project_authenticated_evaluation_rows,
+    ResolvedManifestInput,
+    project_verified_evaluation_rows,
     require_exact_authored_cartesian_coverage,
+    resolve_analysis_inputs,
 )
-from feedbax.analysis.manifest_inputs import ResolvedManifestInput
+from feedbax.analysis.evaluation import write_evaluation_states_cache
+from feedbax.contracts.evaluation_states import store_evaluation_states_artifact
 from feedbax.contracts.manifest import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
-    AnalysisEvaluationStateSource,
-    ArtifactRef,
+    AnalysisRunSpec,
     EntrypointRef,
     EvaluationRunManifest,
     EvaluationRunSpec,
     ParentRef,
     Provenance,
     SpecPayload,
+    evaluation_states_cache_path,
+    write_manifest,
 )
 
 
-class _Parameters(BaseModel):
+class _VelocityParameters(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     arm: str
     target: int
+    conditioning: str
+    gain: float
 
 
-class _Metadata(BaseModel):
+class _VelocityMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     states_schema: str
+    controller: str
+    partition: str
 
 
 def _authenticated_ref(
@@ -64,7 +74,12 @@ def _authenticated_ref(
     )
 
 
-def _input(*, arm: str = "trained", target: int = 0) -> ResolvedAnalysisInput:
+def _manifest_and_input(
+    tmp_path: Path,
+    *,
+    target: int,
+    durable: bool,
+) -> tuple[EvaluationRunManifest, ResolvedManifestInput]:
     training_bytes = b"training"
     training = _authenticated_ref(
         "TrainingRunManifest",
@@ -72,24 +87,25 @@ def _input(*, arm: str = "trained", target: int = 0) -> ResolvedAnalysisInput:
         "training_run",
         training_bytes,
     )
+    manifest_id = f"evaluation:trained:{target}"
     run_spec = EvaluationRunSpec(
         evaluation_type="fixture.row_projection",
         inputs=[training],
-        params={"arm": arm, "target": target},
+        params={
+            "arm": "trained",
+            "target": target,
+            "conditioning": "reach",
+            "gain": 2.0,
+        },
     )
-    states_bytes = b"states"
-    states_digest = hashlib.sha256(states_bytes).hexdigest()
-    artifact = ArtifactRef(
-        role="evaluation_states",
-        logical_name="states",
-        artifact_id=f"artifact://sha256/{states_digest}",
-        sha256=states_digest,
-        size_bytes=len(states_bytes),
-        storage_backend="fixture",
-        uri=f"artifact://sha256/{states_digest}",
+    states = {"sample": target, "velocity": target + 0.5}
+    artifacts = (
+        [store_evaluation_states_artifact(states, root=tmp_path, manifest_id=manifest_id)]
+        if durable
+        else []
     )
     manifest = EvaluationRunManifest(
-        id=f"evaluation:{arm}:{target}",
+        id=manifest_id,
         status="completed",
         evaluation_spec=SpecPayload(
             kind="EvaluationRunSpec",
@@ -98,8 +114,12 @@ def _input(*, arm: str = "trained", target: int = 0) -> ResolvedAnalysisInput:
             inline=run_spec.model_dump(mode="json"),
         ),
         input_training_runs=[training],
-        artifacts=[artifact],
-        metadata={"states_schema": "fixture.states.v1"},
+        artifacts=artifacts,
+        metadata={
+            "states_schema": "fixture.states.v1",
+            "controller": "feedback",
+            "partition": "holdout",
+        },
         provenance=Provenance(
             entrypoint=EntrypointRef(
                 kind="feedbax-evaluation-recipe",
@@ -115,71 +135,153 @@ def _input(*, arm: str = "trained", target: int = 0) -> ResolvedAnalysisInput:
         "evaluation_run",
         raw_bytes,
     )
-    portable_authority = authority.model_copy(update={"uri": None})
-    source = AnalysisEvaluationStateSource(
-        source_kind="durable",
-        requested_evaluation_manifest_id=manifest.id,
-        evaluation_manifest_authority=portable_authority,
-        supplying_evaluation_manifest_id=manifest.id,
-        artifact_id=artifact.artifact_id,
-        artifact_sha256=artifact.sha256,
-        artifact_size_bytes=artifact.size_bytes,
-        artifact_storage_backend=artifact.storage_backend,
-        container_schema_id="feedbax.manifest.evaluation_states_container",
-        container_schema_version="feedbax.manifest.evaluation_states_container.v3",
-        container_storage_backend="npz.v3",
-    )
-    return ResolvedAnalysisInput(
+    return manifest, ResolvedManifestInput(
         ref=authority,
         manifest=manifest,
-        path=None,
-        states={"samples": [target]},
-        evaluation_state_source=source,
-        manifest_input=ResolvedManifestInput(
-            ref=authority,
-            manifest=manifest,
-            path=Path(f"/fixture/{manifest.id}.json"),
-            raw_bytes=raw_bytes,
-        ),
+        path=Path(f"/fixture/{manifest.id}.json"),
+        raw_bytes=raw_bytes,
     )
 
 
-def _projector() -> EvaluationRowProjector[
-    tuple[int, ...],
-    _Parameters,
-    _Metadata,
-    tuple[str, int],
-]:
-    return EvaluationRowProjector(
-        state=lambda row: tuple(row.states["samples"]),
-        parameters=lambda row: _Parameters.model_validate(row.parameters),
-        metadata=lambda row: _Metadata.model_validate(row.metadata),
-        row_key=lambda _row, _state, params, _metadata: (params.arm, params.target),
+def _resolved_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    source_kind: str = "evaluation_cache",
+    target: int = 0,
+) -> ResolvedAnalysisInput:
+    durable = source_kind == "durable"
+    manifest, manifest_input = _manifest_and_input(
+        tmp_path,
+        target=target,
+        durable=durable,
+    )
+    states = {"sample": target, "velocity": target + 0.5}
+    cache_path = evaluation_states_cache_path(manifest.id, root=tmp_path)
+    if source_kind == "evaluation_cache":
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        write_evaluation_states_cache(cache_path, manifest_id=manifest.id, states=states)
+    elif source_kind == "analysis_time_recompute":
+
+        def rederive(*_args: Any, **_kwargs: Any) -> tuple[EvaluationRunManifest, Path]:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            write_evaluation_states_cache(cache_path, manifest_id=manifest.id, states=states)
+            return manifest, write_manifest(manifest, root=tmp_path, index=False)
+
+        monkeypatch.setattr("feedbax.analysis.specs._rederive_evaluation_states", rederive)
+    policy = "require_durable" if durable else "recompute"
+    analysis_spec = AnalysisRunSpec(
+        analysis_type="fixture.row_projection.analysis",
+        inputs=[manifest_input.ref],
+        evaluation_states_policy=policy,
+    )
+    return resolve_analysis_inputs(
+        analysis_spec,
+        root=tmp_path,
+        authenticated_inputs={0: manifest_input},
+    )[0]
+
+
+def _velocity_projection(facts: Any) -> EvaluationRowProjection:
+    params = _VelocityParameters.model_validate(facts.parameters)
+    metadata = _VelocityMetadata.model_validate(facts.metadata)
+    if metadata.states_schema != "fixture.states.v1":
+        raise ValueError("unsupported state geometry")
+    velocity = float(facts.states["velocity"])
+    if velocity <= params.target:
+        raise ValueError("state/parameter relationship is invalid")
+    return EvaluationRowProjection(
+        row_key=(params.arm, params.target, params.conditioning),
+        state=velocity,
+        parameters=params,
+        metadata=metadata,
     )
 
 
-def test_projects_typed_rows_after_authenticating_authority_and_provenance() -> None:
-    rows = project_authenticated_evaluation_rows(
-        [_input(target=0), _input(target=1)],
-        projector=_projector(),
-    )
-
-    assert tuple(row.row_key for row in rows) == (("trained", 0), ("trained", 1))
-    assert rows[1].state == (1,)
-    assert rows[0].parameters == _Parameters(arm="trained", target=0)
-    assert rows[0].metadata == _Metadata(states_schema="fixture.states.v1")
-    assert rows[0].authority.provenance.producer_identity == "fixture.row_projection"
-    assert rows[0].authority.provenance.source_refs == (
-        rows[0].authority.run_spec.inputs[0],
+def _controller_response_projection(facts: Any) -> EvaluationRowProjection:
+    params = _VelocityParameters.model_validate(facts.parameters)
+    metadata = _VelocityMetadata.model_validate(facts.metadata)
+    if metadata.controller != "feedback" or metadata.partition != "holdout":
+        raise ValueError("consumer-owned controller partition is invalid")
+    response = float(facts.states["velocity"]) * params.gain
+    return EvaluationRowProjection(
+        row_key=(metadata.controller, params.target, metadata.partition),
+        state={"peak_response": response},
+        parameters=params,
+        metadata=metadata,
     )
 
 
 @pytest.mark.parametrize(
-    ("mutate", "category"),
+    ("source_kind", "proof_kind"),
+    [
+        ("durable", "authenticated_artifact"),
+        ("evaluation_cache", "manifest_keyed_cache"),
+        ("analysis_time_recompute", "authenticated_recompute"),
+    ],
+)
+def test_projects_all_resolver_source_kinds_with_truthful_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_kind: str,
+    proof_kind: str,
+) -> None:
+    item = _resolved_input(tmp_path, monkeypatch, source_kind=source_kind)
+
+    row = project_verified_evaluation_rows([item], project=_velocity_projection)[0]
+
+    assert row.row_key == ("trained", 0, "reach")
+    assert row.state == 0.5
+    assert row.facts.state_source.source_kind == source_kind
+    assert row.facts.state_receipt.proof_kind == proof_kind
+    assert row.facts.provenance.producer_identity == "fixture.row_projection"
+
+
+def test_one_projector_supports_two_materially_different_consumer_shapes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inputs = [
+        _resolved_input(tmp_path, monkeypatch, target=0),
+        _resolved_input(tmp_path, monkeypatch, target=1),
+    ]
+
+    velocity = project_verified_evaluation_rows(inputs, project=_velocity_projection)
+    controller = project_verified_evaluation_rows(
+        inputs,
+        project=_controller_response_projection,
+    )
+
+    assert tuple(row.state for row in velocity) == (0.5, 1.5)
+    assert tuple(row.row_key for row in controller) == (
+        ("feedback", 0, "holdout"),
+        ("feedback", 1, "holdout"),
+    )
+    assert controller[1].state == {"peak_response": 3.0}
+
+
+def test_state_receipt_cannot_be_minted_through_the_public_constructor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = _resolved_input(tmp_path, monkeypatch)
+
+    with pytest.raises(TypeError, match="issued by resolve_analysis_inputs"):
+        EvaluationStateMaterializationReceipt(
+            item.evaluation_state_source,
+            "manifest_keyed_cache",
+            item.states,
+            _token=object(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "category", "reason"),
     [
         (
             lambda item: replace(item, manifest_input=None),
             EvaluationRowProjectionErrorCategory.INPUT_CONTRACT,
+            EvaluationRowProjectionErrorReason.INPUT_MANIFEST_MISSING,
         ),
         (
             lambda item: replace(
@@ -187,63 +289,106 @@ def test_projects_typed_rows_after_authenticating_authority_and_provenance() -> 
                 manifest_input=replace(item.manifest_input, raw_bytes=b"tampered"),
             ),
             EvaluationRowProjectionErrorCategory.PROVENANCE,
+            EvaluationRowProjectionErrorReason.MANIFEST_PROVENANCE_INVALID,
         ),
         (
-            lambda item: replace(item, evaluation_state_source=None),
-            EvaluationRowProjectionErrorCategory.STATE_AUTHORITY,
+            lambda item: replace(item, evaluation_state_receipt=None),
+            EvaluationRowProjectionErrorCategory.STATE_MATERIALIZATION,
+            EvaluationRowProjectionErrorReason.STATE_RECEIPT_MISSING,
+        ),
+        (
+            lambda item: replace(item, states={"sample": 99, "velocity": 99.5}),
+            EvaluationRowProjectionErrorCategory.STATE_MATERIALIZATION,
+            EvaluationRowProjectionErrorReason.STATE_RECEIPT_MISMATCH,
         ),
     ],
 )
-def test_authentication_failures_have_structured_categories(
+def test_failures_have_stable_categories_and_reason_codes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     mutate: Any,
     category: EvaluationRowProjectionErrorCategory,
+    reason: EvaluationRowProjectionErrorReason,
 ) -> None:
+    item = _resolved_input(tmp_path, monkeypatch, source_kind="durable")
+
     with pytest.raises(EvaluationRowProjectionError) as caught:
-        project_authenticated_evaluation_rows(
-            [mutate(_input())],
-            projector=_projector(),
-        )
+        project_verified_evaluation_rows([mutate(item)], project=_velocity_projection)
 
     assert caught.value.category is category
+    assert caught.value.reason is reason
     assert caught.value.row_index == 0
 
 
-def test_downstream_projection_failure_is_categorized_without_message_parsing() -> None:
-    projector = replace(
-        _projector(),
-        metadata=lambda _row: (_ for _ in ()).throw(RuntimeError("downstream detail")),
+@pytest.mark.parametrize(
+    ("source_kind", "field", "value"),
+    [
+        ("durable", "container_schema_version", "wrong"),
+        ("evaluation_cache", "cache_key", "wrong"),
+        ("analysis_time_recompute", "resulting_evaluation_manifest_id", "wrong"),
+    ],
+)
+def test_complete_typed_source_is_bound_at_the_receipt_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_kind: str,
+    field: str,
+    value: str,
+) -> None:
+    item = _resolved_input(tmp_path, monkeypatch, source_kind=source_kind)
+    tampered = replace(
+        item,
+        evaluation_state_source=item.evaluation_state_source.model_copy(update={field: value}),
     )
 
     with pytest.raises(EvaluationRowProjectionError) as caught:
-        project_authenticated_evaluation_rows([_input()], projector=projector)
+        project_verified_evaluation_rows([tampered], project=_velocity_projection)
+
+    assert caught.value.reason is EvaluationRowProjectionErrorReason.STATE_RECEIPT_MISMATCH
+
+
+def test_downstream_projection_failure_is_reason_coded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(_facts: Any) -> EvaluationRowProjection:
+        raise RuntimeError("downstream detail")
+
+    with pytest.raises(EvaluationRowProjectionError) as caught:
+        project_verified_evaluation_rows(
+            [_resolved_input(tmp_path, monkeypatch)],
+            project=fail,
+        )
 
     assert caught.value.category is EvaluationRowProjectionErrorCategory.PROJECTION
-    assert caught.value.projection_field == "metadata"
+    assert caught.value.reason is EvaluationRowProjectionErrorReason.PROJECTOR_FAILED
     assert isinstance(caught.value.__cause__, RuntimeError)
 
 
-def test_duplicate_projected_row_key_is_a_distinct_error_category() -> None:
-    with pytest.raises(EvaluationRowProjectionError) as caught:
-        project_authenticated_evaluation_rows(
-            [_input(), _input()],
-            projector=_projector(),
-        )
+def test_duplicate_projected_row_key_carries_identity_and_indices(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = _resolved_input(tmp_path, monkeypatch)
 
-    assert caught.value.category is EvaluationRowProjectionErrorCategory.DUPLICATE_ROW_KEY
+    with pytest.raises(EvaluationRowProjectionError) as caught:
+        project_verified_evaluation_rows([item, item], project=_velocity_projection)
+
+    assert caught.value.reason is EvaluationRowProjectionErrorReason.PROJECTED_KEY_DUPLICATE
+    assert caught.value.row_key == ("trained", 0, "reach")
+    assert caught.value.first_index == 0
+    assert caught.value.row_index == 1
 
 
 def test_exact_authored_cartesian_coverage_preserves_authored_order() -> None:
-    axes = {"arm": ["analytical", "trained"], "target": [0, 1]}
-    observed = [
-        ("trained", 1),
-        ("analytical", 0),
-        ("trained", 0),
-        ("analytical", 1),
-    ]
-
     expected = require_exact_authored_cartesian_coverage(
-        observed,
-        axes=axes,
+        [
+            ("trained", 1),
+            ("analytical", 0),
+            ("trained", 0),
+            ("analytical", 1),
+        ],
+        axes={"arm": ["analytical", "trained"], "target": [0, 1]},
         row_key=lambda coordinate: (coordinate["arm"], coordinate["target"]),
     )
 
@@ -263,24 +408,36 @@ def test_exact_authored_cartesian_coverage_reports_structured_delta() -> None:
             row_key=lambda coordinate: (coordinate["arm"], coordinate["target"]),
         )
 
-    assert caught.value.category is EvaluationRowProjectionErrorCategory.COVERAGE
+    assert caught.value.reason is EvaluationRowProjectionErrorReason.COVERAGE_KEY_SET_MISMATCH
     assert caught.value.missing == (("trained", 1),)
     assert caught.value.unexpected == (("other", 1),)
 
 
-def test_exact_authored_cartesian_coverage_rejects_duplicates_and_key_collisions() -> None:
+def test_exact_coverage_reports_duplicate_keys_and_indices() -> None:
     with pytest.raises(EvaluationRowCoverageError) as duplicate:
         require_exact_authored_cartesian_coverage(
             [("trained", 0), ("trained", 0)],
             axes={"arm": ["trained"], "target": [0]},
             row_key=lambda coordinate: (coordinate["arm"], coordinate["target"]),
         )
-    assert duplicate.value.duplicates == (("trained", 0),)
 
+    assert duplicate.value.reason is (
+        EvaluationRowProjectionErrorReason.COVERAGE_OBSERVED_KEY_DUPLICATE
+    )
+    assert duplicate.value.duplicates == (("trained", 0),)
+    assert duplicate.value.duplicate_indices == ((0, 1),)
+
+
+def test_exact_coverage_reports_expected_key_collision() -> None:
     with pytest.raises(EvaluationRowCoverageError) as collision:
         require_exact_authored_cartesian_coverage(
             ["trained"],
             axes={"arm": ["trained"], "target": [0, 1]},
             row_key=lambda coordinate: coordinate["arm"],
         )
+
+    assert collision.value.reason is (
+        EvaluationRowProjectionErrorReason.COVERAGE_EXPECTED_KEY_COLLISION
+    )
     assert collision.value.duplicates == ("trained",)
+    assert collision.value.duplicate_indices == ((0, 1),)

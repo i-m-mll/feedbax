@@ -10,7 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 RESULT_SCHEMA_ID = "feedbax.external_conformance.result"
 RESULT_SCHEMA_VERSION_V1 = f"{RESULT_SCHEMA_ID}.v1"
 RESULT_SCHEMA_VERSION_V2 = f"{RESULT_SCHEMA_ID}.v2"
-RESULT_SCHEMA_VERSION = f"{RESULT_SCHEMA_ID}.v3"
+RESULT_SCHEMA_VERSION_V3 = f"{RESULT_SCHEMA_ID}.v3"
+RESULT_SCHEMA_VERSION = f"{RESULT_SCHEMA_ID}.v4"
 V2_REQUIRED_CASE_IDS = (
     "ordered_registration",
     "component_registration_and_migration",
@@ -24,14 +25,17 @@ REQUIRED_CASE_IDS = (
     "typed_evaluation_row_projection",
     V2_REQUIRED_CASE_IDS[-1],
 )
+V3_REQUIRED_CASE_IDS = REQUIRED_CASE_IDS
 _REQUIRED_CASE_ID_SET = frozenset(REQUIRED_CASE_IDS)
 RESULT_SCHEMA_MIGRATION_TABLE = {
     RESULT_SCHEMA_VERSION_V1: (
         f"migrate to {RESULT_SCHEMA_VERSION_V2} by adding unbound protocol role slots; "
         f"then reject for {RESULT_SCHEMA_VERSION}"
     ),
-    RESULT_SCHEMA_VERSION_V2: (
-        "reject; v2 contains no typed_evaluation_row_projection evidence"
+    RESULT_SCHEMA_VERSION_V2: ("reject; v2 contains no typed_evaluation_row_projection evidence"),
+    RESULT_SCHEMA_VERSION_V3: (
+        "reject; v3 row-projection evidence did not require a resolver-issued "
+        "state-materialization receipt"
     ),
 }
 
@@ -60,7 +64,7 @@ class ConformanceResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_id: Literal["feedbax.external_conformance.result"] = RESULT_SCHEMA_ID
-    schema_version: Literal["feedbax.external_conformance.result.v3"] = RESULT_SCHEMA_VERSION
+    schema_version: Literal["feedbax.external_conformance.result.v4"] = RESULT_SCHEMA_VERSION
     status: Literal["pass", "blocked"]
     feedbax_version: str = Field(min_length=1)
     feedbax_install_root: str = Field(min_length=1)
@@ -74,7 +78,7 @@ class ConformanceResult(BaseModel):
         observed = frozenset(self.cases)
         if observed != _REQUIRED_CASE_ID_SET:
             raise ValueError(
-                "external conformance cases must exactly match the v3 contract: "
+                "external conformance cases must exactly match the v4 contract: "
                 f"missing={sorted(_REQUIRED_CASE_ID_SET - observed)!r}, "
                 f"extra={sorted(observed - _REQUIRED_CASE_ID_SET)!r}"
             )
@@ -90,7 +94,7 @@ class ConformanceResult(BaseModel):
 
 
 def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResult:
-    """Load v3; reject v2 because its exact evidence set cannot prove the new case."""
+    """Load v4; reject older evidence that cannot prove the resolver receipt."""
     if isinstance(payload, ConformanceResult):
         return ConformanceResult.model_validate(payload.model_dump(mode="json"))
     data = dict(payload)
@@ -113,6 +117,12 @@ def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResul
             "external conformance result v2 cannot migrate to v3: "
             "v2 contains no typed_evaluation_row_projection evidence"
         )
+    if version == RESULT_SCHEMA_VERSION_V3:
+        raise ValueError(
+            "external conformance result v3 cannot migrate to v4: "
+            "v3 typed_evaluation_row_projection evidence did not require a "
+            "resolver-issued state-materialization receipt"
+        )
     if version != RESULT_SCHEMA_VERSION:
         raise ValueError(
             "unsupported external conformance result schema_version: "
@@ -127,9 +137,11 @@ __all__ = [
     "RESULT_SCHEMA_VERSION",
     "RESULT_SCHEMA_VERSION_V1",
     "RESULT_SCHEMA_VERSION_V2",
+    "RESULT_SCHEMA_VERSION_V3",
     "RESULT_SCHEMA_MIGRATION_TABLE",
     "REQUIRED_CASE_IDS",
     "V2_REQUIRED_CASE_IDS",
+    "V3_REQUIRED_CASE_IDS",
     "ConformanceResult",
     "LifecycleResult",
     "ProtocolRoleSlots",

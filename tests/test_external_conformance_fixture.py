@@ -90,9 +90,28 @@ def test_result_v2_rejects_because_the_new_case_was_not_measured(
         fixture_package.load_result(payload)
 
 
+def test_result_v3_rejects_unbound_row_projection_evidence(fixture_package) -> None:
+    payload = fixture_package.ConformanceResult(
+        status="pass",
+        feedbax_version="0.1.2",
+        feedbax_install_root="/installed/feedbax",
+        fixture_install_root="/installed/fixture",
+        protocol_roles=_protocol_roles(),
+        cases=_required_cases(fixture_package),
+        lifecycle={"status": "pass"},
+    ).model_dump(mode="json")
+    payload["schema_version"] = "feedbax.external_conformance.result.v3"
+
+    with pytest.raises(
+        ValueError,
+        match="v3 cannot migrate to v4.*resolver-issued state-materialization receipt",
+    ):
+        fixture_package.load_result(payload)
+
+
 @pytest.mark.parametrize(
     "version",
-    [None, "feedbax.external_conformance.result.v0", "feedbax.external_conformance.result.v4"],
+    [None, "feedbax.external_conformance.result.v0", "feedbax.external_conformance.result.v5"],
 )
 def test_result_rejects_unsupported_versions(fixture_package, version: str | None) -> None:
     payload = {
@@ -159,7 +178,7 @@ def test_result_rejects_inconsistent_outcomes(
         )
 
 
-def test_result_v3_case_contract_is_exact_and_v2_remains_frozen(fixture_package) -> None:
+def test_result_v4_case_contract_is_exact_and_v2_remains_frozen(fixture_package) -> None:
     assert fixture_package.V2_REQUIRED_CASE_IDS == (
         "ordered_registration",
         "component_registration_and_migration",
@@ -194,7 +213,7 @@ def test_result_v3_case_contract_is_exact_and_v2_remains_frozen(fixture_package)
             fixture_package.ConformanceResult.model_validate({**valid, "cases": cases})
 
 
-def test_result_v3_case_values_are_strict_booleans(fixture_package) -> None:
+def test_result_v4_case_values_are_strict_booleans(fixture_package) -> None:
     cases = _required_cases(fixture_package)
     cases["public_lifecycle_recovery"] = "yes"
 
@@ -211,7 +230,7 @@ def test_result_v3_case_values_are_strict_booleans(fixture_package) -> None:
 
 
 @pytest.mark.parametrize("slot", ["current", "minimum"])
-def test_result_v3_protocol_roles_remain_unbound(fixture_package, slot: str) -> None:
+def test_result_v4_protocol_roles_remain_unbound(fixture_package, slot: str) -> None:
     roles: dict[str, object] = _protocol_roles()
     roles[slot] = "unratified"
     with pytest.raises(ValidationError):
@@ -231,13 +250,13 @@ def test_result_v3_protocol_roles_remain_unbound(fixture_package, slot: str) -> 
     [None, {}, {"current": None}, {"minimum": None}],
     ids=["absent", "empty", "missing-minimum", "missing-current"],
 )
-def test_result_v3_requires_explicit_protocol_role_slots(
+def test_result_v4_requires_explicit_protocol_role_slots(
     fixture_package,
     protocol_roles: dict[str, None] | None,
 ) -> None:
     payload = {
         "schema_id": "feedbax.external_conformance.result",
-        "schema_version": "feedbax.external_conformance.result.v3",
+        "schema_version": "feedbax.external_conformance.result.v4",
         "status": "pass",
         "feedbax_version": "0.1.2",
         "feedbax_install_root": "/installed/feedbax",
@@ -429,7 +448,7 @@ def test_clean_wheel_wrapper_rejects_malformed_result(
     result_path.write_text(
         """{
   "schema_id": "feedbax.external_conformance.result",
-  "schema_version": "feedbax.external_conformance.result.v3",
+  "schema_version": "feedbax.external_conformance.result.v4",
   "status": "pass",
   "feedbax_version": "0.1.2",
   "feedbax_install_root": "/isolated/feedbax",

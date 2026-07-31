@@ -28,11 +28,13 @@ therefore authenticates installed-wheel provenance at both execution
 boundaries. The deployment policy is explicitly local and cloud-unauthorized;
 all custody, orchestration, and cache paths are unique temporary directories.
 
-The result schema is `feedbax.external_conformance.result.v3`. Its evidence map
+The result schema is `feedbax.external_conformance.result.v4`. Its evidence map
 has exactly seven case IDs with strict boolean values, including typed
-authenticated evaluation-row projection. V2 remains the exact six-case
-foundation and rejects rather than pretending it measured the new case. The
-`current` and `minimum` protocol role slots remain explicitly required and
-None-only until owner ratification. Version 1 can normalize to v2 only when the
-later role field is absent, then rejects for the same missing v3 evidence.
-Unknown, ambiguous, versionless, and future versions are rejected.
+verified-provenance evaluation-row projection. V2 remains the exact six-case
+foundation and rejects rather than pretending it measured the new case. V3
+also rejects because its row-projection case did not require a resolver-issued
+state-materialization receipt. The `current` and `minimum` protocol role slots
+remain explicitly required and None-only until owner ratification. Version 1
+can normalize to v2 only when the later role field is absent, then rejects for
+the same missing v3 evidence. Unknown, ambiguous, versionless, and future
+versions are rejected.
