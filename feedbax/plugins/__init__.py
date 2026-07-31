@@ -44,6 +44,42 @@ from .bootstrap import (
     validate_downstream_protocol_version,
 )
 from .registry import ExperimentRegistry
+from feedbax.analysis.evaluation import (
+    EvaluationBatchRecipe,
+    EvaluationRecipe,
+    EvaluationRecipeRegistry,
+    EvaluationRecipeResult,
+)
+from feedbax.analysis.evaluation_compaction import (
+    EvaluationBatchConsumer,
+    EvaluationBatchConsumerInput,
+    EvaluationBatchConsumerRegistry,
+    EvaluationBatchFinalizeInput,
+    EvaluationBatchFragment,
+    EvaluationBatchMergeInput,
+    EvaluationBatchMergeState,
+)
+from feedbax.analysis.evaluation_product_union import (
+    EvaluationCompactProductUnionFinalizerRegistry,
+    EvaluationCompactProductUnionInput,
+)
+from feedbax.analysis.specs import (
+    AnalysisRecipe,
+    AnalysisRecipeRegistry,
+    AnalysisRecipeResult,
+    AnalysisRecipeResultValidator,
+)
+from feedbax.contracts.training import TrainingMethodDescriptor, TrainingMethodRegistry
+from feedbax.training.authoring import compile_training_method_authoring
+from feedbax.training.preparation import (
+    ExecutionPreparationProvider,
+    ExecutionPreparationProviderRegistry,
+    ExecutionPreparationRegistration,
+)
+from feedbax.training.row_lowering import (
+    TrainingRowLowererRegistration,
+    TrainingRowLowererRegistry,
+)
 
 __all__ = [
     "APPLICATION_REGISTRY_KEYS",
@@ -86,4 +122,29 @@ __all__ = [
     "discover_plugin_registrations",
     "new_registration_context",
     "validate_downstream_protocol_version",
+    "AnalysisRecipe",
+    "AnalysisRecipeRegistry",
+    "AnalysisRecipeResult",
+    "AnalysisRecipeResultValidator",
+    "EvaluationBatchConsumer",
+    "EvaluationBatchConsumerInput",
+    "EvaluationBatchConsumerRegistry",
+    "EvaluationBatchFinalizeInput",
+    "EvaluationBatchFragment",
+    "EvaluationBatchMergeInput",
+    "EvaluationBatchMergeState",
+    "EvaluationBatchRecipe",
+    "EvaluationCompactProductUnionFinalizerRegistry",
+    "EvaluationCompactProductUnionInput",
+    "EvaluationRecipe",
+    "EvaluationRecipeRegistry",
+    "EvaluationRecipeResult",
+    "ExecutionPreparationProvider",
+    "ExecutionPreparationProviderRegistry",
+    "ExecutionPreparationRegistration",
+    "TrainingMethodDescriptor",
+    "TrainingMethodRegistry",
+    "TrainingRowLowererRegistration",
+    "TrainingRowLowererRegistry",
+    "compile_training_method_authoring",
 ]

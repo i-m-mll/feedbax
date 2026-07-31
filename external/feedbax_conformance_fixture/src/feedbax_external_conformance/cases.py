@@ -71,6 +71,13 @@ from feedbax.contracts.evaluation_states import store_evaluation_states_artifact
 from feedbax.plugins import (
     COMPONENTS,
     DRIVERS,
+    ANALYSIS_RECIPES,
+    EVALUATION_BATCH_CONSUMERS,
+    EVALUATION_PRODUCT_UNION_FINALIZERS,
+    EVALUATION_RECIPES,
+    EXECUTION_PREPARATIONS,
+    ROW_LOWERERS,
+    TRAINING_METHODS,
     BootstrapError,
     BootstrapErrorCode,
     FamilyRequirement,
@@ -186,6 +193,46 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
 
     for state in states:
         registry = state.registry(FIXTURE_RECORDS)
+        # These lookups deliberately cross every concrete family registered by
+        # the installed plugin. They prove the public typed registries rather
+        # than only the fixture's generic bootstrap family.
+        if (
+            state.registry(TRAINING_METHODS).descriptor("feedbax_external_conformance/training/v1")
+            is None
+        ):
+            raise AssertionError("external training descriptor was not registered")
+        if not state.registry(ROW_LOWERERS).available_keys():
+            raise AssertionError("external row lowerer was not registered")
+        if (
+            state.registry(EXECUTION_PREPARATIONS).get("feedbax_external_conformance/training/v1")
+            is None
+        ):
+            raise AssertionError("external execution preparation was not registered")
+        if not callable(
+            state.registry(ANALYSIS_RECIPES).get("feedbax_external_conformance.analysis")
+        ):
+            raise AssertionError("external analysis recipe was not resolved")
+        if not callable(
+            state.registry(EVALUATION_RECIPES).get("feedbax_external_conformance.evaluation")
+        ):
+            raise AssertionError("external evaluation recipe was not resolved")
+        if not callable(
+            state.registry(EVALUATION_RECIPES).batch("feedbax_external_conformance.evaluation")
+        ):
+            raise AssertionError("external evaluation batch recipe was not resolved")
+        if (
+            state.registry(EVALUATION_BATCH_CONSUMERS)
+            .get("feedbax_external_conformance.consumer", "v1")
+            .compact
+            is None
+        ):
+            raise AssertionError("external batch consumer was not resolved")
+        if not callable(
+            state.registry(EVALUATION_PRODUCT_UNION_FINALIZERS).get(
+                "feedbax_external_conformance.consumer", "v1"
+            )
+        ):
+            raise AssertionError("external product-union finalizer was not resolved")
         if registry.keys() != ("foundation", "dependent"):
             raise AssertionError("plugin dependency result depends on discovery order")
         provenance = state.provenance
@@ -198,6 +245,18 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
                 COMPONENTS.family: (EXTERNAL_DYNAMIC_COMPONENT,),
                 DRIVERS.family: ("fixture:driver",),
                 FIXTURE_RECORDS.family: ("foundation",),
+                TRAINING_METHODS.family: ("feedbax_external_conformance/training/v1",),
+                ROW_LOWERERS.family: (
+                    "('feedbax_external_conformance.training', 'v1', "
+                    "'feedbax_external_conformance.lowerer', 'v1')",
+                ),
+                EXECUTION_PREPARATIONS.family: ("feedbax_external_conformance/training/v1",),
+                ANALYSIS_RECIPES.family: ("feedbax_external_conformance.analysis",),
+                EVALUATION_RECIPES.family: ("feedbax_external_conformance.evaluation",),
+                EVALUATION_BATCH_CONSUMERS.family: ("feedbax_external_conformance.consumer@v1",),
+                EVALUATION_PRODUCT_UNION_FINALIZERS.family: (
+                    "feedbax_external_conformance.consumer@v1",
+                ),
             },
             {FIXTURE_RECORDS.family: ("dependent",)},
         ):
@@ -207,6 +266,13 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
                 COMPONENTS.family: "1",
                 DRIVERS.family: "1",
                 FIXTURE_RECORDS.family: "1",
+                TRAINING_METHODS.family: "1",
+                ROW_LOWERERS.family: "1",
+                EXECUTION_PREPARATIONS.family: "1",
+                ANALYSIS_RECIPES.family: "1",
+                EVALUATION_RECIPES.family: "1",
+                EVALUATION_BATCH_CONSUMERS.family: "1",
+                EVALUATION_PRODUCT_UNION_FINALIZERS.family: "1",
             },
             {FIXTURE_RECORDS.family: "1"},
         )

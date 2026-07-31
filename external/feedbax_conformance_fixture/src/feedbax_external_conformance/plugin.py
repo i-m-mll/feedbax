@@ -4,17 +4,33 @@ from __future__ import annotations
 
 import equinox as eqx
 import jax.numpy as jnp
+from dataclasses import replace
 
 from feedbax import Component
 from feedbax.plugins import (
+    ANALYSIS_RECIPES,
     COMPONENTS,
     DOWNSTREAM_PROTOCOL_CURRENT,
     DRIVERS,
+    EVALUATION_BATCH_CONSUMERS,
+    EVALUATION_PRODUCT_UNION_FINALIZERS,
+    EVALUATION_RECIPES,
+    EXECUTION_PREPARATIONS,
     FamilyRequirement,
     PluginDeclaration,
     PluginDependency,
     PluginRegistration,
     RegistrationContext,
+    ROW_LOWERERS,
+    TRAINING_METHODS,
+    EvaluationBatchFragment,
+    ExecutionPreparationRegistration,
+    TrainingRowLowererRegistration,
+)
+from feedbax.contracts.training import (
+    TrainingMethodDescriptor,
+    standard_supervised_method_contract,
+    standard_supervised_method_descriptor,
 )
 from feedbax.orchestration.drivers import (
     AcquisitionSemantics,
@@ -122,6 +138,64 @@ def _fixture_driver_registration() -> DriverRegistration:
     )
 
 
+_FIXTURE_METHOD_REF = "feedbax_external_conformance/training/v1"
+_FIXTURE_ANALYSIS_TYPE = "feedbax_external_conformance.analysis"
+_FIXTURE_EVALUATION_TYPE = "feedbax_external_conformance.evaluation"
+_FIXTURE_CONSUMER_ID = "feedbax_external_conformance.consumer"
+_FIXTURE_CONSUMER_VERSION = "v1"
+
+
+def _fixture_method_descriptor() -> TrainingMethodDescriptor:
+    baseline = standard_supervised_method_descriptor()
+    return replace(
+        baseline,
+        method_ref=_FIXTURE_METHOD_REF,
+        contract_compiler=lambda _payload: standard_supervised_method_contract().model_copy(
+            update={"method_ref": _FIXTURE_METHOD_REF}
+        ),
+        owner="feedbax-external-conformance",
+        package="feedbax-external-conformance",
+    )
+
+
+def _fixture_lowerer(_row, _context):
+    return {"fixture": "lowered"}
+
+
+def _fixture_preparation(_request):
+    return None
+
+
+def _fixture_analysis(_run_spec, _root, _inputs, _execution_context):
+    return None
+
+
+def _fixture_evaluation(_run_spec, _root, _states_path, _execution_context):
+    return None
+
+
+def _fixture_evaluation_batch(_items, _execution_context):
+    return ()
+
+
+def _fixture_compact(_input):
+    return EvaluationBatchFragment({}, "fixture.batch", "v1", "compact")
+
+
+def _fixture_merge(_input):
+    from feedbax.plugins import EvaluationBatchMergeState
+
+    return EvaluationBatchMergeState({}, "fixture.batch", "v1")
+
+
+def _fixture_finalize(_input):
+    return EvaluationBatchFragment({}, "fixture.batch", "v1", "final")
+
+
+def _fixture_union(_input):
+    return EvaluationBatchFragment({}, "fixture.union", "v1", "union")
+
+
 def _register_foundation(context: RegistrationContext) -> None:
     context.registry(FIXTURE_RECORDS).register("foundation")
     context.registry(COMPONENTS).register_component_type(
@@ -153,6 +227,43 @@ def _register_foundation(context: RegistrationContext) -> None:
         provenance="package:feedbax-external-conformance",
     )
     context.registry(DRIVERS).register(_fixture_driver_registration())
+    context.registry(TRAINING_METHODS).register_descriptor(_fixture_method_descriptor())
+    context.registry(ROW_LOWERERS).register(
+        TrainingRowLowererRegistration(
+            authored_schema_id="feedbax_external_conformance.training",
+            authored_schema_version="v1",
+            lowerer_id="feedbax_external_conformance.lowerer",
+            lowerer_version="v1",
+            implementation_sha256="0" * 64,
+            lower=_fixture_lowerer,
+            owner="feedbax-external-conformance",
+        )
+    )
+    context.registry(EXECUTION_PREPARATIONS).register(
+        ExecutionPreparationRegistration(
+            method_ref=_FIXTURE_METHOD_REF,
+            provider=_fixture_preparation,
+            owner="feedbax-external-conformance",
+        )
+    )
+    context.registry(ANALYSIS_RECIPES).register(_FIXTURE_ANALYSIS_TYPE, _fixture_analysis)
+    context.registry(EVALUATION_RECIPES).register(
+        _FIXTURE_EVALUATION_TYPE,
+        _fixture_evaluation,
+        batch_recipe=_fixture_evaluation_batch,
+    )
+    context.registry(EVALUATION_BATCH_CONSUMERS).register(
+        _FIXTURE_CONSUMER_ID,
+        _FIXTURE_CONSUMER_VERSION,
+        compact=_fixture_compact,
+        merge=_fixture_merge,
+        finalize=_fixture_finalize,
+    )
+    context.registry(EVALUATION_PRODUCT_UNION_FINALIZERS).register(
+        _FIXTURE_CONSUMER_ID,
+        _FIXTURE_CONSUMER_VERSION,
+        _fixture_union,
+    )
 
 
 def _register_dependent(context: RegistrationContext) -> None:
@@ -168,6 +279,13 @@ FOUNDATION_PLUGIN_REGISTRATION = PluginRegistration(
             FamilyRequirement(COMPONENTS.family),
             FamilyRequirement(FIXTURE_RECORDS.family),
             FamilyRequirement(DRIVERS.family),
+            FamilyRequirement(TRAINING_METHODS.family),
+            FamilyRequirement(ROW_LOWERERS.family),
+            FamilyRequirement(EXECUTION_PREPARATIONS.family),
+            FamilyRequirement(ANALYSIS_RECIPES.family),
+            FamilyRequirement(EVALUATION_RECIPES.family),
+            FamilyRequirement(EVALUATION_BATCH_CONSUMERS.family),
+            FamilyRequirement(EVALUATION_PRODUCT_UNION_FINALIZERS.family),
         ),
     ),
     register=_register_foundation,

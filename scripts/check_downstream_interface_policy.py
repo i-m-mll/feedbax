@@ -40,6 +40,19 @@ DRIVER_POLICY_SCHEMAS = {
     ],
 }
 RATIFIED_NON_EXTERNAL_ROWS = {"terminal-certification"}
+CONCRETE_FAMILY_PUBLIC_NAMES = {
+    "APPLICATION_REGISTRY_KEYS",
+    "ApplicationRegistryBundle",
+    "COMPONENTS",
+    "TRAINING_METHODS",
+    "ROW_LOWERERS",
+    "EXECUTION_PREPARATIONS",
+    "ANALYSIS_RECIPES",
+    "EVALUATION_RECIPES",
+    "EVALUATION_BATCH_CONSUMERS",
+    "EVALUATION_PRODUCT_UNION_FINALIZERS",
+    "compile_training_method_authoring",
+}
 
 
 def _marked_block(path: Path, start_marker: str, end_marker: str) -> str:
@@ -180,6 +193,8 @@ def check_policy() -> None:
         raise ValueError("driver policy row must preserve the reviewed v11 external case")
     if driver_row.get("schemas") != DRIVER_POLICY_SCHEMAS:
         raise ValueError("driver policy schema and migration mapping drifted")
+    if set(manifest_rows["plugin-bootstrap"].get("public_names", ())) != CONCRETE_FAMILY_PUBLIC_NAMES:
+        raise ValueError("plugin policy omits or widens concrete-family public names")
     for row_id in (
         "orchestration-lifecycle",
         "custody-persistence",

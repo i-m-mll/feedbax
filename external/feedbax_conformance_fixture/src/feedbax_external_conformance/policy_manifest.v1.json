@@ -13,6 +13,19 @@
       "case_ids": [
         "unified_plugin_bootstrap"
       ],
+      "public_names": [
+        "APPLICATION_REGISTRY_KEYS",
+        "ApplicationRegistryBundle",
+        "COMPONENTS",
+        "TRAINING_METHODS",
+        "ROW_LOWERERS",
+        "EXECUTION_PREPARATIONS",
+        "ANALYSIS_RECIPES",
+        "EVALUATION_RECIPES",
+        "EVALUATION_BATCH_CONSUMERS",
+        "EVALUATION_PRODUCT_UNION_FINALIZERS",
+        "compile_training_method_authoring"
+      ],
       "schemas": {
         "current": [
           "feedbax.plugin.declaration.v2"
