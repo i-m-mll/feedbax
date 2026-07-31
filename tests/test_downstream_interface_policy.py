@@ -86,6 +86,22 @@ GUARANTEED_IMPORTS = {
         "RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5",
         "RunAssemblyRequest",
     ),
+    "feedbax.orchestration": (
+        "RUN_SET_STATE_SCHEMA_ID",
+        "RUN_SET_STATE_SCHEMA_VERSION",
+        "RUN_SET_STATE_SCHEMA_VERSION_V4",
+        "EMERGENCY_RUN_SET_RECORD_SCHEMA_ID",
+        "EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION",
+        "ControlFilesystemPreflight",
+        "ControlFilesystemPreflightError",
+        "CustodyPreservationRequired",
+        "EmergencyProviderIdentity",
+        "EmergencyRunSetRecord",
+        "PrimaryStatePersistenceError",
+        "RunSetState",
+        "RunSetStateStore",
+        "StageEngine",
+    ),
     "feedbax.lowering": (
         "LowererRegistration",
         "LoweredContribution",
@@ -241,6 +257,19 @@ def test_driver_policy_schema_heads_match_reviewed_690_contract() -> None:
     assert assembly.RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION == "feedbax.spec.run_assembly_request.v6"
 
 
+def test_persistence_policy_schema_heads_match_reviewed_b85_contract() -> None:
+    orchestration = importlib.import_module("feedbax.orchestration")
+
+    assert orchestration.RUN_SET_STATE_SCHEMA_VERSION == "feedbax.orchestration.run_set_state.v5"
+    assert orchestration.RUN_SET_STATE_SCHEMA_VERSION_V4 == "feedbax.orchestration.run_set_state.v4"
+    assert (
+        orchestration.EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION
+        == "feedbax.orchestration.emergency_run_set_record.v1"
+    )
+    assert issubclass(orchestration.PrimaryStatePersistenceError, OSError)
+    assert issubclass(orchestration.CustodyPreservationRequired, RuntimeError)
+
+
 def test_current_downstream_protocol_is_admitted_by_unified_bootstrap() -> None:
     assert validate_downstream_protocol_version(DOWNSTREAM_PROTOCOL_CURRENT) == 1
     _bootstrap_protocol(DOWNSTREAM_PROTOCOL_CURRENT)
@@ -294,7 +323,7 @@ def test_policy_checker_accepts_current_repository_contract() -> None:
     module.check_policy()
 
 
-def test_b85_rows_remain_schema_and_case_free_while_result_stays_v11() -> None:
+def test_ratified_rows_bind_v12_and_have_no_pending_coverage() -> None:
     fixture = ROOT / "external" / "feedbax_conformance_fixture"
     manifest = json.loads(
         (fixture / "src/feedbax_external_conformance/policy_manifest.v1.json").read_text(
@@ -302,15 +331,42 @@ def test_b85_rows_remain_schema_and_case_free_while_result_stays_v11() -> None:
         )
     )
     rows = {row["row_id"]: row for row in manifest["guaranteed_rows"]}
-    for row_id in ("custody-persistence", "emergency-persistence", "result-role-binding"):
-        assert rows[row_id]["coverage_status"] == "pending-final-sync"
-        assert rows[row_id]["case_ids"] == []
-        assert rows[row_id]["schemas"] == {"current": [], "migrated": [], "rejected": []}
+    for row_id in (
+        "orchestration-lifecycle",
+        "custody-persistence",
+        "emergency-persistence",
+        "result-role-binding",
+    ):
+        assert rows[row_id]["coverage_status"] == "covered"
+    assert rows["terminal-certification"]["coverage_status"] == "not-external-covered"
+    assert rows["terminal-certification"]["case_ids"] == []
+    assert "pending-final-sync" not in json.dumps(manifest)
 
     result_source = (fixture / "src/feedbax_external_conformance/result.py").read_text(
         encoding="utf-8"
     )
-    assert 'Literal["feedbax.external_conformance.result.v11"]' in result_source
+    assert 'Literal["feedbax.external_conformance.result.v12"]' in result_source
+    assert "v11 cannot migrate to v12" in result_source
+
+
+def test_ratified_policy_checker_rejects_residual_pending_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = ROOT / "scripts" / "check_downstream_interface_policy.py"
+    spec = importlib.util.spec_from_file_location(
+        "check_downstream_interface_policy_pending", script
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    manifest = json.loads(module.POLICY_MANIFEST.read_text(encoding="utf-8"))
+    manifest["guaranteed_rows"][0]["coverage_status"] = "pending-final-sync"
+    pending_manifest = tmp_path / "policy_manifest.v1.json"
+    pending_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(module, "POLICY_MANIFEST", pending_manifest)
+
+    with pytest.raises(ValueError, match="retains a pending-final-sync row"):
+        module.check_policy()
 
 
 def test_policy_does_not_promote_runtime_namespace() -> None:

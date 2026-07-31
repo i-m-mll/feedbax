@@ -168,8 +168,10 @@ def main(argv: list[str] | None = None) -> int:
             cwd=work,
             env=execution_env,
         )
-        if payload["schema_version"] != "feedbax.external_conformance.result.v11":
+        if payload["schema_version"] != "feedbax.external_conformance.result.v12":
             raise RuntimeError("external conformance result schema drifted")
+        if payload["protocol_roles"] != {"current": 1, "minimum": 1}:
+            raise RuntimeError("external conformance protocol roles drifted")
         if payload["status"] != "pass":
             raise RuntimeError("clean-wheel external conformance did not pass")
         if payload["lifecycle"]["status"] != "pass":

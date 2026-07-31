@@ -39,11 +39,7 @@ DRIVER_POLICY_SCHEMAS = {
         "unknown",
     ],
 }
-PENDING_B85_ROWS = {
-    "custody-persistence",
-    "emergency-persistence",
-    "result-role-binding",
-}
+RATIFIED_NON_EXTERNAL_ROWS = {"terminal-certification"}
 
 
 def _marked_block(path: Path, start_marker: str, end_marker: str) -> str:
@@ -168,8 +164,14 @@ def check_policy() -> None:
     result_source = (FIXTURE_ROOT / "src" / "feedbax_external_conformance" / "result.py").read_text(
         encoding="utf-8"
     )
-    if 'Literal["feedbax.external_conformance.result.v11"]' not in result_source:
-        raise ValueError("policy metadata must not advance the reviewed v11 result")
+    if 'Literal["feedbax.external_conformance.result.v12"]' not in result_source:
+        raise ValueError("ratified policy requires the authoritative v12 result")
+    if "v11 cannot migrate to v12" not in result_source:
+        raise ValueError("v11 must reject rather than synthesize custody and role evidence")
+    if "pending-final-sync" in document or "pending-final-sync" in POLICY_MANIFEST.read_text(
+        encoding="utf-8"
+    ):
+        raise ValueError("ratified policy retains a pending-final-sync row")
     case_ids = frozenset(result_values["REQUIRED_CASE_IDS"])
     driver_row = manifest_rows.get("orchestration-driver")
     if driver_row is None:
@@ -178,29 +180,58 @@ def check_policy() -> None:
         raise ValueError("driver policy row must preserve the reviewed v11 external case")
     if driver_row.get("schemas") != DRIVER_POLICY_SCHEMAS:
         raise ValueError("driver policy schema and migration mapping drifted")
-    for row_id in PENDING_B85_ROWS:
+    for row_id in (
+        "orchestration-lifecycle",
+        "custody-persistence",
+        "emergency-persistence",
+        "result-role-binding",
+    ):
         row = manifest_rows.get(row_id)
-        if row is None:
-            raise ValueError(f"fixture policy manifest omits pending b85 row {row_id!r}")
-        if row.get("coverage_status") != "pending-final-sync" or row.get("case_ids"):
-            raise ValueError(f"pending b85 row {row_id!r} acquired premature coverage")
-        if row.get("schemas") != {"current": [], "migrated": [], "rejected": []}:
-            raise ValueError(f"pending b85 row {row_id!r} pre-guesses final schemas")
+        if row is None or row.get("coverage_status") != "covered":
+            raise ValueError(f"ratified policy row {row_id!r} is not covered")
+    if manifest_rows["custody-persistence"].get("case_ids") != ["custody_persistence_recovery"]:
+        raise ValueError("custody policy row must bind the landed external case")
+    if manifest_rows["emergency-persistence"].get("schemas", {}).get("current") != [
+        "feedbax.orchestration.emergency_run_set_record.v1"
+    ]:
+        raise ValueError("emergency persistence schema mapping drifted")
+    if manifest_rows["result-role-binding"].get("schemas", {}).get("current") != [
+        "feedbax.external_conformance.result.v12"
+    ]:
+        raise ValueError("result-role schema mapping drifted")
     for row_id, row in manifest_rows.items():
         cases = tuple(row.get("case_ids", ()))
         if tuple(document_rows[row_id]) != cases:
-            if not (row["coverage_status"] == "pending-final-sync" and not cases):
-                raise ValueError(f"document/manifest case IDs differ for {row_id!r}")
+            raise ValueError(f"document/manifest case IDs differ for {row_id!r}")
         unknown_cases = sorted(set(cases) - case_ids)
         if unknown_cases:
             raise ValueError(f"policy row {row_id!r} names unknown cases {unknown_cases!r}")
         if row["coverage_status"] == "covered" and not cases:
             raise ValueError(f"covered policy row {row_id!r} has no external case")
-        if row["coverage_status"] == "pending-final-sync" and cases:
-            raise ValueError(f"pending policy row {row_id!r} must not fabricate case coverage")
+        if row["coverage_status"] == "not-external-covered" and cases:
+            raise ValueError(f"non-external policy row {row_id!r} fabricates case coverage")
+        if row["coverage_status"] not in {"covered", "not-external-covered"}:
+            raise ValueError(f"ratified policy row {row_id!r} has unresolved coverage status")
         schemas = row.get("schemas")
         if not isinstance(schemas, dict) or set(schemas) != {"current", "migrated", "rejected"}:
             raise ValueError(f"policy row {row_id!r} has an invalid schema mapping")
+    observed_non_external = {
+        row_id
+        for row_id, row in manifest_rows.items()
+        if row["coverage_status"] == "not-external-covered"
+    }
+    if observed_non_external != RATIFIED_NON_EXTERNAL_ROWS:
+        raise ValueError("ratified non-external coverage rows drifted")
+
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    for proof in (
+        "--result-out artifacts/downstream-conformance.json",
+        "actions/upload-artifact@v4",
+        "path: artifacts/downstream-conformance.json",
+        "if-no-files-found: error",
+    ):
+        if proof not in workflow:
+            raise ValueError(f"CI conformance artifact proof is missing {proof!r}")
 
 
 def main() -> int:

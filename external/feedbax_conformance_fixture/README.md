@@ -28,8 +28,8 @@ therefore authenticates installed-wheel provenance at both execution
 boundaries. The deployment policy is explicitly local and cloud-unauthorized;
 all custody, orchestration, and cache paths are unique temporary directories.
 
-The result schema is `feedbax.external_conformance.result.v11`. Its evidence map
-has exactly eleven strict-boolean cases. The `unified_plugin_bootstrap` case loads
+The result schema is `feedbax.external_conformance.result.v12`. Its evidence map
+has exactly twelve strict-boolean cases. The `unified_plugin_bootstrap` case loads
 two typed `PluginRegistration` values from the installed package through the
 single `feedbax.plugins` group and adds a fixture-owned typed registry family
 without loader changes. It proves deterministic dependency sorting, atomic
@@ -39,20 +39,19 @@ remains the protected exact six-case foundation and rejects rather than
 pretending it measured later cases. Unshipped v3-v6 results reject explicitly;
 shipped v7 lacks the array-value case, shipped v8 lacks the unified-bootstrap
 case, shipped v9 lacks the dynamic-port case, and shipped v10 lacks the external
-driver case, so all reject rather than acquiring synthetic evidence. The
+driver case, so all reject rather than acquiring synthetic evidence. Shipped
+v11 lacks both `custody_persistence_recovery` and bound numeric protocol roles,
+so it also rejects without synthetic migration. The
 `dynamic_component_ports` case proves an
 external policy-bearing component through unified bootstrap, deterministic
 materialization, GraphSpec build, runtime execution, and fail-closed mismatch.
-The versioned `policy_manifest.v1.json` maps every ratification policy row to
-its durable schemas and real case IDs. The `external_driver_plugin` row maps to
-the v11 evidence that constructs a fixture-owned driver through the same
-injected application registry without changes to the orchestration CLI. The
-dynamic-port row continues to map to the evidence introduced in v10. Terminal
-certification and the final custody, emergency-persistence, and result-role
-rows remain explicitly pending the final b85 result rather than acquiring
-fabricated coverage.
+The `custody_persistence_recovery` case proves a primary ENOSPC persistence
+failure survives restart, publishes the bounded v1 emergency recovery record,
+blocks destructive teardown until custody is complete, and permits exactly one
+post-custody deletion. The versioned `policy_manifest.v1.json` maps each
+externally exercised policy row to real case IDs and marks terminal
+certification as non-external-covered rather than inventing a case.
 
-The `current` and `minimum` protocol role slots remain required and None-only
-until owner ratification. Version 1 can normalize to v2 only when the later role
-field is absent, then rejects for the same missing current evidence. Unknown,
-ambiguous, versionless, and future versions reject.
+The required `current` and `minimum` protocol role members are both the strict
+numeric value `1`. Version 1 retains its v2 normalization-before-rejection
+behavior. Unknown, ambiguous, versionless, and future versions reject.

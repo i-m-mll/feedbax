@@ -51,6 +51,27 @@
       "coverage_status": "covered"
     },
     {
+      "row_id": "orchestration-lifecycle",
+      "case_ids": [
+        "public_lifecycle_recovery",
+        "custody_persistence_recovery"
+      ],
+      "schemas": {
+        "current": [
+          "feedbax.orchestration.run_set_state.v5"
+        ],
+        "migrated": [],
+        "rejected": [
+          "feedbax.orchestration.run_set_state.v0",
+          "feedbax.orchestration.run_set_state.v1",
+          "feedbax.orchestration.run_set_state.v2",
+          "feedbax.orchestration.run_set_state.v3",
+          "feedbax.orchestration.run_set_state.v4"
+        ]
+      },
+      "coverage_status": "covered"
+    },
+    {
       "row_id": "ordered-lowering",
       "case_ids": [
         "ordered_registration"
@@ -161,37 +182,69 @@
           "absent failed"
         ]
       },
-      "coverage_status": "pending-final-sync"
+      "coverage_status": "not-external-covered"
     },
     {
       "row_id": "custody-persistence",
-      "case_ids": [],
+      "case_ids": [
+        "custody_persistence_recovery"
+      ],
       "schemas": {
-        "current": [],
+        "current": [
+          "feedbax.orchestration.run_set_state.v5"
+        ],
         "migrated": [],
-        "rejected": []
+        "rejected": [
+          "feedbax.orchestration.run_set_state.v0",
+          "feedbax.orchestration.run_set_state.v1",
+          "feedbax.orchestration.run_set_state.v2",
+          "feedbax.orchestration.run_set_state.v3",
+          "feedbax.orchestration.run_set_state.v4"
+        ]
       },
-      "coverage_status": "pending-final-sync"
+      "coverage_status": "covered"
     },
     {
       "row_id": "emergency-persistence",
-      "case_ids": [],
+      "case_ids": [
+        "custody_persistence_recovery"
+      ],
       "schemas": {
-        "current": [],
+        "current": [
+          "feedbax.orchestration.emergency_run_set_record.v1"
+        ],
         "migrated": [],
-        "rejected": []
+        "rejected": [
+          "feedbax.orchestration.emergency_run_set_record.v0",
+          "unknown"
+        ]
       },
-      "coverage_status": "pending-final-sync"
+      "coverage_status": "covered"
     },
     {
       "row_id": "result-role-binding",
-      "case_ids": [],
+      "case_ids": [
+        "custody_persistence_recovery"
+      ],
       "schemas": {
-        "current": [],
-        "migrated": [],
-        "rejected": []
+        "current": [
+          "feedbax.external_conformance.result.v12"
+        ],
+        "migrated": [
+          "feedbax.external_conformance.result.v1 to v2 normalization before rejection"
+        ],
+        "rejected": [
+          "feedbax.external_conformance.result.v2",
+          "feedbax.external_conformance.result.v3-v6",
+          "feedbax.external_conformance.result.v7",
+          "feedbax.external_conformance.result.v8",
+          "feedbax.external_conformance.result.v9",
+          "feedbax.external_conformance.result.v10",
+          "feedbax.external_conformance.result.v11",
+          "unknown"
+        ]
       },
-      "coverage_status": "pending-final-sync"
+      "coverage_status": "covered"
     },
     {
       "row_id": "array-values",
