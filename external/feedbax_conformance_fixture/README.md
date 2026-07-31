@@ -31,6 +31,7 @@ all custody, orchestration, and cache paths are unique temporary directories.
 The result schema is `feedbax.external_conformance.result.v2`. Its evidence map
 has exactly the six current case IDs with strict boolean values; changing that
 set requires a new schema version and explicit migration. The `current` and
-`minimum` protocol role slots are None-only until owner ratification. Version 1
-results migrate only when the later role field is absent, adding explicit null
-slots. Unknown, ambiguous, versionless, and future versions are rejected.
+`minimum` protocol role slots are both explicitly required and None-only until
+owner ratification; v2 never fills an omitted role object or member. Version 1
+results migrate only when the later role field is absent, adding both explicit
+null slots. Unknown, ambiguous, versionless, and future versions are rejected.

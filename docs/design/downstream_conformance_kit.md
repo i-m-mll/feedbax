@@ -69,9 +69,10 @@ The versioned machine result is
 unbound `current` and `minimum` protocol role slots, while other versions are
 rejected. Those slots are not stability guarantees and remain unbound until
 the owner-ratified policy exists. V2 requires the exact six foundation case
-IDs with strict boolean values. Adding or removing a case, or binding a
-protocol role, requires a deliberate schema version and migration rather than
-silently changing durable evidence.
+IDs with strict boolean values and requires both None-valued role slots to be
+present explicitly. Adding or removing a case, binding a protocol role, or
+changing required evidence fields requires a deliberate schema version and
+migration rather than silently changing durable evidence.
 
 The production lifecycle case uses the installed-wheel
 `StageEngine`/`LocalOrchestrationDriver` path with one deterministic local row.

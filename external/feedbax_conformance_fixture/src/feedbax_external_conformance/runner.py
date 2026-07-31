@@ -113,6 +113,7 @@ def run_fixture(*, source_root: Path | None = None) -> ConformanceResult:
         feedbax_version=importlib.metadata.version("feedbax"),
         feedbax_install_root=str(feedbax_root),
         fixture_install_root=str(fixture_root),
+        protocol_roles={"current": None, "minimum": None},
         cases=cases,
         lifecycle=LifecycleResult(status="pass"),
     )

@@ -26,8 +26,8 @@ class ProtocolRoleSlots(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    current: Literal[None] = None
-    minimum: Literal[None] = None
+    current: Literal[None]
+    minimum: Literal[None]
 
 
 class LifecycleResult(BaseModel):
@@ -50,7 +50,7 @@ class ConformanceResult(BaseModel):
     feedbax_version: str = Field(min_length=1)
     feedbax_install_root: str = Field(min_length=1)
     fixture_install_root: str = Field(min_length=1)
-    protocol_roles: ProtocolRoleSlots = Field(default_factory=ProtocolRoleSlots)
+    protocol_roles: ProtocolRoleSlots
     cases: dict[str, StrictBool]
     lifecycle: LifecycleResult
 

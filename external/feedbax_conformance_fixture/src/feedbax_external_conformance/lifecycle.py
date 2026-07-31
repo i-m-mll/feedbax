@@ -159,9 +159,11 @@ def check_public_lifecycle_recovery() -> bool:
         first = initial_engine.run(stop_after_stage="PREFLIGHT")
         assert initial_engine.bundle is not None
         expected_command = [sys.executable, "-c", _LOCAL_LIFECYCLE_SCRIPT]
-        if initial_engine.bundle.rows[0].launch.command != expected_command:
+        observed_rows = [(row.row_id, row.launch.command) for row in initial_engine.bundle.rows]
+        expected_rows = [(f"{_RUN_SET_ID}-row", expected_command)]
+        if observed_rows != expected_rows:
             raise AssertionError(
-                "bounded lifecycle child command drifted from print-only execution"
+                "bounded lifecycle row inventory drifted from the single print-only child"
             )
         revision_check = next(
             check

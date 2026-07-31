@@ -25,12 +25,17 @@ def _required_cases(fixture_package, *, value: object = True) -> dict[str, objec
     return dict.fromkeys(fixture_package.REQUIRED_CASE_IDS, value)
 
 
+def _protocol_roles() -> dict[str, None]:
+    return {"current": None, "minimum": None}
+
+
 def test_result_v1_migrates_with_unratified_role_slots(fixture_package) -> None:
     current = fixture_package.ConformanceResult(
         status="pass",
         feedbax_version="0.1.2",
         feedbax_install_root="/installed/feedbax",
         fixture_install_root="/installed/fixture",
+        protocol_roles=_protocol_roles(),
         cases=_required_cases(fixture_package),
         lifecycle={"status": "pass"},
     )
@@ -51,6 +56,7 @@ def test_result_v1_rejects_supplied_protocol_roles(fixture_package) -> None:
         feedbax_version="0.1.2",
         feedbax_install_root="/installed/feedbax",
         fixture_install_root="/installed/fixture",
+        protocol_roles=_protocol_roles(),
         cases=_required_cases(fixture_package),
         lifecycle={"status": "pass"},
     ).model_dump(mode="json")
@@ -91,6 +97,7 @@ def test_result_model_rejects_extra_fields(fixture_package) -> None:
                 "feedbax_version": "0.1.2",
                 "feedbax_install_root": "/installed/feedbax",
                 "fixture_install_root": "/installed/fixture",
+                "protocol_roles": _protocol_roles(),
                 "cases": _required_cases(fixture_package),
                 "lifecycle": {
                     "status": "blocked",
@@ -122,6 +129,7 @@ def test_result_rejects_inconsistent_outcomes(
             feedbax_version="0.1.2",
             feedbax_install_root="/installed/feedbax",
             fixture_install_root="/installed/fixture",
+            protocol_roles=_protocol_roles(),
             cases=_required_cases(fixture_package, value=cases_pass),
             lifecycle=lifecycle,
         )
@@ -141,6 +149,7 @@ def test_result_v2_case_contract_is_exact(fixture_package) -> None:
         "feedbax_version": "0.1.2",
         "feedbax_install_root": "/installed/feedbax",
         "fixture_install_root": "/installed/fixture",
+        "protocol_roles": _protocol_roles(),
         "cases": _required_cases(fixture_package),
         "lifecycle": {"status": "pass"},
     }
@@ -162,6 +171,7 @@ def test_result_v2_case_values_are_strict_booleans(fixture_package) -> None:
             feedbax_version="0.1.2",
             feedbax_install_root="/installed/feedbax",
             fixture_install_root="/installed/fixture",
+            protocol_roles=_protocol_roles(),
             cases=cases,
             lifecycle={"status": "pass"},
         )
@@ -169,16 +179,44 @@ def test_result_v2_case_values_are_strict_booleans(fixture_package) -> None:
 
 @pytest.mark.parametrize("slot", ["current", "minimum"])
 def test_result_v2_protocol_roles_remain_unbound(fixture_package, slot: str) -> None:
+    roles: dict[str, object] = _protocol_roles()
+    roles[slot] = "unratified"
     with pytest.raises(ValidationError):
         fixture_package.ConformanceResult(
             status="pass",
             feedbax_version="0.1.2",
             feedbax_install_root="/installed/feedbax",
             fixture_install_root="/installed/fixture",
-            protocol_roles={slot: "unratified"},
+            protocol_roles=roles,
             cases=_required_cases(fixture_package),
             lifecycle={"status": "pass"},
         )
+
+
+@pytest.mark.parametrize(
+    "protocol_roles",
+    [None, {}, {"current": None}, {"minimum": None}],
+    ids=["absent", "empty", "missing-minimum", "missing-current"],
+)
+def test_result_v2_requires_explicit_protocol_role_slots(
+    fixture_package,
+    protocol_roles: dict[str, None] | None,
+) -> None:
+    payload = {
+        "schema_id": "feedbax.external_conformance.result",
+        "schema_version": "feedbax.external_conformance.result.v2",
+        "status": "pass",
+        "feedbax_version": "0.1.2",
+        "feedbax_install_root": "/installed/feedbax",
+        "fixture_install_root": "/installed/fixture",
+        "cases": _required_cases(fixture_package),
+        "lifecycle": {"status": "pass"},
+    }
+    if protocol_roles is not None:
+        payload["protocol_roles"] = protocol_roles
+
+    with pytest.raises(ValidationError, match="Field required"):
+        fixture_package.load_result(payload)
 
 
 @pytest.mark.parametrize(
@@ -281,6 +319,7 @@ class ObservedRunnerLoader(importlib.abc.Loader):
                 feedbax_version="0.1.2",
                 feedbax_install_root="/isolated/feedbax",
                 fixture_install_root="/isolated/fixture",
+                protocol_roles={"current": None, "minimum": None},
                 cases={case_id: True for case_id in fixture.REQUIRED_CASE_IDS},
                 lifecycle={"status": "pass"},
             )
@@ -402,10 +441,15 @@ def test_local_lifecycle_child_is_fixed_print_only(fixture_package) -> None:
         context=None,
     )
 
-    assert compiled.rows[0].launch.command == [
-        sys.executable,
-        "-c",
-        "print('feedbax external conformance lifecycle')",
+    assert [(row.row_id, row.launch.command) for row in compiled.rows] == [
+        (
+            "fixture-row",
+            [
+                sys.executable,
+                "-c",
+                "print('feedbax external conformance lifecycle')",
+            ],
+        )
     ]
 
 
