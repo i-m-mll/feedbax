@@ -38,6 +38,7 @@ def _bootstrap_state(training_methods: object | None = None) -> SimpleNamespace:
         bundle=SimpleNamespace(
             conformance_checks=object(),
             training_methods=training_methods or object(),
+            drivers=object(),
         ),
         provenance=(),
     )
@@ -208,6 +209,7 @@ def test_orchestration_teardown_passes_training_registry(
         interruption_probe: Callable[[], CancellationDecision | None] | None = None,
         conformance_registry: CheckRegistry,
         training_method_registry: object,
+        driver_registry: object,
         plugin_provenance: Sequence[Any],
         input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
         collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
@@ -219,6 +221,7 @@ def test_orchestration_teardown_passes_training_registry(
             retry_failed_certification,
             interruption_probe,
             conformance_registry,
+            driver_registry,
             plugin_provenance,
             input_provider_bindings,
             collection_recovery_bindings,

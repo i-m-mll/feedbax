@@ -16,6 +16,7 @@ from .cases import (
     check_component_param_array_values,
     check_dynamic_component_ports,
     check_exact_parent_migration,
+    check_external_driver_plugin,
     check_material_dependencies,
     check_ordered_registration,
     check_resolved_evaluation_row_projection,
@@ -107,6 +108,7 @@ def run_fixture(*, source_root: Path | None = None) -> ConformanceResult:
     cases = {
         "ordered_registration": check_ordered_registration(),
         "unified_plugin_bootstrap": check_unified_plugin_bootstrap(),
+        "external_driver_plugin": check_external_driver_plugin(),
         "component_registration_and_migration": check_component_registration_and_migration(),
         "dynamic_component_ports": check_dynamic_component_ports(),
         "value_identity": check_value_identity(),

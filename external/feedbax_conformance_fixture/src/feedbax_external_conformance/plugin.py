@@ -8,11 +8,28 @@ import jax.numpy as jnp
 from feedbax import Component
 from feedbax.plugins import (
     COMPONENTS,
+    DRIVERS,
     FamilyRequirement,
     PluginDeclaration,
     PluginDependency,
     PluginRegistration,
     RegistrationContext,
+)
+from feedbax.orchestration.drivers import (
+    AcquisitionSemantics,
+    AuthorizationSemantics,
+    CustodySemantics,
+    DriverCapabilityEnvelope,
+    DriverCapabilityFacts,
+    DriverRegistration,
+    DriverVenue,
+    EnvironmentSemantics,
+    MonitoringSemantics,
+    RecoverySemantics,
+    ResourceSemantics,
+    RetrySemantics,
+    SpendSemantics,
+    TeardownSemantics,
 )
 
 from .family import EXTERNAL_DYNAMIC_COMPONENT, FIXTURE_RECORDS
@@ -42,6 +59,66 @@ class VariableFanIn(Component):
 
 def _build_variable_fan_in(params) -> VariableFanIn:
     return VariableFanIn(len(params["channels"]))
+
+
+class FixtureOrchestrationDriver:
+    """Minimal external driver proving registry construction without CLI edits."""
+
+    poll_interval_seconds = 0.05
+    capability_envelope = DriverCapabilityEnvelope.single(
+        "fixture:driver",
+        DriverCapabilityFacts(
+            variant_id="fixture",
+            venue=DriverVenue.LOCAL_PROCESS,
+            resources=ResourceSemantics.EXTERNALLY_MANAGED,
+            spend=SpendSemantics.NONE,
+            authorization=AuthorizationSemantics.NONE,
+            environment=EnvironmentSemantics.OPAQUE_DRIVER_IDENTITY,
+            monitoring=MonitoringSemantics.ROW_POLL,
+            recovery=RecoverySemantics.NONE,
+            retry=RetrySemantics.NONE,
+            acquisition=AcquisitionSemantics.EXTERNALLY_PROVIDED,
+            teardown=TeardownSemantics.RESOURCES_PRESERVED,
+            custody=CustodySemantics.EXTERNAL_SERVICE,
+        ),
+    )
+
+    def __init__(self, realized) -> None:
+        self.realized_capabilities = realized
+
+    def provision(self, *_args):
+        return {}
+
+    def realize_env(self, *_args):
+        return "fixture"
+
+    def stage_inputs(self, *_args):
+        return {}
+
+    def launch_row(self, *_args):
+        return {}
+
+    def probe(self, *_args):
+        return object()
+
+    def stop_row(self, *_args):
+        return {}
+
+    def collect(self, *_args):
+        return {}
+
+    def teardown(self, *_args):
+        return {}
+
+
+def _fixture_driver_registration() -> DriverRegistration:
+    envelope = FixtureOrchestrationDriver.capability_envelope
+    return DriverRegistration(
+        name="fixture:driver",
+        supported_capabilities=envelope,
+        resolve_capabilities=lambda _context: envelope.realize("fixture"),
+        factory=lambda _context, realized: FixtureOrchestrationDriver(realized),
+    )
 
 
 def _register_foundation(context: RegistrationContext) -> None:
@@ -74,6 +151,7 @@ def _register_foundation(context: RegistrationContext) -> None:
         owner="feedbax-external-conformance",
         provenance="package:feedbax-external-conformance",
     )
+    context.registry(DRIVERS).register(_fixture_driver_registration())
 
 
 def _register_dependent(context: RegistrationContext) -> None:
@@ -87,6 +165,7 @@ FOUNDATION_PLUGIN_REGISTRATION = PluginRegistration(
         families=(
             FamilyRequirement(COMPONENTS.family),
             FamilyRequirement(FIXTURE_RECORDS.family),
+            FamilyRequirement(DRIVERS.family),
         ),
     ),
     register=_register_foundation,
