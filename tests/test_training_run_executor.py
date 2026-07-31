@@ -4682,6 +4682,9 @@ def test_execute_training_run_spec_raises_on_nan_with_program_coordinate(
     assert manifest.status == "failed"
     assert manifest.failure_kind == "nan_guard"
     assert manifest.stopped is True
+    assert manifest.terminal_certification is not None
+    assert manifest.terminal_certification.termination_reason == "diverged"
+    assert manifest.terminal_certification.certified_artifacts == manifest.checkpoint_custody
     assert "train_loss" not in manifest.summary_metrics
     assert set(manifest.summary_metrics) <= {"runtime_telemetry"}
     detection_ref = next(
@@ -4853,6 +4856,12 @@ def test_execute_training_run_spec_halts_and_restores_all_checkpoint_slots_on_na
     assert result.manifest.status == "failed"
     assert result.manifest.failure_kind == "nan_guard"
     assert result.manifest.stopped is True
+    assert result.manifest.terminal_certification is not None
+    assert result.manifest.terminal_certification.termination_reason == "diverged"
+    assert (
+        result.manifest.terminal_certification.certified_artifacts
+        == result.manifest.checkpoint_custody
+    )
     assert "train_loss" not in result.manifest.summary_metrics
     assert set(result.manifest.summary_metrics) <= {"runtime_telemetry"}
     assert result.diagnostics.terminal_status == "failed"

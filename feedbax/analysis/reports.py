@@ -25,7 +25,7 @@ from feedbax.analysis.execution_context import (
     with_staged_manifest_provider_inputs,
     with_staged_parent_execution_locations,
 )
-from feedbax.analysis.exact_parents import StagedExactParents
+from feedbax.analysis.exact_parents import StagedExactParents, migrate_staged_exact_parents
 from feedbax.analysis.manifest_inputs import (
     is_authenticated_manifest_ref,
     resolve_manifest_input,
@@ -715,7 +715,7 @@ def execute_authored_report_spec(
         exact_payload = dict(exact_parents)
     else:
         raise TypeError("exact_parents must be StagedExactParents or a mapping")
-    exact = StagedExactParents.model_validate(exact_payload)
+    exact = migrate_staged_exact_parents(exact_payload)
     root_path = Path(root)
 
     exact_refs = tuple(entry.parent for entry in exact.parents)

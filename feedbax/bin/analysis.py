@@ -38,7 +38,7 @@ from feedbax.analysis.bundles import (
     load_analysis_bundle,
     resolve_analysis_bundle_authoring,
 )
-from feedbax.analysis.exact_parents import StagedExactParents
+from feedbax.analysis.exact_parents import migrate_staged_exact_parents
 from feedbax.analysis.execution_context import (
     StagedArtifactProviderRootBinding,
     StagedCheckpointCustodyRootBinding,
@@ -331,7 +331,7 @@ def run_authored_report_spec_file(argv: list[str]) -> None:
             "--exact-parents document requires explicit schema_id and "
             f"schema_version; missing {', '.join(missing_schema)}"
         )
-    exact_parents = StagedExactParents.model_validate(exact_payload)
+    exact_parents = migrate_staged_exact_parents(exact_payload)
     if (args.artifact_provider or args.checkpoint_custody) and (
         args.execution_descriptor is None
     ):
@@ -461,7 +461,7 @@ def _execute_authored_analysis_bundle(
                     "--exact-parents document requires explicit schema_id and "
                     f"schema_version; missing {', '.join(missing_schema)}"
                 )
-            exact_parents = StagedExactParents.model_validate(exact_payload)
+            exact_parents = migrate_staged_exact_parents(exact_payload)
         if dry_run:
             with _bundle_human_output_to_stderr():
                 preflight = dry_run_staged_analysis_bundle(

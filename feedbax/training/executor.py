@@ -30,6 +30,9 @@ from feedbax.contracts.manifest import (
     ManifestStatus,
     ParentRef,
     Provenance,
+    TRAINING_RUN_CERTIFICATION_SCHEMA_ID,
+    TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION,
+    TrainingRunCertification,
     TrainingRunManifest,
     TrainingManifestMetadataProjectionCustody,
     TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY,
@@ -3374,6 +3377,20 @@ def _build_manifest(
         task_spec=payloads.task_spec,
         task_binding_spec=payloads.task_binding_spec,
         checkpoint_custody=checkpoint_refs,
+        terminal_certification=TrainingRunCertification(
+            schema_id=TRAINING_RUN_CERTIFICATION_SCHEMA_ID,
+            schema_version=TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION,
+            termination_reason=(
+                "cancelled"
+                if status == "cancelled"
+                else "diverged"
+                if status == "failed" and failure_kind == "nan_guard"
+                else "crashed"
+                if status == "failed"
+                else "completed"
+            ),
+            certified_artifacts=checkpoint_refs,
+        ),
         completed_batches=completed_batches,
         stopped=stopped,
         stop_reason=stop_reason,

@@ -100,6 +100,19 @@ TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION = (
     "feedbax.manifest.training_metadata_projection_custody.v1"
 )
 TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY = "manifest_metadata_projection"
+TRAINING_RUN_CERTIFICATION_SCHEMA_ID = "feedbax.manifest.training_run_certification"
+TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION = (
+    "feedbax.manifest.training_run_certification.v1"
+)
+TRAINING_RUN_CERTIFICATION_REJECTED_VERSIONS = (
+    "feedbax.manifest.training_run_certification.v0",
+)
+TRAINING_RUN_CERTIFICATION_MIGRATION_TABLE = {
+    "absent + status=completed": "project completed with declared checkpoint_custody prefix",
+    "absent + status=cancelled": "project cancelled with declared checkpoint_custody prefix",
+    "absent + status=failed": "reject; divergence versus crash is ambiguous",
+    "absent + nonterminal status": "reject; no terminal certification exists",
+}
 STAGED_EVALUATION_PREREQUISITE_SCHEMA_ID = "feedbax.spec.staged_evaluation_prerequisite"
 STAGED_EVALUATION_PREREQUISITE_SCHEMA_VERSION = (
     "feedbax.spec.staged_evaluation_prerequisite.v1"
@@ -687,6 +700,49 @@ class TrainingManifestMetadataProjectionCustody(StrictModel):
         }
 
 
+class TrainingRunCertification(StrictModel):
+    """Why execution ended and the exact artifact prefix it certified.
+
+    This optional versioned subrecord extends the existing training-run
+    envelope without reinterpreting legacy ``status='failed'``. Consumers that
+    need the split must reject an old failed manifest without this record.
+    """
+
+    schema_id: Literal["feedbax.manifest.training_run_certification"]
+    schema_version: Literal["feedbax.manifest.training_run_certification.v1"]
+    termination_reason: Literal["completed", "diverged", "crashed", "cancelled"]
+    certified_artifacts: list[ParentRef | ArtifactRef] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_certified_artifacts(self) -> "TrainingRunCertification":
+        serialized = [
+            artifact.model_dump_json(exclude_none=False)
+            for artifact in self.certified_artifacts
+        ]
+        if len(set(serialized)) != len(serialized):
+            raise ValueError("certified_artifacts must not contain duplicate refs")
+        for artifact in self.certified_artifacts:
+            digest = (
+                artifact.sha256
+                if isinstance(artifact, ArtifactRef)
+                else artifact.metadata.get("manifest_sha256")
+            )
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                label = (
+                    artifact.logical_name
+                    if isinstance(artifact, ArtifactRef)
+                    else artifact.id
+                )
+                raise ValueError(
+                    f"certified artifact {label!r} requires an exact lowercase SHA-256"
+                )
+        return self
+
+
 class TrainingRunManifest(BaseManifest):
     kind: Literal["TrainingRunManifest"] = "TrainingRunManifest"
     run_set_id: Optional[str] = None
@@ -709,6 +765,7 @@ class TrainingRunManifest(BaseManifest):
     input_data_identities: list[dict[str, Any]] = Field(default_factory=list)
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
     metadata_projection_custody: TrainingManifestMetadataProjectionCustody | None = None
+    terminal_certification: TrainingRunCertification | None = None
 
     @model_validator(mode="after")
     def _validate_execution_identity(self) -> "TrainingRunManifest":
@@ -720,6 +777,19 @@ class TrainingRunManifest(BaseManifest):
             raise ValueError("training-run failure_kind requires status='failed'")
         if self.status == "failed" and self.failure_kind == "nan_guard" and not self.stopped:
             raise ValueError("nan_guard failures must be marked stopped")
+        if self.terminal_certification is not None:
+            expected_status = {
+                "completed": "completed",
+                "diverged": "failed",
+                "crashed": "failed",
+                "cancelled": "cancelled",
+            }[self.terminal_certification.termination_reason]
+            if self.status != expected_status:
+                raise ValueError(
+                    "terminal_certification termination_reason disagrees with legacy "
+                    f"status: reason={self.terminal_certification.termination_reason!r}, "
+                    f"status={self.status!r}, expected={expected_status!r}"
+                )
         if self.intent_hash is not None:
             validate_sha256(self.intent_hash, field_name="intent_hash")
         if self.resolved_semantics_root_hash is not None:
@@ -788,6 +858,41 @@ class TrainingRunManifest(BaseManifest):
                     "training metadata projection custody disagrees with provenance summary"
                 )
         return self
+
+
+def training_run_certification(
+    manifest: TrainingRunManifest,
+) -> TrainingRunCertification:
+    """Return explicit certification or deterministically project safe legacy states.
+
+    Historical completed and cancelled manifests have unambiguous termination
+    reasons and their already-declared checkpoint custody is the only
+    projectable certified prefix. Historical failed manifests are ambiguous
+    between divergence and crash and therefore fail with a reauthoring
+    diagnostic instead of guessing.
+    """
+    if manifest.terminal_certification is not None:
+        return manifest.terminal_certification
+    if manifest.status == "completed":
+        reason: Literal["completed", "cancelled"] = "completed"
+    elif manifest.status == "cancelled":
+        reason = "cancelled"
+    elif manifest.status == "failed":
+        raise ValueError(
+            f"TrainingRunManifest {manifest.id!r} uses legacy status='failed' without "
+            "terminal_certification; divergence versus crash cannot be migrated "
+            "deterministically. Reauthor the manifest with an exact certified prefix."
+        )
+    else:
+        raise ValueError(
+            f"TrainingRunManifest {manifest.id!r} is not terminal and has no certification"
+        )
+    return TrainingRunCertification(
+        schema_id=TRAINING_RUN_CERTIFICATION_SCHEMA_ID,
+        schema_version=TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION,
+        termination_reason=reason,
+        certified_artifacts=list(manifest.checkpoint_custody),
+    )
 
 
 class EvaluationRunSpec(StrictModel):
@@ -2411,7 +2516,60 @@ def normalize_checkpoint_selection_lineage(
 
 def evaluation_run_manifest_id(spec: EvaluationRunSpec) -> str:
     """Return deterministic run identity for an evaluation spec."""
-    digest = sha256_bytes(canonical_json_bytes(spec))
+    dependency_identities = [
+        ref.metadata.get("material_dependency_identity_sha256")
+        for ref in spec.inputs
+    ]
+    if any(identity is not None for identity in dependency_identities):
+        from feedbax.contracts.material_dependencies import (
+            MaterialDependencySet,
+            material_dependency_identity_sha256,
+        )
+
+        if not all(
+            isinstance(identity, str)
+            and len(identity) == 64
+            and all(character in "0123456789abcdef" for character in identity)
+            for identity in dependency_identities
+        ):
+            raise ValueError(
+                "every evaluation input must carry an exact "
+                "material_dependency_identity_sha256 when dependency-scoped identity is used"
+            )
+        declarations = [
+            ref.metadata.get("material_dependencies")
+            for ref in spec.inputs
+        ]
+        if not all(isinstance(declaration, dict) for declaration in declarations):
+            raise ValueError(
+                "dependency-scoped evaluation identity requires every input to retain "
+                "its versioned material_dependencies declaration"
+            )
+        validated_declarations = [
+            MaterialDependencySet.model_validate(declaration)
+            for declaration in declarations
+        ]
+        for identity, declaration in zip(
+            dependency_identities,
+            validated_declarations,
+            strict=True,
+        ):
+            expected = material_dependency_identity_sha256(declaration)
+            if identity != expected:
+                raise ValueError(
+                    "evaluation input material_dependency_identity_sha256 disagrees "
+                    "with its validated declaration"
+                )
+        identity_preimage: Any = {
+            "schema_id": "feedbax.identity.evaluation_run",
+            "schema_version": "feedbax.identity.evaluation_run.v1",
+            "evaluation_type": spec.evaluation_type,
+            "params": spec.params,
+            "material_dependency_identities": dependency_identities,
+        }
+    else:
+        identity_preimage = spec
+    digest = sha256_bytes(canonical_json_bytes(identity_preimage))
     return f"feedbax-evaluation-run:{digest[:32]}"
 
 

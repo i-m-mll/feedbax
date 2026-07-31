@@ -24,6 +24,7 @@ from feedbax.analysis.evaluation_inputs import (
 from feedbax.analysis.exact_parents import (
     STAGED_EXACT_PARENTS_SCHEMA_ID,
     STAGED_EXACT_PARENTS_SCHEMA_VERSION,
+    STAGED_EXACT_PARENTS_SCHEMA_VERSION_V1,
     StagedExactParentEntry,
     StagedExactParents,
 )
@@ -32,10 +33,22 @@ from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE
 from feedbax.contracts.manifest import (
     EvaluationRunSpec,
     ParentRef,
+    TRAINING_RUN_CERTIFICATION_SCHEMA_ID,
+    TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION,
+    TrainingRunCertification,
     TrainingRunManifest,
     evaluation_run_manifest_id,
     sha256_bytes,
     write_manifest,
+)
+from feedbax.contracts.material_dependencies import (
+    ADMISSION_WAIVER_SCHEMA_ID,
+    ADMISSION_WAIVER_SCHEMA_VERSION,
+    MATERIAL_DEPENDENCIES_SCHEMA_ID,
+    MATERIAL_DEPENDENCIES_SCHEMA_VERSION,
+    AdmissionWaiver,
+    MaterialDependency,
+    MaterialDependencySet,
 )
 from feedbax.contracts.selection import ManifestPredicate, TopKByMetricPerGroup
 
@@ -164,6 +177,122 @@ def _exact_document(*entries: StagedExactParentEntry) -> StagedExactParents:
     )
 
 
+def _write_diverged_exact_parent(
+    root: Path,
+    *,
+    suffix: str = "",
+    certified: bool = True,
+    waiver_manifest_digest: str | None = None,
+    waiver_artifact_digest: str | None = None,
+) -> StagedExactParentEntry:
+    checkpoint_digest = "b" * 64
+    checkpoint = ParentRef(
+        kind="TrainingCheckpointTransactionManifest",
+        id="checkpoint:certified",
+        role="training_checkpoint_custody",
+        uri="transactions/certified.json",
+        metadata={"manifest_sha256": checkpoint_digest},
+    )
+    run_id = "feedbax-training-run:diverged"
+    manifest = TrainingRunManifest(
+        id=run_id,
+        status="failed",
+        stopped=True,
+        completed_at="2026-07-31T00:00:00Z",
+        failure_kind="nan_guard",
+        run_set_id="run-set-a",
+        checkpoint_custody=[checkpoint],
+        terminal_certification=TrainingRunCertification(
+            schema_id=TRAINING_RUN_CERTIFICATION_SCHEMA_ID,
+            schema_version=TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION,
+            termination_reason="diverged",
+            certified_artifacts=[checkpoint] if certified else [],
+        ),
+        metadata={
+            "method": "minimax",
+            "row_id": "row-diverged",
+            "planned_run_id": run_id,
+            "provenance_note": suffix,
+        },
+    )
+    raw_bytes = manifest.model_dump_json(indent=2).encode("utf-8")
+    relative_path = Path("exact-inputs") / f"diverged{suffix}.json"
+    path = root / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw_bytes)
+    digest = sha256_bytes(raw_bytes)
+    parent = ParentRef(
+        kind="TrainingRunManifest",
+        id=run_id,
+        role="training_run",
+        uri=f"artifact://sha256/{digest}",
+        metadata={
+            "manifest_sha256": digest,
+            "size_bytes": len(raw_bytes),
+            "run_set_id": "run-set-a",
+            "row_id": "row-diverged",
+            "manifest_status": "failed",
+            "registration_status": "completed",
+            "conformance_overall": "pass",
+            "certificate_sha256": "c" * 64,
+            "planned_run_id": run_id,
+        },
+    )
+    waiver_parent = (
+        parent
+        if waiver_manifest_digest is None
+        else parent.model_copy(
+            update={
+                "uri": f"artifact://sha256/{waiver_manifest_digest}",
+                "metadata": {
+                    **parent.metadata,
+                    "manifest_sha256": waiver_manifest_digest,
+                },
+            }
+        )
+    )
+    material_dependencies = MaterialDependencySet(
+        schema_id=MATERIAL_DEPENDENCIES_SCHEMA_ID,
+        schema_version=MATERIAL_DEPENDENCIES_SCHEMA_VERSION,
+        dependencies=[
+            MaterialDependency(name="manifest_authority", value=parent),
+            MaterialDependency(
+                name="certified_checkpoint",
+                value=checkpoint,
+                depends_on=["manifest_authority"],
+            ),
+        ],
+        identity_inputs=["certified_checkpoint"],
+        provenance_metadata={"sampling_contract": suffix},
+        waiver=AdmissionWaiver(
+            schema_id=ADMISSION_WAIVER_SCHEMA_ID,
+            schema_version=ADMISSION_WAIVER_SCHEMA_VERSION,
+            incidental_check="manifest_status_completed",
+            manifest=parent,
+            artifact_sha256=checkpoint_digest,
+            reason="execution diverged after the checkpoint was certified",
+        ),
+    )
+    if waiver_manifest_digest is not None or waiver_artifact_digest is not None:
+        material_dependencies = material_dependencies.model_copy(
+            update={
+                "waiver": AdmissionWaiver(
+                    schema_id=ADMISSION_WAIVER_SCHEMA_ID,
+                    schema_version=ADMISSION_WAIVER_SCHEMA_VERSION,
+                    incidental_check="manifest_status_completed",
+                    manifest=waiver_parent,
+                    artifact_sha256=waiver_artifact_digest or checkpoint_digest,
+                    reason="execution diverged after the checkpoint was certified",
+                )
+            }
+        )
+    return StagedExactParentEntry(
+        parent=parent,
+        execution_uri=relative_path.as_posix(),
+        material_dependencies=material_dependencies,
+    )
+
+
 def _rewrite_manifest_metadata(
     root: Path,
     entry: StagedExactParentEntry,
@@ -237,6 +366,75 @@ def test_four_exact_parents_remain_per_run_until_grouped_downstream(
     assert grouped_stage.inputs == evaluation_stage.manifest_refs
     assert all(ref.kind == "EvaluationRunManifest" for ref in grouped_stage.inputs)
     assert len(grouped_stage.manifest_refs) == 1
+
+
+def test_diverged_run_admits_certified_checkpoint_and_scopes_evaluation_identity(
+    tmp_path: Path,
+    exact_evaluation_calls: list[EvaluationRunSpec],
+) -> None:
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first = _write_diverged_exact_parent(first_root, suffix="-provenance-one")
+    second = _write_diverged_exact_parent(second_root, suffix="-provenance-two")
+
+    first_execution = execute_staged_analysis_bundle(
+        _bundle(),
+        root=first_root,
+        exact_parents=_exact_document(first),
+    )
+    second_execution = execute_staged_analysis_bundle(
+        _bundle(),
+        root=second_root,
+        exact_parents=_exact_document(second),
+    )
+
+    first_ref = first_execution.stages[0].manifest_refs[0]
+    second_ref = second_execution.stages[0].manifest_refs[0]
+    assert first_ref.id == second_ref.id
+    assert first.parent.metadata["manifest_sha256"] != second.parent.metadata["manifest_sha256"]
+    assert (
+        exact_evaluation_calls[0].inputs[0].metadata[
+            "material_dependency_identity_sha256"
+        ]
+        == exact_evaluation_calls[1].inputs[0].metadata[
+            "material_dependency_identity_sha256"
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("missing_checkpoint", "certified_checkpoint.*missing"),
+        ("waiver_manifest", "waiver manifest mismatch"),
+        ("waiver_artifact", "waiver artifact hash mismatch"),
+    ],
+)
+def test_material_dependency_admission_rejects_before_outputs(
+    tmp_path: Path,
+    exact_evaluation_calls: list[EvaluationRunSpec],
+    case: str,
+    message: str,
+) -> None:
+    if case.startswith("waiver_"):
+        with pytest.raises(ValidationError, match=message):
+            _write_diverged_exact_parent(
+                tmp_path,
+                waiver_manifest_digest="d" * 64 if case == "waiver_manifest" else None,
+                waiver_artifact_digest="d" * 64 if case == "waiver_artifact" else None,
+            )
+    else:
+        entry = _write_diverged_exact_parent(tmp_path, certified=False)
+        with pytest.raises(ValueError, match=message):
+            execute_staged_analysis_bundle(
+                _bundle(),
+                root=tmp_path,
+                exact_parents=_exact_document(entry),
+            )
+
+    assert exact_evaluation_calls == []
+    assert not (tmp_path / "cache").exists()
+    assert not (tmp_path / "manifests").exists()
 
 
 def test_manifest_hash_changes_evaluation_identity_for_same_parent_id(tmp_path: Path) -> None:
@@ -585,7 +783,7 @@ def test_exact_parents_require_explicit_root_and_exclude_run_ids(
 
 def test_staged_exact_parent_schema_is_versioned_and_nonempty() -> None:
     assert STAGED_EXACT_PARENTS_SCHEMA_ID == "feedbax.spec.staged_exact_parents"
-    assert STAGED_EXACT_PARENTS_SCHEMA_VERSION == "feedbax.spec.staged_exact_parents.v1"
+    assert STAGED_EXACT_PARENTS_SCHEMA_VERSION == "feedbax.spec.staged_exact_parents.v2"
     with pytest.raises(ValidationError, match="at least 1 item"):
         StagedExactParents(
             schema_id=STAGED_EXACT_PARENTS_SCHEMA_ID,
@@ -601,11 +799,11 @@ def test_staged_exact_parent_schema_is_versioned_and_nonempty() -> None:
         payload.pop(missing_field)
         with pytest.raises(ValidationError, match=missing_field):
             StagedExactParents.model_validate(payload)
-    with pytest.raises(ValidationError, match="staged_exact_parents.v1"):
+    with pytest.raises(ValidationError, match="staged_exact_parents.v2"):
         StagedExactParents.model_validate(
             {
                 "schema_id": STAGED_EXACT_PARENTS_SCHEMA_ID,
-                "schema_version": "feedbax.spec.staged_exact_parents.v0",
+                "schema_version": STAGED_EXACT_PARENTS_SCHEMA_VERSION_V1,
                 "parents": [{}],
             }
         )
@@ -623,7 +821,7 @@ def test_executor_revalidates_mutated_exact_parent_schema(
     exact = _exact_document(entry)
     exact.schema_version = "feedbax.spec.staged_exact_parents.future"  # type: ignore[assignment]
 
-    with pytest.raises(ValidationError, match="staged_exact_parents.v1"):
+    with pytest.raises(ValidationError, match="staged_exact_parents.v2"):
         execute_staged_analysis_bundle(
             _bundle(),
             root=tmp_path,
@@ -777,7 +975,7 @@ def test_staged_cli_rejects_runs_conflict_and_unversioned_exact_document(
     payload = _exact_document(entry).model_dump(mode="json")
     payload["schema_version"] = "feedbax.spec.staged_exact_parents.unknown"
     exact_path.write_text(json.dumps(payload), encoding="utf-8")
-    with pytest.raises(ValidationError, match="staged_exact_parents.v1"):
+    with pytest.raises(ValueError, match="unsupported StagedExactParents schema_version"):
         analysis_cli.main(
             [
                 "--bundle",

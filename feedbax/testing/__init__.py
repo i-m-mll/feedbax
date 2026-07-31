@@ -29,6 +29,10 @@ from .evaluation_contract import (
     check_evaluation_recipe,
     evaluation_params_schema_family_id,
 )
+from .material_dependencies import (
+    MaterialDependencyContractReport,
+    check_material_dependency_contract,
+)
 from .suite import (
     CollectionResult,
     ContractFamily,
@@ -52,6 +56,7 @@ __all__ = [
     "ContractSuiteManifest",
     "EvaluationRecipeContractReport",
     "JsonBaseline",
+    "MaterialDependencyContractReport",
     "RatchetDiff",
     "Scope",
     "SiteVisitor",
@@ -62,6 +67,7 @@ __all__ = [
     "assert_negative_canary",
     "assert_negative_canaries_collected",
     "check_evaluation_recipe",
+    "check_material_dependency_contract",
     "check_version_pin",
     "collect_contract_nodeids",
     "compare_ratchet",
