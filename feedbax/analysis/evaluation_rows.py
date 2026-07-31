@@ -6,23 +6,21 @@ from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
+from feedbax.analysis.specs import (
+    EvaluationStateMaterializationReceipt,
+    ResolvedAnalysisInput,
+)
 from feedbax.contracts.manifest import (
     AnalysisEvaluationStateSource,
     EvaluationManifestProvenanceEnvelope,
     EvaluationRunManifest,
     EvaluationRunSpec,
     ParentRef,
+    load_manifest_bytes,
     verify_evaluation_manifest_provenance,
 )
-
-if TYPE_CHECKING:
-    from feedbax.analysis.specs import (
-        EvaluationStateMaterializationReceipt,
-        ResolvedAnalysisInput,
-    )
-
 
 StateT = TypeVar("StateT")
 ParametersT = TypeVar("ParametersT")
@@ -50,7 +48,11 @@ class EvaluationRowProjectionErrorReason(StrEnum):
     MANIFEST_AUTHORITY_MISMATCH = "manifest_authority_mismatch"
     STATE_SOURCE_MISSING = "state_source_missing"
     STATE_RECEIPT_MISSING = "state_receipt_missing"
+    STATE_RECEIPT_CAPABILITY_INVALID = "state_receipt_capability_invalid"
     STATE_RECEIPT_MISMATCH = "state_receipt_mismatch"
+    STATE_VALUE_IDENTITY_MISMATCH = "state_value_identity_mismatch"
+    SOURCE_RECEIPT_MISMATCH = "source_receipt_mismatch"
+    SOURCE_VALUE_IDENTITY_MISMATCH = "source_value_identity_mismatch"
     MANIFEST_PROVENANCE_INVALID = "manifest_provenance_invalid"
     PROJECTOR_FAILED = "projector_failed"
     PROJECTED_KEY_UNHASHABLE = "projected_key_unhashable"
@@ -354,9 +356,8 @@ def _verify_row_facts(
     *,
     row_index: int,
 ) -> VerifiedEvaluationRowFacts:
-    manifest = item.manifest
-    manifest_id = getattr(manifest, "id", None)
-    if not isinstance(manifest, EvaluationRunManifest) or item.manifest_input is None:
+    manifest_id = item.ref.id
+    if item.manifest_input is None:
         raise EvaluationRowProjectionError(
             EvaluationRowProjectionErrorCategory.INPUT_CONTRACT,
             EvaluationRowProjectionErrorReason.INPUT_MANIFEST_MISSING,
@@ -364,25 +365,43 @@ def _verify_row_facts(
             row_index=row_index,
             manifest_id=manifest_id,
         )
-    if item.states is None:
-        raise EvaluationRowProjectionError(
-            EvaluationRowProjectionErrorCategory.INPUT_CONTRACT,
-            EvaluationRowProjectionErrorReason.INPUT_STATES_MISSING,
-            f"evaluation row {manifest.id!r} has no resolved states",
-            row_index=row_index,
-            manifest_id=manifest.id,
-        )
     ref = item.ref
     if (
         item.manifest_input.ref != ref
-        or item.manifest_input.manifest != manifest
         or ref.kind != "EvaluationRunManifest"
         or ref.role != "evaluation_run"
     ):
         raise EvaluationRowProjectionError(
             EvaluationRowProjectionErrorCategory.MANIFEST_AUTHORITY,
             EvaluationRowProjectionErrorReason.MANIFEST_AUTHORITY_MISMATCH,
-            f"evaluation row {manifest.id!r} disagrees with its manifest authority",
+            f"evaluation row {manifest_id!r} disagrees with its manifest authority",
+            row_index=row_index,
+            manifest_id=manifest_id,
+        )
+    try:
+        manifest = load_manifest_bytes(item.manifest_input.raw_bytes)
+        if not isinstance(manifest, EvaluationRunManifest):
+            raise TypeError("authenticated input is not an EvaluationRunManifest")
+        run_spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
+        provenance = verify_evaluation_manifest_provenance(
+            ref,
+            item.manifest_input.raw_bytes,
+            expected_producer_identity=run_spec.evaluation_type,
+        )
+    except Exception as exc:
+        raise EvaluationRowProjectionError(
+            EvaluationRowProjectionErrorCategory.PROVENANCE,
+            EvaluationRowProjectionErrorReason.MANIFEST_PROVENANCE_INVALID,
+            f"evaluation row {manifest_id!r} provenance authentication failed",
+            row_index=row_index,
+            manifest_id=manifest_id,
+            cause=exc,
+        ) from exc
+    if item.states is None:
+        raise EvaluationRowProjectionError(
+            EvaluationRowProjectionErrorCategory.INPUT_CONTRACT,
+            EvaluationRowProjectionErrorReason.INPUT_STATES_MISSING,
+            f"evaluation row {manifest.id!r} has no resolved states",
             row_index=row_index,
             manifest_id=manifest.id,
         )
@@ -405,33 +424,79 @@ def _verify_row_facts(
             manifest_id=manifest.id,
             source_kind=source.source_kind,
         )
-    portable_ref = ref.model_copy(update={"uri": None})
-    if not receipt.matches(item.states, source):
+    if (
+        type(receipt) is not EvaluationStateMaterializationReceipt
+        or not receipt._is_resolver_issued()
+    ):
+        raise EvaluationRowProjectionError(
+            EvaluationRowProjectionErrorCategory.STATE_MATERIALIZATION,
+            EvaluationRowProjectionErrorReason.STATE_RECEIPT_CAPABILITY_INVALID,
+            f"evaluation row {manifest.id!r} has no valid resolver receipt capability",
+            row_index=row_index,
+            manifest_id=manifest.id,
+            source_kind=source.source_kind,
+        )
+    if not receipt._matches_state_object(item.states):
         raise EvaluationRowProjectionError(
             EvaluationRowProjectionErrorCategory.STATE_MATERIALIZATION,
             EvaluationRowProjectionErrorReason.STATE_RECEIPT_MISMATCH,
-            f"evaluation row {manifest.id!r} states disagree with their resolver receipt",
+            f"evaluation row {manifest.id!r} states are not the resolver-issued object",
             row_index=row_index,
             manifest_id=manifest.id,
             source_kind=source.source_kind,
         )
     try:
-        run_spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
-        provenance = verify_evaluation_manifest_provenance(
-            ref,
-            item.manifest_input.raw_bytes,
-            expected_producer_identity=run_spec.evaluation_type,
-        )
+        state_value_matches = receipt._matches_state_value(item.states)
     except Exception as exc:
         raise EvaluationRowProjectionError(
-            EvaluationRowProjectionErrorCategory.PROVENANCE,
-            EvaluationRowProjectionErrorReason.MANIFEST_PROVENANCE_INVALID,
-            f"evaluation row {manifest.id!r} provenance authentication failed",
+            EvaluationRowProjectionErrorCategory.STATE_MATERIALIZATION,
+            EvaluationRowProjectionErrorReason.STATE_VALUE_IDENTITY_MISMATCH,
+            f"evaluation row {manifest.id!r} state identity cannot be verified",
             row_index=row_index,
             manifest_id=manifest.id,
             source_kind=source.source_kind,
             cause=exc,
         ) from exc
+    if not state_value_matches:
+        raise EvaluationRowProjectionError(
+            EvaluationRowProjectionErrorCategory.STATE_MATERIALIZATION,
+            EvaluationRowProjectionErrorReason.STATE_VALUE_IDENTITY_MISMATCH,
+            f"evaluation row {manifest.id!r} state value changed after resolution",
+            row_index=row_index,
+            manifest_id=manifest.id,
+            source_kind=source.source_kind,
+        )
+    if not receipt._matches_source_object(source):
+        raise EvaluationRowProjectionError(
+            EvaluationRowProjectionErrorCategory.STATE_MATERIALIZATION,
+            EvaluationRowProjectionErrorReason.SOURCE_RECEIPT_MISMATCH,
+            f"evaluation row {manifest.id!r} source is not the resolver-issued object",
+            row_index=row_index,
+            manifest_id=manifest.id,
+            source_kind=source.source_kind,
+        )
+    try:
+        source_value_matches = receipt._matches_source_value(source)
+    except Exception as exc:
+        raise EvaluationRowProjectionError(
+            EvaluationRowProjectionErrorCategory.STATE_MATERIALIZATION,
+            EvaluationRowProjectionErrorReason.SOURCE_VALUE_IDENTITY_MISMATCH,
+            f"evaluation row {manifest.id!r} source identity cannot be verified",
+            row_index=row_index,
+            manifest_id=manifest.id,
+            source_kind=source.source_kind,
+            cause=exc,
+        ) from exc
+    if not source_value_matches:
+        raise EvaluationRowProjectionError(
+            EvaluationRowProjectionErrorCategory.STATE_MATERIALIZATION,
+            EvaluationRowProjectionErrorReason.SOURCE_VALUE_IDENTITY_MISMATCH,
+            f"evaluation row {manifest.id!r} source changed after resolution",
+            row_index=row_index,
+            manifest_id=manifest.id,
+            source_kind=source.source_kind,
+        )
+    portable_ref = ref.model_copy(update={"uri": None})
     return VerifiedEvaluationRowFacts(
         manifest_authority=portable_ref,
         manifest=manifest,

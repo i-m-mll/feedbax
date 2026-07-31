@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import numpy as np
 from pydantic import ValidationError
 
 from feedbax import LowererRegistration, OrderedLowererRegistry
@@ -359,7 +360,7 @@ def _projection_input(root: Path, target: int) -> ResolvedManifestInput:
         inputs=[training],
         params={"arm": "trained", "target": target},
     )
-    states = {"sample": target}
+    states = {"sample": np.asarray(target)}
     artifact = store_evaluation_states_artifact(
         states,
         root=root,
@@ -436,14 +437,19 @@ def check_typed_evaluation_row_projection() -> bool:
         )
         if keys != expected or tuple(row.state for row in projected) != (0, 1):
             raise AssertionError("typed evaluation row projection drifted")
-        invalid = replace(inputs[0], states={"sample": 99})
+        inputs[0].manifest.evaluation_spec.inline["params"]["target"] = 99
+        inputs[0].manifest.metadata["states_schema"] = "mutated"
+        authority_row = project_verified_evaluation_rows([inputs[0]], project=project)[0]
+        if authority_row.row_key != ("trained", 0):
+            raise AssertionError("projection trusted a mutable manifest alias")
+        inputs[0].states["sample"][...] = 99
         try:
-            project_verified_evaluation_rows([invalid], project=project)
+            project_verified_evaluation_rows([inputs[0]], project=project)
         except EvaluationRowProjectionError as exc:
-            if exc.reason is not EvaluationRowProjectionErrorReason.STATE_RECEIPT_MISMATCH:
+            if exc.reason is not EvaluationRowProjectionErrorReason.STATE_VALUE_IDENTITY_MISMATCH:
                 raise AssertionError("row projection returned the wrong reason code") from exc
         else:
-            raise AssertionError("row projection accepted states outside its resolver receipt")
+            raise AssertionError("row projection accepted mutated state values")
     return True
 
 

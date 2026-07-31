@@ -11,7 +11,8 @@ RESULT_SCHEMA_ID = "feedbax.external_conformance.result"
 RESULT_SCHEMA_VERSION_V1 = f"{RESULT_SCHEMA_ID}.v1"
 RESULT_SCHEMA_VERSION_V2 = f"{RESULT_SCHEMA_ID}.v2"
 RESULT_SCHEMA_VERSION_V3 = f"{RESULT_SCHEMA_ID}.v3"
-RESULT_SCHEMA_VERSION = f"{RESULT_SCHEMA_ID}.v4"
+RESULT_SCHEMA_VERSION_V4 = f"{RESULT_SCHEMA_ID}.v4"
+RESULT_SCHEMA_VERSION = f"{RESULT_SCHEMA_ID}.v5"
 V2_REQUIRED_CASE_IDS = (
     "ordered_registration",
     "component_registration_and_migration",
@@ -20,13 +21,96 @@ V2_REQUIRED_CASE_IDS = (
     "staged_exact_parent_migration",
     "public_lifecycle_recovery",
 )
-REQUIRED_CASE_IDS = (
-    *V2_REQUIRED_CASE_IDS[:-1],
+V3_REQUIRED_CASE_IDS = (
+    "ordered_registration",
+    "component_registration_and_migration",
+    "value_identity",
+    "material_dependencies",
+    "staged_exact_parent_migration",
     "typed_evaluation_row_projection",
-    V2_REQUIRED_CASE_IDS[-1],
+    "public_lifecycle_recovery",
 )
-V3_REQUIRED_CASE_IDS = REQUIRED_CASE_IDS
-_REQUIRED_CASE_ID_SET = frozenset(REQUIRED_CASE_IDS)
+V4_REQUIRED_CASE_IDS = (
+    "ordered_registration",
+    "component_registration_and_migration",
+    "value_identity",
+    "material_dependencies",
+    "staged_exact_parent_migration",
+    "typed_evaluation_row_projection",
+    "public_lifecycle_recovery",
+)
+V5_REQUIRED_CASE_IDS = (
+    "ordered_registration",
+    "component_registration_and_migration",
+    "value_identity",
+    "material_dependencies",
+    "staged_exact_parent_migration",
+    "typed_evaluation_row_projection",
+    "public_lifecycle_recovery",
+)
+REQUIRED_CASE_IDS = (
+    "ordered_registration",
+    "component_registration_and_migration",
+    "value_identity",
+    "material_dependencies",
+    "staged_exact_parent_migration",
+    "typed_evaluation_row_projection",
+    "public_lifecycle_recovery",
+)
+V2_REQUIRED_CASE_ID_SET = frozenset(
+    {
+        "ordered_registration",
+        "component_registration_and_migration",
+        "value_identity",
+        "material_dependencies",
+        "staged_exact_parent_migration",
+        "public_lifecycle_recovery",
+    }
+)
+V3_REQUIRED_CASE_ID_SET = frozenset(
+    {
+        "ordered_registration",
+        "component_registration_and_migration",
+        "value_identity",
+        "material_dependencies",
+        "staged_exact_parent_migration",
+        "typed_evaluation_row_projection",
+        "public_lifecycle_recovery",
+    }
+)
+V4_REQUIRED_CASE_ID_SET = frozenset(
+    {
+        "ordered_registration",
+        "component_registration_and_migration",
+        "value_identity",
+        "material_dependencies",
+        "staged_exact_parent_migration",
+        "typed_evaluation_row_projection",
+        "public_lifecycle_recovery",
+    }
+)
+V5_REQUIRED_CASE_ID_SET = frozenset(
+    {
+        "ordered_registration",
+        "component_registration_and_migration",
+        "value_identity",
+        "material_dependencies",
+        "staged_exact_parent_migration",
+        "typed_evaluation_row_projection",
+        "public_lifecycle_recovery",
+    }
+)
+REQUIRED_CASE_ID_SET = frozenset(
+    {
+        "ordered_registration",
+        "component_registration_and_migration",
+        "value_identity",
+        "material_dependencies",
+        "staged_exact_parent_migration",
+        "typed_evaluation_row_projection",
+        "public_lifecycle_recovery",
+    }
+)
 RESULT_SCHEMA_MIGRATION_TABLE = {
     RESULT_SCHEMA_VERSION_V1: (
         f"migrate to {RESULT_SCHEMA_VERSION_V2} by adding unbound protocol role slots; "
@@ -36,6 +120,10 @@ RESULT_SCHEMA_MIGRATION_TABLE = {
     RESULT_SCHEMA_VERSION_V3: (
         "reject; v3 row-projection evidence did not require a resolver-issued "
         "state-materialization receipt"
+    ),
+    RESULT_SCHEMA_VERSION_V4: (
+        "reject; v4 row-projection evidence did not bind canonical state/source "
+        "value identities or derive manifest facts from authenticated raw bytes"
     ),
 }
 
@@ -64,7 +152,7 @@ class ConformanceResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_id: Literal["feedbax.external_conformance.result"] = RESULT_SCHEMA_ID
-    schema_version: Literal["feedbax.external_conformance.result.v4"] = RESULT_SCHEMA_VERSION
+    schema_version: Literal["feedbax.external_conformance.result.v5"] = RESULT_SCHEMA_VERSION
     status: Literal["pass", "blocked"]
     feedbax_version: str = Field(min_length=1)
     feedbax_install_root: str = Field(min_length=1)
@@ -76,11 +164,11 @@ class ConformanceResult(BaseModel):
     @model_validator(mode="after")
     def _validate_outcome(self) -> "ConformanceResult":
         observed = frozenset(self.cases)
-        if observed != _REQUIRED_CASE_ID_SET:
+        if observed != REQUIRED_CASE_ID_SET:
             raise ValueError(
-                "external conformance cases must exactly match the v4 contract: "
-                f"missing={sorted(_REQUIRED_CASE_ID_SET - observed)!r}, "
-                f"extra={sorted(observed - _REQUIRED_CASE_ID_SET)!r}"
+                "external conformance cases must exactly match the v5 contract: "
+                f"missing={sorted(REQUIRED_CASE_ID_SET - observed)!r}, "
+                f"extra={sorted(observed - REQUIRED_CASE_ID_SET)!r}"
             )
         if not all(self.cases.values()):
             raise ValueError("every required external conformance case must pass")
@@ -94,7 +182,7 @@ class ConformanceResult(BaseModel):
 
 
 def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResult:
-    """Load v4; reject older evidence that cannot prove the resolver receipt."""
+    """Load v5; reject older evidence that cannot prove immutable row facts."""
     if isinstance(payload, ConformanceResult):
         return ConformanceResult.model_validate(payload.model_dump(mode="json"))
     data = dict(payload)
@@ -123,6 +211,12 @@ def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResul
             "v3 typed_evaluation_row_projection evidence did not require a "
             "resolver-issued state-materialization receipt"
         )
+    if version == RESULT_SCHEMA_VERSION_V4:
+        raise ValueError(
+            "external conformance result v4 cannot migrate to v5: "
+            "v4 typed_evaluation_row_projection evidence did not bind canonical "
+            "state/source value identities or authenticated raw-byte manifest facts"
+        )
     if version != RESULT_SCHEMA_VERSION:
         raise ValueError(
             "unsupported external conformance result schema_version: "
@@ -138,10 +232,18 @@ __all__ = [
     "RESULT_SCHEMA_VERSION_V1",
     "RESULT_SCHEMA_VERSION_V2",
     "RESULT_SCHEMA_VERSION_V3",
+    "RESULT_SCHEMA_VERSION_V4",
     "RESULT_SCHEMA_MIGRATION_TABLE",
     "REQUIRED_CASE_IDS",
+    "REQUIRED_CASE_ID_SET",
     "V2_REQUIRED_CASE_IDS",
+    "V2_REQUIRED_CASE_ID_SET",
     "V3_REQUIRED_CASE_IDS",
+    "V3_REQUIRED_CASE_ID_SET",
+    "V4_REQUIRED_CASE_IDS",
+    "V4_REQUIRED_CASE_ID_SET",
+    "V5_REQUIRED_CASE_IDS",
+    "V5_REQUIRED_CASE_ID_SET",
     "ConformanceResult",
     "LifecycleResult",
     "ProtocolRoleSlots",

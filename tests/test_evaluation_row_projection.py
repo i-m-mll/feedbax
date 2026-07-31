@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import replace
 import hashlib
 from pathlib import Path
-from typing import Any
+from typing import Any, get_type_hints
 
+import numpy as np
 import pytest
 from pydantic import BaseModel, ConfigDict
 
@@ -98,7 +99,7 @@ def _manifest_and_input(
             "gain": 2.0,
         },
     )
-    states = {"sample": target, "velocity": target + 0.5}
+    states = {"sample": np.asarray(target), "velocity": np.asarray(target + 0.5)}
     artifacts = (
         [store_evaluation_states_artifact(states, root=tmp_path, manifest_id=manifest_id)]
         if durable
@@ -156,7 +157,7 @@ def _resolved_input(
         target=target,
         durable=durable,
     )
-    states = {"sample": target, "velocity": target + 0.5}
+    states = {"sample": np.asarray(target), "velocity": np.asarray(target + 0.5)}
     cache_path = evaluation_states_cache_path(manifest.id, root=tmp_path)
     if source_kind == "evaluation_cache":
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -275,6 +276,47 @@ def test_state_receipt_cannot_be_minted_through_the_public_constructor(
         )
 
 
+def test_public_projection_type_hints_resolve_at_runtime() -> None:
+    hints = get_type_hints(project_verified_evaluation_rows)
+
+    assert "inputs" in hints
+    assert "project" in hints
+    assert "return" in hints
+
+
+def test_duck_typed_fake_receipt_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeReceipt:
+        def _is_resolver_issued(self) -> bool:
+            return True
+
+        def _matches_state_object(self, _states: Any) -> bool:
+            return True
+
+        def _matches_state_value(self, _states: Any) -> bool:
+            return True
+
+        def _matches_source_object(self, _source: Any) -> bool:
+            return True
+
+        def _matches_source_value(self, _source: Any) -> bool:
+            return True
+
+    item = replace(
+        _resolved_input(tmp_path, monkeypatch),
+        evaluation_state_receipt=FakeReceipt(),
+    )
+
+    with pytest.raises(EvaluationRowProjectionError) as caught:
+        project_verified_evaluation_rows([item], project=_velocity_projection)
+
+    assert caught.value.reason is (
+        EvaluationRowProjectionErrorReason.STATE_RECEIPT_CAPABILITY_INVALID
+    )
+
+
 @pytest.mark.parametrize(
     ("mutate", "category", "reason"),
     [
@@ -344,7 +386,50 @@ def test_complete_typed_source_is_bound_at_the_receipt_boundary(
     with pytest.raises(EvaluationRowProjectionError) as caught:
         project_verified_evaluation_rows([tampered], project=_velocity_projection)
 
-    assert caught.value.reason is EvaluationRowProjectionErrorReason.STATE_RECEIPT_MISMATCH
+    assert caught.value.reason is EvaluationRowProjectionErrorReason.SOURCE_RECEIPT_MISMATCH
+
+
+def test_in_place_state_mutation_breaks_snapshotted_value_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = _resolved_input(tmp_path, monkeypatch)
+    item.states["velocity"][...] = 99.5
+
+    with pytest.raises(EvaluationRowProjectionError) as caught:
+        project_verified_evaluation_rows([item], project=_velocity_projection)
+
+    assert caught.value.reason is (EvaluationRowProjectionErrorReason.STATE_VALUE_IDENTITY_MISMATCH)
+
+
+def test_in_place_source_mutation_breaks_complete_typed_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = _resolved_input(tmp_path, monkeypatch)
+    item.evaluation_state_source.cache_key = "mutated"
+
+    with pytest.raises(EvaluationRowProjectionError) as caught:
+        project_verified_evaluation_rows([item], project=_velocity_projection)
+
+    assert caught.value.reason is (
+        EvaluationRowProjectionErrorReason.SOURCE_VALUE_IDENTITY_MISMATCH
+    )
+
+
+def test_manifest_alias_mutation_projects_only_authenticated_raw_byte_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = _resolved_input(tmp_path, monkeypatch)
+    item.manifest.evaluation_spec.inline["params"]["target"] = 99
+    item.manifest.metadata["controller"] = "mutated"
+
+    row = project_verified_evaluation_rows([item], project=_velocity_projection)[0]
+
+    assert row.parameters.target == 0
+    assert row.metadata.controller == "feedback"
+    assert row.facts.manifest is not item.manifest
 
 
 def test_downstream_projection_failure_is_reason_coded(

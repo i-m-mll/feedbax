@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import jax.tree_util as jtu
+import numpy as np
 from pydantic import ValidationError
 
 from feedbax.analysis.analysis import AbstractAnalysis
@@ -27,6 +28,7 @@ from feedbax.contracts.evaluation_states import (
     EvaluationStatesHashMismatch,
     EvaluationStatesProvenanceMismatch,
     EvaluationStatesSchemaMismatch,
+    _treedef_structure_fingerprint,
     load_authenticated_evaluation_states_artifact,
 )
 from feedbax.analysis.execution_context import (
@@ -80,6 +82,10 @@ from feedbax.contracts.analysis_composition import (
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.run_aliases import RunAliasCatalog, resolve_run_aliases
 from feedbax.contracts.staged_execution import StagedExecutionDescriptor
+from feedbax.contracts.value_identity import (
+    authored_value_sha256,
+    semantic_value_sha256,
+)
 from feedbax.persistence.manifest_index import find_manifest_paths_by_id, iter_manifest_files
 from feedbax.analysis.types import AnalysisInputData
 
@@ -111,6 +117,10 @@ class ResolvedAnalysisInput:
 
 
 _EVALUATION_STATE_RECEIPT_TOKEN = object()
+_EVALUATION_STATE_IDENTITY_SCHEMA_ID = "feedbax.runtime.evaluation_state_value"
+_EVALUATION_STATE_IDENTITY_SCHEMA_VERSION = f"{_EVALUATION_STATE_IDENTITY_SCHEMA_ID}.v1"
+_EVALUATION_SOURCE_IDENTITY_SCHEMA_ID = "feedbax.runtime.analysis_evaluation_state_source"
+_EVALUATION_SOURCE_IDENTITY_SCHEMA_VERSION = f"{_EVALUATION_SOURCE_IDENTITY_SCHEMA_ID}.v1"
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -129,7 +139,10 @@ class EvaluationStateMaterializationReceipt:
         "manifest_keyed_cache",
         "authenticated_recompute",
     ]
+    state_value_identity: str
+    source_value_identity: str
     _states: Any = field(repr=False, compare=False)
+    _capability: object = field(repr=False, compare=False)
 
     def __init__(
         self,
@@ -149,11 +162,85 @@ class EvaluationStateMaterializationReceipt:
             )
         object.__setattr__(self, "source", source)
         object.__setattr__(self, "proof_kind", proof_kind)
+        object.__setattr__(
+            self,
+            "state_value_identity",
+            _evaluation_state_value_identity(states),
+        )
+        object.__setattr__(
+            self,
+            "source_value_identity",
+            _evaluation_state_source_value_identity(source),
+        )
         object.__setattr__(self, "_states", states)
+        object.__setattr__(self, "_capability", _token)
 
-    def matches(self, states: Any, source: AnalysisEvaluationStateSource) -> bool:
-        """Return whether this receipt binds the exact resolved object and source."""
-        return self._states is states and self.source == source
+    def _is_resolver_issued(self) -> bool:
+        return self._capability is _EVALUATION_STATE_RECEIPT_TOKEN
+
+    def _matches_state_object(self, states: Any) -> bool:
+        return self._states is states
+
+    def _matches_state_value(self, states: Any) -> bool:
+        return self.state_value_identity == _evaluation_state_value_identity(states)
+
+    def _matches_source_object(self, source: AnalysisEvaluationStateSource) -> bool:
+        return self.source is source
+
+    def _matches_source_value(self, source: AnalysisEvaluationStateSource) -> bool:
+        return self.source_value_identity == _evaluation_state_source_value_identity(source)
+
+
+def _evaluation_state_value_identity(states: Any) -> str:
+    """Compose existing canonical value identities across one state PyTree."""
+
+    path_leaves, treedef = jtu.tree_flatten_with_path(states)
+    if not path_leaves:
+        raise ValueError("evaluation state value identity requires a non-empty PyTree")
+    leaves: list[dict[str, str]] = []
+    for path, leaf in path_leaves:
+        array = np.asarray(leaf)
+        dtype = str(array.dtype)
+        try:
+            identity = semantic_value_sha256(array, dtype=dtype)
+            identity_kind = "semantic"
+        except (TypeError, ValueError):
+            identity = authored_value_sha256(
+                encoding_kind="json_metadata_leaf",
+                encoding_schema_id=_EVALUATION_STATE_IDENTITY_SCHEMA_ID,
+                encoding_schema_version=_EVALUATION_STATE_IDENTITY_SCHEMA_VERSION,
+                arguments={"value": leaf},
+            )
+            identity_kind = "authored"
+        leaves.append(
+            {
+                "path": jtu.keystr(path),
+                "identity_kind": identity_kind,
+                "value_identity": identity,
+            }
+        )
+    return authored_value_sha256(
+        encoding_kind="evaluation_state_pytree",
+        encoding_schema_id=_EVALUATION_STATE_IDENTITY_SCHEMA_ID,
+        encoding_schema_version=_EVALUATION_STATE_IDENTITY_SCHEMA_VERSION,
+        arguments={
+            "structure_fingerprint": _treedef_structure_fingerprint(treedef),
+            "leaves": leaves,
+        },
+    )
+
+
+def _evaluation_state_source_value_identity(
+    source: AnalysisEvaluationStateSource,
+) -> str:
+    """Hash the complete validated typed source through authored value identity."""
+
+    return authored_value_sha256(
+        encoding_kind="analysis_evaluation_state_source",
+        encoding_schema_id=_EVALUATION_SOURCE_IDENTITY_SCHEMA_ID,
+        encoding_schema_version=_EVALUATION_SOURCE_IDENTITY_SCHEMA_VERSION,
+        arguments=source.model_dump(mode="json"),
+    )
 
 
 def _evaluation_state_receipt(

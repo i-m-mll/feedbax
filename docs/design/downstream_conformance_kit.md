@@ -65,23 +65,27 @@ lifecycle child is separately fixed and asserted as a print-only Python
 command.
 
 The versioned machine result is
-`feedbax.external_conformance.result.v4`. V2 remains the frozen exact six-case
+`feedbax.external_conformance.result.v5`. V2 remains the frozen exact six-case
 foundation result; it rejects rather than migrating because it contains no
 evidence for the required `typed_evaluation_row_projection` case. V1 can be
 deterministically normalized to v2 by adding separate unbound `current` and
 `minimum` protocol role slots, but then rejects for the same missing v3
 evidence. V3 rejects because its projection evidence did not require a
-resolver-issued state-materialization receipt. V4 requires the exact seven case
-IDs with strict boolean values and requires both None-valued role slots
-explicitly. Those slots are not stability guarantees and remain unbound until
-the owner-ratified policy exists. Adding or removing a case, binding a protocol
+resolver-issued state-materialization receipt. V4 rejects because its receipt
+bound mutable aliases without canonical state/source identities or raw-byte
+manifest authority. V5 requires the exact seven case IDs with strict boolean
+values and requires both None-valued role slots explicitly. V2, v3, v4, and v5
+case tuples are each literal frozen history even where their keys coincide.
+Those slots are not stability guarantees and remain unbound until the
+owner-ratified policy exists. Adding or removing a case, binding a protocol
 role, or changing required evidence fields requires another deliberate schema
 version and migration or rejection decision.
 
 The typed evaluation-row case uses only public clean-wheel imports. It resolves
-durable states through `resolve_analysis_inputs`, then projects the
-resolver-receipted exact state object and verified manifest/producer provenance
-through one downstream-owned cross-field callback. It also proves structured
+durable states through `resolve_analysis_inputs`, then requires the exact
+resolver capability and its snapshotted canonical state/source value identities.
+Manifest, run-spec, and metadata facts are parsed from authenticated raw bytes
+before one downstream-owned cross-field callback runs. It also proves structured
 error categories and exact authored-Cartesian coverage without embedding
 conditioning, target, replicate, or mixed-authority scientific policy.
 
