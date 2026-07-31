@@ -290,7 +290,6 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         input_provider_bindings=_input_provider_bindings(args.input_provider),
         staged_root_bindings=_staged_root_bindings(args.staged_root),
         conformance_registry=args.bootstrap_state.bundle.conformance_checks,
-        training_method_registry=args.bootstrap_state.bundle.training_methods,
         plugin_provenance=args.bootstrap_state.provenance,
         registry_bundle=args.bootstrap_state.bundle,
     )
@@ -378,7 +377,6 @@ def cmd_shadow_launch(args: argparse.Namespace) -> int:
         staged_root_bindings=_staged_root_bindings(args.staged_root),
         native_update_budget=1,
         conformance_registry=args.bootstrap_state.bundle.conformance_checks,
-        training_method_registry=args.bootstrap_state.bundle.training_methods,
         plugin_provenance=args.bootstrap_state.provenance,
         registry_bundle=args.bootstrap_state.bundle,
     )
@@ -567,6 +565,7 @@ def cmd_certify(args: argparse.Namespace) -> int:
     state = _run_existing(
         args.run_set,
         conformance_registry=args.bootstrap_state.bundle.conformance_checks,
+        training_method_registry=args.bootstrap_state.bundle.training_methods,
         plugin_provenance=args.bootstrap_state.provenance,
         **run_options,
     )
@@ -581,6 +580,7 @@ def cmd_teardown(args: argparse.Namespace) -> int:
         stop_after_stage="TEARDOWN",
         break_stale_lock=args.force,
         conformance_registry=args.bootstrap_state.bundle.conformance_checks,
+        training_method_registry=args.bootstrap_state.bundle.training_methods,
         plugin_provenance=args.bootstrap_state.provenance,
     )
     return _state_exit_code(state)

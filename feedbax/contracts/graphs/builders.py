@@ -1050,6 +1050,33 @@ def register_builtin_component_builders(registry: Any) -> None:
             )
 
 
+def _unsupported_component_message(
+    node_name: str,
+    node_type: str,
+    component_registry: Any,
+) -> str | None:
+    meta = component_registry.get(node_type)
+    if meta is None:
+        return None
+    unsupported_message = (
+        None
+        if meta.builder is None
+        else getattr(meta.builder, "_feedbax_unsupported_builder_message", None)
+    )
+    if meta.builder is not None and unsupported_message is None:
+        return None
+    message = (
+        _template_builder_error(meta, component_registry)
+        or unsupported_message
+        or _DISPLAY_ONLY_MESSAGES.get(
+            node_type,
+            f"Component type {node_type!r} for node {node_name!r} is registered "
+            "for metadata but has no executable builder.",
+        )
+    )
+    return message.format(node_name=node_name)
+
+
 def build_component(
     node_name: str,
     node_type: str,
@@ -1073,22 +1100,13 @@ def build_component(
             f"Component type {node_type!r} for node {node_name!r} belongs to "
             f"domain {meta.domain!r} and cannot be built by the causal component builder."
         )
-    unsupported_message = (
-        None
-        if meta.builder is None
-        else getattr(meta.builder, "_feedbax_unsupported_builder_message", None)
+    unsupported_message = _unsupported_component_message(
+        node_name,
+        node_type,
+        component_registry,
     )
-    if meta.builder is None or unsupported_message is not None:
-        message = (
-            _template_builder_error(meta, component_registry)
-            or unsupported_message
-            or _DISPLAY_ONLY_MESSAGES.get(
-                node_type,
-                f"Component type {node_type!r} for node {node_name!r} is registered "
-                "for metadata but has no executable builder.",
-            )
-        )
-        raise NotImplementedError(message.format(node_name=node_name))
+    if unsupported_message is not None:
+        raise NotImplementedError(unsupported_message)
     try:
         return meta.builder(params)
     except ValueError as exc:
