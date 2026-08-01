@@ -1,10 +1,10 @@
-"""The generic envelope engine kernel, exercised over an invented fake project.
+"""The envelope engine kernel, exercised over an invented fake project.
 
 Every case here is about *mechanism*: canonical hashing, budgets, the compile
-lock's plan/receipt boundary, fail-closed loading, lineage resolution, compile
-orchestration, and the choke point. The science is entirely ``quillon``'s, and
-``quillon`` is made up, which is the point — a test that needed a real project's
-vocabulary would be testing the wrong layer.
+lock's plan/receipt boundary, fail-closed loading, lineage resolution, the
+five-layer compile, and the choke point. The science is entirely ``quillon``'s,
+and ``quillon`` is made up, which is the point — a test that needed a real
+project's vocabulary would be testing the wrong layer.
 """
 
 from __future__ import annotations
@@ -38,42 +38,59 @@ from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeRejection,
     ExperimentEnvelopeRejectionCategory,
 )
+from feedbax.contracts.experiment_envelope_dialect import (
+    EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID,
+    EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+    ExperimentEnvelopeLayer,
+)
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.envelope import (
     CANONICAL_PIN_ALGORITHM,
     ChokeFinding,
     Lineage,
     PinnedDocument,
+    authored_layer_of,
     build_lineage,
     canonical_sha256,
     compare_tracked_outputs,
     emit_text,
+    kernel_for,
+    load_project_budgets,
     read_authored_document,
 )
 from feedbax.envelope.compile import check_no_co_created_protected_document
+from feedbax.envelope.entrypoint import DECLARED_LAYERS
 
-from tests.fake_project_extension import PROJECT_DECLARATION
-from tests.fake_project_extension.kernel import (
-    DIGEST_FAMILY,
-    QUILLON_LAYOUT,
-    SURVEY_FAMILY,
-    load_quillon_budgets,
-    quillon_kernel,
+from tests.fake_project_experiment import (
+    ENVELOPE_DIRECTORY,
+    OUTPUT_DIRECTORY,
+    PROJECT_DECLARATION,
+    TRAINING_BASE,
+    envelope_path,
     write_envelope,
     write_json,
     write_repo,
 )
 
+TRAINING_FAMILY = "training_run_matrix"
+TRAINING_SCHEMA_ID = "feedbax.spec.training_run_matrix"
+
 
 @pytest.fixture
 def budgets() -> AuthoringBudgets:
-    return load_quillon_budgets()
+    return load_project_budgets(PROJECT_DECLARATION)
 
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     write_repo(tmp_path)
     return tmp_path
+
+
+def kernel() -> Any:
+    """Return the one compiler bound to the fake project's data declaration."""
+    return kernel_for(PROJECT_DECLARATION)
 
 
 # -- canonical form ------------------------------------------------------
@@ -107,8 +124,9 @@ def test_emit_text_is_the_deterministic_tracked_form() -> None:
 # -- budgets --------------------------------------------------------------
 
 
-def test_budget_states_one_section_per_declared_layer(budgets: AuthoringBudgets) -> None:
-    assert set(budgets.layers) == set(PROJECT_DECLARATION.labels("layer"))
+def test_budget_states_one_section_per_dialect_layer(budgets: AuthoringBudgets) -> None:
+    assert set(budgets.layers) == set(DECLARED_LAYERS)
+    assert set(DECLARED_LAYERS) == {layer.value for layer in ExperimentEnvelopeLayer}
     assert budgets.budget_id == PROJECT_DECLARATION.authoring_budget.resource_id
 
 
@@ -126,56 +144,56 @@ def test_widest_caps_are_the_maximum_any_layer_states(budgets: AuthoringBudgets)
 def test_per_layer_cap_refuses_the_layer_that_states_the_tighter_bound(
     budgets: AuthoringBudgets,
 ) -> None:
-    prose = "x" * (budgets.for_layer("survey").max_scalar_bytes + 1)
+    prose = "x" * (budgets.for_layer("training").max_scalar_bytes + 1)
     document = {
-        "schema": "quillon.study.v1",
+        "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
         "name": "loud",
-        "layer": "survey",
-        "body": {"settings": {"note": prose}},
+        "reason": prose,
+        "training": {"tags": {"add": ["loud"]}},
     }
     raw = (json.dumps(document, indent=2) + "\n").encode("utf-8")
 
     with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
         read_authored_document(
-            raw, budgets, field="studies/loud.envelope.json", layer_of=_layer_of
+            raw, budgets, field="studies/loud.envelope.json", layer_of=authored_layer_of
         )
 
     assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.BUDGET_EXCEEDED
-    assert "survey layer's authored budget" in str(excinfo.value)
+    assert "training layer's authored budget" in str(excinfo.value)
 
 
 def test_the_same_content_is_admitted_under_the_layer_with_the_wider_cap(
     budgets: AuthoringBudgets,
 ) -> None:
-    prose = "x" * (budgets.for_layer("survey").max_scalar_bytes + 1)
+    prose = "x" * (budgets.for_layer("training").max_scalar_bytes + 1)
     document = {
-        "schema": "quillon.study.v1",
+        "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
         "name": "loud",
-        "layer": "digest",
-        "body": {"summary": prose},
+        "reason": prose,
+        "report": {"bindings": []},
     }
     raw = (json.dumps(document, indent=2) + "\n").encode("utf-8")
 
     parsed = read_authored_document(
-        raw, budgets, field="studies/loud.envelope.json", layer_of=_layer_of
+        raw, budgets, field="studies/loud.envelope.json", layer_of=authored_layer_of
     )
 
-    assert parsed["body"]["summary"] == prose
+    assert parsed["reason"] == prose
 
 
 def test_project_caps_are_validated_but_left_to_the_project(budgets: AuthoringBudgets) -> None:
-    assert budgets.for_layer("survey").project_cap("max_probes") == 6
+    assert budgets.for_layer("training").project_cap("max_probes") == 6
     with pytest.raises(KeyError):
-        budgets.for_layer("digest").project_cap("max_probes")
+        budgets.for_layer("report").project_cap("max_probes")
 
 
 def test_budget_document_refuses_a_section_with_a_mistyped_cap() -> None:
     document = _budget_document()
-    document["layers"]["survey"]["max_lnies"] = document["layers"]["survey"].pop("max_lines")
+    document["layers"]["training"]["max_lnies"] = document["layers"]["training"].pop("max_lines")
 
     with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
         AuthoringBudgets.from_document(
-            document, field="budget.json", declared_layers=("survey", "digest")
+            document, field="budget.json", declared_layers=DECLARED_LAYERS
         )
 
     assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
@@ -183,21 +201,21 @@ def test_budget_document_refuses_a_section_with_a_mistyped_cap() -> None:
 
 def test_budget_document_refuses_a_nonpositive_cap() -> None:
     document = _budget_document()
-    document["layers"]["survey"]["max_depth"] = 0
+    document["layers"]["training"]["max_depth"] = 0
 
     with pytest.raises(ExperimentEnvelopeRejection):
         AuthoringBudgets.from_document(
-            document, field="budget.json", declared_layers=("survey", "digest")
+            document, field="budget.json", declared_layers=DECLARED_LAYERS
         )
 
 
-def test_budget_document_refuses_a_layer_the_project_does_not_declare() -> None:
+def test_budget_document_refuses_a_layer_the_dialect_does_not_declare() -> None:
     document = _budget_document()
-    document["layers"]["ghost"] = dict(document["layers"]["survey"])
+    document["layers"]["ghost"] = dict(document["layers"]["training"])
 
     with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
         AuthoringBudgets.from_document(
-            document, field="budget.json", declared_layers=("survey", "digest")
+            document, field="budget.json", declared_layers=DECLARED_LAYERS
         )
 
     assert "one section per declared layer" in str(excinfo.value)
@@ -254,8 +272,8 @@ def test_lock_records_contract_and_implementation_provenance_apart() -> None:
     lock = _lock()
 
     assert lock["compiler_contract"] == {
-        "contract_id": "quillon.compiler_contract",
-        "contract_version": "quillon.compiler_contract.v1",
+        "contract_id": EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID,
+        "contract_version": EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION,
     }
     implementation = lock["compiler_implementation"]
     assert implementation["code_unit"] == "tests.test_envelope_engine_kernel"
@@ -264,16 +282,19 @@ def test_lock_records_contract_and_implementation_provenance_apart() -> None:
     assert "code_unit" not in lock["compiler_contract"]
 
 
-def test_contract_provenance_comes_from_the_project_declaration() -> None:
-    contract = CompilerContract.from_declaration(PROJECT_DECLARATION)
+def test_the_compiler_contract_is_global_rather_than_per_project(repo: Path) -> None:
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
-    assert contract.contract_id == PROJECT_DECLARATION.compiler_contract_id
-    assert contract.contract_version == PROJECT_DECLARATION.compiler_contract_version
+    assert outcome.compile_lock["compiler_contract"]["contract_version"] == (
+        EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION
+    )
+    assert not hasattr(PROJECT_DECLARATION, "compiler_contract_id")
+    assert not hasattr(PROJECT_DECLARATION, "compiler_contract_version")
 
 
 def test_contract_version_must_extend_its_contract_id() -> None:
     with pytest.raises(Exception, match="does not extend"):
-        CompilerContract("quillon.compiler_contract", "other.v1")
+        CompilerContract("feedbax.experiment_envelope.compiler", "other.v1")
 
 
 def test_an_uninstalled_package_records_none_rather_than_vanishing() -> None:
@@ -286,8 +307,8 @@ def test_an_uninstalled_package_records_none_rather_than_vanishing() -> None:
 
 
 def test_lock_pins_the_envelope_and_the_compiled_document() -> None:
-    envelope = {"schema": "quillon.study.v1", "name": "probe"}
-    document = {"schema_id": SURVEY_FAMILY, "name": "probe"}
+    envelope = {"schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION, "name": "probe"}
+    document = {"schema_id": TRAINING_SCHEMA_ID, "name": "probe"}
 
     lock = _lock(envelope=envelope, document=document)
 
@@ -333,9 +354,7 @@ def test_a_built_lock_passes_its_own_boundary_check() -> None:
 
 
 def test_lock_loader_accepts_the_current_version_and_rechecks_the_boundary() -> None:
-    lock = _lock()
-
-    loaded = load_compile_lock(lock, field="compiled/probe.compile-lock.json")
+    loaded = load_compile_lock(_lock(), field="compiled/probe.compile-lock.json")
 
     assert loaded["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION
 
@@ -385,38 +404,37 @@ def test_the_lock_migration_slot_exists_in_the_shared_spec_registry() -> None:
 
 def test_lineage_names_the_document_that_owns_an_inherited_value(repo: Path) -> None:
     write_json(
-        repo / "bases" / "mid.survey.json",
+        repo / "bases" / "mid.training_run_matrix.json",
         {
-            "schema_id": SURVEY_FAMILY,
+            "schema_id": TRAINING_SCHEMA_ID,
             "name": "mid",
-            "base": {"ref": "bases/baseline.survey.json"},
+            "base": {"ref": TRAINING_BASE},
             "settings": {"span": 6},
         },
     )
     pinned = PinnedDocument.of(
-        "bases/mid.survey.json",
-        json.loads((repo / "bases" / "mid.survey.json").read_text()),
+        "bases/mid.training_run_matrix.json",
+        json.loads((repo / "bases" / "mid.training_run_matrix.json").read_text()),
     )
 
     lineage = build_lineage(repo, pinned)
 
     span = lineage.lookup("settings.span")
-    cadence = lineage.lookup("settings.cadence")
+    cadence = lineage.lookup("base.inline.cadence")
     assert span is not None and span.value == 6
-    assert span.owner_ref == "bases/mid.survey.json"
+    assert span.owner_ref == "bases/mid.training_run_matrix.json"
     assert cadence is not None and cadence.value == 2
-    assert cadence.owner_ref == "bases/baseline.survey.json"
+    assert cadence.owner_ref == TRAINING_BASE
 
 
 def test_lineage_pins_every_document_it_consulted(repo: Path) -> None:
     pinned = PinnedDocument.of(
-        "bases/baseline.survey.json",
-        json.loads((repo / "bases" / "baseline.survey.json").read_text()),
+        TRAINING_BASE, json.loads((repo / TRAINING_BASE).read_text())
     )
 
     pins = build_lineage(repo, pinned).pins()
 
-    assert [pin["ref"] for pin in pins] == ["bases/baseline.survey.json"]
+    assert [pin["ref"] for pin in pins] == [TRAINING_BASE]
     assert all(pin["pin_algorithm"] == CANONICAL_PIN_ALGORITHM for pin in pins)
     assert all(len(pin["content_hash"]) == 64 for pin in pins)
 
@@ -435,11 +453,11 @@ def test_lineage_resolves_a_value_bound_by_a_patch_list() -> None:
 def test_lineage_walk_is_cycle_safe(repo: Path) -> None:
     write_json(
         repo / "bases" / "loop_a.json",
-        {"schema_id": SURVEY_FAMILY, "base": {"ref": "bases/loop_b.json"}},
+        {"schema_id": TRAINING_SCHEMA_ID, "base": {"ref": "bases/loop_b.json"}},
     )
     write_json(
         repo / "bases" / "loop_b.json",
-        {"schema_id": SURVEY_FAMILY, "base": {"ref": "bases/loop_a.json"}},
+        {"schema_id": TRAINING_SCHEMA_ID, "base": {"ref": "bases/loop_a.json"}},
     )
     pinned = PinnedDocument.of(
         "bases/loop_a.json", json.loads((repo / "bases" / "loop_a.json").read_text())
@@ -456,76 +474,191 @@ def test_lineage_walk_is_cycle_safe(repo: Path) -> None:
 # -- compile orchestration ---------------------------------------------------
 
 
-def test_a_two_layer_project_compiles_through_the_generic_kernel(repo: Path) -> None:
-    kernel = quillon_kernel()
+def test_every_dialect_layer_compiles_to_its_feedbax_output_family(repo: Path) -> None:
+    compiler = kernel()
 
-    survey = kernel.compile_envelope_file(_envelope(repo, "widened"), repo_root=repo)
-    digest = kernel.compile_envelope_file(_envelope(repo, "widened-digest"), repo_root=repo)
+    compiled = {
+        alias: compiler.compile_envelope_file(envelope_path(repo, alias), repo_root=repo)
+        for alias in ("widened", "widened-probe", "widened-summary", "widened-plot", "widened-report")
+    }
 
-    assert survey.layer == "survey"
-    assert survey.family == SURVEY_FAMILY
-    assert survey.document["settings"] == {"span": 9, "cadence": 2, "damping": 0.5}
-    assert survey.document["base"]["ref"] == "bases/baseline.survey.json"
-    assert digest.layer == "digest"
-    assert digest.family == DIGEST_FAMILY
-    assert digest.document["subject"]["name"] == "widened"
+    assert {alias: outcome.layer.value for alias, outcome in compiled.items()} == {
+        "widened": "training",
+        "widened-probe": "evaluation",
+        "widened-summary": "analysis",
+        "widened-plot": "figure",
+        "widened-report": "report",
+    }
+    assert {alias: outcome.family for alias, outcome in compiled.items()} == {
+        "widened": "training_run_matrix",
+        "widened-probe": "evaluation_run_matrix",
+        "widened-summary": "analysis_run",
+        "widened-plot": "figure",
+        "widened-report": "report",
+    }
+    assert {outcome.document["schema_id"] for outcome in compiled.values()} == {
+        "feedbax.spec.training_run_matrix",
+        "feedbax.spec.evaluation_run_matrix",
+        "feedbax.spec.analysis_run",
+        "feedbax.spec.figure",
+        "feedbax.spec.report.ordered_figure",
+    }
+
+
+def test_an_authored_training_row_inherits_names_seeds_and_records_replacement(
+    repo: Path,
+) -> None:
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    rows = {row["row_id"]: row for row in outcome.document["rows"]}
+    assert set(rows) == {"baseline", "widened"}
+    assert rows["widened"]["seed"] == 43
+    assert rows["widened"]["metadata"]["replaces"] == {"row": "baseline", "seed": 42}
+    assert outcome.document["name"] == "widened"
+    assert outcome.document["tags"] == ["widened"]
+
+
+def test_a_row_delta_lands_as_native_override_patches(repo: Path) -> None:
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    widened = next(row for row in outcome.document["rows"] if row["row_id"] == "widened")
+    assert [(patch["path"], patch["op"]) for patch in widened["overrides"]] == [
+        ("span", "replace"),
+        ("probe.depth", "remove"),
+        ("cadence_profile", "add"),
+    ]
+
+
+def test_the_lock_records_the_native_delta_it_resolved(repo: Path) -> None:
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert set(outcome.compile_lock["resolved_deltas"]) == {"widened.training"}
+    patches = outcome.compile_lock["resolved_deltas"]["widened.training"]["patches"]
+    assert [patch["path"] for patch in patches] == ["name", "rows.1", "tags.1", "tags.0"]
 
 
 def test_a_cross_layer_reference_pins_only_pre_run_facts(repo: Path) -> None:
-    digest = quillon_kernel().compile_envelope_file(
-        _envelope(repo, "widened-digest"), repo_root=repo
+    outcome = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-probe"), repo_root=repo
     )
 
-    subject = digest.document["subject"]
-    assert set(subject) == {"name", "envelope", "compiled_document"}
-    assert subject["compiled_document"]["pin_algorithm"] == CANONICAL_PIN_ALGORITHM
-    assert not RUN_RECEIPT_ONLY_FACTS & set(subject)
-    check_plan_receipt_boundary(digest.compile_lock)
+    reference = outcome.compile_lock["references"][0]
+    assert reference["kind"] == "planned_product"
+    assert set(reference) == {
+        "kind",
+        "envelope_ref",
+        "envelope_hash",
+        "product_name",
+        "product_schema_id",
+        "product_schema_version",
+        "compiled_content_hash",
+        "role_path",
+        "consumer",
+    }
+    assert not RUN_RECEIPT_ONLY_FACTS & set(reference)
+    check_plan_receipt_boundary(outcome.compile_lock)
+
+
+def test_a_receipt_without_a_digest_is_a_locator_not_a_fabricated_authentication(
+    repo: Path,
+) -> None:
+    outcome = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-summary"), repo_root=repo
+    )
+
+    reference = outcome.compile_lock["references"][0]
+    assert reference["kind"] == "receipt_locator"
+    assert "manifest_sha256" not in reference
+    assert reference["consumer"] == {
+        "consumer": "analysis_input",
+        "alias": "probe",
+        "role": "observations",
+    }
+
+
+def test_an_authored_receipt_with_a_digest_is_quoted_as_authenticated(repo: Path) -> None:
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    reference = next(
+        item
+        for item in outcome.compile_lock["references"]
+        if item["kind"] == "authenticated_receipt"
+    )
+    assert reference["size_bytes"] == 4096
+    assert reference["consumer"] == {
+        "consumer": "checkpoint_initialization",
+        "mode": "continue_from",
+        "row_id": "widened",
+    }
+
+
+def test_authored_not_applicability_is_recorded_rather_than_left_silent(repo: Path) -> None:
+    outcome = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-report"), repo_root=repo
+    )
+
+    absent = next(
+        item
+        for item in outcome.compile_lock["references"]
+        if item["kind"] == "not_applicable"
+    )
+    assert absent["basis"] == "authored"
+    assert absent["role_path"] == "sections.0.tables.0"
+    assert "rule_id" not in absent
+
+
+def test_a_payload_in_its_own_file_is_recorded_as_a_content_pin(repo: Path) -> None:
+    write_json(repo / "bases" / "survey.payload.json", _survey_payload())
+    _repoint_training_base_to_file(repo)
+    _reauthor(repo, "widened", **{"assert": []})
+
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    pin = next(
+        item for item in outcome.compile_lock["references"] if item["kind"] == "content_pin"
+    )
+    assert pin["ref"] == "bases/survey.payload.json"
+    assert "consumer" not in pin
 
 
 def test_compilation_is_deterministic(repo: Path) -> None:
-    kernel = quillon_kernel()
+    compiler = kernel()
 
-    first = kernel.compile_envelope_file(_envelope(repo, "widened"), repo_root=repo)
-    second = kernel.compile_envelope_file(_envelope(repo, "widened"), repo_root=repo)
+    first = compiler.compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+    second = compiler.compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
     assert emit_text(first.document) == emit_text(second.document)
     assert first.compile_lock == second.compile_lock
 
 
 def test_an_assertion_that_holds_is_recorded_with_its_owner(repo: Path) -> None:
-    outcome = quillon_kernel().compile_envelope_file(_envelope(repo, "widened"), repo_root=repo)
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
     assert outcome.compile_lock["assertions"] == [
         {
-            "path": "settings.cadence",
+            "path": "base.inline.cadence",
             "expected": 2,
             "actual": 2,
-            "owner_ref": "bases/baseline.survey.json",
+            "owner_ref": TRAINING_BASE,
         }
     ]
 
 
 def test_an_assertion_that_fails_names_the_document_that_owns_the_value(repo: Path) -> None:
-    _reauthor(repo, "widened", assert_=[{"path": "settings.cadence", "equals": 99}])
+    _reauthor(repo, "widened", **{"assert": [{"path": "base.inline.cadence", "equals": 99}]})
 
     with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
-        quillon_kernel().compile_envelope_file(_envelope(repo, "widened"), repo_root=repo)
+        kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
     assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.ASSERTION_FAILED
-    assert "bases/baseline.survey.json" in str(excinfo.value)
+    assert TRAINING_BASE in str(excinfo.value)
 
 
 def test_an_assertion_may_not_guard_a_path_the_envelope_changes(repo: Path) -> None:
-    _reauthor(
-        repo,
-        "widened",
-        assert_=[{"path": "settings.span", "equals": 4}],
-        body={"settings": {"span": 9}},
-    )
+    _reauthor(repo, "widened", **{"assert": [{"path": "name", "equals": "baseline"}]})
 
     with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
-        quillon_kernel().compile_envelope_file(_envelope(repo, "widened"), repo_root=repo)
+        kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
     assert excinfo.value.category is (
         ExperimentEnvelopeRejectionCategory.ILLEGAL_ASSERTION_PATH
@@ -533,49 +666,45 @@ def test_an_assertion_may_not_guard_a_path_the_envelope_changes(repo: Path) -> N
 
 
 def test_an_assertion_on_an_uninherited_path_has_nothing_to_check(repo: Path) -> None:
-    _reauthor(repo, "widened", assert_=[{"path": "settings.absent", "equals": 1}])
+    _reauthor(repo, "widened", **{"assert": [{"path": "base.inline.absent", "equals": 1}]})
 
     with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
-        quillon_kernel().compile_envelope_file(_envelope(repo, "widened"), repo_root=repo)
+        kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
     assert "not inherited" in str(excinfo.value)
 
 
-def test_an_echoed_inherited_value_is_refused(repo: Path) -> None:
-    _reauthor(repo, "widened", assert_=[], body={"settings": {"cadence": 2}})
+def test_an_echoed_inherited_name_is_refused(repo: Path) -> None:
+    _reauthor(repo, "widened", name="baseline", **{"assert": []})
 
     with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
-        quillon_kernel().compile_envelope_file(_envelope(repo, "widened"), repo_root=repo)
+        kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
     assert excinfo.value.category is (
         ExperimentEnvelopeRejectionCategory.ECHOED_INHERITED_VALUE
     )
-    assert "bases/baseline.survey.json" in str(excinfo.value)
+    assert TRAINING_BASE in str(excinfo.value)
 
 
-def test_an_echo_check_does_not_confuse_a_boolean_with_one(repo: Path) -> None:
-    write_json(
-        repo / "bases" / "flagged.survey.json",
-        {"schema_id": SURVEY_FAMILY, "name": "flagged", "settings": {"span": 1}},
+def test_an_echoed_inherited_seed_is_refused(repo: Path) -> None:
+    envelope = _read(repo, "widened")
+    envelope["training"]["rows"][0]["seed"] = 42
+
+    _write(repo, "widened", envelope)
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert excinfo.value.category is (
+        ExperimentEnvelopeRejectionCategory.ECHOED_INHERITED_VALUE
     )
-    _reauthor(
-        repo,
-        "widened",
-        assert_=[],
-        base="bases/flagged.survey.json",
-        body={"settings": {"span": True}},
-    )
-
-    outcome = quillon_kernel().compile_envelope_file(_envelope(repo, "widened"), repo_root=repo)
-
-    assert outcome.document["settings"]["span"] is True
 
 
 def test_a_base_under_the_output_directory_is_refused(repo: Path) -> None:
-    _reauthor(repo, "widened", assert_=[], base="compiled/widened.quillon.survey_document.json")
+    _reauthor(repo, "widened", base=f"{OUTPUT_DIRECTORY}/widened.training_run_matrix.json")
 
     with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
-        quillon_kernel().compile_envelope_file(_envelope(repo, "widened"), repo_root=repo)
+        kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
     assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
     assert "compiled output" in str(excinfo.value)
@@ -583,130 +712,118 @@ def test_a_base_under_the_output_directory_is_refused(repo: Path) -> None:
 
 def test_a_normalized_path_cannot_smuggle_in_a_compiled_base(repo: Path) -> None:
     _reauthor(
-        repo, "widened", assert_=[], base="./compiled/../compiled/widened.survey_document.json"
+        repo,
+        "widened",
+        base=f"./{OUTPUT_DIRECTORY}/../{OUTPUT_DIRECTORY}/widened.training_run_matrix.json",
     )
 
     with pytest.raises(ExperimentEnvelopeRejection, match="compiled output"):
-        quillon_kernel().compile_envelope_file(_envelope(repo, "widened"), repo_root=repo)
+        kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
 
 def test_a_cross_layer_base_is_refused(repo: Path) -> None:
-    _reauthor(repo, "widened", assert_=[], base="bases/baseline.digest.json")
+    _reauthor(repo, "widened", base="bases/baseline.analysis_run.json", **{"assert": []})
 
     with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
-        quillon_kernel().compile_envelope_file(_envelope(repo, "widened"), repo_root=repo)
+        kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
     assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.CROSS_FAMILY_BASE
 
 
+def test_a_base_of_no_feedbax_output_family_is_not_an_experiment_parent(repo: Path) -> None:
+    write_json(repo / "bases" / "stray.json", {"schema_id": "quillon.notes", "name": "stray"})
+    _reauthor(repo, "widened", base="bases/stray.json", **{"assert": []})
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
+
+
 def test_an_envelope_alias_parent_resolves_and_pins_its_compiled_bytes(repo: Path) -> None:
     write_envelope(
-        repo / QUILLON_LAYOUT.envelope_directory / "narrowed.envelope.json",
+        envelope_path(repo, "narrowed"),
         {
-            "schema": "quillon.study.v1",
+            "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
             "name": "narrowed",
-            "layer": "survey",
             "base": "widened",
-            "body": {"settings": {"span": 3}},
+            "training": {"tags": {"add": ["narrowed"]}},
         },
     )
-    kernel = quillon_kernel()
+    compiler = kernel()
 
-    outcome = kernel.compile_envelope_file(_envelope(repo, "narrowed"), repo_root=repo)
-    parent = kernel.compile_envelope_file(_envelope(repo, "widened"), repo_root=repo)
+    outcome = compiler.compile_envelope_file(envelope_path(repo, "narrowed"), repo_root=repo)
+    parent = compiler.compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
     base = outcome.compile_lock["base"]
     assert base["kind"] == "envelope_alias"
-    assert base["ref"] == "studies/widened.envelope.json"
+    assert base["ref"] == f"{ENVELOPE_DIRECTORY}/widened.envelope.json"
     assert base["content_hash"] == canonical_sha256(parent.document)
 
 
 def test_an_envelope_alias_cycle_is_refused(repo: Path) -> None:
     for alias, base in (("ping", "pong"), ("pong", "ping")):
         write_envelope(
-            repo / QUILLON_LAYOUT.envelope_directory / f"{alias}.envelope.json",
+            envelope_path(repo, alias),
             {
-                "schema": "quillon.study.v1",
+                "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
                 "name": alias,
-                "layer": "survey",
                 "base": base,
-                "body": {"settings": {"span": 7}},
+                "training": {"tags": {"add": [alias]}},
             },
         )
 
     with pytest.raises(ExperimentEnvelopeRejection, match="cycle"):
-        quillon_kernel().compile_envelope_file(_envelope(repo, "ping"), repo_root=repo)
+        kernel().compile_envelope_file(envelope_path(repo, "ping"), repo_root=repo)
 
 
-def test_a_retired_envelope_family_is_refused_naming_its_replacement(repo: Path) -> None:
-    _reauthor(repo, "widened", assert_=[], schema="quillon.trial.v0")
+def test_a_rootless_envelope_is_refused(repo: Path) -> None:
+    envelope = _read(repo, "widened")
+    envelope.pop("base")
+    envelope.pop("assert")
 
-    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
-        quillon_kernel().compile_envelope_file(_envelope(repo, "widened"), repo_root=repo)
-
-    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.RETIRED_BASE_FAMILY
-    assert "quillon.study.v1" in str(excinfo.value)
-
-
-def test_an_unclaimed_envelope_family_is_refused(repo: Path) -> None:
-    _reauthor(repo, "widened", assert_=[], schema="rival.study.v1")
+    _write(repo, "widened", envelope)
 
     with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
-        quillon_kernel().compile_envelope_file(_envelope(repo, "widened"), repo_root=repo)
+        kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
-    assert excinfo.value.category is (
-        ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION
-    )
-
-
-def test_a_compiled_document_that_lies_about_its_family_is_refused(repo: Path) -> None:
-    write_json(
-        repo / "bases" / "baseline.survey.json",
-        {"schema_id": SURVEY_FAMILY, "name": "baseline", "settings": {"span": 4}},
-    )
-    kernel = quillon_kernel()
-    kernel.hooks.validate_compiled(  # sanity: the hook accepts a truthful document
-        {"schema_id": SURVEY_FAMILY}, SURVEY_FAMILY, "studies/widened.envelope.json"
-    )
-
-    with pytest.raises(ExperimentEnvelopeRejection, match="compiled as"):
-        kernel.hooks.validate_compiled(
-            {"schema_id": DIGEST_FAMILY}, SURVEY_FAMILY, "studies/widened.envelope.json"
-        )
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.MISSING_FIELD
 
 
 def test_an_over_budget_assertion_count_is_refused(repo: Path) -> None:
-    budgets = load_quillon_budgets()
+    limit = load_project_budgets(PROJECT_DECLARATION).for_layer("training").max_assertions
     _reauthor(
         repo,
         "widened",
-        assert_=[
-            {"path": "settings.cadence", "equals": 2}
-            for _ in range(budgets.for_layer("survey").max_assertions + 1)
-        ],
+        **{
+            "assert": [
+                {"path": f"base.inline.probe.depth{index}", "equals": index}
+                for index in range(limit + 1)
+            ]
+        },
     )
 
     with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
-        quillon_kernel().compile_envelope_file(_envelope(repo, "widened"), repo_root=repo)
+        kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
     assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.BUDGET_EXCEEDED
     assert "assertions exceeds" in str(excinfo.value)
 
 
 def test_write_outputs_is_byte_reproducible(repo: Path) -> None:
-    kernel = quillon_kernel()
-    outcome = kernel.compile_envelope_file(_envelope(repo, "widened"), repo_root=repo)
-    out_dir = repo / QUILLON_LAYOUT.output_directory
+    compiler = kernel()
+    outcome = compiler.compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+    out_dir = repo / OUTPUT_DIRECTORY
 
     first = {
-        path: path.read_bytes() for path in kernel.write_outputs(outcome, out_dir).values()
+        path: path.read_bytes() for path in compiler.write_outputs(outcome, out_dir).values()
     }
     second = {
-        path: path.read_bytes() for path in kernel.write_outputs(outcome, out_dir).values()
+        path: path.read_bytes() for path in compiler.write_outputs(outcome, out_dir).values()
     }
 
     assert first == second
-    assert set(first) == set(kernel.output_paths(outcome, out_dir).values())
+    assert set(first) == set(compiler.output_paths(outcome, out_dir).values())
 
 
 # -- co-creation -------------------------------------------------------------
@@ -735,74 +852,74 @@ def test_an_ordinary_authoring_change_is_admitted() -> None:
 
 
 def test_identical_tracked_bytes_report_ok(repo: Path) -> None:
-    kernel = quillon_kernel()
-    _regenerate(kernel, repo)
+    compiler = kernel()
+    _regenerate(compiler, repo)
 
-    report = compare_tracked_outputs(kernel, repo)
+    report = compare_tracked_outputs(compiler, repo)
 
     assert report.ok
     assert report.drift == ()
-    assert len(report.by_finding(ChokeFinding.IDENTICAL)) == 4
+    assert len(report.by_finding(ChokeFinding.IDENTICAL)) == 10
 
 
 def test_a_hand_edited_compiled_document_reports_structured_drift(repo: Path) -> None:
-    kernel = quillon_kernel()
-    _regenerate(kernel, repo)
-    edited = repo / QUILLON_LAYOUT.output_directory / f"widened.{SURVEY_FAMILY}.json"
-    edited.write_text(edited.read_text().replace('"span": 9', '"span": 10'), encoding="utf-8")
+    compiler = kernel()
+    _regenerate(compiler, repo)
+    edited = repo / OUTPUT_DIRECTORY / f"widened.{TRAINING_FAMILY}.json"
+    edited.write_text(edited.read_text().replace('"seed": 43', '"seed": 44'), encoding="utf-8")
 
-    report = compare_tracked_outputs(kernel, repo)
+    report = compare_tracked_outputs(compiler, repo)
 
     assert not report.ok
     drift = report.by_finding(ChokeFinding.DIFFERS)
     assert [entry.path for entry in drift] == [
-        f"{QUILLON_LAYOUT.output_directory}/widened.{SURVEY_FAMILY}.json"
+        f"{OUTPUT_DIRECTORY}/widened.{TRAINING_FAMILY}.json"
     ]
-    assert drift[0].envelope_ref == "studies/widened.envelope.json"
+    assert drift[0].envelope_ref == f"{ENVELOPE_DIRECTORY}/widened.envelope.json"
 
 
 def test_an_untracked_output_reports_missing(repo: Path) -> None:
-    kernel = quillon_kernel()
-    _regenerate(kernel, repo)
-    (repo / QUILLON_LAYOUT.output_directory / f"widened.{SURVEY_FAMILY}.json").unlink()
+    compiler = kernel()
+    _regenerate(compiler, repo)
+    (repo / OUTPUT_DIRECTORY / f"widened.{TRAINING_FAMILY}.json").unlink()
 
-    report = compare_tracked_outputs(kernel, repo)
+    report = compare_tracked_outputs(compiler, repo)
 
     assert [entry.finding for entry in report.drift] == [ChokeFinding.MISSING]
 
 
 def test_a_compiled_document_no_envelope_produces_reports_orphaned(repo: Path) -> None:
-    kernel = quillon_kernel()
-    _regenerate(kernel, repo)
-    write_json(repo / QUILLON_LAYOUT.output_directory / "stray.json", {"schema_id": "stray"})
+    compiler = kernel()
+    _regenerate(compiler, repo)
+    write_json(repo / OUTPUT_DIRECTORY / "stray.json", {"schema_id": "stray"})
 
-    report = compare_tracked_outputs(kernel, repo)
+    report = compare_tracked_outputs(compiler, repo)
 
     orphans = report.by_finding(ChokeFinding.ORPHANED)
-    assert [entry.path for entry in orphans] == [
-        f"{QUILLON_LAYOUT.output_directory}/stray.json"
-    ]
+    assert [entry.path for entry in orphans] == [f"{OUTPUT_DIRECTORY}/stray.json"]
 
 
 def test_an_envelope_that_no_longer_compiles_is_a_finding_not_an_exception(repo: Path) -> None:
     """One broken envelope is reported, not raised, and takes its dependants with it.
 
-    ``widened-digest`` names ``widened`` as an upstream reference, so breaking
+    ``widened-probe`` names ``widened`` as an upstream reference, so breaking
     ``widened`` breaks both. Both arrive as findings on one report rather than as
     the first exception to escape, which is what lets a single pass state the
     whole tree's condition.
     """
-    kernel = quillon_kernel()
-    _regenerate(kernel, repo)
-    _reauthor(repo, "widened", assert_=[{"path": "settings.cadence", "equals": 99}])
+    compiler = kernel()
+    _regenerate(compiler, repo)
+    _reauthor(repo, "widened", **{"assert": [{"path": "base.inline.cadence", "equals": 99}]})
 
-    report = compare_tracked_outputs(kernel, repo)
+    report = compare_tracked_outputs(compiler, repo)
 
     rejected = report.by_finding(ChokeFinding.REJECTED)
-    assert sorted(entry.envelope_ref or "" for entry in rejected) == [
-        "studies/widened-digest.envelope.json",
-        "studies/widened.envelope.json",
-    ]
+    assert f"{ENVELOPE_DIRECTORY}/widened.envelope.json" in {
+        entry.envelope_ref for entry in rejected
+    }
+    assert f"{ENVELOPE_DIRECTORY}/widened-probe.envelope.json" in {
+        entry.envelope_ref for entry in rejected
+    }
     assert all("no longer compiles" in (entry.detail or "") for entry in rejected)
     assert not report.ok
     assert report.describe()
@@ -811,15 +928,28 @@ def test_an_envelope_that_no_longer_compiles_is_a_finding_not_an_exception(repo:
 # -- helpers -------------------------------------------------------------------
 
 
-def _layer_of(document: Any) -> str | None:
-    from tests.fake_project_extension.kernel import layer_of
+def _survey_payload() -> dict[str, Any]:
+    from tests.fake_project_experiment import SURVEY_PAYLOAD
 
-    return layer_of(document)
+    return dict(SURVEY_PAYLOAD)
+
+
+def _repoint_training_base_to_file(repo: Path) -> None:
+    """Move the training payload out of the matrix and into its own tracked file."""
+    from feedbax.contracts.authored_canonical import canonical_sha256 as _hash
+
+    document = json.loads((repo / TRAINING_BASE).read_text())
+    document["base"] = {
+        "kind": "authored_intent",
+        "ref": "bases/survey.payload.json",
+        "content_hash": _hash(_survey_payload()),
+    }
+    write_json(repo / TRAINING_BASE, document)
 
 
 def _budget_document() -> dict[str, Any]:
     resource = PROJECT_DECLARATION.authoring_budget
-    return json.loads((resource.root / "quillon.authoring_budget.json").read_text())
+    return json.loads((resource.root / resource.document_name).read_text())
 
 
 def _lock(
@@ -831,34 +961,37 @@ def _lock(
     return build_compile_lock(
         CompileLockInputs(
             envelope_ref="studies/probe.envelope.json",
-            envelope_document=envelope or {"schema": "quillon.study.v1", "name": "probe"},
-            envelope_schema="quillon.study.v1",
+            envelope_document=envelope
+            or {"schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION, "name": "probe"},
+            envelope_schema=EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
             name="probe",
-            family=SURVEY_FAMILY,
-            compiled_document=document or {"schema_id": SURVEY_FAMILY, "name": "probe"},
-            contract=CompilerContract.from_declaration(PROJECT_DECLARATION),
+            family=TRAINING_FAMILY,
+            compiled_document=document or {"schema_id": TRAINING_SCHEMA_ID, "name": "probe"},
+            contract=CompilerContract(
+                EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID,
+                EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION,
+            ),
             implementation=CompilerImplementation(code_unit="tests.test_envelope_engine_kernel"),
             identity_contributions=identity_contributions or {},
         )
     )
 
 
-def _envelope(repo: Path, alias: str) -> Path:
-    return repo / QUILLON_LAYOUT.envelope_directory / f"{alias}{QUILLON_LAYOUT.envelope_suffix}"
+def _read(repo: Path, alias: str) -> dict[str, Any]:
+    return json.loads(envelope_path(repo, alias).read_text())
+
+
+def _write(repo: Path, alias: str, document: dict[str, Any]) -> None:
+    write_envelope(envelope_path(repo, alias), document)
 
 
 def _reauthor(repo: Path, alias: str, **changes: Any) -> None:
-    path = _envelope(repo, alias)
-    document = json.loads(path.read_text())
-    if "assert_" in changes:
-        document["assert"] = changes.pop("assert_")
+    document = _read(repo, alias)
     document.update(changes)
-    write_envelope(path, document)
+    _write(repo, alias, document)
 
 
-def _regenerate(kernel: Any, repo: Path) -> None:
-    out_dir = repo / QUILLON_LAYOUT.output_directory
-    for envelope_path in kernel.envelopes(repo):
-        kernel.write_outputs(
-            kernel.compile_envelope_file(envelope_path, repo_root=repo), out_dir
-        )
+def _regenerate(compiler: Any, repo: Path) -> None:
+    out_dir = repo / OUTPUT_DIRECTORY
+    for path in compiler.envelopes(repo):
+        compiler.write_outputs(compiler.compile_envelope_file(path, repo_root=repo), out_dir)

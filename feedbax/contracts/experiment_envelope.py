@@ -32,6 +32,7 @@ from typing import Any, Callable, Protocol, runtime_checkable
 from pydantic import Field, model_validator
 
 from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.project_experiment import ProjectExperimentDeclaration
 from feedbax.registry_errors import RegistryCollisionError
 
 EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID = "feedbax.spec.experiment_envelope_compile_result"
@@ -65,7 +66,6 @@ class ExperimentEnvelopeRejectionCategory(StrEnum):
     ILLEGAL_ASSERTION_PATH = "illegal-assertion-path"
     UNRESOLVED_ROW_KEY = "unresolved-row-key"
     EMPTY_SELECTION = "empty-selection"
-    UNRESOLVED_EXTENSION_LABEL = "unresolved-extension-label"
     UNSUPPORTED_SCHEMA_VERSION = "unsupported-schema-version"
     UNRESOLVED_BASE = "unresolved-base"
     CROSS_FAMILY_BASE = "cross-family-base"
@@ -135,12 +135,18 @@ class ExperimentEnvelopeCompilerCollisionError(
 
 @dataclass(frozen=True)
 class ExperimentEnvelopeCompileRequest:
-    """Everything a downstream compiler is given, and nothing more."""
+    """Everything the compiler is given, and nothing more.
+
+    ``project_declaration`` is the data declaration of the project whose envelope
+    directory holds this envelope. The caller resolves it by directory before
+    dispatch, so the compiler never reads a project identity out of the envelope.
+    """
 
     envelope: Mapping[str, Any]
     envelope_path: Path
     repo_root: Path
     out_dir: Path
+    project_declaration: ProjectExperimentDeclaration | None = None
 
 
 class ExperimentEnvelopeCompileResult(StrictModel):
@@ -185,6 +191,7 @@ class ExperimentEnvelopeCompiler(Protocol):
         self, request: ExperimentEnvelopeCompileRequest
     ) -> ExperimentEnvelopeCompileResult:
         """Compile one authored envelope or raise ExperimentEnvelopeRejection."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -274,6 +281,7 @@ def dispatch_experiment_envelope(
     envelope_path: Path,
     repo_root: Path,
     out_dir: Path,
+    project_declaration: ProjectExperimentDeclaration | None = None,
 ) -> ExperimentEnvelopeCompileResult:
     """Route one authored envelope to the compiler claiming its schema."""
     schema = envelope_schema_of(envelope)
@@ -284,6 +292,7 @@ def dispatch_experiment_envelope(
             envelope_path=envelope_path,
             repo_root=repo_root,
             out_dir=out_dir,
+            project_declaration=project_declaration,
         )
     )
     if not isinstance(result, ExperimentEnvelopeCompileResult):

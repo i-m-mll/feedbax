@@ -7,7 +7,8 @@ from pathlib import Path
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.experiment_envelope import ExperimentEnvelopeCompilerRegistry
-from feedbax.contracts.project_extension import ProjectExtensionRegistry
+from feedbax.envelope.entrypoint import register_builtin_experiment_envelope_compiler
+from feedbax.contracts.project_experiment import ProjectExperimentRegistry
 from feedbax.analysis.evaluation import EvaluationRecipeRegistry
 from feedbax.analysis.evaluation_compaction import EvaluationBatchConsumerRegistry
 from feedbax.analysis.evaluation_product_union import (
@@ -45,7 +46,7 @@ class ApplicationRegistryBundle:
     conformance_checks: CheckRegistry
     drivers: DriverRegistry
     experiment_envelope_compilers: ExperimentEnvelopeCompilerRegistry
-    project_extensions: ProjectExtensionRegistry
+    project_experiments: ProjectExperimentRegistry
 
     def seal(self) -> None:
         self.components.seal()
@@ -62,7 +63,7 @@ class ApplicationRegistryBundle:
         self.conformance_checks.seal()
         self.drivers.seal()
         self.experiment_envelope_compilers.seal()
-        self.project_extensions.seal()
+        self.project_experiments.seal()
 
 
 COMPONENTS = RegistryKey(
@@ -145,10 +146,10 @@ EXPERIMENT_ENVELOPE_COMPILERS = RegistryKey(
     registered_keys=lambda value: value.available_keys(),
 )
 
-PROJECT_EXTENSIONS = RegistryKey(
-    "project_extensions",
-    "project_extensions",
-    ProjectExtensionRegistry,
+PROJECT_EXPERIMENTS = RegistryKey(
+    "project_experiments",
+    "project_experiments",
+    ProjectExperimentRegistry,
     registered_keys=lambda value: value.available_keys(),
 )
 
@@ -167,7 +168,7 @@ APPLICATION_REGISTRY_KEYS = (
     CONFORMANCE_CHECKS,
     DRIVERS,
     EXPERIMENT_ENVELOPE_COMPILERS,
-    PROJECT_EXTENSIONS,
+    PROJECT_EXPERIMENTS,
 )
 
 
@@ -182,6 +183,8 @@ def new_application_registry_bundle(
     register_default_figure_constructors(figures)
     reports = ReportRecipeRegistry()
     register_builtin_report_recipes(reports)
+    envelope_compilers = ExperimentEnvelopeCompilerRegistry()
+    register_builtin_experiment_envelope_compiler(envelope_compilers)
     return ApplicationRegistryBundle(
         components=components,
         training_methods=default_training_method_registry(),
@@ -196,8 +199,8 @@ def new_application_registry_bundle(
         figures=figures,
         conformance_checks=build_core_check_registry(),
         drivers=build_builtin_driver_registry(),
-        experiment_envelope_compilers=ExperimentEnvelopeCompilerRegistry(),
-        project_extensions=ProjectExtensionRegistry(),
+        experiment_envelope_compilers=envelope_compilers,
+        project_experiments=ProjectExperimentRegistry(),
     )
 
 
