@@ -45,12 +45,12 @@ from feedbax.contracts.manifest import (
     StagedEvaluationPrerequisite,
     ManifestStatus,
     Provenance,
+    canonical_manifest_path,
     collect_git_provenance,
     default_manifest_root,
     evaluation_run_manifest_id,
     evaluation_states_cache_path,
     load_manifest,
-    safe_manifest_key,
     spec_payload,
     write_manifest,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
@@ -1192,9 +1192,7 @@ def execute_evaluation_run_spec(
     execution_context = with_staged_repo_root(execution_context, repo_root)
     manifest_id = evaluation_run_manifest_id(run_spec)
     states_path = evaluation_states_cache_path(manifest_id, root=root_path)
-    manifest_path = (
-        root_path / "manifests" / "evaluation_runs" / f"{safe_manifest_key(manifest_id)}.json"
-    )
+    manifest_path = canonical_manifest_path("EvaluationRunManifest", manifest_id, root=root_path)
     states_path.parent.mkdir(parents=True, exist_ok=True)
 
     prov = provenance.model_copy(deep=True) if provenance is not None else collect_git_provenance()

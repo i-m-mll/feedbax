@@ -65,6 +65,7 @@ from feedbax.contracts.manifest import (
     EvaluationRunSpec,
     ParentRef,
     Provenance,
+    canonical_manifest_candidate_paths,
     default_manifest_root,
     analysis_run_manifest_id,
     evaluation_states_cache_path,
@@ -353,22 +354,59 @@ def coerce_analysis_run_spec(
 def find_manifest_by_id(
     manifest_id: str, *, root: Path | str | None = None
 ) -> tuple[AnyManifest, Path]:
-    """Find one manifest by ID under a manifest root."""
-    root_path = Path(root) if root is not None else default_manifest_root()
-    matches: list[tuple[AnyManifest, Path]] = []
-    indexed_paths = find_manifest_paths_by_id(manifest_id, root=root_path)
-    for manifest_path in indexed_paths:
-        manifest = load_manifest(manifest_path)
-        if manifest.id == manifest_id:
-            matches.append((manifest, manifest_path))
-    if matches:
-        return _single_manifest_match(manifest_id, root_path, matches)
+    """Find one manifest by ID under a manifest root.
 
-    for manifest_path in iter_manifest_files(root_path):
+    Resolution is tiered and the canonical `(kind, id, root)` layout is
+    authoritative. The SQLite manifest index is derived acceleration only: an
+    absent index, a stale entry naming a path that no longer exists, and an
+    entry naming bytes that now hold a different identifier all fall through to
+    the canonical location and then to a full scan instead of raising.
+
+    Tiers resolve in order — canonical paths, indexed paths, full scan — and the
+    first tier yielding any match decides the answer. Duplicate matches inside a
+    tier refuse, because one identifier must name one record.
+    """
+    root_path = Path(root) if root is not None else default_manifest_root()
+    # Tiers are evaluated lazily: the full scan must not run when a cheaper tier
+    # already resolves the identifier.
+    tiers: tuple[Callable[[], Sequence[Path]], ...] = (
+        lambda: canonical_manifest_candidate_paths(manifest_id, root=root_path),
+        lambda: find_manifest_paths_by_id(manifest_id, root=root_path),
+        lambda: iter_manifest_files(root_path),
+    )
+    for candidates in tiers:
+        matches = _manifest_matches(manifest_id, candidates())
+        if matches:
+            return _single_manifest_match(manifest_id, root_path, matches)
+    return _single_manifest_match(manifest_id, root_path, [])
+
+
+def _manifest_matches(
+    manifest_id: str,
+    candidate_paths: Sequence[Path],
+) -> list[tuple[AnyManifest, Path]]:
+    """Load candidate paths that actually hold *manifest_id*, skipping absent bytes.
+
+    Absent bytes are a stale locator, not a custody failure, so they are skipped.
+    Bytes that exist but cannot be parsed as a known manifest are a real custody
+    failure and propagate.
+    """
+    matches: list[tuple[AnyManifest, Path]] = []
+    seen: set[Path] = set()
+    for manifest_path in candidate_paths:
+        try:
+            resolved = manifest_path.resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        if not manifest_path.is_file():
+            continue
+        seen.add(resolved)
         manifest = load_manifest(manifest_path)
         if manifest.id == manifest_id:
             matches.append((manifest, manifest_path))
-    return _single_manifest_match(manifest_id, root_path, matches)
+    return matches
 
 
 def _single_manifest_match(

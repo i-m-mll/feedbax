@@ -15,17 +15,21 @@ from feedbax.contracts.manifest import (
     AnyManifest,
     ParentRef,
     authenticated_manifest_ref_profile,
+    canonical_manifest_relative_path,
     load_manifest_bytes,
-    safe_manifest_key,
 )
 
 
-_MANIFEST_DIRECTORIES = {
-    "EvaluationRunManifest": "evaluation_runs",
-    "AnalysisRunManifest": "analysis_runs",
-    "FigureManifest": "FigureManifest",
-    "ReportManifest": "reports",
-}
+#: Manifest kinds admitted as authenticated staged inputs. Their durable
+#: locations come from the canonical layout, never from a local copy of it.
+_STAGED_MANIFEST_KINDS = frozenset(
+    {
+        "EvaluationRunManifest",
+        "AnalysisRunManifest",
+        "FigureManifest",
+        "ReportManifest",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -76,13 +80,9 @@ def authenticated_manifest_ref(
 
 
 def _canonical_locator(ref: ParentRef) -> str:
-    try:
-        directory = _MANIFEST_DIRECTORIES[ref.kind]
-    except KeyError as exc:
-        raise ValueError(
-            f"Authenticated staged manifest kind {ref.kind!r} is not supported"
-        ) from exc
-    return f"manifests/{directory}/{safe_manifest_key(ref.id)}.json"
+    if ref.kind not in _STAGED_MANIFEST_KINDS:
+        raise ValueError(f"Authenticated staged manifest kind {ref.kind!r} is not supported")
+    return canonical_manifest_relative_path(ref.kind, ref.id)
 
 
 def _locator_parts(locator: Path | str) -> tuple[str, ...]:

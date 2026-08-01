@@ -2363,23 +2363,98 @@ def _validate_retention_artifact_ref_metadata(data: dict[str, Any]) -> dict[str,
     return normalized
 
 
+#: Durable `(manifest kind) -> manifest-root subdirectory` storage layout.
+#:
+#: This mapping is the authoritative on-disk layout for every manifest kind
+#: :func:`write_manifest` can persist. It is ordered so that deterministic
+#: candidate-path enumeration is stable across processes and platforms.
+MANIFEST_KIND_DIRECTORIES: dict[str, str] = {
+    "GraphSpecManifest": "graph_specs",
+    "ModelArtifactManifest": "model_artifacts",
+    "TrainingRunSetManifest": "training_run_sets",
+    "TrainingRunManifest": "training_runs",
+    "EvaluationRunManifest": "evaluation_runs",
+    "CheckpointSelectionManifest": "checkpoint_selections",
+    "AnalysisRunManifest": "analysis_runs",
+    "ReportManifest": "reports",
+    # Historical layout: figure manifests are stored under their kind name.
+    "FigureManifest": "FigureManifest",
+}
+
+
+def manifest_kind_directory(kind: str) -> str:
+    """Return the manifest-root subdirectory that durably stores one manifest kind.
+
+    Args:
+        kind: A ``BaseManifest.kind`` discriminator.
+
+    Returns:
+        The single directory name beneath ``<root>/manifests`` for that kind.
+
+    Raises:
+        ValueError: If the kind has no declared durable location. Unknown kinds
+            fail closed rather than inventing a storage location.
+    """
+    try:
+        return MANIFEST_KIND_DIRECTORIES[kind]
+    except KeyError as exc:
+        known = ", ".join(sorted(MANIFEST_KIND_DIRECTORIES))
+        raise ValueError(
+            f"Manifest kind {kind!r} has no canonical storage location; known kinds: {known}"
+        ) from exc
+
+
+def canonical_manifest_relative_path(kind: str, manifest_id: str) -> str:
+    """Return the root-relative POSIX location of one manifest's canonical bytes."""
+    return f"manifests/{manifest_kind_directory(kind)}/{safe_manifest_key(manifest_id)}.json"
+
+
+def canonical_manifest_path(
+    kind: str,
+    manifest_id: str,
+    *,
+    root: Path | str | None = None,
+) -> Path:
+    """Return the canonical `(kind, id, root)` path that :func:`write_manifest` uses.
+
+    This derivation is authoritative. The SQLite manifest index is derived
+    acceleration over it: an absent or stale index entry never changes where a
+    manifest's bytes canonically live.
+
+    Args:
+        kind: A ``BaseManifest.kind`` discriminator.
+        manifest_id: The deterministic manifest identifier.
+        root: Manifest root; defaults to :func:`default_manifest_root`.
+    """
+    root_path = Path(root) if root is not None else default_manifest_root()
+    directory = root_path / "manifests" / manifest_kind_directory(kind)
+    return directory / f"{safe_manifest_key(manifest_id)}.json"
+
+
+def canonical_manifest_candidate_paths(
+    manifest_id: str,
+    *,
+    root: Path | str | None = None,
+) -> list[Path]:
+    """Return every canonical path one manifest id could occupy, in declared kind order.
+
+    A manifest identifier does not encode its kind, so canonical resolution
+    probes each declared kind directory instead of inferring a kind from the
+    identifier's prefix. The order follows :data:`MANIFEST_KIND_DIRECTORIES`.
+    """
+    root_path = Path(root) if root is not None else default_manifest_root()
+    return [
+        canonical_manifest_path(kind, manifest_id, root=root_path)
+        for kind in MANIFEST_KIND_DIRECTORIES
+    ]
+
+
 def _manifest_dir(root: Path, kind: str) -> Path:
-    names = {
-        "GraphSpecManifest": "graph_specs",
-        "ModelArtifactManifest": "model_artifacts",
-        "TrainingRunSetManifest": "training_run_sets",
-        "TrainingRunManifest": "training_runs",
-        "EvaluationRunManifest": "evaluation_runs",
-        "CheckpointSelectionManifest": "checkpoint_selections",
-        "AnalysisRunManifest": "analysis_runs",
-        "ReportManifest": "reports",
-    }
-    return root / "manifests" / names.get(kind, kind)
+    return root / "manifests" / manifest_kind_directory(kind)
 
 
 def _safe_manifest_filename(manifest_id: str) -> str:
-    safe = manifest_id.replace(":", "_").replace("/", "_")
-    return f"{safe}.json"
+    return f"{safe_manifest_key(manifest_id)}.json"
 
 
 def safe_manifest_key(manifest_id: str) -> str:

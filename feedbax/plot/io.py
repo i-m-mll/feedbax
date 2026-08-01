@@ -9,6 +9,7 @@ import importlib.metadata
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -160,8 +161,16 @@ def save_figure_with_spec(
     """Save a figure and a JSON reproducibility spec to *dst_dir*.
 
     The spec records input artifact paths and their SHA-256 digests, the
-    data-transform pipeline, plot kwargs, version pins, a random seed, and a
-    timestamp — everything needed to reproduce the figure from its sources.
+    data-transform pipeline, plot kwargs, version pins, and a random seed —
+    everything needed to reproduce the figure from its sources.
+
+    The spec bytes are deliberately deterministic: two executions of the same
+    figure spec, against the same inputs and installed package versions, write
+    byte-identical spec JSON. The sidecar is stored as a content-addressed,
+    digest-authenticated artifact, so embedding wall-clock state in it would
+    make every rebuild-as-verification pass report false drift. Provenance
+    timestamps belong on the manifest record that references this artifact
+    (``created_at``), not in the artifact's own authenticated bytes.
 
     Arguments:
         fig: A ``plotly.graph_objs.Figure`` or ``matplotlib.figure.Figure``.
@@ -174,12 +183,15 @@ def save_figure_with_spec(
             - ``plot_kwargs`` (*dict*): the kwargs passed to the plot function.
             - ``seed`` (*int | None*): random seed, if applicable.
 
-            ``versions`` and ``timestamp`` are always added/overwritten by this
-            function.
+            ``versions`` is always added/overwritten by this function. No
+            wall-clock field is added; a ``timestamp`` key supplied by the
+            caller is written through unchanged and makes the resulting bytes
+            non-reproducible.
         dst_dir: Directory in which to write the output files.  Created if it
             does not exist.
         name: Base filename (without extension) for the output files.  When
-            ``None`` the current UTC timestamp is used.
+            ``None`` the current UTC timestamp is used.  Callers that need
+            reproducible output paths must pass an explicit *name*.
         save_render: Whether to also write the figure itself to disk.
         render_format: ``"json"`` (Plotly JSON; default), ``"html"``,
             ``"png"``, ``"svg"``, or ``"pdf"``.
@@ -207,7 +219,7 @@ def save_figure_with_spec(
             name = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
         # ------------------------------------------------------------------
-        # Enrich the spec: resolve SHA-256 digests, add versions + timestamp
+        # Enrich the spec: resolve SHA-256 digests and add versions
         # ------------------------------------------------------------------
         enriched: dict[str, Any] = dict(spec)  # shallow copy — do not mutate caller's dict
 
@@ -223,9 +235,10 @@ def save_figure_with_spec(
             resolved_inputs.append(entry)
         enriched["inputs"] = resolved_inputs
 
-        # Always overwrite versions and timestamp
+        # Always overwrite versions. Deliberately no wall-clock field: these
+        # bytes are digest-authenticated as an artifact and must reproduce
+        # exactly across executions of the same spec.
         enriched["versions"] = _build_versions(extra_packages)
-        enriched["timestamp"] = datetime.now(tz=timezone.utc).isoformat()
 
         # ------------------------------------------------------------------
         # Write spec JSON
@@ -280,7 +293,8 @@ def save_figure(
     Args:
         fig: A ``plotly.graph_objs.Figure`` or ``matplotlib.figure.Figure``.
         spec: Reproducibility spec dict (same schema as ``save_figure_with_spec``).
-            ``versions`` and ``timestamp`` are always added/overwritten.
+            ``versions`` is always added/overwritten; no wall-clock field is
+            added.
         package: Name of the registered application package (e.g. ``"rlrmp"``).
         experiment: Experiment identifier substituted into directory templates
             (e.g. ``"part2_5"``).
@@ -400,6 +414,12 @@ def _figure_render_filename(
     return f"{name}.{ext}"
 
 
+def _safe_html_id(value: str) -> str:
+    """Return *value* reduced to characters an HTML element id may carry."""
+    normalized = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(value)).strip("-")
+    return normalized or "figure"
+
+
 def _replace_symlink(link_path: Path, target: str) -> None:
     """Atomically replace *link_path* with a symlink to *target*."""
     tmp_path = link_path.with_name(f".{link_path.name}.{uuid.uuid4().hex}.tmp")
@@ -450,12 +470,20 @@ def _write_figure(
 
 
 def _write_plotly(fig: Any, dst_dir: Path, name: str, render_format: str) -> Path:
-    """Write a Plotly figure to disk."""
+    """Write a Plotly figure to disk.
+
+    HTML renders pass an explicit ``div_id``. Plotly mints a random UUID for the
+    container element otherwise, so two executions of the same figure would
+    produce different bytes while agreeing in every observable respect, and
+    rebuild-as-verification compares recorded artifact bytes. The id is derived
+    from the figure name, which is already unique within its output directory,
+    and each render is a standalone document, so nothing else has to be unique.
+    """
     path = dst_dir / _figure_render_filename(name, render_format, "plotly")
     if render_format == "json":
         fig.write_json(str(path))
     elif render_format == "html":
-        fig.write_html(str(path))
+        fig.write_html(str(path), div_id=_safe_html_id(name))
     else:
         fig.write_image(str(path))
     logger.info("Wrote Plotly figure to %s", path)

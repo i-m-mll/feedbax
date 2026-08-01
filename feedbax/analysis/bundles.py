@@ -80,11 +80,11 @@ from feedbax.contracts.manifest import (
     StagedEvaluationPrerequisite,
     OverridePatch,
     canonical_json_bytes,
+    canonical_manifest_path,
     collect_git_provenance,
     default_manifest_root,
     evaluation_run_manifest_id,
     load_manifest,
-    safe_manifest_key,
     spec_payload,
     write_manifest,
     load_manifest_bytes,
@@ -788,17 +788,7 @@ def _with_regeneration_spec(
     root: Path,
 ) -> tuple[AnalysisRunManifest | FigureManifest | ReportManifest, Path]:
     if regeneration_payload in manifest.regeneration_specs:
-        path = (
-            root
-            / "manifests"
-            / {
-                "AnalysisRunManifest": "analysis_runs",
-                "FigureManifest": "FigureManifest",
-                "ReportManifest": "reports",
-            }[manifest.kind]
-            / f"{safe_manifest_key(manifest.id)}.json"
-        )
-        return manifest, path
+        return manifest, canonical_manifest_path(manifest.kind, manifest.id, root=root)
     updated = manifest.model_copy(
         update={"regeneration_specs": [*manifest.regeneration_specs, regeneration_payload]}
     )
@@ -1666,7 +1656,7 @@ def _execute_evaluation_stage(
             *(value.parent for value in matched_prerequisites.values()),
         ]
         manifest_id = evaluation_run_manifest_id(spec)
-        path = root / "manifests" / "evaluation_runs" / f"{safe_manifest_key(manifest_id)}.json"
+        path = canonical_manifest_path("EvaluationRunManifest", manifest_id, root=root)
         existing = load_manifest(path) if path.is_file() else None
         if isinstance(existing, EvaluationRunManifest) and existing.status == "completed":
             _validate_completed_evaluation_cache(
