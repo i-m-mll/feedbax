@@ -1467,6 +1467,7 @@ class FigureCompositionSpec(StrictModel):
     schema_version: str = FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION
     parent: ContentPinnedJsonBase
     deltas: list[FigureCompositionDelta] = Field(min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("deltas", mode="before")
     @classmethod

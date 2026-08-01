@@ -207,6 +207,35 @@ def test_delta_schema_is_registered_and_rejects_unknown_versions() -> None:
         TrainingRunMatrixDeltaSpec.model_validate(unsupported)
 
 
+def test_optional_metadata_carrier_accepts_absence_round_trips_and_stays_strict() -> None:
+    """``metadata`` is an additive optional field on the current delta spec version.
+
+    The migration story is additive-optional: documents emitted before the field
+    existed omit it entirely and still validate, defaulting to an empty mapping, so
+    no versioned migration rule is required and the schema version is unchanged.
+    """
+    without_metadata = _child("0" * 64)
+    assert "metadata" not in without_metadata
+
+    baseline = TrainingRunMatrixDeltaSpec.model_validate(without_metadata)
+    assert baseline.metadata == {}
+
+    annotated = TrainingRunMatrixDeltaSpec.model_validate(
+        {**without_metadata, "metadata": {"authoring_status": "draft"}}
+    )
+    assert annotated.metadata == {"authoring_status": "draft"}
+    dumped = annotated.model_dump(mode="json", exclude_none=True)
+    assert dumped["metadata"] == {"authoring_status": "draft"}
+    assert TrainingRunMatrixDeltaSpec.model_validate(dumped).metadata == annotated.metadata
+    # The carrier is not part of the authored envelope, so pinned hashes are unaffected.
+    assert training_matrix_delta_envelope_hash(annotated) == training_matrix_delta_envelope_hash(
+        baseline
+    )
+
+    with pytest.raises(ValidationError):
+        TrainingRunMatrixDeltaSpec.model_validate({**without_metadata, "unexpected": 1})
+
+
 def test_repeated_parent_document_is_rejected_as_a_cycle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

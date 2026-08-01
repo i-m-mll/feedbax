@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from feedbax.analysis import figures as figure_execution
 from feedbax.analysis.figures import coerce_figure_spec, execute_figure_spec, resolve_figure_spec
@@ -170,6 +171,36 @@ def test_ordinary_figure_v2_is_unchanged_and_composition_v0_rejects() -> None:
             )
 
 
+def test_optional_metadata_carrier_accepts_absence_round_trips_and_stays_strict() -> None:
+    """``metadata`` is an additive optional field on the current composition version.
+
+    The migration story is additive-optional: documents emitted before the field
+    existed omit it entirely and still validate, defaulting to an empty mapping, so
+    no versioned migration rule is required and the schema version is unchanged.
+    """
+    baseline = _composition(
+        ContentPinnedJsonBase(ref="base.json", sha256="0" * 64),
+        _replace("name", "name", "annotated"),
+    )
+    without_metadata = baseline.model_dump(mode="json", exclude_none=True)
+    without_metadata.pop("metadata")
+
+    assert FigureCompositionSpec.model_validate(without_metadata).metadata == {}
+
+    annotated = FigureCompositionSpec.model_validate(
+        {**without_metadata, "metadata": {"authoring_status": "draft"}}
+    )
+    assert annotated.metadata == {"authoring_status": "draft"}
+    dumped = annotated.model_dump(mode="json", exclude_none=True)
+    assert dumped["metadata"] == {"authoring_status": "draft"}
+    assert FigureCompositionSpec.model_validate(dumped).metadata == annotated.metadata
+    # The carrier is not part of authored identity, so pinned hashes are unaffected.
+    assert annotated.identity_sha256() == baseline.identity_sha256()
+
+    with pytest.raises(ValidationError):
+        FigureCompositionSpec.model_validate({**without_metadata, "unexpected": 1})
+
+
 def test_composition_reaches_panels_and_trace_families_with_ordered_precedence(
     tmp_path: Path,
 ) -> None:
@@ -314,7 +345,12 @@ def test_v1_migration_preserves_raw_authored_identity_and_custody(tmp_path: Path
     current = _composition(root_ref, _replace("name", "name", "migrated")).model_dump(
         mode="json", exclude_none=True
     )
-    legacy = {**current, "schema_version": FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION_V1}
+    # v1 documents predate the optional ``metadata`` carrier, and the v1 identity path
+    # deliberately fails closed on fields that version never had.
+    legacy = {
+        **{key: value for key, value in current.items() if key != "metadata"},
+        "schema_version": FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION_V1,
+    }
     migrated = default_spec_registry.migrate("FigureCompositionSpec", legacy).payload
     raw_identity_envelope = json.loads(json.dumps(legacy))
     raw_identity_envelope["parent"].pop("ref")
