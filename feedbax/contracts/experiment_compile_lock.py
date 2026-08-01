@@ -31,10 +31,10 @@ A lock records provenance in two separate blocks because they answer different
 questions and change on different schedules:
 
 * :class:`CompilerContract` is the **logical** contract the compiled output
-  conforms to — the ``compiler_contract_id`` and ``compiler_contract_version``
-  the project's extension declaration states. It changes when the meaning of a
-  compiled document changes, and it is what a consumer checks before trusting
-  the output's shape.
+  conforms to — the global ``compiler_contract_id`` and
+  ``compiler_contract_version`` of the one envelope compiler. It changes when the
+  meaning of a compiled document changes, and it is what a consumer checks
+  before trusting the output's shape.
 * :class:`CompilerImplementation` is the **physical** provenance of the code that
   ran — the package that hosts the compiler, its version, and the versions of the
   packages it was built against. It changes whenever anything is released, and it
@@ -96,7 +96,6 @@ from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeRejectionCategory,
 )
 from feedbax.contracts.manifest import StrictModel
-from feedbax.contracts.project_extension import ProjectExtensionDeclaration
 
 EXPERIMENT_COMPILE_LOCK_SCHEMA_ID = "feedbax.spec.experiment_compile_lock"
 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v1"
@@ -485,8 +484,11 @@ def compile_lock_reference_record(value: Any, *, field: str) -> dict[str, Any]:
 class CompilerContract:
     """The logical contract a compiled document conforms to.
 
-    Both fields come from the project's extension declaration; the engine never
-    invents, defaults, or infers them.
+    There is one dialect and one compiler, so this contract is global rather
+    than per-project: see
+    :data:`~feedbax.contracts.experiment_envelope_dialect.EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION`.
+    A project cannot state a contract of its own, which is what makes two
+    projects' compiled documents mean the same thing.
     """
 
     contract_id: str
@@ -502,16 +504,6 @@ class CompilerContract:
                 f"compiler contract version {self.contract_version!r} does not extend "
                 f"contract id {self.contract_id!r}"
             )
-
-    @classmethod
-    def from_declaration(
-        cls, declaration: ProjectExtensionDeclaration
-    ) -> "CompilerContract":
-        """Read the logical contract the project declares it compiles against."""
-        return cls(
-            contract_id=declaration.compiler_contract_id,
-            contract_version=declaration.compiler_contract_version,
-        )
 
     def record(self) -> dict[str, str]:
         """Return this contract as its lock block."""

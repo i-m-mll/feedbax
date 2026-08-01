@@ -1,12 +1,12 @@
-"""The generic authored-envelope engine kernel.
+"""The authored-envelope engine: one dialect, one compiler, five layers.
 
 Feedbax owns the mechanism by which an authored envelope becomes a compiled
-document plus a compile lock; a downstream project owns the science that
-mechanism carries. The split is enforced by construction: nothing in this package
-names a layer, a family, a budget number, or a repository path, and everything
-project-specific arrives through the project's
-:class:`~feedbax.contracts.project_extension.ProjectExtensionDeclaration` and its
-:class:`~feedbax.envelope.compile.ProjectCompilerHooks`.
+document plus a compile lock, and it owns the dialect that mechanism reads. A
+project owns the science the documents carry. The split is enforced by
+construction: a project contributes a
+:class:`~feedbax.contracts.project_experiment.ProjectExperimentDeclaration`,
+which is inert data naming two directories and one budget resource, and it
+contributes no callable at all.
 
 The kernel is four mechanisms:
 
@@ -17,8 +17,9 @@ The kernel is four mechanisms:
   document schema owned here and the numbers owned by the project
   (:mod:`feedbax.contracts.authoring_budget`, :mod:`feedbax.envelope.authoring`);
 * **compilation** — parent resolution over a content-pinned lineage, assertion
-  verification, echo refusal, layer dispatch, and lock emission
-  (:mod:`feedbax.envelope.compile`, :mod:`feedbax.envelope.resolution`);
+  verification, echo refusal, the five-layer lowering, and lock emission
+  (:mod:`feedbax.contracts.experiment_envelope_dialect`,
+  :mod:`feedbax.envelope.compile`, :mod:`feedbax.envelope.resolution`);
 * **the choke point** — proof that tracked compiled bytes are what the envelopes
   compile to right now (:mod:`feedbax.envelope.choke`).
 
@@ -69,21 +70,38 @@ from feedbax.envelope.choke import (
     compare_tracked_outputs,
     format_choke_findings,
 )
+from feedbax.contracts.experiment_envelope_dialect import (
+    EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID,
+    EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION,
+    EXPERIMENT_ENVELOPE_FAMILY,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+    EXPERIMENT_ENVELOPE_SUFFIX,
+    ExperimentEnvelope,
+    ExperimentEnvelopeLayer,
+    LayerOutputContract,
+    parse_experiment_envelope,
+)
 from feedbax.envelope.compile import (
-    AuthoredAssertion,
-    CompiledLayer,
     EnvelopeCompileOutcome,
     EnvelopeKernel,
     EnvelopeLayout,
     LayerCompileContext,
-    ProjectCompilerHooks,
+    LoweredLayer,
     ResolvedParent,
+    authored_layer_of,
     check_echo,
     check_no_co_created_protected_document,
     compiled_document_pin,
     reject_echo,
     scalar_equal,
     verify_assertions,
+)
+from feedbax.envelope.entrypoint import (
+    EXPERIMENT_ENVELOPE_IMPLEMENTATION,
+    compile_experiment_envelope,
+    kernel_for,
+    load_project_budgets,
+    register_builtin_experiment_envelope_compiler,
 )
 from feedbax.envelope.resolution import (
     InheritedValue,
@@ -99,27 +117,35 @@ __all__ = [
     "CANONICAL_PIN_ALGORITHM",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_ID",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION",
+    "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID",
+    "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION",
+    "EXPERIMENT_ENVELOPE_FAMILY",
+    "EXPERIMENT_ENVELOPE_IMPLEMENTATION",
+    "EXPERIMENT_ENVELOPE_SCHEMA_VERSION",
+    "EXPERIMENT_ENVELOPE_SUFFIX",
     "RUN_RECEIPT_ONLY_FACTS",
-    "AuthoredAssertion",
     "AuthoringBudgets",
     "ChokeEntry",
     "ChokeFinding",
     "ChokeReport",
     "CompileLockInputs",
-    "CompiledLayer",
     "CompilerContract",
     "CompilerImplementation",
     "EnvelopeCompileOutcome",
     "EnvelopeKernel",
     "EnvelopeLayout",
+    "ExperimentEnvelope",
+    "ExperimentEnvelopeLayer",
     "InheritedValue",
     "LayerBudget",
     "LayerCompileContext",
+    "LayerOutputContract",
     "Lineage",
+    "LoweredLayer",
     "PinnedDocument",
     "PlanReceiptBoundaryError",
-    "ProjectCompilerHooks",
     "ResolvedParent",
+    "authored_layer_of",
     "build_compile_lock",
     "build_lineage",
     "canonical_bytes",
@@ -128,6 +154,7 @@ __all__ = [
     "check_no_co_created_protected_document",
     "check_plan_receipt_boundary",
     "compare_tracked_outputs",
+    "compile_experiment_envelope",
     "compiled_document_pin",
     "content_pin",
     "emit_text",
@@ -135,10 +162,14 @@ __all__ = [
     "enforce_budget",
     "format_choke_findings",
     "guard_authored_bytes",
+    "kernel_for",
     "load_authoring_budget_document",
     "load_compile_lock",
     "load_pinned",
+    "load_project_budgets",
+    "parse_experiment_envelope",
     "read_authored_document",
+    "register_builtin_experiment_envelope_compiler",
     "reject_echo",
     "scalar_equal",
     "verify_assertions",

@@ -9,11 +9,11 @@ The split of ownership is exact and deliberate:
 * **Feedbax owns the document schema and the enforcement.** The cap names, their
   meaning, the layer-sectioned shape, and the walk that refuses an over-budget
   document are engine mechanism and live here.
-* **The project owns the numbers and the layer names.** A project states one
-  section per layer it declares, and the sections are checked against the layer
-  labels in its :class:`~feedbax.contracts.project_extension.
-  ProjectExtensionDeclaration`. Feedbax never ships a default budget, never
-  infers a cap, and never invents a layer.
+* **The project owns the numbers.** A project states one section per layer of
+  the :mod:`~feedbax.contracts.experiment_envelope_dialect`, and the sections are
+  checked against exactly that set. Feedbax never ships a default budget and
+  never infers a cap; the project cannot omit a layer or invent one, because the
+  layers are the dialect's and not the project's.
 
 A budget is per layer because layers differ in natural size: a parameter delta
 and a block of prose are not over-budget at the same number. Enforcement reads

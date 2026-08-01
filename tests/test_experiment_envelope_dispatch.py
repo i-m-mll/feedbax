@@ -1,10 +1,14 @@
-"""The one generic authoring entrypoint and its downstream dispatch contract.
+"""The one authoring entrypoint and its dispatch contract.
 
 ``python -m feedbax preflight-experiment-envelope <envelope>`` is the single
-documented authoring command. Feedbax knows no downstream dialect: it reads the
-envelope's declared schema, finds the compiler that claimed that schema through
-the ordinary plugin bootstrap with injected registries, and turns the outcome
-into the documented exit codes.
+documented authoring command. It reads the envelope's declared schema, finds the
+compiler that claimed that schema through the ordinary plugin bootstrap with
+injected registries, and turns the outcome into the documented exit codes.
+
+Feedbax's own ``feedbax.experiment_envelope.v1`` is claimed by a built-in
+registration, so a project cannot claim it. The fake schema used here proves the
+dispatch mechanism is still a mechanism: it routes on the declared string, and
+one string is claimed exactly once.
 """
 
 from __future__ import annotations
@@ -273,7 +277,6 @@ def test_rejection_categories_are_a_closed_set() -> None:
         "illegal-assertion-path",
         "unresolved-row-key",
         "empty-selection",
-        "unresolved-extension-label",
         "unsupported-schema-version",
         "unresolved-base",
         "cross-family-base",
@@ -283,6 +286,47 @@ def test_rejection_categories_are_a_closed_set() -> None:
     }
     with pytest.raises(ValueError):
         ExperimentEnvelopeRejection("invented-category", "no")
+
+
+def test_the_feedbax_dialect_is_claimed_by_feedbax_and_cannot_be_reclaimed() -> None:
+    from feedbax.contracts.experiment_envelope_dialect import (
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+    )
+    from feedbax.envelope.entrypoint import (
+        EXPERIMENT_ENVELOPE_COMPILER_OWNER,
+        register_builtin_experiment_envelope_compiler,
+    )
+
+    registry = ExperimentEnvelopeCompilerRegistry()
+    register_builtin_experiment_envelope_compiler(registry)
+
+    assert registry.available_keys() == (EXPERIMENT_ENVELOPE_SCHEMA_VERSION,)
+    assert registry.get(EXPERIMENT_ENVELOPE_SCHEMA_VERSION).owner == (
+        EXPERIMENT_ENVELOPE_COMPILER_OWNER
+    )
+    with pytest.raises(ExperimentEnvelopeCompilerCollisionError):
+        registry.register(
+            ExperimentEnvelopeCompilerRegistration(
+                envelope_schema=EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+                owner="tests.a_project_trying_to_own_the_dialect",
+                compile=lambda request: None,
+            )
+        )
+
+
+def test_compiling_the_dialect_without_a_project_declaration_is_infrastructure() -> None:
+    from feedbax.contracts.experiment_envelope import ExperimentEnvelopeCompileRequest
+    from feedbax.envelope.entrypoint import compile_experiment_envelope
+
+    with pytest.raises(ExperimentEnvelopeCompilerError, match="declaration of the project"):
+        compile_experiment_envelope(
+            ExperimentEnvelopeCompileRequest(
+                envelope={},
+                envelope_path=Path("studies/x.envelope.json"),
+                repo_root=Path("."),
+                out_dir=Path("."),
+            )
+        )
 
 
 def test_compile_result_rejects_unknown_schema_versions() -> None:
