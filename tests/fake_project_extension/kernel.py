@@ -22,7 +22,11 @@ from pathlib import Path
 from typing import Any
 
 from feedbax.contracts.authoring_budget import AuthoringBudgets, load_authoring_budget_document
-from feedbax.contracts.experiment_compile_lock import CompilerImplementation
+from feedbax.contracts.experiment_compile_lock import (
+    CompilerImplementation,
+    PlannedProductReference,
+    ReportParentBinding,
+)
 from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeRejection,
     ExperimentEnvelopeRejectionCategory,
@@ -181,7 +185,20 @@ def _compile_digest(context: LayerCompileContext) -> CompiledLayer:
         family=DIGEST_FAMILY,
         document=compiled,
         resolved_deltas={"digest_summary": summary},
-        references=[{"kind": "envelope", "alias": subject_alias, **subject}],
+        references=[
+            PlannedProductReference(
+                envelope_ref=subject["envelope"]["ref"],
+                envelope_hash=subject["envelope"]["envelope_hash"],
+                product_name=subject["name"],
+                product_schema_id=SURVEY_FAMILY,
+                product_schema_version=f"{SURVEY_FAMILY}.v1",
+                compiled_content_hash=subject["compiled_document"]["content_hash"],
+                role_path="body.of",
+                consumer=ReportParentBinding(
+                    parent_kind=SURVEY_FAMILY, parent_id=subject_alias
+                ),
+            )
+        ],
         identity_contributions={"subject": subject},
         overridden_paths={"name": "envelope.name", "summary": "body.summary"},
         issue=envelope.get("issue"),

@@ -44,23 +44,58 @@ Collapsing the two into one string forces a logical version bump for every
 release, or hides a release behind an unchanged logical version. Keeping them
 apart lets a recompilation that changes derived bytes be attributable without
 implying that the contract moved.
+
+## References are a closed typed union
+
+Everything one compile resolved about a *different* document is recorded in
+``references``, and every entry is one member of :data:`CompileLockReference`.
+The union is closed because the downstream plan is derived from it mechanically:
+a free-form mapping would make "is this an edge?" a question about string keys
+rather than about the record's own kind. The five kinds answer five genuinely
+different questions:
+
+* :class:`ContentPinReference` — bytes this compile *read*. It is a compile-time
+  input and is never a plan edge; nothing runs because of it.
+* :class:`PlannedProductReference` — a product another envelope will compile to,
+  pinned by the upstream envelope and by the content hash of what it compiles
+  into. This is the ordinary pre-run edge.
+* :class:`ReceiptLocatorReference` — a manifest named by kind and id with **no**
+  digest. The compiler knows *which* receipt is wanted before that receipt
+  exists; pretending otherwise would either fabricate a digest or force the
+  reference out of the lock entirely.
+* :class:`AuthenticatedReceiptReference` — a manifest a previous run really
+  wrote, quoted with its digest and size. The compiler may quote one and may
+  never author one.
+* :class:`NotApplicableReference` — a role that is deliberately unfilled, on an
+  authored basis or under a versioned Feedbax structural rule. Silence and
+  not-applicability are different facts and are recorded differently.
+
+Every kind except the content pin also states *who consumes it*, as one member
+of :data:`CompileLockConsumerBinding`. The consumer vocabulary is Feedbax-owned
+and closed: an evaluation subject, an analysis alias/role input, a figure runtime
+input authority, an exact report parent, or a checkpoint initialization.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from importlib.metadata import PackageNotFoundError, version as package_version
-from typing import Any
+from typing import Annotated, Any, Literal, TypeAlias
+
+from pydantic import Field, TypeAdapter, ValidationError, model_validator
 
 from feedbax.contracts.authored_canonical import (
     CANONICAL_PIN_ALGORITHM,
     canonical_sha256,
 )
+from feedbax.contracts.checkpoint_initialization import CheckpointInitializationMode
 from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeRejection,
     ExperimentEnvelopeRejectionCategory,
 )
+from feedbax.contracts.manifest import StrictModel
 from feedbax.contracts.project_extension import ProjectExtensionDeclaration
 
 EXPERIMENT_COMPILE_LOCK_SCHEMA_ID = "feedbax.spec.experiment_compile_lock"
@@ -128,6 +163,322 @@ def _installed_version(name: str) -> str | None:
         return package_version(name)
     except PackageNotFoundError:
         return None
+
+
+# -- the closed typed reference union -------------------------------------
+
+_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
+_VERSIONED_RULE_RE = re.compile(r".+\.v[0-9]+$")
+
+
+def _require_nonempty(value: str, name: str) -> str:
+    if not value.strip():
+        raise ValueError(f"{name} must be nonempty")
+    return value
+
+
+def _require_role_path(value: str, name: str) -> str:
+    _require_nonempty(value, name)
+    if any(not part for part in value.split(".")):
+        raise ValueError(f"{name} is not a dotted role path: {value!r}")
+    return value
+
+
+def _require_digest(value: str, name: str) -> str:
+    if not _DIGEST_RE.fullmatch(value):
+        raise ValueError(f"{name} must be a lowercase sha256 digest")
+    return value
+
+
+class EvaluationSubjectBinding(StrictModel):
+    """The referenced product is the subject an evaluation evaluates."""
+
+    consumer: Literal["evaluation_subject"] = "evaluation_subject"
+    subject_id: str
+
+    @model_validator(mode="after")
+    def _validate(self) -> "EvaluationSubjectBinding":
+        _require_nonempty(self.subject_id, "evaluation_subject subject_id")
+        return self
+
+
+class AnalysisInputBinding(StrictModel):
+    """The referenced product fills one analysis input, addressed by alias and role."""
+
+    consumer: Literal["analysis_input"] = "analysis_input"
+    alias: str
+    role: str
+
+    @model_validator(mode="after")
+    def _validate(self) -> "AnalysisInputBinding":
+        _require_nonempty(self.alias, "analysis_input alias")
+        _require_nonempty(self.role, "analysis_input role")
+        return self
+
+
+class FigureRuntimeInputBinding(StrictModel):
+    """The referenced product satisfies one figure runtime input authority.
+
+    ``input_role`` is the role a
+    :class:`~feedbax.contracts.figures.FigureInputRoleAuthority` addresses its
+    single exact parent by; this binding is the compile-time statement of the
+    same role.
+    """
+
+    consumer: Literal["figure_runtime_input"] = "figure_runtime_input"
+    input_role: str
+
+    @model_validator(mode="after")
+    def _validate(self) -> "FigureRuntimeInputBinding":
+        _require_nonempty(self.input_role, "figure_runtime_input input_role")
+        return self
+
+
+class ReportParentBinding(StrictModel):
+    """The referenced product is one exact parent of a report.
+
+    ``parent_kind`` and ``parent_id`` are the two fields a
+    :class:`~feedbax.contracts.manifest.ParentRef` identifies a parent by, stated
+    at compile time before the parent exists.
+    """
+
+    consumer: Literal["report_parent"] = "report_parent"
+    parent_kind: str
+    parent_id: str
+
+    @model_validator(mode="after")
+    def _validate(self) -> "ReportParentBinding":
+        _require_nonempty(self.parent_kind, "report_parent parent_kind")
+        _require_nonempty(self.parent_id, "report_parent parent_id")
+        return self
+
+
+class CheckpointInitializationBinding(StrictModel):
+    """The referenced product initializes or continues one training row."""
+
+    consumer: Literal["checkpoint_initialization"] = "checkpoint_initialization"
+    mode: CheckpointInitializationMode
+    row_id: str
+
+    @model_validator(mode="after")
+    def _validate(self) -> "CheckpointInitializationBinding":
+        _require_nonempty(self.row_id, "checkpoint_initialization row_id")
+        return self
+
+
+#: Who consumes a reference. Feedbax-owned and closed: a project names a role
+#: string *inside* one of these bindings and never adds a consumer kind.
+CompileLockConsumerBinding: TypeAlias = Annotated[
+    EvaluationSubjectBinding
+    | AnalysisInputBinding
+    | FigureRuntimeInputBinding
+    | ReportParentBinding
+    | CheckpointInitializationBinding,
+    Field(discriminator="consumer"),
+]
+
+
+class ContentPinReference(StrictModel):
+    """Bytes this compile read, pinned. A compile-time input, never a plan edge.
+
+    A content pin says "these exact bytes were consulted". Nothing has to run
+    because of it, so plan derivation skips it by kind rather than by inspecting
+    its fields. It therefore states no consumer: nothing downstream is waiting
+    on it.
+    """
+
+    kind: Literal["content_pin"] = "content_pin"
+    ref: str
+    content_hash: str
+    pin_algorithm: str = CANONICAL_PIN_ALGORITHM
+
+    @model_validator(mode="after")
+    def _validate(self) -> "ContentPinReference":
+        _require_nonempty(self.ref, "content_pin ref")
+        _require_digest(self.content_hash, "content_pin content_hash")
+        if self.pin_algorithm != CANONICAL_PIN_ALGORITHM:
+            raise ValueError(
+                f"content_pin pin_algorithm must be {CANONICAL_PIN_ALGORITHM!r}"
+            )
+        return self
+
+
+class PlannedProductReference(StrictModel):
+    """A product another envelope compiles to, pinned before anything runs.
+
+    Both facts that exist pre-run are recorded: the upstream envelope's own hash,
+    and the content hash of the document it compiles into. The expected output
+    schema is stated so a consumer can check the shape it is planning against
+    without opening the upstream file.
+    """
+
+    kind: Literal["planned_product"] = "planned_product"
+    envelope_ref: str
+    envelope_hash: str
+    product_name: str
+    product_schema_id: str
+    product_schema_version: str
+    compiled_content_hash: str
+    role_path: str
+    consumer: CompileLockConsumerBinding
+
+    @model_validator(mode="after")
+    def _validate(self) -> "PlannedProductReference":
+        _require_nonempty(self.envelope_ref, "planned_product envelope_ref")
+        _require_digest(self.envelope_hash, "planned_product envelope_hash")
+        _require_nonempty(self.product_name, "planned_product product_name")
+        _require_nonempty(self.product_schema_id, "planned_product product_schema_id")
+        if not self.product_schema_version.startswith(f"{self.product_schema_id}."):
+            raise ValueError(
+                f"planned_product product_schema_version {self.product_schema_version!r} "
+                f"does not extend schema id {self.product_schema_id!r}"
+            )
+        _require_digest(self.compiled_content_hash, "planned_product compiled_content_hash")
+        _require_role_path(self.role_path, "planned_product role_path")
+        return self
+
+
+class ReceiptLocatorReference(StrictModel):
+    """A manifest named by kind and id, with no digest, because none exists yet.
+
+    The real corpus needs this kind: a figure or analysis names the receipt it
+    wants long before that receipt is written. Naming it without a digest is the
+    honest record. Authenticating it is
+    :class:`AuthenticatedReceiptReference`'s job, and only a run can supply the
+    facts that promotion needs.
+    """
+
+    kind: Literal["receipt_locator"] = "receipt_locator"
+    manifest_kind: str
+    manifest_id: str
+    role_path: str
+    consumer: CompileLockConsumerBinding
+
+    @model_validator(mode="after")
+    def _validate(self) -> "ReceiptLocatorReference":
+        _require_nonempty(self.manifest_kind, "receipt_locator manifest_kind")
+        _require_nonempty(self.manifest_id, "receipt_locator manifest_id")
+        _require_role_path(self.role_path, "receipt_locator role_path")
+        return self
+
+
+class AuthenticatedReceiptReference(StrictModel):
+    """A manifest a previous run really wrote, quoted with its byte profile."""
+
+    kind: Literal["authenticated_receipt"] = "authenticated_receipt"
+    manifest_kind: str
+    manifest_id: str
+    manifest_sha256: str
+    size_bytes: int = Field(ge=0)
+    role_path: str
+    consumer: CompileLockConsumerBinding
+    execution_uri: str | None = None
+
+    @model_validator(mode="after")
+    def _validate(self) -> "AuthenticatedReceiptReference":
+        _require_nonempty(self.manifest_kind, "authenticated_receipt manifest_kind")
+        _require_nonempty(self.manifest_id, "authenticated_receipt manifest_id")
+        _require_digest(self.manifest_sha256, "authenticated_receipt manifest_sha256")
+        _require_role_path(self.role_path, "authenticated_receipt role_path")
+        if self.execution_uri is not None:
+            _require_nonempty(self.execution_uri, "authenticated_receipt execution_uri")
+        return self
+
+
+class NotApplicableReference(StrictModel):
+    """A role deliberately left unfilled, and the basis for leaving it so.
+
+    ``authored`` means a human stated it in the envelope; ``compiler_rule`` means
+    a versioned Feedbax structural rule decided it. No project callback decides
+    applicability, so there is no third basis.
+    """
+
+    kind: Literal["not_applicable"] = "not_applicable"
+    role_path: str
+    basis: Literal["authored", "compiler_rule"]
+    reason: str
+    rule_id: str | None = None
+
+    @model_validator(mode="after")
+    def _validate(self) -> "NotApplicableReference":
+        _require_role_path(self.role_path, "not_applicable role_path")
+        _require_nonempty(self.reason, "not_applicable reason")
+        if self.basis == "compiler_rule":
+            if self.rule_id is None:
+                raise ValueError(
+                    "not_applicable basis 'compiler_rule' must name the rule that decided it"
+                )
+            if not _VERSIONED_RULE_RE.fullmatch(self.rule_id):
+                raise ValueError(
+                    f"not_applicable rule_id {self.rule_id!r} must end with a version "
+                    "segment such as '.v1'"
+                )
+        elif self.rule_id is not None:
+            raise ValueError(
+                "not_applicable basis 'authored' states no rule id; a human decided it"
+            )
+        return self
+
+
+#: The only reference records a compile lock stores. Closed by construction.
+CompileLockReference: TypeAlias = Annotated[
+    ContentPinReference
+    | PlannedProductReference
+    | ReceiptLocatorReference
+    | AuthenticatedReceiptReference
+    | NotApplicableReference,
+    Field(discriminator="kind"),
+]
+
+_REFERENCE_ADAPTER: TypeAdapter[Any] = TypeAdapter(CompileLockReference)
+
+_REFERENCE_MEMBERS = (
+    ContentPinReference,
+    PlannedProductReference,
+    ReceiptLocatorReference,
+    AuthenticatedReceiptReference,
+    NotApplicableReference,
+)
+
+#: Every reference kind, in the order the union declares them.
+COMPILE_LOCK_REFERENCE_KINDS: tuple[str, ...] = (
+    "content_pin",
+    "planned_product",
+    "receipt_locator",
+    "authenticated_receipt",
+    "not_applicable",
+)
+
+#: Reference kinds that are plan edges. A content pin is an input, not an edge.
+COMPILE_LOCK_PLAN_EDGE_KINDS: frozenset[str] = frozenset(
+    kind for kind in COMPILE_LOCK_REFERENCE_KINDS if kind != "content_pin"
+)
+
+
+def parse_compile_lock_reference(value: Any, *, field: str) -> Any:
+    """Validate one reference into its union member, failing closed.
+
+    Accepts either an already-typed member or the mapping form a tracked lock
+    holds. An unknown kind, a missing consumer binding, or a stray key is a
+    rejection here rather than a shape surprise in the plan lane.
+    """
+    if isinstance(value, _REFERENCE_MEMBERS):
+        return value
+    try:
+        return _REFERENCE_ADAPTER.validate_python(value)
+    except ValidationError as exc:
+        raise ExperimentEnvelopeRejection(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            f"not a compile-lock reference; kinds={list(COMPILE_LOCK_REFERENCE_KINDS)}: {exc}",
+            field=field,
+        ) from exc
+
+
+def compile_lock_reference_record(value: Any, *, field: str) -> dict[str, Any]:
+    """Return one validated reference as the mapping a lock stores."""
+    return parse_compile_lock_reference(value, field=field).model_dump(
+        mode="json", exclude_none=True
+    )
 
 
 @dataclass(frozen=True)
@@ -211,7 +562,8 @@ class CompileLockInputs:
         base: The resolved parent's pin record, or ``None`` for a root document.
         lineage_pins: The ordered content-pinned lineage behind the parent.
         resolved_deltas: What the compiler resolved, keyed by project concern.
-        references: Cross-document references the compile resolved.
+        references: Cross-document references the compile resolved, each one a
+            member of the closed :data:`CompileLockReference` union.
         assertions: The inherited preconditions the compile checked.
         identity_contributions: Extra compile-time facts that widen execution
             identity, in the order the project states them. Two envelopes that
@@ -229,10 +581,10 @@ class CompileLockInputs:
     implementation: CompilerImplementation
     base: Mapping[str, Any] | None = None
     lineage_pins: Sequence[Mapping[str, Any]] = ()
-    resolved_deltas: Mapping[str, Any] = ()
-    references: Sequence[Mapping[str, Any]] = ()
+    resolved_deltas: Mapping[str, Any] = dataclass_field(default_factory=dict)
+    references: Sequence[Any] = ()
     assertions: Sequence[Mapping[str, Any]] = ()
-    identity_contributions: Mapping[str, Any] = ()
+    identity_contributions: Mapping[str, Any] = dataclass_field(default_factory=dict)
     issue: str | None = None
 
 
@@ -265,7 +617,10 @@ def build_compile_lock(inputs: CompileLockInputs) -> dict[str, Any]:
         "base": dict(inputs.base) if inputs.base is not None else None,
         "lineage": [dict(pin) for pin in inputs.lineage_pins],
         "resolved_deltas": dict(inputs.resolved_deltas or {}),
-        "references": [dict(reference) for reference in inputs.references],
+        "references": [
+            compile_lock_reference_record(reference, field=f"references[{index}]")
+            for index, reference in enumerate(inputs.references)
+        ],
         "assertions": [dict(assertion) for assertion in inputs.assertions],
         "compiled_document": {
             "family": inputs.family,
@@ -293,7 +648,9 @@ def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
     A version absent from both the supported set and the migration table has no
     path forward and is refused with both named. The plan/receipt boundary is
     re-checked on read, so a lock that was edited into carrying a receipt fact is
-    caught by the reader as well as by the writer.
+    caught by the reader as well as by the writer. Every reference is re-validated
+    against the closed union for the same reason: a lock whose references were
+    edited into a shape the plan lane cannot read is caught here, not there.
     """
     if not isinstance(document, Mapping):
         raise ExperimentEnvelopeRejection(
@@ -320,22 +677,63 @@ def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
         )
     lock = dict(document)
     check_plan_receipt_boundary(lock)
+    references = lock.get("references", [])
+    if not isinstance(references, Sequence) or isinstance(references, (str, bytes)):
+        raise ExperimentEnvelopeRejection(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "a compile lock's references are a list of typed reference records",
+            field=f"{field}#references",
+        )
+    for index, reference in enumerate(references):
+        parse_compile_lock_reference(reference, field=f"{field}#references[{index}]")
     return lock
 
 
+def compile_lock_plan_edges(lock: Mapping[str, Any], *, field: str) -> tuple[Any, ...]:
+    """Return the lock's references that are plan edges, typed and in order.
+
+    Content pins are compile-time inputs and are filtered out by kind, so the
+    plan lane never has to decide what an edge is by looking at fields.
+    """
+    return tuple(
+        parsed
+        for index, reference in enumerate(lock.get("references", []))
+        if (parsed := parse_compile_lock_reference(reference, field=f"{field}#references[{index}]"))
+        .kind
+        in COMPILE_LOCK_PLAN_EDGE_KINDS
+    )
+
+
 __all__ = [
+    "COMPILE_LOCK_PLAN_EDGE_KINDS",
+    "COMPILE_LOCK_REFERENCE_KINDS",
     "EXPERIMENT_COMPILE_LOCK_MIGRATION_TABLE",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_ID",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1",
     "EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS",
     "RUN_RECEIPT_ONLY_FACTS",
+    "AnalysisInputBinding",
+    "AuthenticatedReceiptReference",
+    "CheckpointInitializationBinding",
+    "CompileLockConsumerBinding",
     "CompileLockError",
     "CompileLockInputs",
+    "CompileLockReference",
     "CompilerContract",
     "CompilerImplementation",
+    "ContentPinReference",
+    "EvaluationSubjectBinding",
+    "FigureRuntimeInputBinding",
+    "NotApplicableReference",
     "PlanReceiptBoundaryError",
+    "PlannedProductReference",
+    "ReceiptLocatorReference",
+    "ReportParentBinding",
     "build_compile_lock",
     "check_plan_receipt_boundary",
+    "compile_lock_plan_edges",
+    "compile_lock_reference_record",
     "load_compile_lock",
+    "parse_compile_lock_reference",
 ]
