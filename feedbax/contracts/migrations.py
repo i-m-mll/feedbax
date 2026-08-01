@@ -39,6 +39,14 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
     structural_abi_content_sha256,
 )
+from feedbax.contracts.checkpoint_initialization import (
+    CHECKPOINT_INITIALIZATION_PLAN_SCHEMA_ID,
+    CHECKPOINT_INITIALIZATION_PLAN_SCHEMA_VERSION,
+    CHECKPOINT_INITIALIZATION_SCHEMA_ID,
+    CHECKPOINT_INITIALIZATION_SCHEMA_VERSION,
+    CHECKPOINT_STRUCTURE_SCHEMA_ID,
+    CHECKPOINT_STRUCTURE_SCHEMA_VERSION,
+)
 from feedbax.contracts.component import (
     COMPONENT_DEFINITION_DYNAMIC_PORT_POLICY_MIGRATION_ID,
     COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID,
@@ -3583,6 +3591,51 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Single-parent recursive authored composition with ordered deltas.",
             rejected_old_versions=(f"{COMPOSITION_SCHEMA_ID}.v0",),
             required_tests=("tests/test_training_run_composition.py",),
+        ),
+        _family(
+            "CheckpointStructure",
+            CHECKPOINT_STRUCTURE_SCHEMA_ID,
+            CHECKPOINT_STRUCTURE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.checkpoint_initialization",
+            emitted_by=(
+                "feedbax.contracts.checkpoint_initialization.checkpoint_structure_from_manifest",
+            ),
+            consumed_by=("checkpoint initialize/continue lowering",),
+            description=(
+                "Exact canonical slot, PyTree-definition, and leaf structure for one side of "
+                "the closed checkpoint initialize/continue matching rule."
+            ),
+            required_tests=("tests/test_envelope_layer_contracts.py",),
+        ),
+        _family(
+            "CheckpointInitializationRequest",
+            CHECKPOINT_INITIALIZATION_SCHEMA_ID,
+            CHECKPOINT_INITIALIZATION_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.checkpoint_initialization",
+            emitted_by=("authored training initialize_from/continue_from blocks",),
+            consumed_by=(
+                "feedbax.contracts.checkpoint_initialization.lower_checkpoint_initialization",
+            ),
+            description=(
+                "Authored model-weight warm start or checkpoint continuation naming one "
+                "authenticated source checkpoint."
+            ),
+            required_tests=("tests/test_envelope_layer_contracts.py",),
+        ),
+        _family(
+            "CheckpointInitializationPlan",
+            CHECKPOINT_INITIALIZATION_PLAN_SCHEMA_ID,
+            CHECKPOINT_INITIALIZATION_PLAN_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.checkpoint_initialization",
+            emitted_by=(
+                "feedbax.contracts.checkpoint_initialization.lower_checkpoint_initialization",
+            ),
+            consumed_by=("training run preparation",),
+            description=(
+                "Explicit per-slot restore/fresh/ignored outcome of the closed checkpoint "
+                "matching rule; no structural search and no renaming maps."
+            ),
+            required_tests=("tests/test_envelope_layer_contracts.py",),
         ),
         _family(
             "TrainingExecutionDependencyLayer",

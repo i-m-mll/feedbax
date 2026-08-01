@@ -642,6 +642,379 @@ class TestRowIndexCustodyWriter:
             load_row_index_custody_bindings(path)
 
 
+def _leaf(path: str, *, shape=(2, 3), dtype: str = "float32"):
+    from feedbax.contracts.checkpoints import SlotLeafFingerprint
+
+    return SlotLeafFingerprint(path=path, leaf_type="jax.Array", shape=shape, dtype=dtype)
+
+
+def _slot(name: str, role: str, paths, *, required: bool = True, treedef: str | None = None):
+    from feedbax.contracts.checkpoint_initialization import CheckpointSlotStructure
+
+    return CheckpointSlotStructure(
+        slot=name,
+        role=role,
+        required=required,
+        treedef=treedef or f"treedef:{name}",
+        leaves=[_leaf(path) for path in paths],
+    )
+
+
+def _structure(*slots):
+    from feedbax.contracts.checkpoint_initialization import CheckpointStructure
+
+    return CheckpointStructure(slots=list(slots))
+
+
+def _full_structure():
+    return _structure(
+        _slot("model", "model", ("net.weight", "net.bias")),
+        _slot("optimizer", "optimizer", ("mu", "nu")),
+        _slot("prng", "prng", ("key",)),
+        _slot("batch_counter", "auxiliary", ("count",)),
+        _slot("adaptive_state", "auxiliary", ("scale",), required=False),
+    )
+
+
+def _request(mode: str):
+    from feedbax.contracts.checkpoint_initialization import CheckpointInitializationRequest
+
+    return CheckpointInitializationRequest(
+        mode=mode,
+        source=ParentRef(
+            kind="TrainingCheckpointTransactionManifest",
+            id="feedbax-checkpoint:source",
+            role="checkpoint",
+            metadata={
+                "manifest_sha256": "a" * 64,
+                "ref_schema_id": "feedbax.ref.authenticated_manifest",
+                "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+                "size_bytes": 1024,
+            },
+        ),
+    )
+
+
+class TestCheckpointInitializationLowering:
+    """The closed matching rule: exact paths, exact PyTree def, shape, and dtype."""
+
+    def test_exact_match_restores_every_target_path_on_continue(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import lower_checkpoint_initialization
+
+        plan = lower_checkpoint_initialization(
+            _request("continue_from"),
+            source=_full_structure(),
+            target=_full_structure(),
+        )
+        assert plan.fresh_paths == ()
+        assert set(plan.restored_paths) == {
+            "model/net.weight",
+            "model/net.bias",
+            "optimizer/mu",
+            "optimizer/nu",
+            "prng/key",
+            "batch_counter/count",
+            "adaptive_state/scale",
+        }
+        assert plan.ignored_source_slots == []
+
+    def test_initialize_from_restores_model_only_and_freshens_the_rest(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import lower_checkpoint_initialization
+
+        plan = lower_checkpoint_initialization(
+            _request("initialize_from"),
+            source=_full_structure(),
+            target=_full_structure(),
+        )
+        assert set(plan.restored_paths) == {"model/net.weight", "model/net.bias"}
+        assert set(plan.fresh_paths) == {
+            "optimizer/mu",
+            "optimizer/nu",
+            "prng/key",
+            "batch_counter/count",
+            "adaptive_state/scale",
+        }
+        by_slot = {entry.slot: entry for entry in plan.slots}
+        assert by_slot["optimizer"].fresh_reason == "mode_scope"
+        assert by_slot["prng"].fresh_reason == "mode_scope"
+
+    def test_missing_target_path_fresh_initializes(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import lower_checkpoint_initialization
+
+        source = _structure(_slot("model", "model", ("net.weight",)))
+        target = _structure(
+            _slot("model", "model", ("net.weight",)),
+            _slot("adaptive_state", "auxiliary", ("scale",), required=False),
+        )
+        plan = lower_checkpoint_initialization(
+            _request("initialize_from"), source=source, target=target
+        )
+        assert plan.restored_paths == ("model/net.weight",)
+        assert plan.fresh_paths == ("adaptive_state/scale",)
+        by_slot = {entry.slot: entry for entry in plan.slots}
+        assert by_slot["adaptive_state"].fresh_reason == "absent_from_source"
+
+    def test_source_only_paths_and_slots_are_ignored(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import lower_checkpoint_initialization
+
+        source = _structure(
+            _slot("model", "model", ("net.weight", "net.bias")),
+            _slot("legacy_extra", "auxiliary", ("dropped",)),
+        )
+        target = _structure(_slot("model", "model", ("net.weight", "net.bias")))
+        plan = lower_checkpoint_initialization(
+            _request("initialize_from"), source=source, target=target
+        )
+        assert plan.ignored_source_slots == ["legacy_extra"]
+        assert plan.fresh_paths == ()
+
+    def test_source_only_leaf_inside_a_matching_slot_is_ignored(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import lower_checkpoint_initialization
+
+        treedef = "treedef:model"
+        source = _structure(
+            _slot("model", "model", ("net.weight", "net.dropped"), treedef=treedef)
+        )
+        target = _structure(_slot("model", "model", ("net.weight",), treedef=treedef))
+        plan = lower_checkpoint_initialization(
+            _request("initialize_from"), source=source, target=target
+        )
+        assert plan.slots[0].ignored_source_paths == ["net.dropped"]
+        assert plan.restored_paths == ("model/net.weight",)
+
+    def test_present_path_shape_mismatch_refuses_and_names_the_paths(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import (
+            CheckpointInitializationErrorCode,
+            CheckpointInitializationRefused,
+            CheckpointSlotStructure,
+            CheckpointStructure,
+            lower_checkpoint_initialization,
+        )
+
+        source = _structure(_slot("model", "model", ("net.weight",)))
+        target = CheckpointStructure(
+            slots=[
+                CheckpointSlotStructure(
+                    slot="model",
+                    role="model",
+                    treedef="treedef:model",
+                    leaves=[_leaf("net.weight", shape=(4, 3))],
+                )
+            ]
+        )
+        with pytest.raises(CheckpointInitializationRefused) as excinfo:
+            lower_checkpoint_initialization(
+                _request("initialize_from"), source=source, target=target
+            )
+        assert excinfo.value.code is CheckpointInitializationErrorCode.LEAF_MISMATCH
+        assert excinfo.value.paths == ("model/net.weight",)
+        assert "shape" in str(excinfo.value)
+
+    def test_present_path_dtype_mismatch_refuses(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import (
+            CheckpointInitializationErrorCode,
+            CheckpointInitializationRefused,
+            CheckpointSlotStructure,
+            CheckpointStructure,
+            lower_checkpoint_initialization,
+        )
+
+        source = _structure(_slot("model", "model", ("net.weight",)))
+        target = CheckpointStructure(
+            slots=[
+                CheckpointSlotStructure(
+                    slot="model",
+                    role="model",
+                    treedef="treedef:model",
+                    leaves=[_leaf("net.weight", dtype="float64")],
+                )
+            ]
+        )
+        with pytest.raises(CheckpointInitializationRefused) as excinfo:
+            lower_checkpoint_initialization(
+                _request("initialize_from"), source=source, target=target
+            )
+        assert excinfo.value.code is CheckpointInitializationErrorCode.LEAF_MISMATCH
+        assert "dtype" in str(excinfo.value)
+
+    def test_treedef_mismatch_refuses_without_structural_search(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import (
+            CheckpointInitializationErrorCode,
+            CheckpointInitializationRefused,
+            lower_checkpoint_initialization,
+        )
+
+        source = _structure(_slot("model", "model", ("net.weight",), treedef="treedef:a"))
+        target = _structure(_slot("model", "model", ("net.weight",), treedef="treedef:b"))
+        with pytest.raises(CheckpointInitializationRefused) as excinfo:
+            lower_checkpoint_initialization(
+                _request("initialize_from"), source=source, target=target
+            )
+        assert excinfo.value.code is CheckpointInitializationErrorCode.SLOT_TREEDEF_MISMATCH
+        assert excinfo.value.slots == ("model",)
+        assert "does not search for structurally similar subtrees" in str(excinfo.value)
+
+    def test_continue_from_refuses_when_required_state_is_absent(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import (
+            CheckpointInitializationErrorCode,
+            CheckpointInitializationRefused,
+            lower_checkpoint_initialization,
+        )
+
+        source = _structure(_slot("model", "model", ("net.weight",)))
+        target = _structure(
+            _slot("model", "model", ("net.weight",)),
+            _slot("optimizer", "optimizer", ("mu",)),
+        )
+        with pytest.raises(CheckpointInitializationRefused) as excinfo:
+            lower_checkpoint_initialization(
+                _request("continue_from"), source=source, target=target
+            )
+        assert (
+            excinfo.value.code
+            is CheckpointInitializationErrorCode.MISSING_REQUIRED_CONTINUATION_STATE
+        )
+        assert excinfo.value.paths == ("optimizer/mu",)
+        assert "initialize_from" in str(excinfo.value)
+
+    def test_continue_from_admits_absent_optional_state(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import lower_checkpoint_initialization
+
+        source = _structure(_slot("model", "model", ("net.weight",)))
+        target = _structure(
+            _slot("model", "model", ("net.weight",)),
+            _slot("adaptive_state", "auxiliary", ("scale",), required=False),
+        )
+        plan = lower_checkpoint_initialization(
+            _request("continue_from"), source=source, target=target
+        )
+        assert plan.fresh_paths == ("adaptive_state/scale",)
+
+    def test_initialize_from_does_not_require_optimizer_state(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import lower_checkpoint_initialization
+
+        source = _structure(_slot("model", "model", ("net.weight",)))
+        target = _structure(
+            _slot("model", "model", ("net.weight",)),
+            _slot("optimizer", "optimizer", ("mu",)),
+        )
+        plan = lower_checkpoint_initialization(
+            _request("initialize_from"), source=source, target=target
+        )
+        assert plan.fresh_paths == ("optimizer/mu",)
+
+    def test_unauthenticated_source_is_refused_at_request_construction(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import CheckpointInitializationRequest
+
+        with pytest.raises(ValueError, match="authenticated manifest ref"):
+            CheckpointInitializationRequest(
+                mode="continue_from",
+                source=ParentRef(
+                    kind="TrainingCheckpointTransactionManifest",
+                    id="feedbax-checkpoint:unauthenticated",
+                    role="checkpoint",
+                ),
+            )
+
+    def test_schema_identities_are_registered_and_reject_v0(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import (
+            CHECKPOINT_INITIALIZATION_PLAN_SCHEMA_ID,
+            CHECKPOINT_INITIALIZATION_PLAN_SCHEMA_VERSION,
+            CHECKPOINT_INITIALIZATION_SCHEMA_ID,
+            CHECKPOINT_INITIALIZATION_SCHEMA_VERSION,
+            CHECKPOINT_STRUCTURE_SCHEMA_ID,
+            CHECKPOINT_STRUCTURE_SCHEMA_VERSION,
+        )
+
+        expected = {
+            "CheckpointStructure": (
+                CHECKPOINT_STRUCTURE_SCHEMA_ID,
+                CHECKPOINT_STRUCTURE_SCHEMA_VERSION,
+            ),
+            "CheckpointInitializationRequest": (
+                CHECKPOINT_INITIALIZATION_SCHEMA_ID,
+                CHECKPOINT_INITIALIZATION_SCHEMA_VERSION,
+            ),
+            "CheckpointInitializationPlan": (
+                CHECKPOINT_INITIALIZATION_PLAN_SCHEMA_ID,
+                CHECKPOINT_INITIALIZATION_PLAN_SCHEMA_VERSION,
+            ),
+        }
+        for kind, (schema_id, version) in expected.items():
+            family = default_spec_registry.resolve(kind)
+            assert (family.identity, family.current_version) == (schema_id, version)
+            with pytest.raises(UnsupportedSpecVersion):
+                default_spec_registry.migrate(kind, {"schema_version": f"{schema_id}.v0"})
+
+    def test_structure_projects_from_a_durable_checkpoint_transaction(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import (
+            checkpoint_structure_from_manifest,
+        )
+        from feedbax.contracts.checkpoints import (
+            CheckpointSlotBlobRef,
+            CheckpointSegmentLineage,
+            CheckpointTransactionManifest,
+            SlotContentDigest,
+            StructuralAbiFingerprint,
+        )
+
+        fingerprint = StructuralAbiFingerprint(
+            treedef="treedef:model",
+            leaf_count=1,
+            leaves=[_leaf("net.weight")],
+            fingerprint_sha256="b" * 64,
+        )
+        manifest = CheckpointTransactionManifest(
+            transaction_id="txn-1",
+            run_id="feedbax-training-run:one",
+            barrier="batch",
+            completed_coordinate={
+                "run_id": "feedbax-training-run:one",
+                "phase": "train",
+                "completed_barrier": "batch",
+                "program_step": 1,
+            },
+            segment_lineage=CheckpointSegmentLineage(start_batch=0, segment_batch_count=1),
+            consistency_predicate={"rules": [], "phase_program_digest": "c" * 64},
+            run_contract_binding={
+                "training_run_spec_schema_id": "feedbax.spec.training_run",
+                "training_run_spec_schema_version": "feedbax.spec.training_run.v4",
+                "training_run_spec_sha256": "c" * 64,
+                "method_payload_schema_id": "feedbax.spec.worker.toy_payload",
+                "method_payload_schema_version": "feedbax.spec.worker.toy_payload.v1",
+                "method_payload_sha256": "d" * 64,
+                "phase_program_sha256": "c" * 64,
+            },
+            slots=[
+                CheckpointSlotBlobRef(
+                    slot="model",
+                    role="model",
+                    relative_path="slots/model.pkl",
+                    sha256="e" * 64,
+                    size_bytes=10,
+                    coordinate={
+                "run_id": "feedbax-training-run:one",
+                "phase": "train",
+                "completed_barrier": "batch",
+                "program_step": 1,
+            },
+                    structural_abi_fingerprint=fingerprint,
+                    content_digest=SlotContentDigest(
+                        slot="model",
+                        blob_sha256="e" * 64,
+                        blob_size_bytes=10,
+                        slot_root_sha256="e" * 64,
+                    ),
+                )
+            ],
+            content_integrity_digest={"slots": [], "transaction_root_sha256": "f" * 64},
+        )
+        structure = checkpoint_structure_from_manifest(manifest)
+        assert [slot.slot for slot in structure.slots] == ["model"]
+        assert structure.slots[0].treedef == "treedef:model"
+        assert [leaf.path for leaf in structure.slots[0].leaves] == ["net.weight"]
+
+
 class TestEvaluationMatrixCoexistingVersions:
     """The matrix family already coexists across v1, v2, and v3."""
 
