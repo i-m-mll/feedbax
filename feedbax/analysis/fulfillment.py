@@ -17,6 +17,12 @@ admission stops fulfillment with named, structured failures rather than being
 silently overwritten by re-execution, because silent re-execution over a failed
 record conceals custody loss. Failures are returned as data so a later repair
 mode can decide what to quarantine.
+
+Stability note: this module is not part of the owner-ratified downstream
+inventory in ``docs/design/downstream_interface_stability.md``. The
+``feedbax.fulfillment.admission_outcome`` family nonetheless carries explicit
+schema identity and rejects unsupported versions, because a refusal record that
+crosses a process boundary is a durable emitted spec.
 """
 
 from __future__ import annotations
