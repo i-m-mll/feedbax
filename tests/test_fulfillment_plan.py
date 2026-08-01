@@ -8,13 +8,11 @@ rather than any project's. Three claims are under test:
   receipt root is read and no path is inferred;
 * a node is addressed by a *logical key*, so one declaration is one node no
   matter how many referrers reach it, and two refs that claim one key refuse;
-* every input edge carries a typed applicability decision, and only a decision a
-  closed rule certified may be materialized.
+* every input edge carries a typed applicability decision, and the two bases it
+  may be reached on stay distinguishable on the plan.
 """
 
 from __future__ import annotations
-
-from typing import Any
 
 import pytest
 
@@ -24,7 +22,6 @@ from feedbax.analysis.fulfillment_plan import (
     FULFILLMENT_PLAN_SCHEMA_ID,
     FULFILLMENT_PLAN_SCHEMA_VERSION_V1,
     FULFILLMENT_PLAN_SUPPORTED_SCHEMA_VERSIONS,
-    CertifiedOmissionsPendingError,
     DuplicateLogicalKeyError,
     EdgeDeclaration,
     LogicalKey,
@@ -34,12 +31,10 @@ from feedbax.analysis.fulfillment_plan import (
     PlanNode,
     UnresolvedPlanReferenceError,
     UnsupportedFulfillmentPlanVersionError,
-    apply_certified_omissions,
     build_fulfillment_plan,
     expand_fulfillment_plan,
     fulfillment_plan_from_document,
     read_fulfillment_plan_document,
-    require_no_certified_omissions,
 )
 from feedbax.contracts.manifest import canonical_json_bytes
 
@@ -503,21 +498,8 @@ def test_required_edges_are_the_inputs_something_must_bind(corpus: _Corpus) -> N
     assert [edge.role_path for edge in required] == [("Nominal", "k1")]
 
 
-def test_without_the_flag_a_certified_omission_refuses_with_its_records(
-    corpus: _Corpus,
-) -> None:
-    plan = expand_fulfillment_plan(_bulletin_with_slots(corpus), expand=corpus.expand)
-    with pytest.raises(CertifiedOmissionsPendingError) as caught:
-        require_no_certified_omissions(plan)
-    (record,) = caught.value.omissions
-    assert record.consumer == plan.target
-    assert record.role_path == ("Appendix", "s1")
-    assert record.rule == UNBOUND_SLOT_RULE
-    assert record.basis == "compiler_rule"
-    assert UNBOUND_SLOT_RULE in str(caught.value)
-
-
-def test_a_fully_specified_target_needs_no_refusal(corpus: _Corpus) -> None:
+def test_a_fully_bound_target_certifies_nothing(corpus: _Corpus) -> None:
+    """An authored inapplicability is not a rule-certified one."""
     _sample(corpus, "bound-source")
     target = corpus.declare(
         "specified.decl",
@@ -535,58 +517,6 @@ def test_a_fully_specified_target_needs_no_refusal(corpus: _Corpus) -> None:
     )
     plan = expand_fulfillment_plan(target, expand=corpus.expand)
     assert plan.certified_omissions() == ()
-    require_no_certified_omissions(plan)
-
-
-def test_apply_certified_omissions_passes_only_certified_edges(corpus: _Corpus) -> None:
-    """The never-omit-uncertified invariant: authored and required never reach it."""
-    plan = expand_fulfillment_plan(_bulletin_with_slots(corpus), expand=corpus.expand)
-    seen: list[tuple[str, ...]] = []
-
-    def apply(payload: dict[str, Any], edges) -> dict[str, Any]:
-        seen.extend(edge.role_path for edge in edges)
-        omitted = dict(payload)
-        omitted["omitted"] = sorted("/".join(edge.role_path) for edge in edges)
-        return omitted
-
-    document = {"slots": ["Nominal/k1", "Nominal/k2", "Appendix/s1"]}
-    result, records = apply_certified_omissions(
-        document, plan, consumer=plan.target, apply=apply
-    )
-    assert seen == [("Appendix", "s1")]
-    assert result["omitted"] == ["Appendix/s1"]
-    assert [record.role_path for record in records] == [("Appendix", "s1")]
-    assert all(record.rule == UNBOUND_SLOT_RULE for record in records)
-    assert all(record.basis == "compiler_rule" for record in records)
-    assert document == {"slots": ["Nominal/k1", "Nominal/k2", "Appendix/s1"]}, (
-        "the original document is never mutated in place"
-    )
-
-
-def test_a_target_with_nothing_certified_is_returned_unchanged(corpus: _Corpus) -> None:
-    _sample(corpus, "only-source")
-    target = _digest(corpus, "nothing-certified", only="only-source.decl")
-    plan = expand_fulfillment_plan(target, expand=corpus.expand)
-
-    def apply(payload, edges):  # pragma: no cover - must never be called
-        raise AssertionError("nothing was certified, so nothing may be materialized")
-
-    document = {"slots": ["only"]}
-    result, records = apply_certified_omissions(
-        document, plan, consumer=plan.target, apply=apply
-    )
-    assert records == ()
-    assert result == document and result is not document
-
-
-def test_an_omission_record_serializes_deterministically(corpus: _Corpus) -> None:
-    plan = expand_fulfillment_plan(_bulletin_with_slots(corpus), expand=corpus.expand)
-    with pytest.raises(CertifiedOmissionsPendingError) as caught:
-        require_no_certified_omissions(plan)
-    assert caught.value.omissions[0].record() == {
-        "consumer": "bulletin:bulletin",
-        "role_path": ["Appendix", "s1"],
-        "reason": f"no producer in this closure binds the slot ({UNBOUND_SLOT_RULE})",
-        "basis": "compiler_rule",
-        "rule": UNBOUND_SLOT_RULE,
-    }
+    assert [edge.role_path for edge in plan.input_edges(plan.target, status="not_applicable")] == [
+        ("Nominal", "k2")
+    ]

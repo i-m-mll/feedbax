@@ -1,0 +1,303 @@
+"""Lowering one compiled document into the node request that executes it.
+
+A compiled experiment document already *is* a Feedbax spec. Which node request
+executes it therefore follows from the document's own ``schema_id`` and from
+nothing else: not from a layer label an envelope carried, not from a project
+callable, and not from a table a project contributes to. Both sides of the
+mapping are Feedbax-owned, which is what makes the mapping Feedbax code.
+
+## Inputs come from the lock, exactly once
+
+A compiled document is a *plan*: it cannot name an authenticated receipt,
+because authenticating one takes a run. The receipts a node binds are therefore
+minted here, from the typed references its compile lock recorded, and a compiled
+spec that already declares ``inputs`` refuses rather than being bound twice.
+
+Which field a bound receipt lands in follows from the *consumer binding* the
+reference carries, which is a closed Feedbax union:
+
+* :class:`~feedbax.contracts.experiment_compile_lock.EvaluationSubjectBinding`
+  binds the subject an evaluation evaluates;
+* :class:`~feedbax.contracts.experiment_compile_lock.AnalysisInputBinding` binds
+  one analysis input, addressed by its role;
+* :class:`~feedbax.contracts.experiment_compile_lock.FigureRuntimeInputBinding`
+  binds one figure runtime input authority;
+* :class:`~feedbax.contracts.experiment_compile_lock.ReportParentBinding` binds
+  one exact parent of a report;
+* :class:`~feedbax.contracts.experiment_compile_lock.CheckpointInitializationBinding`
+  initializes a training row, and training is never executed here, so reaching
+  it from an executable node is a refusal rather than a silent drop.
+
+The ``role`` a bound :class:`~feedbax.contracts.manifest.ParentRef` carries is
+the binding's own addressing string. The ref's ``kind`` and ``id`` are never
+taken from the binding: those name real bytes, and only an admitted receipt
+supplies them.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
+
+from feedbax.analysis.exact_parents import (
+    STAGED_EXACT_PARENTS_SCHEMA_ID,
+    STAGED_EXACT_PARENTS_SCHEMA_VERSION,
+    StagedExactParents,
+)
+from feedbax.analysis.fulfillment_adapters import (
+    AnalysisNodeRequest,
+    EvaluationMatrixNodeRequest,
+    EvaluationNodeRequest,
+    FigureNodeRequest,
+    NodeRequest,
+    ReportNodeRequest,
+)
+from feedbax.analysis.fulfillment_derivation import (
+    COMPILED_PRODUCT_KINDS,
+    CompiledEnvelope,
+    FulfillmentDerivationError,
+)
+from feedbax.contracts.experiment_compile_lock import (
+    AnalysisInputBinding,
+    CheckpointInitializationBinding,
+    EvaluationSubjectBinding,
+    FigureRuntimeInputBinding,
+    ReportParentBinding,
+)
+from feedbax.contracts.figures import FIGURE_SPEC_SCHEMA_ID
+from feedbax.contracts.manifest import (
+    ANALYSIS_RUN_SPEC_SCHEMA_ID,
+    EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
+    EVALUATION_RUN_SPEC_SCHEMA_ID,
+    REPORT_SPEC_SCHEMA_ID,
+    AnalysisRunSpec,
+    EvaluationRunSpec,
+    ParentRef,
+    ReportSpec,
+)
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from feedbax.analysis.fulfillment_driver import ClosureNode, NodeBinding
+
+
+class NodeLoweringError(FulfillmentDerivationError):
+    """A compiled node cannot be lowered into a node request it would execute."""
+
+
+class BoundaryNodeLoweringError(NodeLoweringError):
+    """A boundary node reached lowering, which only an executable node may."""
+
+
+def binding_role(consumer: Any, *, ref: str) -> str:
+    """Return the ``ParentRef`` role one closed consumer binding addresses by.
+
+    The binding says how the *consumer* names the input. It never says what the
+    bound bytes are: the receipt supplies the kind and the id.
+    """
+    if isinstance(consumer, EvaluationSubjectBinding):
+        return consumer.subject_id
+    if isinstance(consumer, AnalysisInputBinding):
+        return consumer.role
+    if isinstance(consumer, FigureRuntimeInputBinding):
+        return consumer.input_role
+    if isinstance(consumer, ReportParentBinding):
+        return consumer.parent_id
+    if isinstance(consumer, CheckpointInitializationBinding):
+        raise NodeLoweringError(
+            f"{ref} binds a checkpoint initialization for row {consumer.row_id!r}, which "
+            "initializes a training row. Training is launched through its own orchestration "
+            "entrypoint and is never executed by artifact fulfillment, so this binding cannot "
+            "appear on an executable node."
+        )
+    raise NodeLoweringError(
+        f"{ref} carries the consumer binding {type(consumer).__name__}, which this build does "
+        "not bind; the consumer union is closed and every member has exactly one meaning here"
+    )
+
+
+def _require_unbound_inputs(document: Mapping[str, Any], *, ref: str) -> None:
+    """Refuse a compiled spec that already declares inputs it cannot have.
+
+    Authenticating an input takes a run, so a compile plan never authors one. A
+    document that carries ``inputs`` anyway would be bound twice — once by
+    whoever wrote them and once from the lock — and the two would silently
+    disagree.
+    """
+    declared = document.get("inputs")
+    if declared:
+        raise NodeLoweringError(
+            f"{ref} declares {len(list(declared))} input(s) in its compiled document; a "
+            "compiled document is a plan and cannot authenticate an input. Inputs are bound "
+            "from the compile lock's typed references, which is the single place they are "
+            "stated."
+        )
+
+
+def bound_parents(
+    node: "ClosureNode", *, binding: "NodeBinding"
+) -> tuple[tuple[ParentRef, ...], tuple[str, ...]]:
+    """Return the authenticated parents one node binds, and the roles they fill.
+
+    Order is the compile lock's own reference order, so two walks of one closure
+    bind identically. Every required reference contributes exactly one parent;
+    an inapplicable reference contributes none, because it binds nothing.
+    """
+    compiled = node.compiled
+    ref = str(compiled.lock_path)
+    edges = {edge.role_path: edge for edge in binding.plan.input_edges(node.key)}
+    parents: list[ParentRef] = []
+    roles: list[str] = []
+    for reference in compiled.plan_edge_references():
+        role_path = tuple(str(reference.role_path).split("."))
+        edge = edges.get(role_path)
+        if edge is None:
+            raise NodeLoweringError(
+                f"{ref} references role {reference.role_path!r} but the plan carries no edge "
+                f"for {node.key.text} at that role; the plan and the lock disagree"
+            )
+        if edge.status != "required":
+            continue
+        role = binding_role(reference.consumer, ref=ref)
+        parents.append(binding.parent_ref(edge, role=role))
+        roles.append(role)
+    return tuple(parents), tuple(roles)
+
+
+def _exact_parents(
+    node: "ClosureNode", *, binding: "NodeBinding"
+) -> StagedExactParents | None:
+    """Bind one node's required inputs to the locations they execute from."""
+    compiled = node.compiled
+    ref = str(compiled.lock_path)
+    edges = {edge.role_path: edge for edge in binding.plan.input_edges(node.key)}
+    entries = []
+    for reference in compiled.plan_edge_references():
+        edge = edges.get(tuple(str(reference.role_path).split(".")))
+        if edge is None or edge.status != "required":
+            continue
+        entries.append(
+            binding.exact_parent_entry(edge, role=binding_role(reference.consumer, ref=ref))
+        )
+    if not entries:
+        return None
+    return StagedExactParents(
+        schema_id=STAGED_EXACT_PARENTS_SCHEMA_ID,
+        schema_version=STAGED_EXACT_PARENTS_SCHEMA_VERSION,
+        parents=entries,
+    )
+
+
+def _document(node: "ClosureNode") -> dict[str, Any]:
+    return dict(node.compiled.document)
+
+
+def _lower_evaluation(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
+    document = _document(node)
+    _require_unbound_inputs(document, ref=str(node.compiled.document_path))
+    parents, _roles = bound_parents(node, binding=binding)
+    spec = EvaluationRunSpec.model_validate({**document, "inputs": [
+        parent.model_dump(mode="json", exclude_none=True) for parent in parents
+    ]})
+    return EvaluationNodeRequest(node_key=node.key.text, spec=spec, order=node.order)
+
+
+def _lower_evaluation_matrix(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
+    required = binding.plan.required_edges(node.key)
+    if required:
+        raise NodeLoweringError(
+            f"{node.compiled.lock_path} declares {len(required)} required input(s) on an "
+            "evaluation run matrix. A matrix binds its parents per row, through the staged "
+            "execution context the environment declares, and this build does not distribute a "
+            "closure edge across matrix rows. Compile the subject as a staged binding, or "
+            "author the evaluation as single runs."
+        )
+    return EvaluationMatrixNodeRequest(
+        node_key=node.key.text, matrix=_document(node), order=node.order
+    )
+
+
+def _lower_analysis(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
+    document = _document(node)
+    _require_unbound_inputs(document, ref=str(node.compiled.document_path))
+    parents, _roles = bound_parents(node, binding=binding)
+    spec = AnalysisRunSpec.model_validate({**document, "inputs": [
+        parent.model_dump(mode="json", exclude_none=True) for parent in parents
+    ]})
+    return AnalysisNodeRequest(node_key=node.key.text, spec=spec, order=node.order)
+
+
+def _lower_figure(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
+    document = _document(node)
+    parents, _roles = bound_parents(node, binding=binding)
+    return FigureNodeRequest(
+        node_key=node.key.text,
+        spec=document,
+        runtime_inputs=parents if parents else None,
+        order=node.order,
+    )
+
+
+def _lower_report(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
+    document = _document(node)
+    _require_unbound_inputs(document, ref=str(node.compiled.document_path))
+    parents, _roles = bound_parents(node, binding=binding)
+    exact = _exact_parents(node, binding=binding)
+    spec = ReportSpec.model_validate({**document, "inputs": [
+        parent.model_dump(mode="json", exclude_none=True) for parent in parents
+    ]})
+    return ReportNodeRequest(
+        node_key=node.key.text, spec=spec, exact_parents=exact, order=node.order
+    )
+
+
+#: Compiled ``schema_id`` to the lowering that produces its node request. The
+#: table is exhaustive over the executable members of
+#: :data:`~feedbax.analysis.fulfillment_derivation.COMPILED_PRODUCT_KINDS`.
+_LOWERINGS = {
+    EVALUATION_RUN_SPEC_SCHEMA_ID: _lower_evaluation,
+    EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID: _lower_evaluation_matrix,
+    ANALYSIS_RUN_SPEC_SCHEMA_ID: _lower_analysis,
+    FIGURE_SPEC_SCHEMA_ID: _lower_figure,
+    REPORT_SPEC_SCHEMA_ID: _lower_report,
+}
+
+
+def lower_compiled_node(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
+    """Return the node request one compiled document's schema identity executes.
+
+    Dispatch is on the compiled document's own ``schema_id``. A boundary node is
+    refused rather than lowered: it is produced by another entrypoint, and
+    preflight has already refused any closure that still names one, so reaching
+    here means a closure was assembled without that proof.
+    """
+    compiled: CompiledEnvelope = node.compiled
+    kind = compiled.kind
+    if not kind.executable:
+        raise BoundaryNodeLoweringError(
+            f"{node.key.text} is a {kind.boundary!r} boundary node and is never executed by "
+            "artifact fulfillment; produce it through its own entrypoint and quote the receipt"
+        )
+    lowering = _LOWERINGS.get(compiled.schema_id)
+    if lowering is None:  # pragma: no cover - the two tables are kept exhaustive
+        raise NodeLoweringError(
+            f"{compiled.document_path} declares schema_id {compiled.schema_id!r}, which is a "
+            f"planned layer product but has no lowering; supported={sorted(_LOWERINGS)}"
+        )
+    return lowering(node, binding=binding)
+
+
+def supported_lowerings() -> tuple[str, ...]:
+    """Return every compiled ``schema_id`` this build can execute, in order."""
+    return tuple(
+        schema_id for schema_id in COMPILED_PRODUCT_KINDS if schema_id in _LOWERINGS
+    )
+
+
+__all__ = [
+    "BoundaryNodeLoweringError",
+    "NodeLoweringError",
+    "binding_role",
+    "bound_parents",
+    "lower_compiled_node",
+    "supported_lowerings",
+]

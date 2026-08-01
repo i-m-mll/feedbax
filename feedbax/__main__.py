@@ -259,6 +259,57 @@ def _dump_manifest_requests(
     return requests
 
 
+def _fulfill_experiment_envelope(args: argparse.Namespace, registries: Any) -> int:
+    """Fulfill one compiled experiment target's whole dependency closure.
+
+    Exit codes are the documented fulfillment contract: 0 fulfilled, 2 a stable
+    typed rejection with an actionable diagnostic on stderr, 1 infrastructure
+    failure.
+    """
+    from feedbax.analysis.fulfillment import FulfillmentAdmissionError
+    from feedbax.analysis.fulfillment_adapters import FulfillmentEnvironment
+    from feedbax.analysis.fulfillment_custody import FulfillmentDriftError
+    from feedbax.analysis.fulfillment_derivation import FulfillmentDerivationError
+    from feedbax.analysis.fulfillment_driver import FulfillmentDriverError
+    from feedbax.analysis.fulfillment_experiment import fulfill_experiment_envelope
+    from feedbax.analysis.fulfillment_plan import (
+        FulfillmentPlanError,
+        UnsupportedFulfillmentPlanVersionError,
+    )
+
+    repo_root = Path(args.repo_root).resolve()
+    out_dir = Path(args.out_dir)
+    if not out_dir.is_absolute():
+        out_dir = repo_root / out_dir
+    environment = FulfillmentEnvironment(
+        root=Path(args.receipt_root).resolve(),
+        registries=registries,
+        repo_root=repo_root,
+        issues=tuple(args.issue or ()),
+    )
+    try:
+        fulfillment = fulfill_experiment_envelope(
+            args.target, output_directory=out_dir, environment=environment
+        )
+    except (
+        ExperimentEnvelopeRejection,
+        FulfillmentAdmissionError,
+        FulfillmentDerivationError,
+        FulfillmentDriftError,
+        FulfillmentDriverError,
+        FulfillmentPlanError,
+        UnsupportedFulfillmentPlanVersionError,
+    ) as rejection:
+        print(f"{type(rejection).__name__}: {rejection}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"fulfillment failed on infrastructure: {exc}", file=sys.stderr)
+        return 1
+    json.dump(fulfillment.summary(), fp=sys.stdout, indent=2, sort_keys=True)
+    print()
+    return 0
+
+
 def _preflight_experiment_envelope(args: argparse.Namespace, registries: Any) -> int:
     """Route one authored envelope to its registered downstream compiler.
 
@@ -420,6 +471,45 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Import a module that registers a downstream experiment envelope compiler "
             "before dispatch; may be repeated."
+        ),
+    )
+    fulfill_parser = subparsers.add_parser(
+        "fulfill-experiment-envelope",
+        help=(
+            "Fulfill one compiled experiment target's dependency closure from the compile "
+            "locks and documents in an output directory."
+        ),
+    )
+    fulfill_parser.add_argument(
+        "target",
+        help="Envelope path or compiled name of the artifact to fulfill.",
+    )
+    fulfill_parser.add_argument(
+        "--out-dir",
+        default="generated",
+        help="Directory holding the compile locks and compiled documents.",
+    )
+    fulfill_parser.add_argument(
+        "--receipt-root",
+        required=True,
+        help="Receipt root every admitted and executed manifest lives beneath.",
+    )
+    fulfill_parser.add_argument(
+        "--repo-root",
+        default=".",
+        help="Repository root the compiled documents' relative references resolve against.",
+    )
+    fulfill_parser.add_argument(
+        "--issue",
+        action="append",
+        help="Issue reference recorded on produced manifests; may be repeated.",
+    )
+    fulfill_parser.add_argument(
+        "--plugin",
+        action="append",
+        help=(
+            "Import a module that registers evaluation, analysis, figure, or report "
+            "implementations before the walk; may be repeated."
         ),
     )
     adopt_root = subparsers.add_parser(
@@ -705,6 +795,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return harness_main(harness_argv, bootstrap_state=bootstrap_state)
     if args.command == "preflight-experiment-envelope":
         return _preflight_experiment_envelope(args, registries)
+    if args.command == "fulfill-experiment-envelope":
+        return _fulfill_experiment_envelope(args, registries)
     if args.command == "execute-training-run-spec":
         run_spec = validate_training_run_spec(_read_json(args.spec))
         resolved_method = resolve_training_run_spec(run_spec, registries.training_methods)

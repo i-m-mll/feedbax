@@ -1,19 +1,23 @@
-"""The generic fulfillment driver: preflight, pull-forward execution, custody.
+"""The fulfillment driver: preflight, native lowering, pull-forward, custody.
 
-Everything here is stated against an invented corpus — its layers, node kinds,
-external-record vocabulary, and rule names are this module's own — and a receipt
-root under ``tmp_path``. The lowering from a node kind to a feedbax node request
-is supplied per test, exactly as a project supplies it, so the driver is
-exercised without any project vocabulary reaching it. Four claims are under test:
+Everything here is stated over ``quillon``'s compiled outputs — real Feedbax
+specs under real compile locks, emitted into ``tmp_path`` — and a receipt root
+under ``tmp_path``. There is no lowering callback and no payload preparer: the
+driver reaches Feedbax's own lowering directly, so the only project vocabulary
+in play is the recipe names quillon registers and the roles its bindings state.
 
-* **preflight refuses before anything runs.** A closure naming a boundary node
-  is refused with every boundary node named, and no recipe of any branch runs;
+Five claims are under test:
+
+* **preflight refuses before anything runs.** A closure naming a boundary node —
+  a compiled training run matrix — is refused with every boundary node named,
+  and no recipe of any branch runs;
+* **the node request follows from the compiled document's schema identity**, and
+  the receipts it binds follow from the lock's typed consumer bindings;
 * **fulfillment is a pull-forward.** Each node is reused when its receipt admits
   and executed exactly once when it does not, in the plan's dependency order, so
   a second walk over a fulfilled closure executes nothing and an interrupted one
   resumes at the node boundary it stopped at;
-* **a receipt that exists but fails admission is a refusal**, never a cache
-  miss, and the named admission failure reaches the caller;
+* **a receipt that exists but fails admission is a refusal**, never a cache miss;
 * **rebuild is verification and repair is transactional**, both over the whole
   closure and both feedbax's, reached through this driver's resolution walk.
 """
@@ -28,19 +32,13 @@ from typing import Any
 import pytest
 
 from feedbax.analysis.evaluation import EvaluationRecipeResult
-from feedbax.analysis.exact_parents import (
-    STAGED_EXACT_PARENTS_SCHEMA_ID,
-    STAGED_EXACT_PARENTS_SCHEMA_VERSION,
-    StagedExactParents,
-)
 from feedbax.analysis.fulfillment import FulfillmentAdmissionError
-from feedbax.analysis.fulfillment_adapters import (
-    EvaluationMatrixNodeRequest,
-    EvaluationNodeRequest,
-    FulfillmentEnvironment,
-    ReportNodeRequest,
-)
+from feedbax.analysis.fulfillment_adapters import FulfillmentEnvironment
 from feedbax.analysis.fulfillment_custody import FulfillmentDriftError
+from feedbax.analysis.fulfillment_derivation import (
+    derive_fulfillment_plan,
+    read_compiled_outputs,
+)
 from feedbax.analysis.fulfillment_driver import (
     AmbiguousNodeReceiptError,
     ExternalBoundaryError,
@@ -53,42 +51,33 @@ from feedbax.analysis.fulfillment_driver import (
     repair_closure_node,
     truncated_closure,
 )
-from feedbax.analysis.fulfillment_plan import (
-    CertifiedOmissionsPendingError,
-    EdgeDeclaration,
-    LogicalKey,
-    NodeDeclaration,
-    PlanNode,
-    expand_fulfillment_plan,
-)
+from feedbax.analysis.fulfillment_lowering import NodeLoweringError
+from feedbax.analysis.fulfillment_plan import LogicalKey
 from feedbax.analysis.reports import REPORT_RENDER_ROLE, ReportRecipeResult
+from feedbax.contracts.experiment_compile_lock import (
+    AnalysisInputBinding,
+    AuthenticatedReceiptReference,
+    CheckpointInitializationBinding,
+    EvaluationSubjectBinding,
+    ReceiptLocatorReference,
+    ReportParentBinding,
+)
 from feedbax.contracts.manifest import (
-    EvaluationRunSpec,
     ReportManifest,
-    ReportSpec,
-    canonical_json_bytes,
     canonical_manifest_path,
     load_manifest,
-    sha256_bytes,
     store_bytes_artifact,
 )
 
+from tests.fake_project_extension.products import (
+    BULLETIN_TYPE,
+    CONDENSE_TYPE,
+    PROBE_TYPE,
+    QuillonOutputs,
+    planned,
+)
 
-#: The invented corpus's vocabulary. None of it is known to the driver.
-SAMPLE_LAYER = "sample"
-DIGEST_LAYER = "digest"
-BULLETIN_LAYER = "bulletin"
-HARVEST_LAYER = "harvest"
-
-SAMPLE_KIND = "toybox.sample"
-DIGEST_KIND = "toybox.digest"
-BULLETIN_KIND = "toybox.bulletin"
-HARVEST_BOUNDARY = "harvest"
-
-TOY_EVALUATION_TYPE = "testpkg.toybox_probe"
-TOY_REPORT_TYPE = "testpkg.toybox_bulletin"
-
-UNBOUND_SLOT_RULE = "unbound_inherited_slot"
+DIGEST = "b" * 64
 
 
 # --------------------------------------------------------------------------
@@ -111,6 +100,11 @@ def calls() -> _Calls:
 
 
 @pytest.fixture
+def outputs(tmp_path: Path) -> QuillonOutputs:
+    return QuillonOutputs(tmp_path / "repo")
+
+
+@pytest.fixture
 def environment(tmp_path: Path, application_registry_bundle, calls: _Calls):
     def evaluation_recipe(run_spec, root, states_path, execution_context):
         calls.evaluation += 1
@@ -125,7 +119,7 @@ def environment(tmp_path: Path, application_registry_bundle, calls: _Calls):
             summary_metrics={"stage": run_spec.params.get("stage", ""),
                              "payload": calls.payload},
             artifacts=[artifact],
-            metadata={"states_schema": "testpkg.states.v1"},
+            metadata={"states_schema": "quillon.states.v1"},
         )
 
     def report_recipe(report_spec, root, inputs):
@@ -140,165 +134,56 @@ def environment(tmp_path: Path, application_registry_bundle, calls: _Calls):
         )
         return ReportRecipeResult(artifacts=[artifact], summary={"inputs": len(inputs)})
 
-    application_registry_bundle.evaluation_recipes.register(
-        TOY_EVALUATION_TYPE, evaluation_recipe
-    )
-    application_registry_bundle.report_recipes.register(TOY_REPORT_TYPE, report_recipe)
+    application_registry_bundle.evaluation_recipes.register(PROBE_TYPE, evaluation_recipe)
+    application_registry_bundle.evaluation_recipes.register(CONDENSE_TYPE, evaluation_recipe)
+    application_registry_bundle.report_recipes.register(BULLETIN_TYPE, report_recipe)
     return FulfillmentEnvironment(
         root=tmp_path / "receipts",
         registries=application_registry_bundle,
-        issues=("4390d11",),
+        issues=("7be9c5d",),
     )
 
 
 # --------------------------------------------------------------------------
-# The invented corpus, its expander, and its lowering
+# Closure helpers
 # --------------------------------------------------------------------------
 
 
-class _Corpus:
-    """A tiny declaration store standing in for a project's compiler."""
-
-    def __init__(self) -> None:
-        self.documents: dict[str, dict[str, Any]] = {}
-        self.declarations: dict[str, NodeDeclaration] = {}
-
-    def declare(
-        self,
-        name: str,
-        *,
-        layer: str,
-        kind: str,
-        params: dict[str, Any] | None = None,
-        edges: tuple[EdgeDeclaration, ...] = (),
-        boundary: str | None = None,
-    ) -> str:
-        ref = f"{name}.decl"
-        document = {"name": name, "kind": kind, "params": params or {"stage": name}}
-        self.documents[ref] = document
-        self.declarations[ref] = NodeDeclaration(
-            node=PlanNode(
-                key=LogicalKey(layer, name),
-                source_ref=ref,
-                kind=kind,
-                content_hash=content_hash(document),
-                execution_identity=f"identity-of-{name}",
-                boundary=boundary,
-            ),
-            edges=edges,
-        )
-        return ref
-
-    def expand(self, source_ref: str) -> NodeDeclaration:
-        return self.declarations[source_ref]
-
-    def prepare(self, node: PlanNode) -> dict[str, Any]:
-        return json.loads(json.dumps(self.documents[node.source_ref]))
+def _closure(outputs: QuillonOutputs, target: str):
+    index = read_compiled_outputs(outputs.output_directory)
+    return preflight(derive_fulfillment_plan(index, target=target), index)
 
 
-def content_hash(payload: Any) -> str:
-    return sha256_bytes(canonical_json_bytes(payload))
+def _fulfill(outputs: QuillonOutputs, target: str, *, environment):
+    return fulfill_closure(_closure(outputs, target), environment=environment)
 
 
-@pytest.fixture
-def corpus() -> _Corpus:
-    return _Corpus()
-
-
-def _external_binding(edge) -> dict[str, str]:
-    """Read this corpus's external-record vocabulary into a (kind, id) pair."""
-    if edge.producer is not None:
-        return {}
-    external = edge.external or {}
-    return {"kind": external["manifest_kind"], "manifest_id": external["manifest_id"]}
-
-
-def lower(node, *, binding):
-    """The project-supplied lowering: one node kind to one feedbax node request."""
-    edges = binding.required_edges(node.key)
-    if node.kind in (SAMPLE_KIND, DIGEST_KIND):
-        inputs = [
-            binding.parent_ref(edge, role=edge.role_path[-1], **_external_binding(edge))
-            for edge in edges
-        ]
-        return EvaluationNodeRequest(
-            node_key=node.key.text,
-            spec=EvaluationRunSpec(
-                evaluation_type=TOY_EVALUATION_TYPE,
-                params=node.payload["params"],
-                inputs=inputs,
-            ),
-            order=node.order,
-        )
-    if node.kind == BULLETIN_KIND:
-        entries = [
-            binding.exact_parent_entry(edge, role=edge.role_path[-1], **_external_binding(edge))
-            for edge in edges
-        ]
-        exact = StagedExactParents(
-            schema_id=STAGED_EXACT_PARENTS_SCHEMA_ID,
-            schema_version=STAGED_EXACT_PARENTS_SCHEMA_VERSION,
-            parents=entries,
-        )
-        return ReportNodeRequest(
-            node_key=node.key.text,
-            spec=ReportSpec(
-                report_type=TOY_REPORT_TYPE,
-                inputs=[entry.parent for entry in entries],
-                params=node.payload["params"],
-            ),
-            exact_parents=exact,
-            order=node.order,
-        )
-    raise AssertionError(f"the corpus declares no lowering for {node.kind!r}")
-
-
-def _sample(corpus: _Corpus, name: str, **params: Any) -> str:
-    return corpus.declare(
-        name, layer=SAMPLE_LAYER, kind=SAMPLE_KIND, params={"stage": name, **params}
+def _subject(product, *, role_path: str, subject_id: str):
+    return planned(
+        product, role_path=role_path, consumer=EvaluationSubjectBinding(subject_id=subject_id)
     )
 
 
-def _digest(corpus: _Corpus, name: str, **roles: str) -> str:
-    return corpus.declare(
-        name,
-        layer=DIGEST_LAYER,
-        kind=DIGEST_KIND,
-        edges=tuple(
-            EdgeDeclaration(role_path=(role,), producer_ref=ref) for role, ref in roles.items()
-        ),
+def _chain(outputs: QuillonOutputs) -> str:
+    """A three-node closure: probe -> probe -> bulletin, and its target name."""
+    root = outputs.probe("chain-root")
+    mid = outputs.probe(
+        "chain-mid", references=[_subject(root, role_path="body.upstream", subject_id="upstream")]
     )
-
-
-def _chain(corpus: _Corpus) -> str:
-    """A three-node closure: root -> mid -> leaf, and its target ref."""
-    _sample(corpus, "chain-root")
-    corpus.declare(
-        "chain-mid",
-        layer=DIGEST_LAYER,
-        kind=DIGEST_KIND,
-        edges=(EdgeDeclaration(role_path=("upstream",), producer_ref="chain-root.decl"),),
-    )
-    return corpus.declare(
+    outputs.bulletin(
         "chain-leaf",
-        layer=DIGEST_LAYER,
-        kind=DIGEST_KIND,
-        edges=(EdgeDeclaration(role_path=("middle",), producer_ref="chain-mid.decl"),),
+        references=[
+            planned(
+                mid,
+                role_path="body.middle",
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="middle"),
+            )
+        ],
     )
+    return "chain-leaf"
 
 
-CHAIN_EXECUTION_ORDER = ("sample:chain-root", "digest:chain-mid", "digest:chain-leaf")
-
-
-def _closure(corpus: _Corpus, target_ref: str, **kwargs: Any):
-    plan = expand_fulfillment_plan(target_ref, expand=corpus.expand)
-    return preflight(plan, prepare=corpus.prepare, content_hash=content_hash, **kwargs)
-
-
-def _fulfill(corpus: _Corpus, target_ref: str, *, environment, **kwargs: Any):
-    return fulfill_closure(
-        _closure(corpus, target_ref, **kwargs), environment=environment, lower=lower
-    )
+CHAIN_ORDER = ("evaluation:chain-root", "evaluation:chain-mid", "report:chain-leaf")
 
 
 def _reports_directory(environment: FulfillmentEnvironment) -> Path:
@@ -306,72 +191,192 @@ def _reports_directory(environment: FulfillmentEnvironment) -> Path:
     return canonical_manifest_path("ReportManifest", "probe", root=environment.root).parent
 
 
+def _mutate(path: Path, **changes: Any) -> None:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document.update(changes)
+    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+
+
 # --------------------------------------------------------------------------
 # Preflight: the closure, its order, and the external boundary
 # --------------------------------------------------------------------------
 
 
-def test_preflight_states_the_whole_closure_in_dependency_order(corpus: _Corpus) -> None:
-    closure = _closure(corpus, _chain(corpus))
-    assert closure.order == CHAIN_EXECUTION_ORDER
-    assert closure.target == LogicalKey(DIGEST_LAYER, "chain-leaf")
-    for node in closure.nodes:
-        assert content_hash(node.payload) == node.plan_node.content_hash
-        assert node.kind in (SAMPLE_KIND, DIGEST_KIND)
-
-
-def test_a_payload_that_no_longer_hashes_to_what_was_pinned_refuses(corpus: _Corpus) -> None:
-    target = _chain(corpus)
-    plan = expand_fulfillment_plan(target, expand=corpus.expand)
-    corpus.documents["chain-mid.decl"]["params"]["stage"] = "moved"
-    with pytest.raises(PlanDocumentDriftError) as caught:
-        preflight(plan, prepare=corpus.prepare, content_hash=content_hash)
-    assert caught.value.key == LogicalKey(DIGEST_LAYER, "chain-mid")
-
-
-def test_an_absent_boundary_receipt_refuses_before_any_node_executes(
-    corpus: _Corpus, environment: FulfillmentEnvironment, calls: _Calls
+def test_preflight_states_the_whole_closure_in_dependency_order(
+    outputs: QuillonOutputs,
 ) -> None:
-    corpus.declare(
-        "boundary-run", layer=HARVEST_LAYER, kind=SAMPLE_KIND, boundary=HARVEST_BOUNDARY
+    closure = _closure(outputs, _chain(outputs))
+    assert closure.order == CHAIN_ORDER
+    assert closure.target == LogicalKey("report", "chain-leaf")
+    for node in closure.nodes:
+        assert node.compiled.content_hash == node.plan_node.content_hash
+        assert node.document["schema_id"] == node.kind
+
+
+def test_a_document_that_no_longer_hashes_to_what_was_pinned_refuses(
+    outputs: QuillonOutputs,
+) -> None:
+    target = _chain(outputs)
+    index = read_compiled_outputs(outputs.output_directory)
+    plan = derive_fulfillment_plan(index, target=target)
+    outputs.probe("chain-mid", stage_note="moved")
+    with pytest.raises(PlanDocumentDriftError) as caught:
+        preflight(plan, read_compiled_outputs(outputs.output_directory))
+    assert caught.value.key == LogicalKey("evaluation", "chain-mid")
+
+
+def test_a_training_matrix_refuses_the_closure_before_any_node_executes(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
+) -> None:
+    cohort = outputs.cohort("boundary-run")
+    outputs.probe(
+        "boundary-consumer",
+        references=[_subject(cohort, role_path="body.harvested", subject_id="harvested")],
     )
-    target = _digest(corpus, "boundary-consumer", harvested="boundary-run.decl")
 
     with pytest.raises(ExternalBoundaryError) as caught:
-        _fulfill(corpus, target, environment=environment)
+        _fulfill(outputs, "boundary-consumer", environment=environment)
 
     record = caught.value.record()
-    assert [node["key"] for node in record["boundary_nodes"]] == ["harvest:boundary-run"]
+    assert [node["key"] for node in record["boundary_nodes"]] == ["training:boundary-run"]
     node = record["boundary_nodes"][0]
-    assert node["source_ref"] == "boundary-run.decl"
-    assert node["boundary"] == HARVEST_BOUNDARY
+    assert node["source_ref"] == "studies/boundary-run.envelope.json"
+    assert node["boundary"] == "feedbax.spec.training_run_matrix"
     assert node["named_by"] == [
-        {"consumer": "digest:boundary-consumer", "role_path": ["harvested"]}
+        {"consumer": "evaluation:boundary-consumer", "role_path": ["body", "harvested"]}
     ]
-    assert node["unblocks"] == ["digest:boundary-consumer"]
+    assert node["unblocks"] == ["evaluation:boundary-consumer"]
     assert calls.evaluation == 0
     assert not environment.root.exists()
 
 
 def test_the_refusal_lists_every_branch_the_boundary_unblocks(
-    corpus: _Corpus, environment: FulfillmentEnvironment, calls: _Calls
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
 ) -> None:
     """Zero executions on *every* branch, including the ones that could run."""
-    corpus.declare(
-        "shared-run", layer=HARVEST_LAYER, kind=SAMPLE_KIND, boundary=HARVEST_BOUNDARY
+    cohort = outputs.cohort("shared-run")
+    free = outputs.probe("free-branch")
+    blocked = outputs.probe(
+        "blocked-branch",
+        references=[_subject(cohort, role_path="body.harvested", subject_id="harvested")],
     )
-    _sample(corpus, "free-branch")
-    _digest(corpus, "blocked-branch", harvested="shared-run.decl")
-    target = _digest(
-        corpus, "joined", free="free-branch.decl", blocked="blocked-branch.decl"
+    outputs.bulletin(
+        "joined",
+        references=[
+            planned(
+                free,
+                role_path="body.free",
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="free"),
+            ),
+            planned(
+                blocked,
+                role_path="body.blocked",
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="blocked"),
+            ),
+        ],
     )
     with pytest.raises(ExternalBoundaryError) as caught:
-        _fulfill(corpus, target, environment=environment)
+        _fulfill(outputs, "joined", environment=environment)
     assert caught.value.record()["boundary_nodes"][0]["unblocks"] == [
-        "digest:blocked-branch",
-        "digest:joined",
+        "evaluation:blocked-branch",
+        "report:joined",
     ]
     assert calls.evaluation == 0
+
+
+# --------------------------------------------------------------------------
+# Native lowering: the schema decides the request, the binding decides the role
+# --------------------------------------------------------------------------
+
+
+def test_the_compiled_schema_decides_the_node_request(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    target = _chain(outputs)
+    _fulfill(outputs, target, environment=environment)
+    requests = closure_requests(_closure(outputs, target), environment=environment)
+    assert [request.node_kind for request in requests] == ["evaluation", "evaluation", "report"]
+    assert [request.node_key for request in requests] == list(CHAIN_ORDER)
+    assert [request.order for request in requests] == [0, 1, 2]
+
+
+def test_a_consumer_binding_names_the_role_its_receipt_is_bound_under(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    root = outputs.probe("role-source")
+    outputs.condensate(
+        "role-consumer",
+        references=[
+            planned(
+                root,
+                role_path="inputs.states",
+                consumer=AnalysisInputBinding(alias="role-source", role="observed_states"),
+            )
+        ],
+    )
+    outputs.probe("role-source")  # keep the emitted pair identical
+    fulfill_closure(
+        truncated_closure(_closure(outputs, "role-consumer"), 1), environment=environment
+    )
+    # No analysis recipe is registered, so the analysis node stops the walk before
+    # admission; its resolved request is what the binding decides.
+    requests = closure_requests(
+        _closure(outputs, "role-consumer"),
+        environment=environment,
+        stop_at=LogicalKey("analysis", "role-consumer"),
+    )
+    assert [ref.role for ref in requests[-1].spec.inputs] == ["observed_states"]
+    assert requests[-1].spec.inputs[0].kind == "EvaluationRunManifest"
+
+
+def test_a_checkpoint_initialization_binding_never_binds_an_executable_node(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    prior = outputs.probe("prior-run")
+    outputs.probe(
+        "misbound",
+        references=[
+            planned(
+                prior,
+                role_path="body.checkpoint",
+                consumer=CheckpointInitializationBinding(
+                    mode="continue_from", row_id="misbound"
+                ),
+            )
+        ],
+    )
+    with pytest.raises(NodeLoweringError, match="training row"):
+        _fulfill(outputs, "misbound", environment=environment)
+
+
+def test_a_compiled_spec_that_already_declares_inputs_refuses(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """A compile plan cannot authenticate an input, so it may not state one."""
+    outputs.emit(
+        "pre-bound",
+        {
+            "schema_id": "feedbax.spec.evaluation_run",
+            "schema_version": "feedbax.spec.evaluation_run.v1",
+            "evaluation_type": PROBE_TYPE,
+            "params": {"stage": "pre-bound"},
+            "inputs": [{"kind": "EvaluationRunManifest", "id": "feedbax-evaluation-run:x"}],
+        },
+    )
+    with pytest.raises(NodeLoweringError, match="cannot authenticate an input"):
+        _fulfill(outputs, "pre-bound", environment=environment)
+
+
+def test_an_evaluation_matrix_refuses_a_closure_edge_it_cannot_distribute(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    source = outputs.probe("matrix-source")
+    outputs.probe_matrix(
+        "matrix-consumer",
+        references=[_subject(source, role_path="body.subject", subject_id="subject")],
+    )
+    with pytest.raises(NodeLoweringError, match="per row"):
+        _fulfill(outputs, "matrix-consumer", environment=environment)
 
 
 # --------------------------------------------------------------------------
@@ -380,44 +385,39 @@ def test_the_refusal_lists_every_branch_the_boundary_unblocks(
 
 
 def test_one_walk_fulfils_the_closure_and_the_second_executes_nothing(
-    corpus: _Corpus, environment: FulfillmentEnvironment, calls: _Calls
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
 ) -> None:
-    target = _chain(corpus)
+    target = _chain(outputs)
 
-    first = _fulfill(corpus, target, environment=environment)
-    assert first.execution_order == CHAIN_EXECUTION_ORDER
-    assert first.executed == CHAIN_EXECUTION_ORDER
-    assert calls.evaluation == 3
+    first = _fulfill(outputs, target, environment=environment)
+    assert first.execution_order == CHAIN_ORDER
+    assert first.executed == CHAIN_ORDER
+    assert calls.evaluation == 2 and calls.report == 1
     for result in first.results:
         assert load_manifest(result.receipt.path).status == "completed"
 
-    second = _fulfill(corpus, target, environment=environment)
-    assert second.execution_order == CHAIN_EXECUTION_ORDER
+    second = _fulfill(outputs, target, environment=environment)
     assert second.executed == ()
-    assert second.reused == CHAIN_EXECUTION_ORDER
-    assert calls.evaluation == 3
+    assert second.reused == CHAIN_ORDER
+    assert calls.evaluation == 2 and calls.report == 1
 
 
 def test_two_walks_produce_identical_order_and_listings(
-    corpus: _Corpus, environment: FulfillmentEnvironment
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
-    target = _chain(corpus)
-    first = _fulfill(corpus, target, environment=environment)
-    second = _fulfill(corpus, target, environment=environment)
+    target = _chain(outputs)
+    first = _fulfill(outputs, target, environment=environment)
+    second = _fulfill(outputs, target, environment=environment)
     assert first.execution_order == second.execution_order
     assert [result.receipt.manifest_id for result in first.results] == [
         result.receipt.manifest_id for result in second.results
     ]
-    assert [result.node_kind for result in first.results] == [
-        result.node_kind for result in second.results
-    ]
 
 
 def test_a_receipt_binds_forward_as_the_authenticated_parent_it_is(
-    corpus: _Corpus, environment: FulfillmentEnvironment
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
-    target = _chain(corpus)
-    run = _fulfill(corpus, target, environment=environment)
+    run = _fulfill(outputs, _chain(outputs), environment=environment)
     upstream, middle, leaf = run.results
     middle_parents = load_manifest(middle.receipt.path).provenance.parents
     assert [ref.id for ref in middle_parents] == [upstream.receipt.manifest_id]
@@ -427,30 +427,34 @@ def test_a_receipt_binds_forward_as_the_authenticated_parent_it_is(
     assert [ref.role for ref in middle_parents] == ["upstream"]
     leaf_parents = load_manifest(leaf.receipt.path).provenance.parents
     assert [ref.id for ref in leaf_parents] == [middle.receipt.manifest_id]
+    assert [ref.role for ref in leaf_parents] == ["middle"]
 
 
 @pytest.mark.parametrize("boundary", [1, 2])
 def test_an_interrupted_walk_resumes_at_the_node_boundary_it_stopped_at(
-    corpus: _Corpus, environment: FulfillmentEnvironment, calls: _Calls, boundary: int
+    outputs: QuillonOutputs,
+    environment: FulfillmentEnvironment,
+    calls: _Calls,
+    boundary: int,
 ) -> None:
     """A crash after node k leaves k admitted receipts; re-invocation finishes."""
-    target = _chain(corpus)
-    partial = truncated_closure(_closure(corpus, target), boundary)
-    interrupted = fulfill_closure(partial, environment=environment, lower=lower)
-    assert interrupted.executed == CHAIN_EXECUTION_ORDER[:boundary]
+    target = _chain(outputs)
+    partial = truncated_closure(_closure(outputs, target), boundary)
+    interrupted = fulfill_closure(partial, environment=environment)
+    assert interrupted.executed == CHAIN_ORDER[:boundary]
     assert calls.evaluation == boundary
 
-    resumed = _fulfill(corpus, target, environment=environment)
-    assert resumed.reused == CHAIN_EXECUTION_ORDER[:boundary]
-    assert resumed.executed == CHAIN_EXECUTION_ORDER[boundary:]
-    assert calls.evaluation == 3
+    resumed = _fulfill(outputs, target, environment=environment)
+    assert resumed.reused == CHAIN_ORDER[:boundary]
+    assert resumed.executed == CHAIN_ORDER[boundary:]
+    assert calls.evaluation == 2
 
 
 def test_deleting_one_producer_receipt_rebinds_and_re_mints_its_consumers(
-    corpus: _Corpus, environment: FulfillmentEnvironment, calls: _Calls
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
 ) -> None:
-    target = _chain(corpus)
-    first = _fulfill(corpus, target, environment=environment)
+    target = _chain(outputs)
+    first = _fulfill(outputs, target, environment=environment)
     root_receipt, mid_receipt, leaf_receipt = (result.receipt for result in first.results)
     old_leaf_id = leaf_receipt.manifest_id
     old_leaf_path = leaf_receipt.path
@@ -459,15 +463,14 @@ def test_deleting_one_producer_receipt_rebinds_and_re_mints_its_consumers(
     mid_receipt.path.unlink()
     calls.payload = "re-executed"  # the re-execution is real, not a byte replay
 
-    second = _fulfill(corpus, target, environment=environment)
-    assert second.reused == ("sample:chain-root",)
-    assert set(second.executed) == {"digest:chain-mid", "digest:chain-leaf"}
-    assert calls.evaluation == 5, "nothing upstream of the deleted receipt re-executed"
+    second = _fulfill(outputs, target, environment=environment)
+    assert second.reused == ("evaluation:chain-root",)
+    assert set(second.executed) == {"evaluation:chain-mid", "report:chain-leaf"}
+    assert calls.evaluation == 3, "nothing upstream of the deleted receipt re-executed"
     assert load_manifest(root_receipt.path).id == root_receipt.manifest_id
 
     new_leaf = second.results[-1].receipt
     assert new_leaf.manifest_id != old_leaf_id, "the consumer's identity is recomputed"
-    assert new_leaf.path != old_leaf_path
     assert old_leaf_path.is_file(), "the old receipt stays a valid record of its old parents"
     assert load_manifest(old_leaf_path).provenance.parents == old_leaf_parents
     assert load_manifest(new_leaf.path).provenance.parents != old_leaf_parents
@@ -476,12 +479,6 @@ def test_deleting_one_producer_receipt_rebinds_and_re_mints_its_consumers(
 # --------------------------------------------------------------------------
 # Admission failure is refusal, never a cache miss
 # --------------------------------------------------------------------------
-
-
-def _mutate(path: Path, **changes: Any) -> None:
-    document = json.loads(path.read_text(encoding="utf-8"))
-    document.update(changes)
-    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -494,285 +491,169 @@ def _mutate(path: Path, **changes: Any) -> None:
     ],
 )
 def test_each_admission_failure_refuses_with_its_named_failure(
-    corpus: _Corpus,
+    outputs: QuillonOutputs,
     environment: FulfillmentEnvironment,
     calls: _Calls,
     changes: dict[str, Any],
     code: str,
 ) -> None:
-    target = _chain(corpus)
-    run = _fulfill(corpus, target, environment=environment)
+    target = _chain(outputs)
+    run = _fulfill(outputs, target, environment=environment)
     _mutate(run.results[1].receipt.path, **changes)
 
     with pytest.raises(FulfillmentAdmissionError) as caught:
-        _fulfill(corpus, target, environment=environment)
+        _fulfill(outputs, target, environment=environment)
     assert code in caught.value.outcome.codes
-    assert calls.evaluation == 3, "a failed record is never silently re-executed over"
+    assert calls.evaluation == 2, "a failed record is never silently re-executed over"
 
 
 def test_altered_artifact_bytes_refuse_as_custody_loss(
-    corpus: _Corpus, environment: FulfillmentEnvironment, calls: _Calls
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
 ) -> None:
-    target = _chain(corpus)
-    run = _fulfill(corpus, target, environment=environment)
+    target = _chain(outputs)
+    run = _fulfill(outputs, target, environment=environment)
     artifact = load_manifest(run.results[0].receipt.path).artifacts[0]
     (environment.root / artifact.metadata["relative_path"]).write_bytes(b"corrupt")
 
     with pytest.raises(FulfillmentAdmissionError) as caught:
-        _fulfill(corpus, target, environment=environment)
+        _fulfill(outputs, target, environment=environment)
     assert "artifact_sha256_mismatch" in caught.value.outcome.codes
-    assert calls.evaluation == 3
-
-
-# --------------------------------------------------------------------------
-# External receipts: quoted, resolved canonically, never inferred
-# --------------------------------------------------------------------------
-
-
-def _external_consumer(corpus: _Corpus, name: str, manifest_id: str, kind: str) -> str:
-    return corpus.declare(
-        name,
-        layer=DIGEST_LAYER,
-        kind=DIGEST_KIND,
-        edges=(
-            EdgeDeclaration(
-                role_path=("prior",),
-                external={"manifest_kind": kind, "manifest_id": manifest_id},
-            ),
-        ),
-    )
-
-
-def test_an_external_receipt_binds_at_its_canonical_location(
-    corpus: _Corpus, environment: FulfillmentEnvironment, calls: _Calls
-) -> None:
-    produced = _fulfill(
-        corpus, _sample(corpus, "prior-source"), environment=environment
-    ).results[0].receipt
-    target = _external_consumer(
-        corpus, "prior-consumer", produced.manifest_id, "EvaluationRunManifest"
-    )
-    run = _fulfill(corpus, target, environment=environment)
-    assert run.execution_order == ("digest:prior-consumer",)
-    bound = load_manifest(run.results[0].receipt.path).provenance.parents
-    assert [ref.id for ref in bound] == [produced.manifest_id]
-    assert bound[0].metadata["manifest_sha256"] == hashlib.sha256(
-        produced.path.read_bytes()
-    ).hexdigest()
     assert calls.evaluation == 2
 
 
-def test_an_absent_external_receipt_is_a_refusal_and_never_an_inapplicability(
-    corpus: _Corpus, environment: FulfillmentEnvironment, calls: _Calls
+# --------------------------------------------------------------------------
+# Already-produced receipts: quoted, resolved canonically, never inferred
+# --------------------------------------------------------------------------
+
+
+def test_a_receipt_locator_binds_at_its_canonical_location(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
 ) -> None:
-    target = _external_consumer(
-        corpus,
+    outputs.probe("prior-source")
+    produced = _fulfill(outputs, "prior-source", environment=environment).results[0].receipt
+    outputs.bulletin(
+        "prior-consumer",
+        references=[
+            ReceiptLocatorReference(
+                manifest_kind="EvaluationRunManifest",
+                manifest_id=produced.manifest_id,
+                role_path="body.prior",
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="prior"),
+            )
+        ],
+    )
+    run = _fulfill(outputs, "prior-consumer", environment=environment)
+    assert run.execution_order == ("report:prior-consumer",)
+    bound = load_manifest(run.results[0].receipt.path).provenance.parents
+    assert [ref.id for ref in bound] == [produced.manifest_id]
+    assert [ref.role for ref in bound] == ["prior"]
+    assert bound[0].metadata["manifest_sha256"] == hashlib.sha256(
+        produced.path.read_bytes()
+    ).hexdigest()
+    assert calls.evaluation == 1
+
+
+def test_an_authenticated_receipt_reference_binds_the_same_way(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    outputs.probe("quoted-source")
+    produced = _fulfill(outputs, "quoted-source", environment=environment).results[0].receipt
+    raw = produced.path.read_bytes()
+    outputs.bulletin(
+        "quoted-consumer",
+        references=[
+            AuthenticatedReceiptReference(
+                manifest_kind="EvaluationRunManifest",
+                manifest_id=produced.manifest_id,
+                manifest_sha256=hashlib.sha256(raw).hexdigest(),
+                size_bytes=len(raw),
+                role_path="body.quoted",
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="quoted"),
+            )
+        ],
+    )
+    run = _fulfill(outputs, "quoted-consumer", environment=environment)
+    bound = load_manifest(run.results[0].receipt.path).provenance.parents
+    assert [ref.id for ref in bound] == [produced.manifest_id]
+
+
+def test_an_absent_receipt_is_a_refusal_and_never_an_inapplicability(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
+) -> None:
+    outputs.bulletin(
         "absent-consumer",
-        "feedbax-evaluation-run:never-produced",
-        "EvaluationRunManifest",
+        references=[
+            ReceiptLocatorReference(
+                manifest_kind="EvaluationRunManifest",
+                manifest_id="feedbax-evaluation-run:never-produced",
+                role_path="body.prior",
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="prior"),
+            )
+        ],
     )
     with pytest.raises(MissingExternalReceiptError) as caught:
-        _fulfill(corpus, target, environment=environment)
+        _fulfill(outputs, "absent-consumer", environment=environment)
     assert caught.value.manifest_id == "feedbax-evaluation-run:never-produced"
-    assert caught.value.consumer == LogicalKey(DIGEST_LAYER, "absent-consumer")
+    assert caught.value.consumer == LogicalKey("report", "absent-consumer")
     assert "never means the input does not apply" in str(caught.value)
     assert calls.evaluation == 0
-
-
-def test_an_incomplete_external_receipt_is_refused_rather_than_bound(
-    corpus: _Corpus, environment: FulfillmentEnvironment
-) -> None:
-    produced = _fulfill(
-        corpus, _sample(corpus, "incomplete-source"), environment=environment
-    ).results[0].receipt
-    _mutate(produced.path, status="failed")
-    target = _external_consumer(
-        corpus, "incomplete-consumer", produced.manifest_id, "EvaluationRunManifest"
-    )
-    with pytest.raises(MissingExternalReceiptError):
-        _fulfill(corpus, target, environment=environment)
-
-
-def test_an_external_edge_the_lowering_does_not_address_refuses(
-    corpus: _Corpus, environment: FulfillmentEnvironment
-) -> None:
-    """Reading an external record is the project's job, and it is never guessed."""
-    target = _external_consumer(
-        corpus, "unaddressed", "feedbax-evaluation-run:whatever", "EvaluationRunManifest"
-    )
-    closure = _closure(corpus, target)
-
-    def bare_lowering(node, *, binding):
-        edges = binding.required_edges(node.key)
-        return EvaluationNodeRequest(
-            node_key=node.key.text,
-            spec=EvaluationRunSpec(
-                evaluation_type=TOY_EVALUATION_TYPE,
-                params=node.payload["params"],
-                inputs=[binding.parent_ref(edge, role="prior") for edge in edges],
-            ),
-            order=node.order,
-        )
-
-    with pytest.raises(AmbiguousNodeReceiptError, match="only the lowering project"):
-        fulfill_closure(closure, environment=environment, lower=bare_lowering)
-
-
-# --------------------------------------------------------------------------
-# A node kind whose inputs are exact staged parents
-# --------------------------------------------------------------------------
-
-
-def _bulletin(corpus: _Corpus, name: str, **slots: str) -> str:
-    return corpus.declare(
-        name,
-        layer=BULLETIN_LAYER,
-        kind=BULLETIN_KIND,
-        edges=tuple(
-            EdgeDeclaration(role_path=("Nominal", role), producer_ref=ref)
-            for role, ref in slots.items()
-        ),
-    )
-
-
-def test_a_bulletin_binds_its_slots_from_the_receipts_they_name(
-    corpus: _Corpus, environment: FulfillmentEnvironment, calls: _Calls
-) -> None:
-    _sample(corpus, "k1-source")
-    target = _bulletin(corpus, "bound-bulletin", k1="k1-source.decl")
-
-    run = _fulfill(corpus, target, environment=environment)
-    assert run.execution_order == ("sample:k1-source", "bulletin:bound-bulletin")
-    assert run.executed == ("sample:k1-source", "bulletin:bound-bulletin")
-    manifest = load_manifest(run.results[-1].receipt.path)
-    assert [parent.role for parent in manifest.provenance.parents] == ["k1"]
-    assert manifest.provenance.parents[0].metadata["manifest_sha256"] == hashlib.sha256(
-        run.results[0].receipt.path.read_bytes()
-    ).hexdigest()
-    assert calls.report == 1
-
-    assert _fulfill(corpus, target, environment=environment).executed == ()
-    assert calls.report == 1
-
-
-def test_a_bulletin_whose_external_slot_is_absent_refuses_before_it_renders(
-    corpus: _Corpus, environment: FulfillmentEnvironment, calls: _Calls
-) -> None:
-    target = corpus.declare(
-        "unbound-bulletin",
-        layer=BULLETIN_LAYER,
-        kind=BULLETIN_KIND,
-        edges=(
-            EdgeDeclaration(
-                role_path=("Nominal", "k1"),
-                external={
-                    "manifest_kind": "EvaluationRunManifest",
-                    "manifest_id": "feedbax-evaluation-run:never-produced",
-                },
-            ),
-        ),
-    )
-    with pytest.raises(MissingExternalReceiptError):
-        _fulfill(corpus, target, environment=environment)
-    assert calls.report == 0
     assert not _reports_directory(environment).exists()
 
 
+def test_an_incomplete_receipt_is_refused_rather_than_bound(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    outputs.probe("incomplete-source")
+    produced = (
+        _fulfill(outputs, "incomplete-source", environment=environment).results[0].receipt
+    )
+    _mutate(produced.path, status="failed")
+    outputs.bulletin(
+        "incomplete-consumer",
+        references=[
+            ReceiptLocatorReference(
+                manifest_kind="EvaluationRunManifest",
+                manifest_id=produced.manifest_id,
+                role_path="body.prior",
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="prior"),
+            )
+        ],
+    )
+    with pytest.raises(MissingExternalReceiptError):
+        _fulfill(outputs, "incomplete-consumer", environment=environment)
+
+
 # --------------------------------------------------------------------------
-# Certified omissions at preflight
+# Applicability reaches the walk as a decision, never as a missing input
 # --------------------------------------------------------------------------
 
 
-def _underspecified_bulletin(corpus: _Corpus, name: str) -> str:
-    """A bulletin binding `k1` and leaving `s1` certified-unbound."""
-    _sample(corpus, "slot-source")
-    return corpus.declare(
-        name,
-        layer=BULLETIN_LAYER,
-        kind=BULLETIN_KIND,
-        edges=(
-            EdgeDeclaration(role_path=("Nominal", "k1"), producer_ref="slot-source.decl"),
-            EdgeDeclaration(
-                role_path=("Appendix", "s1"),
-                status="not_applicable",
+def test_an_inapplicable_role_binds_nothing_and_blocks_nothing(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    from feedbax.contracts.experiment_compile_lock import NotApplicableReference
+
+    source = outputs.probe("partial-source")
+    outputs.bulletin(
+        "partial-bulletin",
+        references=[
+            planned(
+                source,
+                role_path="body.nominal",
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="nominal"),
+            ),
+            NotApplicableReference(
+                role_path="body.appendix",
                 basis="compiler_rule",
-                reason=f"no producer in this closure binds the slot ({UNBOUND_SLOT_RULE})",
-                rule=UNBOUND_SLOT_RULE,
+                reason="no producer in this closure binds the role",
+                rule_id="feedbax.rule.unbound_role.v1",
             ),
-            EdgeDeclaration(
-                role_path=("Nominal", "k2"),
-                status="not_applicable",
-                basis="authored",
-                reason="this target has no second controller",
-            ),
-        ),
+        ],
     )
-
-
-def _omit(payload: dict[str, Any], edges) -> dict[str, Any]:
-    """This corpus's way of saying a slot was materialized as inapplicable."""
-    payload["params"] = {
-        **payload["params"],
-        "omitted": sorted("/".join(edge.role_path) for edge in edges),
-    }
-    return payload
-
-
-def test_without_the_flag_a_certified_omission_refuses_at_preflight(
-    corpus: _Corpus, environment: FulfillmentEnvironment, calls: _Calls
-) -> None:
-    target = _underspecified_bulletin(corpus, "underspecified-bulletin")
-    with pytest.raises(CertifiedOmissionsPendingError) as caught:
-        _fulfill(corpus, target, environment=environment)
-    assert [record.role_path for record in caught.value.omissions] == [("Appendix", "s1")]
-    assert calls.evaluation == 0
-    assert not environment.root.exists()
-
-
-def test_the_flag_materializes_the_certified_omissions_and_mints_a_new_identity(
-    corpus: _Corpus, environment: FulfillmentEnvironment
-) -> None:
-    target = _underspecified_bulletin(corpus, "omitted-bulletin")
-    closure = _closure(corpus, target, omit_certified=True, apply_omission=_omit)
-    assert [record.role_path for record in closure.omissions] == [("Appendix", "s1")]
-    assert all(record.rule == UNBOUND_SLOT_RULE for record in closure.omissions)
-    assert all(record.basis == "compiler_rule" for record in closure.omissions)
-
-    run = fulfill_closure(closure, environment=environment, lower=lower)
-    omitted_id = run.results[-1].receipt.manifest_id
-    omitted_manifest = load_manifest(run.results[-1].receipt.path)
-    assert isinstance(omitted_manifest, ReportManifest)
-    assert omitted_manifest.report_spec.inline["params"]["omitted"] == ["Appendix/s1"]
-
-    unomitted = fulfill_closure(
-        _closure(
-            corpus,
-            _bulletin(corpus, "specified-bulletin", k1="slot-source.decl"),
-        ),
-        environment=environment,
-        lower=lower,
-    )
-    assert unomitted.results[-1].receipt.manifest_id != omitted_id, (
-        "an omitted document is a different document, so it has a different identity"
-    )
-
-
-def test_an_uncertified_absence_is_never_omitted(corpus: _Corpus) -> None:
-    """The flag materializes only what a closed rule certified."""
-    _sample(corpus, "certified-source")
-    target = _bulletin(corpus, "certified-only-bulletin", k1="certified-source.decl")
-    closure = _closure(corpus, target, omit_certified=True, apply_omission=_omit)
-    assert closure.omissions == ()
-    plain = _closure(corpus, target)
-    assert [node.payload for node in closure.nodes] == [node.payload for node in plain.nodes]
-
-
-def test_the_flag_needs_a_way_for_a_payload_to_say_a_decision_was_materialized(
-    corpus: _Corpus,
-) -> None:
-    target = _underspecified_bulletin(corpus, "no-applier-bulletin")
-    with pytest.raises(ValueError, match="apply_omission"):
-        _closure(corpus, target, omit_certified=True)
+    run = _fulfill(outputs, "partial-bulletin", environment=environment)
+    manifest = load_manifest(run.results[-1].receipt.path)
+    assert isinstance(manifest, ReportManifest)
+    assert [parent.role for parent in manifest.provenance.parents] == ["nominal"]
 
 
 # --------------------------------------------------------------------------
@@ -780,78 +661,66 @@ def test_the_flag_needs_a_way_for_a_payload_to_say_a_decision_was_materialized(
 # --------------------------------------------------------------------------
 
 
-def test_closure_requests_resolve_in_the_plan_order(
-    corpus: _Corpus, environment: FulfillmentEnvironment
-) -> None:
-    target = _chain(corpus)
-    _fulfill(corpus, target, environment=environment)
-    requests = closure_requests(_closure(corpus, target), environment=environment, lower=lower)
-    assert [request.node_key for request in requests] == list(CHAIN_EXECUTION_ORDER)
-    assert [request.order for request in requests] == [0, 1, 2]
-    assert all(request.required_output_roles == () for request in requests)
-
-
 def test_rebuilding_an_intact_closure_reports_no_drift_and_preserves_receipts(
-    corpus: _Corpus, environment: FulfillmentEnvironment
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
-    target = _chain(corpus)
-    run = _fulfill(corpus, target, environment=environment)
+    target = _chain(outputs)
+    run = _fulfill(outputs, target, environment=environment)
     before = {result.receipt.path: result.receipt.path.read_bytes() for result in run.results}
 
-    rebuilt = rebuild_closure(_closure(corpus, target), environment=environment, lower=lower)
-    assert rebuilt.verification_order == CHAIN_EXECUTION_ORDER
+    rebuilt = rebuild_closure(_closure(outputs, target), environment=environment)
+    assert rebuilt.verification_order == CHAIN_ORDER
     assert rebuilt.drifted == ()
     assert {path: path.read_bytes() for path in before} == before
 
 
 def test_a_receipt_that_disagrees_with_a_clean_re_execution_drifts(
-    corpus: _Corpus, environment: FulfillmentEnvironment
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
     """Drift is reported per node against the defined projection, original intact."""
-    target = _sample(corpus, "drifting-sample")
-    receipt = _fulfill(corpus, target, environment=environment).results[0].receipt
+    outputs.probe("drifting-probe")
+    receipt = _fulfill(outputs, "drifting-probe", environment=environment).results[0].receipt
     document = json.loads(receipt.path.read_text(encoding="utf-8"))
     document["summary_metrics"] = {**document.get("summary_metrics", {}), "stage": "tampered"}
     receipt.path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
     with pytest.raises(FulfillmentDriftError) as caught:
-        rebuild_closure(_closure(corpus, target), environment=environment, lower=lower)
+        rebuild_closure(_closure(outputs, "drifting-probe"), environment=environment)
     (outcome,) = caught.value.drifted
-    assert outcome.node_key == "sample:drifting-sample"
+    assert outcome.node_key == "evaluation:drifting-probe"
     assert json.loads(receipt.path.read_text(encoding="utf-8"))["summary_metrics"]["stage"] == (
         "tampered"
     ), "the authoritative receipt is never written to by a rebuild"
 
 
 def test_altered_stored_bytes_refuse_before_any_rebuild(
-    corpus: _Corpus, environment: FulfillmentEnvironment, calls: _Calls
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
 ) -> None:
-    target = _chain(corpus)
-    run = _fulfill(corpus, target, environment=environment)
+    target = _chain(outputs)
+    run = _fulfill(outputs, target, environment=environment)
     artifact = load_manifest(run.results[0].receipt.path).artifacts[0]
     (environment.root / artifact.metadata["relative_path"]).write_bytes(b"corrupt")
 
     with pytest.raises(FulfillmentAdmissionError) as caught:
-        rebuild_closure(_closure(corpus, target), environment=environment, lower=lower)
+        rebuild_closure(_closure(outputs, target), environment=environment)
     assert "artifact_sha256_mismatch" in caught.value.outcome.codes
-    assert calls.evaluation == 3, "corruption is custody loss, not drift, so nothing rebuilt"
+    assert calls.evaluation == 2, "corruption is custody loss, not drift, so nothing rebuilt"
 
 
 def test_repair_promotes_a_revalidated_candidate_and_records_the_custody_event(
-    corpus: _Corpus, environment: FulfillmentEnvironment
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
-    target = _chain(corpus)
-    run = _fulfill(corpus, target, environment=environment)
+    target = _chain(outputs)
+    run = _fulfill(outputs, target, environment=environment)
     receipt = run.results[1].receipt
     _mutate(receipt.path, status="failed")
 
     result = repair_closure_node(
-        _closure(corpus, target),
-        LogicalKey(DIGEST_LAYER, "chain-mid"),
+        _closure(outputs, target),
+        LogicalKey("evaluation", "chain-mid"),
         environment=environment,
-        lower=lower,
     )
-    assert result.record.node_key == "digest:chain-mid"
+    assert result.record.node_key == "evaluation:chain-mid"
     assert result.record.triggering_admission.codes == ("status_not_completed",)
     assert result.record.admission_after_repair.admitted
     assert result.record_path.is_file()
@@ -859,17 +728,16 @@ def test_repair_promotes_a_revalidated_candidate_and_records_the_custody_event(
 
 
 def test_resolution_refuses_before_repairing_around_a_broken_upstream(
-    corpus: _Corpus, environment: FulfillmentEnvironment
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
-    target = _chain(corpus)
-    run = _fulfill(corpus, target, environment=environment)
+    target = _chain(outputs)
+    run = _fulfill(outputs, target, environment=environment)
     _mutate(run.results[0].receipt.path, status="failed")
     with pytest.raises(FulfillmentAdmissionError):
         repair_closure_node(
-            _closure(corpus, target),
-            LogicalKey(DIGEST_LAYER, "chain-leaf"),
+            _closure(outputs, target),
+            LogicalKey("report", "chain-leaf"),
             environment=environment,
-            lower=lower,
         )
 
 
@@ -878,32 +746,20 @@ def test_resolution_refuses_before_repairing_around_a_broken_upstream(
 # --------------------------------------------------------------------------
 
 
-def test_a_lowering_that_returns_a_foreign_node_key_refuses(
-    corpus: _Corpus, environment: FulfillmentEnvironment
-) -> None:
-    closure = _closure(corpus, _sample(corpus, "keyed"))
-
-    def mislabelled(node, *, binding):
-        request = lower(node, binding=binding)
-        assert isinstance(request, EvaluationNodeRequest), "this corpus lowers a sample to one"
-        return EvaluationNodeRequest(
-            node_key="somebody-elses-key", spec=request.spec, order=request.order
-        )
-
-    with pytest.raises(AmbiguousNodeReceiptError, match="carries the logical key"):
-        fulfill_closure(closure, environment=environment, lower=mislabelled)
-
-
 def test_a_matrix_node_has_no_single_receipt_to_resolve(
-    corpus: _Corpus, environment: FulfillmentEnvironment
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
     """Resolving one receipt for a matrix would mean choosing among its rows."""
-    closure = _closure(corpus, _sample(corpus, "matrix-node"))
-
-    def matrix_lowering(node, *, binding):
-        return EvaluationMatrixNodeRequest(
-            node_key=node.key.text, matrix={"rows": []}, order=node.order
-        )
-
+    matrix = outputs.probe_matrix("standalone-matrix")
+    outputs.bulletin(
+        "matrix-reader",
+        references=[
+            planned(
+                matrix,
+                role_path="body.rows",
+                consumer=ReportParentBinding(parent_kind="matrix", parent_id="rows"),
+            )
+        ],
+    )
     with pytest.raises(AmbiguousNodeReceiptError, match="evaluation matrix"):
-        closure_requests(closure, environment=environment, lower=matrix_lowering)
+        closure_requests(_closure(outputs, "matrix-reader"), environment=environment)
