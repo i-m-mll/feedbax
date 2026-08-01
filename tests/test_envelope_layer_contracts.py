@@ -245,6 +245,181 @@ class TestReportManifestSchemaAdmission:
         assert "migration_intentionally_absent" in str(excinfo.value)
 
 
+EVALUATE_CLI_EVALUATION_TYPE = "feedbax.test.envelope_layer_eval"
+
+
+@pytest.fixture
+def evaluate_cli_state(application_registry_bundle, monkeypatch):
+    """Register a toy evaluation recipe and inject it into the analysis CLI."""
+    import numpy as np
+
+    from feedbax.analysis.evaluation import EvaluationRecipeResult
+    from feedbax.bin import analysis as analysis_cli
+    from feedbax.plugins.bootstrap import BootstrapState
+
+    def recipe(run_spec: EvaluationRunSpec, _root, _states_path, _context):
+        n_trials = int(run_spec.params["n_trials"])
+        return EvaluationRecipeResult(
+            states={"value": np.asarray(n_trials, dtype=np.int32)},
+            summary_metrics={"n_trials": n_trials},
+        )
+
+    def batch_recipe(items, _context):
+        return [recipe(item.spec, None, None, None) for item in items]
+
+    application_registry_bundle.evaluation_recipes.register(
+        EVALUATE_CLI_EVALUATION_TYPE,
+        recipe,
+        batch_recipe=batch_recipe,
+    )
+
+    async def compose_application(**_kwargs):
+        return BootstrapState(application_registry_bundle, ())
+
+    monkeypatch.setattr(analysis_cli, "compose_application", compose_application)
+    return application_registry_bundle
+
+
+def _matrix_payload(*, n_trials: tuple[int, ...]) -> dict:
+    return {
+        "schema_id": "feedbax.spec.evaluation_run_matrix",
+        "schema_version": "feedbax.spec.evaluation_run_matrix.v3",
+        "base": {
+            "evaluation_type": EVALUATE_CLI_EVALUATION_TYPE,
+            "params": {"n_trials": n_trials[0]},
+        },
+        "rows": [
+            {
+                "row_id": f"row-{index}",
+                "deltas": [{"path": "params.n_trials", "value": value}],
+            }
+            for index, value in enumerate(n_trials)
+        ],
+    }
+
+
+class TestEvaluationExecutionEntrypoint:
+    """`feedbax-analysis evaluate` is the additive evaluation execution entrypoint."""
+
+    def test_matrix_document_executes_and_writes_manifests(
+        self, tmp_path, capsys, evaluate_cli_state
+    ) -> None:
+        from feedbax.bin import analysis as analysis_cli
+        from feedbax.contracts.manifest import load_manifest
+
+        spec_path = tmp_path / "matrix.json"
+        spec_path.write_text(json.dumps(_matrix_payload(n_trials=(2, 3))), encoding="utf-8")
+
+        analysis_cli.main(["evaluate", str(spec_path), "--root", str(tmp_path / "runs")])
+
+        payload = json.loads(capsys.readouterr().out)
+        assert [row["row_id"] for row in payload["rows"]] == ["row-0", "row-1"]
+        for row in payload["rows"]:
+            manifest = load_manifest(row["manifest_path"])
+            assert manifest.kind == "EvaluationRunManifest"
+            assert manifest.id == row["manifest_id"]
+            assert manifest.status == "completed"
+
+    def test_row_subset_executes_only_the_named_rows(
+        self, tmp_path, capsys, evaluate_cli_state
+    ) -> None:
+        from feedbax.bin import analysis as analysis_cli
+
+        spec_path = tmp_path / "matrix.json"
+        spec_path.write_text(json.dumps(_matrix_payload(n_trials=(2, 3, 4))), encoding="utf-8")
+
+        analysis_cli.main(
+            ["evaluate", str(spec_path), "--root", str(tmp_path / "runs"), "--rows", "row-2,row-0"]
+        )
+
+        payload = json.loads(capsys.readouterr().out)
+        assert [row["row_id"] for row in payload["rows"]] == ["row-2", "row-0"]
+
+    def test_flat_spec_requires_the_stated_escape_hatch_reason(
+        self, tmp_path, evaluate_cli_state
+    ) -> None:
+        from feedbax.bin import analysis as analysis_cli
+
+        spec_path = tmp_path / "flat.json"
+        spec_path.write_text(
+            json.dumps(
+                {
+                    "evaluation_type": EVALUATE_CLI_EVALUATION_TYPE,
+                    "params": {"n_trials": 2},
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="escape hatch requires a stated non-empty reason"):
+            analysis_cli.main(["evaluate", str(spec_path), "--root", str(tmp_path / "runs")])
+
+    def test_flat_spec_executes_with_a_stated_reason(
+        self, tmp_path, capsys, evaluate_cli_state
+    ) -> None:
+        from feedbax.bin import analysis as analysis_cli
+
+        spec_path = tmp_path / "flat.json"
+        spec_path.write_text(
+            json.dumps(
+                {
+                    "evaluation_type": EVALUATE_CLI_EVALUATION_TYPE,
+                    "params": {"n_trials": 5},
+                }
+            ),
+            encoding="utf-8",
+        )
+        analysis_cli.main(
+            [
+                "evaluate",
+                str(spec_path),
+                "--root",
+                str(tmp_path / "runs"),
+                "--escape-hatch-reason",
+                "single legacy condition",
+            ]
+        )
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["escape_hatch_reason"] == "single legacy condition"
+        assert [row["row_id"] for row in payload["rows"]] == ["flat"]
+
+    def test_rejected_spec_version_fails_closed_before_execution(
+        self, tmp_path, evaluate_cli_state
+    ) -> None:
+        from feedbax.bin import analysis as analysis_cli
+
+        payload = _matrix_payload(n_trials=(2,))
+        payload["schema_version"] = "feedbax.spec.evaluation_run_matrix.v0"
+        spec_path = tmp_path / "matrix.json"
+        spec_path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(UnsupportedSpecVersion):
+            analysis_cli.main(["evaluate", str(spec_path), "--root", str(tmp_path / "runs")])
+
+    def test_bindings_require_an_execution_descriptor(self, tmp_path, evaluate_cli_state) -> None:
+        from feedbax.bin import analysis as analysis_cli
+
+        spec_path = tmp_path / "matrix.json"
+        spec_path.write_text(json.dumps(_matrix_payload(n_trials=(2,))), encoding="utf-8")
+        with pytest.raises(ValueError, match="require --execution-descriptor"):
+            analysis_cli.main(
+                [
+                    "evaluate",
+                    str(spec_path),
+                    "--root",
+                    str(tmp_path / "runs"),
+                    "--artifact-provider",
+                    "name=/tmp/does-not-matter",
+                ]
+            )
+
+    def test_existing_subcommands_are_unchanged(self) -> None:
+        from feedbax.bin import analysis as analysis_cli
+
+        assert analysis_cli.RUN_SUBCOMMAND == "run"
+        assert analysis_cli.REPORT_SUBCOMMAND == "report"
+        assert analysis_cli.BUNDLE_SUBCOMMAND == "bundle"
+        assert analysis_cli.EVALUATE_SUBCOMMAND == "evaluate"
+
+
 class TestEvaluationMatrixCoexistingVersions:
     """The matrix family already coexists across v1, v2, and v3."""
 
