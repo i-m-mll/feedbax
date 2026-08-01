@@ -31,6 +31,7 @@ class TrainingRunMatrixDeltaSpec(StrictModel):
     schema_version: str = TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION
     parent: ContentPinnedJsonBase
     deltas: list[MatrixCompositionDelta] = Field(min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate_delta_spec(self) -> "TrainingRunMatrixDeltaSpec":
