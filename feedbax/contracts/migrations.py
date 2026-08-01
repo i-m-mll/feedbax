@@ -39,6 +39,14 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
     structural_abi_content_sha256,
 )
+from feedbax.contracts.checkpoint_initialization import (
+    CHECKPOINT_INITIALIZATION_PLAN_SCHEMA_ID,
+    CHECKPOINT_INITIALIZATION_PLAN_SCHEMA_VERSION,
+    CHECKPOINT_INITIALIZATION_SCHEMA_ID,
+    CHECKPOINT_INITIALIZATION_SCHEMA_VERSION,
+    CHECKPOINT_STRUCTURE_SCHEMA_ID,
+    CHECKPOINT_STRUCTURE_SCHEMA_VERSION,
+)
 from feedbax.contracts.component import (
     COMPONENT_DEFINITION_DYNAMIC_PORT_POLICY_MIGRATION_ID,
     COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID,
@@ -303,6 +311,13 @@ from feedbax.contracts.manifest import (
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
+    EVALUATION_RUN_SPEC_SCHEMA_ID,
+    EVALUATION_RUN_SPEC_SCHEMA_VERSION,
+    EVALUATION_RUN_SPEC_UNVERSIONED_BASELINE,
+    REPORT_MANIFEST_SCHEMA_ID,
+    REPORT_SPEC_SCHEMA_ID,
+    REPORT_SPEC_SCHEMA_VERSION,
+    REPORT_SPEC_UNVERSIONED_BASELINE,
     EVALUATION_STATES_CONTAINER_SCHEMA_ID,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
@@ -1874,6 +1889,77 @@ def migrate_studio_task_binding_spec(
         migration_records=[
             _record_with_spec_path(record, path) for record in result.migration_records
         ],
+    )
+
+
+def _migrate_unversioned_baseline_spec_payload(
+    kind: str,
+    payload: Mapping[str, Any],
+    *,
+    baseline_version: str,
+    path: str,
+    registry: SpecSchemaRegistry | None = None,
+) -> SpecMigrationResult:
+    """Admit one document family that shipped before it declared a schema version.
+
+    A payload that carries no ``schema_version`` is exactly the family's
+    original released shape, so it is stamped with the explicit named baseline
+    version and then migrated through the ordinary registered path. Nothing is
+    inferred forward: a declared unknown or rejected version still fails closed.
+    """
+    active_registry = registry or default_spec_registry
+    family = active_registry.resolve(kind)
+    document = dict(payload)
+    declared_id = document.get("schema_id")
+    if declared_id is not None and declared_id != family.identity:
+        raise UnsupportedSpecVersion(
+            "Unsupported Feedbax structured spec identity: "
+            f"family={family.kind!r}, path={path!r}, schema_id={declared_id!r}, "
+            f"expected_schema_id={family.identity!r}"
+        )
+    if _payload_schema_version(document) is None:
+        document["schema_version"] = baseline_version
+    result = migrate_structured_spec_payload(
+        kind,
+        document,
+        path=path,
+        registry=active_registry,
+    )
+    migrated = dict(result.payload)
+    migrated["schema_id"] = family.identity
+    migrated["schema_version"] = result.target_version
+    return replace(result, payload=migrated)
+
+
+def migrate_evaluation_run_spec_payload(
+    payload: Mapping[str, Any],
+    *,
+    path: str = "evaluation_spec",
+    registry: SpecSchemaRegistry | None = None,
+) -> SpecMigrationResult:
+    """Accept, migrate, or explicitly reject one ``EvaluationRunSpec`` document."""
+    return _migrate_unversioned_baseline_spec_payload(
+        "EvaluationRunSpec",
+        payload,
+        baseline_version=EVALUATION_RUN_SPEC_UNVERSIONED_BASELINE,
+        path=path,
+        registry=registry,
+    )
+
+
+def migrate_report_spec_payload(
+    payload: Mapping[str, Any],
+    *,
+    path: str = "report_spec",
+    registry: SpecSchemaRegistry | None = None,
+) -> SpecMigrationResult:
+    """Accept, migrate, or explicitly reject one ``ReportSpec`` document."""
+    return _migrate_unversioned_baseline_spec_payload(
+        "ReportSpec",
+        payload,
+        baseline_version=REPORT_SPEC_UNVERSIONED_BASELINE,
+        path=path,
+        registry=registry,
     )
 
 
@@ -3506,6 +3592,51 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             required_tests=("tests/test_training_run_composition.py",),
         ),
         _family(
+            "CheckpointStructure",
+            CHECKPOINT_STRUCTURE_SCHEMA_ID,
+            CHECKPOINT_STRUCTURE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.checkpoint_initialization",
+            emitted_by=(
+                "feedbax.contracts.checkpoint_initialization.checkpoint_structure_from_manifest",
+            ),
+            consumed_by=("checkpoint initialize/continue lowering",),
+            description=(
+                "Exact canonical slot, PyTree-definition, and leaf structure for one side of "
+                "the closed checkpoint initialize/continue matching rule."
+            ),
+            required_tests=("tests/test_envelope_layer_contracts.py",),
+        ),
+        _family(
+            "CheckpointInitializationRequest",
+            CHECKPOINT_INITIALIZATION_SCHEMA_ID,
+            CHECKPOINT_INITIALIZATION_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.checkpoint_initialization",
+            emitted_by=("authored training initialize_from/continue_from blocks",),
+            consumed_by=(
+                "feedbax.contracts.checkpoint_initialization.lower_checkpoint_initialization",
+            ),
+            description=(
+                "Authored model-weight warm start or checkpoint continuation naming one "
+                "authenticated source checkpoint."
+            ),
+            required_tests=("tests/test_envelope_layer_contracts.py",),
+        ),
+        _family(
+            "CheckpointInitializationPlan",
+            CHECKPOINT_INITIALIZATION_PLAN_SCHEMA_ID,
+            CHECKPOINT_INITIALIZATION_PLAN_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.checkpoint_initialization",
+            emitted_by=(
+                "feedbax.contracts.checkpoint_initialization.lower_checkpoint_initialization",
+            ),
+            consumed_by=("training run preparation",),
+            description=(
+                "Explicit per-slot restore/fresh/ignored outcome of the closed checkpoint "
+                "matching rule; no structural search and no renaming maps."
+            ),
+            required_tests=("tests/test_envelope_layer_contracts.py",),
+        ),
+        _family(
             "TrainingExecutionDependencyLayer",
             EXECUTION_DEPENDENCY_SCHEMA_ID,
             EXECUTION_DEPENDENCY_SCHEMA_VERSION,
@@ -3966,12 +4097,25 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         _family(
             "EvaluationRunSpec",
-            "feedbax.spec.evaluation_run",
-            "feedbax.spec.evaluation_run.v1",
+            EVALUATION_RUN_SPEC_SCHEMA_ID,
+            EVALUATION_RUN_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.manifest",
             emitted_by=("EvaluationRunManifest.evaluation_spec", "provider_manifest.schemas"),
-            consumed_by=("feedbax.analysis.evaluation",),
-            description="Declarative evaluation run request.",
+            consumed_by=(
+                "feedbax.analysis.evaluation",
+                "feedbax-analysis evaluate",
+            ),
+            description=(
+                "Declarative evaluation run request. The document carries its own schema "
+                "identity; an unversioned historical payload is admitted as the named v1 "
+                "baseline, and evaluation_run_manifest_id excludes the identity fields so "
+                "existing run ids stay byte-stable."
+            ),
+            rejected_old_versions=(f"{EVALUATION_RUN_SPEC_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_envelope_layer_contracts.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "AnalysisRunSpec",
@@ -4244,13 +4388,26 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         _family(
             "ReportSpec",
-            "feedbax.spec.report",
-            "feedbax.spec.report.v1",
+            REPORT_SPEC_SCHEMA_ID,
+            REPORT_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.manifest",
             emitted_by=("ReportManifest.report_spec", "provider_manifest.schemas"),
-            consumed_by=("Studio report materialization",),
-            description="Declarative report request.",
-            rejected_old_versions=("feedbax.spec.report.v0",),
+            consumed_by=(
+                "Studio report materialization",
+                "feedbax.analysis.reports.execute_authored_report_spec",
+                "feedbax-analysis report",
+            ),
+            description=(
+                "Declarative report request. The document carries its own schema identity; "
+                "an unversioned historical payload is admitted as the named v1 baseline, and "
+                "report_manifest_id excludes the identity fields so existing report ids stay "
+                "byte-stable."
+            ),
+            rejected_old_versions=(f"{REPORT_SPEC_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_envelope_layer_contracts.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "RegenerationSpec",
@@ -4457,7 +4614,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
             "Typed data product emitted from an analysis-run manifest.",
         ),
-        ("ReportManifest", "feedbax.manifest.report", "Durable report manifest."),
+        (
+            "ReportManifest",
+            REPORT_MANIFEST_SCHEMA_ID,
+            "Durable report manifest; unknown schema versions reject at load.",
+        ),
     ):
         families.append(
             _family(

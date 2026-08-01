@@ -1148,13 +1148,23 @@ def write_evaluation_states_cache(path: Path, *, manifest_id: str, states: Any) 
 def coerce_evaluation_run_spec(
     value: EvaluationRunSpec | Mapping[str, Any] | Path | str,
 ) -> EvaluationRunSpec:
-    """Load an ``EvaluationRunSpec`` from an object, mapping, or JSON file path."""
+    """Load an ``EvaluationRunSpec`` from an object, mapping, or JSON file path.
+
+    Serialized documents are admitted through the registered schema family, so
+    an unversioned historical document is accepted as the named v1 baseline
+    while an unknown or explicitly rejected version fails closed.
+    """
+    from feedbax.contracts.migrations import migrate_evaluation_run_spec_payload
+
     if isinstance(value, EvaluationRunSpec):
         return value
     if isinstance(value, Mapping):
-        return EvaluationRunSpec.model_validate(value)
-    path = Path(value)
-    return EvaluationRunSpec.model_validate_json(path.read_text(encoding="utf-8"))
+        payload: Mapping[str, Any] = value
+    else:
+        payload = json.loads(Path(value).read_text(encoding="utf-8"))
+        if not isinstance(payload, Mapping):
+            raise ValueError("EvaluationRunSpec document must be a JSON object")
+    return EvaluationRunSpec.model_validate(migrate_evaluation_run_spec_payload(payload).payload)
 
 
 def execute_evaluation_run_spec(

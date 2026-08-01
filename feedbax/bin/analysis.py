@@ -45,6 +45,10 @@ from feedbax.analysis.execution_context import (
     StagedCheckpointCustodyRootBinding,
     StagedManifestRootBinding,
 )
+from feedbax.analysis.evaluation import (
+    EvaluationBatchExecution,
+    execute_evaluation_run_matrix,
+)
 from feedbax.analysis.specs import execute_analysis_run_spec
 from feedbax.analysis.reports import (
     ReportRecipeExecutionError,
@@ -68,6 +72,7 @@ from feedbax.bin._setup import setup_application_package
 logger = logging.getLogger(os.path.basename(__file__))
 
 RUN_SUBCOMMAND = "run"
+EVALUATE_SUBCOMMAND = "evaluate"
 REPORT_SUBCOMMAND = "report"
 BUNDLE_SUBCOMMAND = "bundle"
 
@@ -250,6 +255,140 @@ def run_analysis_run_spec_file(argv: list[str], state: BootstrapState) -> None:
         "status": manifest.status,
         "artifacts": [
             artifact.model_dump(mode="json", exclude_none=True) for artifact in manifest.artifacts
+        ],
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def build_evaluate_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="feedbax-analysis evaluate",
+        description=(
+            "Execute a compiled evaluation document — an EvaluationRunMatrixSpec, an "
+            "EvaluationRunMatrixDeltaSpec, or a flat EvaluationRunSpec escape hatch — and "
+            "write its evaluation-run manifests."
+        ),
+    )
+    parser.add_argument(
+        "spec",
+        type=Path,
+        help=(
+            "Path to an EvaluationRunMatrixSpec, EvaluationRunMatrixDeltaSpec, or "
+            "EvaluationRunSpec JSON/YAML file."
+        ),
+    )
+    parser.add_argument(
+        "--root",
+        type=Path,
+        required=True,
+        help="Manifest root to write the evaluation-run manifests under.",
+    )
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=None,
+        help="Repo root for resolving content-pinned bases and delta parents.",
+    )
+    parser.add_argument(
+        "--parent-manifest-root",
+        type=Path,
+        default=None,
+        help="Retained manifest root the matrix's authenticated staged parents resolve against.",
+    )
+    parser.add_argument(
+        "--rows",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated ordered subset of matrix row ids to execute through the "
+            "governed batch path; the evaluation type must have a registered batch recipe."
+        ),
+    )
+    parser.add_argument(
+        "--escape-hatch-reason",
+        type=str,
+        default=None,
+        help="Stated reason required to execute a flat EvaluationRunSpec without a matrix.",
+    )
+    parser.add_argument(
+        "--execution-descriptor",
+        type=Path,
+        default=None,
+        help="Versioned staged execution descriptor for explicit runtime bindings.",
+    )
+    parser.add_argument(
+        "--artifact-provider",
+        action="append",
+        default=[],
+        metavar="NAME=ROOT",
+        help="Bind one authenticated-manifest artifact provider root.",
+    )
+    parser.add_argument(
+        "--checkpoint-custody",
+        action="append",
+        default=[],
+        metavar="NAME=ROOT",
+        help="Bind one named checkpoint custody root.",
+    )
+    return parser
+
+
+def run_evaluation_spec_file(argv: list[str], state: BootstrapState) -> None:
+    """Execute one serialized evaluation document and print its manifest summary."""
+    args = build_evaluate_arg_parser().parse_args(argv)
+    _apply_plotly_template_default()
+    spec = _load_spec_document(args.spec, label="EvaluationRunMatrixSpec")
+    if (args.artifact_provider or args.checkpoint_custody) and (args.execution_descriptor is None):
+        raise ValueError(
+            "--artifact-provider and --checkpoint-custody require --execution-descriptor"
+        )
+    execution_descriptor = None
+    if args.execution_descriptor is not None:
+        execution_descriptor = StagedExecutionDescriptor.model_validate(
+            _load_json_object(args.execution_descriptor, label="--execution-descriptor")
+        )
+    artifact_provider_bindings = [
+        StagedArtifactProviderRootBinding(*_binding_parts(value, option="--artifact-provider"))
+        for value in args.artifact_provider
+    ]
+    checkpoint_custody_bindings = [
+        StagedCheckpointCustodyRootBinding(*_binding_parts(value, option="--checkpoint-custody"))
+        for value in args.checkpoint_custody
+    ]
+    batch = None
+    if args.rows is not None:
+        ordered_row_ids = [item.strip() for item in args.rows.split(",") if item.strip()]
+        if not ordered_row_ids:
+            raise ValueError("--rows requires at least one non-empty row id")
+        batch = EvaluationBatchExecution(ordered_row_ids=ordered_row_ids)
+    with _bundle_human_output_to_stderr():
+        result = execute_evaluation_run_matrix(
+            spec,
+            registry=state.bundle.evaluation_recipes,
+            root=args.root,
+            repo_root=args.repo_root,
+            escape_hatch_reason=args.escape_hatch_reason,
+            parent_manifest_root=args.parent_manifest_root,
+            execution_descriptor=execution_descriptor,
+            artifact_provider_bindings=artifact_provider_bindings,
+            checkpoint_custody_bindings=checkpoint_custody_bindings,
+            batch=batch,
+        )
+    payload = {
+        "note": result.note,
+        "escape_hatch_reason": result.escape_hatch_reason,
+        "rows": [
+            {
+                "row_id": row.row_id,
+                "manifest_id": getattr(row.result, "id", None),
+                "manifest_path": str(row.manifest_path) if row.manifest_path else None,
+                "status": getattr(row.result, "status", None),
+                "artifacts": [
+                    artifact.model_dump(mode="json", exclude_none=True)
+                    for artifact in row.artifacts
+                ],
+            }
+            for row in result.rows
         ],
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
@@ -607,7 +746,10 @@ def build_arg_parser():
         description="Run analysis modules on trained models.",
         epilog=(
             f"Subcommands: '{RUN_SUBCOMMAND} <spec.json> [--root ROOT]' executes a serialized "
-            f"AnalysisRunSpec file directly; '{BUNDLE_SUBCOMMAND} <spec.json> [--root ROOT]' "
+            f"AnalysisRunSpec file directly; '{EVALUATE_SUBCOMMAND} <spec.json> --root ROOT' "
+            "executes a compiled EvaluationRunMatrixSpec/delta/flat EvaluationRunSpec; "
+            f"'{REPORT_SUBCOMMAND} <spec.json> --exact-parents PATH --root ROOT' executes an "
+            f"authored ReportSpec; '{BUNDLE_SUBCOMMAND} <spec.json> [--root ROOT]' "
             "executes a file-authored AnalysisBundleSpec without a registered package."
         ),
     )
@@ -753,6 +895,9 @@ def main(
         )
     if args_in and args_in[0] == RUN_SUBCOMMAND:
         run_analysis_run_spec_file(args_in[1:], state)
+        return
+    if args_in and args_in[0] == EVALUATE_SUBCOMMAND:
+        run_evaluation_spec_file(args_in[1:], state)
         return
     if args_in and args_in[0] == REPORT_SUBCOMMAND:
         run_authored_report_spec_file(args_in[1:], state)

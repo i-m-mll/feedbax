@@ -23,9 +23,13 @@ selector.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
+import json
+import os
+from pathlib import Path
 import re
+import tempfile
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
@@ -422,6 +426,133 @@ class RowIndexCustodyBindings(StrictModel):
             )
 
 
+#: Declarative custody request supplied by a downstream authoring layer: one
+#: mapping from row id to binding key to the authenticated manifest ref that
+#: produced that row's artifact. Feedbax owns everything else — index matching,
+#: authentication checks, ordering, serialization, and the atomic write.
+RowCustodyBindingMap: TypeAlias = "Mapping[str, Mapping[str, ParentRef | Mapping[str, Any]]]"
+
+
+def build_row_index_custody_bindings(
+    index: AuthenticatedRowIndex,
+    bindings: RowCustodyBindingMap,
+    *,
+    required_binding_keys: Sequence[str] = (),
+) -> RowIndexCustodyBindings:
+    """Build post-run custody bindings for *index* from a declarative row map.
+
+    The caller supplies only ``{row_id: {binding_key: parent}}``. This function
+    owns index matching (every declared row must be declared by *index*),
+    authenticated ``ParentRef`` validation (delegated to
+    :class:`RowCustodyBinding`), and deterministic ordering: rows follow index
+    order and binding keys sort within a row, so the same declaration always
+    produces the same document bytes.
+
+    Args:
+        index: Compile-time row index the custody attaches to.
+        bindings: Declarative row/binding-role mapping.
+        required_binding_keys: Binding keys every index row must carry. Empty
+            means partial custody is admissible; a named key that is missing for
+            any index row fails closed rather than writing a partial document.
+
+    Raises:
+        RowSelectionError: If a declared row is not in *index*, or a required
+            binding key is missing for an index row.
+        ValueError: If a parent is not an authenticated manifest ref or a
+            binding key is not a normalized lowercase token.
+    """
+    declared = set(index.row_ids)
+    unknown = sorted(set(bindings) - declared)
+    if unknown:
+        raise RowSelectionError(
+            RowSelectionErrorCode.UNRESOLVED_ROW_KEY,
+            f"row custody declaration names rows absent from index {index.index_id!r}: {unknown}",
+            index_id=index.index_id,
+            row_id=unknown[0],
+        )
+    required = list(dict.fromkeys(required_binding_keys))
+    ordered: list[RowCustodyBinding] = []
+    for row_id in index.row_ids:
+        row_bindings = bindings.get(row_id, {})
+        missing = [key for key in required if key not in row_bindings]
+        if missing:
+            raise RowSelectionError(
+                RowSelectionErrorCode.UNRESOLVED_ROW_KEY,
+                f"row {row_id!r} is missing required custody bindings {missing} "
+                f"for index {index.index_id!r}",
+                index_id=index.index_id,
+                row_id=row_id,
+                binding_key=missing[0],
+            )
+        for binding_key in sorted(row_bindings):
+            parent = row_bindings[binding_key]
+            ordered.append(
+                RowCustodyBinding(
+                    row_id=row_id,
+                    binding_key=binding_key,
+                    parent=(
+                        parent if isinstance(parent, ParentRef) else ParentRef.model_validate(parent)
+                    ),
+                )
+            )
+    document = RowIndexCustodyBindings(index_id=index.index_id, bindings=ordered)
+    document.require_index(index)
+    return document
+
+
+def serialize_row_index_custody_bindings(document: RowIndexCustodyBindings) -> str:
+    """Return the canonical sidecar text for one custody-bindings document.
+
+    Keys are sorted at every level and the text ends with a newline, so a
+    regenerated sidecar is byte-comparable against its tracked predecessor.
+    """
+    payload = document.model_dump(mode="json", exclude_none=True)
+    return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+
+def write_row_index_custody_bindings(
+    document: RowIndexCustodyBindings,
+    path: Path | str,
+    *,
+    index: AuthenticatedRowIndex | None = None,
+) -> Path:
+    """Atomically write one custody-bindings sidecar and return its path.
+
+    The document is fully serialized to a sibling temporary file and renamed
+    into place, so a reader never observes a partially written sidecar. When
+    *index* is supplied the document is matched against it first.
+    """
+    if index is not None:
+        document.require_index(index)
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    text = serialize_row_index_custody_bindings(document)
+    handle, temporary_name = tempfile.mkstemp(
+        dir=str(target.parent),
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return target
+
+
+def load_row_index_custody_bindings(path: Path | str) -> RowIndexCustodyBindings:
+    """Load one custody-bindings sidecar, failing closed on foreign identity."""
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("row custody bindings document must be a JSON object")
+    return RowIndexCustodyBindings.model_validate(payload)
+
+
 __all__ = [
     "MAX_ROW_INDEX_ROWS",
     "MAX_ROW_TAGS",
@@ -436,13 +567,18 @@ __all__ = [
     "AuthenticatedRowIndex",
     "ResolvedRowSet",
     "RowCustodyBinding",
+    "RowCustodyBindingMap",
     "RowIndexCustodyBindings",
     "RowIndexEntry",
     "RowSelectionError",
     "RowSelectionErrorCode",
     "RowSetSelector",
     "TagRowsSelector",
+    "build_row_index_custody_bindings",
     "derive_row_label",
     "expand_row_selector",
+    "load_row_index_custody_bindings",
     "normalize_row_tags",
+    "serialize_row_index_custody_bindings",
+    "write_row_index_custody_bindings",
 ]
