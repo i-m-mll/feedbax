@@ -1,0 +1,17 @@
+{
+  "schema_id": "feedbax.spec.authenticated_row_index",
+  "schema_version": "feedbax.spec.authenticated_row_index.v1",
+  "index_id": "target2x_target4x_floor",
+  "rows": [
+    {
+      "row_id": "target2x-floor",
+      "label": "target2x floor",
+      "tags": ["floor-saturated", "sisu", "target2x"]
+    },
+    {
+      "row_id": "target4x-floor",
+      "label": "target4x floor",
+      "tags": ["floor-saturated", "sisu", "target4x"]
+    }
+  ]
+}

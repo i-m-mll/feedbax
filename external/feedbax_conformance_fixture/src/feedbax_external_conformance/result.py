@@ -24,7 +24,8 @@ RESULT_SCHEMA_VERSION_V9 = f"{RESULT_SCHEMA_ID}.v9"
 RESULT_SCHEMA_VERSION_V10 = f"{RESULT_SCHEMA_ID}.v10"
 RESULT_SCHEMA_VERSION_V11 = f"{RESULT_SCHEMA_ID}.v11"
 RESULT_SCHEMA_VERSION_V12 = f"{RESULT_SCHEMA_ID}.v12"
-RESULT_SCHEMA_VERSION = f"{RESULT_SCHEMA_ID}.v13"
+RESULT_SCHEMA_VERSION_V13 = f"{RESULT_SCHEMA_ID}.v13"
+RESULT_SCHEMA_VERSION = f"{RESULT_SCHEMA_ID}.v14"
 REJECTED_UNSHIPPED_SCHEMA_VERSIONS = (
     f"{RESULT_SCHEMA_ID}.v3",
     f"{RESULT_SCHEMA_ID}.v4",
@@ -82,6 +83,22 @@ V12_REQUIRED_CASE_IDS = (
     "custody_persistence_recovery",
 )
 V12_REQUIRED_CASE_ID_SET = frozenset(V12_REQUIRED_CASE_IDS)
+V13_REQUIRED_CASE_IDS = (
+    "ordered_registration",
+    "unified_plugin_bootstrap",
+    "external_driver_plugin",
+    "component_registration_and_migration",
+    "dynamic_component_ports",
+    "value_identity",
+    "component_param_array_values",
+    "material_dependencies",
+    "staged_exact_parent_migration",
+    "resolved_evaluation_row_projection",
+    "public_lifecycle_recovery",
+    "custody_persistence_recovery",
+    "figure_composition_public_contract",
+)
+V13_REQUIRED_CASE_ID_SET = frozenset(V13_REQUIRED_CASE_IDS)
 REQUIRED_CASE_IDS = (
     "ordered_registration",
     "unified_plugin_bootstrap",
@@ -96,6 +113,7 @@ REQUIRED_CASE_IDS = (
     "public_lifecycle_recovery",
     "custody_persistence_recovery",
     "figure_composition_public_contract",
+    "figure_role_reference_public_contract",
 )
 REQUIRED_CASE_ID_SET = frozenset(REQUIRED_CASE_IDS)
 RESULT_SCHEMA_MIGRATION_TABLE = {
@@ -122,6 +140,9 @@ RESULT_SCHEMA_MIGRATION_TABLE = {
     ),
     RESULT_SCHEMA_VERSION_V12: (
         "reject; shipped v12 contains no figure_composition_public_contract evidence"
+    ),
+    RESULT_SCHEMA_VERSION_V13: (
+        "reject; shipped v13 contains no figure_role_reference_public_contract evidence"
     ),
 }
 
@@ -157,7 +178,7 @@ class ConformanceResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_id: Literal["feedbax.external_conformance.result"] = RESULT_SCHEMA_ID
-    schema_version: Literal["feedbax.external_conformance.result.v13"] = RESULT_SCHEMA_VERSION
+    schema_version: Literal["feedbax.external_conformance.result.v14"] = RESULT_SCHEMA_VERSION
     status: Literal["pass", "blocked"]
     feedbax_version: str = Field(min_length=1)
     feedbax_install_root: str = Field(min_length=1)
@@ -171,7 +192,7 @@ class ConformanceResult(BaseModel):
         observed = frozenset(self.cases)
         if observed != REQUIRED_CASE_ID_SET:
             raise ValueError(
-                "external conformance cases must exactly match the v13 contract: "
+                "external conformance cases must exactly match the v14 contract: "
                 f"missing={sorted(REQUIRED_CASE_ID_SET - observed)!r}, "
                 f"extra={sorted(observed - REQUIRED_CASE_ID_SET)!r}"
             )
@@ -208,7 +229,7 @@ def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResul
         version = RESULT_SCHEMA_VERSION_V2
     if version == RESULT_SCHEMA_VERSION_V2:
         raise ValueError(
-            "external conformance result v2 cannot migrate to v13: protected v2 "
+            "external conformance result v2 cannot migrate to v14: protected v2 "
             "contains neither resolved_evaluation_row_projection, "
             "component_param_array_values, nor unified_plugin_bootstrap evidence"
         )
@@ -219,33 +240,38 @@ def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResul
         )
     if version == RESULT_SCHEMA_VERSION_V7:
         raise ValueError(
-            "external conformance result v7 cannot migrate to v13: v7 contains no "
+            "external conformance result v7 cannot migrate to v14: v7 contains no "
             "component_param_array_values evidence"
         )
     if version == RESULT_SCHEMA_VERSION_V8:
         raise ValueError(
-            "external conformance result v8 cannot migrate to v13: v8 contains no "
+            "external conformance result v8 cannot migrate to v14: v8 contains no "
             "unified_plugin_bootstrap evidence"
         )
     if version == RESULT_SCHEMA_VERSION_V9:
         raise ValueError(
-            "external conformance result v9 cannot migrate to v13: v9 contains no "
+            "external conformance result v9 cannot migrate to v14: v9 contains no "
             "dynamic_component_ports evidence"
         )
     if version == RESULT_SCHEMA_VERSION_V10:
         raise ValueError(
-            "external conformance result v10 cannot migrate to v13: v10 contains no "
+            "external conformance result v10 cannot migrate to v14: v10 contains no "
             "external_driver_plugin evidence"
         )
     if version == RESULT_SCHEMA_VERSION_V11:
         raise ValueError(
-            "external conformance result v11 cannot migrate to v13: v11 contains no "
+            "external conformance result v11 cannot migrate to v14: v11 contains no "
             "custody_persistence_recovery evidence and its protocol roles are unbound"
         )
     if version == RESULT_SCHEMA_VERSION_V12:
         raise ValueError(
-            "external conformance result v12 cannot migrate to v13: v12 contains no "
+            "external conformance result v12 cannot migrate to v14: v12 contains no "
             "figure_composition_public_contract evidence"
+        )
+    if version == RESULT_SCHEMA_VERSION_V13:
+        raise ValueError(
+            "external conformance result v13 cannot migrate to v14: v13 contains no "
+            "figure_role_reference_public_contract evidence"
         )
     if version != RESULT_SCHEMA_VERSION:
         raise ValueError(
@@ -273,12 +299,15 @@ __all__ = [
     "RESULT_SCHEMA_VERSION_V10",
     "RESULT_SCHEMA_VERSION_V11",
     "RESULT_SCHEMA_VERSION_V12",
+    "RESULT_SCHEMA_VERSION_V13",
     "V10_REQUIRED_CASE_IDS",
     "V10_REQUIRED_CASE_ID_SET",
     "V11_REQUIRED_CASE_IDS",
     "V11_REQUIRED_CASE_ID_SET",
     "V12_REQUIRED_CASE_IDS",
     "V12_REQUIRED_CASE_ID_SET",
+    "V13_REQUIRED_CASE_IDS",
+    "V13_REQUIRED_CASE_ID_SET",
     "V2_REQUIRED_CASE_IDS",
     "V2_REQUIRED_CASE_ID_SET",
     "load_result",

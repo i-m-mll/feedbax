@@ -10,6 +10,7 @@ from .application import (
     EVALUATION_PRODUCT_UNION_FINALIZERS,
     EVALUATION_RECIPES,
     EXECUTION_PREPARATIONS,
+    EXPERIMENT_ENVELOPE_COMPILERS,
     EXPERIMENT_PACKAGES,
     FIGURES,
     REPORT_RECIPES,
@@ -45,6 +46,15 @@ from .bootstrap import (
     validate_downstream_protocol_version,
 )
 from .registry import ExperimentRegistry
+from feedbax.contracts.experiment_envelope import (
+    ExperimentEnvelopeCompileRequest,
+    ExperimentEnvelopeCompileResult,
+    ExperimentEnvelopeCompiler,
+    ExperimentEnvelopeCompilerRegistration,
+    ExperimentEnvelopeCompilerRegistry,
+    ExperimentEnvelopeRejection,
+    ExperimentEnvelopeRejectionCategory,
+)
 from feedbax.analysis.evaluation import (
     EvaluationAuthoringSchema,
     EvaluationBatchRecipe,
@@ -108,6 +118,14 @@ _NON_GUARANTEED_PLUGIN_EXPORTS = (
     "PLUGIN_DECLARATION_SCHEMA_VERSION",
     "PLUGIN_DECLARATION_SCHEMA_VERSION_V1",
     "PLUGIN_PROTOCOL_VERSION",
+    "EXPERIMENT_ENVELOPE_COMPILERS",
+    "ExperimentEnvelopeCompileRequest",
+    "ExperimentEnvelopeCompileResult",
+    "ExperimentEnvelopeCompiler",
+    "ExperimentEnvelopeCompilerRegistration",
+    "ExperimentEnvelopeCompilerRegistry",
+    "ExperimentEnvelopeRejection",
+    "ExperimentEnvelopeRejectionCategory",
 )
 
 __all__ = [
@@ -188,4 +206,12 @@ __all__ = [
     "PLUGIN_DECLARATION_SCHEMA_VERSION",
     "PLUGIN_DECLARATION_SCHEMA_VERSION_V1",
     "PLUGIN_PROTOCOL_VERSION",
+    "EXPERIMENT_ENVELOPE_COMPILERS",
+    "ExperimentEnvelopeCompileRequest",
+    "ExperimentEnvelopeCompileResult",
+    "ExperimentEnvelopeCompiler",
+    "ExperimentEnvelopeCompilerRegistration",
+    "ExperimentEnvelopeCompilerRegistry",
+    "ExperimentEnvelopeRejection",
+    "ExperimentEnvelopeRejectionCategory",
 ]

@@ -100,6 +100,54 @@ GUARANTEED_IMPORTS = {
         "RunSetStateStore",
         "StageEngine",
     ),
+    "feedbax.contracts.row_index": (
+        "ROW_INDEX_SCHEMA_ID",
+        "ROW_INDEX_SCHEMA_VERSION",
+        "ROW_INDEX_CUSTODY_SCHEMA_ID",
+        "ROW_INDEX_CUSTODY_SCHEMA_VERSION",
+        "RESOLVED_ROW_SET_SCHEMA_ID",
+        "RESOLVED_ROW_SET_SCHEMA_VERSION",
+        "AllRowsSelector",
+        "AuthenticatedRowIndex",
+        "ResolvedRowSet",
+        "RowCustodyBinding",
+        "RowIndexCustodyBindings",
+        "RowIndexEntry",
+        "RowSelectionError",
+        "RowSelectionErrorCode",
+        "RowSetSelector",
+        "TagRowsSelector",
+        "derive_row_label",
+        "expand_row_selector",
+        "normalize_row_tags",
+    ),
+    "feedbax.contracts.figure_roles": (
+        "FIGURE_ROW_EXPANSION_REQUEST_SCHEMA_ID",
+        "FIGURE_ROW_EXPANSION_REQUEST_SCHEMA_VERSION",
+        "RESOLVED_FIGURE_INPUTS_SCHEMA_ID",
+        "RESOLVED_FIGURE_INPUTS_SCHEMA_VERSION",
+        "FigureRoleBindingContract",
+        "FigureRoleReferenceError",
+        "FigureRowExpansionRequest",
+        "PerRowInputReference",
+        "ResolvedFigureInput",
+        "ResolvedFigureInputs",
+        "SharedInputReference",
+        "expand_figure_rows",
+        "resolve_figure_input_roles",
+        "row_namespace",
+    ),
+    "feedbax.contracts.experiment_envelope": (
+        "EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID",
+        "EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_VERSION",
+        "ExperimentEnvelopeCompileRequest",
+        "ExperimentEnvelopeCompileResult",
+        "ExperimentEnvelopeCompilerRegistration",
+        "ExperimentEnvelopeCompilerRegistry",
+        "ExperimentEnvelopeRejection",
+        "ExperimentEnvelopeRejectionCategory",
+        "dispatch_experiment_envelope",
+    ),
     "feedbax.lowering": (
         "LowererRegistration",
         "LoweredContribution",
@@ -400,7 +448,7 @@ def test_plugin_api_checker_rejects_facade_inventory_drift(
         module._check_plugin_api(copy.deepcopy(_PLUGIN_ROW), "rendered inventory")
 
 
-def test_ratified_rows_bind_v13_and_have_no_pending_coverage() -> None:
+def test_ratified_rows_bind_v14_and_have_no_pending_coverage() -> None:
     fixture = ROOT / "external" / "feedbax_conformance_fixture"
     manifest = json.loads(
         (fixture / "src/feedbax_external_conformance/policy_manifest.v1.json").read_text(
@@ -414,6 +462,7 @@ def test_ratified_rows_bind_v13_and_have_no_pending_coverage() -> None:
         "emergency-persistence",
         "result-role-binding",
         "figure-composition",
+        "figure-role-references",
     ):
         assert rows[row_id]["coverage_status"] == "covered"
     assert rows["terminal-certification"]["coverage_status"] == "not-external-covered"
@@ -423,8 +472,9 @@ def test_ratified_rows_bind_v13_and_have_no_pending_coverage() -> None:
     result_source = (fixture / "src/feedbax_external_conformance/result.py").read_text(
         encoding="utf-8"
     )
-    assert 'Literal["feedbax.external_conformance.result.v13"]' in result_source
-    assert "v12 cannot migrate to v13" in result_source
+    assert 'Literal["feedbax.external_conformance.result.v14"]' in result_source
+    assert "v12 cannot migrate to v14" in result_source
+    assert "v13 cannot migrate to v14" in result_source
 
 
 def test_ratified_policy_checker_rejects_residual_pending_rows(
