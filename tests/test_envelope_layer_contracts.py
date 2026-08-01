@@ -420,6 +420,228 @@ class TestEvaluationExecutionEntrypoint:
         assert analysis_cli.EVALUATE_SUBCOMMAND == "evaluate"
 
 
+#: Byte-exact shape of the hand-authored downstream sidecar this writer replaces
+#: (rlrmp2 ``results/4e08c8d/target2x_target4x_floor.row_custody.v1.json``).
+REFERENCE_ROW_CUSTODY_SIDECAR = """{
+  "bindings": [
+    {
+      "binding_key": "k2",
+      "parent": {
+        "id": "feedbax-analysis-run:3d916232abe4ae8eccf16b676c890e7d",
+        "kind": "AnalysisRunManifest",
+        "metadata": {
+          "manifest_sha256": \
+"710b5922eabb11180d83f3abf35b0dc1022d7d15585ab825bfd188cc37e90f0f",
+          "ref_schema_id": "feedbax.ref.authenticated_manifest",
+          "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+          "size_bytes": 10658924
+        },
+        "role": "analysis_run"
+      },
+      "row_id": "target2x-floor"
+    },
+    {
+      "binding_key": "k2",
+      "parent": {
+        "id": "feedbax-analysis-run:11b2be35e7a3118ef25d6822c992e79a",
+        "kind": "AnalysisRunManifest",
+        "metadata": {
+          "manifest_sha256": \
+"7170a4d1db43586d826b2fc94c90a2eff838f2faa20738616bf7e8c8e444cd94",
+          "ref_schema_id": "feedbax.ref.authenticated_manifest",
+          "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+          "size_bytes": 10658924
+        },
+        "role": "analysis_run"
+      },
+      "row_id": "target4x-floor"
+    }
+  ],
+  "index_id": "target2x_target4x_floor",
+  "schema_id": "feedbax.spec.row_index_custody_bindings",
+  "schema_version": "feedbax.spec.row_index_custody_bindings.v1"
+}
+"""
+
+
+def _authenticated_parent(manifest_id: str, digest: str, size: int = 10658924) -> ParentRef:
+    return ParentRef(
+        kind="AnalysisRunManifest",
+        id=manifest_id,
+        role="analysis_run",
+        metadata={
+            "manifest_sha256": digest,
+            "ref_schema_id": "feedbax.ref.authenticated_manifest",
+            "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+            "size_bytes": size,
+        },
+    )
+
+
+def _reference_index():
+    from feedbax.contracts.row_index import AuthenticatedRowIndex, RowIndexEntry, derive_row_label
+
+    return AuthenticatedRowIndex(
+        index_id="target2x_target4x_floor",
+        rows=[
+            RowIndexEntry(row_id=row_id, label=derive_row_label(row_id))
+            for row_id in ("target2x-floor", "target4x-floor")
+        ],
+    )
+
+
+def _reference_declaration() -> dict:
+    return {
+        "target2x-floor": {
+            "k2": _authenticated_parent(
+                "feedbax-analysis-run:3d916232abe4ae8eccf16b676c890e7d",
+                "710b5922eabb11180d83f3abf35b0dc1022d7d15585ab825bfd188cc37e90f0f",
+            )
+        },
+        "target4x-floor": {
+            "k2": _authenticated_parent(
+                "feedbax-analysis-run:11b2be35e7a3118ef25d6822c992e79a",
+                "7170a4d1db43586d826b2fc94c90a2eff838f2faa20738616bf7e8c8e444cd94",
+            )
+        },
+    }
+
+
+class TestRowIndexCustodyWriter:
+    """Feedbax owns construction, matching, authentication, and atomic writing."""
+
+    def test_reproduces_the_reference_sidecar_bytes(self) -> None:
+        from feedbax.contracts.row_index import (
+            build_row_index_custody_bindings,
+            serialize_row_index_custody_bindings,
+        )
+
+        document = build_row_index_custody_bindings(
+            _reference_index(),
+            _reference_declaration(),
+            required_binding_keys=("k2",),
+        )
+        assert serialize_row_index_custody_bindings(document) == REFERENCE_ROW_CUSTODY_SIDECAR
+
+    def test_write_is_atomic_and_round_trips(self, tmp_path) -> None:
+        from feedbax.contracts.row_index import (
+            build_row_index_custody_bindings,
+            load_row_index_custody_bindings,
+            write_row_index_custody_bindings,
+        )
+
+        index = _reference_index()
+        document = build_row_index_custody_bindings(index, _reference_declaration())
+        target = tmp_path / "nested" / "target2x_target4x_floor.row_custody.v1.json"
+        written = write_row_index_custody_bindings(document, target, index=index)
+        assert written == target
+        assert target.read_text(encoding="utf-8") == REFERENCE_ROW_CUSTODY_SIDECAR
+        assert list(target.parent.iterdir()) == [target]
+        assert load_row_index_custody_bindings(target) == document
+
+    def test_ordering_follows_index_order_then_binding_key(self) -> None:
+        from feedbax.contracts.row_index import (
+            AuthenticatedRowIndex,
+            RowIndexEntry,
+            build_row_index_custody_bindings,
+            derive_row_label,
+        )
+
+        index = AuthenticatedRowIndex(
+            index_id="ordered",
+            rows=[
+                RowIndexEntry(row_id=row_id, label=derive_row_label(row_id))
+                for row_id in ("zeta", "alpha")
+            ],
+        )
+        parent = _authenticated_parent("feedbax-analysis-run:one", "0" * 64)
+        document = build_row_index_custody_bindings(
+            index,
+            {
+                "alpha": {"b_key": parent, "a_key": parent},
+                "zeta": {"a_key": parent},
+            },
+        )
+        assert [
+            (binding.row_id, binding.binding_key) for binding in document.bindings
+        ] == [("zeta", "a_key"), ("alpha", "a_key"), ("alpha", "b_key")]
+
+    def test_row_absent_from_the_index_fails_closed(self) -> None:
+        from feedbax.contracts.row_index import (
+            RowSelectionError,
+            RowSelectionErrorCode,
+            build_row_index_custody_bindings,
+        )
+
+        declaration = _reference_declaration()
+        declaration["not-a-row"] = declaration["target2x-floor"]
+        with pytest.raises(RowSelectionError) as excinfo:
+            build_row_index_custody_bindings(_reference_index(), declaration)
+        assert excinfo.value.code is RowSelectionErrorCode.UNRESOLVED_ROW_KEY
+        assert "not-a-row" in str(excinfo.value)
+
+    def test_missing_required_binding_key_fails_closed(self) -> None:
+        from feedbax.contracts.row_index import (
+            RowSelectionError,
+            RowSelectionErrorCode,
+            build_row_index_custody_bindings,
+        )
+
+        declaration = _reference_declaration()
+        del declaration["target4x-floor"]
+        with pytest.raises(RowSelectionError) as excinfo:
+            build_row_index_custody_bindings(
+                _reference_index(), declaration, required_binding_keys=("k2",)
+            )
+        assert excinfo.value.code is RowSelectionErrorCode.UNRESOLVED_ROW_KEY
+        assert excinfo.value.binding_key == "k2"
+
+    def test_unauthenticated_parent_is_refused(self) -> None:
+        from feedbax.contracts.row_index import build_row_index_custody_bindings
+
+        with pytest.raises(ValueError, match="authenticated manifest"):
+            build_row_index_custody_bindings(
+                _reference_index(),
+                {
+                    "target2x-floor": {
+                        "k2": ParentRef(
+                            kind="AnalysisRunManifest",
+                            id="feedbax-analysis-run:unauthenticated",
+                            role="analysis_run",
+                        )
+                    }
+                },
+            )
+
+    def test_partial_authentication_profile_is_refused(self) -> None:
+        from feedbax.contracts.row_index import build_row_index_custody_bindings
+
+        partial = _authenticated_parent("feedbax-analysis-run:partial", "1" * 64)
+        del partial.metadata["size_bytes"]
+        with pytest.raises(ValueError, match="incomplete"):
+            build_row_index_custody_bindings(
+                _reference_index(), {"target2x-floor": {"k2": partial}}
+            )
+
+    def test_partial_custody_is_admissible_without_required_keys(self) -> None:
+        from feedbax.contracts.row_index import build_row_index_custody_bindings
+
+        declaration = _reference_declaration()
+        del declaration["target4x-floor"]
+        document = build_row_index_custody_bindings(_reference_index(), declaration)
+        assert [binding.row_id for binding in document.bindings] == ["target2x-floor"]
+
+    def test_loader_rejects_a_foreign_schema_version(self, tmp_path) -> None:
+        from feedbax.contracts.row_index import load_row_index_custody_bindings
+
+        path = tmp_path / "custody.json"
+        payload = json.loads(REFERENCE_ROW_CUSTODY_SIDECAR)
+        payload["schema_version"] = "feedbax.spec.row_index_custody_bindings.v2"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError, match="unsupported RowIndexCustodyBindings schema_version"):
+            load_row_index_custody_bindings(path)
+
+
 class TestEvaluationMatrixCoexistingVersions:
     """The matrix family already coexists across v1, v2, and v3."""
 
