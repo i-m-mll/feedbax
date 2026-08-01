@@ -54,7 +54,7 @@ from feedbax.contracts.manifest import (
     REPORT_SPEC_SCHEMA_ID,
 )
 
-from tests.fake_project_extension.products import QuillonOutputs, planned
+from tests.fake_project_experiment.products import QuillonOutputs, planned
 
 DIGEST = "a" * 64
 
@@ -122,7 +122,7 @@ def test_the_plan_records_the_compiler_that_produced_the_locks(
         "contract_version": "quillon.compiler_contract.v1",
     }
     assert plan.origin["compiler_implementation"]["code_unit"] == (
-        "tests.fake_project_extension.products"
+        "tests.fake_project_experiment.products"
     )
 
 

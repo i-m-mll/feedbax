@@ -18,7 +18,7 @@ from feedbax.plugins import (
     PluginRegistration,
 )
 
-from tests.fake_project_extension.products import BULLETIN_TYPE, CONDENSE_TYPE, PROBE_TYPE
+from tests.fake_project_experiment.products import BULLETIN_TYPE, CONDENSE_TYPE, PROBE_TYPE
 
 
 def probe_recipe(run_spec, root, states_path, execution_context):

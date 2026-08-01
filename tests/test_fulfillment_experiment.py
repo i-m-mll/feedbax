@@ -25,7 +25,7 @@ from feedbax.analysis.reports import REPORT_RENDER_ROLE, ReportRecipeResult
 from feedbax.contracts.experiment_compile_lock import EvaluationSubjectBinding, ReportParentBinding
 from feedbax.contracts.manifest import load_manifest, store_bytes_artifact
 
-from tests.fake_project_extension.products import (
+from tests.fake_project_experiment.products import (
     BULLETIN_TYPE,
     PROBE_TYPE,
     QuillonOutputs,

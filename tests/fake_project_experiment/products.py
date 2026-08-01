@@ -1,8 +1,8 @@
 """The fake project's compiled outputs: real locks over real Feedbax specs.
 
-:mod:`tests.fake_project_extension.kernel` proves ``quillon`` can drive the
-generic compile engine. This module proves the *other* end of the same pipe:
-what a compile leaves on disk, and what fulfillment reads back from it.
+:mod:`tests.fake_project_experiment` proves ``quillon`` can drive the generic
+compile engine. This module proves the *other* end of the same pipe: what a
+compile leaves on disk, and what fulfillment reads back from it.
 
 Every output here is emitted through the production emitter —
 :func:`~feedbax.contracts.experiment_compile_lock.build_compile_lock` plus
@@ -39,14 +39,18 @@ from feedbax.contracts.manifest import (
     REPORT_SPEC_SCHEMA_ID,
     REPORT_SPEC_SCHEMA_VERSION,
 )
+from feedbax.contracts.experiment_envelope_dialect import (
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+    EXPERIMENT_ENVELOPE_SUFFIX,
+)
 from feedbax.contracts.run_matrix import TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
 
-from tests.fake_project_extension import ENVELOPE_SCHEMA
+from tests.fake_project_experiment import ENVELOPE_DIRECTORY, OUTPUT_DIRECTORY
 
-#: Where a quillon repository files authored envelopes and compiled outputs.
-ENVELOPE_DIRECTORY = "studies"
-OUTPUT_DIRECTORY = "compiled"
-ENVELOPE_SUFFIX = ".envelope.json"
+#: The one dialect every authored envelope declares, engine-owned since the
+#: project compiler seam was closed.
+ENVELOPE_SCHEMA = EXPERIMENT_ENVELOPE_SCHEMA_VERSION
+ENVELOPE_SUFFIX = EXPERIMENT_ENVELOPE_SUFFIX
 
 #: The recipe types quillon registers. Invented vocabulary, as everything the
 #: project names is.
@@ -59,7 +63,7 @@ QUILLON_CONTRACT = CompilerContract(
     contract_version="quillon.compiler_contract.v1",
 )
 QUILLON_IMPLEMENTATION = CompilerImplementation(
-    code_unit="tests.fake_project_extension.products", packages=("feedbax",)
+    code_unit="tests.fake_project_experiment.products", packages=("feedbax",)
 )
 
 

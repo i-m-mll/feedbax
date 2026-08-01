@@ -70,7 +70,7 @@ from feedbax.contracts.manifest import (
     store_bytes_artifact,
 )
 
-from tests.fake_project_extension.products import (
+from tests.fake_project_experiment.products import (
     BULLETIN_TYPE,
     CONDENSE_TYPE,
     PROBE_TYPE,
