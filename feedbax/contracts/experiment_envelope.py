@@ -44,9 +44,20 @@ ENVELOPE_SCHEMA_FIELD = "schema"
 
 
 class ExperimentEnvelopeRejectionCategory(StrEnum):
-    """Closed set of authored-envelope rejection categories."""
+    """Closed set of authored-envelope rejection categories.
+
+    This is the one rejection vocabulary the authoring surface speaks. The
+    engine kernel and every downstream compiler name a category from this set;
+    a compiler that needs a category not listed here is describing a different
+    kind of failure and must say so through a new schema version rather than
+    inventing a category string of its own.
+    """
 
     UNKNOWN_FIELD = "unknown-field"
+    MISSING_FIELD = "missing-field"
+    INVALID_VALUE = "invalid-value"
+    DUPLICATE_KEY = "duplicate-key"
+    NONCANONICAL_FORMAT = "noncanonical-format"
     ECHOED_INHERITED_VALUE = "echoed-inherited-value"
     DERIVED_VALUE_AUTHORED = "derived-value-authored"
     BUDGET_EXCEEDED = "budget-exceeded"
@@ -54,6 +65,13 @@ class ExperimentEnvelopeRejectionCategory(StrEnum):
     ILLEGAL_ASSERTION_PATH = "illegal-assertion-path"
     UNRESOLVED_ROW_KEY = "unresolved-row-key"
     EMPTY_SELECTION = "empty-selection"
+    UNRESOLVED_EXTENSION_LABEL = "unresolved-extension-label"
+    UNSUPPORTED_SCHEMA_VERSION = "unsupported-schema-version"
+    UNRESOLVED_BASE = "unresolved-base"
+    CROSS_FAMILY_BASE = "cross-family-base"
+    RETIRED_BASE_FAMILY = "retired-base-family"
+    UNRESOLVED_UPSTREAM_REFERENCE = "unresolved-upstream-reference"
+    CO_CREATED_PROTECTED_DOCUMENT = "co-created-protected-document"
 
 
 class ExperimentEnvelopeRejection(ValueError):
@@ -81,6 +99,27 @@ class ExperimentEnvelopeRejection(ValueError):
         if self.correct_home is not None:
             parts.append(f"correct home: {self.correct_home}")
         return "envelope rejected: " + "; ".join(parts)
+
+
+class PendingProductCustodyError(RuntimeError):
+    """The envelope is well-formed but the data it names has not been produced.
+
+    This is a repository-state failure, not an authoring failure: no edit to the
+    envelope fixes it, so the entrypoint reports it as infrastructure (exit 1)
+    and never as a rejection. It is the explicit counterpart of
+    :class:`ExperimentEnvelopeRejection`, and the reason the two exit codes stay
+    distinguishable when a compile plan outruns the runs that feed it.
+    """
+
+    def __init__(self, roles: tuple[str, ...], custody_ref: str) -> None:
+        self.roles = tuple(roles)
+        self.custody_ref = custody_ref
+        super().__init__(
+            f"the data this envelope names has not been produced: {sorted(self.roles)} still "
+            f"await a run receipt. The receipt layer writes {custody_ref}; until it exists, "
+            "compilation resolves the reference but cannot emit a document naming unproduced "
+            "data."
+        )
 
 
 class ExperimentEnvelopeCompilerError(ValueError):
@@ -282,6 +321,7 @@ __all__ = [
     "ExperimentEnvelopeCompilerRegistry",
     "ExperimentEnvelopeRejection",
     "ExperimentEnvelopeRejectionCategory",
+    "PendingProductCustodyError",
     "dispatch_experiment_envelope",
     "envelope_schema_of",
     "missing_outputs",

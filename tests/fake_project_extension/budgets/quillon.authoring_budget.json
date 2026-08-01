@@ -1,0 +1,31 @@
+{
+  "schema_id": "feedbax.spec.authoring_budget",
+  "schema_version": "feedbax.spec.authoring_budget.v1",
+  "budget_id": "quillon.authoring_budgets.v1",
+  "rationale": "A survey states a parameter delta; a digest states prose about one. Prose has a different natural size than a delta, so the two layers differ exactly where that matters and nowhere else.",
+  "layers": {
+    "survey": {
+      "max_lines": 60,
+      "max_bytes": 4096,
+      "max_scalar_bytes": 512,
+      "max_ast_nodes": 200,
+      "max_depth": 8,
+      "max_items": 32,
+      "max_object_keys": 32,
+      "max_assertions": 4,
+      "project_caps": {
+        "max_probes": 6
+      }
+    },
+    "digest": {
+      "max_lines": 80,
+      "max_bytes": 8192,
+      "max_scalar_bytes": 4096,
+      "max_ast_nodes": 200,
+      "max_depth": 8,
+      "max_items": 32,
+      "max_object_keys": 32,
+      "max_assertions": 2
+    }
+  }
+}

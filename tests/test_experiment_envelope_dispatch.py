@@ -254,8 +254,18 @@ def test_undeclared_outputs_are_infrastructure_failure(
 
 
 def test_rejection_categories_are_a_closed_set() -> None:
+    """The vocabulary is one closed set shared by the dispatcher and the kernel.
+
+    Categories are added deliberately, in the change that gives the engine a
+    reason to name one. What the set forbids is a compiler inventing a category
+    string of its own at the point of failure.
+    """
     assert {item.value for item in ExperimentEnvelopeRejectionCategory} == {
         "unknown-field",
+        "missing-field",
+        "invalid-value",
+        "duplicate-key",
+        "noncanonical-format",
         "echoed-inherited-value",
         "derived-value-authored",
         "budget-exceeded",
@@ -263,6 +273,13 @@ def test_rejection_categories_are_a_closed_set() -> None:
         "illegal-assertion-path",
         "unresolved-row-key",
         "empty-selection",
+        "unresolved-extension-label",
+        "unsupported-schema-version",
+        "unresolved-base",
+        "cross-family-base",
+        "retired-base-family",
+        "unresolved-upstream-reference",
+        "co-created-protected-document",
     }
     with pytest.raises(ValueError):
         ExperimentEnvelopeRejection("invented-category", "no")
