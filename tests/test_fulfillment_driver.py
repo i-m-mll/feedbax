@@ -59,6 +59,7 @@ from feedbax.contracts.experiment_compile_lock import (
     AuthenticatedReceiptReference,
     CheckpointInitializationBinding,
     EvaluationSubjectBinding,
+    FigureRuntimeInputBinding,
     ReceiptLocatorReference,
     ReportParentBinding,
 )
@@ -327,6 +328,35 @@ def test_a_consumer_binding_names_the_role_its_receipt_is_bound_under(
     )
     assert [ref.role for ref in requests[-1].spec.inputs] == ["observed_states"]
     assert requests[-1].spec.inputs[0].kind == "EvaluationRunManifest"
+
+
+def test_a_figure_binds_its_runtime_input_authority_by_role(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    source = outputs.probe("plate-source")
+    outputs.plate(
+        "plate",
+        references=[
+            planned(
+                source,
+                role_path="runtime.states",
+                consumer=FigureRuntimeInputBinding(input_role="observed"),
+            )
+        ],
+    )
+    fulfill_closure(
+        truncated_closure(_closure(outputs, "plate"), 1), environment=environment
+    )
+    requests = closure_requests(
+        _closure(outputs, "plate"),
+        environment=environment,
+        stop_at=LogicalKey("figure", "plate"),
+    )
+    figure = requests[-1]
+    assert figure.node_kind == "figure"
+    assert figure.runtime_inputs is not None
+    assert [ref.role for ref in figure.runtime_inputs] == ["observed"]
+    assert figure.spec["schema_id"] == "feedbax.spec.figure"
 
 
 def test_a_checkpoint_initialization_binding_never_binds_an_executable_node(
