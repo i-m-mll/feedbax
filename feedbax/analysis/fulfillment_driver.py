@@ -2,10 +2,10 @@
 
 A plan (:mod:`feedbax.analysis.fulfillment_plan`) says what must exist. This
 module makes it exist: it proves the closure's external boundary before anything
-runs, lowers each plan node into the feedbax node request its kind executes, and
-walks the closure in dependency order, reusing every node whose receipt admits
-and executing only the ones that are missing. Nothing here decides *what* a node
-is; orchestration decides only whether it runs.
+runs, lowers each plan node into the feedbax node request its compiled schema
+executes, and walks the closure in dependency order, reusing every node whose
+receipt admits and executing only the ones that are missing. Nothing here decides
+*what* a node is; orchestration decides only whether it runs.
 
 ## What this module owns, and what it does not
 
@@ -14,24 +14,26 @@ Every reuse-or-execute decision is
 :func:`feedbax.analysis.fulfillment_adapters.fulfill_node`, every admission is
 the uniform per-kind validator behind
 :func:`~feedbax.analysis.fulfillment_adapters.admit_node`, and rebuild and repair
-are :mod:`feedbax.analysis.fulfillment_custody`'s. This module reimplements none
-of them.
+are :mod:`feedbax.analysis.fulfillment_custody`'s. Deriving the plan is
+:mod:`feedbax.analysis.fulfillment_derivation`'s and lowering one node is
+:mod:`feedbax.analysis.fulfillment_lowering`'s. This module reimplements none of
+them.
 
 What it owns is the *walk*: the order nodes are reached in, which admitted
-receipt fills each declared input, and the refusals that stop the walk. What it
-does not own is the *lowering* — which node request a project's node kind
-compiles into. That reaches it as the :class:`NodeRequestLowering` callable the
-caller supplies, so no project vocabulary is ever switched on here.
+receipt fills each declared input, and the refusals that stop the walk. There is
+no caller-supplied lowering, payload preparation, or omission applier: those
+existed only while the engine that produced these plans lived downstream, and
+every one of them is now Feedbax code reached directly.
 
 ## The external boundary
 
-Some producers are receipts this runner may consume but never make: a run only
-another entrypoint launches, an acquisition that happens outside the process.
-The lowerer marks such a node by setting :attr:`~.fulfillment_plan.PlanNode.boundary`,
-and :func:`preflight` refuses the whole closure before any node of any branch
-executes, naming each boundary node, the consumers that name it with their role
-paths, and the subtree its receipt would unblock. Which nodes are boundaries is
-the project's fact; that a boundary refuses everything is this module's rule.
+Some producers are receipts this runner may consume but never make — a compiled
+training run matrix is exactly that, launched through its own orchestration
+entrypoint. Derivation marks such a node by setting
+:attr:`~.fulfillment_plan.PlanNode.boundary`, and :func:`preflight` refuses the
+whole closure before any node of any branch executes, naming each boundary node,
+the consumers that name it with their role paths, and the subtree its receipt
+would unblock.
 
 ## Missing receipts are refusals
 
@@ -51,7 +53,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any
 
 from feedbax.analysis.fulfillment import (
     FulfillmentAdmissionError,
@@ -74,15 +76,17 @@ from feedbax.analysis.fulfillment_custody import (
     rebuild_nodes,
     repair_node,
 )
+from feedbax.analysis.fulfillment_derivation import (
+    CompiledEnvelope,
+    CompiledOutputIndex,
+    require_external_record,
+)
+from feedbax.analysis.fulfillment_lowering import lower_compiled_node
 from feedbax.analysis.fulfillment_plan import (
     FulfillmentPlan,
     LogicalKey,
-    OmissionApplier,
-    OmissionRecord,
     PlanEdge,
     PlanNode,
-    apply_certified_omissions,
-    require_no_certified_omissions,
 )
 from feedbax.analysis.exact_parents import StagedExactParentEntry
 from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
@@ -211,16 +215,15 @@ class PlanDocumentDriftError(FulfillmentDriverError):
 
 @dataclass(frozen=True)
 class ClosureNode:
-    """One executable node of a preflighted closure, with its prepared payload.
+    """One node of a preflighted closure, with the compiled output it executes.
 
-    ``payload`` is whatever the project's :class:`PreparePayload` returned for
-    this node — typically its compiled document. Nothing here reads it; the
-    lowering callable does.
+    ``compiled`` is the lock/document pair the plan node was derived from, read
+    back and verified against the hash the plan pinned.
     """
 
     key: LogicalKey
     plan_node: PlanNode
-    payload: Any
+    compiled: CompiledEnvelope
     order: int
 
     @property
@@ -229,7 +232,13 @@ class ClosureNode:
 
     @property
     def kind(self) -> str:
+        """The compiled document's schema identity."""
         return self.plan_node.kind
+
+    @property
+    def document(self) -> Mapping[str, Any]:
+        """The compiled document this node executes."""
+        return self.compiled.document
 
     @property
     def source_ref(self) -> str:
@@ -247,8 +256,6 @@ class FulfillmentClosure:
 
     plan: FulfillmentPlan
     nodes: tuple[ClosureNode, ...]
-    omissions: tuple[OmissionRecord, ...] = ()
-    omit_certified: bool = False
 
     @property
     def target(self) -> LogicalKey:
@@ -266,24 +273,11 @@ class FulfillmentClosure:
         raise KeyError(key.text)
 
 
-class PreparePayload(Protocol):
-    """Returns the per-node document a lowering will be given.
-
-    This is where a project re-reads or re-derives what its plan node pinned. It
-    is called once per node, in plan order, and never for a closure that has
-    already refused. The node is positional-only, so an implementation names its
-    parameter freely.
-    """
-
-    def __call__(self, node: PlanNode, /) -> Any:  # pragma: no cover - protocol
-        ...
-
-
 @dataclass(frozen=True)
 class NodeBinding:
-    """Everything a lowering needs to bind one node's declared inputs.
+    """Everything the lowering needs to bind one node's declared inputs.
 
-    A lowering is handed the node, the plan, the required input edges in the
+    The lowering is handed the node, the plan, the required input edges in the
     plan's canonical order, and the receipts of the producers already walked. The
     two resolution helpers are the only sanctioned ways to turn an edge into an
     authenticated reference: :meth:`parent_ref` for a normal input and
@@ -309,47 +303,33 @@ class NodeBinding:
             return None
         return self.receipts[edge.producer]
 
-    def parent_ref(
-        self,
-        edge: PlanEdge,
-        *,
-        role: str,
-        kind: str | None = None,
-        manifest_id: str | None = None,
-    ) -> ParentRef:
+    def parent_ref(self, edge: PlanEdge, *, role: str) -> ParentRef:
         """Return the authenticated reference one required edge binds.
 
         An edge with a producer in this closure binds that producer's admitted
         receipt. An edge carrying an external record binds the receipt stored at
-        its canonical location; the caller supplies the ``kind`` and
-        ``manifest_id`` its own external vocabulary names, because what an
-        external record means is the project's fact.
+        its canonical location; the record's manifest kind and id come from the
+        typed lock reference the edge was derived from, so nothing is guessed and
+        nothing is supplied by a caller.
         """
         receipt = self.producer_receipt(edge)
         if receipt is not None:
             return receipt_parent_ref(receipt, role=role)
         return external_parent_ref(
-            _require_external(edge, kind, manifest_id),
+            require_external_record(edge.external, field=self._edge_field(edge)),
             role=role,
             root=self.environment.root,
             consumer=edge.consumer,
             role_path=edge.role_path,
         )[0]
 
-    def exact_parent_entry(
-        self,
-        edge: PlanEdge,
-        *,
-        role: str,
-        kind: str | None = None,
-        manifest_id: str | None = None,
-    ) -> StagedExactParentEntry:
+    def exact_parent_entry(self, edge: PlanEdge, *, role: str) -> StagedExactParentEntry:
         """Bind one required edge to the root-relative location it executes from."""
         receipt = self.producer_receipt(edge)
         if receipt is not None:
             return receipt_exact_parent_entry(receipt, role=role)
         parent, path = external_parent_ref(
-            _require_external(edge, kind, manifest_id),
+            require_external_record(edge.external, field=self._edge_field(edge)),
             role=role,
             root=self.environment.root,
             consumer=edge.consumer,
@@ -360,35 +340,9 @@ class NodeBinding:
             execution_uri=path.relative_to(Path(self.environment.root)).as_posix(),
         )
 
-
-class NodeRequestLowering(Protocol):
-    """Lowers one closure node into the feedbax node request its kind executes.
-
-    This is the driver's project-facing seam. The kernel never switches on a
-    project's node kind, family, or layer; the lowering does, and returns one of
-    feedbax's node requests. It is called once per node per walk, in dependency
-    order, with the receipts of everything upstream already admitted.
-
-    The node is positional-only so an implementation names it freely; the
-    binding stays keyword-only, because a walk always hands it by name.
-    """
-
-    def __call__(
-        self, node: ClosureNode, /, *, binding: NodeBinding
-    ) -> NodeRequest:  # pragma: no cover - protocol
-        ...
-
-
-def _require_external(
-    edge: PlanEdge, kind: str | None, manifest_id: str | None
-) -> tuple[str, str]:
-    if kind is None or manifest_id is None:
-        raise AmbiguousNodeReceiptError(
-            f"{edge.consumer.text} declares input {list(edge.role_path)} as an external record "
-            f"({edge.external!r}); binding it needs the manifest kind and id that record names, "
-            "which only the lowering project can read"
-        )
-    return kind, manifest_id
+    @staticmethod
+    def _edge_field(edge: PlanEdge) -> str:
+        return f"{edge.consumer.text} input {list(edge.role_path)}"
 
 
 def resolve_external_receipt(
@@ -456,79 +410,45 @@ def require_no_external_boundary(plan: FulfillmentPlan) -> None:
     raise ExternalBoundaryError(plan.target, boundary)
 
 
-def preflight(
-    plan: FulfillmentPlan,
-    *,
-    prepare: PreparePayload | Callable[[PlanNode], Any],
-    content_hash: Callable[[Any], str] | None = None,
-    omit_certified: bool = False,
-    apply_omission: OmissionApplier | None = None,
-) -> FulfillmentClosure:
-    """Prepare one plan's closure and prove its external boundary.
+def preflight(plan: FulfillmentPlan, index: CompiledOutputIndex) -> FulfillmentClosure:
+    """Bind one plan's closure to its compiled outputs and prove its boundary.
 
-    Nothing executes here and nothing is written. The order of the two refusals
-    is fixed: the boundary is proved first, because a closure that cannot run at
-    all is not made runnable by an applicability decision.
+    Nothing executes here and nothing is written. The boundary is proved first,
+    because a closure that cannot run at all is not made runnable by anything a
+    later check finds.
 
-    Args:
-        plan: The closure to preflight.
-        prepare: Returns each node's payload, called once per node in plan order.
-        content_hash: Hashes a prepared payload in the same domain the plan's
-            ``content_hash`` was minted in. When given, a node whose payload no
-            longer hashes to what the plan pinned refuses.
-        omit_certified: Materialize the plan's certified ``not_applicable``
-            decisions into the payloads that declare them, before any identity is
-            minted from them. Without it, a plan carrying any such decision
-            refuses with every certified decision named.
-        apply_omission: How a payload says a decision was materialized. Required
-            when *omit_certified* is set; it only ever sees certified edges.
+    Every node is re-read from *index* and re-hashed. Plan derivation and
+    fulfillment read the same compiled outputs, so a hash that no longer matches
+    means the outputs moved between them, and the node is named rather than
+    executed under a plan that described something else.
 
     Raises:
         ExternalBoundaryError: The closure names a boundary node.
-        CertifiedOmissionsPendingError: A node still declares an input the plan
-            certified as not applicable, and *omit_certified* is off.
-        PlanDocumentDriftError: A payload no longer hashes to what was pinned.
+        PlanDocumentDriftError: A compiled document no longer hashes to its pin.
     """
     require_no_external_boundary(plan)
-    if not omit_certified:
-        require_no_certified_omissions(plan)
-    elif apply_omission is None:
-        raise ValueError(
-            "omit_certified materializes certified decisions into a payload, so it needs an "
-            "apply_omission that states how this project's document says one"
-        )
-
     nodes: list[ClosureNode] = []
-    materialized: list[OmissionRecord] = []
     for order, plan_node in enumerate(plan.nodes):
-        payload = prepare(plan_node)
-        if content_hash is not None and plan_node.content_hash is not None:
-            observed = content_hash(payload)
-            if observed != plan_node.content_hash:
-                raise PlanDocumentDriftError(
-                    plan_node.key, plan_node.source_ref, plan_node.content_hash, observed
-                )
-        if omit_certified and apply_omission is not None:
-            payload, records = apply_certified_omissions(
-                payload, plan, consumer=plan_node.key, apply=apply_omission
+        compiled = index.require(plan_node.source_ref)
+        if plan_node.content_hash is not None and compiled.content_hash != plan_node.content_hash:
+            raise PlanDocumentDriftError(
+                plan_node.key,
+                plan_node.source_ref,
+                plan_node.content_hash,
+                compiled.content_hash,
             )
-            materialized.extend(records)
         nodes.append(
-            ClosureNode(key=plan_node.key, plan_node=plan_node, payload=payload, order=order)
+            ClosureNode(
+                key=plan_node.key, plan_node=plan_node, compiled=compiled, order=order
+            )
         )
-    return FulfillmentClosure(
-        plan=plan,
-        nodes=tuple(nodes),
-        omissions=tuple(materialized),
-        omit_certified=omit_certified,
-    )
+    return FulfillmentClosure(plan=plan, nodes=tuple(nodes))
 
 
 def fulfill_closure(
     closure: FulfillmentClosure,
     *,
     environment: FulfillmentEnvironment,
-    lower: NodeRequestLowering,
 ) -> FulfillmentRun:
     """Walk one preflighted closure, reusing or executing each node in order.
 
@@ -541,8 +461,7 @@ def fulfill_closure(
     results: list[NodeFulfillment] = []
     receipts: dict[LogicalKey, FulfillmentReceipt] = {}
     for node in closure.nodes:
-        request = _lowered(node, closure=closure, receipts=receipts, environment=environment,
-                           lower=lower)
+        request = _lowered(node, closure=closure, receipts=receipts, environment=environment)
         result = fulfill_node(request, environment=environment)
         results.append(result)
         receipts[node.key] = _single_receipt(node, result)
@@ -553,7 +472,6 @@ def closure_requests(
     closure: FulfillmentClosure,
     *,
     environment: FulfillmentEnvironment,
-    lower: NodeRequestLowering,
     stop_at: LogicalKey | None = None,
 ) -> tuple[NodeRequest, ...]:
     """Resolve every node request of an already-fulfilled closure, in order.
@@ -571,8 +489,7 @@ def closure_requests(
     requests: list[NodeRequest] = []
     receipts: dict[LogicalKey, FulfillmentReceipt] = {}
     for node in closure.nodes:
-        request = _lowered(node, closure=closure, receipts=receipts, environment=environment,
-                           lower=lower)
+        request = _lowered(node, closure=closure, receipts=receipts, environment=environment)
         requests.append(request)
         if stop_at is not None and node.key == stop_at:
             return tuple(requests)
@@ -586,7 +503,6 @@ def rebuild_closure(
     closure: FulfillmentClosure,
     *,
     environment: FulfillmentEnvironment,
-    lower: NodeRequestLowering,
 ) -> RebuildRun:
     """Verify one fulfilled closure by rebuilding every node into shadow custody.
 
@@ -599,7 +515,7 @@ def rebuild_closure(
         FulfillmentDriftError: Any node rebuilt to a different output projection.
         FulfillmentAdmissionError: Any node's stored receipt fails admission.
     """
-    requests = closure_requests(closure, environment=environment, lower=lower)
+    requests = closure_requests(closure, environment=environment)
     return rebuild_nodes(requests, environment=environment)
 
 
@@ -608,7 +524,6 @@ def repair_closure_node(
     node_key: LogicalKey,
     *,
     environment: FulfillmentEnvironment,
-    lower: NodeRequestLowering,
     metadata: Mapping[str, Any] | None = None,
 ) -> RepairResult:
     """Repair one node of a closure whose receipt exists but fails admission.
@@ -618,9 +533,7 @@ def repair_closure_node(
     ones. The repair itself — quarantine, shadow execution, complete
     revalidation, promotion, durable repair record — is feedbax's.
     """
-    requests = closure_requests(
-        closure, environment=environment, lower=lower, stop_at=node_key
-    )
+    requests = closure_requests(closure, environment=environment, stop_at=node_key)
     return repair_node(requests[-1], environment=environment, metadata=dict(metadata or {}))
 
 
@@ -640,10 +553,9 @@ def _lowered(
     closure: FulfillmentClosure,
     receipts: Mapping[LogicalKey, FulfillmentReceipt],
     environment: FulfillmentEnvironment,
-    lower: NodeRequestLowering,
 ) -> NodeRequest:
     binding = NodeBinding(closure=closure, environment=environment, receipts=dict(receipts))
-    request = lower(node, binding=binding)
+    request = lower_compiled_node(node, binding=binding)
     if request.node_key != node.key.text:
         raise AmbiguousNodeReceiptError(
             f"the lowering for {node.key.text} returned a request keyed {request.node_key!r}; a "

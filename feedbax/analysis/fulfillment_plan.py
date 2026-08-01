@@ -28,22 +28,24 @@ reached (``authored`` or ``compiler_rule``). Two bases, and no third:
 
 * **authored** — the declaration itself states the input is not applicable, so
   the decision is already materialized and nothing further is owed.
-* **compiler_rule** — a closed rule over the declaration proves the target
-  provides no such input. The rule is *named* on the edge
-  (:attr:`PlanEdge.rule`); which rules exist is the lowering project's data,
-  never a constant of this kernel.
+* **compiler_rule** — a closed versioned Feedbax structural rule proves the
+  target provides no such input. The rule is *named* on the edge
+  (:attr:`PlanEdge.rule`), so the plan quotes the rule that decided rather than
+  asserting the decision bare.
+
+Both decisions are made by the compile that emitted the lock, and are already
+materialized in the compiled document by the time a plan exists. Nothing
+downstream re-decides applicability, and no project callback ever did.
 
 A missing receipt is never one of these. Not-yet-executed, previously-failed,
 wrong-root, and corrupt are outcomes of fulfillment, not evidence about the
-science, and none of them reaches this module. Only a ``compiler_rule`` decision
-may be materialized into a declaration by :func:`apply_certified_omissions`.
+science, and none of them reaches this module.
 
 ## What this kernel does not decide
 
-It does not know what a layer is, how a declaration compiles, which node kinds
-exist, what a rule name means, or how a project's document expresses an
-omission. Those reach it as data on the plan and as the callables named in this
-module's protocols.
+It does not know how a declaration compiles, what a rule name means, or which
+compiled documents exist. Those reach it as data on the plan, derived from
+compile locks by :mod:`feedbax.analysis.fulfillment_derivation`.
 
 Stability note: this module is not part of the owner-ratified downstream
 inventory in ``docs/design/downstream_interface_stability.md``. The
@@ -55,10 +57,9 @@ plan is a durable emitted spec that crosses a process boundary.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from copy import deepcopy
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol, TypeVar
+from typing import Any, Protocol
 from urllib.parse import quote, unquote
 
 from feedbax.contracts.manifest import canonical_json_bytes
@@ -82,11 +83,9 @@ FULFILLMENT_PLAN_MIGRATION_TABLE: dict[str, str] = {}
 APPLICABILITY_STATUSES = ("required", "not_applicable")
 APPLICABILITY_BASES = ("authored", "compiler_rule")
 
-#: The one basis whose decisions :func:`apply_certified_omissions` may
-#: materialize. An ``authored`` decision is already materialized by definition.
+#: The basis a closed versioned rule reaches a decision on, as opposed to a
+#: human authoring it in the envelope.
 CERTIFYING_BASIS = "compiler_rule"
-
-PayloadT = TypeVar("PayloadT")
 
 
 class FulfillmentPlanError(RuntimeError):
@@ -151,31 +150,6 @@ class UnsupportedFulfillmentPlanVersionError(ValueError):
     """A plan document declares a schema identity this build does not support."""
 
 
-class CertifiedOmissionsPendingError(FulfillmentPlanError):
-    """A plan certifies inapplicability its declarations have not materialized.
-
-    This is author-actionable: :attr:`omissions` names every certified decision,
-    with the rule that certified it, so the lowering project can render the exact
-    edit its declaration format needs. Materializing them mechanically instead is
-    an explicit caller choice (:func:`apply_certified_omissions`), never a
-    fallback this module takes on its own.
-    """
-
-    def __init__(self, target: "LogicalKey", omissions: Sequence["OmissionRecord"]) -> None:
-        self.target = target
-        self.omissions = tuple(omissions)
-        listing = ", ".join(
-            f"{record.consumer.text}{list(record.role_path)} ({record.rule})"
-            for record in self.omissions
-        )
-        super().__init__(
-            f"the plan for {target.text} certifies {len(self.omissions)} input(s) as not "
-            f"applicable that its declarations still include: {listing}. Author the "
-            "applicability the plan states, or bind a producer to each input; materializing "
-            "them mechanically is an explicit choice and mints a different identity"
-        )
-
-
 @dataclass(frozen=True, order=True)
 class LogicalKey:
     """The stable logical address of one plan node: its layer and its envelope.
@@ -185,8 +159,9 @@ class LogicalKey:
     referrer. Role paths address *inputs*, not documents, so they live on the
     edges, where a role means something.
 
-    Both parts are project vocabulary. ``layer`` may not contain ``":"`` and
-    neither part may be empty, so :attr:`text` parses back to exactly one key.
+    ``layer`` is one of Feedbax's artifact layers and ``envelope`` is the
+    compiled output's name. ``layer`` may not contain ``":"`` and neither part
+    may be empty, so :attr:`text` parses back to exactly one key.
     """
 
     layer: str
@@ -224,20 +199,17 @@ class PlanNode:
 
     Attributes:
         key: The node's logical address.
-        source_ref: Where the declaration lives, in the lowering project's own
-            reference vocabulary. Opaque here, and the ref an expander is asked
-            to expand.
-        kind: The project's own node kind for this declaration. Opaque here: the
-            driver's lowering callback is what turns a kind into a node request.
-        content_hash: The project's hash of the document this node pins, so a
-            later lowering can prove the declaration has not moved underneath it.
-        execution_identity: The project's execution identity for this node, when
-            it has one.
+        source_ref: The repo-relative envelope this node was compiled from, and
+            the ref an expander is asked to expand.
+        kind: The compiled document's own ``schema_id``. Opaque here; it is what
+            :mod:`feedbax.analysis.fulfillment_lowering` dispatches on.
+        content_hash: The canonical hash of the compiled document this node pins,
+            so a later lowering can prove it has not moved underneath the plan.
+        execution_identity: The compile lock's execution identity for this node.
         boundary: When set, this node names an *external boundary*: a producer
-            this runner may consume the receipt of but never execute. The string
-            is the project's own name for the boundary.
-        metadata: Extra project facts carried with the node. Serialized as
-            given; nothing here reads it.
+            this runner may consume the receipt of but never execute.
+        metadata: Extra facts carried with the node. Serialized as given;
+            nothing here reads it.
     """
 
     key: LogicalKey
@@ -350,36 +322,6 @@ class PlanEdge:
     @property
     def sort_key(self) -> tuple[str, tuple[str, ...], bytes]:
         return (self.consumer.text, self.role_path, canonical_json_bytes(self.record()))
-
-
-@dataclass(frozen=True)
-class OmissionRecord:
-    """One certified decision, as the run that materialized it records it."""
-
-    consumer: LogicalKey
-    role_path: tuple[str, ...]
-    reason: str | None
-    basis: str
-    rule: str | None
-
-    @classmethod
-    def of(cls, edge: PlanEdge) -> "OmissionRecord":
-        return cls(
-            consumer=edge.consumer,
-            role_path=edge.role_path,
-            reason=edge.reason,
-            basis=edge.basis,
-            rule=edge.rule,
-        )
-
-    def record(self) -> dict[str, Any]:
-        return {
-            "consumer": self.consumer.text,
-            "role_path": list(self.role_path),
-            "reason": self.reason,
-            "basis": self.basis,
-            "rule": self.rule,
-        }
 
 
 @dataclass(frozen=True)
@@ -574,10 +516,10 @@ def build_fulfillment_plan(
 class EdgeDeclaration:
     """One input a node declares, before its producer has been addressed.
 
-    An expander states inputs in its own reference vocabulary: a ``producer_ref``
-    is a source ref the expander itself can expand, and the kernel is what turns
-    it into a :class:`LogicalKey`. Everything else is exactly a
-    :class:`PlanEdge`'s typed decision.
+    An expander states inputs by source ref: a ``producer_ref`` is a ref the
+    expander itself can expand, and the kernel is what turns it into a
+    :class:`LogicalKey`. Everything else is exactly a :class:`PlanEdge`'s typed
+    decision.
     """
 
     role_path: tuple[str, ...]
@@ -612,9 +554,11 @@ class NodeDeclaration:
 class NodeExpander(Protocol):
     """Expands one source ref into the node and inputs it declares.
 
-    This is the project-facing seam of plan construction: the kernel knows how
-    to reach a closure, dedupe a diamond, refuse a key collision, and order the
-    result; the expander knows what a declaration is and how to read it.
+    This splits plan construction in two: the kernel knows how to reach a
+    closure, dedupe a diamond, refuse a key collision, and order the result;
+    the expander knows what a declaration is and how to read it.
+    :mod:`feedbax.analysis.fulfillment_derivation` is the expander the engine
+    uses, and it reads compile locks.
 
     The source ref is positional-only, so an implementation names its parameter
     whatever its own vocabulary calls it.
@@ -707,55 +651,29 @@ def _dependency_order(
     return tuple(ordered)
 
 
-def require_no_certified_omissions(
-    plan: FulfillmentPlan, *, consumer: LogicalKey | None = None
-) -> None:
-    """Refuse a plan that still carries a certified-inapplicable input.
-
-    This is the no-flag path. The refusal carries every certified decision and
-    the rule that certified it, so the author's next action is to state that
-    applicability rather than to reverse-engineer what the lowerer proved.
-    """
-    omissions = plan.certified_omissions(consumer=consumer)
-    if omissions:
-        raise CertifiedOmissionsPendingError(
-            plan.target, tuple(OmissionRecord.of(edge) for edge in omissions)
-        )
-
-
-class OmissionApplier(Protocol):
-    """Materializes certified omissions into one project document.
-
-    The kernel decides *which* decisions may be materialized — only those a
-    closed rule certified — and the project decides how its own document says
-    so. An applier never sees an uncertified edge. Both parameters are
-    positional-only, so an implementation names them freely.
-    """
-
-    def __call__(
-        self, payload: Any, edges: Sequence[PlanEdge], /
-    ) -> Any:  # pragma: no cover - protocol
-        ...
-
-
-def apply_certified_omissions(
-    payload: PayloadT,
-    plan: FulfillmentPlan,
-    *,
-    consumer: LogicalKey,
-    apply: OmissionApplier | Callable[[PayloadT, Sequence[PlanEdge]], PayloadT],
-) -> tuple[PayloadT, tuple[OmissionRecord, ...]]:
-    """Materialize one node's certified omissions into its document.
-
-    Only decisions a closed rule certified are passed to *apply*: an authored
-    decision is already materialized, a required input is not a decision at all,
-    and a missing receipt never reaches this module. Because the document
-    changes, whatever identity is minted from it changes; that is the point, not
-    a side effect. Every materialized decision is returned so the run that
-    executes the result can record what it left out.
-    """
-    omissions = plan.certified_omissions(consumer=consumer)
-    if not omissions:
-        return deepcopy(payload), ()
-    applied = apply(deepcopy(payload), omissions)
-    return applied, tuple(OmissionRecord.of(edge) for edge in omissions)
+__all__ = [
+    "APPLICABILITY_BASES",
+    "APPLICABILITY_STATUSES",
+    "CERTIFYING_BASIS",
+    "FULFILLMENT_PLAN_MIGRATION_TABLE",
+    "FULFILLMENT_PLAN_SCHEMA_ID",
+    "FULFILLMENT_PLAN_SCHEMA_VERSION",
+    "FULFILLMENT_PLAN_SCHEMA_VERSION_V1",
+    "FULFILLMENT_PLAN_SUPPORTED_SCHEMA_VERSIONS",
+    "DuplicateLogicalKeyError",
+    "EdgeDeclaration",
+    "FulfillmentPlan",
+    "FulfillmentPlanError",
+    "LogicalKey",
+    "NodeDeclaration",
+    "NodeExpander",
+    "PlanCycleError",
+    "PlanEdge",
+    "PlanNode",
+    "UnresolvedPlanReferenceError",
+    "UnsupportedFulfillmentPlanVersionError",
+    "build_fulfillment_plan",
+    "expand_fulfillment_plan",
+    "fulfillment_plan_from_document",
+    "read_fulfillment_plan_document",
+]
