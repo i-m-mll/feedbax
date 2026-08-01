@@ -30,6 +30,10 @@ from feedbax.contracts.training import (
     resolve_training_run_spec,
     validate_training_run_spec_semantics,
 )
+from feedbax.governance.science_surface import (
+    build_parser as build_science_surface_parser,
+    run_cli as run_science_surface_cli,
+)
 from feedbax.plugins.composition import compose_application
 from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.orchestration.events import RunEventEmitter
@@ -663,7 +667,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
 
+    build_science_surface_parser(
+        subparsers.add_parser(
+            "check-project-science-surface",
+            help=(
+                "Deny-by-default gate: check a downstream project's production Python against "
+                "the science-surface policy ratified on a protected baseline ref."
+            ),
+        )
+    )
+
     args = parser.parse_args(argv)
+    if args.command == "check-project-science-surface":
+        return run_science_surface_cli(
+            root=args.root, policy=args.policy, baseline_ref=args.baseline_ref
+        )
     bootstrap_state = asyncio.run(
         compose_application(modules=tuple(getattr(args, "plugin", None) or ()))
     )
