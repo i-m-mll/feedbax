@@ -367,12 +367,15 @@ def find_manifest_by_id(
     tier refuse, because one identifier must name one record.
     """
     root_path = Path(root) if root is not None else default_manifest_root()
-    for candidates in (
-        canonical_manifest_candidate_paths(manifest_id, root=root_path),
-        find_manifest_paths_by_id(manifest_id, root=root_path),
-        iter_manifest_files(root_path),
-    ):
-        matches = _manifest_matches(manifest_id, candidates)
+    # Tiers are evaluated lazily: the full scan must not run when a cheaper tier
+    # already resolves the identifier.
+    tiers: tuple[Callable[[], Sequence[Path]], ...] = (
+        lambda: canonical_manifest_candidate_paths(manifest_id, root=root_path),
+        lambda: find_manifest_paths_by_id(manifest_id, root=root_path),
+        lambda: iter_manifest_files(root_path),
+    )
+    for candidates in tiers:
+        matches = _manifest_matches(manifest_id, candidates())
         if matches:
             return _single_manifest_match(manifest_id, root_path, matches)
     return _single_manifest_match(manifest_id, root_path, [])

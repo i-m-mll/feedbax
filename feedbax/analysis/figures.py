@@ -760,21 +760,42 @@ def _resolve_authority_payloads(
     return resolved, tuple(resolved_refs)
 
 
-def execute_figure_spec(
+@dataclass(frozen=True)
+class FigureExecutionPlan:
+    """Everything a figure execution derives before any effect happens.
+
+    `FigureManifest` identity is minted from the resolved authored spec, while
+    runtime inputs, authorities, and artifact-provider bindings are overlaid
+    afterwards and recorded separately. Cache admission therefore needs the
+    same derivation the executor uses, so the derivation lives here rather than
+    inside :func:`execute_figure_spec`.
+    """
+
+    resolution: ResolvedFigureSpec
+    resolved_spec: FigureSpec
+    execution_spec: FigureSpec
+    manifest_id: str
+    authored_payload: SpecPayload
+    composition_payloads: tuple[SpecPayload, ...]
+    runtime_binding_payload: SpecPayload | None
+    runtime_overlay: bool
+
+
+def plan_figure_execution(
     spec: FigureSpecInput,
     *,
     runtime_inputs: Sequence[ParentRef] | None = None,
     runtime_input_authorities: Sequence[FigureInputAuthoritySpec] | None = None,
     runtime_metadata: Mapping[str, Any] | None = None,
     repo_root: Path | str | None = None,
-    root: Path | str | None = None,
-    provenance: Provenance | None = None,
-    issues: list[str] | None = None,
-    metadata: dict[str, Any] | None = None,
     execution_context: StagedExecutionContext | None = None,
     registry: FigureRegistry,
-) -> tuple[FigureManifest, Path]:
-    """Resolve and execute exactly the ordinary FigureSpec exposed by display."""
+) -> FigureExecutionPlan:
+    """Derive one figure's identity, embedded spec, and runtime binding record.
+
+    This is an internal Feedbax helper shared by figure execution and figure
+    receipt admission. It performs no filesystem effects.
+    """
     resolution = resolve_figure_spec(spec, repo_root=repo_root, registry=registry)
     resolved_spec = resolution.figure_spec
     runtime_update: dict[str, Any] = {}
@@ -808,15 +829,15 @@ def execute_figure_spec(
         else resolution.authored
     )
     resolved_payload = spec_payload("FigureSpec", semantic_payload)
-    composition_payloads: list[SpecPayload] = []
+    composition_payloads: tuple[SpecPayload, ...] = ()
     if resolution.composition is not None:
-        composition_payloads = [
+        composition_payloads = (
             spec_payload("FigureCompositionSpec", resolution.authored),
             spec_payload(
                 "FigureCompositionProvenance",
                 resolution.composition.model_dump(mode="json", exclude_none=True),
             ),
-        ]
+        )
     runtime_binding_payload = _figure_runtime_binding_payload(
         resolution.authored_identity_sha256,
         resolution.resolved_identity_sha256,
@@ -825,8 +846,49 @@ def execute_figure_spec(
         runtime_overlay=bool(runtime_update),
         runtime_metadata=dict(runtime_metadata or {}),
     )
+    return FigureExecutionPlan(
+        resolution=resolution,
+        resolved_spec=resolved_spec,
+        execution_spec=figure_spec,
+        manifest_id=figure_manifest_id(resolved_spec),
+        authored_payload=resolved_payload,
+        composition_payloads=composition_payloads,
+        runtime_binding_payload=runtime_binding_payload,
+        runtime_overlay=bool(runtime_update),
+    )
+
+
+def execute_figure_spec(
+    spec: FigureSpecInput,
+    *,
+    runtime_inputs: Sequence[ParentRef] | None = None,
+    runtime_input_authorities: Sequence[FigureInputAuthoritySpec] | None = None,
+    runtime_metadata: Mapping[str, Any] | None = None,
+    repo_root: Path | str | None = None,
+    root: Path | str | None = None,
+    provenance: Provenance | None = None,
+    issues: list[str] | None = None,
+    metadata: dict[str, Any] | None = None,
+    execution_context: StagedExecutionContext | None = None,
+    registry: FigureRegistry,
+) -> tuple[FigureManifest, Path]:
+    """Resolve and execute exactly the ordinary FigureSpec exposed by display."""
+    plan = plan_figure_execution(
+        spec,
+        runtime_inputs=runtime_inputs,
+        runtime_input_authorities=runtime_input_authorities,
+        runtime_metadata=runtime_metadata,
+        repo_root=repo_root,
+        execution_context=execution_context,
+        registry=registry,
+    )
+    resolved_spec = plan.resolved_spec
+    figure_spec = plan.execution_spec
+    resolved_payload = plan.authored_payload
+    composition_payloads = list(plan.composition_payloads)
+    runtime_binding_payload = plan.runtime_binding_payload
     root_path = Path(root) if root is not None else default_manifest_root()
-    manifest_id = figure_manifest_id(resolved_spec)
+    manifest_id = plan.manifest_id
     prov = provenance.model_copy(deep=True) if provenance is not None else collect_git_provenance()
     prov.parents = list(figure_spec.inputs)
     if issues:

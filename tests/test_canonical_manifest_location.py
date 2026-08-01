@@ -145,6 +145,19 @@ def test_stale_index_entry_falls_back_to_the_canonical_path(tmp_path: Path) -> N
     assert found.id == manifest.id
 
 
+def test_canonical_resolution_does_not_pay_for_a_full_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = _analysis_manifest()
+    path = write_manifest(manifest, root=tmp_path, index=False)
+
+    def _refuse(*_args, **_kwargs):
+        raise AssertionError("canonical resolution must not fall through to a full scan")
+
+    monkeypatch.setattr("feedbax.analysis.specs.iter_manifest_files", _refuse)
+    assert find_manifest_by_id(manifest.id, root=tmp_path)[1] == path
+
+
 def test_stale_index_entry_naming_other_bytes_is_ignored(tmp_path: Path) -> None:
     wanted = _analysis_manifest()
     other = _evaluation_manifest("feedbax-evaluation-run:decoy")
