@@ -64,6 +64,7 @@ from feedbax.analysis.fulfillment_plan import (
 from feedbax.analysis.reports import REPORT_RENDER_ROLE, ReportRecipeResult
 from feedbax.contracts.manifest import (
     EvaluationRunSpec,
+    ReportManifest,
     ReportSpec,
     canonical_json_bytes,
     canonical_manifest_path,
@@ -740,6 +741,7 @@ def test_the_flag_materializes_the_certified_omissions_and_mints_a_new_identity(
     run = fulfill_closure(closure, environment=environment, lower=lower)
     omitted_id = run.results[-1].receipt.manifest_id
     omitted_manifest = load_manifest(run.results[-1].receipt.path)
+    assert isinstance(omitted_manifest, ReportManifest)
     assert omitted_manifest.report_spec.inline["params"]["omitted"] == ["Appendix/s1"]
 
     unomitted = fulfill_closure(
@@ -883,6 +885,7 @@ def test_a_lowering_that_returns_a_foreign_node_key_refuses(
 
     def mislabelled(node, *, binding):
         request = lower(node, binding=binding)
+        assert isinstance(request, EvaluationNodeRequest), "this corpus lowers a sample to one"
         return EvaluationNodeRequest(
             node_key="somebody-elses-key", spec=request.spec, order=request.order
         )

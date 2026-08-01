@@ -615,9 +615,12 @@ class NodeExpander(Protocol):
     This is the project-facing seam of plan construction: the kernel knows how
     to reach a closure, dedupe a diamond, refuse a key collision, and order the
     result; the expander knows what a declaration is and how to read it.
+
+    The source ref is positional-only, so an implementation names its parameter
+    whatever its own vocabulary calls it.
     """
 
-    def __call__(self, source_ref: str) -> NodeDeclaration:  # pragma: no cover - protocol
+    def __call__(self, source_ref: str, /) -> NodeDeclaration:  # pragma: no cover - protocol
         ...
 
 
@@ -725,11 +728,12 @@ class OmissionApplier(Protocol):
 
     The kernel decides *which* decisions may be materialized — only those a
     closed rule certified — and the project decides how its own document says
-    so. An applier never sees an uncertified edge.
+    so. An applier never sees an uncertified edge. Both parameters are
+    positional-only, so an implementation names them freely.
     """
 
     def __call__(
-        self, payload: Any, edges: Sequence[PlanEdge]
+        self, payload: Any, edges: Sequence[PlanEdge], /
     ) -> Any:  # pragma: no cover - protocol
         ...
 

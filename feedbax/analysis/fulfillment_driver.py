@@ -271,10 +271,11 @@ class PreparePayload(Protocol):
 
     This is where a project re-reads or re-derives what its plan node pinned. It
     is called once per node, in plan order, and never for a closure that has
-    already refused.
+    already refused. The node is positional-only, so an implementation names its
+    parameter freely.
     """
 
-    def __call__(self, node: PlanNode) -> Any:  # pragma: no cover - protocol
+    def __call__(self, node: PlanNode, /) -> Any:  # pragma: no cover - protocol
         ...
 
 
@@ -367,10 +368,13 @@ class NodeRequestLowering(Protocol):
     project's node kind, family, or layer; the lowering does, and returns one of
     feedbax's node requests. It is called once per node per walk, in dependency
     order, with the receipts of everything upstream already admitted.
+
+    The node is positional-only so an implementation names it freely; the
+    binding stays keyword-only, because a walk always hands it by name.
     """
 
     def __call__(
-        self, node: ClosureNode, *, binding: NodeBinding
+        self, node: ClosureNode, /, *, binding: NodeBinding
     ) -> NodeRequest:  # pragma: no cover - protocol
         ...
 
