@@ -54,6 +54,7 @@ class ExperimentEnvelopeRejectionCategory(StrEnum):
     ILLEGAL_ASSERTION_PATH = "illegal-assertion-path"
     UNRESOLVED_ROW_KEY = "unresolved-row-key"
     EMPTY_SELECTION = "empty-selection"
+    UNRESOLVED_EXTENSION_LABEL = "unresolved-extension-label"
 
 
 class ExperimentEnvelopeRejection(ValueError):

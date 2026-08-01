@@ -1,0 +1,7 @@
+{
+  "budget_id": "quillon.authoring_budgets.v1",
+  "layers": {
+    "digest": {"max_authored_lines": 40},
+    "survey": {"max_authored_lines": 50}
+  }
+}

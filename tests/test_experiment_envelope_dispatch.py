@@ -263,6 +263,7 @@ def test_rejection_categories_are_a_closed_set() -> None:
         "illegal-assertion-path",
         "unresolved-row-key",
         "empty-selection",
+        "unresolved-extension-label",
     }
     with pytest.raises(ValueError):
         ExperimentEnvelopeRejection("invented-category", "no")
