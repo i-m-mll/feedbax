@@ -14,9 +14,11 @@ from feedbax.analysis.fulfillment import (
     receipt_path,
 )
 from feedbax.analysis.fulfillment_adapters import (
+    AnalysisNodeRequest,
     EvaluationNodeRequest,
     FulfillmentEnvironment,
     ReportNodeRequest,
+    execute_node,
     fulfill_node,
     staged_exact_parents_from_receipts,
 )
@@ -41,6 +43,7 @@ from feedbax.analysis.fulfillment_custody import (
     shadow_custody,
 )
 from feedbax.contracts.manifest import (
+    AnalysisRunSpec,
     EvaluationRunManifest,
     EvaluationRunSpec,
     Provenance,
@@ -51,6 +54,8 @@ from feedbax.contracts.manifest import (
     store_bytes_artifact,
 )
 from feedbax.analysis.reports import REPORT_RENDER_ROLE, ReportRecipeResult
+from feedbax.analysis.specs import AnalysisRecipeResult
+from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 
 class _Recipes:
@@ -59,7 +64,9 @@ class _Recipes:
     def __init__(self) -> None:
         self.evaluation = 0
         self.report = 0
+        self.analysis = 0
         self.payload = "baseline"
+        self.analysis_value = 3
 
 
 @pytest.fixture
@@ -99,8 +106,30 @@ def environment(tmp_path: Path, application_registry_bundle, recipes: _Recipes):
         )
         return ReportRecipeResult(artifacts=[artifact], summary={"inputs": len(inputs)})
 
+    def stateful_evaluation_recipe(run_spec, root, states_path, execution_context):
+        recipes.evaluation += 1
+        return EvaluationRecipeResult(
+            states={"trajectory": [1, 2, 3]},
+            summary_metrics={
+                "rows": run_spec.params.get("rows", 0),
+                "payload": recipes.payload,
+            },
+            metadata={"states_schema": "testpkg.states.v1"},
+        )
+
+    def analysis_recipe(_run_spec, _root, _inputs, _execution_context):
+        recipes.analysis += 1
+        return AnalysisRecipeResult(
+            analyses={"toy": ToyAnalysis(variant="toy")},
+            data=build_toy_analysis_data(value=recipes.analysis_value),
+        )
+
     application_registry_bundle.evaluation_recipes.register("testpkg.custody", evaluation_recipe)
+    application_registry_bundle.evaluation_recipes.register(
+        "testpkg.custody.stateful", stateful_evaluation_recipe
+    )
     application_registry_bundle.report_recipes.register("testpkg.custody", report_recipe)
+    application_registry_bundle.analysis_recipes.register("testpkg.custody", analysis_recipe)
     return FulfillmentEnvironment(
         root=tmp_path / "receipts",
         registries=application_registry_bundle,
@@ -112,6 +141,28 @@ def _evaluation_node(key: str = "eval/a", rows: int = 1) -> EvaluationNodeReques
     return EvaluationNodeRequest(
         node_key=key,
         spec=EvaluationRunSpec(evaluation_type="testpkg.custody", params={"rows": rows}),
+    )
+
+
+def _stateful_evaluation_node(
+    key: str = "eval/stateful",
+    *,
+    states_custody: str = "cache",
+) -> EvaluationNodeRequest:
+    """A node whose recipe returns states, so the states cache is populated."""
+    return EvaluationNodeRequest(
+        node_key=key,
+        spec=EvaluationRunSpec(
+            evaluation_type="testpkg.custody.stateful",
+            params={"rows": 1, "states_custody": states_custody},
+        ),
+    )
+
+
+def _analysis_node(key: str = "analysis/a") -> AnalysisNodeRequest:
+    return AnalysisNodeRequest(
+        node_key=key,
+        spec=AnalysisRunSpec(analysis_type="testpkg.custody", params={"k": 1}),
     )
 
 
@@ -170,6 +221,131 @@ def test_rebuild_over_an_intact_tree_reports_zero_drift_and_preserves_receipts(
         executions[0] + 1,
         executions[1] + 1,
     ), "a rebuild executes each node exactly once, in shadow custody"
+
+
+@pytest.mark.parametrize("states_custody", ["cache", "durable"])
+def test_intact_evaluation_rebuild_re_executes_past_the_states_cache(
+    environment, recipes: _Recipes, states_custody: str
+) -> None:
+    """An evaluation rebuild runs the recipe again even with states cached.
+
+    ``execute_evaluation_run_spec`` serves cached states by default and then
+    takes the previously completed manifest's summary metrics and artifacts
+    instead of the recipe's. The shadow root mirrors ``cache/`` along with every
+    other readable entry, so that path would reproduce the receipt from itself.
+    Both states custody modes are covered: ``durable`` additionally republishes
+    the states artifact into the shadow root, which must not collide with the
+    mirrored copy.
+    """
+    node = _stateful_evaluation_node(states_custody=states_custody)
+    receipt = fulfill_node(node, environment=environment).receipt
+    assert (Path(environment.root) / "cache" / "states").is_dir()
+    before = receipt.path.read_bytes()
+    executions = recipes.evaluation
+
+    outcome = rebuild_node(node, environment=environment)
+
+    assert recipes.evaluation == executions + 1, (
+        "a rebuild must re-execute the evaluation recipe, not replay its states cache"
+    )
+    assert outcome.matched
+    assert outcome.differences == []
+    assert receipt.path.read_bytes() == before
+
+
+def test_perturbed_evaluation_recipe_drifts_despite_a_populated_states_cache(
+    environment, recipes: _Recipes
+) -> None:
+    """A changed evaluation recipe is caught even though its states are cached."""
+    node = _stateful_evaluation_node()
+    receipt = fulfill_node(node, environment=environment).receipt
+    before = receipt.path.read_bytes()
+
+    recipes.payload = "perturbed"
+    outcome = rebuild_node(node, environment=environment)
+
+    assert not outcome.matched
+    assert outcome.field_paths == ("summaries.summary_metrics.payload",)
+    assert outcome.differences[0].expected == "baseline"
+    assert outcome.differences[0].observed == "perturbed"
+    assert receipt.path.read_bytes() == before
+
+
+def test_intact_analysis_rebuild_re_executes_the_recipe_and_reports_zero_drift(
+    environment, recipes: _Recipes
+) -> None:
+    """An analysis rebuild really runs the recipe again before comparing.
+
+    ``execute_analysis_run_spec`` short-circuits by default on any completed
+    manifest with the same id found beneath its root. A shadow root mirrors
+    ``manifests/`` — dependent nodes must resolve their authenticated parents
+    there — so that short-circuit would hand the rebuild its own authoritative
+    receipt and every analysis node would match vacuously. The recipe counter is
+    the proof that this rebuild executed rather than returning the mirror.
+    """
+    analysis = _analysis_node()
+    receipt = fulfill_node(analysis, environment=environment).receipt
+    before = receipt.path.read_bytes()
+    executions = recipes.analysis
+
+    outcome = rebuild_node(analysis, environment=environment)
+
+    assert recipes.analysis == executions + 1, (
+        "a rebuild must re-execute the analysis recipe, not return the mirrored receipt"
+    )
+    assert outcome.matched
+    assert outcome.differences == []
+    assert outcome.manifest_id == load_manifest(receipt.path).id
+    assert receipt.path.read_bytes() == before
+
+
+def test_perturbed_analysis_recipe_drifts_and_leaves_the_original_receipt_intact(
+    environment, recipes: _Recipes
+) -> None:
+    """A changed analysis recipe output is reported as drift, naming the fields."""
+    analysis = _analysis_node()
+    receipt = fulfill_node(analysis, environment=environment).receipt
+    before = receipt.path.read_bytes()
+    executions = recipes.analysis
+
+    recipes.analysis_value += 1
+    outcome = rebuild_node(analysis, environment=environment)
+
+    assert recipes.analysis == executions + 1
+    assert not outcome.matched
+    assert outcome.field_paths == ("artifacts[0].sha256",)
+    difference = outcome.differences[0]
+    assert difference.expected == outcome.expected.artifacts[0].sha256
+    assert difference.observed == outcome.observed.artifacts[0].sha256
+    assert difference.expected != difference.observed
+    assert outcome.describe() == (
+        "analysis node analysis/a drifted: artifacts[0].sha256"
+    )
+    assert receipt.path.read_bytes() == before
+
+    with pytest.raises(FulfillmentDriftError) as excinfo:
+        rebuild_nodes([analysis], environment=environment)
+    assert excinfo.value.drifted[0].field_paths == outcome.field_paths
+
+
+def test_execute_node_for_an_analysis_never_returns_a_pre_existing_receipt(
+    environment, recipes: _Recipes
+) -> None:
+    """The adapter path executes unconditionally even with a receipt in place.
+
+    This is ``execute_node``'s contract stated directly against the analysis
+    adapter: reuse is the caller's decision, taken through ``admit_node``.
+    """
+    analysis = _analysis_node()
+    fulfill_node(analysis, environment=environment)
+    executions = recipes.analysis
+
+    _manifest, path = execute_node(analysis, environment=environment)
+    assert recipes.analysis == executions + 1
+
+    _again, again_path = execute_node(analysis, environment=environment)
+    assert recipes.analysis == executions + 2
+    assert again_path == path
 
 
 def test_rebuilt_report_projection_carries_artifacts_and_recorded_summaries(

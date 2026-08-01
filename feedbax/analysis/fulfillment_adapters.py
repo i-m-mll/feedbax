@@ -440,6 +440,19 @@ def _execute_evaluation(
     request: EvaluationNodeRequest,
     environment: FulfillmentEnvironment,
 ):
+    """Execute one evaluation node unconditionally.
+
+    ``execute_evaluation_run_spec`` serves the evaluated states from its cache
+    by default whenever ``<root>/cache/states/<id>.pkl`` exists, and then takes
+    the summary metrics and artifacts of the previously completed manifest
+    rather than the recipe's. A shadow root mirrors that cache along with
+    everything else a parent might resolve through, so a rebuild would rebuild
+    nothing: the recipe would not run and the receipt would reproduce itself.
+    ``force=True`` re-executes while leaving the cache write in place, so
+    downstream state consumers still find the states this run produced;
+    ``use_cache=False`` would additionally stop populating that cache, which is
+    a different decision than the one :func:`execute_node` needs to make.
+    """
     return execute_evaluation_run_spec(
         request.spec,
         registry=environment.registries.evaluation_recipes,
@@ -448,6 +461,7 @@ def _execute_evaluation(
         issues=list(environment.issues),
         metadata=dict(request.metadata),
         execution_context=environment.execution_context,
+        force=True,
     )
 
 
@@ -455,6 +469,18 @@ def _execute_analysis(
     request: AnalysisNodeRequest,
     environment: FulfillmentEnvironment,
 ):
+    """Execute one analysis node unconditionally.
+
+    ``execute_analysis_run_spec`` short-circuits by default on any completed
+    manifest carrying the same id anywhere beneath its root. That admission is
+    weaker than :func:`admit_node`'s — status and kind only — and it would fire
+    on the mirrored receipt when a rebuild executes into shadow custody, so the
+    node would return its own authoritative record instead of re-executing and
+    every rebuild would match vacuously. ``use_cache=False`` opts this call path
+    out of that cache entirely, which is what :func:`execute_node` promises:
+    execution never consults an existing receipt. Reuse remains the caller's
+    decision, taken through :func:`admit_node`.
+    """
     provenance = Provenance(parents=list(request.spec.inputs))
     return execute_analysis_run_spec(
         request.spec,
@@ -467,6 +493,7 @@ def _execute_analysis(
         issues=list(environment.issues),
         metadata=dict(request.metadata),
         execution_context=environment.execution_context,
+        use_cache=False,
     )
 
 

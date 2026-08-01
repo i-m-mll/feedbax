@@ -9,6 +9,7 @@ import importlib.metadata
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -413,6 +414,12 @@ def _figure_render_filename(
     return f"{name}.{ext}"
 
 
+def _safe_html_id(value: str) -> str:
+    """Return *value* reduced to characters an HTML element id may carry."""
+    normalized = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(value)).strip("-")
+    return normalized or "figure"
+
+
 def _replace_symlink(link_path: Path, target: str) -> None:
     """Atomically replace *link_path* with a symlink to *target*."""
     tmp_path = link_path.with_name(f".{link_path.name}.{uuid.uuid4().hex}.tmp")
@@ -463,12 +470,20 @@ def _write_figure(
 
 
 def _write_plotly(fig: Any, dst_dir: Path, name: str, render_format: str) -> Path:
-    """Write a Plotly figure to disk."""
+    """Write a Plotly figure to disk.
+
+    HTML renders pass an explicit ``div_id``. Plotly mints a random UUID for the
+    container element otherwise, so two executions of the same figure would
+    produce different bytes while agreeing in every observable respect, and
+    rebuild-as-verification compares recorded artifact bytes. The id is derived
+    from the figure name, which is already unique within its output directory,
+    and each render is a standalone document, so nothing else has to be unique.
+    """
     path = dst_dir / _figure_render_filename(name, render_format, "plotly")
     if render_format == "json":
         fig.write_json(str(path))
     elif render_format == "html":
-        fig.write_html(str(path))
+        fig.write_html(str(path), div_id=_safe_html_id(name))
     else:
         fig.write_image(str(path))
     logger.info("Wrote Plotly figure to %s", path)

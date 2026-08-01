@@ -3,6 +3,7 @@ import logging
 import os
 import functools
 import inspect
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Optional
@@ -363,6 +364,12 @@ def calculate_array_minmax(arrays_dict, indices=None, padding=0.05):
 EXTS_WITH_EXIF = ["jpg", "jpeg", "tif", "tiff", "webp"]
 
 
+def _safe_html_id(value: str) -> str:
+    """Return *value* reduced to characters an HTML element id may carry."""
+    normalized = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(value)).strip("-")
+    return normalized or "figure"
+
+
 @with_caller_logger
 def savefig(
     fig,
@@ -392,7 +399,17 @@ def savefig(
             for ext in image_formats:
                 path_i = path.format(ext=ext)
                 if ext == "html":
-                    fig.write_html(path_i, **kwargs)
+                    # Plotly mints a random UUID for the container element
+                    # otherwise, so two executions of the same figure would
+                    # write different bytes while agreeing in every observable
+                    # respect. Analysis figure artifacts are digest
+                    # authenticated, and rebuild-as-verification compares those
+                    # digests, so a random id would report false drift forever.
+                    # The label is already unique within the output directory,
+                    # and each render is a standalone document. `kwargs` is
+                    # shared with the other formats in this loop, so the id goes
+                    # into a copy rather than into `kwargs` itself.
+                    fig.write_html(path_i, **{"div_id": _safe_html_id(label), **kwargs})
                 elif ext == "json":
                     fig.write_json(path_i, engine="auto", **kwargs)
                 else:
