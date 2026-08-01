@@ -269,51 +269,102 @@ def fulfill_node(
     """
     if isinstance(request, EvaluationMatrixNodeRequest):
         return _fulfill_evaluation_matrix(request, environment=environment)
+    if isinstance(
+        request,
+        (EvaluationNodeRequest, AnalysisNodeRequest, FigureNodeRequest, ReportNodeRequest),
+    ):
+        return _fulfill_single(request, environment=environment)
+    raise TypeError(f"unknown fulfillment node request type: {type(request).__name__}")
+
+
+def admit_node(
+    request: NodeRequest,
+    *,
+    environment: FulfillmentEnvironment,
+    path: Path | None = None,
+    manifest: Any | None = None,
+) -> AdmissionOutcome:
+    """Admit one node's receipt through the uniform per-kind validator.
+
+    This is the single dispatch from a node request to its kind's validator.
+    Cached admission, post-execution re-admission, and custody operations all
+    take this path, so no caller can accidentally admit a node against weaker
+    criteria than another.
+
+    Args:
+        request: The node whose receipt is being admitted.
+        environment: The environment whose ``root`` holds the receipt.
+        path: Explicit manifest location, when it is not the canonical one.
+        manifest: An in-memory manifest to admit instead of reading bytes from
+            *path*; artifacts are still verified against the environment root.
+    """
     if isinstance(request, EvaluationNodeRequest):
-        return _fulfill_single(
-            request,
-            environment=environment,
-            admit=lambda: admit_evaluation_receipt(
-                request.spec,
-                root=environment.root,
-                required_output_roles=request.required_output_roles,
-            ),
-            execute=lambda: _execute_evaluation(request, environment),
+        return admit_evaluation_receipt(
+            request.spec,
+            root=environment.root,
+            manifest=manifest,
+            path=path,
+            required_output_roles=request.required_output_roles,
         )
     if isinstance(request, AnalysisNodeRequest):
-        return _fulfill_single(
-            request,
-            environment=environment,
-            admit=lambda: admit_analysis_receipt(
-                request.spec,
-                root=environment.root,
-                required_output_roles=request.required_output_roles,
-            ),
-            execute=lambda: _execute_analysis(request, environment),
+        return admit_analysis_receipt(
+            request.spec,
+            root=environment.root,
+            manifest=manifest,
+            path=path,
+            required_output_roles=request.required_output_roles,
         )
     if isinstance(request, FigureNodeRequest):
-        plan = figure_execution_plan(request, environment=environment)
-        return _fulfill_single(
-            request,
-            environment=environment,
-            admit=lambda: admit_figure_receipt(
-                plan,
-                root=environment.root,
-                required_output_roles=request.required_output_roles,
-            ),
-            execute=lambda: _execute_figure(request, plan, environment),
+        return admit_figure_receipt(
+            figure_execution_plan(request, environment=environment),
+            root=environment.root,
+            manifest=manifest,
+            path=path,
+            required_output_roles=request.required_output_roles,
         )
     if isinstance(request, ReportNodeRequest):
-        execution_spec = report_execution_spec(request)
-        return _fulfill_single(
+        return admit_report_receipt(
+            report_execution_spec(request),
+            root=environment.root,
+            manifest=manifest,
+            path=path,
+            required_output_roles=request.required_output_roles,
+        )
+    if isinstance(request, EvaluationMatrixNodeRequest):
+        raise TypeError(
+            f"evaluation matrix node {request.node_key!r} has no single receipt; expand it "
+            "with expand_evaluation_matrix_node and admit each row"
+        )
+    raise TypeError(f"unknown fulfillment node request type: {type(request).__name__}")
+
+
+def execute_node(
+    request: NodeRequest,
+    *,
+    environment: FulfillmentEnvironment,
+) -> tuple[Any, Path]:
+    """Execute one node unconditionally and return its manifest and path.
+
+    Execution never consults an existing receipt. Reuse is the caller's
+    decision, taken through :func:`admit_node`; custody operations execute into
+    a shadow root where reuse would defeat the purpose.
+    """
+    if isinstance(request, EvaluationNodeRequest):
+        return _execute_evaluation(request, environment)
+    if isinstance(request, AnalysisNodeRequest):
+        return _execute_analysis(request, environment)
+    if isinstance(request, FigureNodeRequest):
+        return _execute_figure(
             request,
-            environment=environment,
-            admit=lambda: admit_report_receipt(
-                execution_spec,
-                root=environment.root,
-                required_output_roles=request.required_output_roles,
-            ),
-            execute=lambda: _execute_report(request, environment),
+            figure_execution_plan(request, environment=environment),
+            environment,
+        )
+    if isinstance(request, ReportNodeRequest):
+        return _execute_report(request, environment)
+    if isinstance(request, EvaluationMatrixNodeRequest):
+        raise TypeError(
+            f"evaluation matrix node {request.node_key!r} is not a single execution; expand it "
+            "with expand_evaluation_matrix_node and execute each row"
         )
     raise TypeError(f"unknown fulfillment node request type: {type(request).__name__}")
 
@@ -322,10 +373,8 @@ def _fulfill_single(
     request: NodeRequest,
     *,
     environment: FulfillmentEnvironment,
-    admit,
-    execute,
 ) -> NodeFulfillment:
-    outcome = admit()
+    outcome = admit_node(request, environment=environment)
     if outcome.admitted:
         if outcome.manifest_path is None:
             raise RuntimeError("an admitted receipt must name the bytes that authenticated it")
@@ -345,7 +394,7 @@ def _fulfill_single(
         )
     if outcome.manifest_present:
         raise FulfillmentAdmissionError(outcome)
-    manifest, path = execute()
+    manifest, path = execute_node(request, environment=environment)
     verified = _reverify(request, environment=environment, manifest_path=path)
     return NodeFulfillment(
         node_key=request.node_key,
@@ -375,36 +424,7 @@ def _reverify(
     Re-admitting closes the gap where a first run would accept a record that a
     later run would refuse.
     """
-    if isinstance(request, EvaluationNodeRequest):
-        outcome = admit_evaluation_receipt(
-            request.spec,
-            root=environment.root,
-            path=manifest_path,
-            required_output_roles=request.required_output_roles,
-        )
-    elif isinstance(request, AnalysisNodeRequest):
-        outcome = admit_analysis_receipt(
-            request.spec,
-            root=environment.root,
-            path=manifest_path,
-            required_output_roles=request.required_output_roles,
-        )
-    elif isinstance(request, FigureNodeRequest):
-        outcome = admit_figure_receipt(
-            figure_execution_plan(request, environment=environment),
-            root=environment.root,
-            path=manifest_path,
-            required_output_roles=request.required_output_roles,
-        )
-    elif isinstance(request, ReportNodeRequest):
-        outcome = admit_report_receipt(
-            report_execution_spec(request),
-            root=environment.root,
-            path=manifest_path,
-            required_output_roles=request.required_output_roles,
-        )
-    else:  # pragma: no cover - guarded by fulfill_node
-        raise TypeError(f"unknown fulfillment node request type: {type(request).__name__}")
+    outcome = admit_node(request, environment=environment, path=manifest_path)
     if not outcome.admitted:
         raise FulfillmentAdmissionError(outcome)
     return outcome

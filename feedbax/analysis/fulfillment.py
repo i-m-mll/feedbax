@@ -440,7 +440,7 @@ def _check_output_roles(
             )
 
 
-def _artifact_bytes_path(artifact: ArtifactRef, *, root: Path) -> Path | None:
+def artifact_bytes_path(artifact: ArtifactRef, *, root: Path) -> Path | None:
     """Return the in-root location of one artifact's bytes, or ``None``.
 
     Resolution is root-relative and never follows a machine-local ``uri``: a
@@ -492,7 +492,7 @@ def _check_artifacts(
                 observed=artifact.model_dump(mode="json", exclude_none=True),
             )
             continue
-        path = _artifact_bytes_path(artifact, root=root)
+        path = artifact_bytes_path(artifact, root=root)
         if path is None:
             collector.add(
                 "artifacts_verified",
