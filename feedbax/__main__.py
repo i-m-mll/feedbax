@@ -21,10 +21,7 @@ from feedbax.contracts.experiment_envelope import (
     dispatch_experiment_envelope,
     missing_outputs,
 )
-from feedbax.contracts.project_extension import (
-    ProjectExtensionDeclarationError,
-    resolve_authored_extension_labels,
-)
+from feedbax.contracts.project_extension import resolve_authored_extension_labels
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.run_matrix import ExecutionDependency
 from feedbax.contracts.training import (
@@ -292,9 +289,6 @@ def _preflight_experiment_envelope(args: argparse.Namespace, registries: Any) ->
     except ExperimentEnvelopeRejection as rejection:
         print(rejection.render(), file=sys.stderr)
         return 2
-    except ProjectExtensionDeclarationError as exc:
-        print(f"project extension declaration failed: {exc}", file=sys.stderr)
-        return 1
     except ExperimentEnvelopeCompilerError as exc:
         print(f"experiment envelope dispatch failed: {exc}", file=sys.stderr)
         return 1

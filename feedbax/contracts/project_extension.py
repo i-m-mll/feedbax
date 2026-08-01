@@ -24,11 +24,15 @@ declaration's behalf.
 
 Label resolution is the one behavior this module adds, and it is fail-closed:
 
-* the project package failed to load, or two declarations collide — that is an
-  infrastructure failure and the entrypoint exits 1;
+* the project package failed to load, a declaration is malformed, or two
+  declarations collide — that is an infrastructure failure. It is raised as an
+  ordinary ``BootstrapError`` while the bootstrap is still running, so it never
+  reaches the authoring command and ``python -m feedbax`` exits 1;
 * the project loaded but an authored label is absent from its declaration —
   that is an authored rejection under the stable
-  ``unresolved-extension-label`` category and the entrypoint exits 2.
+  ``unresolved-extension-label`` category, and
+  ``preflight-experiment-envelope`` returns 2 with the full field set on
+  stderr.
 
 Both decisions are reached before the compiler runs and therefore before any
 output file exists.

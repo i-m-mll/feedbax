@@ -36,6 +36,15 @@ from feedbax.contracts.project_extension import (
     UnresolvedExtensionLabelRejection,
     resolve_authored_extension_labels,
 )
+from feedbax.plugins import (
+    BootstrapError,
+    BootstrapErrorCode,
+    FamilyRequirement,
+    PluginDeclaration,
+    PluginRegistration,
+    bootstrap_application,
+    new_registration_context,
+)
 from feedbax.plugins.composition import compose_application
 
 import tests.fake_project_extension as fixture
@@ -364,9 +373,10 @@ def test_duplicate_labels_are_an_infrastructure_failure(
         ),
     )
 
-    with pytest.raises(Exception) as caught:
+    with pytest.raises(BootstrapError) as caught:
         _run(tmp_path, {"schema": ENVELOPE_SCHEMA, "name": "quill-run", "layer": "survey"})
 
+    assert caught.value.code is BootstrapErrorCode.NAMESPACE_COLLISION
     assert "duplicate layer label" in str(caught.value)
     assert not (tmp_path / "generated").exists()
 
@@ -375,7 +385,7 @@ def test_a_project_that_fails_to_load_is_an_infrastructure_failure(tmp_path: Pat
     envelope_path = tmp_path / "envelope.json"
     envelope_path.write_text(json.dumps({"schema": ENVELOPE_SCHEMA}), encoding="utf-8")
 
-    with pytest.raises(Exception, match="failed to import module"):
+    with pytest.raises(BootstrapError) as caught:
         main(
             [
                 "preflight-experiment-envelope",
@@ -386,6 +396,43 @@ def test_a_project_that_fails_to_load_is_an_infrastructure_failure(tmp_path: Pat
                 "tests.fake_project_extension_absent",
             ]
         )
+
+    assert caught.value.code is BootstrapErrorCode.LOAD
+    assert not (tmp_path / "generated").exists()
+
+
+def test_two_projects_claiming_one_family_collide_during_bootstrap(tmp_path: Path) -> None:
+    second = ProjectExtensionDeclaration(
+        project="quillon-rival",
+        declaration_source="tests:rival",
+        compiler_contract_id="rival.compiler_contract",
+        compiler_contract_version="rival.compiler_contract.v1",
+        authoring_budget=_budget(tmp_path),
+        envelope_families=(EnvelopeFamilyDeclaration(fixture.ENVELOPE_SCHEMA_ID, ENVELOPE_SCHEMA),),
+        layers=(LayerBinding("survey", dict, lambda block: block, "rival.document"),),
+        label_sites=(AuthoredLabelSite(ProjectExtensionPlugPoint.LAYER, "layer"),),
+    )
+    rival = PluginRegistration(
+        PluginDeclaration(
+            "tests.fake_project_extension_rival",
+            "1.0",
+            1,
+            families=(FamilyRequirement("project_extensions"),),
+        ),
+        lambda context: context.registry(fixture.PROJECT_EXTENSIONS).register(second),
+    )
+
+    async def _compose():
+        context = new_registration_context(local_component_source=None)
+        return await bootstrap_application(
+            context, registrations=(fixture.PLUGIN_REGISTRATION, rival)
+        )
+
+    with pytest.raises(BootstrapError) as caught:
+        asyncio.run(_compose())
+
+    assert caught.value.code is BootstrapErrorCode.NAMESPACE_COLLISION
+    assert "already accepted by project" in str(caught.value)
 
 
 # --- bootstrap isolation ----------------------------------------------------
