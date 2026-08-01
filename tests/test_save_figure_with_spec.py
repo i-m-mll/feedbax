@@ -72,12 +72,52 @@ def test_spec_is_json_deserializable(tmp_path: Path, simple_fig: go.Figure) -> N
 
 
 def test_spec_has_required_keys(tmp_path: Path, simple_fig: go.Figure) -> None:
-    """The spec must contain 'versions' and 'timestamp'."""
+    """The spec must contain 'versions' and must not embed wall-clock state.
+
+    The sidecar is stored as a digest-authenticated artifact, so a wall-clock
+    field would make every rebuild-as-verification pass report false drift on
+    an intact figure. Provenance timestamps live on the manifest record that
+    references the artifact, not inside the artifact's own bytes.
+    """
     spec_path, _ = save_figure_with_spec(simple_fig, {}, tmp_path, name="test")
     with open(spec_path, encoding="utf-8") as f:
         data = json.load(f)
     assert "versions" in data
-    assert "timestamp" in data
+    assert "timestamp" not in data
+
+
+def test_repeated_saves_produce_byte_identical_spec(tmp_path: Path, input_file: Path) -> None:
+    """Two executions of the same figure spec write byte-identical sidecars."""
+    spec: dict = {
+        "kind": "FigureSpec",
+        "inputs": [{"path": str(input_file)}],
+        "plot_kwargs": {"width": 640},
+        "seed": 7,
+    }
+
+    digests = []
+    for run in ("first", "second"):
+        fig = go.Figure()
+        fig.add_scatter(x=[0, 1, 2], y=[0, 1, 0])
+        spec_path, _ = save_figure_with_spec(fig, spec, tmp_path / run, name="figure")
+        digests.append(spec_path.read_bytes())
+
+    assert digests[0] == digests[1]
+    assert _sha256(tmp_path / "first" / "figure.json") == _sha256(
+        tmp_path / "second" / "figure.json"
+    )
+
+
+def test_caller_supplied_timestamp_is_written_through(
+    tmp_path: Path, simple_fig: go.Figure
+) -> None:
+    """A caller's own 'timestamp' is preserved, not overwritten with the wall clock."""
+    spec_path, _ = save_figure_with_spec(
+        simple_fig, {"timestamp": "authored-value"}, tmp_path, name="test"
+    )
+    with open(spec_path, encoding="utf-8") as f:
+        data = json.load(f)
+    assert data["timestamp"] == "authored-value"
 
 
 def test_versions_contain_feedbax(tmp_path: Path, simple_fig: go.Figure) -> None:

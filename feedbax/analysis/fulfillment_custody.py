@@ -22,13 +22,15 @@ stay stable; on difference the operation fails with a per-node drift report and
 the original receipt intact. Corrupted stored bytes are an admission failure
 before any rebuild comparison happens: that is custody loss, not drift.
 
-Rebuild reports what the executors really produce. One producer is known not to
-be byte-reproducible today: ``save_figure_with_spec`` always overwrites the
-``figure_spec`` sidecar's ``timestamp`` with the wall clock, so every figure
-node drifts on that artifact's digest. The projection does not special-case it.
-A stored artifact whose digest the receipt authenticates is exactly what rebuild
-exists to verify, and excluding one would make verification blind to real
-changes in the same bytes. The fix belongs in the producer.
+Rebuild reports what the executors really produce, and the projection
+special-cases no producer. A stored artifact whose digest the receipt
+authenticates is exactly what rebuild exists to verify, and excluding one would
+make verification blind to real changes in the same bytes. When a producer is
+not byte-reproducible, the fix belongs in the producer, not in an exclusion
+here: ``save_figure_with_spec`` formerly stamped the ``figure_spec`` sidecar
+with the wall clock and so drifted on every intact figure node, and it was
+fixed by removing that field from the authenticated bytes rather than by
+exempting the artifact from comparison.
 
 Shadow custody mirrors the authoritative root's readable bytes so parents
 resolve identically in both roots. Mirroring copies; it never hard-links,

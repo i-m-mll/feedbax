@@ -188,18 +188,19 @@ def test_rebuilt_report_projection_carries_artifacts_and_recorded_summaries(
     assert outcome.expected.manifest_id == outcome.observed.manifest_id
 
 
-def test_figure_rebuild_drifts_only_on_the_timestamped_figure_spec_sidecar(
+def test_intact_figure_rebuild_reports_no_drift(
     environment, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A figure's runtime inputs resolve in the shadow, but its sidecar is not reproducible.
+    """An intact figure node rebuilds with zero drift, sidecar bytes included.
 
-    ``save_figure_with_spec`` always overwrites the ``figure_spec`` sidecar's
-    ``timestamp`` with the wall clock, so that artifact's bytes differ between
-    two clean executions of the same figure. The projection reports this as
-    drift rather than hiding it: the sidecar is a stored artifact whose digest
-    the receipt authenticates, and excluding it would make rebuild verification
-    blind to real changes in the same artifact. The rendered figure bytes are
-    reproducible, and the original receipt is untouched either way.
+    A figure's runtime inputs resolve in the shadow root exactly as they do in
+    the authoritative root, and every artifact a figure execution stores is now
+    byte-reproducible: the rendered figure, the Plotly JSON, and the
+    ``figure_spec`` sidecar. The sidecar became reproducible when
+    ``save_figure_with_spec`` stopped stamping it with the wall clock; nothing
+    is excluded from the projection to achieve this, so the comparison stays
+    sensitive to real changes in the same bytes. The original receipt is
+    untouched.
     """
     import plotly.graph_objects as go
 
@@ -229,15 +230,18 @@ def test_figure_rebuild_drifts_only_on_the_timestamped_figure_spec_sidecar(
 
     assert outcome.node_kind == "figure"
     assert outcome.expected.manifest_id == outcome.observed.manifest_id
-    assert outcome.field_paths == ("artifacts[0].sha256",)
+    assert outcome.matched
+    assert outcome.field_paths == ()
+    assert outcome.differences == []
+    assert require_no_drift(outcome) is outcome
     assert outcome.expected.artifacts[0].role == FIGURE_SPEC_ROLE
     assert outcome.expected.artifacts[1].role == FIGURE_RENDER_ROLE
-    assert outcome.expected.artifacts[1:] == outcome.observed.artifacts[1:], (
-        "the rendered figure bytes are reproducible; only the timestamped sidecar is not"
+    assert outcome.expected.artifacts == outcome.observed.artifacts, (
+        "every figure artifact reproduces byte-for-byte, sidecar included"
     )
     assert (
         fulfill_node(node, environment=environment).receipt.path.read_bytes() == receipt_bytes
-    ), "a drifting rebuild leaves the authoritative receipt untouched"
+    ), "a verifying rebuild leaves the authoritative receipt untouched"
 
 
 def test_altered_stored_bytes_refuse_admission_before_any_rebuild(
