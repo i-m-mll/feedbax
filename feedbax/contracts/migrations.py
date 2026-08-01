@@ -216,6 +216,24 @@ from feedbax.contracts.figures import (
     SCENE_CAMERA_SCHEMA_ID,
     SCENE_CAMERA_SCHEMA_VERSION,
 )
+from feedbax.contracts.figure_roles import (
+    FIGURE_ROW_EXPANSION_REQUEST_SCHEMA_ID,
+    FIGURE_ROW_EXPANSION_REQUEST_SCHEMA_VERSION,
+    RESOLVED_FIGURE_INPUTS_SCHEMA_ID,
+    RESOLVED_FIGURE_INPUTS_SCHEMA_VERSION,
+)
+from feedbax.contracts.row_index import (
+    RESOLVED_ROW_SET_SCHEMA_ID,
+    RESOLVED_ROW_SET_SCHEMA_VERSION,
+    ROW_INDEX_CUSTODY_SCHEMA_ID,
+    ROW_INDEX_CUSTODY_SCHEMA_VERSION,
+    ROW_INDEX_SCHEMA_ID,
+    ROW_INDEX_SCHEMA_VERSION,
+)
+from feedbax.contracts.experiment_envelope import (
+    EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID,
+    EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_VERSION,
+)
 from feedbax.contracts.graph import (
     ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION,
@@ -2960,6 +2978,78 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Authored-to-resolved FigureSpec identity and delta lineage.",
             rejected_old_versions=("feedbax.spec.figure_composition_provenance.v0",),
             required_tests=("tests/test_figure_composition.py",),
+        ),
+        _family(
+            "AuthenticatedRowIndex",
+            ROW_INDEX_SCHEMA_ID,
+            ROW_INDEX_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.row_index",
+            emitted_by=("downstream experiment envelope compilers",),
+            consumed_by=("feedbax.contracts.row_index.expand_row_selector",),
+            description=(
+                "Compile-time row identity, deterministic order, and bounded tags for one "
+                "selectable row set."
+            ),
+            required_tests=("tests/test_figure_role_references.py",),
+        ),
+        _family(
+            "RowIndexCustodyBindings",
+            ROW_INDEX_CUSTODY_SCHEMA_ID,
+            ROW_INDEX_CUSTODY_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.row_index",
+            emitted_by=("run receipt and manifest custody layer",),
+            consumed_by=("feedbax.contracts.figure_roles.resolve_figure_input_roles",),
+            description="Post-run authenticated artifact custody bound to compile-time rows.",
+            required_tests=("tests/test_figure_role_references.py",),
+        ),
+        _family(
+            "ResolvedRowSet",
+            RESOLVED_ROW_SET_SCHEMA_ID,
+            RESOLVED_ROW_SET_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.row_index",
+            emitted_by=("feedbax.contracts.row_index.expand_row_selector",),
+            consumed_by=("feedbax.contracts.figure_roles.expand_figure_rows",),
+            description="One row-set selector expanded once into pinned ordered row ids.",
+            required_tests=("tests/test_figure_role_references.py",),
+        ),
+        _family(
+            "FigureRowExpansionRequest",
+            FIGURE_ROW_EXPANSION_REQUEST_SCHEMA_ID,
+            FIGURE_ROW_EXPANSION_REQUEST_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figure_roles",
+            emitted_by=("downstream experiment envelope compilers",),
+            consumed_by=(
+                "feedbax.contracts.figure_roles.resolve_figure_input_roles",
+                "feedbax.contracts.figure_roles.expand_figure_rows",
+            ),
+            description=(
+                "Closed request expanding one base figure over a row set through figure "
+                "input role references."
+            ),
+            required_tests=("tests/test_figure_role_references.py",),
+        ),
+        _family(
+            "ResolvedFigureInputs",
+            RESOLVED_FIGURE_INPUTS_SCHEMA_ID,
+            RESOLVED_FIGURE_INPUTS_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figure_roles",
+            emitted_by=("feedbax.contracts.figure_roles.resolve_figure_input_roles",),
+            consumed_by=(
+                "feedbax.contracts.figure_roles.expand_figure_rows",
+                "downstream compile locks",
+            ),
+            description="Ordered figure inputs resolved from role references, with custody.",
+            required_tests=("tests/test_figure_role_references.py",),
+        ),
+        _family(
+            "ExperimentEnvelopeCompileResult",
+            EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID,
+            EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.experiment_envelope",
+            emitted_by=("downstream experiment envelope compilers",),
+            consumed_by=("python -m feedbax preflight-experiment-envelope",),
+            description="Outcome one downstream envelope compiler returns to the dispatcher.",
+            required_tests=("tests/test_experiment_envelope_dispatch.py",),
         ),
         _family(
             "FigureTemplate",

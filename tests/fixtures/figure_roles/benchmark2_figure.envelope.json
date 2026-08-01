@@ -1,0 +1,16 @@
+{
+  "schema": "rlrmp2.experiment.v1",
+  "base": "specs/post_run/sisu_m2_velocity_profiles.figure.v1.json",
+  "name": "sisu-floor-velocity-profiles",
+  "issue": "4e08c8d",
+  "reason": "Stack the two floor-saturated rows' K2 velocity profiles into one figure.",
+  "figure": {
+    "rows": {"mode": "all", "index": "results/4e08c8d/report-production.v1.json#reports.target2x_target4x_floor"},
+    "inputs": {
+      "trained": {"per_row": "k2"},
+      "comparators": {"shared": "feedbax-analysis-run:d6464fe0ac4c2e2a14e36c476b15297e"},
+      "hinf_1p05_reference": {"shared": "feedbax-analysis-run:6d1befa7d02075a2b58fe8787fda2296"}
+    },
+    "title": "Floor rows: velocity profiles"
+  }
+}

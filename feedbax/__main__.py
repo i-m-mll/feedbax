@@ -15,6 +15,12 @@ from typing import Any, Mapping, Sequence
 from pydantic import TypeAdapter
 
 from feedbax.contracts.checkpoints import CheckpointForkPlan
+from feedbax.contracts.experiment_envelope import (
+    ExperimentEnvelopeCompilerError,
+    ExperimentEnvelopeRejection,
+    dispatch_experiment_envelope,
+    missing_outputs,
+)
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.run_matrix import ExecutionDependency
 from feedbax.contracts.training import (
@@ -252,6 +258,53 @@ def _dump_manifest_requests(
     return requests
 
 
+def _preflight_experiment_envelope(args: argparse.Namespace, registries: Any) -> int:
+    """Route one authored envelope to its registered downstream compiler.
+
+    Exit codes are the documented authoring contract: 0 accepted, 2 rejected
+    with an actionable diagnostic on stderr, 1 infrastructure failure.
+    """
+    envelope_path = Path(args.envelope)
+    repo_root = Path(args.repo_root).resolve()
+    out_dir = Path(args.out_dir)
+    if not out_dir.is_absolute():
+        out_dir = repo_root / out_dir
+    try:
+        envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"cannot read experiment envelope {envelope_path}: {exc}", file=sys.stderr)
+        return 1
+    try:
+        result = dispatch_experiment_envelope(
+            envelope,
+            registries.experiment_envelope_compilers,
+            envelope_path=envelope_path,
+            repo_root=repo_root,
+            out_dir=out_dir,
+        )
+    except ExperimentEnvelopeRejection as rejection:
+        print(rejection.render(), file=sys.stderr)
+        return 2
+    except ExperimentEnvelopeCompilerError as exc:
+        print(f"experiment envelope dispatch failed: {exc}", file=sys.stderr)
+        return 1
+    absent = missing_outputs(result, out_dir)
+    if absent:
+        print(
+            f"compiler reported outputs it did not write: {list(absent)}",
+            file=sys.stderr,
+        )
+        return 1
+    json.dump(
+        result.model_dump(mode="json", exclude_none=True),
+        fp=sys.stdout,
+        indent=2,
+        sort_keys=True,
+    )
+    print()
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     command_started_at = time.perf_counter()
     parser = argparse.ArgumentParser(prog="python -m feedbax")
@@ -337,6 +390,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Import a module that registers Feedbax training methods or governed "
             "manifest metadata projections before validation; may be repeated."
+        ),
+    )
+    envelope_parser = subparsers.add_parser(
+        "preflight-experiment-envelope",
+        help=(
+            "Compile one authored experiment envelope through the registered downstream "
+            "compiler claiming its schema."
+        ),
+    )
+    envelope_parser.add_argument("envelope", help="Authored experiment envelope JSON path")
+    envelope_parser.add_argument(
+        "--out-dir",
+        default="generated",
+        help="Directory the compiler writes its compile lock and document into.",
+    )
+    envelope_parser.add_argument(
+        "--repo-root",
+        default=".",
+        help="Repository root the envelope's relative references resolve against.",
+    )
+    envelope_parser.add_argument(
+        "--plugin",
+        action="append",
+        help=(
+            "Import a module that registers a downstream experiment envelope compiler "
+            "before dispatch; may be repeated."
         ),
     )
     adopt_root = subparsers.add_parser(
@@ -620,6 +699,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.allow_large_per_row:
             harness_argv.append("--allow-large-per-row")
         return harness_main(harness_argv, bootstrap_state=bootstrap_state)
+    if args.command == "preflight-experiment-envelope":
+        return _preflight_experiment_envelope(args, registries)
     if args.command == "execute-training-run-spec":
         run_spec = validate_training_run_spec(_read_json(args.spec))
         resolved_method = resolve_training_run_spec(run_spec, registries.training_methods)

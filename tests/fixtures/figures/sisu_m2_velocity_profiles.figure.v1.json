@@ -1,0 +1,454 @@
+{
+  "schema_id": "feedbax.spec.figure",
+  "schema_version": "feedbax.spec.figure.v2",
+  "name": "sisu-m2-terminal-velocity-profiles",
+  "assembler": "feedbax.grid_figure",
+  "assembler_params": {
+    "width": 1180,
+    "height": 540,
+    "title": "M2 nominal forward-velocity profiles",
+    "shared_xaxes": "all",
+    "shared_yaxes": "all",
+    "horizontal_spacing": 0.06,
+    "vertical_spacing": 0.12,
+    "legend_x": 1.02,
+    "legend_y": 1.0,
+    "legend_xanchor": "left",
+    "legend_yanchor": "top",
+    "margin": {
+      "l": 72,
+      "r": 330,
+      "t": 92,
+      "b": 74
+    },
+    "hovermode": "x unified",
+    "template": "plotly_white"
+  },
+  "inputs": [],
+  "input_authorities": [],
+  "panels": [
+    {
+      "name": "seen",
+      "title": "training support",
+      "row": 1,
+      "col": 1,
+      "axes_labels": {
+        "x": "Time from trial start (s)",
+        "y": "Target-radial velocity (m/s)"
+      }
+    },
+    {
+      "name": "held_out",
+      "title": "held-out support",
+      "row": 1,
+      "col": 2,
+      "axes_labels": {
+        "x": "Time from trial start (s)"
+      }
+    }
+  ],
+  "trace_families": [
+    {
+      "name": "trained-seen",
+      "index": {
+        "values": [
+          "s0p000",
+          "s0p020",
+          "s0p027",
+          "s0p037",
+          "s0p049",
+          "s0p067",
+          "s0p090",
+          "s0p122",
+          "s0p164",
+          "s0p222",
+          "s0p300",
+          "s0p405",
+          "s0p548",
+          "s0p740",
+          "s1p000"
+        ]
+      },
+      "values": [
+        0.0,
+        0.02,
+        0.027022155946779647,
+        0.03650984560060393,
+        0.0493287370706183,
+        0.0666484412889969,
+        0.09004922870605307,
+        0.12166621504910963,
+        0.1643841718255734,
+        0.2221007363126433,
+        0.30008203662674154,
+        0.40544317952775266,
+        0.5477974412378553,
+        0.7401333942188094,
+        1.0
+      ],
+      "colorscale": "Viridis",
+      "trace": {
+        "name": "trained-seen-{index}",
+        "constructor": "feedbax.profile_band",
+        "panel": "seen",
+        "required": true,
+        "params": {
+          "label": "GRU s={value:.3f}",
+          "show_band": true,
+          "line_dash": "solid",
+          "line_width": 2.0,
+          "showlegend": false
+        },
+        "data": {
+          "x": {
+            "item": "trained",
+            "path": "artifact_payloads.trained.time_s"
+          },
+          "mean": {
+            "item": "trained",
+            "path": "artifact_payloads.trained.profiles.seen_support.trained.{index}.mean"
+          },
+          "std": {
+            "item": "trained",
+            "path": "artifact_payloads.trained.profiles.seen_support.trained.{index}.sd"
+          }
+        }
+      }
+    },
+    {
+      "name": "trained-held-out",
+      "index": {
+        "values": [
+          "s0p000",
+          "s0p020",
+          "s0p027",
+          "s0p037",
+          "s0p049",
+          "s0p067",
+          "s0p090",
+          "s0p122",
+          "s0p164",
+          "s0p222",
+          "s0p300",
+          "s0p405",
+          "s0p548",
+          "s0p740",
+          "s1p000"
+        ]
+      },
+      "values": [
+        0.0,
+        0.02,
+        0.027022155946779647,
+        0.03650984560060393,
+        0.0493287370706183,
+        0.0666484412889969,
+        0.09004922870605307,
+        0.12166621504910963,
+        0.1643841718255734,
+        0.2221007363126433,
+        0.30008203662674154,
+        0.40544317952775266,
+        0.5477974412378553,
+        0.7401333942188094,
+        1.0
+      ],
+      "colorscale": "Viridis",
+      "trace": {
+        "name": "trained-held-{index}",
+        "constructor": "feedbax.profile_band",
+        "panel": "held_out",
+        "required": true,
+        "params": {
+          "label": "GRU s={value:.3f}",
+          "show_band": true,
+          "line_dash": "solid",
+          "line_width": 2.0,
+          "showlegend": false
+        },
+        "data": {
+          "x": {
+            "item": "trained",
+            "path": "artifact_payloads.trained.time_s"
+          },
+          "mean": {
+            "item": "trained",
+            "path": "artifact_payloads.trained.profiles.held_out.trained.{index}.mean"
+          },
+          "std": {
+            "item": "trained",
+            "path": "artifact_payloads.trained.profiles.held_out.trained.{index}.sd"
+          }
+        }
+      }
+    },
+    {
+      "name": "extlqg-seen",
+      "index": {
+        "values": [
+          "row"
+        ]
+      },
+      "legend_index": "row",
+      "trace": {
+        "name": "extlqg-seen-{index}",
+        "constructor": "feedbax.profile_band",
+        "panel": "seen",
+        "required": true,
+        "params": {
+          "label": "extLQG",
+          "color": "rgb(17,24,39)",
+          "line_dash": "dash",
+          "line_width": 2.2,
+          "show_band": false
+        },
+        "data": {
+          "x": {
+            "item": "comparators",
+            "path": "artifact_payloads.comparators.time_s"
+          },
+          "mean": {
+            "item": "comparators",
+            "path": "artifact_payloads.comparators.profiles.seen_support.extlqg_output_feedback.mean"
+          },
+          "std": {
+            "item": "comparators",
+            "path": "artifact_payloads.comparators.profiles.seen_support.extlqg_output_feedback.sd"
+          }
+        }
+      }
+    },
+    {
+      "name": "extlqg-held",
+      "index": {
+        "values": [
+          "row"
+        ]
+      },
+      "trace": {
+        "name": "extlqg-held-{index}",
+        "constructor": "feedbax.profile_band",
+        "panel": "held_out",
+        "required": true,
+        "params": {
+          "label": "extLQG",
+          "color": "rgb(17,24,39)",
+          "line_dash": "dash",
+          "line_width": 2.2,
+          "show_band": false,
+          "showlegend": false
+        },
+        "data": {
+          "x": {
+            "item": "comparators",
+            "path": "artifact_payloads.comparators.time_s"
+          },
+          "mean": {
+            "item": "comparators",
+            "path": "artifact_payloads.comparators.profiles.held_out.extlqg_output_feedback.mean"
+          },
+          "std": {
+            "item": "comparators",
+            "path": "artifact_payloads.comparators.profiles.held_out.extlqg_output_feedback.sd"
+          }
+        }
+      }
+    },
+    {
+      "name": "hinf-1p05-seen",
+      "index": {
+        "values": [
+          "row"
+        ]
+      },
+      "legend_index": "row",
+      "trace": {
+        "name": "hinf-1p05-seen-{index}",
+        "constructor": "feedbax.profile_band",
+        "panel": "seen",
+        "required": true,
+        "params": {
+          "label": "H\u221e 1.05",
+          "color": "rgb(17,24,39)",
+          "line_dash": "dot",
+          "line_width": 2.2,
+          "show_band": false
+        },
+        "data": {
+          "x": {
+            "item": "hinf_1p05_reference",
+            "path": "artifact_payloads.hinf_1p05_reference.time_s"
+          },
+          "mean": {
+            "item": "hinf_1p05_reference",
+            "path": "artifact_payloads.hinf_1p05_reference.profiles.seen_support.hinf_output_feedback.mean"
+          },
+          "std": {
+            "item": "hinf_1p05_reference",
+            "path": "artifact_payloads.hinf_1p05_reference.profiles.seen_support.hinf_output_feedback.sd"
+          }
+        }
+      }
+    },
+    {
+      "name": "hinf-1p05-held",
+      "index": {
+        "values": [
+          "row"
+        ]
+      },
+      "trace": {
+        "name": "hinf-1p05-held-{index}",
+        "constructor": "feedbax.profile_band",
+        "panel": "held_out",
+        "required": true,
+        "params": {
+          "label": "H\u221e 1.05",
+          "color": "rgb(17,24,39)",
+          "line_dash": "dot",
+          "line_width": 2.2,
+          "show_band": false,
+          "showlegend": false
+        },
+        "data": {
+          "x": {
+            "item": "hinf_1p05_reference",
+            "path": "artifact_payloads.hinf_1p05_reference.time_s"
+          },
+          "mean": {
+            "item": "hinf_1p05_reference",
+            "path": "artifact_payloads.hinf_1p05_reference.profiles.held_out.hinf_output_feedback.mean"
+          },
+          "std": {
+            "item": "hinf_1p05_reference",
+            "path": "artifact_payloads.hinf_1p05_reference.profiles.held_out.hinf_output_feedback.sd"
+          }
+        }
+      }
+    },
+    {
+      "name": "hinf-1p40-seen",
+      "index": {
+        "values": [
+          "row"
+        ]
+      },
+      "legend_index": "row",
+      "trace": {
+        "name": "hinf-1p40-seen-{index}",
+        "constructor": "feedbax.profile_band",
+        "panel": "seen",
+        "required": true,
+        "params": {
+          "label": "H\u221e 1.40",
+          "color": "rgb(17,24,39)",
+          "line_dash": "dashdot",
+          "line_width": 2.2,
+          "show_band": false
+        },
+        "data": {
+          "x": {
+            "item": "comparators",
+            "path": "artifact_payloads.comparators.time_s"
+          },
+          "mean": {
+            "item": "comparators",
+            "path": "artifact_payloads.comparators.profiles.seen_support.hinf_output_feedback.mean"
+          },
+          "std": {
+            "item": "comparators",
+            "path": "artifact_payloads.comparators.profiles.seen_support.hinf_output_feedback.sd"
+          }
+        }
+      }
+    },
+    {
+      "name": "hinf-1p40-held",
+      "index": {
+        "values": [
+          "row"
+        ]
+      },
+      "trace": {
+        "name": "hinf-1p40-held-{index}",
+        "constructor": "feedbax.profile_band",
+        "panel": "held_out",
+        "required": true,
+        "params": {
+          "label": "H\u221e 1.40",
+          "color": "rgb(17,24,39)",
+          "line_dash": "dashdot",
+          "line_width": 2.2,
+          "show_band": false,
+          "showlegend": false
+        },
+        "data": {
+          "x": {
+            "item": "comparators",
+            "path": "artifact_payloads.comparators.time_s"
+          },
+          "mean": {
+            "item": "comparators",
+            "path": "artifact_payloads.comparators.profiles.held_out.hinf_output_feedback.mean"
+          },
+          "std": {
+            "item": "comparators",
+            "path": "artifact_payloads.comparators.profiles.held_out.hinf_output_feedback.sd"
+          }
+        }
+      }
+    }
+  ],
+  "colorbar": {
+    "schema_id": "feedbax.spec.figure_colorbar",
+    "schema_version": "feedbax.spec.figure_colorbar.v1",
+    "title": "Conditioning level s",
+    "family": "trained-seen",
+    "placement": {
+      "schema_id": "feedbax.spec.colorbar_panel_placement",
+      "schema_version": "feedbax.spec.colorbar_panel_placement.v1",
+      "panel": "held_out",
+      "side": "right",
+      "length_fraction": 0.5,
+      "center_fraction": 0.5,
+      "offset_fraction": 0.12
+    }
+  },
+  "metadata": {
+    "issue": "4e08c8d",
+    "report_role": "k2_velocity_profiles_with_comparators",
+    "caption": "K2. Nominal forward-velocity profiles for one authenticated trained model row, with task-compatible comparator traces when their exact authorities are available.",
+    "row_composition": "This FigureSpec has training-support and held-out-support panels for one model row; report composition owns any multi-row subplot layout.",
+    "perturbation_marker": "none",
+    "applicability": {
+      "comparators": "Include only comparators evaluated under the same typed task and trial contract.",
+      "hinf_1p05": "A model-independent comparator authority may be reused when its task contract matches the row."
+    },
+    "input_binding_contracts": [
+      {
+        "input_role": "trained",
+        "kind": "AnalysisRunManifest",
+        "artifact_role": "velocity_profile_result",
+        "artifact_provider": "results",
+        "manifest_status": "completed",
+        "analysis_type": "rlrmp2.trained_velocity_profiles"
+      },
+      {
+        "input_role": "comparators",
+        "kind": "AnalysisRunManifest",
+        "artifact_role": "velocity_profile_result",
+        "artifact_provider": "results",
+        "manifest_status": "completed",
+        "analysis_type": "rlrmp2.trained_velocity_profiles"
+      },
+      {
+        "input_role": "hinf_1p05_reference",
+        "kind": "AnalysisRunManifest",
+        "artifact_role": "velocity_profile_result",
+        "artifact_provider": "results",
+        "manifest_status": "completed",
+        "analysis_type": "rlrmp2.trained_velocity_profiles"
+      }
+    ]
+  }
+}

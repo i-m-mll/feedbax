@@ -428,7 +428,7 @@
       ],
       "schemas": {
         "current": [
-          "feedbax.external_conformance.result.v13"
+          "feedbax.external_conformance.result.v14"
         ],
         "migrated": [
           "feedbax.external_conformance.result.v1 to v2 normalization before rejection"
@@ -442,6 +442,7 @@
           "feedbax.external_conformance.result.v10",
           "feedbax.external_conformance.result.v11",
           "feedbax.external_conformance.result.v12",
+          "feedbax.external_conformance.result.v13",
           "unknown"
         ]
       },
@@ -571,6 +572,33 @@
           "feedbax.spec.figure_composition_provenance.v0",
           "feedbax.spec.figure_runtime_binding.v0",
           "feedbax.spec.source_document_inheritance.v0",
+          "unknown"
+        ]
+      },
+      "coverage_status": "covered"
+    },
+    {
+      "row_id": "figure-role-references",
+      "case_ids": [
+        "figure_role_reference_public_contract"
+      ],
+      "schemas": {
+        "current": [
+          "feedbax.spec.authenticated_row_index.v1",
+          "feedbax.spec.row_index_custody_bindings.v1",
+          "feedbax.spec.resolved_row_set.v1",
+          "feedbax.spec.figure_row_expansion_request.v1",
+          "feedbax.spec.resolved_figure_inputs.v1",
+          "feedbax.spec.experiment_envelope_compile_result.v1"
+        ],
+        "migrated": [],
+        "rejected": [
+          "feedbax.spec.authenticated_row_index.v0",
+          "feedbax.spec.row_index_custody_bindings.v0",
+          "feedbax.spec.resolved_row_set.v0",
+          "feedbax.spec.figure_row_expansion_request.v0",
+          "feedbax.spec.resolved_figure_inputs.v0",
+          "feedbax.spec.experiment_envelope_compile_result.v0",
           "unknown"
         ]
       },

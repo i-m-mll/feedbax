@@ -90,7 +90,24 @@ from feedbax.contracts.figures import (
     FigureCompositionSpec,
     FigureRuntimeBindingSpec,
     FigureSpec,
+    PanelSpec,
     ResolvedFigureSpec,
+    TraceBinding,
+    TraceFamily,
+    TraceFamilyIndex,
+)
+from feedbax.contracts.figure_roles import (
+    FigureRoleBindingContract,
+    FigureRowExpansionRequest,
+    expand_figure_rows,
+    resolve_figure_input_roles,
+)
+from feedbax.contracts.row_index import (
+    AuthenticatedRowIndex,
+    RowIndexCustodyBindings,
+    RowSelectionError,
+    RowSelectionErrorCode,
+    expand_row_selector,
 )
 from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
 from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
@@ -1596,11 +1613,181 @@ def check_figure_composition_public_contract() -> bool:
     return True
 
 
+def check_figure_role_reference_public_contract() -> bool:
+    """Prove the installed public row index, selector, and figure role contract."""
+
+    index = AuthenticatedRowIndex(
+        index_id="external-fixture-rows",
+        rows=[
+            {"row_id": "row-a", "label": "row a", "tags": ["baseline", "external"]},
+            {"row_id": "row-b", "label": "row b", "tags": ["external", "variant"]},
+        ],
+    )
+    resolved_rows = expand_row_selector({"mode": "all"}, index)
+    if resolved_rows.row_ids != ["row-a", "row-b"]:
+        raise AssertionError("row-set expansion lost the index order")
+    if resolved_rows.index_sha256 != index.canonical_sha256():
+        raise AssertionError("expanded row set did not pin its source index digest")
+    if expand_row_selector({"mode": "tag", "tag": "variant"}, index).row_ids != ["row-b"]:
+        raise AssertionError("tag selection did not resolve the declared subset")
+    for rejected in ({"mode": "any"}, {"mode": "all", "tag": "external"}, {"mode": "tag"}):
+        try:
+            expand_row_selector(rejected, index)
+        except ValueError:
+            continue
+        raise AssertionError(f"row-set selector union admitted {rejected!r}")
+    try:
+        expand_row_selector({"mode": "tag", "tag": "absent"}, index)
+    except RowSelectionError as exc:
+        if exc.code is not RowSelectionErrorCode.EMPTY_SELECTION:
+            raise AssertionError("empty selection did not fail with its stable code") from exc
+    else:
+        raise AssertionError("empty selection did not fail closed")
+
+    contracts = [
+        FigureRoleBindingContract(
+            input_role="measured",
+            artifact_role="external_result",
+            artifact_provider="results",
+        ),
+        FigureRoleBindingContract(
+            input_role="reference",
+            artifact_role="external_result",
+            artifact_provider="results",
+        ),
+    ]
+    request = FigureRowExpansionRequest(
+        figure_name="external-fixture-figure",
+        rows={"mode": "all"},
+        inputs={"measured": {"per_row": "primary"}, "reference": {"shared": "run:reference"}},
+        role_contracts=contracts,
+        assembler_title="External fixture rows",
+    )
+    try:
+        FigureRowExpansionRequest(
+            figure_name="external-fixture-figure",
+            rows={"mode": "all"},
+            inputs={
+                "measured": {
+                    "shared": "run:measured",
+                    "manifest_sha256": "0" * 64,
+                    "size_bytes": 1,
+                }
+            },
+            role_contracts=contracts,
+        )
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("authored figure input accepted an embedded authority block")
+
+    pending = resolve_figure_input_roles(request, resolved_rows)
+    if pending.fully_bound or pending.pending_roles != ("row_1__measured", "row_2__measured"):
+        raise AssertionError("a first-time figure did not resolve to pending per-row roles")
+
+    produced = {row_id: json.dumps({"row": row_id}).encode() for row_id in ("row-a", "row-b")}
+    bindings = RowIndexCustodyBindings(
+        index_id=index.index_id,
+        bindings=[
+            {
+                "row_id": row_id,
+                "binding_key": "primary",
+                "parent": {
+                    "kind": "AnalysisRunManifest",
+                    "id": f"run:{row_id}",
+                    "role": "analysis_run",
+                    "metadata": {
+                        "ref_schema_id": "feedbax.ref.authenticated_manifest",
+                        "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+                        "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+                        "size_bytes": len(raw),
+                    },
+                },
+            }
+            for row_id, raw in produced.items()
+        ],
+    )
+    resolved_inputs = resolve_figure_input_roles(request, resolved_rows, bindings)
+    if not resolved_inputs.fully_bound or len(resolved_inputs.inputs) != 4:
+        raise AssertionError("bound role resolution did not expand row-major over the row set")
+    if [item.role for item in resolved_inputs.inputs] != [
+        "row_1__measured",
+        "row_1__reference",
+        "row_2__measured",
+        "row_2__reference",
+    ]:
+        raise AssertionError("figure role names drifted from the row namespace")
+    if {item.parent.id for item in resolved_inputs.inputs if item.binding == "shared"} != {
+        "run:reference"
+    }:
+        raise AssertionError("a shared role did not stay experiment-invariant")
+
+    base = FigureSpec(
+        name="external-fixture-base",
+        assembler="feedbax.grid_figure",
+        assembler_params={"height": 300, "title": "base"},
+        panels=[
+            PanelSpec(name="left", title="left panel", row=1, col=1),
+            PanelSpec(name="right", title="right panel", row=1, col=2),
+        ],
+        trace_families=[
+            TraceFamily(
+                name="measured-left",
+                index=TraceFamilyIndex(values=[0, 1]),
+                legend_index=0,
+                trace=TraceBinding(
+                    name="measured-left-{index}",
+                    constructor="feedbax.line",
+                    panel="left",
+                    data={"y": {"item": "measured", "path": "values.{index}"}},
+                ),
+            )
+        ],
+        metadata={"caption": "base caption"},
+    )
+    expanded = expand_figure_rows(base, request, resolved_rows, resolved_inputs)
+    if len(expanded.panels) != 4 or len(expanded.trace_families or []) != 2:
+        raise AssertionError("row expansion did not derive one base block per resolved row")
+    if expanded.assembler_params["height"] != 600:
+        raise AssertionError("assembler height was not derived from the base and row count")
+    if expanded.assembler_params["title"] != "External fixture rows":
+        raise AssertionError("the one authored assembler fact was not applied")
+    if [panel.name for panel in expanded.panels] != [
+        "row_1__left",
+        "row_1__right",
+        "row_2__left",
+        "row_2__right",
+    ]:
+        raise AssertionError("panel namespace drifted from row-index order")
+    if [panel.title for panel in expanded.panels][2] != "row b \u2014 left panel":
+        raise AssertionError("panel titles are not derived from the row label")
+    if [panel.row for panel in expanded.panels] != [1, 1, 2, 2]:
+        raise AssertionError("panel grid placement did not follow row-index order")
+    families = expanded.trace_families or []
+    if families[0].legend_index != 0 or families[1].legend_index is not None:
+        raise AssertionError("legend ownership did not stay with the first expanded row")
+    if families[1].trace.params.get("showlegend") is not False:
+        raise AssertionError("a later expanded row kept a duplicate legend entry")
+    payload = expanded.model_dump(mode="json", exclude_none=True)
+    if payload["trace_families"][1]["trace"]["data"]["y"]["item"] != "row_2__measured":
+        raise AssertionError("trace data items were not bound to the expanded row role")
+    if any(parent.get("metadata") for parent in payload["inputs"]):
+        raise AssertionError("resolved figure inputs carried authority metadata")
+    if len(payload["input_authorities"]) != 4:
+        raise AssertionError("input authorities were not derived one per resolved input")
+    if payload["metadata"] != base.metadata:
+        raise AssertionError("row expansion restated derived facts into figure metadata")
+    if expanded.schema_version != "feedbax.spec.figure.v2":
+        raise AssertionError("row expansion did not produce ordinary FigureSpec v2 semantics")
+    return True
+
+
 __all__ = [
     "check_component_registration_and_migration",
     "check_component_param_array_values",
     "check_exact_parent_migration",
     "check_figure_composition_public_contract",
+    "check_figure_role_reference_public_contract",
     "check_material_dependencies",
     "check_ordered_registration",
     "check_resolved_evaluation_row_projection",

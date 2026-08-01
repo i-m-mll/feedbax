@@ -380,10 +380,12 @@ def check_policy() -> None:
     result_source = (FIXTURE_ROOT / "src" / "feedbax_external_conformance" / "result.py").read_text(
         encoding="utf-8"
     )
-    if 'Literal["feedbax.external_conformance.result.v13"]' not in result_source:
-        raise ValueError("ratified policy requires the authoritative v13 result")
-    if "v12 cannot migrate to v13" not in result_source:
+    if 'Literal["feedbax.external_conformance.result.v14"]' not in result_source:
+        raise ValueError("ratified policy requires the authoritative v14 result")
+    if "v12 cannot migrate to v14" not in result_source:
         raise ValueError("v12 must reject rather than synthesize figure evidence")
+    if "v13 cannot migrate to v14" not in result_source:
+        raise ValueError("v13 must reject rather than synthesize figure-role evidence")
     if "pending-final-sync" in document or "pending-final-sync" in POLICY_MANIFEST.read_text(
         encoding="utf-8"
     ):
@@ -404,6 +406,7 @@ def check_policy() -> None:
         "emergency-persistence",
         "result-role-binding",
         "figure-composition",
+        "figure-role-references",
     ):
         row = manifest_rows.get(row_id)
         if row is None or row.get("coverage_status") != "covered":
@@ -415,7 +418,7 @@ def check_policy() -> None:
     ]:
         raise ValueError("emergency persistence schema mapping drifted")
     if manifest_rows["result-role-binding"].get("schemas", {}).get("current") != [
-        "feedbax.external_conformance.result.v13"
+        "feedbax.external_conformance.result.v14"
     ]:
         raise ValueError("result-role schema mapping drifted")
     for row_id, row in manifest_rows.items():
