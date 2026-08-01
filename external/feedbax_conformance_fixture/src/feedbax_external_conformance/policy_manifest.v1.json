@@ -603,6 +603,70 @@
         ]
       },
       "coverage_status": "covered"
+    },
+    {
+      "row_id": "report-surface",
+      "case_ids": [],
+      "schemas": {
+        "current": [
+          "feedbax.spec.report.v1",
+          "feedbax.manifest.v1",
+          "feedbax.spec.report.ordered_figure.v3"
+        ],
+        "migrated": [],
+        "rejected": [
+          "feedbax.spec.report.v0",
+          "feedbax.manifest.report.v0",
+          "feedbax.spec.report.ordered_figure.v1",
+          "feedbax.spec.report.ordered_figure.v2",
+          "unknown"
+        ]
+      },
+      "coverage_status": "not-external-covered"
+    },
+    {
+      "row_id": "evaluation-surface",
+      "case_ids": [],
+      "schemas": {
+        "current": [
+          "feedbax.spec.evaluation_run.v1",
+          "feedbax.spec.evaluation_run_matrix.v3"
+        ],
+        "migrated": [
+          "feedbax.spec.evaluation_run_matrix.v1",
+          "feedbax.spec.evaluation_run_matrix.v2"
+        ],
+        "rejected": [
+          "feedbax.spec.evaluation_run.v0",
+          "feedbax.spec.evaluation_run_matrix.v0",
+          "unknown"
+        ]
+      },
+      "coverage_status": "not-external-covered"
+    },
+    {
+      "row_id": "analysis-authoring",
+      "case_ids": [],
+      "schemas": {
+        "current": [
+          "feedbax.spec.analysis_run.v2",
+          "feedbax.spec.analysis_bundle.v6"
+        ],
+        "migrated": [
+          "feedbax.spec.analysis_run.v1",
+          "feedbax.spec.analysis_bundle.v2",
+          "feedbax.spec.analysis_bundle.v3",
+          "feedbax.spec.analysis_bundle.v4",
+          "feedbax.spec.analysis_bundle.v5"
+        ],
+        "rejected": [
+          "feedbax.spec.analysis_run.v0",
+          "feedbax.spec.analysis_bundle.v0",
+          "feedbax.spec.analysis_bundle.v1",
+          "unknown"
+        ]
+      },
+      "coverage_status": "not-external-covered"
     }
   ]
 }

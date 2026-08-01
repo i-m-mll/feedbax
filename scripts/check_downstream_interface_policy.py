@@ -46,7 +46,19 @@ DRIVER_POLICY_SCHEMAS = {
         "unknown",
     ],
 }
-RATIFIED_NON_EXTERNAL_ROWS = {"terminal-certification"}
+# Rows whose behavior is proved by focused in-repo tests rather than by an
+# external conformance case. Adding a row here is a deliberate statement that no
+# external case covers it, never a way to skip evidence.
+RATIFIED_NON_EXTERNAL_ROWS = {
+    "terminal-certification",
+    # Draft rows raised by Feedbax issue 88d021d; ratified only by the owner's
+    # approval and merge of the protected delivery that carries them.
+    "report-surface",
+    "evaluation-surface",
+    "analysis-authoring",
+}
+DRAFT_POLICY_ROWS = {"report-surface", "evaluation-surface", "analysis-authoring"}
+DRAFT_POLICY_MARKER = "## Pending owner ratification: envelope-layer prerequisite rows"
 
 
 def _marked_block(path: Path, start_marker: str, end_marker: str) -> str:
@@ -444,6 +456,17 @@ def check_policy() -> None:
     }
     if observed_non_external != RATIFIED_NON_EXTERNAL_ROWS:
         raise ValueError("ratified non-external coverage rows drifted")
+    if not DRAFT_POLICY_ROWS <= set(manifest_rows):
+        raise ValueError("draft policy rows are missing from the fixture manifest")
+    if DRAFT_POLICY_MARKER not in document:
+        raise ValueError("draft policy rows are not marked pending owner ratification")
+    facade_non_guaranteed = tuple(
+        _literal_assignments(ROOT / "feedbax" / "plugins" / "__init__.py")[
+            "_NON_GUARANTEED_PLUGIN_EXPORTS"
+        ]
+    )
+    if "REPORT_RECIPES" not in facade_non_guaranteed:
+        raise ValueError("REPORT_RECIPES must stay outside the guaranteed plugin inventory")
 
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     for proof in (

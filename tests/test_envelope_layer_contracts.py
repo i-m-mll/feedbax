@@ -1015,6 +1015,108 @@ class TestCheckpointInitializationLowering:
         assert [leaf.path for leaf in structure.slots[0].leaves] == ["net.weight"]
 
 
+DRAFT_POLICY_ROW_IDS = ("report-surface", "evaluation-surface", "analysis-authoring")
+
+
+def _policy_document_rows() -> dict[str, list[str]]:
+    """Return backticked columns for each guarantees-table row, keyed by row id."""
+    import re
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parents[1]
+    text = (root / "docs" / "design" / "downstream_interface_stability.md").read_text(
+        encoding="utf-8"
+    )
+    start = text.index("<!-- policy-guarantees:start -->")
+    end = text.index("<!-- policy-guarantees:end -->")
+    rows: dict[str, list[str]] = {}
+    for line in text[start:end].splitlines():
+        match = re.match(r"\| `([^`]+)` \|", line)
+        if match is None:
+            continue
+        rows[match.group(1)] = [column.strip() for column in line.strip().strip("|").split("|")]
+    return rows
+
+
+class TestRatificationDraftRows:
+    """The report, evaluation, and analysis rows are drafted, not silently ratified."""
+
+    def test_draft_rows_are_present_in_the_policy_document(self) -> None:
+        rows = _policy_document_rows()
+        assert set(DRAFT_POLICY_ROW_IDS) <= set(rows)
+        for row_id in DRAFT_POLICY_ROW_IDS:
+            assert rows[row_id][-1] == "No external case"
+
+    def test_draft_rows_are_marked_pending_owner_ratification(self) -> None:
+        from pathlib import Path as _Path
+
+        root = _Path(__file__).resolve().parents[1]
+        text = (root / "docs" / "design" / "downstream_interface_stability.md").read_text(
+            encoding="utf-8"
+        )
+        assert "## Pending owner ratification: envelope-layer prerequisite rows" in text
+        assert "become ratified only when" in text
+
+    def test_fixture_manifest_declares_the_draft_rows_without_external_cases(self) -> None:
+        from pathlib import Path as _Path
+
+        root = _Path(__file__).resolve().parents[1]
+        manifest = json.loads(
+            (
+                root
+                / "external"
+                / "feedbax_conformance_fixture"
+                / "src"
+                / "feedbax_external_conformance"
+                / "policy_manifest.v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        rows = {row["row_id"]: row for row in manifest["guaranteed_rows"]}
+        for row_id in DRAFT_POLICY_ROW_IDS:
+            assert rows[row_id]["coverage_status"] == "not-external-covered"
+            assert rows[row_id]["case_ids"] == []
+            assert set(rows[row_id]["schemas"]) == {"current", "migrated", "rejected"}
+
+    def test_report_recipes_stays_outside_the_guaranteed_plugin_inventory(self) -> None:
+        from feedbax.plugins import _NON_GUARANTEED_PLUGIN_EXPORTS
+
+        assert "REPORT_RECIPES" in _NON_GUARANTEED_PLUGIN_EXPORTS
+
+    def test_every_drafted_public_name_resolves(self) -> None:
+        import importlib
+        import re
+
+        rows = _policy_document_rows()
+        for row_id in DRAFT_POLICY_ROW_IDS:
+            columns = rows[row_id]
+            namespaces = re.findall(r"`([^`]+)`", columns[1])
+            modules = [importlib.import_module(namespace) for namespace in namespaces]
+            names = [
+                name
+                for name in re.findall(r"`([^`]+)`", columns[2])
+                if not name.startswith("feedbax-")
+            ]
+            assert names
+            unresolved = [
+                name for name in names if not any(hasattr(module, name) for module in modules)
+            ]
+            assert unresolved == [], f"{row_id}: {unresolved}"
+
+    def test_policy_consistency_check_accepts_the_draft(self) -> None:
+        import importlib.util
+        from pathlib import Path as _Path
+
+        root = _Path(__file__).resolve().parents[1]
+        spec = importlib.util.spec_from_file_location(
+            "feedbax_check_downstream_interface_policy",
+            root / "scripts" / "check_downstream_interface_policy.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        module.check_policy()
+
+
 class TestEvaluationMatrixCoexistingVersions:
     """The matrix family already coexists across v1, v2, and v3."""
 
