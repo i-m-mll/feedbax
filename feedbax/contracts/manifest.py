@@ -895,9 +895,26 @@ def training_run_certification(
     )
 
 
-class EvaluationRunSpec(StrictModel):
-    """Declarative request for an evaluation run."""
+EVALUATION_RUN_SPEC_SCHEMA_ID = "feedbax.spec.evaluation_run"
+EVALUATION_RUN_SPEC_SCHEMA_VERSION = "feedbax.spec.evaluation_run.v1"
+#: Version an unversioned historical ``EvaluationRunSpec`` document declares.
+#: The family shipped without an in-document schema identity, so a payload that
+#: carries no ``schema_version`` is exactly the original v1 shape and is never
+#: guessed forward to a future current version.
+EVALUATION_RUN_SPEC_UNVERSIONED_BASELINE = EVALUATION_RUN_SPEC_SCHEMA_VERSION
 
+
+class EvaluationRunSpec(StrictModel):
+    """Declarative request for an evaluation run.
+
+    ``schema_id``/``schema_version`` are the document's durable identity. They
+    are deliberately excluded from :func:`evaluation_run_manifest_id`: run
+    identity names the semantic evaluation request, so a schema migration that
+    preserves semantics must not fork the identity of runs already produced.
+    """
+
+    schema_id: Literal["feedbax.spec.evaluation_run"] = EVALUATION_RUN_SPEC_SCHEMA_ID
+    schema_version: Literal["feedbax.spec.evaluation_run.v1"] = EVALUATION_RUN_SPEC_SCHEMA_VERSION
     evaluation_type: str
     training_run_ids: list[str] = Field(default_factory=list)
     inputs: list[ParentRef] = Field(default_factory=list)
@@ -1307,9 +1324,24 @@ class AnalysisRunManifest(BaseManifest):
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
 
 
-class ReportSpec(StrictModel):
-    """Declarative request for a report product."""
+REPORT_SPEC_SCHEMA_ID = "feedbax.spec.report"
+REPORT_SPEC_SCHEMA_VERSION = "feedbax.spec.report.v1"
+#: Version an unversioned historical ``ReportSpec`` document declares.
+REPORT_SPEC_UNVERSIONED_BASELINE = REPORT_SPEC_SCHEMA_VERSION
+REPORT_MANIFEST_SCHEMA_ID = "feedbax.manifest.report"
+REPORT_MANIFEST_SCHEMA_VERSION = SCHEMA_VERSION
 
+
+class ReportSpec(StrictModel):
+    """Declarative request for a report product.
+
+    ``schema_id``/``schema_version`` are the document's durable identity and are
+    excluded from :func:`report_manifest_id` for the same reason as
+    :class:`EvaluationRunSpec`.
+    """
+
+    schema_id: Literal["feedbax.spec.report"] = REPORT_SPEC_SCHEMA_ID
+    schema_version: Literal["feedbax.spec.report.v1"] = REPORT_SPEC_SCHEMA_VERSION
     report_type: str
     inputs: list[ParentRef] = Field(default_factory=list)
     params: dict[str, Any] = Field(default_factory=dict)
@@ -1318,6 +1350,7 @@ class ReportSpec(StrictModel):
 
 class ReportManifest(BaseManifest):
     kind: Literal["ReportManifest"] = "ReportManifest"
+    schema_version: str = REPORT_MANIFEST_SCHEMA_VERSION
     report_spec: SpecPayload
     inputs: list[ParentRef] = Field(default_factory=list)
     regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(default_factory=list)
@@ -2421,6 +2454,21 @@ def _normalize_training_run_set_manifest_data(data: dict[str, Any]) -> dict[str,
     return migrated
 
 
+def _normalize_report_manifest_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Admit a ``ReportManifest`` document only at a registered schema version."""
+    if data.get("kind") != "ReportManifest":
+        return data
+    from feedbax.contracts.migrations import default_spec_registry
+
+    schema_version = data.get("schema_version", REPORT_MANIFEST_SCHEMA_VERSION)
+    result = default_spec_registry.migrate(
+        "ReportManifest",
+        data,
+        source_version=schema_version if isinstance(schema_version, str) else None,
+    )
+    return result.payload
+
+
 def _normalize_analysis_run_manifest_data(data: dict[str, Any]) -> dict[str, Any]:
     if data.get("kind") != "AnalysisRunManifest":
         return data
@@ -2514,6 +2562,25 @@ def normalize_checkpoint_selection_lineage(
     return manifest.model_copy(update={"provenance": provenance})
 
 
+#: Fields that declare a document's schema identity rather than its meaning.
+SPEC_SCHEMA_IDENTITY_FIELDS: tuple[str, ...] = ("schema_id", "schema_version")
+
+
+def spec_identity_preimage(spec: BaseModel) -> dict[str, Any]:
+    """Return the canonical semantic preimage used for content-minted spec ids.
+
+    Schema identity fields are removed: a versioned document's identity names
+    what it asks for, not which schema revision expressed it. This keeps
+    content-minted manifest ids byte-stable when a family gains an explicit
+    in-document schema identity, and it forces a genuinely semantic migration to
+    change semantic fields if it intends to change identity.
+    """
+    payload = spec.model_dump(mode="json", exclude_none=True)
+    for field_name in SPEC_SCHEMA_IDENTITY_FIELDS:
+        payload.pop(field_name, None)
+    return payload
+
+
 def evaluation_run_manifest_id(spec: EvaluationRunSpec) -> str:
     """Return deterministic run identity for an evaluation spec."""
     dependency_identities = [
@@ -2568,7 +2635,7 @@ def evaluation_run_manifest_id(spec: EvaluationRunSpec) -> str:
             "material_dependency_identities": dependency_identities,
         }
     else:
-        identity_preimage = spec
+        identity_preimage = spec_identity_preimage(spec)
     digest = sha256_bytes(canonical_json_bytes(identity_preimage))
     return f"feedbax-evaluation-run:{digest[:32]}"
 
@@ -2629,7 +2696,7 @@ def analysis_run_manifest_id(spec: AnalysisRunSpec) -> str:
 
 def report_manifest_id(spec: ReportSpec) -> str:
     """Return deterministic report identity for a report spec."""
-    digest = sha256_bytes(canonical_json_bytes(spec))
+    digest = sha256_bytes(canonical_json_bytes(spec_identity_preimage(spec)))
     return f"feedbax-report:{digest[:32]}"
 
 
@@ -2693,6 +2760,7 @@ def load_manifest_bytes(raw: bytes) -> AnyManifest:
     data = json.loads(raw)
     data = _normalize_training_run_set_manifest_data(data)
     data = _normalize_analysis_run_manifest_data(data)
+    data = _normalize_report_manifest_data(data)
     data = _normalize_manifest_data_spec_payloads(data)
     data = _validate_retention_artifact_ref_metadata(data)
     raw_kind = data.get("kind")
