@@ -35,6 +35,7 @@ import subprocess
 import sys
 import tomllib
 import zipfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -217,7 +218,7 @@ def _clean_env(**extra: str) -> dict[str, str]:
 
 
 def _run(
-    args: list[str], *, cwd: Path, check: bool = True
+    args: Sequence[str | Path], *, cwd: Path, check: bool = True
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(arg) for arg in args],
@@ -229,7 +230,7 @@ def _run(
     )
 
 
-def _git(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _git(args: Sequence[str | Path], *, cwd: Path) -> subprocess.CompletedProcess[str]:
     return _run(
         [
             "git",
@@ -255,7 +256,7 @@ def _git_source_requirements() -> list[str]:
     """
     document = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     sources = document.get("tool", {}).get("uv", {}).get("sources", {})
-    requirements = []
+    requirements: list[str] = []
     for name, source in sorted(sources.items()):
         if isinstance(source, dict) and "git" in source:
             rev = source.get("rev")
@@ -297,7 +298,7 @@ class InstalledFramework:
         return self.environment / "bin" / "python"
 
     def cli(
-        self, args: list[str], *, cwd: Path, check: bool = True
+        self, args: Sequence[str | Path], *, cwd: Path, check: bool = True
     ) -> subprocess.CompletedProcess[str]:
         """Run one ``feedbax`` subcommand through the installed console script."""
         return _run([self.feedbax, *args], cwd=cwd, check=check)
@@ -371,7 +372,7 @@ class ColdStartProject:
     init_stdout: str
 
     def cli(
-        self, args: list[str], *, check: bool = True
+        self, args: Sequence[str | Path], *, check: bool = True
     ) -> subprocess.CompletedProcess[str]:
         return self.framework.cli(args, cwd=self.root, check=check)
 
