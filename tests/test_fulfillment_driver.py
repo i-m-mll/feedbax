@@ -65,7 +65,6 @@ from feedbax.contracts.experiment_compile_lock import (
     ReportParentBinding,
 )
 from feedbax.contracts.manifest import (
-    ReportManifest,
     canonical_json_bytes,
     canonical_manifest_path,
     load_manifest,
@@ -1061,26 +1060,43 @@ def test_an_incomplete_receipt_is_refused_rather_than_bound(
 def test_an_inapplicable_role_binds_nothing_and_blocks_nothing(
     outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
+    """A certified omission sits beside a bound role without blocking it.
+
+    The omission is stated where its rule actually decides — a figure input slot
+    row expansion fills per row — because certification evaluates the rule rather
+    than looking its id up, and the same decision on a report parent is refused.
+    """
     from feedbax.contracts.applicability_rules import (
         PER_ROW_FIGURE_INPUT_RULE,
         certify_not_applicable,
     )
 
     source = outputs.probe("partial-source")
-    outputs.bulletin(
-        "partial-bulletin",
+    outputs.plate(
+        "partial-plate",
         references=[
             planned(
                 source,
-                role_path="body.nominal",
-                consumer=ReportParentBinding(parent_kind="probe", parent_id="nominal"),
+                role_path="runtime.states",
+                consumer=FigureRuntimeInputBinding(input_role="nominal"),
             ),
-            certify_not_applicable("body.appendix", PER_ROW_FIGURE_INPUT_RULE),
+            certify_not_applicable("inputs.observed", PER_ROW_FIGURE_INPUT_RULE),
         ],
     )
-    run = _fulfill(outputs, "partial-bulletin", environment=environment)
-    manifest = load_manifest(run.results[-1].receipt.path)
-    assert isinstance(manifest, ReportManifest)
+    key = LogicalKey("figure", "partial-plate")
+    closure = _closure(outputs, "partial-plate")
+
+    assert [edge.role_path for edge in closure.plan.required_edges(key)] == [
+        ("runtime", "states")
+    ]
+    assert [edge.role_path for edge in closure.plan.certified_omissions(consumer=key)] == [
+        ("inputs", "observed")
+    ]
+
+    run = _fulfill(outputs, "partial-plate", environment=environment)
+    figure = run.results[-1]
+    assert figure.node_kind == "figure"
+    manifest = load_manifest(figure.receipt.path)
     assert [parent.role for parent in manifest.provenance.parents] == ["nominal"]
 
 

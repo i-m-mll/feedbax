@@ -111,8 +111,9 @@ from feedbax.analysis.fulfillment_plan import (
 from feedbax.analysis.exact_parents import StagedExactParentEntry
 from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
 from feedbax.contracts.applicability_rules import (
+    StructuralApplicabilityRuleMismatchError,
     UnknownStructuralApplicabilityRuleError,
-    require_structural_applicability_rule,
+    certify_structural_applicability,
 )
 from feedbax.contracts.manifest import (
     AnyManifest,
@@ -504,13 +505,14 @@ def external_parent_ref(
 
 
 class UncertifiedApplicabilityError(FulfillmentDriverError):
-    """The closure omits an input under a structural rule this build does not own.
+    """The closure omits an input under a structural rule that does not certify it.
 
     A ``compiler_rule`` omission is honored on the strength of the rule it
-    quotes. A rule id this build cannot state certifies nothing, so the omission
-    is refused rather than executed around: the input is neither bound nor proved
-    inapplicable, and running the node would silently produce an artifact missing
-    an input nobody decided about.
+    quotes. A rule id this build cannot state certifies nothing, and neither does
+    a rule it can state quoted on a consumer or role the rule proves nothing
+    about. Either way the omission is refused rather than executed around: the
+    input is neither bound nor proved inapplicable, and running the node would
+    silently produce an artifact missing an input nobody decided about.
     """
 
     def __init__(self, target: LogicalKey, failures: Sequence[tuple[PlanEdge, str]]) -> None:
@@ -542,21 +544,36 @@ class UncertifiedApplicabilityError(FulfillmentDriverError):
 
 
 def require_certified_applicability(plan: FulfillmentPlan) -> None:
-    """Refuse a plan that omits an input under a rule this build does not own.
+    """Refuse a plan that omits an input under a rule that does not decide it.
 
     The plan kernel deliberately does not know what a rule *name* means, so the
-    proof that a quoted rule is one of Feedbax's closed structural rules is made
-    here, where the closure is about to be executed. Every uncertified decision
-    in the closure is collected before any is raised, so one refusal names the
-    whole problem rather than the first instance of it.
+    proof that a quoted rule is one of Feedbax's closed structural rules — and
+    that it decides the input it was quoted on — is made here, where the closure
+    is about to be executed. The edge carries everything the predicate needs: the
+    consumer's artifact layer, the role path, and the reason the decision states.
+
+    Ownership alone is not certification. The rule table's sole entry is about a
+    per-row figure input slot, so a lock quoting it over an evaluation, report,
+    or analysis prerequisite would otherwise drop that prerequisite from the
+    closure under a rule that proves nothing about it.
+
+    Every uncertified decision in the closure is collected before any is raised,
+    so one refusal names the whole problem rather than the first instance of it.
     """
     failures: list[tuple[PlanEdge, str]] = []
     for edge in sorted(plan.certified_omissions(), key=lambda item: item.sort_key):
         try:
-            require_structural_applicability_rule(
-                edge.rule, ref=f"{edge.consumer.text} input {list(edge.role_path)}"
+            certify_structural_applicability(
+                edge.rule,
+                consumer_layer=edge.consumer.layer,
+                role_path=edge.role_path,
+                reason=edge.reason,
+                ref=f"{edge.consumer.text} input {list(edge.role_path)}",
             )
-        except UnknownStructuralApplicabilityRuleError as exc:
+        except (
+            UnknownStructuralApplicabilityRuleError,
+            StructuralApplicabilityRuleMismatchError,
+        ) as exc:
             failures.append((edge, str(exc)))
     if failures:
         raise UncertifiedApplicabilityError(plan.target, failures)

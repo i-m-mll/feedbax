@@ -231,6 +231,36 @@ class ParentRef(StrictModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+def authenticated_manifest_ref_metadata(digest: str, size_bytes: int) -> dict[str, Any]:
+    """Return the ref metadata one ``(sha256, size)`` custody profile authenticates.
+
+    This is the producer half of :func:`authenticated_manifest_ref_profile`: a
+    caller that already holds an authenticated profile — because a custody
+    document or a compile lock stated it — states it as ref metadata here rather
+    than assembling the four keys itself, so a producer can never emit a profile
+    the reader would refuse.
+
+    Raises:
+        ValueError: The digest is not a lowercase SHA-256 or the size is not a
+            non-negative integer. An invalid profile is refused at the producer
+            rather than written and refused later.
+    """
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise ValueError(f"authenticated manifest ref digest {digest!r} is not a SHA-256")
+    if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes < 0:
+        raise ValueError(f"authenticated manifest ref size {size_bytes!r} is not a byte count")
+    return {
+        "ref_schema_id": AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+        "ref_schema_version": AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+        "manifest_sha256": digest,
+        "size_bytes": size_bytes,
+    }
+
+
 def authenticated_manifest_ref_profile(ref: ParentRef) -> tuple[str, int] | None:
     """Return one ref's authenticated byte profile, if it declares one.
 
