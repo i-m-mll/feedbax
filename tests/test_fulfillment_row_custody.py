@@ -666,7 +666,8 @@ def test_a_stale_custody_document_reusing_the_index_id_is_refused(repo: Path) ->
         resolve_row_custody_overlay(index.envelopes[0], repo_root=repo)
 
     assert "do not belong to the row index cut pinned at" in str(caught.value)
-    assert "mid-span" in str(caught.value)
+    assert "pin index_sha256" in str(caught.value)
+    assert "belong to a different cut of the same index" in str(caught.value)
     assert "never for one that reuses its index id" in str(caught.value)
 
 
