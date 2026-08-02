@@ -46,6 +46,7 @@ from feedbax.analysis.fulfillment_driver import (
     ExternalBoundaryError,
     ExternalReceiptAuthenticationError,
     PlanLockDisagreementError,
+    PlanNodeDisagreementError,
     external_parent_ref,
     MissingExternalReceiptError,
     PlanDocumentDriftError,
@@ -2015,6 +2016,114 @@ def test_a_plan_node_with_no_content_hash_refuses_rather_than_skipping_the_pin(
     assert caught.value.record()["key"] == "evaluation:chain-mid"
     assert "never a skipped check" in str(caught.value)
     assert calls.evaluation == before
+
+
+@pytest.mark.parametrize(
+    ("field", "substituted"),
+    [
+        ("kind", "feedbax.spec.report"),
+        ("execution_identity", "e" * 64),
+        ("key", "analysis:chain-mid"),
+    ],
+)
+def test_a_node_fact_the_lock_does_not_determine_refuses_at_preflight(
+    outputs: QuillonOutputs,
+    environment: FulfillmentEnvironment,
+    calls: _Calls,
+    field: str,
+    substituted: str,
+) -> None:
+    """The document pin proves the document, and nothing else the node claims.
+
+    A plan is a derived record of the compile locks, so every fact it carries
+    about a node is a copy. Copying is fine; carrying an intact ``content_hash``
+    beside a substituted schema id, execution identity, or logical key is a plan
+    describing a node the compile never emitted, and preflight is where the
+    copies are checked against the authority they were copied from.
+    """
+    target = _chain(outputs)
+    index = read_compiled_outputs(outputs.output_directory)
+    document = derive_fulfillment_plan(index, target=target).document()
+    for node in document["nodes"]:
+        if node["key"] == "evaluation:chain-mid":
+            if field == "key":
+                node["layer"] = "analysis"
+                node["key"] = substituted
+            else:
+                node[field] = substituted
+    if field == "key":
+        # A lone key substitution is already refused by the plan kernel, whose
+        # edges would name a consumer the plan no longer carries. The shape that
+        # reaches preflight is the *consistent* one: every reference rewritten,
+        # so the plan is internally coherent and only the lock disagrees.
+        for edge in document["edges"]:
+            if edge["consumer"] == "evaluation:chain-mid":
+                edge["consumer"] = substituted
+            if edge.get("producer") == "evaluation:chain-mid":
+                edge["producer"] = substituted
+
+    before = calls.evaluation
+    with pytest.raises(PlanNodeDisagreementError) as caught:
+        preflight(
+            fulfillment_plan_from_document(document),
+            read_compiled_outputs(outputs.output_directory),
+        )
+
+    differences = caught.value.record()["differences"]
+    assert any(difference.startswith(f"{field}:") for difference in differences)
+    assert substituted in str(caught.value)
+    assert calls.evaluation == before, "a refused closure never runs"
+
+
+def test_erasing_a_boundary_refuses_at_preflight_rather_than_at_lowering(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
+) -> None:
+    """A boundary the plan does not state is one nothing checked before running.
+
+    ``require_no_external_boundary`` reads the plan's own claim, so a plan that
+    simply omits the boundary walks past it. The node's boundary is determined
+    by its compile lock, so it is compared with the lock like every other fact
+    the node carries, and the closure refuses before anything executes.
+    """
+    cohort = outputs.cohort("erased-boundary")
+    outputs.probe(
+        "erased-consumer",
+        references=[_subject(cohort, role_path="body.harvested", subject_id="harvested")],
+    )
+    index = read_compiled_outputs(outputs.output_directory)
+    document = derive_fulfillment_plan(index, target="erased-consumer").document()
+    erased = [
+        node for node in document["nodes"] if node["key"] == "training:erased-boundary"
+    ]
+    assert len(erased) == 1, "the corpus must actually contain the boundary node"
+    assert erased[0]["boundary"] == "feedbax.spec.training_run_matrix"
+    erased[0]["boundary"] = None
+
+    with pytest.raises(PlanNodeDisagreementError) as caught:
+        preflight(
+            fulfillment_plan_from_document(document),
+            read_compiled_outputs(outputs.output_directory),
+        )
+
+    assert caught.value.record()["key"] == "training:erased-boundary"
+    assert any(
+        difference.startswith("boundary:") for difference in caught.value.differences
+    )
+    assert calls.evaluation == 0
+    assert not environment.root.exists()
+
+
+def test_an_honest_derived_plan_still_reconciles_every_node_fact(
+    outputs: QuillonOutputs,
+) -> None:
+    """The node gate refuses substitutions, not the plans derivation produces."""
+    closure = _closure(outputs, _chain(outputs))
+    assert closure.order == CHAIN_ORDER
+    for node in closure.nodes:
+        assert node.plan_node.kind == node.compiled.schema_id
+        assert node.plan_node.execution_identity == node.compiled.execution_identity
+        assert node.plan_node.boundary == node.compiled.kind.boundary
+        assert node.plan_node.key == node.compiled.key
 
 
 def test_a_half_stated_restated_profile_is_refused_rather_than_dropped(
