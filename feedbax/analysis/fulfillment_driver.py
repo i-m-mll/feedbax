@@ -274,6 +274,48 @@ class UnpinnedPlanNodeError(FulfillmentDriverError):
         return {**self.key.record(), "source_ref": self.source_ref}
 
 
+class PlanNodeDisagreementError(FulfillmentDriverError):
+    """A plan node states facts about itself that its compile lock does not.
+
+    The content hash proves which *document* a node executes. It proves nothing
+    about the rest of what the node says it is, and the rest is not decoration:
+    the logical key is the address every receipt, edge, and dependency is
+    resolved through; the schema id is what the node is lowered by; the boundary
+    is what makes a node one this runner must never execute; the execution
+    identity is the compile's own statement of what it built.
+
+    Every one of those was copied out of a compile lock when the plan was
+    derived, and a copy is authority only until somebody checks it. So they are
+    checked here, on the same footing as the plan's edges, and against the same
+    authority: the lock is the sole source of what a node is, and the plan is a
+    derived record of it. A node that carries an intact document pin beside a
+    substituted key, kind, boundary, or execution identity is a plan describing
+    a node the compile never emitted.
+    """
+
+    def __init__(
+        self, key: LogicalKey, source_ref: str, differences: Sequence[str]
+    ) -> None:
+        self.key = key
+        self.source_ref = source_ref
+        self.differences = tuple(differences)
+        listing = "; ".join(self.differences)
+        super().__init__(
+            f"the fulfillment plan describes node {key.text} ({source_ref}) as something its "
+            f"compile lock does not determine: {listing}. The compile lock is the sole "
+            "authority for what a node is; a plan is a derived record of it. Re-derive the "
+            "plan from the compiled outputs it is meant to describe."
+        )
+
+    def record(self) -> dict[str, Any]:
+        """Return the structured refusal, deterministic in every field."""
+        return {
+            **self.key.record(),
+            "source_ref": self.source_ref,
+            "differences": list(self.differences),
+        }
+
+
 @dataclass(frozen=True)
 class ClosureNode:
     """One node of a preflighted closure, with the compiled output it executes.
@@ -866,6 +908,52 @@ def require_plan_matches_locks(plan: FulfillmentPlan, index: CompiledOutputIndex
             )
 
 
+def _node_facts_from_lock(compiled: CompiledEnvelope) -> dict[str, Any]:
+    """Return the node facts one compiled output determines, for exact comparison."""
+    return {
+        "key": compiled.key.text,
+        "kind": compiled.schema_id,
+        "content_hash": compiled.content_hash,
+        "execution_identity": compiled.execution_identity,
+        "boundary": compiled.kind.boundary,
+    }
+
+
+def _node_facts_from_plan(plan_node: PlanNode) -> dict[str, Any]:
+    """Return the same node facts as the plan document carries them."""
+    return {
+        "key": plan_node.key.text,
+        "kind": plan_node.kind,
+        "content_hash": plan_node.content_hash,
+        "execution_identity": plan_node.execution_identity,
+        "boundary": plan_node.boundary,
+    }
+
+
+def require_plan_node_matches_lock(
+    plan_node: PlanNode, compiled: CompiledEnvelope
+) -> None:
+    """Refuse a plan node whose own facts are not the ones its lock determines.
+
+    This is the node-side counterpart of
+    :func:`require_plan_matches_locks`, which does the same for edges. Both
+    exist for one reason: the plan is a cache of the locks, and every
+    authenticating fact it carries is a copy. ``content_hash`` is compared
+    separately by :func:`preflight`, before this, because a moved document is
+    the coarser fact and explains the differences that follow from it.
+    """
+    expected = _node_facts_from_lock(compiled)
+    declared = _node_facts_from_plan(plan_node)
+    differences = [
+        f"{name}: the lock determines {expected[name]!r} and the plan declares "
+        f"{declared[name]!r}"
+        for name in sorted(expected)
+        if expected[name] != declared[name]
+    ]
+    if differences:
+        raise PlanNodeDisagreementError(plan_node.key, plan_node.source_ref, differences)
+
+
 def preflight(plan: FulfillmentPlan, index: CompiledOutputIndex) -> FulfillmentClosure:
     """Bind one plan's closure to its compiled outputs and prove its boundary.
 
@@ -879,12 +967,16 @@ def preflight(plan: FulfillmentPlan, index: CompiledOutputIndex) -> FulfillmentC
     executed under a plan that described something else.
 
     The node hash proves the compiled *document* is the one the plan described.
-    It says nothing about the plan's edges, which are derived from the compile
-    lock rather than from the document, so they are reconciled against the locks
+    It says nothing about the rest of what the plan asserts. The node's own
+    facts — its logical key, the schema id it is lowered by, its execution
+    identity, whether it is a boundary — are copied out of the compile lock at
+    derivation, so they are reconciled back against it here. Its edges are
+    derived from the lock rather than from the document, so they are reconciled
     separately: otherwise a plan could carry an intact document hash beside an
     input the lock never stated, or beside an authenticated reference with its
     byte profile removed. The document check runs first, because a moved document
-    is the coarser fact and explains an edge difference that follows from it.
+    is the coarser fact and explains the node and edge differences that follow
+    from it.
 
     Raises:
         ExternalBoundaryError: The closure names a boundary node.
@@ -893,6 +985,9 @@ def preflight(plan: FulfillmentPlan, index: CompiledOutputIndex) -> FulfillmentC
         PlanDocumentDriftError: A compiled document no longer hashes to its pin.
         UnpinnedPlanNodeError: A node carries no content hash, so the document it
             executes cannot be proved to be the one the plan described.
+        PlanNodeDisagreementError: A node's own facts — its logical key, schema
+            id, execution identity, or boundary — are not the ones its compile
+            lock determines.
         PlanLockDisagreementError: A node's declared inputs are not the ones its
             compile lock determines.
     """
@@ -910,6 +1005,7 @@ def preflight(plan: FulfillmentPlan, index: CompiledOutputIndex) -> FulfillmentC
                 plan_node.content_hash,
                 compiled.content_hash,
             )
+        require_plan_node_matches_lock(plan_node, compiled)
         nodes.append(
             ClosureNode(
                 key=plan_node.key, plan_node=plan_node, compiled=compiled, order=order
