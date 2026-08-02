@@ -28,6 +28,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Union
 
+from feedbax.analysis.bundles import (
+    AnalysisBundleSpec,
+    execute_analysis_bundle,
+    execute_staged_analysis_bundle,
+    select_bundle_manifests,
+)
 from feedbax.analysis.evaluation import (
     execute_evaluation_run_spec,
     materialize_evaluation_run_matrix,
@@ -49,6 +55,7 @@ from feedbax.analysis.figures import (
     plan_figure_execution,
 )
 from feedbax.analysis.fulfillment import (
+    MANIFEST_KIND_BY_NODE_KIND,
     AdmissionOutcome,
     FulfillmentAdmissionError,
     FulfillmentNodeKind,
@@ -58,7 +65,10 @@ from feedbax.analysis.fulfillment import (
     admit_figure_receipt,
     admit_report_receipt,
 )
-from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
+from feedbax.analysis.manifest_inputs import (
+    authenticated_manifest_ref,
+    resolve_manifest_input,
+)
 from feedbax.analysis.reports import (
     execute_authored_report_spec,
     execute_report_spec,
@@ -138,6 +148,31 @@ class AnalysisNodeRequest:
 
 
 @dataclass(frozen=True)
+class AnalysisBundleNodeRequest:
+    """One analysis bundle, executed as the many products its own plan states.
+
+    A bundle is to the analysis layer what a matrix is to the evaluation layer:
+    one compiled document that is not itself an execution. Its stages are, and
+    each stage writes its own ordinary manifest, so a bundle node carries many
+    receipts rather than one.
+
+    ``root_inputs`` are the authenticated receipts the closure bound to this
+    node. A bundle addresses its roots as the *set* of manifests its predicate
+    selects, not by role, so the binding is by manifest identity: the bound ids
+    constrain the selection, and a selection that does not reproduce exactly
+    that set refuses rather than executing over a different one.
+    """
+
+    node_key: str
+    bundle: AnalysisBundleSpec
+    root_inputs: tuple[ParentRef, ...] = ()
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+    order: int | None = None
+
+    node_kind: ClassVar[FulfillmentNodeKind] = "analysis"
+
+
+@dataclass(frozen=True)
 class FigureNodeRequest:
     """One figure render, including the runtime overlay outside figure identity."""
 
@@ -171,6 +206,7 @@ NodeRequest = Union[
     EvaluationNodeRequest,
     EvaluationMatrixNodeRequest,
     AnalysisNodeRequest,
+    AnalysisBundleNodeRequest,
     FigureNodeRequest,
     ReportNodeRequest,
 ]
@@ -269,6 +305,8 @@ def fulfill_node(
     """
     if isinstance(request, EvaluationMatrixNodeRequest):
         return _fulfill_evaluation_matrix(request, environment=environment)
+    if isinstance(request, AnalysisBundleNodeRequest):
+        return _fulfill_analysis_bundle(request, environment=environment)
     if isinstance(
         request,
         (EvaluationNodeRequest, AnalysisNodeRequest, FigureNodeRequest, ReportNodeRequest),
@@ -335,6 +373,12 @@ def admit_node(
             f"evaluation matrix node {request.node_key!r} has no single receipt; expand it "
             "with expand_evaluation_matrix_node and admit each row"
         )
+    if isinstance(request, AnalysisBundleNodeRequest):
+        raise TypeError(
+            f"analysis bundle node {request.node_key!r} has no single receipt; a bundle's "
+            "stages are its executions, and each writes its own manifest. Admit those "
+            "manifests as the per-kind receipts they are."
+        )
     raise TypeError(f"unknown fulfillment node request type: {type(request).__name__}")
 
 
@@ -365,6 +409,11 @@ def execute_node(
         raise TypeError(
             f"evaluation matrix node {request.node_key!r} is not a single execution; expand it "
             "with expand_evaluation_matrix_node and execute each row"
+        )
+    if isinstance(request, AnalysisBundleNodeRequest):
+        raise TypeError(
+            f"analysis bundle node {request.node_key!r} is not a single execution; its stages "
+            "are, and they are driven together by execute_analysis_bundle_node"
         )
     raise TypeError(f"unknown fulfillment node request type: {type(request).__name__}")
 
@@ -628,6 +677,176 @@ def _fulfill_evaluation_matrix(
         disposition="reused" if all(d == "reused" for d in dispositions) else "executed",
         receipts=tuple(receipts),
         admissions=tuple(admissions),
+    )
+
+
+#: Manifest kind back to the fulfillment node kind whose receipt it is. A
+#: bundle's stages write ordinary manifests of several kinds, and each product is
+#: a receipt of exactly the kind its own manifest declares.
+_NODE_KIND_BY_MANIFEST_KIND: dict[str, FulfillmentNodeKind] = {
+    manifest_kind: node_kind
+    for node_kind, manifest_kind in MANIFEST_KIND_BY_NODE_KIND.items()
+}
+
+
+def analysis_bundle_root_run_ids(request: AnalysisBundleNodeRequest) -> tuple[str, ...] | None:
+    """Return the manifest ids the closure bound as this bundle's roots.
+
+    ``None`` means the node declared no required input, so the bundle selects its
+    roots the way its own document says: by its authored predicate. A bound node
+    constrains that selection to exactly the receipts the plan named.
+    """
+    if not request.root_inputs:
+        return None
+    run_ids = tuple(parent.id for parent in request.root_inputs)
+    duplicates = sorted({run_id for run_id in run_ids if run_ids.count(run_id) > 1})
+    if duplicates:
+        raise ValueError(
+            f"analysis bundle node {request.node_key!r} binds the same root receipt twice: "
+            f"{duplicates!r}; one required input names one root manifest"
+        )
+    return run_ids
+
+
+def _require_bundle_roots(
+    request: AnalysisBundleNodeRequest,
+    run_ids: tuple[str, ...] | None,
+    selected: Sequence[str],
+    *,
+    stage: str,
+) -> None:
+    """Refuse a selection that is not exactly the set the closure bound."""
+    if run_ids is None:
+        return
+    if set(selected) != set(run_ids):
+        raise ValueError(
+            f"analysis bundle node {request.node_key!r} binds root receipts {sorted(run_ids)!r} "
+            f"but its predicate {stage} selects {sorted(set(selected))!r}. A bundle executes "
+            "over exactly the receipts the plan named; a predicate that narrows, widens, or "
+            "misses them describes different work."
+        )
+
+
+def _bundle_stage_receipt(
+    manifest: Any, path: Path, *, root: Path, node_key: str
+) -> FulfillmentReceipt:
+    """Return one bundle stage product as the receipt its manifest kind makes it."""
+    node_kind = _NODE_KIND_BY_MANIFEST_KIND.get(str(manifest.kind))
+    if node_kind is None:
+        raise ValueError(
+            f"analysis bundle node {node_key!r} produced a {manifest.kind!r} manifest, which "
+            f"is not a fulfillment receipt kind; supported="
+            f"{sorted(_NODE_KIND_BY_MANIFEST_KIND)}"
+        )
+    return FulfillmentReceipt(
+        node_kind=node_kind, manifest=manifest, path=path, root=root
+    )
+
+
+def execute_analysis_bundle_node(
+    request: AnalysisBundleNodeRequest,
+    *,
+    environment: FulfillmentEnvironment,
+) -> tuple[FulfillmentReceipt, ...]:
+    """Drive one bundle's own plan and return every product it materialized.
+
+    Which entrypoint runs follows from the bundle document's own execution shape,
+    which :class:`~feedbax.analysis.bundles.AnalysisBundleSpec` already refuses to
+    leave ambiguous: a staged plan runs its ordered stages, and a template bundle
+    expands its templates. Both take the bound root ids as their selection, and
+    both are refused before any recipe runs when that selection is not exactly
+    what the plan named.
+
+    Receipts come back in the bundle's own product order — stage order, then the
+    order each stage materialized — so two runs over one bundle list identically.
+    """
+    bundle = request.bundle
+    root = Path(environment.root)
+    run_ids = analysis_bundle_root_run_ids(request)
+    if not bundle.stages and not bundle.templates:
+        raise ValueError(
+            f"analysis bundle node {request.node_key!r} declares neither a staged plan nor a "
+            "template set, so it states no work; a bundle defines exactly one non-empty "
+            "execution shape"
+        )
+    if environment.execution_context is not EMPTY_STAGED_EXECUTION_CONTEXT:
+        raise ValueError(
+            f"analysis bundle node {request.node_key!r} cannot run in an environment that "
+            "declares a staged execution context: bundle execution takes a portable "
+            "StagedExecutionDescriptor plus explicit root bindings, and a resolved context "
+            "cannot be turned back into them. Run the bundle in an environment whose parents "
+            "resolve beneath the receipt root."
+        )
+    if run_ids is not None:
+        _require_bundle_roots(
+            request,
+            run_ids,
+            [
+                manifest.id
+                for manifest in select_bundle_manifests(
+                    bundle, root, run_ids=run_ids, repo_root=environment.repo_root
+                )
+            ],
+            stage="preflight",
+        )
+    products: list[tuple[Any, Path]] = []
+    if bundle.stages:
+        execution = execute_staged_analysis_bundle(
+            bundle,
+            root=root,
+            repo_root=environment.repo_root,
+            run_ids=run_ids,
+            issues=list(environment.issues),
+            registries=environment.registries,
+        )
+        matched = tuple(execution.matched_run_ids)
+        for record in execution.stages:
+            for ref in record.manifest_refs:
+                resolved = resolve_manifest_input(ref, root)
+                products.append((resolved.manifest, resolved.path))
+    else:
+        outputs = execute_analysis_bundle(
+            bundle,
+            root=root,
+            repo_root=environment.repo_root,
+            run_ids=run_ids,
+            issues=list(environment.issues),
+            registries=environment.registries,
+        )
+        matched = tuple(
+            dict.fromkeys(
+                run_id for expansion, _, _ in outputs for run_id in expansion.matched_run_ids
+            )
+        )
+        products.extend((manifest, path) for _, manifest, path in outputs)
+    _require_bundle_roots(request, run_ids, matched, stage="selection")
+    return tuple(
+        _bundle_stage_receipt(manifest, path, root=root, node_key=request.node_key)
+        for manifest, path in products
+    )
+
+
+def _fulfill_analysis_bundle(
+    request: AnalysisBundleNodeRequest,
+    *,
+    environment: FulfillmentEnvironment,
+) -> NodeFulfillment:
+    """Fulfill one bundle node by driving the bundle its document describes.
+
+    A bundle node has no single canonical receipt to admit against, because the
+    ids of its stage products are only knowable once the stages before them have
+    bound. So the node is driven rather than admitted, and reuse is the bundle
+    executor's own per-stage decision, not this surface's. That is why the
+    disposition is always ``executed``: reporting reuse here would claim an
+    admission that was never performed.
+    """
+    receipts = execute_analysis_bundle_node(request, environment=environment)
+    return NodeFulfillment(
+        node_key=request.node_key,
+        node_kind=request.node_kind,
+        disposition="executed",
+        receipts=receipts,
+        admissions=(),
     )
 
 
