@@ -87,6 +87,7 @@ EVALUATION_BASE = f"{BASE_DIRECTORY}/baseline.evaluation_run_matrix.json"
 ANALYSIS_BASE = f"{BASE_DIRECTORY}/baseline.analysis_run.json"
 FIGURE_BASE = f"{BASE_DIRECTORY}/baseline.figure.json"
 REPORT_BASE = f"{BASE_DIRECTORY}/baseline.report.json"
+ROW_INDEX_BASE = f"{BASE_DIRECTORY}/quillon.row_index.json"
 
 BASE_DOCUMENTS: dict[str, dict[str, Any]] = {
     TRAINING_BASE: {
@@ -119,13 +120,45 @@ BASE_DOCUMENTS: dict[str, dict[str, Any]] = {
         "schema_version": "feedbax.spec.figure.v2",
         "name": "baseline-span",
         "assembler": "quillon.span_assembler",
-        "assembler_params": {},
+        "assembler_params": {"height": 300},
+        "panels": [{"name": "span", "title": "span", "row": 1, "col": 1}],
+        "trace_families": [
+            {
+                "name": "observed-span",
+                "index": {"values": ["near", "far"]},
+                "legend_index": "near",
+                "trace": {
+                    "name": "observed-span-{index}",
+                    "constructor": "quillon.span_band",
+                    "panel": "span",
+                    "data": {"x": {"item": "observed", "path": "artifact_payloads.x"}},
+                },
+            }
+        ],
     },
+    #: The row set a row-expansion figure repeats the base over. It carries only
+    #: compile-time facts: stable ids, deterministic order, and display labels.
+    ROW_INDEX_BASE: {
+        "schema_id": "feedbax.spec.authenticated_row_index",
+        "schema_version": "feedbax.spec.authenticated_row_index.v1",
+        "index_id": "quillon-span-survey",
+        "rows": [
+            {"row_id": "near-span", "label": "near span", "tags": ["survey"]},
+            {"row_id": "far-span", "label": "far span", "tags": ["survey"]},
+        ],
+    },
+    #: A top-level report document. The ordered-figure content is its ``params``
+    #: block; the document itself says which report this is.
     REPORT_BASE: {
-        "schema_id": "feedbax.spec.report.ordered_figure",
-        "schema_version": "feedbax.spec.report.ordered_figure.v3",
-        "title": "Quillon baseline span",
-        "sections": [{"title": "Span", "figures": [], "tables": []}],
+        "schema_id": "feedbax.spec.report",
+        "schema_version": "feedbax.spec.report.v1",
+        "report_type": "feedbax.ordered_figure_report",
+        "params": {
+            "schema_id": "feedbax.spec.report.ordered_figure",
+            "schema_version": "feedbax.spec.report.ordered_figure.v3",
+            "title": "Quillon baseline span",
+            "sections": [{"title": "Span", "figures": [], "tables": []}],
+        },
     },
 }
 
@@ -137,6 +170,7 @@ TRAINING_ENVELOPE: dict[str, Any] = {
     "reason": "The baseline span saturates the probe before the cadence window closes.",
     "assert": [{"path": "base.inline.cadence", "equals": 2}],
     "training": {
+        "rows_mode": "append",
         "rows": [
             {
                 "from": "baseline",
@@ -212,14 +246,33 @@ FIGURE_ENVELOPE: dict[str, Any] = {
     "name": "widened-plot",
     "base": FIGURE_BASE,
     "figure": {
+        "mode": "row_expansion",
+        "rows": {"mode": "all", "index": ROW_INDEX_BASE},
+        "assembler_title": "Quillon widened span survey",
         "inputs": [
             {
                 "input_role": "observed",
                 "ref": {"kind": "envelope", "alias": "widened-summary"},
+                "binding": "per_row",
+                "binding_key": "observations",
+                "contract": {
+                    "kind": "quillon.survey_run",
+                    "artifact_role": "span_observations",
+                    "artifact_provider": "quillon.custody",
+                },
             }
         ],
+    },
+}
+
+FIGURE_COMPOSITION_ENVELOPE: dict[str, Any] = {
+    "schema": "feedbax.experiment_envelope.v1",
+    "name": "widened-overlay",
+    "base": FIGURE_BASE,
+    "figure": {
+        "mode": "composition",
         "delta": {
-            "layer_id": "widened-plot",
+            "layer_id": "widened-overlay",
             "patches": [
                 {"path": "assembler_params.style", "op": "add", "value": "wide"}
             ],
@@ -234,11 +287,11 @@ REPORT_ENVELOPE: dict[str, Any] = {
     "report": {
         "bindings": [
             {
-                "role_path": "sections.0.figures.0",
+                "role_path": "params.sections.0.figures.0",
                 "ref": {"kind": "envelope", "alias": "widened-plot"},
             },
             {
-                "role_path": "sections.0.tables.0",
+                "role_path": "params.sections.0.tables.0",
                 "ref": {
                     "kind": "not_applicable",
                     "reason": "the widened survey has no comparison arm to tabulate",
@@ -248,7 +301,7 @@ REPORT_ENVELOPE: dict[str, Any] = {
         "delta": {
             "layer_id": "widened-report",
             "patches": [
-                {"path": "title", "op": "replace", "value": "Quillon widened span"}
+                {"path": "params.title", "op": "replace", "value": "Quillon widened span"}
             ],
         },
     },
@@ -259,6 +312,7 @@ ENVELOPES: dict[str, dict[str, Any]] = {
     "widened-probe": EVALUATION_ENVELOPE,
     "widened-summary": ANALYSIS_ENVELOPE,
     "widened-plot": FIGURE_ENVELOPE,
+    "widened-overlay": FIGURE_COMPOSITION_ENVELOPE,
     "widened-report": REPORT_ENVELOPE,
 }
 
@@ -291,7 +345,7 @@ def write_declaration(root: Path) -> Path:
 
 
 def write_repo(root: Path, *, envelopes: dict[str, dict[str, Any]] | None = None) -> None:
-    """Lay out one quillon repository: a declaration, five bases, five envelopes."""
+    """Lay out one quillon repository: a declaration, its bases, its envelopes."""
     write_declaration(root)
     for ref, document in BASE_DOCUMENTS.items():
         write_json(root / ref, document)
@@ -311,6 +365,7 @@ __all__ = [
     "EVALUATION_BASE",
     "EVALUATION_ENVELOPE",
     "FIGURE_BASE",
+    "FIGURE_COMPOSITION_ENVELOPE",
     "FIGURE_ENVELOPE",
     "OUTPUT_DIRECTORY",
     "PROJECT",
@@ -319,6 +374,7 @@ __all__ = [
     "PROJECT_DECLARATION_DOCUMENT",
     "REPORT_BASE",
     "REPORT_ENVELOPE",
+    "ROW_INDEX_BASE",
     "SURVEY_PAYLOAD",
     "TRAINING_BASE",
     "TRAINING_ENVELOPE",

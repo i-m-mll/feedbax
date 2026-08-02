@@ -170,7 +170,12 @@ class QuillonOutputs:
                     "params": {"stage": name},
                 },
                 "rows": [
-                    {"row_id": f"{name}-{index}", "params": {"stage": f"{name}-{index}"}}
+                    {
+                        "row_id": f"{name}-{index}",
+                        "deltas": [
+                            {"path": "params.stage", "value": f"{name}-{index}"}
+                        ],
+                    }
                     for index in range(rows)
                 ],
             },

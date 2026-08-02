@@ -49,7 +49,7 @@ receipt does not exist yet.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -60,8 +60,14 @@ from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeRejection,
     ExperimentEnvelopeRejectionCategory,
 )
+from feedbax.contracts.figure_roles import (
+    FigureInputReference,
+    PerRowInputReference,
+    SharedInputReference,
+)
 from feedbax.contracts.figures import FigureCompositionDelta
 from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.row_index import RowSetSelector
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 
 #: The unversioned identity of the dialect family.
@@ -219,10 +225,16 @@ class TrainingRowAuthoring(DialectModel):
     ``delta`` is a native :class:`MatrixCompositionDelta` authored directly. There
     is no shorthand layer above it: a shorthand would have to know what the
     patched paths mean, which is the project's science and not Feedbax's.
+
+    ``label`` is the row's display name. It defaults to the row's own ``id`` and
+    is never copied from the source row: a changed row that kept its source's
+    label would advertise, in the one field a reader sees first, an experiment it
+    is no longer running.
     """
 
     from_: str = Field(alias="from")
     id: str
+    label: str | None = None
     seed: int | None = None
     replaces: RowReplacement | None = None
     delta: MatrixCompositionDelta | None = None
@@ -233,7 +245,14 @@ class TrainingRowAuthoring(DialectModel):
             raise ValueError("a training row inherits a nonempty parent row id")
         if not self.id.strip():
             raise ValueError("a training row states its own nonempty id")
+        if self.label is not None and not self.label.strip():
+            raise ValueError("a training row that states a label states a nonempty one")
         return self
+
+    @property
+    def effective_label(self) -> str:
+        """Return the label this row carries: the authored one, or its own id."""
+        return self.id if self.label is None else self.label
 
 
 class TagsDelta(DialectModel):
@@ -273,9 +292,36 @@ class CheckpointInitializationAuthoring(DialectModel):
         return self
 
 
-class TrainingLayerAuthoring(DialectModel):
-    """Rows inherited from the parent matrix, plus tags and checkpoint sources."""
+class TrainingRowsMode(StrEnum):
+    """What the compiled row set is, relative to the rows the parent declares.
 
+    * ``authored_only`` — the compiled matrix runs exactly the rows this envelope
+      authors. Every inherited row is dropped.
+    * ``append`` — the inherited rows keep running and the authored rows are
+      added after them.
+
+    The distinction is not presentational. An inherited row that survives is
+    runnable work: a compile that silently kept the parent's rows would launch
+    training nobody in this envelope asked for. So the mode is stated, never
+    defaulted and never inferred — an absent ``rows_mode`` is a missing field,
+    not a request for the historical behavior.
+    """
+
+    AUTHORED_ONLY = "authored_only"
+    APPEND = "append"
+
+
+class TrainingLayerAuthoring(DialectModel):
+    """Rows inherited from the parent matrix, plus tags and checkpoint sources.
+
+    There is deliberately no top-level ``delta`` here. An arbitrary patch over the
+    whole matrix would make every structured field on this model ornamental: the
+    same change could always be written as a raw path, and the row/tag/checkpoint
+    vocabulary would stop being the thing that decides what runs. A change this
+    layer cannot express belongs in the base, not in a free-form patch.
+    """
+
+    rows_mode: TrainingRowsMode
     rows: list[TrainingRowAuthoring] = Field(default_factory=list)
     tags: TagsDelta | None = None
     checkpoint_initialization: list[CheckpointInitializationAuthoring] = Field(
@@ -286,6 +332,11 @@ class TrainingLayerAuthoring(DialectModel):
     def _validate(self) -> "TrainingLayerAuthoring":
         if not self.rows and self.tags is None:
             raise ValueError("a training layer authors rows, tags, or both")
+        if self.rows_mode is TrainingRowsMode.AUTHORED_ONLY and not self.rows:
+            raise ValueError(
+                "rows_mode 'authored_only' states that the compiled matrix runs exactly "
+                "the authored rows; authoring none would compile a matrix that runs nothing"
+            )
         ids = [row.id for row in self.rows]
         if len(set(ids)) != len(ids):
             raise ValueError("training row ids must be unique within one envelope")
@@ -359,23 +410,124 @@ class AnalysisLayerAuthoring(DialectModel):
 # -- figure ----------------------------------------------------------------
 
 
+class FigureLayerMode(StrEnum):
+    """The one operation a figure envelope performs, stated explicitly.
+
+    * ``row_expansion`` — a :class:`~feedbax.contracts.figures.FigureSpec` parent
+      is repeated over a resolved row set and compiles to a ``FigureSpec``. The
+      derivation is normative and unauthored: row-index order alone decides
+      namespaces, panel placement, titles, legend ownership, and height.
+    * ``composition`` — a ``FigureSpec`` parent is content-pinned and compiles to
+      a :class:`~feedbax.contracts.figures.FigureCompositionSpec` carrying the
+      authored ordered deltas over it.
+
+    The mode is authored because it is a semantic choice, and a semantic choice
+    is never read off a filename, a family word, or the shape of the parent.
+    """
+
+    ROW_EXPANSION = "row_expansion"
+    COMPOSITION = "composition"
+
+
+class FigureRoleContractAuthoring(DialectModel):
+    """The declared closed artifact contract for one row-expanded input role.
+
+    These are the fields of
+    :class:`~feedbax.contracts.figure_roles.FigureRoleBindingContract` an author
+    decides; ``input_role`` is not among them because the enclosing input already
+    states it, and ``manifest_status`` is not among them because only a completed
+    manifest is ever bound.
+    """
+
+    kind: str = "AnalysisRunManifest"
+    authority: Literal["artifact_provider", "analysis_data_product"] = "artifact_provider"
+    artifact_role: str
+    artifact_provider: str
+    media_type: str = "application/json"
+    payload_name: str | None = None
+    product_role: str | None = None
+    product_schema_id: str | None = None
+    product_schema_version: str | None = None
+    analysis_type: str | None = None
+
+    @model_validator(mode="after")
+    def _validate(self) -> "FigureRoleContractAuthoring":
+        for name in ("kind", "artifact_role", "artifact_provider", "media_type"):
+            if not str(getattr(self, name)).strip():
+                raise ValueError(f"a figure role contract states a nonempty {name}")
+        return self
+
+    def binding_contract(self, input_role: str) -> dict[str, Any]:
+        """Return the ``FigureRoleBindingContract`` payload for *input_role*."""
+        payload = self.model_dump(mode="json", exclude_none=True)
+        payload["input_role"] = input_role
+        return payload
+
+
 class FigureInputAuthoring(DialectModel):
-    """One figure runtime input, addressed by its input role."""
+    """One figure runtime input, addressed by its input role.
+
+    ``ref`` is the runtime locator the compile lock records; it never enters the
+    compiled document, because authenticating an input takes a run. Under
+    ``row_expansion`` the input additionally states *how* the role is filled —
+    once per expanded row from the row index's custody (``per_row``), or once for
+    every row from one named manifest (``shared``) — and the closed artifact
+    contract that fill must satisfy.
+    """
 
     input_role: str
     ref: AuthoredReference
+    binding: Literal["per_row", "shared"] | None = None
+    binding_key: str | None = None
+    contract: FigureRoleContractAuthoring | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> "FigureInputAuthoring":
         if not self.input_role.strip():
             raise ValueError("a figure input states a nonempty input role")
+        expanded = (self.binding, self.binding_key, self.contract)
+        if any(item is None for item in expanded) and any(
+            item is not None for item in expanded
+        ):
+            raise ValueError(
+                "a row-expanded figure input states binding, binding_key, and contract "
+                "together; a partial profile is neither a per-row nor a shared role"
+            )
+        if self.binding_key is not None and not self.binding_key.strip():
+            raise ValueError("a figure input states a nonempty binding key")
         return self
+
+    @property
+    def is_row_expanded(self) -> bool:
+        """Whether this input declares the per-row/shared profile expansion needs."""
+        return self.binding is not None
+
+    def role_reference(self) -> FigureInputReference:
+        """Return the closed ``per_row``/``shared`` reference this input declares."""
+        if self.binding is None or self.binding_key is None:
+            raise ValueError(
+                f"figure input {self.input_role!r} declares no row-expansion binding"
+            )
+        if self.binding == "per_row":
+            return PerRowInputReference(per_row=self.binding_key)
+        return SharedInputReference(shared=self.binding_key)
 
 
 class FigureLayerAuthoring(DialectModel):
-    """Figure inputs bound by role, plus a native figure composition delta."""
+    """One figure operation: its mode, its inputs, and what that mode needs.
 
+    ``row_expansion`` states the row set it repeats the parent over and declares
+    every input's per-row/shared profile. It authors no delta at all: the
+    expansion is derived, and a patch layered over a derived document would make
+    the derivation negotiable.
+
+    ``composition`` states the ordered deltas and nothing about rows.
+    """
+
+    mode: FigureLayerMode
     inputs: list[FigureInputAuthoring] = Field(default_factory=list)
+    rows: RowSetSelector | None = None
+    assembler_title: str | None = None
     delta: FigureCompositionDelta | None = None
 
     @model_validator(mode="after")
@@ -383,8 +535,48 @@ class FigureLayerAuthoring(DialectModel):
         roles = [item.input_role for item in self.inputs]
         if len(set(roles)) != len(roles):
             raise ValueError("figure input roles must be unique")
-        if not self.inputs and self.delta is None:
-            raise ValueError("a figure layer binds inputs, states a delta, or both")
+        if self.mode is FigureLayerMode.ROW_EXPANSION:
+            return self._validate_row_expansion()
+        return self._validate_composition()
+
+    def _validate_row_expansion(self) -> "FigureLayerAuthoring":
+        if self.delta is not None:
+            raise ValueError(
+                "a row_expansion figure authors no delta; the expansion is derived from "
+                "row-index order alone, and a patch over it would make that derivation "
+                "negotiable"
+            )
+        if self.rows is None:
+            raise ValueError("a row_expansion figure states the row set it expands over")
+        if not self.rows.index or not self.rows.index.strip():
+            raise ValueError(
+                "a row_expansion figure's row selector names the row index document it "
+                "is expanded against, by repo-relative path"
+            )
+        if not self.inputs:
+            raise ValueError("a row_expansion figure binds at least one input role")
+        unprofiled = [item.input_role for item in self.inputs if not item.is_row_expanded]
+        if unprofiled:
+            raise ValueError(
+                f"row_expansion figure inputs {sorted(unprofiled)} state no per-row or "
+                "shared binding profile; expansion cannot fill a role it cannot address"
+            )
+        return self
+
+    def _validate_composition(self) -> "FigureLayerAuthoring":
+        if self.delta is None:
+            raise ValueError("a composition figure states the ordered deltas it composes")
+        if self.rows is not None or self.assembler_title is not None:
+            raise ValueError(
+                "a composition figure states no row set and no assembler title; those are "
+                "row_expansion vocabulary"
+            )
+        profiled = [item.input_role for item in self.inputs if item.is_row_expanded]
+        if profiled:
+            raise ValueError(
+                f"composition figure inputs {sorted(profiled)} state a per-row or shared "
+                "binding profile, which only row_expansion resolves"
+            )
         return self
 
 
@@ -487,6 +679,13 @@ class LayerOutputContract:
 
     ``model_ref`` is a ``module:attribute`` pair rather than the class itself so
     that importing the dialect does not drag in the analysis and figure stacks.
+
+    A family whose top-level document delegates its authored content to an inner
+    ``params`` block states ``params_discriminator`` — the top-level field naming
+    which content this is — and ``params_models``, the closed table of the models
+    Feedbax validates that content with. A discriminator value absent from the
+    table is content Feedbax does not own, and its ``params`` are left to whoever
+    does.
     """
 
     layer: ExperimentEnvelopeLayer
@@ -494,13 +693,31 @@ class LayerOutputContract:
     schema_id: str
     schema_version: str
     model_ref: tuple[str, str]
+    params_discriminator: str | None = None
+    params_models: Mapping[str, tuple[str, str]] = field(default_factory=dict)
 
     def model(self) -> Any:
         """Import and return the Feedbax output model this layer compiles into."""
-        from importlib import import_module
+        return _import_attribute(self.model_ref)
 
-        module, attribute = self.model_ref
-        return getattr(import_module(module), attribute)
+    def params_model(self, document: Mapping[str, Any]) -> Any | None:
+        """Return the model *document*'s declared content type validates against.
+
+        ``None`` means this family takes no inner ``params`` block, or the
+        document declares a content type Feedbax does not own.
+        """
+        if self.params_discriminator is None:
+            return None
+        ref = self.params_models.get(str(document.get(self.params_discriminator)))
+        return None if ref is None else _import_attribute(ref)
+
+
+def _import_attribute(ref: tuple[str, str]) -> Any:
+    """Import and return one ``(module, attribute)`` pair."""
+    from importlib import import_module
+
+    module, attribute = ref
+    return getattr(import_module(module), attribute)
 
 
 TRAINING_OUTPUT = LayerOutputContract(
@@ -545,12 +762,24 @@ FIGURE_COMPOSITION_OUTPUT = LayerOutputContract(
     "feedbax.spec.figure_composition.v2",
     ("feedbax.contracts.figures", "FigureCompositionSpec"),
 )
+#: Report ``report_type`` to the closed model validating that report's ``params``.
+#: Both sides are Feedbax-owned, so this is Feedbax code; a report type absent
+#: from it carries params whose owner is the recipe that registered the type.
+REPORT_PARAMS_MODELS: Mapping[str, tuple[str, str]] = {
+    "feedbax.ordered_figure_report": (
+        "feedbax.analysis.reports",
+        "OrderedFigureReportParams",
+    ),
+}
+
 REPORT_OUTPUT = LayerOutputContract(
     ExperimentEnvelopeLayer.REPORT,
     "report",
-    "feedbax.spec.report.ordered_figure",
-    "feedbax.spec.report.ordered_figure.v3",
-    ("feedbax.analysis.reports", "OrderedFigureReportParams"),
+    "feedbax.spec.report",
+    "feedbax.spec.report.v1",
+    ("feedbax.contracts.manifest", "ReportSpec"),
+    params_discriminator="report_type",
+    params_models=REPORT_PARAMS_MODELS,
 )
 
 #: Every output a layer may compile into, keyed by the compiled document's own
@@ -669,6 +898,7 @@ __all__ = [
     "LAYER_PARAMS_PREFIX",
     "LAYER_RECIPE_PATH",
     "REPORT_OUTPUT",
+    "REPORT_PARAMS_MODELS",
     "TRAINING_OUTPUT",
     "AnalysisLayerAuthoring",
     "AnalysisSubjectAuthoring",
@@ -681,6 +911,8 @@ __all__ = [
     "ExperimentEnvelopeLayer",
     "FigureInputAuthoring",
     "FigureLayerAuthoring",
+    "FigureLayerMode",
+    "FigureRoleContractAuthoring",
     "LayerOutputContract",
     "NotApplicableAuthoring",
     "ReceiptReference",
@@ -690,6 +922,7 @@ __all__ = [
     "TagsDelta",
     "TrainingLayerAuthoring",
     "TrainingRowAuthoring",
+    "TrainingRowsMode",
     "UpstreamEnvelopeReference",
     "layer_of_document",
     "output_contract_of_document",

@@ -88,7 +88,7 @@ def test_the_dialect_is_one_family_at_one_version() -> None:
     ["feedbax.experiment_envelope.v0", "feedbax.experiment_envelope.v2", "quillon.study.v1", None],
 )
 def test_any_other_schema_fails_closed_naming_its_migration_slot(schema: Any) -> None:
-    document = _minimal(training={"tags": {"add": ["probe"]}})
+    document = _minimal(training={"rows_mode": "append", "tags": {"add": ["probe"]}})
     if schema is None:
         document.pop("schema")
     else:
@@ -134,7 +134,7 @@ def test_an_envelope_that_authors_two_layers_is_refused() -> None:
     with pytest.raises(ExperimentEnvelopeRejection) as caught:
         _parse(
             _minimal(
-                training={"tags": {"add": ["probe"]}},
+                training={"rows_mode": "append", "tags": {"add": ["probe"]}},
                 report={"delta": {"layer_id": "one", "patches": []}},
             )
         )
@@ -171,9 +171,17 @@ def test_the_pre_parse_layer_probe_declines_an_ambiguous_document() -> None:
 @pytest.mark.parametrize(
     "document",
     [
-        {**_minimal(training={"tags": {"add": ["p"]}}), "invented_top_level": 1},
-        _minimal(training={"tags": {"add": ["p"]}, "invented": 1}),
-        _minimal(training={"rows": [{"from": "baseline", "id": "x", "invented": 1}]}),
+        {
+            **_minimal(training={"rows_mode": "append", "tags": {"add": ["p"]}}),
+            "invented_top_level": 1,
+        },
+        _minimal(training={"rows_mode": "append", "tags": {"add": ["p"]}, "invented": 1}),
+        _minimal(
+            training={
+                "rows_mode": "append",
+                "rows": [{"from": "baseline", "id": "x", "invented": 1}],
+            }
+        ),
         _minimal(
             report={
                 "bindings": [
@@ -187,6 +195,8 @@ def test_the_pre_parse_layer_probe_declines_an_ambiguous_document() -> None:
         ),
         _minimal(
             figure={
+                "mode": "composition",
+                "delta": {"layer_id": "one", "patches": []},
                 "inputs": [
                     {
                         "input_role": "observed",
@@ -206,7 +216,7 @@ def test_an_unknown_field_is_refused_anywhere_in_the_document(document: dict[str
 
 def test_a_missing_required_field_is_refused_as_missing() -> None:
     with pytest.raises(ExperimentEnvelopeRejection) as caught:
-        _parse(_minimal(training={"rows": [{"id": "widened"}]}))
+        _parse(_minimal(training={"rows_mode": "append", "rows": [{"id": "widened"}]}))
 
     assert caught.value.category is ExperimentEnvelopeRejectionCategory.MISSING_FIELD
 
@@ -215,7 +225,7 @@ def test_an_assertion_states_the_value_it_expects() -> None:
     with pytest.raises(ExperimentEnvelopeRejection, match="states the value it expects"):
         _parse(
             {
-                **_minimal(training={"tags": {"add": ["probe"]}}),
+                **_minimal(training={"rows_mode": "append", "tags": {"add": ["probe"]}}),
                 "assert": [{"path": "base.inline.cadence"}],
             }
         )
@@ -224,7 +234,7 @@ def test_an_assertion_states_the_value_it_expects() -> None:
 def test_an_assertion_may_expect_a_null_it_states_explicitly() -> None:
     envelope = _parse(
         {
-            **_minimal(training={"tags": {"add": ["probe"]}}),
+            **_minimal(training={"rows_mode": "append", "tags": {"add": ["probe"]}}),
             "assert": [{"path": "base.inline.cadence", "equals": None}],
         }
     )
@@ -234,19 +244,22 @@ def test_an_assertion_may_expect_a_null_it_states_explicitly() -> None:
 
 def test_a_tags_delta_must_change_something_and_may_not_contradict_itself() -> None:
     with pytest.raises(ExperimentEnvelopeRejection, match="adds or removes something"):
-        _parse(_minimal(training={"tags": {"add": [], "remove": []}}))
+        _parse(_minimal(training={"rows_mode": "append", "tags": {"add": [], "remove": []}}))
     with pytest.raises(ExperimentEnvelopeRejection, match="both added and removed"):
-        _parse(_minimal(training={"tags": {"add": ["p"], "remove": ["p"]}}))
+        _parse(
+            _minimal(training={"rows_mode": "append", "tags": {"add": ["p"], "remove": ["p"]}})
+        )
 
 
 def test_training_row_ids_and_delta_layer_ids_are_unique_within_one_envelope() -> None:
     row = {"from": "baseline", "id": "widened"}
     with pytest.raises(ExperimentEnvelopeRejection, match="row ids must be unique"):
-        _parse(_minimal(training={"rows": [dict(row), dict(row)]}))
+        _parse(_minimal(training={"rows_mode": "append", "rows": [dict(row), dict(row)]}))
     with pytest.raises(ExperimentEnvelopeRejection, match="layer ids must be unique"):
         _parse(
             _minimal(
                 training={
+                    "rows_mode": "append",
                     "rows": [
                         {**row, "delta": {"layer_id": "one", "patches": []}},
                         {**row, "id": "other", "delta": {"layer_id": "one", "patches": []}},
@@ -298,9 +311,11 @@ def test_an_unknown_authored_reference_kind_is_refused() -> None:
         _parse(
             _minimal(
                 figure={
+                    "mode": "composition",
+                    "delta": {"layer_id": "one", "patches": []},
                     "inputs": [
                         {"input_role": "observed", "ref": {"kind": "http", "url": "x"}}
-                    ]
+                    ],
                 }
             )
         )
@@ -311,6 +326,7 @@ def test_checkpoint_initialization_that_is_not_applicable_is_simply_not_authored
         _parse(
             _minimal(
                 training={
+                    "rows_mode": "append",
                     "rows": [{"from": "baseline", "id": "widened"}],
                     "checkpoint_initialization": [
                         {
@@ -374,7 +390,7 @@ def test_a_value_the_output_model_refuses_is_a_rejection_not_a_bad_document(
         ("feedbax.spec.analysis_bundle", "analysis", "analysis_bundle"),
         ("feedbax.spec.figure", "figure", "figure"),
         ("feedbax.spec.figure_composition", "figure", "figure_composition"),
-        ("feedbax.spec.report.ordered_figure", "report", "report"),
+        ("feedbax.spec.report", "report", "report"),
     ],
 )
 def test_a_document_declares_which_layer_owns_it(
@@ -399,3 +415,243 @@ def test_every_declared_output_model_actually_imports() -> None:
     for contract in LAYER_OUTPUT_CONTRACTS.values():
         model = contract.model()
         assert hasattr(model, "model_validate")
+
+
+# -- the ratified equivalence corrections -------------------------------------
+
+
+class TestTrainingRowsMode:
+    """What the compiled row set is, is stated rather than inherited by default."""
+
+    def test_an_absent_rows_mode_is_a_missing_field_rather_than_a_default(self) -> None:
+        with pytest.raises(ExperimentEnvelopeRejection) as caught:
+            _parse(_minimal(training={"tags": {"add": ["probe"]}}))
+
+        assert caught.value.category is ExperimentEnvelopeRejectionCategory.MISSING_FIELD
+        assert "rows_mode" in str(caught.value)
+
+    @pytest.mark.parametrize("mode", ["authored_only", "append"])
+    def test_the_mode_set_is_closed(self, mode: str) -> None:
+        envelope = _parse(
+            _minimal(
+                training={"rows_mode": mode, "rows": [{"from": "baseline", "id": "x"}]}
+            )
+        )
+
+        assert envelope.training is not None
+        assert envelope.training.rows_mode.value == mode
+
+    def test_an_invented_mode_is_refused(self) -> None:
+        with pytest.raises(ExperimentEnvelopeRejection) as caught:
+            _parse(
+                _minimal(
+                    training={"rows_mode": "inherit", "rows": [{"from": "b", "id": "x"}]}
+                )
+            )
+
+        assert caught.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+
+    def test_authored_only_with_no_authored_rows_would_run_nothing(self) -> None:
+        with pytest.raises(ExperimentEnvelopeRejection, match="runs exactly"):
+            _parse(
+                _minimal(
+                    training={"rows_mode": "authored_only", "tags": {"add": ["probe"]}}
+                )
+            )
+
+
+class TestTrainingRowLabel:
+    """A row's label follows its identity, never its source's."""
+
+    def test_the_label_defaults_to_the_rows_own_id(self) -> None:
+        envelope = _parse(
+            _minimal(
+                training={
+                    "rows_mode": "append",
+                    "rows": [{"from": "baseline", "id": "widened"}],
+                }
+            )
+        )
+
+        assert envelope.training is not None
+        assert envelope.training.rows[0].effective_label == "widened"
+
+    def test_an_authored_label_is_used_as_stated(self) -> None:
+        envelope = _parse(
+            _minimal(
+                training={
+                    "rows_mode": "append",
+                    "rows": [
+                        {"from": "baseline", "id": "widened", "label": "widened span"}
+                    ],
+                }
+            )
+        )
+
+        assert envelope.training is not None
+        assert envelope.training.rows[0].effective_label == "widened span"
+
+    def test_an_empty_label_is_refused_rather_than_treated_as_absent(self) -> None:
+        with pytest.raises(ExperimentEnvelopeRejection, match="nonempty one"):
+            _parse(
+                _minimal(
+                    training={
+                        "rows_mode": "append",
+                        "rows": [{"from": "baseline", "id": "widened", "label": "  "}],
+                    }
+                )
+            )
+
+
+def test_a_top_level_training_delta_would_make_the_structured_layer_ornamental() -> None:
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        _parse(
+            _minimal(
+                training={
+                    "rows_mode": "append",
+                    "tags": {"add": ["probe"]},
+                    "delta": {"layer_id": "raw", "patches": []},
+                }
+            )
+        )
+
+    assert caught.value.category is ExperimentEnvelopeRejectionCategory.UNKNOWN_FIELD
+
+
+class TestFigureMode:
+    """The operation a figure performs is authored, never read off a document."""
+
+    def test_an_absent_mode_is_a_missing_field(self) -> None:
+        with pytest.raises(ExperimentEnvelopeRejection) as caught:
+            _parse(
+                _minimal(figure={"delta": {"layer_id": "one", "patches": []}})
+            )
+
+        assert caught.value.category is ExperimentEnvelopeRejectionCategory.MISSING_FIELD
+        assert "mode" in str(caught.value)
+
+    def test_a_row_expansion_figure_authors_no_delta(self) -> None:
+        with pytest.raises(ExperimentEnvelopeRejection, match="authors no delta"):
+            _parse(
+                _minimal(
+                    figure={
+                        "mode": "row_expansion",
+                        "rows": {"mode": "all", "index": "bases/rows.json"},
+                        "delta": {"layer_id": "one", "patches": []},
+                        "inputs": [
+                            {
+                                "input_role": "observed",
+                                "ref": {"kind": "envelope", "alias": "x"},
+                                "binding": "per_row",
+                                "binding_key": "observations",
+                                "contract": {
+                                    "artifact_role": "r",
+                                    "artifact_provider": "p",
+                                },
+                            }
+                        ],
+                    }
+                )
+            )
+
+    def test_a_row_expansion_figure_names_the_row_index_it_expands_against(self) -> None:
+        with pytest.raises(ExperimentEnvelopeRejection, match="names the row index"):
+            _parse(
+                _minimal(
+                    figure={
+                        "mode": "row_expansion",
+                        "rows": {"mode": "all"},
+                        "inputs": [
+                            {
+                                "input_role": "observed",
+                                "ref": {"kind": "envelope", "alias": "x"},
+                                "binding": "shared",
+                                "binding_key": "m-0",
+                                "contract": {
+                                    "artifact_role": "r",
+                                    "artifact_provider": "p",
+                                },
+                            }
+                        ],
+                    }
+                )
+            )
+
+    def test_a_row_expansion_input_states_a_whole_binding_profile_or_none(self) -> None:
+        with pytest.raises(ExperimentEnvelopeRejection, match="partial profile"):
+            _parse(
+                _minimal(
+                    figure={
+                        "mode": "row_expansion",
+                        "rows": {"mode": "all", "index": "bases/rows.json"},
+                        "inputs": [
+                            {
+                                "input_role": "observed",
+                                "ref": {"kind": "envelope", "alias": "x"},
+                                "binding": "per_row",
+                            }
+                        ],
+                    }
+                )
+            )
+
+    def test_a_composition_figure_states_no_row_vocabulary(self) -> None:
+        with pytest.raises(ExperimentEnvelopeRejection, match="row_expansion vocabulary"):
+            _parse(
+                _minimal(
+                    figure={
+                        "mode": "composition",
+                        "delta": {"layer_id": "one", "patches": []},
+                        "rows": {"mode": "all", "index": "bases/rows.json"},
+                    }
+                )
+            )
+
+    def test_a_composition_figure_states_the_deltas_it_composes(self) -> None:
+        with pytest.raises(ExperimentEnvelopeRejection, match="ordered deltas"):
+            _parse(_minimal(figure={"mode": "composition"}))
+
+    def test_the_row_selector_is_the_closed_feedbax_selector(self) -> None:
+        with pytest.raises(ExperimentEnvelopeRejection):
+            _parse(
+                _minimal(
+                    figure={
+                        "mode": "row_expansion",
+                        "rows": {"mode": "regex", "pattern": ".*"},
+                        "inputs": [],
+                    }
+                )
+            )
+
+
+def test_the_report_layer_output_is_the_top_level_report_spec() -> None:
+    from feedbax.analysis.fulfillment_derivation import COMPILED_PRODUCT_KINDS
+    from feedbax.contracts.experiment_envelope_dialect import REPORT_OUTPUT
+    from feedbax.contracts.manifest import (
+        REPORT_SPEC_SCHEMA_ID,
+        REPORT_SPEC_SCHEMA_VERSION,
+        ReportSpec,
+    )
+
+    assert REPORT_OUTPUT.schema_id == REPORT_SPEC_SCHEMA_ID
+    assert REPORT_OUTPUT.schema_version == REPORT_SPEC_SCHEMA_VERSION
+    assert REPORT_OUTPUT.model() is ReportSpec
+    assert REPORT_OUTPUT.schema_id in COMPILED_PRODUCT_KINDS
+
+
+def test_the_report_output_validates_its_ordered_figure_params() -> None:
+    from feedbax.analysis.reports import (
+        ORDERED_FIGURE_REPORT_TYPE,
+        OrderedFigureReportParams,
+    )
+    from feedbax.contracts.experiment_envelope_dialect import REPORT_OUTPUT
+
+    document = {"report_type": ORDERED_FIGURE_REPORT_TYPE}
+
+    assert REPORT_OUTPUT.params_model(document) is OrderedFigureReportParams
+    assert REPORT_OUTPUT.params_model({"report_type": "quillon.bulletin"}) is None
+
+
+def test_an_ordered_figure_params_document_is_no_longer_a_layer_parent() -> None:
+    """The parent is the whole report, not the params block inside one."""
+    assert layer_of_document({"schema_id": "feedbax.spec.report.ordered_figure"}) is None

@@ -397,16 +397,138 @@ def test_a_compiled_spec_that_already_declares_inputs_refuses(
         _fulfill(outputs, "pre-bound", environment=environment)
 
 
-def test_an_evaluation_matrix_refuses_a_closure_edge_it_cannot_distribute(
+def _matrix_request(outputs: QuillonOutputs, target: str, *, environment):
+    """Fulfil everything upstream of one matrix node and return its request."""
+    closure = _closure(outputs, target)
+    fulfill_closure(truncated_closure(closure, 1), environment=environment)
+    requests = closure_requests(
+        _closure(outputs, target),
+        environment=environment,
+        stop_at=LogicalKey("evaluation", target),
+    )
+    return requests[-1]
+
+
+def test_an_evaluation_matrix_binds_a_closure_edge_as_a_staged_parent(
     outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
+    """A matrix binds its required input the way a matrix reaches a row."""
     source = outputs.probe("matrix-source")
     outputs.probe_matrix(
         "matrix-consumer",
         references=[_subject(source, role_path="body.subject", subject_id="subject")],
     )
-    with pytest.raises(NodeLoweringError, match="per row"):
-        _fulfill(outputs, "matrix-consumer", environment=environment)
+
+    request = _matrix_request(outputs, "matrix-consumer", environment=environment)
+
+    staged = request.matrix["staged_parents"]
+    assert list(staged) == ["subject"]
+    parent = staged["subject"]["parent"]
+    assert parent["kind"] == "EvaluationRunManifest"
+    assert parent["role"] == "subject"
+    assert parent["metadata"]["ref_schema_id"] == "feedbax.ref.authenticated_manifest"
+    assert request.matrix["base"]["params"]["staged_prerequisites"] == staged
+
+
+def test_a_staged_matrix_parent_reaches_every_materialized_row(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """Every row inherits the prerequisite, which is what makes the matrix legal."""
+    from feedbax.analysis.evaluation import materialize_evaluation_run_matrix
+
+    source = outputs.probe("row-source")
+    outputs.probe_matrix(
+        "row-consumer",
+        references=[_subject(source, role_path="body.subject", subject_id="subject")],
+    )
+    request = _matrix_request(outputs, "row-consumer", environment=environment)
+
+    rows = materialize_evaluation_run_matrix(
+        request.matrix, registry=environment.registries.evaluation_recipes
+    )
+
+    assert [row.row_id for row in rows] == ["row-consumer-0", "row-consumer-1"]
+    for row in rows:
+        assert (
+            row.payload.params["staged_prerequisites"]
+            == request.matrix["staged_parents"]
+        )
+
+
+def test_a_staged_matrix_never_runs_without_a_declared_execution_context(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """Where the bound bytes live is the environment's declaration, never a guess."""
+    source = outputs.probe("context-source")
+    outputs.probe_matrix(
+        "context-consumer",
+        references=[_subject(source, role_path="body.subject", subject_id="subject")],
+    )
+    with pytest.raises(ValueError, match="staged execution context"):
+        _fulfill(outputs, "context-consumer", environment=environment)
+
+
+def test_a_matrix_that_already_states_a_staged_parent_refuses_to_bind_it_twice(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    source = outputs.probe("twice-source")
+    outputs.emit(
+        "twice-consumer",
+        {
+            "schema_id": "feedbax.spec.evaluation_run_matrix",
+            "schema_version": "feedbax.spec.evaluation_run_matrix.v3",
+            "base": {
+                "schema_id": "feedbax.spec.evaluation_run",
+                "schema_version": "feedbax.spec.evaluation_run.v1",
+                "evaluation_type": PROBE_TYPE,
+                "params": {"stage": "twice-consumer"},
+            },
+            "rows": [{"row_id": "twice-consumer-0"}],
+            "staged_parents": {
+                "subject": {
+                    "parent": {
+                        "kind": "EvaluationRunManifest",
+                        "id": "feedbax-evaluation-run:preauthored",
+                        "role": "subject",
+                        "metadata": {
+                            "manifest_sha256": DIGEST,
+                            "ref_schema_id": "feedbax.ref.authenticated_manifest",
+                            "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+                            "size_bytes": 1,
+                        },
+                    }
+                }
+            },
+        },
+        references=[_subject(source, role_path="body.subject", subject_id="subject")],
+    )
+    with pytest.raises(NodeLoweringError, match="cannot authenticate a parent"):
+        _fulfill(outputs, "twice-consumer", environment=environment)
+
+
+def test_a_matrix_with_a_pinned_base_cannot_receive_a_staged_prerequisite(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """Injecting into pinned bytes would break the pin they are pinned by."""
+    source = outputs.probe("pinned-source")
+    outputs.emit(
+        "pinned-consumer",
+        {
+            "schema_id": "feedbax.spec.evaluation_run_matrix",
+            "schema_version": "feedbax.spec.evaluation_run_matrix.v3",
+            "base": {"ref": "bases/pinned.json", "sha256": "a" * 64},
+            "axes": [
+                {
+                    "id": "stage",
+                    "path": "params.stage",
+                    "values": [{"id": "one"}, {"id": "two"}],
+                }
+            ],
+        },
+        references=[_subject(source, role_path="body.subject", subject_id="subject")],
+    )
+    with pytest.raises(NodeLoweringError, match="content-pinned"):
+        _fulfill(outputs, "pinned-consumer", environment=environment)
 
 
 # --------------------------------------------------------------------------

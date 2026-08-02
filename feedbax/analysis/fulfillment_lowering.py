@@ -32,11 +32,22 @@ The ``role`` a bound :class:`~feedbax.contracts.manifest.ParentRef` carries is
 the binding's own addressing string. The ref's ``kind`` and ``id`` are never
 taken from the binding: those name real bytes, and only an admitted receipt
 supplies them.
+
+## A matrix binds per row, because a matrix does not execute
+
+An evaluation run matrix is not one execution; its rows are. So its required
+inputs are not bound as the matrix's own ``inputs`` but as named *staged
+parents*: authenticated once here, and injected into the base parameters every
+materialized row inherits. Execution resolves them through the staged execution
+context the environment declares, which is the only thing that knows where the
+bound bytes actually live — so a matrix carrying staged parents refuses to run
+in an environment that declares no such context.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
 from feedbax.analysis.exact_parents import (
@@ -74,7 +85,9 @@ from feedbax.contracts.manifest import (
     EvaluationRunSpec,
     ParentRef,
     ReportSpec,
+    StagedEvaluationPrerequisite,
 )
+from feedbax.contracts.staged_execution import validate_staged_binding_name
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from feedbax.analysis.fulfillment_driver import ClosureNode, NodeBinding
@@ -202,18 +215,89 @@ def _lower_evaluation(node: "ClosureNode", *, binding: "NodeBinding") -> NodeReq
 
 
 def _lower_evaluation_matrix(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
-    required = binding.plan.required_edges(node.key)
-    if required:
-        raise NodeLoweringError(
-            f"{node.compiled.lock_path} declares {len(required)} required input(s) on an "
-            "evaluation run matrix. A matrix binds its parents per row, through the staged "
-            "execution context the environment declares, and this build does not distribute a "
-            "closure edge across matrix rows. Compile the subject as a staged binding, or "
-            "author the evaluation as single runs."
+    document = _document(node)
+    if not binding.plan.required_edges(node.key):
+        return EvaluationMatrixNodeRequest(
+            node_key=node.key.text, matrix=document, order=node.order
         )
     return EvaluationMatrixNodeRequest(
-        node_key=node.key.text, matrix=_document(node), order=node.order
+        node_key=node.key.text,
+        matrix=_matrix_with_staged_parents(node, document, binding=binding),
+        order=node.order,
     )
+
+
+def _matrix_with_staged_parents(
+    node: "ClosureNode",
+    document: Mapping[str, Any],
+    *,
+    binding: "NodeBinding",
+) -> dict[str, Any]:
+    """Bind one matrix's required inputs as staged parents every row consumes.
+
+    A matrix does not execute; its rows do. So a required input is bound the way
+    a matrix binds anything that reaches a row: as a named staged prerequisite,
+    authenticated once at the matrix level and injected into the base parameters
+    every materialized row inherits. Execution then resolves it through the
+    staged execution context the environment declares, which is the one place
+    that knows where the bound bytes actually live.
+
+    The binding *name* is the role the consumer binding addresses — the subject
+    id for an evaluation subject — so nothing here invents an addressing string.
+    """
+    ref = str(node.compiled.lock_path)
+    declared = document.get("staged_parents")
+    if declared:
+        raise NodeLoweringError(
+            f"{ref} binds {len(list(declared))} staged parent(s) in its compiled document "
+            "while its plan also declares required inputs. A compiled document is a plan "
+            "and cannot authenticate a parent; staged parents are bound from the compile "
+            "lock's typed references, which is the single place they are stated."
+        )
+    base = document.get("base")
+    if not isinstance(base, Mapping) or "evaluation_type" not in base:
+        raise NodeLoweringError(
+            f"{ref} declares required input(s) on an evaluation run matrix whose base is "
+            "content-pinned rather than stated inline. A staged prerequisite is injected "
+            "into the base parameters every row inherits, and pinned bytes cannot receive "
+            "one without breaking their pin. State the matrix base inline, or bind the "
+            "subject in the pinned base itself."
+        )
+    parents, roles = bound_parents(node, binding=binding)
+    prerequisites: dict[str, dict[str, Any]] = {}
+    for parent, role in zip(parents, roles, strict=True):
+        try:
+            name = validate_staged_binding_name(role)
+        except ValueError as exc:
+            raise NodeLoweringError(
+                f"{ref} binds a required input at role {role!r}, which is not a staged "
+                f"execution binding name: {exc}"
+            ) from exc
+        if name in prerequisites:
+            raise NodeLoweringError(
+                f"{ref} binds two required inputs to the staged parent name {name!r}; a "
+                "staged binding names exactly one authenticated parent"
+            )
+        prerequisites[name] = StagedEvaluationPrerequisite(parent=parent).model_dump(
+            mode="json", exclude_none=True
+        )
+    bound = deepcopy(dict(document))
+    bound["staged_parents"] = prerequisites
+    bound_base = deepcopy(dict(base))
+    params = dict(bound_base.get("params") or {})
+    staged = dict(params.get("staged_prerequisites") or {})
+    collisions = sorted(set(staged) & set(prerequisites))
+    if collisions:
+        raise NodeLoweringError(
+            f"{ref} already states staged prerequisites {collisions} in its compiled base "
+            "parameters; a compile plan cannot authenticate one, and binding it twice "
+            "would let the two disagree"
+        )
+    staged.update(prerequisites)
+    params["staged_prerequisites"] = staged
+    bound_base["params"] = params
+    bound["base"] = bound_base
+    return bound
 
 
 def _lower_analysis(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
