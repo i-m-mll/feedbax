@@ -35,9 +35,11 @@ from feedbax.analysis.fulfillment_adapters import (
     FigureNodeRequest,
     FulfillmentEnvironment,
     admit_node,
+    analysis_bundle_root_identities,
     analysis_bundle_root_run_ids,
     execute_node,
 )
+from feedbax.analysis.fulfillment_adapters import _require_bundle_roots
 from feedbax.analysis.fulfillment_derivation import (
     COMPILED_PRODUCT_KINDS,
     UnsupportedCompiledProductError,
@@ -279,14 +281,86 @@ def test_a_declared_but_empty_root_set_is_refused_rather_than_read_as_ambient(
 def test_a_bound_bundle_binds_by_exact_manifest_identity(
     outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
-    """A declared root set is the exact set, with no ambient fallback beneath it."""
+    """A declared root set is the exact set, with no ambient fallback beneath it.
+
+    Identity is kind, id, and the bytes the bound ref authenticates — not the id
+    on its own. Ids are unique within a kind, so an id alone cannot say which
+    artifact was selected, and it says nothing at all about which bytes.
+    """
     target = _bound_sheaf(outputs, "sheaf-exact")
     request = _bundle_request(outputs, target, environment=environment)
 
-    run_ids = analysis_bundle_root_run_ids(request)
+    identities = analysis_bundle_root_identities(request)
 
-    assert run_ids is not None
-    assert run_ids == tuple(parent.id for parent in request.root_inputs)
+    assert identities is not None
+    assert [identity.kind for identity in identities] == ["EvaluationRunManifest"]
+    assert [identity.id for identity in identities] == [
+        parent.id for parent in request.root_inputs
+    ]
+    assert all(identity.manifest_sha256 is not None for identity in identities)
+    # The id-only view still exists, because bundle selection addresses
+    # candidates by id, but it is explicitly not what the gate compares.
+    assert analysis_bundle_root_run_ids(request) == tuple(
+        identity.id for identity in identities
+    )
+
+
+def test_a_selected_root_of_another_kind_with_the_same_id_refuses(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """The reviewer's case: same id, different kind, and it must not pass.
+
+    A lock naming a ``TrainingRunManifest`` and a selection producing an
+    ``EvaluationRunManifest`` that happens to share its id are two different
+    artifacts. Comparing id sets cannot tell them apart; comparing addresses can.
+    """
+    target = _bound_sheaf(outputs, "sheaf-kind-swap")
+    request = _bundle_request(outputs, target, environment=environment)
+    identities = analysis_bundle_root_identities(request)
+    assert identities is not None
+    shared_id = identities[0].id
+
+    with pytest.raises(ValueError) as caught:
+        _require_bundle_roots(
+            request,
+            [replace(identities[0], kind="TrainingRunManifest")],
+            [identities[0]],
+            stage="selection",
+        )
+
+    message = str(caught.value)
+    assert "TrainingRunManifest" in message and "EvaluationRunManifest" in message
+    assert shared_id in message
+
+
+def test_a_selected_root_whose_bytes_moved_refuses(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """Same artifact, different bytes: a rerun is not the receipt the plan named."""
+    target = _bound_sheaf(outputs, "sheaf-byte-swap")
+    request = _bundle_request(outputs, target, environment=environment)
+    identities = analysis_bundle_root_identities(request)
+    assert identities is not None
+    reran = replace(identities[0], manifest_sha256="f" * 64, size_bytes=1)
+
+    with pytest.raises(ValueError) as caught:
+        _require_bundle_roots(request, identities, [reran], stage="selection")
+
+    message = str(caught.value)
+    assert identities[0].manifest_sha256 in message
+    assert "f" * 64 in message
+
+
+def test_the_exact_root_gate_accepts_the_set_it_bound(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """The gate is exact rather than merely strict: the bound set itself passes."""
+    target = _bound_sheaf(outputs, "sheaf-agrees")
+    request = _bundle_request(outputs, target, environment=environment)
+    identities = analysis_bundle_root_identities(request)
+    assert identities is not None
+
+    _require_bundle_roots(request, identities, list(identities), stage="selection")
 
 
 def test_a_composition_lowers_to_the_ordinary_figure_it_renders_as(

@@ -23,6 +23,8 @@ execution order.
 
 from __future__ import annotations
 
+import hashlib
+
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -81,6 +83,8 @@ from feedbax.contracts.manifest import (
     ParentRef,
     Provenance,
     ReportSpec,
+    authenticated_manifest_ref_profile,
+    canonical_manifest_path,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -697,8 +701,45 @@ _NODE_KIND_BY_MANIFEST_KIND: dict[str, FulfillmentNodeKind] = {
 }
 
 
-def analysis_bundle_root_run_ids(request: AnalysisBundleNodeRequest) -> tuple[str, ...] | None:
-    """Return the manifest ids the closure bound as this bundle's roots.
+@dataclass(frozen=True)
+class BundleRootIdentity:
+    """One root receipt, as completely as the closure knows how to name it.
+
+    A manifest id is not an identity. Ids are unique within a kind, so the same
+    id names a different artifact under a different kind, and the same id under
+    the same kind names different *bytes* after a rerun. Both facts have to
+    travel with the id or the "exact root set" a lock declares is only an exact
+    set of strings.
+    """
+
+    kind: str
+    id: str
+    manifest_sha256: str | None = None
+    size_bytes: int | None = None
+
+    @property
+    def address(self) -> tuple[str, str]:
+        """The ``(kind, id)`` pair that says *which artifact* this is."""
+        return self.kind, self.id
+
+    def describe(self) -> str:
+        digest = "-" if self.manifest_sha256 is None else self.manifest_sha256[:12]
+        return f"{self.kind}:{self.id}@{digest}"
+
+    @classmethod
+    def of_parent(cls, parent: ParentRef) -> "BundleRootIdentity":
+        """Return the identity one bound parent ref carries."""
+        profile = authenticated_manifest_ref_profile(parent)
+        if profile is None:
+            return cls(kind=parent.kind, id=parent.id)
+        digest, size = profile
+        return cls(kind=parent.kind, id=parent.id, manifest_sha256=digest, size_bytes=size)
+
+
+def analysis_bundle_root_identities(
+    request: AnalysisBundleNodeRequest,
+) -> tuple[BundleRootIdentity, ...] | None:
+    """Return the full identities the closure bound as this bundle's roots.
 
     ``None`` means the compile lock declares no root reference, so the bundle
     selects its roots the way its own document says: by its authored predicate.
@@ -719,33 +760,104 @@ def analysis_bundle_root_run_ids(request: AnalysisBundleNodeRequest) -> tuple[st
             "executes over at least one root receipt, and an empty declaration is not the "
             "same statement as declaring no roots at all"
         )
-    run_ids = tuple(parent.id for parent in request.root_inputs)
-    duplicates = sorted({run_id for run_id in run_ids if run_ids.count(run_id) > 1})
+    identities = tuple(
+        BundleRootIdentity.of_parent(parent) for parent in request.root_inputs
+    )
+    addresses = [identity.address for identity in identities]
+    duplicates = sorted(
+        {f"{kind}:{run_id}" for kind, run_id in addresses if addresses.count((kind, run_id)) > 1}
+    )
     if duplicates:
         raise ValueError(
             f"analysis bundle node {request.node_key!r} binds the same root receipt twice: "
             f"{duplicates!r}; one required input names one root manifest"
         )
-    return run_ids
+    return identities
+
+
+def analysis_bundle_root_run_ids(request: AnalysisBundleNodeRequest) -> tuple[str, ...] | None:
+    """Return just the manifest ids of the bound root set, for selection.
+
+    The bundle selection API addresses candidates by id, so this is the shape it
+    takes. It is deliberately *not* the shape the equality gate compares: an id
+    alone cannot tell a locked ``TrainingRunManifest`` from a selected
+    ``EvaluationRunManifest`` that happens to share it. Use
+    :func:`analysis_bundle_root_identities` to decide whether a selection is the
+    bound set; use this only to narrow the search.
+    """
+    identities = analysis_bundle_root_identities(request)
+    if identities is None:
+        return None
+    return tuple(identity.id for identity in identities)
 
 
 def _require_bundle_roots(
     request: AnalysisBundleNodeRequest,
-    run_ids: tuple[str, ...] | None,
-    selected: Sequence[str],
+    identities: Sequence[BundleRootIdentity] | None,
+    selected: Sequence[BundleRootIdentity],
     *,
     stage: str,
 ) -> None:
-    """Refuse a selection that is not exactly the set the closure bound."""
-    if run_ids is None:
+    """Refuse a selection that is not exactly the set the closure bound.
+
+    Equality is over full identities. Kind and id together say which artifact was
+    selected, and the digest — where the bound ref carries one, which it does
+    whenever the lock authenticated the reference — says it is still the same
+    bytes. A selection that agrees on ids while differing in either is not the
+    set the plan named, and executing it would produce an artifact whose recorded
+    parents describe work that was not done.
+    """
+    if identities is None:
         return
-    if set(selected) != set(run_ids):
+    bound = {identity.address: identity for identity in identities}
+    found = {identity.address: identity for identity in selected}
+    differences: list[str] = []
+    for address in sorted(set(bound) | set(found)):
+        locked = bound.get(address)
+        chosen = found.get(address)
+        if locked is None:
+            differences.append(f"{chosen.describe()} was selected but the plan named no such root")
+            continue
+        if chosen is None:
+            differences.append(f"{locked.describe()} was named by the plan but not selected")
+            continue
+        if locked.manifest_sha256 is None or chosen.manifest_sha256 is None:
+            continue
+        if (locked.manifest_sha256, locked.size_bytes) != (
+            chosen.manifest_sha256,
+            chosen.size_bytes,
+        ):
+            differences.append(
+                f"{locked.kind}:{locked.id} is bound to manifest_sha256="
+                f"{locked.manifest_sha256} size_bytes={locked.size_bytes} but the selected "
+                f"receipt is manifest_sha256={chosen.manifest_sha256} size_bytes="
+                f"{chosen.size_bytes}"
+            )
+    if differences:
         raise ValueError(
-            f"analysis bundle node {request.node_key!r} binds root receipts {sorted(run_ids)!r} "
-            f"but its predicate {stage} selects {sorted(set(selected))!r}. A bundle executes "
-            "over exactly the receipts the plan named; a predicate that narrows, widens, or "
-            "misses them describes different work."
+            f"analysis bundle node {request.node_key!r} binds root receipts "
+            f"{sorted(identity.describe() for identity in identities)!r} but its predicate "
+            f"{stage} selects {sorted(identity.describe() for identity in selected)!r}: "
+            f"{'; '.join(differences)}. A bundle executes over exactly the receipts the plan "
+            "named — the same artifacts, and the same bytes of them — so a selection that "
+            "narrows, widens, substitutes a kind, or re-runs one of them describes different "
+            "work."
         )
+
+
+def _selected_root_identity(manifest: Any, *, root: Path) -> BundleRootIdentity:
+    """Return one selected manifest's identity, including its stored bytes."""
+    path = canonical_manifest_path(str(manifest.kind), str(manifest.id), root=root)
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return BundleRootIdentity(kind=str(manifest.kind), id=str(manifest.id))
+    return BundleRootIdentity(
+        kind=str(manifest.kind),
+        id=str(manifest.id),
+        manifest_sha256=hashlib.sha256(raw).hexdigest(),
+        size_bytes=len(raw),
+    )
 
 
 def _bundle_stage_receipt(
@@ -783,7 +895,8 @@ def execute_analysis_bundle_node(
     """
     bundle = request.bundle
     root = Path(environment.root)
-    run_ids = analysis_bundle_root_run_ids(request)
+    identities = analysis_bundle_root_identities(request)
+    run_ids = None if identities is None else tuple(identity.id for identity in identities)
     if not bundle.stages and not bundle.templates:
         raise ValueError(
             f"analysis bundle node {request.node_key!r} declares neither a staged plan nor a "
@@ -798,12 +911,12 @@ def execute_analysis_bundle_node(
             "cannot be turned back into them. Run the bundle in an environment whose parents "
             "resolve beneath the receipt root."
         )
-    if run_ids is not None:
+    if identities is not None:
         _require_bundle_roots(
             request,
-            run_ids,
+            identities,
             [
-                manifest.id
+                _selected_root_identity(manifest, root=root)
                 for manifest in select_bundle_manifests(
                     bundle, root, run_ids=run_ids, repo_root=environment.repo_root
                 )
@@ -840,7 +953,20 @@ def execute_analysis_bundle_node(
             )
         )
         products.extend((manifest, path) for _, manifest, path in outputs)
-    _require_bundle_roots(request, run_ids, matched, stage="selection")
+    # What execution reports back is ids. Their kind is not in doubt: selection
+    # fixes its candidates by the bundle predicate's manifest kind, so that is
+    # the kind every matched id has. The bytes were settled at the preflight gate
+    # above, against the same root, so this gate re-proves the address rather
+    # than re-reading every receipt.
+    _require_bundle_roots(
+        request,
+        identities,
+        [
+            BundleRootIdentity(kind=str(bundle.predicate.manifest_kind), id=str(run_id))
+            for run_id in matched
+        ],
+        stage="selection",
+    )
     return tuple(
         _bundle_stage_receipt(manifest, path, root=root, node_key=request.node_key)
         for manifest, path in products
