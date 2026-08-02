@@ -19,7 +19,20 @@ into the runtime overlay the figure executes with.
 The bound parents and their input authorities are a *runtime overlay*
 (:attr:`~feedbax.analysis.fulfillment_adapters.FigureNodeRequest.runtime_inputs`),
 never an edit to the compiled document. Digests and byte sizes stay outside the
-figure's scientific identity, which is the same boundary the compile drew.
+figure's scientific identity, which is the same boundary the compile drew — and
+inside the overlay, which is what execution authenticates against. Each bound
+parent therefore restates the custody document's own ``(sha256, size_bytes)``
+profile as authenticated manifest ref metadata, so figure execution resolves the
+exact bytes custody recorded instead of refusing a parent it cannot authenticate.
+
+## The cut is proved, not asserted
+
+A custody document names the row index it belongs to, and an index id is a name
+two cuts of one index both wear. So before any binding, the row index the
+expansion resolved against is re-read from the declared repository and its
+canonical digest re-derived; it must equal the digest the lock pinned, and the
+located custody document's bindings must belong to that proved cut. A stale
+document from another cut is refused rather than bound row by row.
 
 ## Only per-row roles come from here
 
@@ -42,6 +55,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +74,7 @@ from feedbax.contracts.figure_roles import (
 )
 from feedbax.contracts.manifest import ParentRef
 from feedbax.contracts.row_index import (
+    AuthenticatedRowIndex,
     ResolvedRowSet,
     RowIndexCustodyBindings,
     RowSelectionError,
@@ -215,10 +230,14 @@ def resolve_row_custody_overlay(
             ref=ref,
         )
     _require_locator_matches(locator, record.resolved_rows, ref=ref)
+    index = _authenticated_row_index(record, locator, repo_root=repo_root, ref=ref)
     bindings, path = _load_custody(locator, repo_root=repo_root, ref=ref)
+    _require_custody_belongs_to_cut(bindings, index, locator=locator, ref=ref)
     resolved = _resolve_inputs(record, bindings, ref=ref, custody_ref=locator.ref)
     per_row = tuple(item for item in resolved.inputs if item.binding == "per_row")
-    inputs, authorities = figure_input_binding_records(record.request, per_row)
+    inputs, authorities = figure_input_binding_records(
+        record.request, per_row, authenticated=True
+    )
     return RowCustodyOverlay(
         inputs=tuple(ParentRef.model_validate(item) for item in inputs),
         authorities=tuple(FigureInputAuthority.model_validate(item) for item in authorities),
@@ -257,6 +276,95 @@ def _require_locator_matches(
             ref=ref,
             custody_ref=locator.ref,
         )
+
+
+def _authenticated_row_index(
+    record: RowExpansionRecord,
+    locator: FigureRowCustodyLocator,
+    *,
+    repo_root: Path | str | None,
+    ref: str,
+) -> AuthenticatedRowIndex:
+    """Return the exact index cut the lock pinned, re-derived from located bytes.
+
+    ``index_sha256`` is the only lock-side digest a row expansion has, and until
+    something recomputes it from bytes on disk it is compared with nothing but
+    another copy of itself. This reads the row index the expansion names and
+    re-derives its canonical digest, so the cut a custody document is checked
+    against is a proved cut rather than an asserted one.
+
+    Raises:
+        RowCustodyFulfillmentError: The lock names no index to re-read, the
+            declared repository is absent, the index is missing or does not
+            validate, or its bytes are a different cut from the pinned one.
+    """
+    index_ref = record.resolved_rows.index_ref
+    if not index_ref:
+        raise RowCustodyFulfillmentError(
+            "binds per-row custody against row index digest "
+            f"{locator.index_sha256} but its resolved row set names no index_ref, so the "
+            "cut the custody must belong to cannot be re-read and proved. Recompile: an "
+            "index digest nothing can be checked against authenticates nothing",
+            ref=ref,
+            custody_ref=locator.ref,
+        )
+    if repo_root is None:
+        raise RowCustodyFulfillmentError(
+            f"authenticates its row index cut from {index_ref!r}, which is a repo-relative "
+            "path, but the fulfillment environment declares no repo_root",
+            ref=ref,
+            custody_ref=locator.ref,
+        )
+    path = Path(repo_root) / index_ref
+    try:
+        index = AuthenticatedRowIndex.model_validate(
+            json.loads(path.read_text(encoding="utf-8"))
+        )
+    except (OSError, ValueError, TypeError) as exc:
+        raise RowCustodyFulfillmentError(
+            f"expanded over the row index {index_ref!r}, which does not read at {path} as an "
+            f"AuthenticatedRowIndex: {exc}. The cut custody must belong to is proved from "
+            "the index's own bytes, so an unreadable index is a refusal",
+            ref=ref,
+            custody_ref=locator.ref,
+        ) from exc
+    digest = index.canonical_sha256()
+    if digest != locator.index_sha256:
+        raise RowCustodyFulfillmentError(
+            f"expanded over the row index {index_ref!r} pinned at {locator.index_sha256}, but "
+            f"the index at {path} now canonicalizes to {digest}; the rows were resolved "
+            "against a different cut, and custody bound to this one addresses other rows",
+            ref=ref,
+            custody_ref=locator.ref,
+        )
+    return index
+
+
+def _require_custody_belongs_to_cut(
+    bindings: RowIndexCustodyBindings,
+    index: AuthenticatedRowIndex,
+    *,
+    locator: FigureRowCustodyLocator,
+    ref: str,
+) -> None:
+    """Prove the located custody document's content belongs to the pinned cut.
+
+    Sharing an ``index_id`` proves nothing: an id is a name, and two cuts of one
+    index wear the same one. This checks the document's actual bindings against
+    the authenticated index, so custody produced for another cut is refused
+    rather than bound row by row.
+    """
+    try:
+        bindings.require_index(index)
+    except RowSelectionError as exc:
+        raise RowCustodyFulfillmentError(
+            f"binds per-row custody from {locator.ref!r}, whose bindings do not belong to the "
+            f"row index cut pinned at {locator.index_sha256}: {exc}. A custody document is "
+            "believed for the cut it was produced against, never for one that reuses its "
+            "index id",
+            ref=ref,
+            custody_ref=locator.ref,
+        ) from exc
 
 
 def _load_custody(
