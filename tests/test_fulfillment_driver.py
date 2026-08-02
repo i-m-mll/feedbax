@@ -36,13 +36,17 @@ from feedbax.analysis.fulfillment import FulfillmentAdmissionError
 from feedbax.analysis.fulfillment_adapters import FulfillmentEnvironment
 from feedbax.analysis.fulfillment_custody import FulfillmentDriftError
 from feedbax.analysis.fulfillment_derivation import (
+    ExternalReceiptRecord,
     derive_fulfillment_plan,
     read_compiled_outputs,
+    require_external_record,
 )
 from feedbax.analysis.fulfillment_driver import (
     AmbiguousNodeReceiptError,
     ExternalBoundaryError,
     ExternalReceiptAuthenticationError,
+    PlanLockDisagreementError,
+    external_parent_ref,
     MissingExternalReceiptError,
     PlanDocumentDriftError,
     closure_requests,
@@ -53,7 +57,7 @@ from feedbax.analysis.fulfillment_driver import (
     truncated_closure,
 )
 from feedbax.analysis.fulfillment_lowering import NodeLoweringError
-from feedbax.analysis.fulfillment_plan import LogicalKey
+from feedbax.analysis.fulfillment_plan import LogicalKey, fulfillment_plan_from_document
 from feedbax.analysis.reports import REPORT_RENDER_ROLE, ReportRecipeResult
 from feedbax.contracts.experiment_compile_lock import (
     AnalysisInputBinding,
@@ -635,6 +639,155 @@ def test_a_matrix_may_not_state_a_staged_parent_its_lock_never_bound(
         _fulfill(outputs, "unbound-consumer", environment=environment)
 
 
+def test_a_restated_staged_parent_may_name_the_artifacts_own_role(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """The paired-controller shape: the document's role and the lock's differ.
+
+    A compiled matrix that inherits ``staged_parents`` from a tracked base
+    restates the parent as the artifact it is — role ``evaluation_run`` — while
+    the binding name the lock owns is what the *consumer* calls that slot, here
+    ``trial_bank``. Those are two true statements about different things, and the
+    restatement's job is only to agree about which artifact.
+
+    So the bound parent takes the lock's role, and the restatement is checked on
+    kind, id, and byte profile alone.
+    """
+    subject = outputs.probe("paired-subject")
+    bank = outputs.probe("paired-bank")
+    fulfill_closure(_closure(outputs, "paired-subject"), environment=environment)
+    produced = _fulfill(outputs, "paired-bank", environment=environment).results[0].receipt
+    raw = produced.path.read_bytes()
+    outputs.emit(
+        "paired-consumer",
+        {
+            "schema_id": "feedbax.spec.evaluation_run_matrix",
+            "schema_version": "feedbax.spec.evaluation_run_matrix.v3",
+            "base": _base_spec("paired-consumer"),
+            "rows": [{"row_id": "paired-consumer-0"}],
+            "staged_parents": {
+                "trial_bank": {
+                    "parent": {
+                        "kind": "EvaluationRunManifest",
+                        "id": produced.manifest_id,
+                        # The artifact's own role, exactly as the corpus base
+                        # states it, and deliberately not the binding name.
+                        "role": "evaluation_run",
+                        "metadata": {
+                            "ref_schema_id": "feedbax.ref.authenticated_manifest",
+                            "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+                            "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+                            "size_bytes": len(raw),
+                        },
+                    },
+                    "artifact_provider": "shared",
+                }
+            },
+        },
+        references=[
+            _subject(subject, role_path="body.subject", subject_id="subject"),
+            _subject(bank, role_path="body.trial_bank", subject_id="trial_bank"),
+        ],
+    )
+
+    request = _matrix_request(outputs, "paired-consumer", environment=environment, upstream=2)
+
+    staged = request.matrix["staged_parents"]
+    assert sorted(staged) == ["subject", "trial_bank"]
+    # The lock's consumer binding decides the role, so the restated
+    # ``evaluation_run`` is not what gets bound.
+    assert staged["trial_bank"]["parent"]["role"] == "trial_bank"
+    assert staged["trial_bank"]["parent"]["id"] == produced.manifest_id
+    assert staged["trial_bank"]["parent"]["metadata"]["manifest_sha256"] == (
+        hashlib.sha256(raw).hexdigest()
+    )
+    # A non-authenticating field the document owns still travels.
+    assert staged["trial_bank"]["artifact_provider"] == "shared"
+    assert request.matrix["base"]["params"]["staged_prerequisites"] == staged
+
+
+def test_a_restated_staged_parent_naming_another_artifact_still_refuses(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """Relaxing the role comparison does not relax the identity comparison."""
+    subject = outputs.probe("disagree-subject")
+    bank = outputs.probe("disagree-bank")
+    fulfill_closure(_closure(outputs, "disagree-subject"), environment=environment)
+    _fulfill(outputs, "disagree-bank", environment=environment)
+    outputs.emit(
+        "disagree-consumer",
+        {
+            "schema_id": "feedbax.spec.evaluation_run_matrix",
+            "schema_version": "feedbax.spec.evaluation_run_matrix.v3",
+            "base": _base_spec("disagree-consumer"),
+            "rows": [{"row_id": "disagree-consumer-0"}],
+            "staged_parents": {
+                "trial_bank": {
+                    "parent": {
+                        "kind": "EvaluationRunManifest",
+                        "id": "feedbax-evaluation-run:some-other-bank",
+                        "role": "evaluation_run",
+                    }
+                }
+            },
+        },
+        references=[
+            _subject(subject, role_path="body.subject", subject_id="subject"),
+            _subject(bank, role_path="body.trial_bank", subject_id="trial_bank"),
+        ],
+    )
+
+    with pytest.raises(NodeLoweringError) as caught:
+        _matrix_request(outputs, "disagree-consumer", environment=environment, upstream=2)
+
+    message = str(caught.value)
+    assert "some-other-bank" in message
+    assert "may only restate the artifact the lock binds" in message
+
+
+def test_a_restated_staged_parent_whose_digest_disagrees_refuses(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """Same artifact, different bytes: the restatement disagrees about the run."""
+    subject = outputs.probe("digest-subject")
+    bank = outputs.probe("digest-bank")
+    fulfill_closure(_closure(outputs, "digest-subject"), environment=environment)
+    produced = _fulfill(outputs, "digest-bank", environment=environment).results[0].receipt
+    outputs.emit(
+        "digest-consumer",
+        {
+            "schema_id": "feedbax.spec.evaluation_run_matrix",
+            "schema_version": "feedbax.spec.evaluation_run_matrix.v3",
+            "base": _base_spec("digest-consumer"),
+            "rows": [{"row_id": "digest-consumer-0"}],
+            "staged_parents": {
+                "trial_bank": {
+                    "parent": {
+                        "kind": "EvaluationRunManifest",
+                        "id": produced.manifest_id,
+                        "role": "evaluation_run",
+                        "metadata": {
+                            "ref_schema_id": "feedbax.ref.authenticated_manifest",
+                            "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+                            "manifest_sha256": DIGEST,
+                            "size_bytes": 1,
+                        },
+                    }
+                }
+            },
+        },
+        references=[
+            _subject(subject, role_path="body.subject", subject_id="subject"),
+            _subject(bank, role_path="body.trial_bank", subject_id="trial_bank"),
+        ],
+    )
+
+    with pytest.raises(NodeLoweringError) as caught:
+        _matrix_request(outputs, "digest-consumer", environment=environment, upstream=2)
+
+    assert "byte profile" in str(caught.value)
+
+
 def test_a_pinned_matrix_base_is_bound_without_being_touched(
     outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
@@ -1004,6 +1157,218 @@ def test_a_receipt_locator_binds_without_a_byte_profile_to_check(
     assert bound[0].metadata["manifest_sha256"] == hashlib.sha256(
         produced.path.read_bytes()
     ).hexdigest()
+
+
+def test_stripping_a_plan_edges_byte_profile_refuses_at_preflight(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
+) -> None:
+    """The reviewer's reproduction: a durable plan cannot downgrade a lock edge.
+
+    A plan travels apart from the locks it was derived from, so everything
+    authenticating it carries is a copy. Removing ``manifest_sha256`` and
+    ``size_bytes`` from an ``authenticated_receipt`` edge leaves a document whose
+    node hashes all still match, and whose edge now reads as a bare locator —
+    which is exactly the downgrade the lock forbids.
+    """
+    outputs.probe("downgrade-source")
+    produced = (
+        _fulfill(outputs, "downgrade-source", environment=environment).results[0].receipt
+    )
+    raw = produced.path.read_bytes()
+    outputs.bulletin(
+        "downgrade-consumer",
+        references=[
+            AuthenticatedReceiptReference(
+                manifest_kind="EvaluationRunManifest",
+                manifest_id=produced.manifest_id,
+                manifest_sha256=hashlib.sha256(raw).hexdigest(),
+                size_bytes=len(raw),
+                role_path="body.quoted",
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="quoted"),
+            )
+        ],
+    )
+    index = read_compiled_outputs(outputs.output_directory)
+    document = derive_fulfillment_plan(index, target="downgrade-consumer").document()
+    stripped = 0
+    for edge in document["edges"]:
+        external = edge.get("external")
+        if external and "manifest_sha256" in external:
+            external.pop("manifest_sha256")
+            external.pop("size_bytes")
+            stripped += 1
+    assert stripped == 1, "the fixture must carry exactly one authenticated edge"
+    downgraded = fulfillment_plan_from_document(document)
+    # The downgrade is real: read back on its own, the edge no longer
+    # authenticates anything.
+    edge = next(item for item in downgraded.edges if item.external is not None)
+    assert require_external_record(edge.external, field="probe").is_authenticated is False
+
+    before = calls.report
+    with pytest.raises(PlanLockDisagreementError) as caught:
+        preflight(downgraded, read_compiled_outputs(outputs.output_directory))
+
+    record = caught.value.record()
+    assert record["key"] == "report:downgrade-consumer"
+    assert record["source_ref"] == "studies/downgrade-consumer.envelope.json"
+    assert any("external" in difference for difference in record["differences"])
+    assert any("manifest_sha256" in difference for difference in record["differences"])
+    assert calls.report == before, "a refused closure never runs"
+
+
+def test_a_plan_edge_naming_a_manifest_the_lock_never_named_refuses(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """Substitution is the same defect as downgrade, and refuses the same way."""
+    outputs.probe("substitute-source")
+    produced = (
+        _fulfill(outputs, "substitute-source", environment=environment).results[0].receipt
+    )
+    outputs.bulletin(
+        "substitute-consumer",
+        references=[
+            ReceiptLocatorReference(
+                manifest_kind="EvaluationRunManifest",
+                manifest_id=produced.manifest_id,
+                role_path="body.quoted",
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="quoted"),
+            )
+        ],
+    )
+    index = read_compiled_outputs(outputs.output_directory)
+    document = derive_fulfillment_plan(index, target="substitute-consumer").document()
+    for edge in document["edges"]:
+        if edge.get("external"):
+            edge["external"]["manifest_id"] = "feedbax-evaluation-run:substituted"
+
+    with pytest.raises(PlanLockDisagreementError) as caught:
+        preflight(
+            fulfillment_plan_from_document(document),
+            read_compiled_outputs(outputs.output_directory),
+        )
+
+    assert any("substituted" in difference for difference in caught.value.record()["differences"])
+
+
+def test_a_plan_that_drops_an_input_the_lock_states_refuses(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """Deletion is not a quieter downgrade; the lock states the input either way."""
+    outputs.probe("dropped-source")
+    produced = (
+        _fulfill(outputs, "dropped-source", environment=environment).results[0].receipt
+    )
+    outputs.bulletin(
+        "dropped-consumer",
+        references=[
+            ReceiptLocatorReference(
+                manifest_kind="EvaluationRunManifest",
+                manifest_id=produced.manifest_id,
+                role_path="body.quoted",
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="quoted"),
+            )
+        ],
+    )
+    index = read_compiled_outputs(outputs.output_directory)
+    document = derive_fulfillment_plan(index, target="dropped-consumer").document()
+    document["edges"] = [edge for edge in document["edges"] if not edge.get("external")]
+
+    with pytest.raises(PlanLockDisagreementError) as caught:
+        preflight(
+            fulfillment_plan_from_document(document),
+            read_compiled_outputs(outputs.output_directory),
+        )
+
+    assert any(
+        "the plan declares no edge for it" in difference
+        for difference in caught.value.record()["differences"]
+    )
+
+
+def test_a_plan_derived_from_its_own_locks_reconciles(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """The reconciliation is exact, so an untouched plan must survive it."""
+    target = _chain(outputs)
+    index = read_compiled_outputs(outputs.output_directory)
+    plan = derive_fulfillment_plan(index, target=target)
+
+    round_tripped = fulfillment_plan_from_document(plan.document())
+
+    closure = preflight(round_tripped, read_compiled_outputs(outputs.output_directory))
+    assert closure.order == _closure(outputs, target).order
+
+
+def test_the_bytes_authenticated_are_the_bytes_bound(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, monkeypatch
+) -> None:
+    """No second read exists for a swap to slip into.
+
+    The receipt file is read once. This spy returns the real bytes on that read
+    and tampered bytes on any read after it, so a resolver that re-opened the
+    path to mint its digest would emit the tampered digest. The bound ref must
+    carry the lock's profile, and the spy must see exactly one read.
+    """
+    outputs.probe("single-read-source")
+    produced = (
+        _fulfill(outputs, "single-read-source", environment=environment).results[0].receipt
+    )
+    raw = produced.path.read_bytes()
+    lock_digest = hashlib.sha256(raw).hexdigest()
+    tampered = json.dumps({**json.loads(raw), "metadata": {"swapped": True}}).encode()
+    assert hashlib.sha256(tampered).hexdigest() != lock_digest
+
+    reads: list[Path] = []
+    real_read_bytes = Path.read_bytes
+
+    def spying_read_bytes(self: Path) -> bytes:
+        if self == produced.path:
+            reads.append(self)
+            if len(reads) > 1:
+                return tampered
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", spying_read_bytes)
+
+    parent, path = external_parent_ref(
+        ExternalReceiptRecord(
+            manifest_kind="EvaluationRunManifest",
+            manifest_id=produced.manifest_id,
+            manifest_sha256=lock_digest,
+            size_bytes=len(raw),
+        ),
+        role="quoted",
+        root=environment.root,
+    )
+
+    assert reads == [produced.path], "the receipt is read exactly once"
+    assert path == produced.path
+    assert parent.metadata["manifest_sha256"] == lock_digest
+    assert parent.metadata["size_bytes"] == len(raw)
+
+
+def test_a_locator_binds_the_profile_of_the_bytes_it_actually_read(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """A locator quoted nothing, so the single read is the only authority there."""
+    outputs.probe("locator-profile-source")
+    produced = (
+        _fulfill(outputs, "locator-profile-source", environment=environment)
+        .results[0]
+        .receipt
+    )
+
+    parent, _path = external_parent_ref(
+        ExternalReceiptRecord(
+            manifest_kind="EvaluationRunManifest", manifest_id=produced.manifest_id
+        ),
+        role="quoted",
+        root=environment.root,
+    )
+
+    raw = produced.path.read_bytes()
+    assert parent.metadata["manifest_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert parent.metadata["size_bytes"] == len(raw)
 
 
 def test_an_absent_receipt_is_a_refusal_and_never_an_inapplicability(

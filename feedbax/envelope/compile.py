@@ -896,14 +896,14 @@ def _lower_evaluation(context: LayerCompileContext) -> LoweredLayer:
     # inherits. It is a second authenticated reference in the lock, which is the
     # only thing that can authenticate one — the compiled document states the
     # same names as a plan, and lowering refuses any it does not find here.
-    for index, prerequisite in enumerate(authored.staged_prerequisites or ()):
+    for name, ref in (authored.prerequisites or {}).items():
         references.append(
             _reference_for(
                 context,
-                prerequisite.ref,
-                role_path=f"subjects.{prerequisite.name}",
-                field=f"evaluation.staged_prerequisites[{index}].ref",
-                consumer_of=lambda _kind, _id, name=prerequisite.name: (
+                ref,
+                role_path=f"subjects.{name}",
+                field=f"evaluation.prerequisites.{name}",
+                consumer_of=lambda _kind, _id, name=name: (
                     EvaluationSubjectBinding(subject_id=name)
                 ),
             )

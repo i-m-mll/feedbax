@@ -2525,10 +2525,10 @@ def test_an_evaluation_authors_further_staged_prerequisites_into_its_lock(
             "evaluation": {
                 "subject": {"kind": "envelope", "alias": "widened"},
                 "subject_id": "trained",
-                "staged_prerequisites": [
-                    {"name": "trial_bank", "ref": _receipt("bank-0")},
-                    {"name": "reference_run", "ref": _receipt("reference-0")},
-                ],
+                "prerequisites": {
+                    "trial_bank": _receipt("bank-0"),
+                    "reference_run": _receipt("reference-0"),
+                },
             },
         },
     )
@@ -2573,9 +2573,7 @@ def test_a_prerequisite_may_not_take_the_subjects_own_binding_name(repo: Path) -
                 "evaluation": {
                     "subject": {"kind": "envelope", "alias": "widened"},
                     "subject_id": "trained",
-                    "staged_prerequisites": [
-                        {"name": "trained", "ref": _receipt("bank-0")}
-                    ],
+                    "prerequisites": {"trained": _receipt("bank-0")},
                 },
             },
         )

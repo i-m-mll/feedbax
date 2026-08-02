@@ -44,6 +44,15 @@ against the closed table in :mod:`feedbax.contracts.applicability_rules`. A rule
 this build cannot state certifies nothing, and the closure is refused rather than
 executed with an input neither bound nor proved inapplicable.
 
+## The plan is a derived record; the locks are the authority
+
+A plan is durable and travels apart from the locks it came from, so every
+authenticating fact it carries is a copy. :func:`preflight` re-derives each
+node's edges from its own compile lock and refuses on any disagreement
+(:class:`PlanLockDisagreementError`). The node content hash cannot cover this:
+it pins the compiled *document*, while edges come from the *lock*, so an intact
+hash sits happily beside an edge whose byte profile was removed.
+
 ## Missing receipts are refusals, and the lock says which bytes count
 
 An input the plan carries as an already-produced external receipt is resolved at
@@ -99,6 +108,7 @@ from feedbax.analysis.fulfillment_derivation import (
     CompiledEnvelope,
     CompiledOutputIndex,
     ExternalReceiptRecord,
+    lock_edge_declarations,
     require_external_record,
 )
 from feedbax.analysis.fulfillment_lowering import lower_compiled_node
@@ -118,8 +128,10 @@ from feedbax.contracts.applicability_rules import (
 from feedbax.contracts.manifest import (
     AnyManifest,
     ParentRef,
+    authenticated_manifest_ref_metadata,
     canonical_manifest_path,
     load_manifest,
+    load_manifest_bytes,
 )
 
 
@@ -442,13 +454,60 @@ class ExternalReceiptAuthenticationError(FulfillmentDriverError):
         }
 
 
+@dataclass(frozen=True)
+class ResolvedExternalReceipt:
+    """One external receipt resolved from exactly one read of its bytes.
+
+    Everything downstream is derived from :attr:`raw`. The manifest is parsed
+    from those bytes rather than loaded again from the path, and the byte profile
+    is measured on them, so there is no second read for the file to change
+    between: the bytes that were authenticated are the bytes that are used.
+
+    Attributes:
+        record: The external edge record this was resolved for.
+        manifest: The manifest parsed from :attr:`raw`.
+        path: Where those bytes were read from, for diagnostics and execution
+            locators.
+        raw: The single read.
+        manifest_sha256: The digest this reference binds. When the lock quoted a
+            profile this is the *lock's* digest, verified equal to the digest of
+            :attr:`raw`; otherwise it is the digest of :attr:`raw`, because a
+            locator quoted nothing to prefer over what was read.
+        size_bytes: The size this reference binds, on the same rule.
+    """
+
+    record: ExternalReceiptRecord
+    manifest: AnyManifest
+    path: Path
+    raw: bytes
+    manifest_sha256: str
+    size_bytes: int
+
+    def parent_ref(self, role: str) -> ParentRef:
+        """Return the authenticated parent this resolution binds, under *role*.
+
+        The metadata is minted from the profile this resolution already settled,
+        never by hashing the file again. Re-reading to mint a digest is what
+        would let bytes swapped after authentication be blessed with their own
+        digest, which is exactly the profile a consumer would then record as
+        proof.
+        """
+        return ParentRef(
+            kind=self.manifest.kind,
+            id=self.manifest.id,
+            role=role,
+            uri=None,
+            metadata=authenticated_manifest_ref_metadata(self.manifest_sha256, self.size_bytes),
+        )
+
+
 def resolve_external_receipt(
     record: ExternalReceiptRecord,
     *,
     root: Path | str,
     consumer: LogicalKey | None = None,
     role_path: Sequence[str] = (),
-) -> tuple[AnyManifest, Path]:
+) -> ResolvedExternalReceipt:
     """Authenticate one already-produced receipt from its canonical location.
 
     The manifest index is derived acceleration and is never consulted: a receipt
@@ -461,22 +520,33 @@ def resolve_external_receipt(
     quoted is *authentication*, and only a lock that quoted a byte profile can
     assert it; when one did, disagreement refuses rather than binding whatever
     now occupies the address.
+
+    Both proofs are made against **one** read. Authenticating a file and then
+    reopening it to describe what was authenticated is two different files as far
+    as anything outside this process is concerned, and the second one is the one
+    that would be recorded.
     """
     kind, manifest_id = record.locator
     path = canonical_manifest_path(kind, manifest_id, root=Path(root))
-    if not path.is_file():
+    try:
+        raw = path.read_bytes()
+    except OSError:
         raise MissingExternalReceiptError(
             kind, manifest_id, path, consumer=consumer, role_path=role_path
-        )
-    manifest = load_manifest(path)
+        ) from None
+    try:
+        manifest = load_manifest_bytes(raw)
+    except (ValueError, TypeError):
+        raise MissingExternalReceiptError(
+            kind, manifest_id, path, consumer=consumer, role_path=role_path
+        ) from None
     if manifest.kind != kind or manifest.id != manifest_id or manifest.status != "completed":
         raise MissingExternalReceiptError(
             kind, manifest_id, path, consumer=consumer, role_path=role_path
         )
+    found_sha256 = hashlib.sha256(raw).hexdigest()
+    found_size = len(raw)
     if record.is_authenticated:
-        raw = path.read_bytes()
-        found_sha256 = hashlib.sha256(raw).hexdigest()
-        found_size = len(raw)
         if found_sha256 != record.manifest_sha256 or found_size != record.size_bytes:
             raise ExternalReceiptAuthenticationError(
                 record,
@@ -486,7 +556,21 @@ def resolve_external_receipt(
                 consumer=consumer,
                 role_path=role_path,
             )
-    return manifest, path
+        # Equal by the check above, and taken from the lock deliberately: the
+        # profile a consumer records is the one the lock stated, not one this
+        # process measured and happens to believe.
+        bound_sha256 = str(record.manifest_sha256)
+        bound_size = int(record.size_bytes or 0)
+    else:
+        bound_sha256, bound_size = found_sha256, found_size
+    return ResolvedExternalReceipt(
+        record=record,
+        manifest=manifest,
+        path=path,
+        raw=raw,
+        manifest_sha256=bound_sha256,
+        size_bytes=bound_size,
+    )
 
 
 def external_parent_ref(
@@ -498,10 +582,10 @@ def external_parent_ref(
     role_path: Sequence[str] = (),
 ) -> tuple[ParentRef, Path]:
     """Return the authenticated parent one external receipt record names."""
-    manifest, path = resolve_external_receipt(
+    resolved = resolve_external_receipt(
         record, root=root, consumer=consumer, role_path=role_path
     )
-    return authenticated_manifest_ref(manifest, path, role), path
+    return resolved.parent_ref(role), resolved.path
 
 
 class UncertifiedApplicabilityError(FulfillmentDriverError):
@@ -601,6 +685,104 @@ def require_no_external_boundary(plan: FulfillmentPlan) -> None:
     raise ExternalBoundaryError(plan.target, boundary)
 
 
+class PlanLockDisagreementError(FulfillmentDriverError):
+    """A plan's declared inputs are not the ones its compile lock determines.
+
+    A :class:`~feedbax.analysis.fulfillment_plan.FulfillmentPlan` is a durable
+    document. It is derived from compile locks, but it travels apart from them
+    and can be edited, regenerated against different locks, or hand-written. That
+    makes every authenticating fact it carries a *copy*, and a copy is authority
+    only for as long as nobody checks it.
+
+    So the plan is reconciled against the locks before the closure runs. The lock
+    is the sole authority; the plan is a cache of it. Any disagreement refuses —
+    a stripped byte profile, a substituted manifest id, an input added or
+    dropped, a decision restated on a different basis — because each of those is
+    a way of saying the node's inputs are something the lock never said.
+    """
+
+    def __init__(self, key: LogicalKey, source_ref: str, differences: Sequence[str]) -> None:
+        self.key = key
+        self.source_ref = source_ref
+        self.differences = tuple(differences)
+        listing = "; ".join(self.differences)
+        super().__init__(
+            f"the fulfillment plan declares inputs for {key.text} that {source_ref}'s compile "
+            f"lock does not determine: {listing}. The compile lock is the sole authority for "
+            "what a node's inputs are and how they are authenticated; a plan is a derived "
+            "record of it. Re-derive the plan from the compiled outputs it is meant to describe."
+        )
+
+    def record(self) -> dict[str, Any]:
+        """Return the structured refusal, deterministic in every field."""
+        return {
+            **self.key.record(),
+            "source_ref": self.source_ref,
+            "differences": list(self.differences),
+        }
+
+
+def _edge_facts(edge: PlanEdge) -> dict[str, Any]:
+    """Return the authority-bearing facts one edge states, for exact comparison."""
+    return {
+        "role_path": list(edge.role_path),
+        "status": edge.status,
+        "basis": edge.basis,
+        "reason": edge.reason,
+        "rule": edge.rule,
+        "producer": None if edge.producer is None else edge.producer.text,
+        "external": None if edge.external is None else dict(edge.external),
+    }
+
+
+def require_plan_matches_locks(plan: FulfillmentPlan, index: CompiledOutputIndex) -> None:
+    """Refuse a plan whose edges are not the edges its locks determine.
+
+    Every node's inputs are re-derived from its own compile lock and compared,
+    field for field, with what the plan document carries. Nothing is repaired and
+    nothing is preferred: a plan that disagrees with a lock is refused, because
+    silently taking either side would make one of the two documents decorative.
+    """
+    for plan_node in plan.nodes:
+        compiled = index.require(plan_node.source_ref)
+        expected: dict[tuple[str, ...], PlanEdge] = {}
+        for declaration in lock_edge_declarations(compiled):
+            producer: LogicalKey | None = None
+            if declaration.producer_ref is not None:
+                producer = index.require(declaration.producer_ref).key
+            edge = declaration.edge(plan_node.key, producer)
+            expected[edge.role_path] = edge
+        declared = {edge.role_path: edge for edge in plan.input_edges(plan_node.key)}
+        differences: list[str] = []
+        for role_path in sorted(set(expected) | set(declared)):
+            lock_edge = expected.get(role_path)
+            plan_edge = declared.get(role_path)
+            if lock_edge is None:
+                differences.append(
+                    f"input {list(role_path)} is declared by the plan but the lock states no "
+                    "reference at that role"
+                )
+                continue
+            if plan_edge is None:
+                differences.append(
+                    f"input {list(role_path)} is stated by the lock but the plan declares no "
+                    "edge for it"
+                )
+                continue
+            lock_facts = _edge_facts(lock_edge)
+            plan_facts = _edge_facts(plan_edge)
+            for name in sorted(lock_facts):
+                if lock_facts[name] != plan_facts[name]:
+                    differences.append(
+                        f"input {list(role_path)} {name}: the lock states "
+                        f"{lock_facts[name]!r} and the plan declares {plan_facts[name]!r}"
+                    )
+        if differences:
+            raise PlanLockDisagreementError(
+                plan_node.key, plan_node.source_ref, differences
+            )
+
+
 def preflight(plan: FulfillmentPlan, index: CompiledOutputIndex) -> FulfillmentClosure:
     """Bind one plan's closure to its compiled outputs and prove its boundary.
 
@@ -613,11 +795,21 @@ def preflight(plan: FulfillmentPlan, index: CompiledOutputIndex) -> FulfillmentC
     means the outputs moved between them, and the node is named rather than
     executed under a plan that described something else.
 
+    The node hash proves the compiled *document* is the one the plan described.
+    It says nothing about the plan's edges, which are derived from the compile
+    lock rather than from the document, so they are reconciled against the locks
+    separately: otherwise a plan could carry an intact document hash beside an
+    input the lock never stated, or beside an authenticated reference with its
+    byte profile removed. The document check runs first, because a moved document
+    is the coarser fact and explains an edge difference that follows from it.
+
     Raises:
         ExternalBoundaryError: The closure names a boundary node.
         UncertifiedApplicabilityError: An omission quotes a structural rule this
             build does not own, so nothing certified it.
         PlanDocumentDriftError: A compiled document no longer hashes to its pin.
+        PlanLockDisagreementError: A node's declared inputs are not the ones its
+            compile lock determines.
     """
     require_no_external_boundary(plan)
     require_certified_applicability(plan)
@@ -636,6 +828,7 @@ def preflight(plan: FulfillmentPlan, index: CompiledOutputIndex) -> FulfillmentC
                 key=plan_node.key, plan_node=plan_node, compiled=compiled, order=order
             )
         )
+    require_plan_matches_locks(plan, index)
     return FulfillmentClosure(plan=plan, nodes=tuple(nodes))
 
 

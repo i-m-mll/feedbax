@@ -128,6 +128,7 @@ from feedbax.contracts.manifest import (
     ParentRef,
     ReportSpec,
     StagedEvaluationPrerequisite,
+    authenticated_manifest_ref_profile,
 )
 from feedbax.contracts.staged_execution import validate_staged_binding_name
 
@@ -342,8 +343,11 @@ def _staged_prerequisites(
     """Return every staged prerequisite one matrix's compile lock authenticates.
 
     The lock is the sole authority for *which* parent each name binds. A name the
-    document also states must name that same parent; a name only the document
+    document also states must name that same artifact; a name only the document
     states has no authenticated source and refuses.
+
+    "The same artifact" is :func:`restated_parent_differences`' contract, and it
+    deliberately excludes the ref's ``role``. See that function for why.
     """
     ref = str(node.compiled.lock_path)
     stated = _declared_staged_parents(document, ref=ref)
@@ -363,13 +367,16 @@ def _staged_prerequisites(
                 "staged binding names exactly one authenticated parent"
             )
         declared = stated.pop(name, None)
-        if declared is not None and declared.parent != parent:
-            raise NodeLoweringError(
-                f"{ref} states the staged parent {name!r} as {declared.parent.id!r} in its "
-                f"compiled document while its compile lock authenticates {parent.id!r}. A "
-                "compiled document is a plan and cannot authenticate a parent, so a stated "
-                "staged parent may only restate the one the lock binds."
-            )
+        if declared is not None:
+            differences = restated_parent_differences(declared.parent, parent)
+            if differences:
+                raise NodeLoweringError(
+                    f"{ref} restates the staged parent {name!r} in its compiled document as a "
+                    f"different artifact than its compile lock authenticates: "
+                    f"{'; '.join(differences)}. A compiled document is a plan and cannot "
+                    "authenticate a parent, so a restated staged parent may only restate the "
+                    "artifact the lock binds."
+                )
         prerequisites[name] = StagedEvaluationPrerequisite(
             parent=parent,
             artifact_provider=None if declared is None else declared.artifact_provider,
@@ -384,6 +391,57 @@ def _staged_prerequisites(
     return prerequisites
 
 
+def restated_parent_differences(stated: ParentRef, bound: ParentRef) -> tuple[str, ...]:
+    """Return how a document's restated parent disagrees with the bound one.
+
+    A compiled document cannot authenticate a parent, so the only thing its
+    restatement can do is agree or disagree about **which artifact** the binding
+    names. That is three facts: the manifest kind, the manifest id, and the
+    authenticated byte profile the restatement carries if it carries one.
+
+    ``role`` is deliberately not among them, and its absence is the contract
+    rather than a tolerance. A ``ParentRef``'s role is the *consumer's* addressing
+    string, and for a staged prerequisite the consumer binding in the compile
+    lock is what states it — that is where the binding name comes from in the
+    first place. A document that also carried a role would either restate the
+    lock's, adding nothing, or contradict it, in which case honoring the document
+    would let a plan rename a binding the lock owns. Neither is a reason to
+    refuse an otherwise identical artifact: the corpus habit of recording an
+    artifact's own kind-ish role ("evaluation_run") beside a binding the lock
+    names ("paired_trial_bank") is two true statements about different things.
+
+    ``uri`` is excluded for the same reason: where bytes are staged from is the
+    executing environment's, not the plan's.
+    """
+    differences: list[str] = []
+    if stated.kind != bound.kind:
+        differences.append(
+            f"kind: the document restates {stated.kind!r} and the lock binds {bound.kind!r}"
+        )
+    if stated.id != bound.id:
+        differences.append(
+            f"id: the document restates {stated.id!r} and the lock binds {bound.id!r}"
+        )
+    stated_profile = _restated_profile(stated)
+    bound_profile = _restated_profile(bound)
+    if stated_profile is not None and stated_profile != bound_profile:
+        differences.append(
+            f"byte profile: the document restates {stated_profile} and the lock binds "
+            f"{bound_profile}"
+        )
+    return tuple(differences)
+
+
+def _restated_profile(ref: ParentRef) -> tuple[str, int] | None:
+    """Return one ref's authenticated byte profile, or ``None`` if it states none."""
+    try:
+        return authenticated_manifest_ref_profile(ref)
+    except ValueError:
+        # A half-stated profile is not a profile. It is caught where refs are
+        # built; here it simply is not a fact the restatement contributes.
+        return None
+
+
 def _base_with_staged_prerequisites(
     base: Mapping[str, Any],
     prerequisites: Mapping[str, dict[str, Any]],
@@ -396,29 +454,34 @@ def _base_with_staged_prerequisites(
     staged = dict(params.get("staged_prerequisites") or {})
     for name, prerequisite in prerequisites.items():
         stated = staged.get(name)
-        if stated is not None and not _same_prerequisite(stated, prerequisite, ref=ref):
-            raise NodeLoweringError(
-                f"{ref} already states the staged prerequisite {name!r} in its compiled base "
-                "parameters, naming a different parent than the one its compile lock "
-                "authenticates; a compiled document is a plan and cannot authenticate a "
-                "parent, and binding it twice would let the two disagree"
-            )
+        if stated is not None:
+            differences = _stated_prerequisite_differences(stated, prerequisite, ref=ref)
+            if differences:
+                raise NodeLoweringError(
+                    f"{ref} already states the staged prerequisite {name!r} in its compiled "
+                    f"base parameters, naming a different artifact than the one its compile "
+                    f"lock authenticates: {'; '.join(differences)}. A compiled document is a "
+                    "plan and cannot authenticate a parent, and binding it twice would let "
+                    "the two disagree."
+                )
         staged[name] = prerequisite
     params["staged_prerequisites"] = staged
     bound_base["params"] = params
     return bound_base
 
 
-def _same_prerequisite(stated: Any, bound: Mapping[str, Any], *, ref: str) -> bool:
-    """Whether one stated prerequisite is the bound one, read as the contract it is."""
+def _stated_prerequisite_differences(
+    stated: Any, bound: Mapping[str, Any], *, ref: str
+) -> tuple[str, ...]:
+    """Return how one stated base prerequisite disagrees with the bound one."""
     try:
-        return StagedEvaluationPrerequisite.model_validate(
-            stated
-        ) == StagedEvaluationPrerequisite.model_validate(bound)
+        stated_model = StagedEvaluationPrerequisite.model_validate(stated)
+        bound_model = StagedEvaluationPrerequisite.model_validate(bound)
     except ValidationError as exc:
         raise NodeLoweringError(
             f"{ref} states a base staged prerequisite this build cannot read: {exc}"
         ) from exc
+    return restated_parent_differences(stated_model.parent, bound_model.parent)
 
 
 def _lower_analysis(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
@@ -587,6 +650,7 @@ __all__ = [
     "NodeLoweringError",
     "binding_role",
     "bound_parents",
+    "restated_parent_differences",
     "lower_compiled_node",
     "supported_lowerings",
 ]
