@@ -131,6 +131,7 @@ all = [
 ]
 
 [project.scripts]
+feedbax = "feedbax.cli:main"
 feedbax-run = "feedbax.bin.run:main"
 feedbax-analysis = "feedbax.bin.analysis:main"
 feedbax-figure = "feedbax.bin.figure:main"

@@ -395,8 +395,12 @@ def _preflight_experiment_envelope(args: argparse.Namespace, registries: Any) ->
     return 0
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    command_started_at = time.perf_counter()
+def build_parser() -> argparse.ArgumentParser:
+    """Build the engine parser every `python -m feedbax` command is dispatched from.
+
+    The unified ``feedbax`` console script routes engine subcommands here, so the
+    two entry points can never drift into two different command inventories.
+    """
     parser = argparse.ArgumentParser(prog="python -m feedbax")
     subparsers = parser.add_subparsers(dest="command", required=True)
     execute_parser = subparsers.add_parser(
@@ -798,6 +802,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     )
 
+    return parser
+
+
+def engine_command_names() -> tuple[str, ...]:
+    """Return every subcommand name this parser registers, in stable order.
+
+    The unified ``feedbax`` console script asks for this inventory rather than
+    keeping a copy of it, so the two entry points cannot advertise two different
+    sets of engine commands.
+    """
+    return tuple(
+        sorted(
+            name
+            for action in build_parser()._actions
+            if isinstance(action, argparse._SubParsersAction)
+            for name in action.choices
+        )
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    command_started_at = time.perf_counter()
+    parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "check-project-science-surface":
         return run_science_surface_cli(
