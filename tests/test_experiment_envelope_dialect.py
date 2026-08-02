@@ -660,30 +660,34 @@ def test_an_ordered_figure_params_document_is_no_longer_a_layer_parent() -> None
 # -- a per-row role has no single reference to state ---------------------------
 
 
+#: Where a row-expansion envelope says its per-row custody bindings will be.
+CUSTODY_REF = "custody/quillon.row_custody.json"
+
+
 class TestPerRowInputReference:
     """``ref`` is optional exactly where a single locator would be false."""
 
     @staticmethod
-    def _figure(**input_fields: Any) -> dict[str, Any]:
-        return _minimal(
-            figure={
-                "mode": "row_expansion",
-                "rows": {"mode": "all", "index": "bases/quillon.row_index.json"},
-                "row_custody": "custody/quillon.row_custody.json",
-                "inputs": [
-                    {
-                        "input_role": "observed",
-                        "binding_key": "observations",
-                        "contract": {
-                            "kind": "quillon.survey_run",
-                            "artifact_role": "span_observations",
-                            "artifact_provider": "quillon.custody",
-                        },
-                        **input_fields,
-                    }
-                ],
-            }
-        )
+    def _figure(*, custody: str | None = CUSTODY_REF, **input_fields: Any) -> dict[str, Any]:
+        figure: dict[str, Any] = {
+            "mode": "row_expansion",
+            "rows": {"mode": "all", "index": "bases/quillon.row_index.json"},
+            "inputs": [
+                {
+                    "input_role": "observed",
+                    "binding_key": "observations",
+                    "contract": {
+                        "kind": "quillon.survey_run",
+                        "artifact_role": "span_observations",
+                        "artifact_provider": "quillon.custody",
+                    },
+                    **input_fields,
+                }
+            ],
+        }
+        if custody is not None:
+            figure["row_custody"] = custody
+        return _minimal(figure=figure)
 
     def test_a_per_row_role_may_omit_the_reference_row_expansion_fills(self) -> None:
         envelope = _parse(self._figure(binding="per_row"))
@@ -694,6 +698,27 @@ class TestPerRowInputReference:
         assert item.is_per_row
         assert item.is_row_expanded
         assert item.role_reference().model_dump() == {"per_row": "observations"}
+        assert envelope.figure.row_custody == CUSTODY_REF
+
+    def test_a_per_row_role_may_omit_the_custody_declaration_too(self) -> None:
+        """An envelope authored before the declaration existed still parses.
+
+        Its per-row roles cannot be *bound* — fulfillment refuses the figure by
+        name — but the ratified corpus is not invalidated by a field that did not
+        exist when it was written.
+        """
+        envelope = _parse(self._figure(binding="per_row", custody=None))
+
+        assert envelope.figure is not None
+        assert envelope.figure.row_custody is None
+        assert envelope.figure.inputs[0].is_per_row
+
+    def test_an_empty_custody_declaration_names_no_document(self) -> None:
+        with pytest.raises(ExperimentEnvelopeRejection) as caught:
+            _parse(self._figure(binding="per_row", custody="   "))
+
+        assert caught.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+        assert "states a nonempty 'row_custody' path or states none at all" in str(caught.value)
 
     def test_a_shared_role_still_states_the_one_manifest_it_is_filled_from(self) -> None:
         with pytest.raises(ExperimentEnvelopeRejection) as caught:
@@ -744,3 +769,20 @@ class TestPerRowInputReference:
                     ref={"kind": "envelope", "alias": "widened-summary"},
                 )
             )
+
+    def test_custody_declared_where_nothing_is_filled_per_row_is_refused(self) -> None:
+        """A shared role names its own manifest, so the declaration addresses nothing."""
+        with pytest.raises(ExperimentEnvelopeRejection) as caught:
+            _parse(
+                self._figure(
+                    binding="shared",
+                    ref={
+                        "kind": "receipt",
+                        "manifest_kind": "quillon.survey_run",
+                        "manifest_id": "observed-0",
+                    },
+                )
+            )
+
+        assert caught.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+        assert "only when a per-row role is filled from it" in str(caught.value)

@@ -289,25 +289,56 @@ def test_an_absent_custody_document_is_a_refusal(
     assert "never that the per-row roles do not apply" in str(caught.value)
 
 
-def test_an_undeclared_custody_document_is_a_refusal(repo: Path, tmp_path: Path) -> None:
-    """A lock whose per-row roles name no custody cannot be fulfilled."""
-    lock_path = _compile_plot(repo)
-    lock = json.loads(lock_path.read_text(encoding="utf-8"))
-    del lock["identity_contributions"]["row_custody"]
+def _undeclare_custody(repo: Path) -> None:
+    """Author the envelope the way it read before ``row_custody`` existed."""
+    path = envelope_path(repo, "widened-plot")
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    del envelope["figure"]["row_custody"]
+    path.write_text(json.dumps(envelope, indent=2) + "\n", encoding="utf-8")
+
+
+def test_an_envelope_that_declares_no_custody_still_compiles(repo: Path) -> None:
+    """The ratified corpus predates the declaration and is not invalidated by it."""
+    _undeclare_custody(repo)
+
+    lock = json.loads(_compile_plot(repo).read_text(encoding="utf-8"))
+
+    assert "row_custody" not in lock["identity_contributions"]
+    assert set(lock["identity_contributions"]) == {
+        "figure_row_expansion",
+        "resolved_row_set",
+    }
+
+
+def test_an_undeclared_custody_document_is_refused_at_fulfillment(repo: Path) -> None:
+    """Fail-closed moves to the boundary where a custody document is needed.
+
+    The compile is unchanged and the figure is not silently rendered with its
+    per-row roles unfilled: binding refuses by name, and says which field to add.
+    """
+    _undeclare_custody(repo)
+    _compile_plot(repo)
+    _write_custody(repo)
     index = read_compiled_outputs(repo / "compiled")
-    compiled = index.require(index.envelopes[0].envelope_ref)
-    stripped = type(compiled)(
-        lock=lock,
-        document=compiled.document,
-        lock_path=compiled.lock_path,
-        document_path=compiled.document_path,
-    )
 
     with pytest.raises(RowCustodyFulfillmentError) as caught:
-        resolve_row_custody_overlay(stripped, repo_root=repo)
+        resolve_row_custody_overlay(index.envelopes[0], repo_root=repo)
 
     assert "names no custody bindings document" in str(caught.value)
     assert "'row_custody'" in str(caught.value)
+    assert "observations" in str(caught.value)
+
+
+def test_the_undeclared_refusal_reaches_the_figure_node_request(
+    repo: Path, environment: FulfillmentEnvironment
+) -> None:
+    """Nothing proceeds: the whole node request refuses, not just the helper."""
+    _undeclare_custody(repo)
+    _compile_plot(repo)
+    _write_custody(repo)
+
+    with pytest.raises(RowCustodyFulfillmentError, match="names no custody bindings document"):
+        _closure_request(repo, environment)
 
 
 def test_a_declared_repo_root_is_required(repo: Path) -> None:
