@@ -391,6 +391,14 @@ def _find_id_candidates(
     *,
     selected: _ManifestCandidate | None = None,
 ) -> list[_ManifestCandidate]:
+    """Enumerate every manifest under ``root`` that declares ``manifest_id``.
+
+    This is a *uniqueness census*, not a search that stops at the first hit, so
+    every discovered candidate has to be decided. A candidate that cannot be
+    read or parsed is undecidable: it may well be a second copy of the very ID
+    being resolved, and skipping it makes the surviving copy look unique. So an
+    undecidable candidate refuses the census instead of disappearing from it.
+    """
     manifests_dir = root / "manifests"
     paths = sorted(manifests_dir.glob("**/*.json")) if manifests_dir.is_dir() else []
     candidates: dict[str, _ManifestCandidate] = {}
@@ -407,8 +415,13 @@ def _find_id_candidates(
             continue
         try:
             candidate = _read_candidate(relative, root, root_fd)
-        except EvaluationInputResolutionError:
-            continue
+        except EvaluationInputResolutionError as exc:
+            raise EvaluationInputAmbiguityError(
+                f"Manifest {manifest_id!r} cannot be proved unique under the allowed root: "
+                f"candidate {reference} is unreadable or malformed ({exc}). A uniqueness census "
+                "decides every candidate it discovers; one it cannot decide might be the "
+                "duplicate, so it is a refusal and never a skip."
+            ) from exc
         if isinstance(candidate.payload, dict) and candidate.payload.get("id") == manifest_id:
             candidates[reference] = candidate
     return [candidates[reference] for reference in sorted(candidates)]
