@@ -60,6 +60,7 @@ from feedbax.contracts.experiment_compile_lock import (
 from feedbax.envelope.authoring import (
     enforce_assertion_budget,
     enforce_budget,
+    enforce_row_budget,
     guard_authored_bytes,
     read_authored_document,
 )
@@ -158,6 +159,7 @@ __all__ = [
     "content_pin",
     "emit_text",
     "enforce_assertion_budget",
+    "enforce_row_budget",
     "enforce_budget",
     "format_choke_findings",
     "guard_authored_bytes",

@@ -20,11 +20,12 @@ and a block of prose are not over-budget at the same number. Enforcement reads
 the section belonging to the layer the document authors, and the *widest* cap
 any section states is what a document is judged under before its layer is known.
 
-Caps Feedbax enforces are a closed set of eight. A project cap the engine does
-not enforce is not silently ignored and is not a schema error either: it goes in
-a section's ``project_caps`` block, where it is validated as a positive integer
-and handed back to the project's own compiler to enforce. That keeps a
-project-specific bound expressible without teaching the engine what it means.
+Every cap a section states is enforced by Feedbax. Eight are required of every
+layer. A ninth, ``max_rows``, is optional and layer-specific — only the training
+layer authors rows — so it lives in that section's ``project_caps`` block. A
+``project_caps`` key naming anything else is refused: there is no project-owned
+compiler left to hand an unenforced bound to, and a declared cap nothing enforces
+is worse than no cap, because it reads as a bound while permitting everything.
 """
 
 from __future__ import annotations
@@ -65,8 +66,9 @@ class LayerBudget:
     """One layer's authored-document caps.
 
     ``layer`` is carried so every refusal can say *whose* budget was exceeded.
-    ``project_caps`` holds bounds the engine validates but does not enforce; the
-    project's own compiler reads them.
+    ``project_caps`` holds the optional caps this layer states; the engine
+    enforces every one of them, and refuses any key outside
+    :data:`OPTIONAL_BUDGET_KEYS`.
 
     Attributes:
         layer: The declared layer label these caps belong to.
@@ -78,7 +80,8 @@ class LayerBudget:
         max_items: Cap on the length of any single array.
         max_object_keys: Cap on the key count of any single object.
         max_assertions: Cap on authored assertions.
-        project_caps: Positive-integer bounds the project enforces itself.
+        project_caps: The optional caps this layer states, from the closed set
+            :data:`OPTIONAL_BUDGET_KEYS`, each a positive integer.
     """
 
     layer: str
@@ -96,15 +99,22 @@ class LayerBudget:
         """Name one of this layer's caps for a refusal message."""
         return f"the {self.layer} layer's authored budget of {getattr(self, name)}"
 
-    def project_cap(self, name: str) -> int:
-        """Return one project-enforced cap, or fail closed naming what is stated."""
-        try:
-            return self.project_caps[name]
-        except KeyError as exc:
-            stated = ", ".join(sorted(self.project_caps)) or "none"
+    def optional_cap(self, name: str) -> int | None:
+        """Return one optional cap this layer states, or ``None`` if it states none.
+
+        An unstated optional cap is an unbounded dimension, not an error: only
+        the training layer authors rows, so only it states ``max_rows``.
+        """
+        if name not in OPTIONAL_BUDGET_KEYS:
             raise KeyError(
-                f"the {self.layer!r} layer states no project cap {name!r}; stated: {stated}"
-            ) from exc
+                f"{name!r} is not an optional budget cap; optional caps: "
+                f"{list(OPTIONAL_BUDGET_KEYS)}"
+            )
+        return self.project_caps.get(name)
+
+    def optional_cap_label(self, name: str) -> str:
+        """Name one optional cap for a refusal message."""
+        return f"the {self.layer} layer's authored budget of {self.project_caps[name]}"
 
 
 #: The eight caps the engine enforces, derived from the dataclass rather than
@@ -114,6 +124,13 @@ ENFORCED_BUDGET_KEYS: tuple[str, ...] = tuple(
     for name in LayerBudget.__dataclass_fields__
     if name not in ("layer", "project_caps")
 )
+
+#: The optional caps a layer section may state in ``project_caps``. They are
+#: optional because they bind a dimension only some layers have — ``max_rows``
+#: binds authored training rows, and no other layer authors rows — but every one
+#: of them is engine-enforced. The set is closed: an unrecognized key is refused
+#: rather than carried as a bound nothing checks.
+OPTIONAL_BUDGET_KEYS: tuple[str, ...] = ("max_rows",)
 
 
 def _reject(
@@ -206,6 +223,15 @@ class AuthoringBudgets:
                     f"{locator}.project_caps",
                     f"project caps are an object of positive integers; found {project_caps!r}",
                 )
+            unknown = sorted(set(project_caps) - set(OPTIONAL_BUDGET_KEYS))
+            if unknown:
+                _reject(
+                    ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+                    f"{locator}.project_caps",
+                    f"no cap named {unknown!r} is enforced; the optional caps are "
+                    f"{list(OPTIONAL_BUDGET_KEYS)}. A declared cap nothing enforces reads "
+                    "as a bound while permitting everything",
+                )
             layers[layer] = LayerBudget(
                 layer=layer,
                 project_caps=MappingProxyType(
@@ -295,6 +321,7 @@ __all__ = [
     "AUTHORING_BUDGET_SCHEMA_VERSION_V1",
     "AUTHORING_BUDGET_SUPPORTED_SCHEMA_VERSIONS",
     "ENFORCED_BUDGET_KEYS",
+    "OPTIONAL_BUDGET_KEYS",
     "WIDEST_LAYER_LABEL",
     "AuthoringBudgets",
     "LayerBudget",

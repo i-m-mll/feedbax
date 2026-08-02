@@ -129,7 +129,11 @@ from feedbax.contracts.run_matrix import (
     apply_composition_deltas,
     apply_override_patches,
 )
-from feedbax.envelope.authoring import enforce_assertion_budget, read_authored_document
+from feedbax.envelope.authoring import (
+    enforce_assertion_budget,
+    enforce_row_budget,
+    read_authored_document,
+)
 from feedbax.envelope.resolution import (
     Lineage,
     PinnedDocument,
@@ -1684,6 +1688,12 @@ class EnvelopeKernel:
         enforce_assertion_budget(
             len(envelope.assert_), budget, field=f"{envelope_ref}#assert"
         )
+        if envelope.training is not None:
+            enforce_row_budget(
+                len(envelope.training.rows),
+                budget,
+                field=f"{envelope_ref}#training.rows",
+            )
         if envelope.base is None:
             _reject(
                 ExperimentEnvelopeRejectionCategory.MISSING_FIELD,

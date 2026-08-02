@@ -184,10 +184,83 @@ def test_the_same_content_is_admitted_under_the_layer_with_the_wider_cap(
     assert parsed["reason"] == prose
 
 
-def test_project_caps_are_validated_but_left_to_the_project(budgets: AuthoringBudgets) -> None:
-    assert budgets.for_layer("training").project_cap("max_probes") == 6
-    with pytest.raises(KeyError):
-        budgets.for_layer("report").project_cap("max_probes")
+def test_optional_caps_are_stated_only_where_the_dimension_exists(
+    budgets: AuthoringBudgets,
+) -> None:
+    """``max_rows`` binds the one layer that authors rows, and nothing else."""
+    assert budgets.for_layer("training").optional_cap("max_rows") == 2
+    assert budgets.for_layer("report").optional_cap("max_rows") is None
+    with pytest.raises(KeyError, match="not an optional budget cap"):
+        budgets.for_layer("training").optional_cap("max_probes")
+
+
+def test_budget_document_refuses_a_project_cap_nothing_enforces() -> None:
+    """A declared cap nothing checks reads as a bound while permitting everything."""
+    document = _budget_document()
+    document["layers"]["training"]["project_caps"] = {"max_probes": 6}
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        AuthoringBudgets.from_document(
+            document, field="budget.json", declared_layers=DECLARED_LAYERS
+        )
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert "max_probes" in str(excinfo.value)
+    assert "['max_rows']" in str(excinfo.value)
+
+
+def test_budget_document_refuses_a_nonpositive_optional_cap() -> None:
+    document = _budget_document()
+    document["layers"]["training"]["project_caps"] = {"max_rows": 0}
+
+    with pytest.raises(ExperimentEnvelopeRejection, match="positive integer"):
+        AuthoringBudgets.from_document(
+            document, field="budget.json", declared_layers=DECLARED_LAYERS
+        )
+
+
+def _authored_training_rows(repo: Path, count: int) -> None:
+    """Re-author the training envelope so it states exactly *count* rows."""
+    envelope = _read(repo, "widened")
+    envelope["training"]["rows"] = [
+        {"from": "baseline", "id": f"widened-{index}", "seed": 43 + index}
+        for index in range(count)
+    ]
+    envelope["training"].pop("checkpoint_initialization", None)
+    _write(repo, "widened", envelope)
+
+
+def test_authoring_rows_up_to_the_row_cap_compiles(repo: Path) -> None:
+    """The cap is a bound, not a target: authoring exactly it is admitted."""
+    _authored_training_rows(repo, 2)
+
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert [row["row_id"] for row in outcome.document["rows"]] == [
+        "baseline",
+        "widened-0",
+        "widened-1",
+    ]
+
+
+def test_authoring_more_rows_than_the_cap_is_refused(repo: Path) -> None:
+    _authored_training_rows(repo, 3)
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.BUDGET_EXCEEDED
+    assert "3 authored rows exceeds" in str(excinfo.value)
+    assert str(excinfo.value.field).endswith("#training.rows")
+
+
+def test_a_layer_that_authors_no_rows_is_bound_by_no_row_cap(repo: Path) -> None:
+    """The figure layer's budget states no max_rows, so nothing here bounds it."""
+    outcome = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+
+    assert len(outcome.document["panels"]) == 2
 
 
 def test_budget_document_refuses_a_section_with_a_mistyped_cap() -> None:

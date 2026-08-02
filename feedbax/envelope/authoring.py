@@ -190,6 +190,26 @@ def enforce_assertion_budget(count: int, budget: LayerBudget, *, field: str) -> 
         )
 
 
+def enforce_row_budget(count: int, budget: LayerBudget, *, field: str) -> None:
+    """Refuse a layer that authors more rows than its budget admits.
+
+    ``max_rows`` is optional because only the training layer authors rows: a
+    layer whose budget states no ``max_rows`` bounds nothing here. The count is
+    the rows the *envelope* authors, not the rows the compiled matrix ends up
+    with, so a refusal is always fixable by editing the envelope rather than by
+    editing whatever the envelope inherits from.
+    """
+    cap = budget.optional_cap("max_rows")
+    if cap is not None and count > cap:
+        _reject(
+            ExperimentEnvelopeRejectionCategory.BUDGET_EXCEEDED,
+            field,
+            f"{count} authored rows exceeds {budget.optional_cap_label('max_rows')}",
+            correct_home="a row is one run of the experiment; a sweep wider than the budget "
+            "is a separate experiment, authored as its own envelope",
+        )
+
+
 def read_authored_document(
     raw: bytes,
     budgets: AuthoringBudgets,
@@ -242,6 +262,7 @@ def read_authored_document(
 __all__ = [
     "enforce_assertion_budget",
     "enforce_budget",
+    "enforce_row_budget",
     "guard_authored_bytes",
     "read_authored_document",
 ]

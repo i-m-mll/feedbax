@@ -14,7 +14,7 @@
       "max_object_keys": 32,
       "max_assertions": 4,
       "project_caps": {
-        "max_probes": 6
+        "max_rows": 2
       }
     },
     "evaluation": {
