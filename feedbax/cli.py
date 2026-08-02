@@ -93,6 +93,7 @@ DELEGATED_BY_NAME: dict[str, DelegatedCommand] = {
 #: project rather than about running science in one.
 PROJECT_COMMANDS: dict[str, str] = {
     "init": "Create or validate this project's Feedbax skeleton.",
+    "instructions": "Install or check this repository's Feedbax agent instructions.",
 }
 
 _HELP_FLAGS = frozenset({"-h", "--help", "help"})
