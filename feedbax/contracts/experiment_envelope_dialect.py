@@ -477,10 +477,12 @@ class FigureInputAuthoring(DialectModel):
     A ``per_row`` role is the one case with no single locator to state: the
     expansion fills it once per expanded row from the row index's own custody, so
     any single ``ref`` would name one row's artifact and be false for every other
-    row. ``ref`` is therefore optional exactly there. A ``shared`` role is filled
-    once for every row from one named manifest, so it states that manifest, and a
-    figure input outside row expansion has nothing filling it at all unless it
-    states one: both fail closed on an omitted ``ref``.
+    row. ``ref`` is therefore *forbidden* exactly there — an authored locator on a
+    per-row role is not a harmless extra fact, it is a false one, and the compile
+    lock would carry it as though it addressed the role. A ``shared`` role is
+    filled once for every row from one named manifest, so it states that manifest,
+    and a figure input outside row expansion has nothing filling it at all unless
+    it states one: both fail closed on an omitted ``ref``.
     """
 
     input_role: str
@@ -508,6 +510,14 @@ class FigureInputAuthoring(DialectModel):
                 f"figure input {self.input_role!r} states no ref; only a 'per_row' "
                 "row-expansion role omits it, because row expansion fills that role once "
                 "per expanded row and no single locator addresses it"
+            )
+        if self.ref is not None and self.binding == "per_row":
+            raise ValueError(
+                f"figure input {self.input_role!r} is a 'per_row' role and states a ref; row "
+                "expansion fills that role once per expanded row from the row index's own "
+                "custody, so any single locator names one row's artifact and is false for "
+                "every other row. Remove the ref: the per-row binding key and its artifact "
+                "contract are the whole binding"
             )
         return self
 

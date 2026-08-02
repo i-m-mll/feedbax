@@ -1316,7 +1316,9 @@ def test_row_expansion_names_no_produced_data_in_the_compiled_plan(repo: Path) -
 
     assert not outcome.document.get("inputs")
     assert not outcome.document.get("input_authorities")
-    assert outcome.compile_lock["references"][0]["kind"] == "planned_product"
+    kinds = {item["kind"] for item in outcome.compile_lock["references"]}
+    assert "planned_product" not in kinds
+    assert "not_applicable" in kinds
     check_plan_receipt_boundary(outcome.compile_lock)
 
 
@@ -1559,6 +1561,10 @@ def test_a_figure_runtime_input_that_has_not_run_is_a_locator_in_the_lock(
     repo: Path,
 ) -> None:
     envelope = _read(repo, "widened-plot")
+    # A locator belongs to a role one manifest fills for every row; a per-row
+    # role has no single locator and the dialect refuses one on it.
+    envelope["figure"]["inputs"][0]["binding"] = "shared"
+    envelope["figure"]["inputs"][0]["binding_key"] = "widened-plot-observed"
     envelope["figure"]["inputs"][0]["ref"] = {
         "kind": "receipt",
         "manifest_kind": "quillon.survey_run",
@@ -2046,16 +2052,7 @@ def test_a_params_node_the_contract_gives_no_applicability_stays_lock_only(
 # -- a per-row figure input has no single locator --------------------------------
 
 
-def _per_row_input(repo: Path) -> None:
-    """Drop the false single reference from the per-row role the figure expands."""
-    envelope = _read(repo, "widened-plot")
-    envelope["figure"]["inputs"][0].pop("ref")
-    _write(repo, "widened-plot", envelope)
-
-
 def test_a_per_row_input_without_a_reference_compiles(repo: Path) -> None:
-    _per_row_input(repo)
-
     outcome = kernel().compile_envelope_file(
         envelope_path(repo, "widened-plot"), repo_root=repo
     )
@@ -2069,8 +2066,6 @@ def test_the_lock_states_the_per_row_role_rather_than_a_false_locator(
     repo: Path,
 ) -> None:
     from feedbax.envelope.compile import PER_ROW_INPUT_RULE_ID
-
-    _per_row_input(repo)
 
     outcome = kernel().compile_envelope_file(
         envelope_path(repo, "widened-plot"), repo_root=repo

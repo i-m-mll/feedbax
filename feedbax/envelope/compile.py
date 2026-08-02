@@ -952,7 +952,11 @@ def _lower_figure(context: LayerCompileContext) -> LoweredLayer:
     references: list[Any] = []
     for index, item in enumerate(authored.inputs):
         role_path = f"inputs.{item.input_role}"
-        if item.ref is None:
+        if item.is_per_row:
+            # The dialect refuses a ref on a per-row role, so this rule is the
+            # only way a per-row role reaches the lock: the single-locator slot
+            # is stated not-applicable, never filled with one row's locator.
+            assert item.ref is None  # guaranteed by FigureInputAuthoring
             references.append(
                 NotApplicableReference(
                     role_path=role_path,
