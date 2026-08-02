@@ -161,11 +161,19 @@ class AnalysisBundleNodeRequest:
     selects, not by role, so the binding is by manifest identity: the bound ids
     constrain the selection, and a selection that does not reproduce exactly
     that set refuses rather than executing over a different one.
+
+    ``None`` and a bound set are two different statements, and the difference is
+    load-bearing rather than a convenience for an empty tuple. ``None`` means the
+    compile lock declares no root references at all, so the bundle's own authored
+    predicate selects its roots from whatever the manifest repository holds when
+    it runs. A non-``None`` value means the lock declared the root set, and the
+    predicate is then a claim that must reproduce it exactly. An empty declared
+    set is neither and is refused: a bundle executing over no roots is not work.
     """
 
     node_key: str
     bundle: AnalysisBundleSpec
-    root_inputs: tuple[ParentRef, ...] = ()
+    root_inputs: tuple[ParentRef, ...] | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
     order: int | None = None
 
@@ -692,12 +700,25 @@ _NODE_KIND_BY_MANIFEST_KIND: dict[str, FulfillmentNodeKind] = {
 def analysis_bundle_root_run_ids(request: AnalysisBundleNodeRequest) -> tuple[str, ...] | None:
     """Return the manifest ids the closure bound as this bundle's roots.
 
-    ``None`` means the node declared no required input, so the bundle selects its
-    roots the way its own document says: by its authored predicate. A bound node
-    constrains that selection to exactly the receipts the plan named.
+    ``None`` means the compile lock declares no root reference, so the bundle
+    selects its roots the way its own document says: by its authored predicate.
+    That is the only case in which ambient selection stands, and it stands
+    because nothing authenticated anything to compare it against — not because a
+    declared set happened to come back empty.
+
+    A declared root set constrains the selection to exactly the receipts the lock
+    named. A declared set with no members is refused here rather than degraded
+    into the ambient case, because the two would otherwise be indistinguishable
+    at the point where the distinction decides whether authentication applies.
     """
-    if not request.root_inputs:
+    if request.root_inputs is None:
         return None
+    if not request.root_inputs:
+        raise ValueError(
+            f"analysis bundle node {request.node_key!r} declares an empty root set; a bundle "
+            "executes over at least one root receipt, and an empty declaration is not the "
+            "same statement as declaring no roots at all"
+        )
     run_ids = tuple(parent.id for parent in request.root_inputs)
     duplicates = sorted({run_id for run_id in run_ids if run_ids.count(run_id) > 1})
     if duplicates:

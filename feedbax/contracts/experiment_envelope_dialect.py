@@ -5,24 +5,6 @@ project does not define an envelope family, a layer, a lowerer, or a rule: it
 authors documents in this dialect and Feedbax compiles them into the spec
 families it already owns.
 
-## Why one closed dialect rather than a per-project DSL
-
-An extensible dialect makes every authored document mean whatever the installed
-project says it means, which is exactly the property that makes a compiled
-corpus unreadable a year later. The closed alternative works because the two
-things a project really needs are already generic:
-
-* **structure** — inheriting a row, naming it, seeding it, recording what it
-  replaces, and stating an ordered patch layer over a content-pinned base. All
-  of that is :class:`~feedbax.contracts.run_matrix.MatrixCompositionDelta` and
-  :class:`~feedbax.contracts.manifest.OverridePatch`, which Feedbax already owns;
-* **vocabulary** — dotted paths, values, component and recipe ids, input-role
-  strings, and prose. All of that is *data inside* the structure, validated by
-  the final output model and by whatever science plugin owns the payload.
-
-So the dialect fixes the shape and stays silent about the words. Nothing here
-names a task, an objective, a metric, or a project.
-
 ## The common fields and the one-layer rule
 
 Every envelope states ``schema``, ``name``, and optionally ``base``, ``issue``,
@@ -319,6 +301,12 @@ class TrainingLayerAuthoring(DialectModel):
     same change could always be written as a raw path, and the row/tag/checkpoint
     vocabulary would stop being the thing that decides what runs. A change this
     layer cannot express belongs in the base, not in a free-form patch.
+
+    Checkpoint initialization is a contribution in its own right, not a decoration
+    on an authored row. A fork that inherits every row and only attaches
+    authenticated checkpoint sources to them changes what those runs *are* —
+    initialized or continued from stated bytes rather than from scratch — so a
+    layer whose sole contribution is that is a whole authored layer.
     """
 
     rows_mode: TrainingRowsMode
@@ -330,8 +318,11 @@ class TrainingLayerAuthoring(DialectModel):
 
     @model_validator(mode="after")
     def _validate(self) -> "TrainingLayerAuthoring":
-        if not self.rows and self.tags is None:
-            raise ValueError("a training layer authors rows, tags, or both")
+        if not self.rows and self.tags is None and not self.checkpoint_initialization:
+            raise ValueError(
+                "a training layer authors rows, tags, checkpoint initialization, or a "
+                "combination of them"
+            )
         if self.rows_mode is TrainingRowsMode.AUTHORED_ONLY and not self.rows:
             raise ValueError(
                 "rows_mode 'authored_only' states that the compiled matrix runs exactly "
@@ -352,11 +343,51 @@ class TrainingLayerAuthoring(DialectModel):
 # -- evaluation ------------------------------------------------------------
 
 
+class StagedPrerequisiteAuthoring(DialectModel):
+    """One further named prerequisite every row of an evaluation inherits.
+
+    An evaluation has one subject. It may still need other already-produced
+    artifacts to run — a trial bank a paired controller is replayed against, a
+    reference evaluation a contrast is measured from — and those are named staged
+    prerequisites, addressed by binding name exactly as the subject is.
+
+    The compiled matrix's ``staged_parents`` block is *a plan*: it cannot
+    authenticate a parent, and lowering refuses a staged parent the compile lock
+    does not bind. This is the authoring form that puts one in the lock.
+    """
+
+    name: str
+    ref: AuthoredReference
+
+    @model_validator(mode="after")
+    def _validate(self) -> "StagedPrerequisiteAuthoring":
+        if not self.name.strip():
+            raise ValueError("a staged prerequisite states a nonempty binding name")
+        if isinstance(self.ref, NotApplicableAuthoring):
+            raise ValueError(
+                "a staged prerequisite that is not applicable is simply not authored; a "
+                "named prerequisite binding nothing would name an empty staged parent"
+            )
+        return self
+
+
 class EvaluationLayerAuthoring(DialectModel):
-    """The subject an evaluation evaluates, and the recipe parameters it runs."""
+    """The subject an evaluation evaluates, and the recipe parameters it runs.
+
+    ``staged_prerequisites`` are the further named artifacts every row inherits
+    alongside the subject. Without them an evaluation could author exactly one
+    reference, which is why a document whose compiled base states a second staged
+    parent had no way to authenticate it and refused at lowering.
+
+    Absent and empty are distinct here, as everywhere else in this dialect. An
+    absent list is an evaluation with one subject and nothing further; an empty
+    one states a prerequisite block with no prerequisite in it, and is refused
+    rather than treated as the absent case.
+    """
 
     subject: AuthoredReference
     subject_id: str
+    staged_prerequisites: list[StagedPrerequisiteAuthoring] | None = None
     recipe: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     delta: MatrixCompositionDelta | None = None
@@ -365,6 +396,21 @@ class EvaluationLayerAuthoring(DialectModel):
     def _validate(self) -> "EvaluationLayerAuthoring":
         if not self.subject_id.strip():
             raise ValueError("an evaluation names its subject id")
+        if self.staged_prerequisites is None:
+            return self
+        if not self.staged_prerequisites:
+            raise ValueError(
+                "an evaluation that states staged prerequisites states at least one; omit "
+                "'staged_prerequisites' entirely when the subject is the whole input"
+            )
+        names = [item.name for item in self.staged_prerequisites]
+        if len(set(names)) != len(names):
+            raise ValueError("staged prerequisite binding names must be unique")
+        if self.subject_id in names:
+            raise ValueError(
+                f"staged prerequisite {self.subject_id!r} names the evaluation's own "
+                "subject; one binding name addresses exactly one authenticated parent"
+            )
         return self
 
 
@@ -385,11 +431,47 @@ class AnalysisSubjectAuthoring(DialectModel):
         return self
 
 
+class AnalysisBundleRootAuthoring(DialectModel):
+    """One member of the exact root set a bundle executes over.
+
+    A bundle addresses its roots by manifest identity rather than by role: its
+    stages run over a *set* of receipts, and the alias is the author's name for
+    one member of that set, not a slot inside a stage.
+    """
+
+    alias: str
+    ref: AuthoredReference
+
+    @model_validator(mode="after")
+    def _validate(self) -> "AnalysisBundleRootAuthoring":
+        if not self.alias.strip():
+            raise ValueError("a bundle root states a nonempty alias")
+        if isinstance(self.ref, NotApplicableAuthoring):
+            raise ValueError(
+                "a bundle root that is not applicable is simply not a member of the root "
+                "set; an inapplicable root would name a receipt the bundle cannot run over"
+            )
+        return self
+
+
 class AnalysisLayerAuthoring(DialectModel):
-    """A run or a bundle, its typed subjects, and its parameters."""
+    """A run or a bundle, its typed subjects or roots, and its parameters.
+
+    ``roots`` is a bundle's exact root set, and it is the only way to lock one:
+    the alternative is the bundle's own authored predicate, which selects
+    whatever the manifest repository holds when it runs, so a converted bundle
+    would silently widen as that repository grows. Declaring roots makes the
+    binding an exact manifest-identity set and the predicate a claim that must
+    agree with it.
+
+    An absent ``roots`` is the honest record of a bundle that genuinely selects
+    ambiently; an empty ``roots`` is refused, because a declared root set with no
+    members would describe a bundle that executes over nothing. 
+    """
 
     target: Literal["run", "bundle"] = "run"
     subjects: list[AnalysisSubjectAuthoring] = Field(default_factory=list)
+    roots: list[AnalysisBundleRootAuthoring] | None = None
     recipe: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     delta: MatrixCompositionDelta | None = None
@@ -404,6 +486,20 @@ class AnalysisLayerAuthoring(DialectModel):
                 "an analysis bundle states its templates as a delta; subjects and a "
                 "recipe belong to a single analysis run"
             )
+        if self.roots is not None:
+            if self.target != "bundle":
+                raise ValueError(
+                    "only an analysis bundle states a root set; a single analysis run "
+                    "states its inputs as typed subjects"
+                )
+            if not self.roots:
+                raise ValueError(
+                    "an analysis bundle that states a root set states at least one root; "
+                    "omit 'roots' entirely to select roots by the bundle's own predicate"
+                )
+            root_aliases = [root.alias for root in self.roots]
+            if len(set(root_aliases)) != len(root_aliases):
+                raise ValueError("analysis bundle root aliases must be unique")
         return self
 
 
@@ -964,6 +1060,7 @@ __all__ = [
     "REPORT_OUTPUT",
     "REPORT_PARAMS_MODELS",
     "TRAINING_OUTPUT",
+    "AnalysisBundleRootAuthoring",
     "AnalysisLayerAuthoring",
     "AnalysisSubjectAuthoring",
     "AuthoredReference",
@@ -983,6 +1080,7 @@ __all__ = [
     "ReportBindingAuthoring",
     "ReportLayerAuthoring",
     "RowReplacement",
+    "StagedPrerequisiteAuthoring",
     "TagsDelta",
     "TrainingLayerAuthoring",
     "TrainingRowAuthoring",

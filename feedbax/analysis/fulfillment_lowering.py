@@ -457,15 +457,22 @@ def _lower_analysis_bundle(node: "ClosureNode", *, binding: "NodeBinding") -> No
     and the role each consumer binding names addresses nothing further. Nothing
     is invented to fill that gap: the ids constrain the selection exactly, and
     the adapter refuses a selection that is not the bound set.
+
+    Whether the lock declares a root set at all is read from the lock, not
+    inferred from how many parents came back. A lock with no required reference
+    leaves the bundle's authored predicate as the only statement about its roots,
+    and that is passed on as ``None`` — the explicit "nothing was authenticated"
+    case — rather than as an empty set that would look like a declared one.
     """
     document = _document(node)
     ref = str(node.compiled.document_path)
     bundle = _validated_document(AnalysisBundleSpec, document, ref=ref)
+    declares_roots = bool(binding.plan.required_edges(node.key))
     parents, _roles = bound_parents(node, binding=binding)
     return AnalysisBundleNodeRequest(
         node_key=node.key.text,
         bundle=bundle,
-        root_inputs=parents,
+        root_inputs=parents if declares_roots else None,
         order=node.order,
     )
 
