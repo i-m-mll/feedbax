@@ -1801,36 +1801,145 @@ def test_an_admitted_receipt_binds_the_digest_admission_read(
     )
 
 
-def test_no_fulfillment_module_can_reach_a_fresh_digest_minting_helper() -> None:
-    """``authenticated_manifest_ref`` re-reads a path; it is out of reach here.
+#: Every module reachable while a fulfillment closure executes. This is the
+#: security boundary, and it is deliberately not a filename glob: the bundle
+#: executors and the analysis-run executor run *inside* the closure, so a
+#: check/use race in them is a check/use race in fulfillment. Round 3 drew the
+#: boundary at ``fulfillment*.py`` and missed exactly that.
+EXECUTION_SURFACE = (
+    "analysis/fulfillment.py",
+    "analysis/fulfillment_adapters.py",
+    "analysis/fulfillment_checkpoint_init.py",
+    "analysis/fulfillment_custody.py",
+    "analysis/fulfillment_derivation.py",
+    "analysis/fulfillment_driver.py",
+    "analysis/fulfillment_experiment.py",
+    "analysis/fulfillment_lowering.py",
+    "analysis/fulfillment_plan.py",
+    "analysis/fulfillment_row_custody.py",
+    "analysis/bundles.py",
+    "analysis/specs.py",
+)
 
-    The helper opens the file it is handed and mints a digest from whatever it
-    finds, which is the whole check/use defect in one function. Other callers
-    outside fulfillment legitimately use it to authenticate bytes they have just
-    written. This asserts the fulfillment surface cannot reach it at all, so the
-    defect cannot reappear by someone reaching for the obvious helper.
+#: The helper that opens a path it is handed and mints a profile from whatever
+#: it finds. Correct as a *first* authentication; a silent override anywhere a
+#: profile already exists, which on this surface is everywhere.
+FORBIDDEN_HELPER = "authenticated_manifest_ref"
+
+
+def _package_root() -> Path:
+    return Path(__file__).resolve().parents[1] / "feedbax"
+
+
+def test_no_module_on_the_execution_path_can_reach_a_fresh_digest_minting_helper() -> None:
+    """``authenticated_manifest_ref`` is out of reach for the whole closure.
+
+    The helper re-reads the path it is given and mints a digest from the second
+    read, which is the check/use defect in one function. Callers outside the
+    closure — Studio, the web API — legitimately use it to authenticate bytes
+    they have just written and hold no prior proof of. Inside the closure, a
+    proof always exists by the time anything wants a ref, so the surface must
+    not be able to reach it at all.
+
+    Detection covers the static reaches: importing the name, referring to it,
+    and reaching it as an attribute on a module object. It also covers the two
+    dynamic spellings that would defeat the first three —
+    ``importlib.import_module`` and ``getattr`` — by flagging any ``getattr``
+    whose attribute name is a literal match and any dynamic import of the
+    module that defines it.
     """
     import ast
 
-    surface = sorted(
-        Path(__file__).resolve().parents[1].joinpath("feedbax", "analysis").glob(
-            "fulfillment*.py"
-        )
-    )
-    assert surface, "the fulfillment surface must be discoverable"
     offenders: list[str] = []
-    for module in surface:
+    for relative in EXECUTION_SURFACE:
+        module = _package_root() / relative
+        assert module.is_file(), f"{relative} must exist for the guard to mean anything"
         tree = ast.parse(module.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
-                names = {alias.name for alias in node.names}
-                if "authenticated_manifest_ref" in names:
-                    offenders.append(f"{module.name}: imports authenticated_manifest_ref")
-            elif isinstance(node, ast.Name) and node.id == "authenticated_manifest_ref":
-                offenders.append(f"{module.name}: names authenticated_manifest_ref")
-            elif isinstance(node, ast.Attribute) and node.attr == "authenticated_manifest_ref":
-                offenders.append(f"{module.name}: reaches authenticated_manifest_ref")
+                if FORBIDDEN_HELPER in {alias.name for alias in node.names}:
+                    offenders.append(f"{relative}: imports {FORBIDDEN_HELPER}")
+            elif isinstance(node, ast.Name) and node.id == FORBIDDEN_HELPER:
+                offenders.append(f"{relative}: names {FORBIDDEN_HELPER}")
+            elif isinstance(node, ast.Attribute) and node.attr == FORBIDDEN_HELPER:
+                offenders.append(f"{relative}: reaches {FORBIDDEN_HELPER} as an attribute")
+            elif isinstance(node, ast.Call):
+                function = node.func
+                name = (
+                    function.attr
+                    if isinstance(function, ast.Attribute)
+                    else function.id
+                    if isinstance(function, ast.Name)
+                    else ""
+                )
+                if name == "getattr" and len(node.args) >= 2:
+                    target = node.args[1]
+                    if isinstance(target, ast.Constant) and target.value == FORBIDDEN_HELPER:
+                        offenders.append(f"{relative}: getattr reaches {FORBIDDEN_HELPER}")
+                if name == "import_module":
+                    literal = node.args[0] if node.args else None
+                    if isinstance(literal, ast.Constant) and "manifest_inputs" in str(
+                        literal.value
+                    ):
+                        offenders.append(
+                            f"{relative}: dynamically imports the module defining "
+                            f"{FORBIDDEN_HELPER}"
+                        )
     assert offenders == []
+
+
+def test_the_execution_surface_guard_actually_detects_each_reach(tmp_path: Path) -> None:
+    """The guard is only worth its assertion if it fails on the reaches it names.
+
+    A structural guard that cannot be shown to fire is a comment. Each spelling
+    below is parsed the same way the guard parses the real surface.
+    """
+    import ast
+
+    spellings = {
+        "import": "from feedbax.analysis.manifest_inputs import authenticated_manifest_ref\n",
+        "name": "ref = authenticated_manifest_ref(m, p, 'r')\n",
+        "attribute": "ref = manifest_inputs.authenticated_manifest_ref(m, p, 'r')\n",
+        "getattr": "fn = getattr(manifest_inputs, 'authenticated_manifest_ref')\n",
+        "import_module": (
+            "mod = importlib.import_module('feedbax.analysis.manifest_inputs')\n"
+        ),
+    }
+
+    def detects(source: str) -> bool:
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if FORBIDDEN_HELPER in {alias.name for alias in node.names}:
+                    return True
+            elif isinstance(node, ast.Name) and node.id == FORBIDDEN_HELPER:
+                return True
+            elif isinstance(node, ast.Attribute) and node.attr == FORBIDDEN_HELPER:
+                return True
+            elif isinstance(node, ast.Call):
+                function = node.func
+                name = (
+                    function.attr
+                    if isinstance(function, ast.Attribute)
+                    else function.id
+                    if isinstance(function, ast.Name)
+                    else ""
+                )
+                if name == "getattr" and len(node.args) >= 2:
+                    target = node.args[1]
+                    if isinstance(target, ast.Constant) and target.value == FORBIDDEN_HELPER:
+                        return True
+                if name == "import_module":
+                    literal = node.args[0] if node.args else None
+                    if isinstance(literal, ast.Constant) and "manifest_inputs" in str(
+                        literal.value
+                    ):
+                        return True
+        return False
+
+    for label, source in spellings.items():
+        assert detects(source), f"the guard must detect the {label} reach"
+    assert not detects("ref = authenticated_manifest_ref_from_read(p, role='r')\n")
 
 
 def test_a_duplicate_role_edge_refuses_at_reconciliation(
