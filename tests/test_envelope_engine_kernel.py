@@ -127,7 +127,7 @@ def test_emit_text_is_the_deterministic_tracked_form() -> None:
 def test_budget_states_one_section_per_dialect_layer(budgets: AuthoringBudgets) -> None:
     assert set(budgets.layers) == set(DECLARED_LAYERS)
     assert set(DECLARED_LAYERS) == {layer.value for layer in ExperimentEnvelopeLayer}
-    assert budgets.budget_id == PROJECT_DECLARATION.authoring_budget.resource_id
+    assert budgets.budget_id == _budget_document()["budget_id"]
 
 
 def test_widest_caps_are_the_maximum_any_layer_states(budgets: AuthoringBudgets) -> None:

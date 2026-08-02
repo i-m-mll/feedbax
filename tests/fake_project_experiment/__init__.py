@@ -5,17 +5,25 @@ upstreamed. Its vocabulary is deliberately invented — ``quillon`` names nothin
 and belongs to nobody — so the fixture proves the contract rather than any
 particular science.
 
-What it proves is how little a project now says. The declaration is six fields
-of data: a name, where it was authored, two directories, and one budget
-resource. There is no envelope family to claim, no layer to bind, no lowerer, no
-applicability callback, and no compiler contract, because Feedbax owns the one
-dialect and the one compiler for it. Everything ``quillon`` contributes to a
-compiled document, it contributes as *data inside* native Feedbax composition
-deltas: dotted paths, values, recipe ids, and input-role strings.
+What it proves is how little a project now says, and how it says it. The
+declaration is a six-key JSON document at the project root: a schema identity, a
+name, two directories, and one repo-relative budget path. It is *data*, read
+directly by :func:`~feedbax.contracts.project_experiment.load_project_declaration`
+from a stated root — the fixture registers no plugin to announce it, because a
+layout fact is not an implementation. There is no envelope family to claim, no
+layer to bind, no lowerer, no applicability callback, and no compiler contract,
+because Feedbax owns the one dialect and the one compiler for it. Everything
+``quillon`` contributes to a compiled document, it contributes as *data inside*
+native Feedbax composition deltas: dotted paths, values, recipe ids, and
+input-role strings. What ``quillon`` does register through the ordinary plugin
+bootstrap is genuine science — its recipes, in :mod:`tests.fulfillment_cli_plugin`.
 
-:func:`write_repo` lays out one small repository that exercises all five layers
-and every authored reference kind, which is what the kernel and dialect tests
-compile against.
+:data:`PROJECT_DECLARATION_DOCUMENT` is the single source of truth for the
+declaration. :data:`PROJECT_DECLARATION` is that same document parsed against
+this package's own resources, for tests that drive the kernel without laying out
+a repository; :func:`write_repo` writes it, its budget document, five frozen
+bases, and five envelopes into one real repository root, which is what the
+kernel, dialect, and entrypoint tests compile against.
 """
 
 from __future__ import annotations
@@ -25,47 +33,43 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from feedbax.plugins import (
-    PROJECT_EXPERIMENTS,
-    AuthoringBudgetResource,
-    FamilyRequirement,
-    PluginDeclaration,
-    PluginRegistration,
-    ProjectExperimentDeclaration,
+from feedbax.contracts.project_experiment import (
+    PROJECT_DECLARATION_FILENAME,
+    PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID,
+    PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION,
+    parse_project_declaration,
 )
 
 PROJECT = "quillon"
-DECLARATION_SOURCE = "tests.fake_project_experiment:PROJECT_DECLARATION"
+DECLARATION_SOURCE = f"tests.fake_project_experiment:{PROJECT_DECLARATION_FILENAME}"
 
 ENVELOPE_DIRECTORY = "studies"
 OUTPUT_DIRECTORY = "compiled"
 BASE_DIRECTORY = "bases"
+BUDGET_REF = "budgets/quillon.envelope_budgets.json"
 
-PROJECT_DECLARATION = ProjectExperimentDeclaration(
-    project=PROJECT,
-    declaration_source=DECLARATION_SOURCE,
-    envelope_directory=ENVELOPE_DIRECTORY,
-    output_directory=OUTPUT_DIRECTORY,
-    authoring_budget=AuthoringBudgetResource(
-        resource_id="quillon.envelope_budgets.v1",
-        root=resources.files(__name__) / "budgets",
-        document_name="quillon.envelope_budgets.json",
-    ),
-)
+PROJECT_DECLARATION_DOCUMENT: dict[str, Any] = {
+    "schema_id": PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID,
+    "schema_version": PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION,
+    "project": PROJECT,
+    "envelope_directory": ENVELOPE_DIRECTORY,
+    "output_directory": OUTPUT_DIRECTORY,
+    "authoring_budget": BUDGET_REF,
+}
 
+#: The declaration document's exact tracked bytes, as a project root holds them.
+PROJECT_DECLARATION_BYTES = (
+    json.dumps(PROJECT_DECLARATION_DOCUMENT, indent=2) + "\n"
+).encode("utf-8")
 
-def _register(context: Any) -> None:
-    context.registry(PROJECT_EXPERIMENTS).register(PROJECT_DECLARATION)
+#: The budget document ``quillon`` authors, kept as package data so a kernel test
+#: can load budgets without first writing a repository.
+BUDGET_BYTES = resources.files(__name__).joinpath(*BUDGET_REF.split("/")).read_bytes()
 
-
-PLUGIN_REGISTRATION = PluginRegistration(
-    PluginDeclaration(
-        "tests.fake_project_experiment",
-        "1.0",
-        1,
-        families=(FamilyRequirement("project_experiments"),),
-    ),
-    _register,
+PROJECT_DECLARATION = parse_project_declaration(
+    PROJECT_DECLARATION_BYTES,
+    budget_root=resources.files(__name__),
+    source=DECLARATION_SOURCE,
 )
 
 
@@ -275,8 +279,20 @@ def envelope_path(root: Path, alias: str) -> Path:
     return root / ENVELOPE_DIRECTORY / f"{alias}.envelope.json"
 
 
+def write_declaration(root: Path) -> Path:
+    """Write the project declaration and its budget document into *root*."""
+    declaration = root / PROJECT_DECLARATION_FILENAME
+    declaration.parent.mkdir(parents=True, exist_ok=True)
+    declaration.write_bytes(PROJECT_DECLARATION_BYTES)
+    budget = root / BUDGET_REF
+    budget.parent.mkdir(parents=True, exist_ok=True)
+    budget.write_bytes(BUDGET_BYTES)
+    return declaration
+
+
 def write_repo(root: Path, *, envelopes: dict[str, dict[str, Any]] | None = None) -> None:
-    """Lay out one quillon repository: five frozen bases and five envelopes."""
+    """Lay out one quillon repository: a declaration, five bases, five envelopes."""
+    write_declaration(root)
     for ref, document in BASE_DOCUMENTS.items():
         write_json(root / ref, document)
     for alias, document in (ENVELOPES if envelopes is None else envelopes).items():
@@ -287,6 +303,8 @@ __all__ = [
     "ANALYSIS_BASE",
     "ANALYSIS_ENVELOPE",
     "BASE_DOCUMENTS",
+    "BUDGET_BYTES",
+    "BUDGET_REF",
     "DECLARATION_SOURCE",
     "ENVELOPES",
     "ENVELOPE_DIRECTORY",
@@ -295,15 +313,17 @@ __all__ = [
     "FIGURE_BASE",
     "FIGURE_ENVELOPE",
     "OUTPUT_DIRECTORY",
-    "PLUGIN_REGISTRATION",
     "PROJECT",
     "PROJECT_DECLARATION",
+    "PROJECT_DECLARATION_BYTES",
+    "PROJECT_DECLARATION_DOCUMENT",
     "REPORT_BASE",
     "REPORT_ENVELOPE",
     "SURVEY_PAYLOAD",
     "TRAINING_BASE",
     "TRAINING_ENVELOPE",
     "envelope_path",
+    "write_declaration",
     "write_envelope",
     "write_json",
     "write_repo",

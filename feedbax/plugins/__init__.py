@@ -13,7 +13,6 @@ from .application import (
     EXPERIMENT_ENVELOPE_COMPILERS,
     EXPERIMENT_PACKAGES,
     FIGURES,
-    PROJECT_EXPERIMENTS,
     REPORT_RECIPES,
     ROW_LOWERERS,
     TRAINING_METHODS,
@@ -55,15 +54,6 @@ from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeCompilerRegistry,
     ExperimentEnvelopeRejection,
     ExperimentEnvelopeRejectionCategory,
-)
-from feedbax.contracts.project_experiment import (
-    PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID,
-    PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION,
-    AuthoringBudgetResource,
-    ProjectExperimentCollisionError,
-    ProjectExperimentDeclaration,
-    ProjectExperimentDeclarationError,
-    ProjectExperimentRegistry,
 )
 from feedbax.analysis.evaluation import (
     EvaluationAuthoringSchema,
@@ -136,14 +126,6 @@ _NON_GUARANTEED_PLUGIN_EXPORTS = (
     "ExperimentEnvelopeCompilerRegistry",
     "ExperimentEnvelopeRejection",
     "ExperimentEnvelopeRejectionCategory",
-    "PROJECT_EXPERIMENTS",
-    "PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID",
-    "PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION",
-    "AuthoringBudgetResource",
-    "ProjectExperimentCollisionError",
-    "ProjectExperimentDeclaration",
-    "ProjectExperimentDeclarationError",
-    "ProjectExperimentRegistry",
 )
 
 __all__ = [
@@ -232,12 +214,4 @@ __all__ = [
     "ExperimentEnvelopeCompilerRegistry",
     "ExperimentEnvelopeRejection",
     "ExperimentEnvelopeRejectionCategory",
-    "PROJECT_EXPERIMENTS",
-    "PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID",
-    "PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION",
-    "AuthoringBudgetResource",
-    "ProjectExperimentCollisionError",
-    "ProjectExperimentDeclaration",
-    "ProjectExperimentDeclarationError",
-    "ProjectExperimentRegistry",
 ]

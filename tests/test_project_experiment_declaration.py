@@ -1,12 +1,16 @@
-"""The data-only project declaration and how an envelope finds the project.
+"""The data-only project declaration and how a root is read as data.
 
 A project declares where its files live and nothing else. These tests hold that
-line in both directions: the declaration must carry no callable and no dialect
-knowledge, and everything the engine used to get from a callable must now come
-from Feedbax itself. Registration is still the ordinary transactional bootstrap
-with an injected registry, and the two documented outcomes are unchanged —
-infrastructure failure (exit 1) or an authored rejection (exit 2) that lands
-before any output file exists.
+line in three directions. The declaration must carry no callable and no dialect
+knowledge. Everything the engine used to get from a callable must now come from
+Feedbax itself. And the declaration must arrive as *data* read from one stated
+root, not as a Python object announced through the plugin bootstrap: there is no
+``project_experiments`` family any more, so an empty project needs no importable
+registration plumbing to be a project at all.
+
+The two documented entrypoint outcomes are unchanged — infrastructure failure
+(exit 1) or an authored rejection (exit 2) that lands before any output file
+exists.
 """
 
 from __future__ import annotations
@@ -25,28 +29,20 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
 )
 from feedbax.contracts.project_experiment import (
+    PROJECT_DECLARATION_FILENAME,
     PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID,
     PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION,
     AuthoringBudgetResource,
-    ProjectExperimentCollisionError,
     ProjectExperimentDeclaration,
     ProjectExperimentDeclarationError,
-    ProjectExperimentRegistry,
+    load_project_declaration,
+    parse_project_declaration,
+    project_declaration_path,
 )
-from feedbax.plugins import (
-    BootstrapError,
-    BootstrapErrorCode,
-    FamilyRequirement,
-    PluginDeclaration,
-    PluginRegistration,
-    bootstrap_application,
-    new_registration_context,
-)
+import feedbax.plugins as plugins
 from feedbax.plugins.composition import compose_application
 
 import tests.fake_project_experiment as fixture
-
-PLUGIN_MODULE = "tests.fake_project_experiment"
 
 
 def _budget(tmp_path: Path) -> AuthoringBudgetResource:
@@ -67,6 +63,23 @@ def _declaration(tmp_path: Path, **overrides: Any) -> ProjectExperimentDeclarati
     }
     fields.update(overrides)
     return ProjectExperimentDeclaration(**fields)
+
+
+def _document(**overrides: Any) -> dict[str, Any]:
+    document = dict(fixture.PROJECT_DECLARATION_DOCUMENT)
+    for key, value in overrides.items():
+        if value is None:
+            document.pop(key, None)
+        else:
+            document[key] = value
+    return document
+
+
+def _write_declaration(root: Path, document: Any) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / PROJECT_DECLARATION_FILENAME
+    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 # --- the declaration is data ------------------------------------------------
@@ -149,81 +162,175 @@ def test_a_budget_resource_names_one_document_by_bare_filename(tmp_path: Path) -
         )
 
 
-# --- registry ---------------------------------------------------------------
+# --- a declaration is loaded from one stated root ---------------------------
 
 
-def test_registry_refuses_two_declarations_of_one_project(tmp_path: Path) -> None:
-    registry = ProjectExperimentRegistry()
-    registry.register(_declaration(tmp_path))
+def test_a_stated_root_loads_its_declaration_file(tmp_path: Path) -> None:
+    fixture.write_declaration(tmp_path)
 
-    with pytest.raises(ProjectExperimentCollisionError, match="already declared"):
-        registry.register(_declaration(tmp_path, envelope_directory="other-studies"))
-    assert registry.available_keys() == ("probe",)
+    declaration = load_project_declaration(tmp_path)
 
-
-def test_registry_refuses_two_projects_claiming_one_envelope_directory(tmp_path: Path) -> None:
-    registry = ProjectExperimentRegistry()
-    registry.register(_declaration(tmp_path))
-
-    with pytest.raises(ProjectExperimentCollisionError, match="already claimed"):
-        registry.register(_declaration(tmp_path, project="probe2"))
+    assert declaration.project == fixture.PROJECT
+    assert declaration.envelope_directory == fixture.ENVELOPE_DIRECTORY
+    assert declaration.output_directory == fixture.OUTPUT_DIRECTORY
+    assert declaration.declaration_source == str(project_declaration_path(tmp_path))
+    assert declaration.authoring_budget.resource_id == fixture.BUDGET_REF
+    budget = declaration.authoring_budget
+    assert budget.root.joinpath(budget.document_name).read_bytes() == fixture.BUDGET_BYTES
 
 
-def test_sealed_registry_refuses_late_registration(tmp_path: Path) -> None:
-    registry = ProjectExperimentRegistry()
-    registry.seal()
+def test_the_written_declaration_and_the_package_one_are_the_same_data(
+    tmp_path: Path,
+) -> None:
+    """One document, two roots: the fixture cannot drift against itself."""
+    fixture.write_declaration(tmp_path)
 
-    with pytest.raises(RuntimeError, match="sealed"):
-        registry.register(_declaration(tmp_path))
+    loaded = load_project_declaration(tmp_path)
 
-
-def test_registry_reports_an_unknown_project_with_what_it_knows(tmp_path: Path) -> None:
-    registry = ProjectExperimentRegistry()
-    registry.register(_declaration(tmp_path))
-
-    with pytest.raises(ProjectExperimentDeclarationError, match="registered projects: probe"):
-        registry.get("absent")
-
-
-# --- resolving which project owns an envelope --------------------------------
-
-
-def test_an_envelope_resolves_to_the_project_whose_directory_holds_it(tmp_path: Path) -> None:
-    registry = ProjectExperimentRegistry()
-    registry.register(_declaration(tmp_path))
-    registry.register(
-        _declaration(tmp_path, project="other", envelope_directory="other-studies")
+    for field in ("project", "envelope_directory", "output_directory", "schema_version"):
+        assert getattr(loaded, field) == getattr(fixture.PROJECT_DECLARATION, field)
+    assert (
+        loaded.authoring_budget.resource_id
+        == fixture.PROJECT_DECLARATION.authoring_budget.resource_id
     )
 
-    assert registry.for_envelope_ref("probe-studies/x.envelope.json").project == "probe"
-    assert registry.for_envelope_ref("other-studies/x.envelope.json").project == "other"
+
+def test_the_declaration_file_name_is_fixed_and_never_searched_for(tmp_path: Path) -> None:
+    nested = tmp_path / "nested"
+    fixture.write_declaration(nested)
+
+    assert project_declaration_path(nested).name == PROJECT_DECLARATION_FILENAME
+    with pytest.raises(ProjectExperimentDeclarationError, match="no project declaration at"):
+        load_project_declaration(tmp_path)
 
 
-def test_an_envelope_outside_every_declared_directory_resolves_to_nothing(
-    tmp_path: Path,
+def test_a_root_that_declares_nothing_fails_closed(tmp_path: Path) -> None:
+    with pytest.raises(ProjectExperimentDeclarationError, match=PROJECT_DECLARATION_FILENAME):
+        load_project_declaration(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("raw", "match"),
+    [
+        (b"{not json", "not a readable JSON"),
+        (b"[]", "must be one JSON object"),
+        (b"\xff\xfe", "not a readable JSON"),
+    ],
+)
+def test_unreadable_declaration_bytes_fail_closed(tmp_path: Path, raw: bytes, match: str) -> None:
+    (tmp_path / PROJECT_DECLARATION_FILENAME).write_bytes(raw)
+
+    with pytest.raises(ProjectExperimentDeclarationError, match=match):
+        load_project_declaration(tmp_path)
+
+
+def test_an_unknown_schema_id_is_refused_rather_than_interpreted(tmp_path: Path) -> None:
+    _write_declaration(tmp_path, _document(schema_id="someone_else.project"))
+
+    with pytest.raises(ProjectExperimentDeclarationError, match="schema_id must be"):
+        load_project_declaration(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "version", ["feedbax.project_experiment.v0", "feedbax.project_experiment.v2", None]
+)
+def test_an_unsupported_schema_version_refuses_with_migration_absent(
+    tmp_path: Path, version: str | None
 ) -> None:
-    registry = ProjectExperimentRegistry()
-    registry.register(_declaration(tmp_path))
+    _write_declaration(tmp_path, _document(schema_version=version))
 
-    with pytest.raises(ProjectExperimentDeclarationError, match="no declared envelope directory"):
-        registry.for_envelope_ref("elsewhere/x.envelope.json")
+    with pytest.raises(
+        ProjectExperimentDeclarationError, match="migration_intentionally_absent"
+    ):
+        load_project_declaration(tmp_path)
 
 
-def test_resolution_is_by_directory_and_never_by_anything_in_the_envelope(
-    tmp_path: Path,
-) -> None:
-    """A document cannot choose the budgets it is judged under.
+@pytest.mark.parametrize(
+    "key", ["project", "envelope_directory", "output_directory", "authoring_budget"]
+)
+def test_an_omitted_key_is_incomplete_rather_than_defaulted(tmp_path: Path, key: str) -> None:
+    _write_declaration(tmp_path, _document(**{key: None}))
 
-    The only input to resolution is the envelope's repo-relative path, so an
-    authored field naming a project would be inert. That is what makes budgets
-    and layout non-negotiable from inside the document.
-    """
-    registry = ProjectExperimentRegistry()
-    registry.register(_declaration(tmp_path))
+    with pytest.raises(ProjectExperimentDeclarationError, match="omits required keys"):
+        load_project_declaration(tmp_path)
 
-    assert registry.for_envelope_ref("probe-studies/./x.envelope.json").project == "probe"
-    with pytest.raises(ProjectExperimentDeclarationError):
-        registry.for_envelope_ref("probe-studies-rival/x.envelope.json")
+
+def test_an_unknown_key_is_refused_rather_than_ignored(tmp_path: Path) -> None:
+    _write_declaration(tmp_path, _document(base_directory="bases"))
+
+    with pytest.raises(ProjectExperimentDeclarationError, match="does not define"):
+        load_project_declaration(tmp_path)
+
+
+@pytest.mark.parametrize("value", [42, "", "   ", None])
+def test_a_non_string_field_is_refused(tmp_path: Path, value: Any) -> None:
+    document = _document()
+    document["project"] = value
+    _write_declaration(tmp_path, document)
+
+    with pytest.raises(ProjectExperimentDeclarationError, match="must be a nonempty string"):
+        load_project_declaration(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "budget_ref",
+    ["/etc/budget.json", "../outside/budget.json", "budgets/", "budgets/./b.json"],
+)
+def test_a_budget_path_may_not_escape_or_wander(tmp_path: Path, budget_ref: str) -> None:
+    _write_declaration(tmp_path, _document(authoring_budget=budget_ref))
+
+    with pytest.raises(ProjectExperimentDeclarationError, match="authoring_budget"):
+        load_project_declaration(tmp_path)
+
+
+def test_a_budget_may_sit_at_the_project_root(tmp_path: Path) -> None:
+    _write_declaration(tmp_path, _document(authoring_budget="budget.json"))
+
+    declaration = load_project_declaration(tmp_path)
+
+    assert declaration.authoring_budget.document_name == "budget.json"
+    assert Path(str(declaration.authoring_budget.root)) == tmp_path
+
+
+def test_parsing_records_the_stated_source_verbatim() -> None:
+    declaration = parse_project_declaration(
+        fixture.PROJECT_DECLARATION_BYTES,
+        budget_root=Path("/nowhere"),
+        source="an-explicit-source",
+    )
+
+    assert declaration.declaration_source == "an-explicit-source"
+
+
+# --- declarations are no longer a plugin family -----------------------------
+
+
+def test_the_bootstrap_has_no_project_declaration_family() -> None:
+    state = asyncio.run(compose_application(modules=(), local_component_source=None))
+
+    assert not hasattr(state.bundle, "project_experiments")
+    families = {key.family for key in plugins.APPLICATION_REGISTRY_KEYS}
+    assert "project_experiments" not in families
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "PROJECT_EXPERIMENTS",
+        "ProjectExperimentRegistry",
+        "ProjectExperimentCollisionError",
+        "ProjectExperimentDeclaration",
+    ],
+)
+def test_the_plugin_facade_no_longer_publishes_declaration_names(name: str) -> None:
+    """A layout fact is not an implementation, so it is not part of the plugin API."""
+    assert name not in plugins.__all__
+    assert not hasattr(plugins, name)
+
+
+def test_the_fixture_registers_no_plugin_for_its_declaration() -> None:
+    assert not hasattr(fixture, "PLUGIN_REGISTRATION")
+    assert "PLUGIN_REGISTRATION" not in fixture.__all__
 
 
 # --- entrypoint exit semantics ------------------------------------------------
@@ -236,8 +343,6 @@ def _run(repo: Path, alias: str, *extra: str) -> int:
             str(fixture.envelope_path(repo, alias)),
             "--repo-root",
             str(repo),
-            "--plugin",
-            PLUGIN_MODULE,
             *extra,
         ]
     )
@@ -280,116 +385,44 @@ def test_a_rejected_envelope_exits_two_before_any_output_exists(
     assert not (tmp_path / fixture.OUTPUT_DIRECTORY).exists()
 
 
-def test_an_envelope_in_no_declared_directory_is_an_infrastructure_failure(
+def test_an_envelope_outside_the_declared_directory_is_an_infrastructure_failure(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     fixture.write_repo(tmp_path)
     stray = tmp_path / "elsewhere" / "widened.envelope.json"
     stray.parent.mkdir(parents=True)
-    stray.write_text(
-        json.dumps(fixture.TRAINING_ENVELOPE, indent=2) + "\n", encoding="utf-8"
-    )
+    stray.write_text(json.dumps(fixture.TRAINING_ENVELOPE, indent=2) + "\n", encoding="utf-8")
 
     code = main(
-        [
-            "preflight-experiment-envelope",
-            str(stray),
-            "--repo-root",
-            str(tmp_path),
-            "--plugin",
-            PLUGIN_MODULE,
-        ]
+        ["preflight-experiment-envelope", str(stray), "--repo-root", str(tmp_path)]
     )
 
     assert code == 1
-    assert "declaration of the project" in capsys.readouterr().err
+    assert "lies outside the envelope directory" in capsys.readouterr().err
 
 
-def test_two_projects_claiming_one_directory_collide_during_bootstrap(tmp_path: Path) -> None:
-    rival = PluginRegistration(
-        PluginDeclaration(
-            "tests.fake_project_experiment_rival",
-            "1.0",
-            1,
-            families=(FamilyRequirement("project_experiments"),),
-        ),
-        lambda context: context.registry(fixture.PROJECT_EXPERIMENTS).register(
-            ProjectExperimentDeclaration(
-                project="quillon-rival",
-                declaration_source="tests:rival",
-                envelope_directory=fixture.ENVELOPE_DIRECTORY,
-                output_directory="rival-compiled",
-                authoring_budget=_budget(tmp_path),
-            )
-        ),
-    )
-
-    async def _compose() -> Any:
-        return await bootstrap_application(
-            new_registration_context(local_component_source=None),
-            registrations=(fixture.PLUGIN_REGISTRATION, rival),
-        )
-
-    with pytest.raises(BootstrapError) as caught:
-        asyncio.run(_compose())
-
-    assert caught.value.code is BootstrapErrorCode.NAMESPACE_COLLISION
-    assert "already claimed by project" in str(caught.value)
-
-
-def test_a_project_that_fails_to_load_is_an_infrastructure_failure(tmp_path: Path) -> None:
+def test_a_root_that_declares_nothing_reaches_the_compilers_own_refusal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Dispatch still happens, so a schema needing no declaration keeps working."""
     fixture.write_repo(tmp_path)
+    project_declaration_path(tmp_path).unlink()
 
-    with pytest.raises(BootstrapError) as caught:
-        main(
-            [
-                "preflight-experiment-envelope",
-                str(fixture.envelope_path(tmp_path, "widened")),
-                "--repo-root",
-                str(tmp_path),
-                "--plugin",
-                "tests.fake_project_experiment_absent",
-            ]
-        )
+    code = _run(tmp_path, "widened", "--out-dir", fixture.OUTPUT_DIRECTORY)
 
-    assert caught.value.code is BootstrapErrorCode.LOAD
-    assert not (tmp_path / "generated").exists()
+    assert code == 1
+    assert "needs the declaration of the project" in capsys.readouterr().err
+    assert not (tmp_path / fixture.OUTPUT_DIRECTORY).exists()
 
 
-# --- bootstrap isolation ------------------------------------------------------
+def test_a_malformed_declaration_stops_before_any_compile(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fixture.write_repo(tmp_path)
+    _write_declaration(tmp_path, _document(schema_version="feedbax.project_experiment.v9"))
 
+    code = _run(tmp_path, "widened", "--out-dir", fixture.OUTPUT_DIRECTORY)
 
-def test_double_bootstrap_produces_isolated_sealed_registries(tmp_path: Path) -> None:
-    async def _compose() -> Any:
-        return await compose_application(modules=(PLUGIN_MODULE,), local_component_source=None)
-
-    first = asyncio.run(_compose())
-    second = asyncio.run(_compose())
-
-    assert first.bundle.project_experiments is not second.bundle.project_experiments
-    assert first.bundle.project_experiments.available_keys() == ("quillon",)
-    assert second.bundle.project_experiments.available_keys() == ("quillon",)
-    assert first.bundle.project_experiments.get(
-        "quillon"
-    ) is second.bundle.project_experiments.get("quillon")
-    with pytest.raises(RuntimeError, match="sealed"):
-        first.bundle.project_experiments.register(_declaration(tmp_path))
-    assert second.bundle.project_experiments.available_keys() == ("quillon",)
-
-
-def test_bootstrap_records_the_declared_project_as_provenance() -> None:
-    state = asyncio.run(compose_application(modules=(PLUGIN_MODULE,), local_component_source=None))
-
-    provenance = {item.plugin_id: item for item in state.provenance}[PLUGIN_MODULE]
-    assert provenance.registered_keys["project_experiments"] == ("quillon",)
-    assert provenance.family_protocols["project_experiments"] == "1"
-
-
-def test_a_project_registers_no_envelope_compiler_of_its_own() -> None:
-    state = asyncio.run(compose_application(modules=(PLUGIN_MODULE,), local_component_source=None))
-
-    provenance = {item.plugin_id: item for item in state.provenance}[PLUGIN_MODULE]
-    assert "experiment_envelope_compilers" not in provenance.registered_keys
-    assert state.bundle.experiment_envelope_compilers.available_keys() == (
-        EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
-    )
+    assert code == 1
+    assert "cannot load the project declaration" in capsys.readouterr().err
+    assert not (tmp_path / fixture.OUTPUT_DIRECTORY).exists()
