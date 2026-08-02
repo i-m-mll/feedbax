@@ -208,6 +208,21 @@ class FulfillmentAdmissionError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class _VerifiedReadToken:
+    """Proof that a byte profile was measured rather than asserted.
+
+    Module-private and unconstructible from anywhere that matters: the only
+    place one is made is inside :meth:`FulfillmentReceipt.of_admitted_bytes`,
+    immediately after hashing bytes that were really read. It carries the
+    profile it measured so the receipt cannot be handed a token from one read
+    and a digest from somewhere else.
+    """
+
+    manifest_sha256: str
+    size_bytes: int
+
+
+@dataclass(frozen=True)
 class FulfillmentReceipt:
     """An admitted manifest bound to the exact bytes that authenticated it.
 
@@ -227,6 +242,15 @@ class FulfillmentReceipt:
     :meth:`admitted`, both of which read once, and every forward binding is
     derived from the profile they settled.
 
+    That rule is *enforced*, not documented. A convention that the classmethods
+    are the way in is worth exactly as much as the next caller's attention, and
+    a direct construction with a plausible-looking digest produces a receipt
+    that is indistinguishable downstream from a verified one — it authenticates
+    every consumer's forward binding on the strength of a number nobody
+    measured. So the constructor demands a capability token that only the
+    verified constructors hold, and there is no way to obtain one except by
+    hashing real bytes.
+
     Attributes:
         node_kind: The fulfillment node kind whose receipt this is.
         manifest: The manifest parsed from the admitted bytes.
@@ -234,6 +258,8 @@ class FulfillmentReceipt:
         root: The receipt root ``path`` lives under.
         manifest_sha256: The SHA-256 of the admitted bytes.
         size_bytes: The length of the admitted bytes.
+        verified: The capability token proving the profile came from a real
+            read. Supplied only by :meth:`of_admitted_bytes`.
     """
 
     node_kind: FulfillmentNodeKind
@@ -242,6 +268,25 @@ class FulfillmentReceipt:
     root: Path
     manifest_sha256: str
     size_bytes: int
+    verified: "_VerifiedReadToken | None" = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.verified, _VerifiedReadToken):
+            raise TypeError(
+                "a FulfillmentReceipt is built from bytes that were actually read: use "
+                "FulfillmentReceipt.of_admitted_bytes(raw, ...) or "
+                "FulfillmentReceipt.admitted(path=..., ...). Constructing one directly would "
+                "let a digest nobody measured authenticate every forward binding made from "
+                "this receipt."
+            )
+        if self.verified.manifest_sha256 != self.manifest_sha256 or (
+            self.verified.size_bytes != self.size_bytes
+        ):
+            raise ValueError(
+                "the receipt's byte profile is not the profile the verified read settled: "
+                f"read {self.verified.manifest_sha256}/{self.verified.size_bytes}, receipt "
+                f"states {self.manifest_sha256}/{self.size_bytes}"
+            )
 
     @property
     def manifest_id(self) -> str:
@@ -276,13 +321,15 @@ class FulfillmentReceipt:
                 f"manifest bytes at {path} are {parsed.kind} {parsed.id!r} but the receipt "
                 f"names {manifest.kind} {manifest.id!r}"
             )
+        digest = hashlib.sha256(raw).hexdigest()
         return cls(
             node_kind=node_kind,
             manifest=parsed,
             path=Path(path),
             root=Path(root),
-            manifest_sha256=hashlib.sha256(raw).hexdigest(),
+            manifest_sha256=digest,
             size_bytes=len(raw),
+            verified=_VerifiedReadToken(manifest_sha256=digest, size_bytes=len(raw)),
         )
 
     @classmethod
