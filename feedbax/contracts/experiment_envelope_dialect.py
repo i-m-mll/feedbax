@@ -1,9 +1,49 @@
 """The one authored-experiment dialect Feedbax owns.
 
-``feedbax.experiment_envelope.v1`` is the only envelope dialect there is. A
+``feedbax.experiment_envelope`` is the only envelope dialect there is. A
 project does not define an envelope family, a layer, a lowerer, or a rule: it
 authors documents in this dialect and Feedbax compiles them into the spec
 families it already owns.
+
+## Two numbered versions, and no third meaning of "v1"
+
+The dialect is a durable authored format, so what a version *accepts* is part of
+its identity. ``feedbax.experiment_envelope.v1`` is exactly the grammar it was
+ratified with; ``feedbax.experiment_envelope.v2`` is the current grammar and
+adds four authored constructs (see :data:`V2_ONLY_CONSTRUCTS`). Both versions are
+supported and neither is reinterpreted as the other:
+
+* a v1 document is held to the v1 grammar. Declaring a v2 construct under v1 is
+  refused by version, naming the construct and the version that owns it, rather
+  than being accepted as a wider "v1";
+* a v1 document compiles to exactly the bytes it always did. Its declared schema
+  string is what the compile lock records and what the envelope hash covers, so
+  a corpus authored at v1 does not move because a v2 exists;
+* :func:`migrate_experiment_envelope_payload` is the explicit, deterministic
+  upgrade to v2. It is a *payload* migration an author runs, never something a
+  compile does silently: migrating changes the authored bytes, and authored
+  bytes are the identity every compiled lock is pinned by.
+
+An unsupported version is refused by version with the supported set and the
+migration table named.
+
+## Why one closed dialect rather than a per-project DSL
+
+An extensible dialect makes every authored document mean whatever the installed
+project says it means, which is exactly the property that makes a compiled
+corpus unreadable a year later. The closed alternative works because the two
+things a project really needs are already generic:
+
+* **structure** — inheriting a row, naming it, seeding it, recording what it
+  replaces, and stating an ordered patch layer over a content-pinned base. All
+  of that is :class:`~feedbax.contracts.run_matrix.MatrixCompositionDelta` and
+  :class:`~feedbax.contracts.manifest.OverridePatch`, which Feedbax already owns;
+* **vocabulary** — dotted paths, values, component and recipe ids, input-role
+  strings, and prose. All of that is *data inside* the structure, validated by
+  the final output model and by whatever science plugin owns the payload.
+
+So the dialect fixes the shape and stays silent about the words. Nothing here
+names a task, an objective, a metric, or a project.
 
 ## The common fields and the one-layer rule
 
@@ -55,17 +95,25 @@ from feedbax.contracts.run_matrix import MatrixCompositionDelta
 #: The unversioned identity of the dialect family.
 EXPERIMENT_ENVELOPE_FAMILY = "feedbax.experiment_envelope"
 
-#: The one authored schema string an envelope declares.
+#: The authored schema strings an envelope may declare.
 EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v1"
-EXPERIMENT_ENVELOPE_SCHEMA_VERSION = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1
+EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v2"
 
-#: Enumerated, never inferred.
+#: The current grammar. A new document is authored at this version.
+EXPERIMENT_ENVELOPE_SCHEMA_VERSION = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2
+
+#: Enumerated, never inferred. Both members are compiled as authored: a v1
+#: document is held to the v1 grammar and keeps its v1 identity.
 EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = (
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
 )
 
-#: Versions accepted and migrated. Empty at v1: nothing Feedbax-owned precedes it.
-EXPERIMENT_ENVELOPE_MIGRATION_TABLE: dict[str, str] = {}
+#: Versions with a deterministic upgrade to a later one, applied by
+#: :func:`migrate_experiment_envelope_payload` and never by a compile.
+EXPERIMENT_ENVELOPE_MIGRATION_TABLE: dict[str, str] = {
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
+}
 
 #: The compiler contract is global. There is no per-project contract indirection:
 #: one dialect compiled by one compiler means one contract for every project.
@@ -306,7 +354,8 @@ class TrainingLayerAuthoring(DialectModel):
     on an authored row. A fork that inherits every row and only attaches
     authenticated checkpoint sources to them changes what those runs *are* —
     initialized or continued from stated bytes rather than from scratch — so a
-    layer whose sole contribution is that is a whole authored layer.
+    layer whose sole contribution is that is a whole authored layer. It is v2
+    grammar: v1 required rows or tags, and a v1 document is still held to that.
     """
 
     rows_mode: TrainingRowsMode
@@ -375,9 +424,9 @@ class EvaluationLayerAuthoring(DialectModel):
     """The subject an evaluation evaluates, and the recipe parameters it runs.
 
     ``staged_prerequisites`` are the further named artifacts every row inherits
-    alongside the subject. Without them an evaluation could author exactly one
-    reference, which is why a document whose compiled base states a second staged
-    parent had no way to authenticate it and refused at lowering.
+    alongside the subject. They are v2 grammar: at v1 an evaluation could author
+    exactly one reference, which is why a v1 document whose compiled base states a
+    second staged parent has no way to authenticate it and refuses at lowering.
 
     Absent and empty are distinct here, as everywhere else in this dialect. An
     absent list is an evaluation with one subject and nothing further; an empty
@@ -466,7 +515,8 @@ class AnalysisLayerAuthoring(DialectModel):
 
     An absent ``roots`` is the honest record of a bundle that genuinely selects
     ambiently; an empty ``roots`` is refused, because a declared root set with no
-    members would describe a bundle that executes over nothing. 
+    members would describe a bundle that executes over nothing. ``roots`` is v2
+    grammar: at v1 a bundle could author no reference at all.
     """
 
     target: Literal["run", "bundle"] = "run"
@@ -778,9 +828,18 @@ class ReportLayerAuthoring(DialectModel):
 
 
 class ExperimentEnvelope(DialectModel):
-    """One authored envelope: common fields plus exactly one layer."""
+    """One authored envelope: common fields plus exactly one layer.
 
-    schema_: Literal["feedbax.experiment_envelope.v1"] = Field(alias="schema")
+    The model is the *union* of the supported grammars, because both versions
+    parse into one set of Python objects. Which constructs a given document may
+    use is decided before validation, by its declared version, in
+    :func:`parse_experiment_envelope`; ``schema_`` keeps the version the document
+    declared, so a v1 envelope hashes and locks as the v1 document it is.
+    """
+
+    schema_: Literal[
+        "feedbax.experiment_envelope.v1", "feedbax.experiment_envelope.v2"
+    ] = Field(alias="schema")
     name: str
     base: str | None = None
     issue: str | None = None
@@ -993,15 +1052,117 @@ def output_contract_of_document(document: Mapping[str, Any]) -> LayerOutputContr
     return LAYER_OUTPUT_CONTRACTS.get(str(document.get("schema_id")))
 
 
-def parse_experiment_envelope(
-    document: Mapping[str, Any], *, field: str
-) -> ExperimentEnvelope:
-    """Parse one authored envelope, failing closed on anything unsupported.
+@dataclass(frozen=True)
+class VersionedConstruct:
+    """One authored construct, the version that introduced it, and where it lives.
 
-    The declared ``schema`` is checked before the body so an envelope written
-    against another version is refused by version rather than by whichever field
-    happened to differ first.
+    ``layer`` and ``key`` address the construct in the authored document, so the
+    version gate reads the document rather than the parsed model: at v1 these
+    keys are not a narrower meaning of the same field, they are absent grammar.
     """
+
+    layer: str
+    key: str
+    version: str
+    describes: str
+
+    @property
+    def path(self) -> str:
+        """The authored dotted path this construct occupies."""
+        return f"{self.layer}.{self.key}"
+
+
+#: Every construct the current grammar adds over ``feedbax.experiment_envelope.v1``.
+#: A v1 document stating one is refused by version, which is what keeps "v1" the
+#: name of exactly one grammar.
+V2_ONLY_CONSTRUCTS: tuple[VersionedConstruct, ...] = (
+    VersionedConstruct(
+        "evaluation",
+        "staged_prerequisites",
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
+        "further named staged prerequisites an evaluation's rows inherit",
+    ),
+    VersionedConstruct(
+        "analysis",
+        "roots",
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
+        "the exact root set an analysis bundle executes over",
+    ),
+    VersionedConstruct(
+        "figure",
+        "row_custody",
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
+        "where a row-expanded figure's per-row custody bindings are found",
+    ),
+)
+
+#: The v2-only *shape*: a training layer whose whole contribution is checkpoint
+#: initialization. It adds no key, so it is stated as a rule rather than as a
+#: :class:`VersionedConstruct`, and v1's own refusal is what it restates.
+CHECKPOINT_ONLY_TRAINING_LAYER_VERSION = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2
+
+
+def _reject_unversioned_construct(
+    field: str, path: str, describes: str, version: str, declared: str
+) -> None:
+    raise ExperimentEnvelopeRejection(
+        ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+        f"{path!r} — {describes} — is {version} grammar, and this envelope declares "
+        f"{declared!r}. A version names exactly one grammar, so it is refused here "
+        f"rather than accepted as a wider {declared!r}",
+        field=f"{field}#{path}",
+        correct_home=f"declare {version!r} and migrate the document with "
+        "feedbax.contracts.experiment_envelope_dialect.migrate_experiment_envelope_payload",
+    )
+
+
+def _require_declared_grammar(
+    document: Mapping[str, Any], *, declared: str, field: str
+) -> None:
+    """Refuse a construct the document's own declared version does not have."""
+    if declared == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2:
+        return
+    for construct in V2_ONLY_CONSTRUCTS:
+        layer = document.get(construct.layer)
+        if isinstance(layer, Mapping) and construct.key in layer:
+            _reject_unversioned_construct(
+                field, construct.path, construct.describes, construct.version, declared
+            )
+    training = document.get("training")
+    if isinstance(training, Mapping) and not training.get("rows") and not training.get("tags"):
+        if training.get("checkpoint_initialization"):
+            _reject_unversioned_construct(
+                field,
+                "training.checkpoint_initialization",
+                "a training layer whose whole contribution is checkpoint initialization",
+                CHECKPOINT_ONLY_TRAINING_LAYER_VERSION,
+                declared,
+            )
+
+
+def migrate_experiment_envelope_payload(
+    document: Mapping[str, Any], *, field: str = "envelope"
+) -> dict[str, Any]:
+    """Return one authored envelope payload at the current dialect version.
+
+    The upgrade is deterministic and semantics-preserving: every v1 construct
+    means the same thing at v2, so the migration restates the version and changes
+    nothing else. It is deliberately *not* applied by a compile — the authored
+    bytes are the identity a compile lock pins, and silently rewriting them would
+    move every downstream reference to a document nobody authored.
+
+    A document already at the current version is returned unchanged. An
+    unsupported version refuses here, by version, as it does at parse.
+    """
+    declared = _require_supported_schema(document, field=field)
+    if declared == EXPERIMENT_ENVELOPE_SCHEMA_VERSION:
+        return dict(document)
+    target = EXPERIMENT_ENVELOPE_MIGRATION_TABLE[declared]
+    return {**dict(document), "schema": target}
+
+
+def _require_supported_schema(document: Mapping[str, Any], *, field: str) -> str:
+    """Return the supported version one authored document declares, or refuse."""
     if not isinstance(document, Mapping):
         raise ExperimentEnvelopeRejection(
             ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
@@ -1014,10 +1175,26 @@ def parse_experiment_envelope(
             ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
             f"unsupported envelope schema {declared!r}; "
             f"supported={list(EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS)}; "
-            f"migration table={EXPERIMENT_ENVELOPE_MIGRATION_TABLE!r}; "
-            "migration_intentionally_absent=yes",
+            f"current={EXPERIMENT_ENVELOPE_SCHEMA_VERSION!r}; "
+            f"migration table={EXPERIMENT_ENVELOPE_MIGRATION_TABLE!r}",
             field=f"{field}#schema",
         )
+    return str(declared)
+
+
+def parse_experiment_envelope(
+    document: Mapping[str, Any], *, field: str
+) -> ExperimentEnvelope:
+    """Parse one authored envelope, failing closed on anything unsupported.
+
+    The declared ``schema`` is checked before the body so an envelope written
+    against another version is refused by version rather than by whichever field
+    happened to differ first, and the grammar that version owns is checked before
+    the body too: a v1 document stating a v2 construct is a version refusal, not a
+    quietly accepted wider v1.
+    """
+    declared = _require_supported_schema(document, field=field)
+    _require_declared_grammar(document, declared=declared, field=field)
     try:
         return ExperimentEnvelope.model_validate(document)
     except ValidationError as exc:
@@ -1043,6 +1220,7 @@ def _rejection_category(error: ValidationError) -> ExperimentEnvelopeRejectionCa
 __all__ = [
     "ANALYSIS_BUNDLE_OUTPUT",
     "ANALYSIS_RUN_OUTPUT",
+    "CHECKPOINT_ONLY_TRAINING_LAYER_VERSION",
     "EVALUATION_OUTPUT",
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID",
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION",
@@ -1050,6 +1228,7 @@ __all__ = [
     "EXPERIMENT_ENVELOPE_MIGRATION_TABLE",
     "EXPERIMENT_ENVELOPE_SCHEMA_VERSION",
     "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1",
+    "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2",
     "EXPERIMENT_ENVELOPE_SUFFIX",
     "EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS",
     "FIGURE_COMPOSITION_OUTPUT",
@@ -1060,6 +1239,7 @@ __all__ = [
     "REPORT_OUTPUT",
     "REPORT_PARAMS_MODELS",
     "TRAINING_OUTPUT",
+    "V2_ONLY_CONSTRUCTS",
     "AnalysisBundleRootAuthoring",
     "AnalysisLayerAuthoring",
     "AnalysisSubjectAuthoring",
@@ -1086,7 +1266,9 @@ __all__ = [
     "TrainingRowAuthoring",
     "TrainingRowsMode",
     "UpstreamEnvelopeReference",
+    "VersionedConstruct",
     "layer_of_document",
+    "migrate_experiment_envelope_payload",
     "output_contract_of_document",
     "parse_experiment_envelope",
 ]

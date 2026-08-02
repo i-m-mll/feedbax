@@ -27,6 +27,7 @@ from feedbax.__main__ import main
 from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+    EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS,
 )
 from feedbax.contracts.project_experiment import (
     PROJECT_DECLARATION_FILENAME,
@@ -357,7 +358,10 @@ def test_a_declared_project_compiles_through_the_feedbax_compiler(
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["envelope_schema"] == EXPERIMENT_ENVELOPE_SCHEMA_VERSION
+    # The version the compiled envelope declared: quillon's training envelope is
+    # authored at v1 and is held to the v1 grammar, so the result reports v1.
+    assert payload["envelope_schema"] == fixture.TRAINING_ENVELOPE["schema"]
+    assert payload["envelope_schema"] in EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS
     assert payload["family"] == "training_run_matrix"
     document = json.loads(
         (tmp_path / fixture.OUTPUT_DIRECTORY / "widened.training_run_matrix.json").read_text()

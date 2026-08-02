@@ -1,52 +1,53 @@
 {
-  "schema_id": "feedbax.spec.row_index_custody_bindings",
-  "schema_version": "feedbax.spec.row_index_custody_bindings.v1",
-  "index_id": "target2x_target4x_floor",
   "bindings": [
     {
-      "row_id": "target2x-floor",
       "binding_key": "k2",
       "parent": {
-        "kind": "AnalysisRunManifest",
         "id": "feedbax-analysis-run:3d916232abe4ae8eccf16b676c890e7d",
-        "role": "analysis_run",
+        "kind": "AnalysisRunManifest",
         "metadata": {
+          "manifest_sha256": "710b5922eabb11180d83f3abf35b0dc1022d7d15585ab825bfd188cc37e90f0f",
           "ref_schema_id": "feedbax.ref.authenticated_manifest",
           "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
-          "manifest_sha256": "710b5922eabb11180d83f3abf35b0dc1022d7d15585ab825bfd188cc37e90f0f",
           "size_bytes": 10658924
-        }
-      }
+        },
+        "role": "analysis_run"
+      },
+      "row_id": "target2x-floor"
     },
     {
-      "row_id": "target4x-floor",
       "binding_key": "k2",
       "parent": {
-        "kind": "AnalysisRunManifest",
         "id": "feedbax-analysis-run:11b2be35e7a3118ef25d6822c992e79a",
-        "role": "analysis_run",
+        "kind": "AnalysisRunManifest",
         "metadata": {
+          "manifest_sha256": "7170a4d1db43586d826b2fc94c90a2eff838f2faa20738616bf7e8c8e444cd94",
           "ref_schema_id": "feedbax.ref.authenticated_manifest",
           "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
-          "manifest_sha256": "7170a4d1db43586d826b2fc94c90a2eff838f2faa20738616bf7e8c8e444cd94",
           "size_bytes": 10658924
-        }
-      }
+        },
+        "role": "analysis_run"
+      },
+      "row_id": "target4x-floor"
     },
     {
-      "row_id": "target2x-floor",
       "binding_key": "k1",
       "parent": {
-        "kind": "AnalysisRunManifest",
         "id": "feedbax-analysis-run:567bc849ee6e3f63e64766ed6f8e30ba",
-        "role": "analysis_run",
+        "kind": "AnalysisRunManifest",
         "metadata": {
+          "manifest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
           "ref_schema_id": "feedbax.ref.authenticated_manifest",
           "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
-          "manifest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
           "size_bytes": 1
-        }
-      }
+        },
+        "role": "analysis_run"
+      },
+      "row_id": "target2x-floor"
     }
-  ]
+  ],
+  "index_id": "target2x_target4x_floor",
+  "index_sha256": "692a93cfbeb67f015751e785da1cbaee70658d764d5f8ac7bc7c47e6582c42d4",
+  "schema_id": "feedbax.spec.row_index_custody_bindings",
+  "schema_version": "feedbax.spec.row_index_custody_bindings.v2"
 }

@@ -1,10 +1,13 @@
-"""The closed ``feedbax.experiment_envelope.v1`` dialect.
+"""The closed ``feedbax.experiment_envelope`` dialect and its version boundary.
 
-Two properties are under test and nothing else. First, the dialect is *closed*:
-one schema string, one layer per envelope, no unknown fields anywhere, and no
-slot through which a project could widen it. Second, the vocabulary inside it is
-*open*: dotted paths, values, recipe ids, and role strings are carried as data
-and judged by the final Feedbax output model, not by the dialect.
+Three properties are under test and nothing else. First, the dialect is *closed*:
+two enumerated schema strings, one layer per envelope, no unknown fields
+anywhere, and no slot through which a project could widen it. Second, the
+vocabulary inside it is *open*: dotted paths, values, recipe ids, and role
+strings are carried as data and judged by the final Feedbax output model, not by
+the dialect. Third, each version names exactly one grammar: a v1 document is
+accepted as v1, migrates to v2 only through an explicit call, and is refused by
+version if it states a v2 construct.
 
 The invented ``quillon`` vocabulary is used throughout for the same reason it is
 used in the kernel tests: if a case needed a real project's words, it would be
@@ -27,11 +30,14 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_FAMILY,
     EXPERIMENT_ENVELOPE_MIGRATION_TABLE,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
     EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS,
     LAYER_OUTPUT_CONTRACTS,
     ExperimentEnvelopeLayer,
     ReceiptReference,
     layer_of_document,
+    migrate_experiment_envelope_payload,
     output_contract_of_document,
     parse_experiment_envelope,
 )
@@ -69,15 +75,40 @@ def _minimal(**layer: Any) -> dict[str, Any]:
     }
 
 
+#: The three authored fragments the version-boundary cases reuse. They are
+#: deliberately the smallest thing each construct accepts, so a failure names the
+#: version rule rather than an unrelated authoring mistake.
+_RECEIPT: dict[str, Any] = {
+    "kind": "receipt",
+    "manifest_kind": "quillon.survey_run",
+    "manifest_id": "baseline-0",
+}
+_ANALYSIS_DELTA: dict[str, Any] = {
+    "layer_id": "probe-bundle",
+    "patches": [{"path": "params_base.trim", "op": "add", "value": 1}],
+}
+_ROLE_CONTRACT: dict[str, Any] = {
+    "kind": "quillon.survey_run",
+    "artifact_role": "span_observations",
+    "artifact_provider": "quillon.custody",
+}
+
+
 # -- the family and its version boundary ----------------------------------
 
 
-def test_the_dialect_is_one_family_at_one_version() -> None:
+def test_the_dialect_is_one_family_at_two_enumerated_versions() -> None:
     assert EXPERIMENT_ENVELOPE_FAMILY == "feedbax.experiment_envelope"
-    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION == "feedbax.experiment_envelope.v1"
+    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1 == "feedbax.experiment_envelope.v1"
+    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2 == "feedbax.experiment_envelope.v2"
+    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2
     assert EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS == (
-        EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
     )
+    assert EXPERIMENT_ENVELOPE_MIGRATION_TABLE == {
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2
+    }
     assert EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION == (
         "feedbax.experiment_envelope.compiler.v1"
     )
@@ -85,7 +116,7 @@ def test_the_dialect_is_one_family_at_one_version() -> None:
 
 @pytest.mark.parametrize(
     "schema",
-    ["feedbax.experiment_envelope.v0", "feedbax.experiment_envelope.v2", "quillon.study.v1", None],
+    ["feedbax.experiment_envelope.v0", "feedbax.experiment_envelope.v3", "quillon.study.v1", None],
 )
 def test_any_other_schema_fails_closed_naming_its_migration_slot(schema: Any) -> None:
     document = _minimal(training={"rows_mode": "append", "tags": {"add": ["probe"]}})
@@ -102,7 +133,128 @@ def test_any_other_schema_fails_closed_naming_its_migration_slot(schema: Any) ->
     )
     message = str(caught.value)
     assert str(EXPERIMENT_ENVELOPE_MIGRATION_TABLE) in message
-    assert "migration_intentionally_absent=yes" in message
+    assert str(list(EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS)) in message
+
+
+# -- the v1/v2 boundary: accept, migrate, reject ---------------------------
+
+
+def _v1(**layer: Any) -> dict[str, Any]:
+    return {**_minimal(**layer), "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1}
+
+
+def test_a_v1_document_is_accepted_and_keeps_its_own_version() -> None:
+    """A prior-version document compiles as itself, not as a wider current one."""
+    envelope = _parse(_v1(training={"rows_mode": "append", "tags": {"add": ["probe"]}}))
+
+    assert envelope.schema_ == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1
+    dumped = envelope.model_dump(mode="json", by_alias=True, exclude_none=True)
+    assert dumped["schema"] == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1
+
+
+@pytest.mark.parametrize(
+    ("layer", "path"),
+    [
+        (
+            {
+                "evaluation": {
+                    "subject_id": "trained",
+                    "subject": _RECEIPT,
+                    "staged_prerequisites": [{"name": "bank", "ref": _RECEIPT}],
+                }
+            },
+            "evaluation.staged_prerequisites",
+        ),
+        (
+            {
+                "analysis": {
+                    "target": "bundle",
+                    "roots": [{"alias": "one", "ref": _RECEIPT}],
+                    "delta": _ANALYSIS_DELTA,
+                }
+            },
+            "analysis.roots",
+        ),
+        (
+            {
+                "figure": {
+                    "mode": "row_expansion",
+                    "rows": {"mode": "all", "index": "bases/rows.row_index.json"},
+                    "row_custody": "generated/rows.custody.json",
+                    "inputs": [
+                        {
+                            "input_role": "per_row_states",
+                            "binding": "per_row",
+                            "binding_key": "states",
+                            "contract": _ROLE_CONTRACT,
+                        }
+                    ],
+                }
+            },
+            "figure.row_custody",
+        ),
+        (
+            {
+                "training": {
+                    "rows_mode": "append",
+                    "checkpoint_initialization": [
+                        {"row": "row-a", "mode": "initialize_from", "source": _RECEIPT}
+                    ],
+                }
+            },
+            "training.checkpoint_initialization",
+        ),
+    ],
+)
+def test_a_v1_document_stating_v2_grammar_is_refused_by_version(
+    layer: dict[str, Any], path: str
+) -> None:
+    """v1 names exactly one grammar; a v2 construct under it is a version refusal."""
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        _parse(_v1(**layer))
+
+    assert caught.value.category is (
+        ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION
+    )
+    message = str(caught.value)
+    assert path in message
+    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2 in message
+    # The same document at v2 is accepted, so the refusal is about the version
+    # boundary and not about the construct being unauthorable.
+    assert _parse(_minimal(**layer)) is not None
+
+
+def test_the_v1_to_v2_migration_is_explicit_and_semantics_preserving() -> None:
+    document = _v1(training={"rows_mode": "append", "tags": {"add": ["probe"]}})
+
+    migrated = migrate_experiment_envelope_payload(document)
+
+    assert migrated["schema"] == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2
+    assert {key: value for key, value in migrated.items() if key != "schema"} == {
+        key: value for key, value in document.items() if key != "schema"
+    }
+    # The migration changes the authored bytes, which is exactly why a compile
+    # never applies it: the original document still parses, as itself.
+    assert _parse(document).schema_ == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1
+    assert _parse(migrated).schema_ == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2
+
+
+def test_migrating_an_unsupported_version_refuses_rather_than_guessing() -> None:
+    document = _minimal(training={"rows_mode": "append", "tags": {"add": ["probe"]}})
+    document["schema"] = "feedbax.experiment_envelope.v3"
+
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        migrate_experiment_envelope_payload(document)
+
+    assert caught.value.category is (
+        ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION
+    )
+
+
+def test_migrating_a_current_document_is_a_no_op() -> None:
+    document = _minimal(training={"rows_mode": "append", "tags": {"add": ["probe"]}})
+
+    assert migrate_experiment_envelope_payload(document) == document
 
 
 # -- exactly one layer ------------------------------------------------------

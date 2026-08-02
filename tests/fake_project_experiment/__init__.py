@@ -246,8 +246,11 @@ ANALYSIS_ENVELOPE: dict[str, Any] = {
     },
 }
 
+#: Authored at v2: ``row_custody`` is v2 grammar. The rest of quillon's corpus
+#: stays at v1 on purpose, so one project closure exercises both supported
+#: versions compiling side by side, each held to its own grammar.
 FIGURE_ENVELOPE: dict[str, Any] = {
-    "schema": "feedbax.experiment_envelope.v1",
+    "schema": "feedbax.experiment_envelope.v2",
     "name": "widened-plot",
     "base": FIGURE_BASE,
     "figure": {

@@ -32,7 +32,10 @@ from feedbax.contracts.experiment_envelope import (
     dispatch_experiment_envelope,
     require_builtin_envelope_schema,
 )
-from feedbax.contracts.experiment_envelope_dialect import EXPERIMENT_ENVELOPE_SCHEMA_VERSION
+from feedbax.contracts.experiment_envelope_dialect import (
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+    EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS,
+)
 from feedbax.plugins.composition import compose_application
 
 import tests.fake_project_experiment as fixture
@@ -73,7 +76,10 @@ def test_the_entrypoint_compiles_the_builtin_dialect_with_no_plugins(
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["envelope_schema"] == EXPERIMENT_ENVELOPE_SCHEMA_VERSION
+    # The version the compiled document declared, not the version this build
+    # calls current: quillon's training envelope is authored at v1 and compiles
+    # as v1, so reporting the current constant would name the wrong grammar.
+    assert payload["envelope_schema"] == fixture.TRAINING_ENVELOPE["schema"]
     assert payload["family"] == "training_run_matrix"
     generated = tmp_path / fixture.OUTPUT_DIRECTORY
     assert (generated / payload["compile_lock_path"]).is_file()
@@ -134,9 +140,10 @@ def test_a_foreign_schema_is_rejected_naming_both_schemas(
 
 
 def test_require_builtin_envelope_schema_accepts_only_the_one_dialect() -> None:
-    require_builtin_envelope_schema(EXPERIMENT_ENVELOPE_SCHEMA_VERSION)
+    for supported in EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS:
+        require_builtin_envelope_schema(supported)
 
-    for schema in (FOREIGN_SCHEMA, "", "feedbax.experiment_envelope.v2"):
+    for schema in (FOREIGN_SCHEMA, "", "feedbax.experiment_envelope.v3"):
         with pytest.raises(ExperimentEnvelopeRejection) as caught:
             require_builtin_envelope_schema(schema)
         assert caught.value.category is (
@@ -244,7 +251,7 @@ def test_undeclared_outputs_are_infrastructure_failure(
     def _lying_compile(request):
         request.out_dir.mkdir(parents=True, exist_ok=True)
         return ExperimentEnvelopeCompileResult(
-            envelope_schema=EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+            envelope_schema=fixture.TRAINING_ENVELOPE["schema"],
             name="widened",
             family="training_run_matrix",
             compile_lock_path="never-written.json",

@@ -23,10 +23,7 @@ from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeCompileResult,
     ExperimentEnvelopeCompilerError,
 )
-from feedbax.contracts.experiment_envelope_dialect import (
-    EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
-    ExperimentEnvelopeLayer,
-)
+from feedbax.contracts.experiment_envelope_dialect import ExperimentEnvelopeLayer
 from feedbax.contracts.project_experiment import ProjectExperimentDeclaration
 from feedbax.envelope.compile import EnvelopeKernel
 
@@ -78,7 +75,10 @@ def compile_experiment_envelope(
     outcome = kernel.compile_envelope_file(request.envelope_path, repo_root=request.repo_root)
     paths = kernel.write_outputs(outcome, request.out_dir)
     return ExperimentEnvelopeCompileResult(
-        envelope_schema=EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+        # The version the compiled envelope declared, which a supported older
+        # document keeps: the compile held it to that grammar, so naming the
+        # current constant here would report a grammar it never compiled under.
+        envelope_schema=outcome.envelope_schema,
         name=outcome.name,
         family=outcome.family,
         compile_lock_path=paths["compile_lock"].name,
