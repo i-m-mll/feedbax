@@ -74,6 +74,18 @@ Every kind except the content pin also states *who consumes it*, as one member
 of :data:`CompileLockConsumerBinding`. The consumer vocabulary is Feedbax-owned
 and closed: an evaluation subject, an analysis alias/role input, a figure runtime
 input authority, an exact report parent, or a checkpoint initialization.
+
+## Row provenance is a refinement of the parent pin, not a reference
+
+``references`` answers "what did this compile resolve about some *other*
+document?", and every answer there is either a compile-time input or a plan edge.
+A row derived from a parent row is neither: the document it comes from is already
+the one named in ``base`` and walked in ``lineage``, and nothing runs because of
+it. What is missing from those two blocks is only *which row inside the parent*
+each derived row descends from, so that is what ``row_provenance`` states, as
+:class:`RowProvenanceReference` records. Keeping it out of the closed union is
+deliberate: the plan lane derives edges from ``references`` by kind, and a sixth
+consumer-less kind would make "is this an edge?" a question again.
 """
 
 from __future__ import annotations
@@ -480,6 +492,78 @@ def compile_lock_reference_record(value: Any, *, field: str) -> dict[str, Any]:
     )
 
 
+# -- row provenance --------------------------------------------------------
+
+
+class RowProvenanceReference(StrictModel):
+    """One compiled row, and the parent row it was derived from.
+
+    A layer that derives a row states the row it inherits *from*; the compiled
+    document keeps the result but not the derivation, and ``base`` pins the parent
+    document as a whole rather than the row inside it. This record is the missing
+    half: the derived row's own id, the key it named in the parent, and the pinned
+    bytes that key was resolved against.
+
+    ``source_ref`` and ``source_content_hash`` are the same parent the lock's
+    ``base`` block names, restated per row so a reader holding one row's
+    provenance needs nothing else to check it.
+
+    Attributes:
+        row_id: The derived row's id in the compiled document.
+        source_row_key: The parent row key the derivation named.
+        source_ref: The resolved parent document the key was looked up in.
+        source_content_hash: The canonical hash of that parent's bytes.
+        pin_algorithm: The hash domain ``source_content_hash`` is stated in.
+    """
+
+    row_id: str
+    source_row_key: str
+    source_ref: str
+    source_content_hash: str
+    pin_algorithm: str = CANONICAL_PIN_ALGORITHM
+
+    @model_validator(mode="after")
+    def _validate(self) -> "RowProvenanceReference":
+        _require_nonempty(self.row_id, "row_provenance row_id")
+        _require_nonempty(self.source_row_key, "row_provenance source_row_key")
+        _require_nonempty(self.source_ref, "row_provenance source_ref")
+        _require_digest(self.source_content_hash, "row_provenance source_content_hash")
+        if self.pin_algorithm != CANONICAL_PIN_ALGORITHM:
+            raise ValueError(
+                f"row_provenance pin_algorithm must be {CANONICAL_PIN_ALGORITHM!r}"
+            )
+        return self
+
+
+_ROW_PROVENANCE_ADAPTER: TypeAdapter[Any] = TypeAdapter(RowProvenanceReference)
+
+
+def parse_row_provenance_reference(value: Any, *, field: str) -> RowProvenanceReference:
+    """Validate one row provenance record, failing closed.
+
+    Accepts either an already-typed record or the mapping form a tracked lock
+    holds, for the same reason the reference union does: a lock edited into a
+    shape nothing can read is caught at the boundary rather than downstream.
+    """
+    if isinstance(value, RowProvenanceReference):
+        return value
+    try:
+        return _ROW_PROVENANCE_ADAPTER.validate_python(value)
+    except ValidationError as exc:
+        raise ExperimentEnvelopeRejection(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            f"not a compile-lock row provenance record: {exc}",
+            field=field,
+        ) from exc
+
+
+def row_provenance_record(value: Any, *, field: str) -> dict[str, Any]:
+    """Return one validated row provenance record as the mapping a lock stores."""
+    return parse_row_provenance_reference(value, field=field).model_dump(
+        mode="json", exclude_none=True
+    )
+
+
 @dataclass(frozen=True)
 class CompilerContract:
     """The logical contract a compiled document conforms to.
@@ -556,6 +640,8 @@ class CompileLockInputs:
         resolved_deltas: What the compiler resolved, keyed by project concern.
         references: Cross-document references the compile resolved, each one a
             member of the closed :data:`CompileLockReference` union.
+        row_provenance: One :class:`RowProvenanceReference` per compiled row that
+            was derived from a row of the resolved parent.
         assertions: The inherited preconditions the compile checked.
         identity_contributions: Extra compile-time facts that widen execution
             identity, in the order the project states them. Two envelopes that
@@ -575,6 +661,7 @@ class CompileLockInputs:
     lineage_pins: Sequence[Mapping[str, Any]] = ()
     resolved_deltas: Mapping[str, Any] = dataclass_field(default_factory=dict)
     references: Sequence[Any] = ()
+    row_provenance: Sequence[Any] = ()
     assertions: Sequence[Mapping[str, Any]] = ()
     identity_contributions: Mapping[str, Any] = dataclass_field(default_factory=dict)
     issue: str | None = None
@@ -608,6 +695,10 @@ def build_compile_lock(inputs: CompileLockInputs) -> dict[str, Any]:
         },
         "base": dict(inputs.base) if inputs.base is not None else None,
         "lineage": [dict(pin) for pin in inputs.lineage_pins],
+        "row_provenance": [
+            row_provenance_record(record, field=f"row_provenance[{index}]")
+            for index, record in enumerate(inputs.row_provenance)
+        ],
         "resolved_deltas": dict(inputs.resolved_deltas or {}),
         "references": [
             compile_lock_reference_record(reference, field=f"references[{index}]")
@@ -678,6 +769,15 @@ def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
         )
     for index, reference in enumerate(references):
         parse_compile_lock_reference(reference, field=f"{field}#references[{index}]")
+    provenance = lock.get("row_provenance", [])
+    if not isinstance(provenance, Sequence) or isinstance(provenance, (str, bytes)):
+        raise ExperimentEnvelopeRejection(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "a compile lock's row provenance is a list of typed row records",
+            field=f"{field}#row_provenance",
+        )
+    for index, record in enumerate(provenance):
+        parse_row_provenance_reference(record, field=f"{field}#row_provenance[{index}]")
     return lock
 
 
@@ -722,10 +822,13 @@ __all__ = [
     "PlannedProductReference",
     "ReceiptLocatorReference",
     "ReportParentBinding",
+    "RowProvenanceReference",
     "build_compile_lock",
     "check_plan_receipt_boundary",
     "compile_lock_plan_edges",
     "compile_lock_reference_record",
     "load_compile_lock",
     "parse_compile_lock_reference",
+    "parse_row_provenance_reference",
+    "row_provenance_record",
 ]

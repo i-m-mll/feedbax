@@ -14,7 +14,9 @@ compiled document means.
    authored layer are refused here, before anything is resolved.
 2. Resolve the one parent — another envelope of the same layer named by alias,
    or a frozen document named by repo-relative path — and pin its content and
-   the lineage behind it.
+   the lineage behind it. The lineage follows the parent's ``sources`` block as
+   well as its base chain, because a document a parent draws values from is a
+   document this compile read.
 3. Verify the envelope's assertions against that lineage, refusing an assertion
    that guards a path this envelope itself changes.
 4. Lower the authored layer into ordered
@@ -68,6 +70,7 @@ from feedbax.contracts.experiment_compile_lock import (
     ContentPinReference,
     ReceiptLocatorReference,
     ReportParentBinding,
+    RowProvenanceReference,
     build_compile_lock,
 )
 from feedbax.contracts.experiment_envelope import (
@@ -199,6 +202,68 @@ class EnvelopeLayout:
         return str(PurePosixPath(self.envelope_directory) / f"{alias}{self.envelope_suffix}")
 
 
+#: The block a Feedbax matrix document names the further documents it reads in.
+#: Each entry is a :class:`~feedbax.contracts.extraction.SourceBinding`: an alias,
+#: a kind, and a repo-relative ``uri``. A source is a document the compile *read*,
+#: so its bytes belong in the content-pinned lineage exactly as a chained base's
+#: do — naming one without pinning it is a lineage entry the lock quietly loses.
+DOCUMENT_SOURCES_KEY = "sources"
+
+
+def source_refs_of(repo_root: Path, ref: str) -> Callable[[Mapping[str, Any]], list[str]]:
+    """Return how one parent document names the sources its lineage must pin.
+
+    Every entry must resolve. A source that cannot be read is exactly the silent
+    gap this pass exists to close, so it is a rejection rather than a skipped
+    link. The single exception is a source the binding itself declares
+    ``optional``, which is the *document* stating that its absence is intended
+    rather than the walk inferring it.
+
+    Args:
+        repo_root: Root every source uri is resolved against.
+        ref: The parent document, named for the rejections raised against it.
+
+    Returns:
+        The callable :func:`~feedbax.envelope.resolution.build_lineage` follows.
+    """
+
+    def source_refs(document: Mapping[str, Any]) -> list[str]:
+        sources = document.get(DOCUMENT_SOURCES_KEY)
+        if sources is None:
+            return []
+        if not isinstance(sources, Sequence) or isinstance(sources, (str, bytes)):
+            _reject(
+                ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+                f"{ref}#{DOCUMENT_SOURCES_KEY}",
+                f"{DOCUMENT_SOURCES_KEY!r} is a list of source bindings",
+            )
+        refs: list[str] = []
+        for index, source in enumerate(sources):
+            field = f"{ref}#{DOCUMENT_SOURCES_KEY}[{index}].uri"
+            if not isinstance(source, Mapping) or not isinstance(source.get("uri"), str):
+                _reject(
+                    ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+                    field,
+                    "a source binding names the repo-relative document it reads",
+                )
+            uri = str(source["uri"])
+            if load_pinned(repo_root, uri) is not None:
+                refs.append(uri)
+            elif source.get("optional") is not True:
+                _reject(
+                    ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
+                    field,
+                    f"{uri!r} is not a readable repo-relative JSON document, so the bytes "
+                    "this compile reads through it cannot be pinned",
+                    correct_home="a source names a tracked JSON document; a source that may "
+                    "legitimately be absent declares itself optional and states the payload "
+                    "to use when it is",
+                )
+        return refs
+
+    return source_refs
+
+
 @dataclass(frozen=True)
 class ResolvedParent:
     """The one experiment parent, resolved and content-pinned."""
@@ -280,6 +345,8 @@ class LoweredLayer:
         document: The compiled document, when this layer constructs rather than
             patches. ``None`` means the deltas decide.
         references: Typed compile-lock references this layer resolved.
+        row_provenance: One typed record per compiled row this layer derived from
+            a row of the resolved parent.
         identity_contributions: Compile-time facts beyond the document that make
             two otherwise-identical plans different executions.
     """
@@ -288,6 +355,7 @@ class LoweredLayer:
     deltas: Sequence[MatrixCompositionDelta]
     document: Mapping[str, Any] | None = None
     references: Sequence[Any] = ()
+    row_provenance: Sequence[Any] = ()
     identity_contributions: Mapping[str, Any] = dataclass_field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -621,6 +689,13 @@ def _lower_training(context: LayerCompileContext) -> LoweredLayer:
     by_id = {
         str(row.get("row_id")): row for row in inherited_rows if isinstance(row, Mapping)
     }
+    # The row keys the *parent document* declares, fixed before any authored row
+    # joins `by_id`. A row derived from one of these is derived from the pinned
+    # parent, and says so in the lock; a row derived from a row this same envelope
+    # authors was resolved inside this compile, where the parent pin names
+    # nothing, and its ancestry is the authored chain the lock already records
+    # through that earlier row.
+    inherited_row_keys = frozenset(by_id)
     base_payload, base_pin = _resolve_matrix_base_payload(
         parent.get("base"), context.repo_root, field=f"{context.parent.ref}#base"
     )
@@ -641,6 +716,7 @@ def _lower_training(context: LayerCompileContext) -> LoweredLayer:
 
     rows = list(inherited_rows) if appending else []
     authored_rows: list[dict[str, Any]] = []
+    row_provenance: list[Any] = []
     for index, row in enumerate(authored.rows):
         field = f"training.rows[{index}]"
         source = by_id.get(row.from_)
@@ -691,6 +767,15 @@ def _lower_training(context: LayerCompileContext) -> LoweredLayer:
         if appending:
             patches.append(OverridePatch(path=f"rows.{len(rows)}", op="add", value=new_row))
             rows.append(new_row)
+        if row.from_ in inherited_row_keys:
+            row_provenance.append(
+                RowProvenanceReference(
+                    row_id=row.id,
+                    source_row_key=row.from_,
+                    source_ref=context.parent.ref,
+                    source_content_hash=context.parent.pinned.content_hash,
+                )
+            )
         authored_rows.append(new_row)
         by_id[row.id] = new_row
 
@@ -729,6 +814,7 @@ def _lower_training(context: LayerCompileContext) -> LoweredLayer:
         contract=TRAINING_OUTPUT,
         deltas=_one_delta(context, patches),
         references=references,
+        row_provenance=row_provenance,
     )
 
 
@@ -1162,7 +1248,7 @@ class EnvelopeKernel:
             "frozen_document",
             base,
             pinned,
-            build_lineage(repo_root, pinned),
+            build_lineage(repo_root, pinned, source_refs=source_refs_of(repo_root, base)),
             contract.layer,
             contract,
         )
@@ -1194,7 +1280,9 @@ class EnvelopeKernel:
             "envelope_alias",
             alias_ref,
             pinned,
-            build_lineage(repo_root, pinned),
+            build_lineage(
+                repo_root, pinned, source_refs=source_refs_of(repo_root, alias_ref)
+            ),
             contract.layer,
             contract,
         )
@@ -1282,6 +1370,7 @@ class EnvelopeKernel:
                     for delta in lowered.deltas
                 },
                 references=lowered.references,
+                row_provenance=lowered.row_provenance,
                 assertions=assertion_records,
                 identity_contributions=lowered.identity_contributions,
                 issue=envelope.issue,
@@ -1439,6 +1528,7 @@ def compiled_document_pin(document: Any) -> dict[str, str]:
 
 
 __all__ = [
+    "DOCUMENT_SOURCES_KEY",
     "TRAINING_UNINHERITED_TOP_LEVEL_FIELDS",
     "EnvelopeCompileOutcome",
     "EnvelopeKernel",
@@ -1452,5 +1542,6 @@ __all__ = [
     "compiled_document_pin",
     "reject_echo",
     "scalar_equal",
+    "source_refs_of",
     "verify_assertions",
 ]

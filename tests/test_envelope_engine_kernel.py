@@ -450,6 +450,89 @@ def test_lineage_resolves_a_value_bound_by_a_patch_list() -> None:
     assert found is not None and found.value == 11
 
 
+def test_lineage_pins_the_documents_a_parent_reads_through_its_sources(repo: Path) -> None:
+    write_json(
+        repo / "bases" / "cadence.table.json",
+        {"schema_id": "quillon.cadence_table", "cadence": 2},
+    )
+    write_json(
+        repo / "bases" / "probe.table.json",
+        {"schema_id": "quillon.probe_table", "depth": 1},
+    )
+    _training_sources(
+        repo,
+        [
+            {
+                "alias": "cadence",
+                "kind": "quillon.cadence_table",
+                "uri": "bases/cadence.table.json",
+            },
+            {
+                "alias": "probe",
+                "kind": "quillon.probe_table",
+                "uri": "bases/probe.table.json",
+            },
+        ],
+    )
+
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    lineage = outcome.compile_lock["lineage"]
+    assert [pin["ref"] for pin in lineage] == [
+        TRAINING_BASE,
+        "bases/cadence.table.json",
+        "bases/probe.table.json",
+    ]
+    assert all(pin["pin_algorithm"] == CANONICAL_PIN_ALGORITHM for pin in lineage)
+    assert all(len(pin["content_hash"]) == 64 for pin in lineage)
+
+
+def test_a_source_that_cannot_be_read_is_refused_rather_than_silently_unpinned(
+    repo: Path,
+) -> None:
+    _training_sources(
+        repo,
+        [{"alias": "cadence", "kind": "quillon.cadence_table", "uri": "bases/absent.json"}],
+    )
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
+    assert excinfo.value.field == f"{TRAINING_BASE}#sources[0].uri"
+
+
+def test_an_optional_source_states_its_own_absence_rather_than_failing_closed(
+    repo: Path,
+) -> None:
+    _training_sources(
+        repo,
+        [
+            {
+                "alias": "cadence",
+                "kind": "quillon.cadence_table",
+                "uri": "bases/absent.json",
+                "optional": True,
+                "missing_payload": {"cadence": 2},
+            }
+        ],
+    )
+
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert [pin["ref"] for pin in outcome.compile_lock["lineage"]] == [TRAINING_BASE]
+
+
+def test_a_source_binding_that_names_no_document_is_refused(repo: Path) -> None:
+    _training_sources(repo, [{"alias": "cadence", "kind": "quillon.cadence_table"}])
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert excinfo.value.field == f"{TRAINING_BASE}#sources[0].uri"
+
+
 def test_lineage_walk_is_cycle_safe(repo: Path) -> None:
     write_json(
         repo / "bases" / "loop_a.json",
@@ -957,6 +1040,13 @@ def _repoint_training_base_to_file(repo: Path) -> None:
     write_json(repo / TRAINING_BASE, document)
 
 
+def _training_sources(repo: Path, sources: list[dict[str, Any]]) -> None:
+    """Give the training base a ``sources`` block naming further documents."""
+    document = json.loads((repo / TRAINING_BASE).read_text())
+    document["sources"] = sources
+    write_json(repo / TRAINING_BASE, document)
+
+
 def _budget_document() -> dict[str, Any]:
     resource = PROJECT_DECLARATION.authoring_budget
     return json.loads((resource.root / resource.document_name).read_text())
@@ -1033,6 +1123,52 @@ def test_append_keeps_the_inherited_rows_running_beside_the_authored_ones(
     outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
     assert [row["row_id"] for row in outcome.document["rows"]] == ["baseline", "widened"]
+
+
+@pytest.mark.parametrize("rows_mode", ["append", "authored_only"])
+def test_a_derived_row_records_the_parent_row_it_was_resolved_from(
+    repo: Path, rows_mode: str
+) -> None:
+    _training_layer(repo, rows_mode=rows_mode)
+
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert outcome.compile_lock["row_provenance"] == [
+        {
+            "row_id": "widened",
+            "source_row_key": "baseline",
+            "source_ref": TRAINING_BASE,
+            "source_content_hash": canonical_sha256(
+                json.loads((repo / TRAINING_BASE).read_text())
+            ),
+            "pin_algorithm": CANONICAL_PIN_ALGORITHM,
+        }
+    ]
+
+
+def test_row_provenance_pins_the_same_parent_the_lock_records_as_its_base(
+    repo: Path,
+) -> None:
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    record = outcome.compile_lock["row_provenance"][0]
+    base = outcome.compile_lock["base"]
+    assert (record["source_ref"], record["source_content_hash"]) == (
+        base["ref"],
+        base["content_hash"],
+    )
+
+
+def test_a_layer_that_derives_no_row_records_no_row_provenance(repo: Path) -> None:
+    _training_layer(repo, rows=[], checkpoint_initialization=[])
+
+    training = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+    evaluation = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-probe"), repo_root=repo
+    )
+
+    assert training.compile_lock["row_provenance"] == []
+    assert evaluation.compile_lock["row_provenance"] == []
 
 
 def test_a_new_row_is_labelled_by_its_own_id_rather_than_its_sources(repo: Path) -> None:
