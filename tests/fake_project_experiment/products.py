@@ -96,6 +96,7 @@ class QuillonOutputs:
         references: Sequence[Any] = (),
         body: Mapping[str, Any] | None = None,
         issue: str | None = None,
+        identity_contributions: Mapping[str, Any] | None = None,
     ) -> EmittedProduct:
         """Write one authored envelope and the two files its compile emits."""
         envelope_ref = f"{ENVELOPE_DIRECTORY}/{name}{ENVELOPE_SUFFIX}"
@@ -122,6 +123,7 @@ class QuillonOutputs:
                 implementation=QUILLON_IMPLEMENTATION,
                 references=references,
                 issue=issue,
+                identity_contributions=dict(identity_contributions or {}),
             )
         )
         self.output_directory.mkdir(parents=True, exist_ok=True)
@@ -212,7 +214,13 @@ class QuillonOutputs:
             references=references,
         )
 
-    def plate(self, name: str, *, references: Sequence[Any] = ()) -> EmittedProduct:
+    def plate(
+        self,
+        name: str,
+        *,
+        references: Sequence[Any] = (),
+        identity_contributions: Mapping[str, Any] | None = None,
+    ) -> EmittedProduct:
         """Emit one figure."""
         return self.emit(
             name,
@@ -223,6 +231,7 @@ class QuillonOutputs:
                 "assembler": "feedbax.grid_figure",
             },
             references=references,
+            identity_contributions=identity_contributions,
         )
 
     def cohort(self, name: str, *, references: Sequence[Any] = ()) -> EmittedProduct:

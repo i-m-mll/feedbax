@@ -225,6 +225,8 @@ from feedbax.contracts.figures import (
     SCENE_CAMERA_SCHEMA_VERSION,
 )
 from feedbax.contracts.figure_roles import (
+    FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_ID,
+    FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_VERSION,
     FIGURE_ROW_EXPANSION_REQUEST_SCHEMA_ID,
     FIGURE_ROW_EXPANSION_REQUEST_SCHEMA_VERSION,
     RESOLVED_FIGURE_INPUTS_SCHEMA_ID,
@@ -3134,6 +3136,21 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             description="Ordered figure inputs resolved from role references, with custody.",
             required_tests=("tests/test_figure_role_references.py",),
+        ),
+        _family(
+            "FigureRowCustodyLocator",
+            FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_ID,
+            FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figure_roles",
+            emitted_by=("feedbax.envelope.compile",),
+            consumed_by=(
+                "feedbax.analysis.fulfillment_row_custody.resolve_row_custody_overlay",
+            ),
+            description=(
+                "Where one row-expanded figure's per-row custody bindings are found, and "
+                "the row index identity the located document must match."
+            ),
+            required_tests=("tests/test_fulfillment_row_custody.py",),
         ),
         _family(
             "ExperimentEnvelopeCompileResult",

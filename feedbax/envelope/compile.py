@@ -58,6 +58,10 @@ from feedbax.contracts.authored_canonical import (
     canonical_sha256,
     emit_text,
 )
+from feedbax.contracts.applicability_rules import (
+    PER_ROW_FIGURE_INPUT_RULE,
+    certify_not_applicable,
+)
 from feedbax.contracts.authoring_budget import AuthoringBudgets
 from feedbax.contracts.experiment_compile_lock import (
     AnalysisInputBinding,
@@ -109,13 +113,16 @@ from feedbax.contracts.experiment_envelope_dialect import (
 )
 from feedbax.contracts.figure_roles import (
     FigureRoleBindingContract,
+    FigureRowCustodyLocator,
     FigureRowExpansionRequest,
     expand_figure_rows_structure,
+    per_row_binding_keys,
 )
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.row_index import (
     ROW_INDEX_SCHEMA_ID,
     AuthenticatedRowIndex,
+    ResolvedRowSet,
     RowSelectionError,
     RowSelectionErrorCode,
     expand_row_selector,
@@ -924,18 +931,13 @@ def _lower_analysis(context: LayerCompileContext) -> LoweredLayer:
 
 
 #: The versioned structural rule under which a ``per_row`` figure input role
-#: carries no single runtime locator. The role is not unbound: row expansion
-#: fills it once per expanded row from the row index's own custody, and the
-#: per-row profile and its closed artifact contract are recorded in the lock's
-#: ``figure_row_expansion`` identity contribution. What is *not* applicable is
-#: the single-locator reference slot, and stating that is different from leaving
-#: the role silent.
-PER_ROW_INPUT_RULE_ID = "feedbax.experiment_envelope.per_row_figure_input.v1"
-PER_ROW_INPUT_REASON = (
-    "row expansion fills this role once per expanded row from the row index's custody, "
-    "so no single locator addresses it; the per-row profile and its artifact contract "
-    "are recorded in the figure_row_expansion identity contribution"
-)
+#: carries no single runtime locator, and the reason it states. Both come from
+#: the closed rule table in
+#: :mod:`feedbax.contracts.applicability_rules`, which owns every structural
+#: applicability rule this build can certify a decision under; restating them
+#: here would let the compile's reason drift away from the rule it quotes.
+PER_ROW_INPUT_RULE_ID = PER_ROW_FIGURE_INPUT_RULE.rule_id
+PER_ROW_INPUT_REASON = PER_ROW_FIGURE_INPUT_RULE.reason
 
 
 def _lower_figure(context: LayerCompileContext) -> LoweredLayer:
@@ -962,12 +964,7 @@ def _lower_figure(context: LayerCompileContext) -> LoweredLayer:
             # is stated not-applicable, never filled with one row's locator.
             assert item.ref is None  # guaranteed by FigureInputAuthoring
             references.append(
-                NotApplicableReference(
-                    role_path=role_path,
-                    basis="compiler_rule",
-                    reason=PER_ROW_INPUT_REASON,
-                    rule_id=PER_ROW_INPUT_RULE_ID,
-                )
+                certify_not_applicable(role_path, PER_ROW_FIGURE_INPUT_RULE)
             )
             continue
         references.append(
@@ -1030,16 +1027,56 @@ def _lower_figure_row_expansion(
             correct_home="the base figure is the single-row scientific statement the "
             "expansion repeats; express it through panels and trace families",
         )
+    contributions: dict[str, Any] = {
+        "figure_row_expansion": request.model_dump(mode="json", exclude_none=True),
+        "resolved_row_set": resolved_rows.model_dump(mode="json", exclude_none=True),
+    }
+    locator = _figure_row_custody_locator(authored, request, resolved_rows)
+    if locator is not None:
+        contributions["row_custody"] = locator.model_dump(mode="json", exclude_none=True)
     return LoweredLayer(
         contract=FIGURE_OUTPUT,
         deltas=(),
         document=document,
         references=[*references, index_pin],
-        identity_contributions={
-            "figure_row_expansion": request.model_dump(mode="json", exclude_none=True),
-            "resolved_row_set": resolved_rows.model_dump(mode="json", exclude_none=True),
-        },
+        identity_contributions=contributions,
     )
+
+
+def _figure_row_custody_locator(
+    authored: FigureLayerAuthoring,
+    request: FigureRowExpansionRequest,
+    resolved_rows: ResolvedRowSet,
+) -> FigureRowCustodyLocator | None:
+    """Record where this figure's per-row custody bindings are to be found.
+
+    The locator is a compile-time fact: it says which document fulfillment must
+    read to fill the per-row roles, and which row index that document has to
+    belong to. It pins the *index* digest, which the compile did read, and never
+    the custody document's own bytes, which are post-run.
+
+    A figure with no per-row role has nothing to locate, and the dialect has
+    already refused a per-row role stated without a custody declaration, so an
+    absent declaration here means an absent per-row role.
+    """
+    keys = per_row_binding_keys(request)
+    if not keys or authored.row_custody is None:
+        return None
+    try:
+        return FigureRowCustodyLocator(
+            index_id=resolved_rows.index_id,
+            index_sha256=resolved_rows.index_sha256,
+            ref=authored.row_custody,
+            binding_keys=list(keys),
+        )
+    except (ValueError, TypeError) as exc:
+        _reject(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "figure.row_custody",
+            f"the authored row custody declaration is not one locator: {exc}",
+            correct_home="a row custody declaration is the repo-relative path of the "
+            "custody bindings document the expanded rows are produced into",
+        )
 
 
 def _figure_row_expansion_request(

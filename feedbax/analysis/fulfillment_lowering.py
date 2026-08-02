@@ -68,6 +68,7 @@ from feedbax.analysis.fulfillment_derivation import (
     CompiledEnvelope,
     FulfillmentDerivationError,
 )
+from feedbax.analysis.fulfillment_row_custody import resolve_row_custody_overlay
 from feedbax.contracts.experiment_compile_lock import (
     AnalysisInputBinding,
     CheckpointInitializationBinding,
@@ -313,10 +314,19 @@ def _lower_analysis(node: "ClosureNode", *, binding: "NodeBinding") -> NodeReque
 def _lower_figure(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
     document = _document(node)
     parents, _roles = bound_parents(node, binding=binding)
+    # A row-expanded figure's per-row roles are filled from the row index's
+    # produced custody, which the lock names and this resolves; every other
+    # figure returns None here and binds exactly as before.
+    overlay = resolve_row_custody_overlay(
+        node.compiled, repo_root=binding.environment.repo_root
+    )
+    if overlay is not None:
+        parents = (*parents, *overlay.inputs)
     return FigureNodeRequest(
         node_key=node.key.text,
         spec=document,
         runtime_inputs=parents if parents else None,
+        runtime_input_authorities=overlay.authorities if overlay is not None else None,
         order=node.order,
     )
 

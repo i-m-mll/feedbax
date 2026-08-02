@@ -89,6 +89,11 @@ FIGURE_BASE = f"{BASE_DIRECTORY}/baseline.figure.json"
 REPORT_BASE = f"{BASE_DIRECTORY}/baseline.report.json"
 ROW_INDEX_BASE = f"{BASE_DIRECTORY}/quillon.row_index.json"
 
+#: Where the run receipt layer writes the custody bindings for the row set. It is
+#: a declaration, not a base: ``write_repo`` deliberately does not create it,
+#: because a first-time compile happens before any row has run.
+ROW_CUSTODY_REF = "custody/quillon.row_custody.json"
+
 BASE_DOCUMENTS: dict[str, dict[str, Any]] = {
     TRAINING_BASE: {
         "schema_id": "feedbax.spec.training_run_matrix",
@@ -248,6 +253,7 @@ FIGURE_ENVELOPE: dict[str, Any] = {
     "figure": {
         "mode": "row_expansion",
         "rows": {"mode": "all", "index": ROW_INDEX_BASE},
+        "row_custody": ROW_CUSTODY_REF,
         "assembler_title": "Quillon widened span survey",
         "inputs": [
             {
@@ -373,6 +379,7 @@ __all__ = [
     "PROJECT_DECLARATION_DOCUMENT",
     "REPORT_BASE",
     "REPORT_ENVELOPE",
+    "ROW_CUSTODY_REF",
     "ROW_INDEX_BASE",
     "SURVEY_PAYLOAD",
     "TRAINING_BASE",
