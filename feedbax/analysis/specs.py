@@ -42,7 +42,7 @@ from feedbax.analysis.execution_context import (
 )
 from feedbax.analysis.manifest_inputs import (
     ResolvedManifestInput,
-    authenticated_manifest_ref,
+    authenticated_manifest_ref_from_read,
     is_authenticated_manifest_ref,
     resolve_manifest_input,
 )
@@ -539,10 +539,13 @@ def resolve_analysis_inputs(
                             evaluation_manifest_authority=_portable_manifest_authority(ref),
                             supplying_evaluation_manifest_id=manifest.id,
                             resulting_evaluation_manifest_id=rederived.id,
-                            resulting_evaluation_manifest_authority=authenticated_manifest_ref(
-                                rederived,
-                                rederived_path,
-                                "evaluation_run",
+                            resulting_evaluation_manifest_authority=(
+                                authenticated_manifest_ref_from_read(
+                                    rederived_path,
+                                    expected_kind=rederived.kind,
+                                    expected_id=rederived.id,
+                                    role="evaluation_run",
+                                )
                             ),
                         )
                     else:
@@ -570,10 +573,13 @@ def resolve_analysis_inputs(
                         requested_evaluation_manifest_id=ref.id,
                         evaluation_manifest_authority=_portable_manifest_authority(ref),
                         resulting_evaluation_manifest_id=rederived.id,
-                        resulting_evaluation_manifest_authority=authenticated_manifest_ref(
-                            rederived,
-                            rederived_path,
-                            "evaluation_run",
+                        resulting_evaluation_manifest_authority=(
+                            authenticated_manifest_ref_from_read(
+                                rederived_path,
+                                expected_kind=rederived.kind,
+                                expected_id=rederived.id,
+                                role="evaluation_run",
+                            )
                         ),
                     )
             if states is None:
@@ -725,10 +731,11 @@ def _durable_state_source(
             raise ValueError(
                 "durable evaluation-state provenance requires the supplying manifest path"
             )
-        authority = authenticated_manifest_ref(
-            manifest,
+        authority = authenticated_manifest_ref_from_read(
             manifest_path,
-            "evaluation_run",
+            expected_kind=manifest.kind,
+            expected_id=manifest.id,
+            role="evaluation_run",
         )
     return AnalysisEvaluationStateSource(
         source_kind="durable",
