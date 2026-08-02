@@ -49,6 +49,7 @@ from feedbax.analysis.fulfillment_driver import (
     external_parent_ref,
     MissingExternalReceiptError,
     PlanDocumentDriftError,
+    UnpinnedPlanNodeError,
     closure_requests,
     fulfill_closure,
     preflight,
@@ -1604,3 +1605,382 @@ def test_a_matrix_node_has_no_single_receipt_to_resolve(
     )
     with pytest.raises(AmbiguousNodeReceiptError, match="evaluation matrix"):
         closure_requests(_closure(outputs, "matrix-reader"), environment=environment)
+
+
+# --------------------------------------------------------------------------
+# Class invariants: one read, one edge per role, and no comparison that skips
+# --------------------------------------------------------------------------
+
+
+def _external_consumer(
+    outputs: QuillonOutputs,
+    *,
+    layer: str,
+    name: str,
+    manifest_id: str,
+    digest: str,
+    size: int,
+):
+    """Emit one node of *layer* whose only input is an authenticated receipt.
+
+    Every consumer kind binds by its own closed consumer binding, so this is the
+    one place the four spellings differ; what is under test is that they all
+    reach the same single read.
+    """
+    reference_kwargs = dict(
+        manifest_kind="EvaluationRunManifest",
+        manifest_id=manifest_id,
+        manifest_sha256=digest,
+        size_bytes=size,
+        role_path="body.quoted",
+    )
+    if layer == "evaluation":
+        return outputs.probe(
+            name,
+            references=[
+                AuthenticatedReceiptReference(
+                    **reference_kwargs,
+                    consumer=EvaluationSubjectBinding(subject_id="quoted"),
+                )
+            ],
+        )
+    if layer == "analysis":
+        return outputs.condensate(
+            name,
+            references=[
+                AuthenticatedReceiptReference(
+                    **reference_kwargs,
+                    consumer=AnalysisInputBinding(alias="quoted", role="observed_states"),
+                )
+            ],
+        )
+    if layer == "figure":
+        return outputs.plate(
+            name,
+            references=[
+                AuthenticatedReceiptReference(
+                    **reference_kwargs,
+                    consumer=FigureRuntimeInputBinding(input_role="observed"),
+                )
+            ],
+        )
+    return outputs.bulletin(
+        name,
+        references=[
+            AuthenticatedReceiptReference(
+                **reference_kwargs,
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="quoted"),
+            )
+        ],
+    )
+
+
+def _bound_parents_of(request) -> tuple:
+    """Return every ``ParentRef`` one lowered request binds, whatever its kind."""
+    parents = []
+    spec = getattr(request, "spec", None)
+    if spec is not None and not isinstance(spec, dict):
+        parents.extend(getattr(spec, "inputs", ()) or ())
+    runtime = getattr(request, "runtime_inputs", None)
+    if runtime:
+        parents.extend(runtime)
+    exact = getattr(request, "exact_parents", None)
+    if exact is not None:
+        parents.extend(entry.parent for entry in exact.parents)
+    return tuple(parents)
+
+
+@pytest.mark.parametrize("layer", ["evaluation", "analysis", "figure", "report"])
+def test_lowering_reads_each_external_input_exactly_once(
+    outputs: QuillonOutputs,
+    environment: FulfillmentEnvironment,
+    monkeypatch: pytest.MonkeyPatch,
+    layer: str,
+) -> None:
+    """The single-read invariant, over every node kind that binds an input.
+
+    One read exists for each external input, and nothing downstream opens the
+    path again. The spy proves both halves at once: it hands back the real bytes
+    on the first read of the receipt and tampered bytes on every read after it,
+    so any second read anywhere in the lowering — binding a parent, restating a
+    profile, resolving an execution locator — would surface as a bound digest
+    that is not the one the lock quoted. A report binds both a parent and the
+    location it executes from, which is exactly the pair that used to resolve
+    twice.
+    """
+    outputs.probe(f"{layer}-single-read-source")
+    produced = (
+        _fulfill(outputs, f"{layer}-single-read-source", environment=environment)
+        .results[0]
+        .receipt
+    )
+    raw = produced.path.read_bytes()
+    lock_digest = hashlib.sha256(raw).hexdigest()
+    tampered = json.dumps({**json.loads(raw), "metadata": {"swapped": True}}).encode()
+    assert hashlib.sha256(tampered).hexdigest() != lock_digest
+
+    name = f"{layer}-single-read-consumer"
+    _external_consumer(
+        outputs,
+        layer=layer,
+        name=name,
+        manifest_id=produced.manifest_id,
+        digest=lock_digest,
+        size=len(raw),
+    )
+    closure = _closure(outputs, name)
+    key = LogicalKey(layer, name)
+
+    reads: list[Path] = []
+    real_read_bytes = Path.read_bytes
+
+    def spying_read_bytes(self: Path) -> bytes:
+        if self == produced.path:
+            reads.append(self)
+            if len(reads) > 1:
+                return tampered
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", spying_read_bytes)
+    requests = closure_requests(closure, environment=environment, stop_at=key)
+
+    assert reads == [produced.path], "one external input, one read"
+    parents = _bound_parents_of(requests[-1])
+    assert parents, "the consumer binds the external receipt it declares"
+    for parent in parents:
+        assert parent.id == produced.manifest_id
+        assert parent.metadata["manifest_sha256"] == lock_digest
+        assert parent.metadata["size_bytes"] == len(raw)
+
+
+def test_an_admitted_receipt_binds_the_digest_admission_read(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, monkeypatch
+) -> None:
+    """Bytes substituted after admission are never blessed with their own digest.
+
+    The producer here is an in-closure node, so its receipt is admitted rather
+    than resolved from a lock quote. Admission is the read; the consumer's
+    binding must restate what admission authenticated, so a substitution landing
+    between the two is a bound digest that no longer matches the file — which is
+    the honest outcome — and never a fresh digest of the replacement.
+    """
+    target = _chain(outputs)
+    _fulfill(outputs, target, environment=environment)
+    closure = _closure(outputs, target)
+    requests = closure_requests(closure, environment=environment)
+    report_request = requests[-1]
+    admitted_digest = report_request.spec.inputs[0].metadata["manifest_sha256"]
+    upstream = canonical_manifest_path(
+        "EvaluationRunManifest", report_request.spec.inputs[0].id, root=environment.root
+    )
+    assert hashlib.sha256(upstream.read_bytes()).hexdigest() == admitted_digest
+
+    # Substitute same-kind, same-id, still-completed bytes after admission read
+    # them, and prove the binding does not follow the substitution.
+    real_read_bytes = Path.read_bytes
+    reads: list[Path] = []
+    substituted = json.dumps(
+        {**json.loads(upstream.read_bytes()), "metadata": {"rerun": "second-pass"}}
+    ).encode()
+
+    def spying_read_bytes(self: Path) -> bytes:
+        if self == upstream:
+            reads.append(self)
+            if len(reads) > 1:
+                return substituted
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", spying_read_bytes)
+    rebound = closure_requests(closure, environment=environment)[-1]
+
+    assert reads == [upstream], "the admitted receipt is read once per walk"
+    assert rebound.spec.inputs[0].metadata["manifest_sha256"] == admitted_digest
+    assert (
+        rebound.spec.inputs[0].metadata["manifest_sha256"]
+        != hashlib.sha256(substituted).hexdigest()
+    )
+
+
+def test_no_fulfillment_module_can_reach_a_fresh_digest_minting_helper() -> None:
+    """``authenticated_manifest_ref`` re-reads a path; it is out of reach here.
+
+    The helper opens the file it is handed and mints a digest from whatever it
+    finds, which is the whole check/use defect in one function. Other callers
+    outside fulfillment legitimately use it to authenticate bytes they have just
+    written. This asserts the fulfillment surface cannot reach it at all, so the
+    defect cannot reappear by someone reaching for the obvious helper.
+    """
+    import ast
+
+    surface = sorted(
+        Path(__file__).resolve().parents[1].joinpath("feedbax", "analysis").glob(
+            "fulfillment*.py"
+        )
+    )
+    assert surface, "the fulfillment surface must be discoverable"
+    offenders: list[str] = []
+    for module in surface:
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                names = {alias.name for alias in node.names}
+                if "authenticated_manifest_ref" in names:
+                    offenders.append(f"{module.name}: imports authenticated_manifest_ref")
+            elif isinstance(node, ast.Name) and node.id == "authenticated_manifest_ref":
+                offenders.append(f"{module.name}: names authenticated_manifest_ref")
+            elif isinstance(node, ast.Attribute) and node.attr == "authenticated_manifest_ref":
+                offenders.append(f"{module.name}: reaches authenticated_manifest_ref")
+    assert offenders == []
+
+
+def test_a_duplicate_role_edge_refuses_at_reconciliation(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
+) -> None:
+    """Defense in depth: reconciliation never dict-keys away a duplicate.
+
+    The plan kernel refuses a duplicate, so this plan is assembled around it —
+    which is exactly what a hand-written or maliciously constructed plan would
+    do. Reconciliation must name the duplicate rather than compare whichever
+    copy it keyed last, because the copy it drops is the one that never faces a
+    lock.
+    """
+    from feedbax.analysis.fulfillment_plan import FulfillmentPlan, PlanEdge
+
+    outputs.probe("recon-source")
+    produced = _fulfill(outputs, "recon-source", environment=environment).results[0].receipt
+    outputs.bulletin(
+        "recon-consumer",
+        references=[
+            ReceiptLocatorReference(
+                manifest_kind="EvaluationRunManifest",
+                manifest_id=produced.manifest_id,
+                role_path="body.quoted",
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="quoted"),
+            )
+        ],
+    )
+    index = read_compiled_outputs(outputs.output_directory)
+    plan = derive_fulfillment_plan(index, target="recon-consumer")
+    genuine = next(edge for edge in plan.edges if edge.external is not None)
+    injected = PlanEdge(
+        consumer=genuine.consumer,
+        role_path=genuine.role_path,
+        status=genuine.status,
+        basis=genuine.basis,
+        reason=genuine.reason,
+        external={**dict(genuine.external), "manifest_id": "feedbax-evaluation-run:injected"},
+    )
+    smuggled = FulfillmentPlan(
+        target=plan.target,
+        nodes=plan.nodes,
+        edges=(injected, *plan.edges),
+        origin=plan.origin,
+    )
+
+    before = calls.report
+    with pytest.raises(PlanLockDisagreementError) as caught:
+        preflight(smuggled, read_compiled_outputs(outputs.output_directory))
+
+    differences = caught.value.record()["differences"]
+    assert any("stated 2 times by the plan" in difference for difference in differences)
+    assert calls.report == before, "a refused closure never runs"
+
+
+def test_a_plan_node_with_no_content_hash_refuses_rather_than_skipping_the_pin(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
+) -> None:
+    """A pin that is absent is not a pin that matched."""
+    target = _chain(outputs)
+    index = read_compiled_outputs(outputs.output_directory)
+    document = derive_fulfillment_plan(index, target=target).document()
+    for node in document["nodes"]:
+        if node["key"] == "evaluation:chain-mid":
+            node["content_hash"] = None
+
+    before = calls.evaluation
+    with pytest.raises(UnpinnedPlanNodeError) as caught:
+        preflight(
+            fulfillment_plan_from_document(document),
+            read_compiled_outputs(outputs.output_directory),
+        )
+    assert caught.value.record()["key"] == "evaluation:chain-mid"
+    assert "never a skipped check" in str(caught.value)
+    assert calls.evaluation == before
+
+
+def test_a_half_stated_restated_profile_is_refused_rather_than_dropped(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """A partial authentication claim is unreadable, not absent.
+
+    A document that restates no byte profile is entitled to: it cannot
+    authenticate a parent, so it asserts nothing about bytes and there is
+    nothing to disagree with. A document that restates *half* a profile is a
+    different thing — something stated an authentication and got it wrong — and
+    reading it as "states nothing" drops the malformed claim out of the very
+    comparison it should have been subject to.
+    """
+    subject = outputs.probe("half-profile-subject")
+    bank = outputs.probe("half-profile-bank")
+    fulfill_closure(_closure(outputs, "half-profile-subject"), environment=environment)
+    produced = (
+        _fulfill(outputs, "half-profile-bank", environment=environment).results[0].receipt
+    )
+    raw = produced.path.read_bytes()
+    outputs.emit(
+        "half-profile-consumer",
+        {
+            "schema_id": "feedbax.spec.evaluation_run_matrix",
+            "schema_version": "feedbax.spec.evaluation_run_matrix.v3",
+            "base": _base_spec("half-profile-consumer"),
+            "rows": [{"row_id": "half-profile-consumer-0"}],
+            "staged_parents": {
+                "trial_bank": {
+                    "parent": {
+                        "kind": "EvaluationRunManifest",
+                        "id": produced.manifest_id,
+                        "role": "evaluation_run",
+                        "metadata": {
+                            "ref_schema_id": "feedbax.ref.authenticated_manifest",
+                            "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+                            # Half a profile: the digest without the size.
+                            "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+                        },
+                    }
+                }
+            },
+        },
+        references=[
+            _subject(subject, role_path="body.subject", subject_id="subject"),
+            _subject(bank, role_path="body.trial_bank", subject_id="trial_bank"),
+        ],
+    )
+
+    with pytest.raises(NodeLoweringError) as caught:
+        _matrix_request(outputs, "half-profile-consumer", environment=environment, upstream=2)
+    assert "cannot read" in str(caught.value)
+
+
+def test_restated_parent_differences_reports_an_unreadable_profile_on_either_side() -> None:
+    """Neither side may drop out of the comparison by being malformed."""
+    from feedbax.analysis.fulfillment_lowering import restated_parent_differences
+    from feedbax.contracts.manifest import ParentRef
+
+    complete = {
+        "ref_schema_id": "feedbax.ref.authenticated_manifest",
+        "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+        "manifest_sha256": DIGEST,
+        "size_bytes": 12,
+    }
+    half = {key: value for key, value in complete.items() if key != "size_bytes"}
+    good = ParentRef(kind="EvaluationRunManifest", id="x", role="a", metadata=complete)
+    partial = ParentRef(kind="EvaluationRunManifest", id="x", role="b", metadata=half)
+
+    assert restated_parent_differences(good, good) == ()
+    stated_defect = restated_parent_differences(partial, good)
+    assert any("the document states an authentication profile" in item for item in stated_defect)
+    bound_defect = restated_parent_differences(good, partial)
+    assert any("the bound parent states an authentication profile" in item for item in bound_defect)
+    # A document that states nothing about bytes still says nothing to refuse.
+    silent = ParentRef(kind="EvaluationRunManifest", id="x", role="b", metadata={})
+    assert restated_parent_differences(silent, good) == ()

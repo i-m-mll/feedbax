@@ -83,6 +83,7 @@ from pathlib import Path
 from typing import Any
 
 from feedbax.analysis.fulfillment import (
+    AdmittedManifestBytes,
     FulfillmentAdmissionError,
     FulfillmentReceipt,
 )
@@ -119,7 +120,6 @@ from feedbax.analysis.fulfillment_plan import (
     PlanNode,
 )
 from feedbax.analysis.exact_parents import StagedExactParentEntry
-from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
 from feedbax.contracts.applicability_rules import (
     StructuralApplicabilityRuleMismatchError,
     UnknownStructuralApplicabilityRuleError,
@@ -130,7 +130,6 @@ from feedbax.contracts.manifest import (
     ParentRef,
     authenticated_manifest_ref_metadata,
     canonical_manifest_path,
-    load_manifest,
     load_manifest_bytes,
 )
 
@@ -250,6 +249,31 @@ class PlanDocumentDriftError(FulfillmentDriverError):
         )
 
 
+class UnpinnedPlanNodeError(FulfillmentDriverError):
+    """A plan node names a compiled document without pinning its content hash.
+
+    The pin is what makes the drift check a check. A node carrying none does not
+    make the closure safer to run than one whose pin still matches; it makes the
+    comparison unperformable, and an unperformable comparison that is skipped is
+    indistinguishable from one that passed. Derivation always records the pin, so
+    a node without one is a plan that was hand-written or stripped.
+    """
+
+    def __init__(self, key: LogicalKey, source_ref: str) -> None:
+        self.key = key
+        self.source_ref = source_ref
+        super().__init__(
+            f"the fulfillment plan carries node {key.text} ({source_ref}) with no "
+            "content_hash, so the compiled document it executes cannot be proved to be the "
+            "one the plan described. Re-derive the plan from the compiled outputs it is "
+            "meant to describe; a missing pin is a refusal, never a skipped check."
+        )
+
+    def record(self) -> dict[str, Any]:
+        """Return the structured refusal, deterministic in every field."""
+        return {**self.key.record(), "source_ref": self.source_ref}
+
+
 @dataclass(frozen=True)
 class ClosureNode:
     """One node of a preflighted closure, with the compiled output it executes.
@@ -320,11 +344,25 @@ class NodeBinding:
     authenticated reference: :meth:`parent_ref` for a normal input and
     :meth:`exact_parent_entry` for one that also records where it was executed
     from.
+
+    A lowering may ask for both — a report binds its parents *and* the locations
+    it executes them from — so one external edge is resolved once per binding and
+    both answers come from that resolution. Resolving twice would read the same
+    file twice, and two reads of one path are two files as far as anything
+    outside this process is concerned: the second one is what the exact-parent
+    locator would describe, and no comparison between them can be trusted to
+    catch it, because both sides would then be describing the replacement.
     """
 
     closure: FulfillmentClosure
     environment: FulfillmentEnvironment
     receipts: Mapping[LogicalKey, FulfillmentReceipt] = field(default_factory=dict)
+    #: Per-edge external resolutions, memoized for this binding's lifetime. One
+    #: binding lowers one node, and an edge is addressed by
+    #: ``(consumer, role_path)``, which the plan kernel proves is unique.
+    _resolved: dict[tuple[LogicalKey, tuple[str, ...]], "ResolvedExternalReceipt"] = field(
+        default_factory=dict, repr=False, compare=False
+    )
 
     @property
     def plan(self) -> FulfillmentPlan:
@@ -367,30 +405,38 @@ class NodeBinding:
         receipt = self.producer_receipt(edge)
         if receipt is not None:
             return receipt_parent_ref(receipt, role=role)
-        return external_parent_ref(
-            require_external_record(edge.external, field=self._edge_field(edge)),
-            role=role,
-            root=self.environment.root,
-            consumer=edge.consumer,
-            role_path=edge.role_path,
-        )[0]
+        return self.resolved_external(edge).parent_ref(role)
 
     def exact_parent_entry(self, edge: PlanEdge, *, role: str) -> StagedExactParentEntry:
         """Bind one required edge to the root-relative location it executes from."""
         receipt = self.producer_receipt(edge)
         if receipt is not None:
             return receipt_exact_parent_entry(receipt, role=role)
-        parent, path = external_parent_ref(
-            require_external_record(edge.external, field=self._edge_field(edge)),
-            role=role,
-            root=self.environment.root,
-            consumer=edge.consumer,
-            role_path=edge.role_path,
-        )
+        resolved = self.resolved_external(edge)
         return StagedExactParentEntry(
-            parent=parent,
-            execution_uri=path.relative_to(Path(self.environment.root)).as_posix(),
+            parent=resolved.parent_ref(role),
+            execution_uri=resolved.path.relative_to(Path(self.environment.root)).as_posix(),
         )
+
+    def resolved_external(self, edge: PlanEdge) -> "ResolvedExternalReceipt":
+        """Return the single resolution one external edge has under this binding.
+
+        The first ask reads and authenticates the receipt; every later ask for
+        the same edge is answered from that resolution rather than from the
+        filesystem, so a lowering that binds a parent and its execution location
+        binds two descriptions of one read.
+        """
+        cache_key = (edge.consumer, edge.role_path)
+        resolved = self._resolved.get(cache_key)
+        if resolved is None:
+            resolved = resolve_external_receipt(
+                require_external_record(edge.external, field=self._edge_field(edge)),
+                root=self.environment.root,
+                consumer=edge.consumer,
+                role_path=edge.role_path,
+            )
+            self._resolved[cache_key] = resolved
+        return resolved
 
     @staticmethod
     def _edge_field(edge: PlanEdge) -> str:
@@ -735,6 +781,27 @@ def _edge_facts(edge: PlanEdge) -> dict[str, Any]:
     }
 
 
+def _duplicate_role_differences(
+    edges: Sequence[PlanEdge], *, stated_by: str
+) -> list[str]:
+    """Return one difference per role path *edges* states more than once.
+
+    Comparison keys an edge by its role path, so a duplicate would collapse into
+    whichever copy is keyed last and the others would never be compared with
+    anything. That is not a comparison that can fail, so the duplicate is named
+    before any keying happens rather than being reconciled away.
+    """
+    counts: dict[tuple[str, ...], int] = {}
+    for edge in edges:
+        counts[edge.role_path] = counts.get(edge.role_path, 0) + 1
+    return [
+        f"input {list(role_path)} is stated {count} times by {stated_by}; a role path "
+        "addresses exactly one input, and reconciliation compares one edge per role"
+        for role_path, count in sorted(counts.items())
+        if count > 1
+    ]
+
+
 def require_plan_matches_locks(plan: FulfillmentPlan, index: CompiledOutputIndex) -> None:
     """Refuse a plan whose edges are not the edges its locks determine.
 
@@ -742,17 +809,33 @@ def require_plan_matches_locks(plan: FulfillmentPlan, index: CompiledOutputIndex
     field for field, with what the plan document carries. Nothing is repaired and
     nothing is preferred: a plan that disagrees with a lock is refused, because
     silently taking either side would make one of the two documents decorative.
+
+    Both sides are proved to state at most one edge per role path *before* they
+    are keyed by role path. The plan kernel already refuses a duplicate and a
+    lock already refuses two references at one role, so this is defense in depth
+    over the one shape that would otherwise be dropped silently by the
+    comparison itself rather than reported by it.
     """
     for plan_node in plan.nodes:
         compiled = index.require(plan_node.source_ref)
-        expected: dict[tuple[str, ...], PlanEdge] = {}
+        lock_edges: list[PlanEdge] = []
         for declaration in lock_edge_declarations(compiled):
             producer: LogicalKey | None = None
             if declaration.producer_ref is not None:
                 producer = index.require(declaration.producer_ref).key
-            edge = declaration.edge(plan_node.key, producer)
-            expected[edge.role_path] = edge
-        declared = {edge.role_path: edge for edge in plan.input_edges(plan_node.key)}
+            lock_edges.append(declaration.edge(plan_node.key, producer))
+        plan_edges = plan.input_edges(plan_node.key)
+        duplicates = _duplicate_role_differences(
+            lock_edges, stated_by="the lock"
+        ) + _duplicate_role_differences(plan_edges, stated_by="the plan")
+        if duplicates:
+            raise PlanLockDisagreementError(
+                plan_node.key, plan_node.source_ref, duplicates
+            )
+        expected: dict[tuple[str, ...], PlanEdge] = {
+            edge.role_path: edge for edge in lock_edges
+        }
+        declared = {edge.role_path: edge for edge in plan_edges}
         differences: list[str] = []
         for role_path in sorted(set(expected) | set(declared)):
             lock_edge = expected.get(role_path)
@@ -808,6 +891,8 @@ def preflight(plan: FulfillmentPlan, index: CompiledOutputIndex) -> FulfillmentC
         UncertifiedApplicabilityError: An omission quotes a structural rule this
             build does not own, so nothing certified it.
         PlanDocumentDriftError: A compiled document no longer hashes to its pin.
+        UnpinnedPlanNodeError: A node carries no content hash, so the document it
+            executes cannot be proved to be the one the plan described.
         PlanLockDisagreementError: A node's declared inputs are not the ones its
             compile lock determines.
     """
@@ -816,7 +901,9 @@ def preflight(plan: FulfillmentPlan, index: CompiledOutputIndex) -> FulfillmentC
     nodes: list[ClosureNode] = []
     for order, plan_node in enumerate(plan.nodes):
         compiled = index.require(plan_node.source_ref)
-        if plan_node.content_hash is not None and compiled.content_hash != plan_node.content_hash:
+        if plan_node.content_hash is None:
+            raise UnpinnedPlanNodeError(plan_node.key, plan_node.source_ref)
+        if compiled.content_hash != plan_node.content_hash:
             raise PlanDocumentDriftError(
                 plan_node.key,
                 plan_node.source_ref,
@@ -985,13 +1072,8 @@ def _admitted_receipt(
             f"node {node.key.text} is an analysis bundle; resolving a single receipt for it "
             "would mean choosing among its stage products, which this version does not do"
         )
-    outcome = admit_node(request, environment=environment)
+    captured = AdmittedManifestBytes()
+    outcome = admit_node(request, environment=environment, capture=captured)
     if not outcome.admitted or outcome.manifest_path is None:
         raise FulfillmentAdmissionError(outcome)
-    path = Path(outcome.manifest_path)
-    return FulfillmentReceipt(
-        node_kind=request.node_kind,
-        manifest=load_manifest(path),
-        path=path,
-        root=Path(environment.root),
-    )
+    return captured.receipt(node_kind=request.node_kind, root=Path(environment.root))

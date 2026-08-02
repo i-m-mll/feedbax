@@ -106,6 +106,38 @@ class DuplicateLogicalKeyError(FulfillmentPlanError):
         )
 
 
+class DuplicateInputEdgeError(FulfillmentPlanError):
+    """One node declares two edges at a single input role path.
+
+    A role path addresses one input, and a compile lock refuses to state two
+    references at one role, so a plan carrying two edges there is not a derived
+    record of any lock. It is also the shape that defeats every downstream
+    consumer of the plan: reconciliation, binding, and exact-parent resolution
+    all address an edge by ``(consumer, role_path)``, so a second edge at one
+    role is silently dropped by whichever of them keys last — while remaining
+    fully live for reachability, which is how an injected node reaches the
+    execution order without ever being reconciled against a lock.
+    """
+
+    def __init__(
+        self,
+        consumer: "LogicalKey",
+        role_path: Sequence[str],
+        first: "PlanEdge",
+        second: "PlanEdge",
+    ) -> None:
+        self.consumer = consumer
+        self.role_path = tuple(role_path)
+        self.first = first
+        self.second = second
+        super().__init__(
+            f"{consumer.text} declares input {list(self.role_path)} twice, binding "
+            f"{_edge_binding_text(first)} and {_edge_binding_text(second)}; a role path "
+            "addresses exactly one input, and no compile lock states two references at one "
+            "role, so a plan carrying both is not a derived record of any lock"
+        )
+
+
 class UnresolvedPlanReferenceError(FulfillmentPlanError):
     """A plan names a node no declaration in the plan provides."""
 
@@ -324,6 +356,17 @@ class PlanEdge:
         return (self.consumer.text, self.role_path, canonical_json_bytes(self.record()))
 
 
+def _edge_binding_text(edge: PlanEdge) -> str:
+    """Return what one edge binds, for naming a duplicate without dumping it."""
+    if edge.producer is not None:
+        return f"the product of {edge.producer.text}"
+    if edge.external is not None:
+        kind = edge.external.get("manifest_kind")
+        manifest_id = edge.external.get("manifest_id")
+        return f"the external receipt {kind}:{manifest_id}"
+    return f"nothing ({edge.status})"
+
+
 @dataclass(frozen=True)
 class FulfillmentPlan:
     """One target's dependency closure, in dependency order.
@@ -461,8 +504,9 @@ def build_fulfillment_plan(
 
     The closure is what the target reaches: nodes no path from the target
     reaches, and the edges that name them, are not part of this plan. Within it,
-    every reference must resolve, one logical key names one declaration, and a
-    cycle is named rather than silently truncating the plan.
+    every reference must resolve, one logical key names one declaration, one
+    ``(consumer, role_path)`` names one edge, and a cycle is named rather than
+    silently truncating the plan.
     """
     declared: dict[LogicalKey, PlanNode] = {}
     for node in nodes:
@@ -477,6 +521,7 @@ def build_fulfillment_plan(
 
     declared_edges = list(edges)
     inputs: dict[LogicalKey, list[PlanEdge]] = {key: [] for key in declared}
+    at_role: dict[tuple[LogicalKey, tuple[str, ...]], PlanEdge] = {}
     for edge in declared_edges:
         if edge.producer is not None and edge.producer not in declared:
             raise UnresolvedPlanReferenceError(
@@ -489,6 +534,13 @@ def build_fulfillment_plan(
                 role_path=edge.role_path,
                 relation="consumer",
             )
+        # One role, one edge. This is proved over *every* declared edge rather
+        # than over the closure, so a duplicate cannot survive by hiding on the
+        # side of the plan a target does not reach and then be reached later.
+        first = at_role.get((edge.consumer, edge.role_path))
+        if first is not None:
+            raise DuplicateInputEdgeError(edge.consumer, edge.role_path, first, edge)
+        at_role[(edge.consumer, edge.role_path)] = edge
         inputs[edge.consumer].append(edge)
 
     reached: set[LogicalKey] = set()
@@ -660,6 +712,7 @@ __all__ = [
     "FULFILLMENT_PLAN_SCHEMA_VERSION",
     "FULFILLMENT_PLAN_SCHEMA_VERSION_V1",
     "FULFILLMENT_PLAN_SUPPORTED_SCHEMA_VERSIONS",
+    "DuplicateInputEdgeError",
     "DuplicateLogicalKeyError",
     "EdgeDeclaration",
     "FulfillmentPlan",

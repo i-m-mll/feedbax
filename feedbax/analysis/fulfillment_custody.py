@@ -63,6 +63,7 @@ from pydantic import Field, model_validator
 
 from feedbax.analysis.fulfillment import (
     AdmissionOutcome,
+    AdmittedManifestBytes,
     FulfillmentAdmissionError,
     FulfillmentNodeKind,
     FulfillmentReceipt,
@@ -82,7 +83,7 @@ from feedbax.contracts.manifest import (
     AnyManifest,
     ArtifactRef,
     StrictModel,
-    load_manifest,
+    load_manifest_bytes,
     normalize_manifest_spec_payloads,
     safe_manifest_key,
     sha256_bytes,
@@ -613,13 +614,20 @@ def _rebuild_in_shadow(
     environment: FulfillmentEnvironment,
     shadow: ShadowCustody,
 ) -> NodeRebuildOutcome:
-    admission = admit_node(request, environment=environment)
+    admitted_bytes = AdmittedManifestBytes()
+    admission = admit_node(request, environment=environment, capture=admitted_bytes)
     if not admission.admitted:
         raise FulfillmentAdmissionError(admission)
     if admission.manifest_path is None:  # pragma: no cover - admitted implies a path
         raise RuntimeError("an admitted receipt must name the bytes that authenticated it")
+    # The projection compared against the rebuild is the projection of the bytes
+    # admission authenticated. Reopening the path here would project whatever is
+    # stored by the time the rebuild finishes, and a verification that reads its
+    # own subject twice verifies nothing about the first read.
     expected = output_projection(
-        load_manifest(admission.manifest_path),
+        admitted_bytes.receipt(
+            node_kind=request.node_kind, root=Path(environment.root)
+        ).manifest,
         node_kind=request.node_kind,
     )
     rebuilt, _path = execute_node(request, environment=shadow.environment)
@@ -755,7 +763,8 @@ def _repair_in_shadow(
 ) -> RepairResult:
     started_at = utc_now()
     root = Path(environment.root)
-    failure = admit_node(request, environment=environment)
+    failed_bytes = AdmittedManifestBytes()
+    failure = admit_node(request, environment=environment, capture=failed_bytes)
     if failure.admitted:
         raise FulfillmentRepairError(
             f"node {request.node_key!r} admits cleanly; repair never runs over a healthy receipt",
@@ -771,8 +780,15 @@ def _repair_in_shadow(
         raise RuntimeError("a present receipt must name the bytes that failed admission")
 
     manifest_path = Path(failure.manifest_path)
-    stored_manifest = load_manifest(manifest_path)
-    quarantined = _quarantine_failed_bytes(stored_manifest, manifest_path=manifest_path, root=root)
+    if failed_bytes.raw is None:  # pragma: no cover - present implies bytes were read
+        raise RuntimeError("a present receipt must carry the bytes admission read")
+    stored_manifest = load_manifest_bytes(failed_bytes.raw)
+    quarantined = _quarantine_failed_bytes(
+        stored_manifest,
+        manifest_path=manifest_path,
+        raw=failed_bytes.raw,
+        root=root,
+    )
     old_manifest_sha256 = quarantined[0].observed_sha256
     _purge_mirrored_corruption(stored_manifest, shadow_root=shadow.root)
 
@@ -804,7 +820,8 @@ def _repair_in_shadow(
         )
     replacement_sha256 = _publish_manifest_bytes(promoted, path=manifest_path, root=root)
 
-    admission_after = admit_node(request, environment=environment)
+    repaired_bytes = AdmittedManifestBytes()
+    admission_after = admit_node(request, environment=environment, capture=repaired_bytes)
     if not admission_after.admitted:  # pragma: no cover - promoted admission already passed
         raise FulfillmentRepairError(
             f"repaired node {request.node_key!r} does not admit from its published bytes: "
@@ -835,12 +852,7 @@ def _repair_in_shadow(
     return RepairResult(
         record=record,
         record_path=record_path,
-        receipt=FulfillmentReceipt(
-            node_kind=request.node_kind,
-            manifest=load_manifest(manifest_path),
-            path=manifest_path,
-            root=root,
-        ),
+        receipt=repaired_bytes.receipt(node_kind=request.node_kind, root=root),
     )
 
 
@@ -848,18 +860,24 @@ def _quarantine_failed_bytes(
     manifest: AnyManifest,
     *,
     manifest_path: Path,
+    raw: bytes,
     root: Path,
 ) -> tuple[QuarantinedBytes, ...]:
     """Preserve every byte stream the repair may replace, keyed by observed hash.
 
-    The failed manifest bytes are always quarantined. An artifact is quarantined
-    when its stored bytes do not hash to their declared digest, because those are
-    the only artifact bytes a promotion may unlink. Bytes are copied, never
-    moved: quarantine adds custody, it never removes it.
+    The failed manifest bytes are always quarantined, and they are the bytes
+    admission read rather than a fresh reopening of the path: quarantine exists
+    to preserve exactly what failed, and re-reading would preserve — and key the
+    whole repair record on — whatever replaced it.
+
+    An artifact is quarantined when its stored bytes do not hash to their
+    declared digest, because those are the only artifact bytes a promotion may
+    unlink. Bytes are copied, never moved: quarantine adds custody, it never
+    removes it.
     """
     entries = [
         _quarantine_bytes(
-            manifest_path.read_bytes(),
+            raw,
             root=root,
             origin="manifest",
             source_path=manifest_path,

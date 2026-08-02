@@ -422,24 +422,46 @@ def restated_parent_differences(stated: ParentRef, bound: ParentRef) -> tuple[st
         differences.append(
             f"id: the document restates {stated.id!r} and the lock binds {bound.id!r}"
         )
-    stated_profile = _restated_profile(stated)
-    bound_profile = _restated_profile(bound)
-    if stated_profile is not None and stated_profile != bound_profile:
+    stated_profile, stated_defect = _restated_profile(stated)
+    bound_profile, bound_defect = _restated_profile(bound)
+    if stated_defect is not None:
         differences.append(
-            f"byte profile: the document restates {stated_profile} and the lock binds "
-            f"{bound_profile}"
+            f"byte profile: the document states an authentication profile this build cannot "
+            f"read ({stated_defect}); a half-stated profile is not a weaker claim than none, "
+            "it is an unreadable one, and it is refused rather than dropped from the "
+            "comparison"
         )
+    if bound_defect is not None:
+        differences.append(
+            f"byte profile: the bound parent states an authentication profile this build "
+            f"cannot read ({bound_defect}); the binding side is the authority, so an "
+            "unreadable profile there is a refusal and never a comparison that is skipped"
+        )
+    if stated_defect is None and bound_defect is None:
+        if stated_profile is not None and stated_profile != bound_profile:
+            differences.append(
+                f"byte profile: the document restates {stated_profile} and the lock binds "
+                f"{bound_profile}"
+            )
     return tuple(differences)
 
 
-def _restated_profile(ref: ParentRef) -> tuple[str, int] | None:
-    """Return one ref's authenticated byte profile, or ``None`` if it states none."""
+def _restated_profile(ref: ParentRef) -> tuple[tuple[str, int] | None, str | None]:
+    """Return one ref's byte profile and, if it is unreadable, why.
+
+    Three outcomes, and they are three different facts. A complete profile is a
+    profile. No profile at all is the honest absence of a claim, which a
+    *document* is entitled to: it cannot authenticate a parent, so restating
+    nothing about bytes adds nothing to refuse over. A *partial* profile is
+    neither: something stated half an authentication, and treating that as
+    "states nothing" would let a malformed claim silently drop out of the
+    comparison it was supposed to be subject to. So it comes back as a defect
+    the caller reports.
+    """
     try:
-        return authenticated_manifest_ref_profile(ref)
-    except ValueError:
-        # A half-stated profile is not a profile. It is caught where refs are
-        # built; here it simply is not a fact the restatement contributes.
-        return None
+        return authenticated_manifest_ref_profile(ref), None
+    except ValueError as exc:
+        return None, str(exc)
 
 
 def _base_with_staged_prerequisites(
