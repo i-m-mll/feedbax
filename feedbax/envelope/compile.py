@@ -90,15 +90,29 @@ from feedbax.contracts.experiment_envelope_dialect import (
     ExperimentEnvelope,
     ExperimentEnvelopeLayer,
     FigureLayerAuthoring,
+    FigureLayerMode,
     LayerOutputContract,
     NotApplicableAuthoring,
     ReceiptReference,
     ReportLayerAuthoring,
     TrainingLayerAuthoring,
+    TrainingRowsMode,
     output_contract_of_document,
     parse_experiment_envelope,
 )
+from feedbax.contracts.figure_roles import (
+    FigureRoleBindingContract,
+    FigureRowExpansionRequest,
+    expand_figure_rows_structure,
+)
 from feedbax.contracts.manifest import OverridePatch
+from feedbax.contracts.row_index import (
+    ROW_INDEX_SCHEMA_ID,
+    AuthenticatedRowIndex,
+    RowSelectionError,
+    RowSelectionErrorCode,
+    expand_row_selector,
+)
 from feedbax.contracts.project_experiment import (
     ProjectExperimentDeclaration,
     path_is_within,
@@ -117,6 +131,29 @@ from feedbax.envelope.resolution import (
 )
 
 _DELTA_ONLY_HOME = "an envelope carries only what changes; delete the line"
+
+#: Row-selection failures, mapped onto the authoring rejection vocabulary. The
+#: selector machinery has its own stable codes because it is used outside
+#: authoring too; an envelope's author needs the answer in one vocabulary.
+_ROW_SELECTION_REJECTIONS: Mapping[
+    RowSelectionErrorCode, ExperimentEnvelopeRejectionCategory
+] = {
+    RowSelectionErrorCode.EMPTY_SELECTION: (
+        ExperimentEnvelopeRejectionCategory.EMPTY_SELECTION
+    ),
+    RowSelectionErrorCode.UNRESOLVED_ROW_KEY: (
+        ExperimentEnvelopeRejectionCategory.UNRESOLVED_ROW_KEY
+    ),
+    RowSelectionErrorCode.DUPLICATE_ROW_ID: (
+        ExperimentEnvelopeRejectionCategory.DUPLICATE_KEY
+    ),
+    RowSelectionErrorCode.AMBIGUOUS_ROW_BINDING: (
+        ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    ),
+    RowSelectionErrorCode.INDEX_MISMATCH: (
+        ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    ),
+}
 
 
 def _reject(
@@ -232,9 +269,16 @@ class LayerCompileContext:
 class LoweredLayer:
     """What one layer lowered to, before the deltas are applied.
 
+    A layer either *patches* its parent, stating ordered ``deltas``, or
+    *constructs* its output from the pinned parent, stating ``document``. The two
+    are exclusive: a constructed document is already the whole answer, and a
+    delta applied afterwards would be a second, invisible authority over it.
+
     Attributes:
         contract: The output contract the compiled document must satisfy.
         deltas: Ordered composition layers to apply to the parent document.
+        document: The compiled document, when this layer constructs rather than
+            patches. ``None`` means the deltas decide.
         references: Typed compile-lock references this layer resolved.
         identity_contributions: Compile-time facts beyond the document that make
             two otherwise-identical plans different executions.
@@ -242,8 +286,16 @@ class LoweredLayer:
 
     contract: LayerOutputContract
     deltas: Sequence[MatrixCompositionDelta]
+    document: Mapping[str, Any] | None = None
     references: Sequence[Any] = ()
     identity_contributions: Mapping[str, Any] = dataclass_field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.document is not None and self.deltas:
+            raise ValueError(
+                "a lowered layer either patches its parent or constructs its document; "
+                "stating both would give the compiled document two authorities"
+            )
 
     @property
     def authored_paths(self) -> dict[str, str]:
@@ -549,16 +601,30 @@ def _prove_patches_apply(
 # -- the five layers -------------------------------------------------------
 
 
+#: Top-level matrix fields a derived training document never inherits.
+#:
+#: ``issue`` names the work the *parent* was authored for; carrying it forward
+#: would state, in the compiled artifact, that this matrix belongs to a ticket it
+#: has nothing to do with. The envelope's own issue is recorded in the compile
+#: lock, which is where provenance lives. ``metadata`` is opaque: Feedbax cannot
+#: tell an inherited launch set or orchestration root from a still-true fact, so
+#: it inherits none of it rather than propagating something obsolete.
+TRAINING_UNINHERITED_TOP_LEVEL_FIELDS: tuple[str, ...] = ("issue", "metadata")
+
+
 def _lower_training(context: LayerCompileContext) -> LoweredLayer:
     """Lower authored rows, tags, and checkpoint sources over a run matrix."""
     authored = context.envelope.content
     assert isinstance(authored, TrainingLayerAuthoring)
     parent = dict(context.parent.pinned.document)
-    rows = list(parent.get("rows") or [])
-    by_id = {str(row.get("row_id")): row for row in rows if isinstance(row, Mapping)}
+    inherited_rows = list(parent.get("rows") or [])
+    by_id = {
+        str(row.get("row_id")): row for row in inherited_rows if isinstance(row, Mapping)
+    }
     base_payload, base_pin = _resolve_matrix_base_payload(
         parent.get("base"), context.repo_root, field=f"{context.parent.ref}#base"
     )
+    appending = authored.rows_mode is TrainingRowsMode.APPEND
 
     references: list[Any] = [] if base_pin is None else [base_pin]
     patches: list[OverridePatch] = []
@@ -569,6 +635,12 @@ def _lower_training(context: LayerCompileContext) -> LoweredLayer:
     else:
         check_echo(context.lineage, "name", context.envelope.name, field="envelope.name")
 
+    for name in TRAINING_UNINHERITED_TOP_LEVEL_FIELDS:
+        if parent.get(name):
+            patches.append(OverridePatch(path=name, op="remove"))
+
+    rows = list(inherited_rows) if appending else []
+    authored_rows: list[dict[str, Any]] = []
     for index, row in enumerate(authored.rows):
         field = f"training.rows[{index}]"
         source = by_id.get(row.from_)
@@ -589,14 +661,20 @@ def _lower_training(context: LayerCompileContext) -> LoweredLayer:
             )
         new_row = deepcopy(dict(source))
         new_row["row_id"] = row.id
+        new_row["label"] = row.effective_label
+        # A changed row inherits none of its source's opaque metadata: the source
+        # states facts about the experiment it was, and this row is a different
+        # one. Authored replacement provenance is the one thing recorded here,
+        # exactly as the envelope states it.
+        new_row.pop("metadata", None)
         if row.seed is not None:
             if scalar_equal(source.get("seed"), row.seed):
                 reject_echo(f"{field}.seed", row.seed, context.parent.ref)
             new_row["seed"] = row.seed
         if row.replaces is not None:
-            metadata = dict(new_row.get("metadata") or {})
-            metadata["replaces"] = row.replaces.model_dump(mode="json", exclude_none=True)
-            new_row["metadata"] = metadata
+            new_row["metadata"] = {
+                "replaces": row.replaces.model_dump(mode="json", exclude_none=True)
+            }
         inherited_overrides = [
             OverridePatch.model_validate(item) for item in (source.get("overrides") or [])
         ]
@@ -610,22 +688,31 @@ def _lower_training(context: LayerCompileContext) -> LoweredLayer:
                 patch.model_dump(mode="json", exclude_none=True)
                 for patch in (*inherited_overrides, *row.delta.patches)
             ]
-        patches.append(
-            OverridePatch(path=f"rows.{len(rows)}", op="add", value=new_row)
-        )
-        rows.append(new_row)
+        if appending:
+            patches.append(OverridePatch(path=f"rows.{len(rows)}", op="add", value=new_row))
+            rows.append(new_row)
+        authored_rows.append(new_row)
         by_id[row.id] = new_row
+
+    if not appending:
+        rows = authored_rows
+        patches.append(OverridePatch(path="rows", op="replace", value=authored_rows))
 
     patches.extend(
         _tag_patches(parent.get("tags") or [], authored.tags, field="training.tags")
     )
 
+    runnable = {str(row.get("row_id")) for row in rows}
     for index, item in enumerate(authored.checkpoint_initialization):
-        if item.row not in by_id:
+        if item.row not in runnable:
             _reject(
                 ExperimentEnvelopeRejectionCategory.UNRESOLVED_ROW_KEY,
                 f"training.checkpoint_initialization[{index}].row",
-                f"{item.row!r} is neither an inherited nor an authored row",
+                f"{item.row!r} is not a row this matrix runs; "
+                f"rows: {sorted(runnable)}",
+                correct_home="checkpoint initialization applies to a row the compiled "
+                "matrix declares; under rows_mode 'authored_only' only the authored rows "
+                "survive",
             )
         references.append(
             _reference_for(
@@ -721,15 +808,20 @@ def _lower_analysis(context: LayerCompileContext) -> LoweredLayer:
 
 
 def _lower_figure(context: LayerCompileContext) -> LoweredLayer:
-    """Lower figure input-role bindings and a native figure composition delta."""
+    """Lower one figure operation, dispatched on the mode the envelope states."""
     authored = context.envelope.content
     assert isinstance(authored, FigureLayerAuthoring)
-    contract = (
-        FIGURE_COMPOSITION_OUTPUT
-        if context.parent.contract is FIGURE_COMPOSITION_OUTPUT
-        else FIGURE_OUTPUT
-    )
-    delta = None if authored.delta is None else authored.delta.matrix_delta()
+    if context.parent.contract is not FIGURE_OUTPUT:
+        _reject(
+            ExperimentEnvelopeRejectionCategory.CROSS_FAMILY_BASE,
+            "figure.mode",
+            f"a {authored.mode.value!r} figure envelope resolves {context.parent.ref}, which "
+            f"is a {context.parent.contract.family!r} document; both figure modes take a "
+            f"{FIGURE_OUTPUT.schema_id!r} parent",
+            correct_home="the single-row scientific statement is the parent of both a "
+            "row_expansion and a composition figure; a composition document is this "
+            "engine's own output shape, not an experiment parent",
+        )
     references = [
         _reference_for(
             context,
@@ -742,9 +834,150 @@ def _lower_figure(context: LayerCompileContext) -> LoweredLayer:
         )
         for index, item in enumerate(authored.inputs)
     ]
+    if authored.mode is FigureLayerMode.ROW_EXPANSION:
+        return _lower_figure_row_expansion(context, authored, references)
+    return _lower_figure_composition(context, authored, references)
+
+
+def _lower_figure_row_expansion(
+    context: LayerCompileContext,
+    authored: FigureLayerAuthoring,
+    references: list[Any],
+) -> LoweredLayer:
+    """Expand the parent figure over the row set the envelope's selector names.
+
+    The expansion is Feedbax's existing derivation, wired to the dialect rather
+    than reimplemented: the selector is expanded once against the pinned row
+    index, and the structural half of the expansion — which names no produced
+    data — becomes the compiled document. Custody stays where it belongs: the
+    per-row and shared profiles are recorded in the lock, and the runtime inputs
+    are bound from it at fulfillment.
+    """
+    assert authored.rows is not None  # guaranteed by the dialect model
+    index, index_pin = _resolve_row_index(
+        str(authored.rows.index), context.repo_root, field="figure.rows.index"
+    )
+    try:
+        resolved_rows = expand_row_selector(authored.rows, index)
+    except RowSelectionError as exc:
+        _reject(
+            _ROW_SELECTION_REJECTIONS.get(
+                exc.code, ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+            ),
+            "figure.rows",
+            f"the authored row selector does not resolve against {authored.rows.index!r}: "
+            f"{exc}",
+            correct_home="a row selector names rows the index declares; a slice the index "
+            "does not carry belongs in the index",
+        )
+    request = _figure_row_expansion_request(context, authored)
+    try:
+        document = expand_figure_rows_structure(
+            context.parent.pinned.document, request, resolved_rows
+        )
+    except (ValueError, KeyError, TypeError) as exc:
+        _reject(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "figure.mode",
+            f"{context.parent.ref} cannot be expanded per row: {exc}",
+            correct_home="the base figure is the single-row scientific statement the "
+            "expansion repeats; express it through panels and trace families",
+        )
     return LoweredLayer(
-        contract=contract,
-        deltas=_one_delta(context, [], delta),
+        contract=FIGURE_OUTPUT,
+        deltas=(),
+        document=document,
+        references=[*references, index_pin],
+        identity_contributions={
+            "figure_row_expansion": request.model_dump(mode="json", exclude_none=True),
+            "resolved_row_set": resolved_rows.model_dump(mode="json", exclude_none=True),
+        },
+    )
+
+
+def _figure_row_expansion_request(
+    context: LayerCompileContext, authored: FigureLayerAuthoring
+) -> FigureRowExpansionRequest:
+    """Build the closed expansion request the envelope's figure layer states."""
+    try:
+        return FigureRowExpansionRequest(
+            figure_name=context.envelope.name,
+            rows=authored.rows,  # type: ignore[arg-type]
+            inputs={item.input_role: item.role_reference() for item in authored.inputs},
+            role_contracts=[
+                FigureRoleBindingContract.model_validate(
+                    item.contract.binding_contract(item.input_role)
+                )
+                for item in authored.inputs
+                if item.contract is not None
+            ],
+            assembler_title=authored.assembler_title,
+        )
+    except (ValueError, TypeError) as exc:
+        _reject(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "figure.inputs",
+            f"the authored figure inputs are not one expansion request: {exc}",
+            correct_home="every input role states its per-row or shared profile and the "
+            "closed artifact contract that profile must satisfy",
+        )
+
+
+def _resolve_row_index(
+    ref: str, repo_root: Path, *, field: str
+) -> tuple[AuthenticatedRowIndex, ContentPinReference]:
+    """Load and pin the authenticated row index one selector names."""
+    pinned = load_pinned(repo_root, ref)
+    if pinned is None:
+        _reject(
+            ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
+            field,
+            f"{ref!r} is not a readable repo-relative JSON document",
+        )
+    try:
+        index = AuthenticatedRowIndex.model_validate(dict(pinned.document))
+    except (ValueError, TypeError) as exc:
+        _reject(
+            ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
+            field,
+            f"{ref!r} is not a valid {ROW_INDEX_SCHEMA_ID} document: {exc}",
+            correct_home="a row selector is expanded against an authenticated row index; "
+            "a row slice is expressed as one, not as a list inside the envelope",
+        )
+    return index, ContentPinReference(ref=ref, content_hash=pinned.content_hash)
+
+
+def _lower_figure_composition(
+    context: LayerCompileContext,
+    authored: FigureLayerAuthoring,
+    references: list[Any],
+) -> LoweredLayer:
+    """Compose the parent figure into a content-pinned composition document."""
+    assert authored.delta is not None  # guaranteed by the dialect model
+    if context.parent.kind != "frozen_document":
+        _reject(
+            ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
+            "envelope.base",
+            f"a composition figure content-pins its parent by repo-relative path, and "
+            f"{context.parent.ref!r} is an {context.parent.kind!r} whose document this "
+            "engine produces rather than tracks",
+            correct_home="a composition figure names a tracked frozen figure document; "
+            "chaining envelopes is what an alias base does, and it composes by delta "
+            "rather than by pin",
+        )
+    document = {
+        "schema_id": FIGURE_COMPOSITION_OUTPUT.schema_id,
+        "schema_version": FIGURE_COMPOSITION_OUTPUT.schema_version,
+        "parent": {
+            "ref": context.parent.ref,
+            "sha256": context.parent.pinned.content_hash,
+        },
+        "deltas": [authored.delta.model_dump(mode="json", exclude_none=True)],
+    }
+    return LoweredLayer(
+        contract=FIGURE_COMPOSITION_OUTPUT,
+        deltas=(),
+        document=document,
         references=references,
     )
 
@@ -1063,19 +1296,22 @@ class EnvelopeKernel:
         )
 
     def _compose(self, context: LayerCompileContext, lowered: LoweredLayer) -> dict[str, Any]:
-        """Apply the lowered layers to the parent and prove the result is valid."""
-        try:
-            document, _attribution, _written = apply_composition_deltas(
-                deepcopy(dict(context.parent.pinned.document)), list(lowered.deltas)
-            )
-        except ValueError as exc:
-            _reject(
-                ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
-                context.envelope_ref,
-                f"the envelope's deltas do not apply to {context.parent.ref}: {exc}",
-                correct_home="a delta states what changes relative to the base it inherits, "
-                "and acknowledges every ancestor-written path it overwrites",
-            )
+        """Apply or take the lowered document and prove the result is valid."""
+        if lowered.document is not None:
+            document = deepcopy(dict(lowered.document))
+        else:
+            try:
+                document, _attribution, _written = apply_composition_deltas(
+                    deepcopy(dict(context.parent.pinned.document)), list(lowered.deltas)
+                )
+            except ValueError as exc:
+                _reject(
+                    ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+                    context.envelope_ref,
+                    f"the envelope's deltas do not apply to {context.parent.ref}: {exc}",
+                    correct_home="a delta states what changes relative to the base it "
+                    "inherits, and acknowledges every ancestor-written path it overwrites",
+                )
         try:
             lowered.contract.model().model_validate(document)
         except Exception as exc:  # noqa: BLE001 - any model failure is one rejection
@@ -1086,7 +1322,37 @@ class EnvelopeKernel:
                 correct_home="the compiled document must be a member of the Feedbax family "
                 "its layer produces; the envelope's delta is what makes it one",
             )
+        self._validate_declared_params(context, lowered.contract, document)
         return document
+
+    def _validate_declared_params(
+        self,
+        context: LayerCompileContext,
+        contract: LayerOutputContract,
+        document: Mapping[str, Any],
+    ) -> None:
+        """Validate an inner ``params`` block against the model its type names.
+
+        A top-level document that delegates its authored content to ``params``
+        would otherwise be validated only as far as ``dict[str, Any]``, and the
+        family's real authored contract would never be checked at compile time at
+        all. The content type is read from the document's own discriminator.
+        """
+        model = contract.params_model(document)
+        if model is None:
+            return
+        try:
+            model.model_validate(document.get("params"))
+        except Exception as exc:  # noqa: BLE001 - any model failure is one rejection
+            discriminator = str(contract.params_discriminator)
+            _reject(
+                ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+                f"{context.envelope_ref}#params",
+                f"the compiled document's params are not valid for "
+                f"{discriminator}={document.get(discriminator)!r}: {exc}",
+                correct_home="the params block carries this content type's authored "
+                "contract; the base states it and the envelope's delta changes it",
+            )
 
     def compile_envelope_file(
         self,
@@ -1173,6 +1439,7 @@ def compiled_document_pin(document: Any) -> dict[str, str]:
 
 
 __all__ = [
+    "TRAINING_UNINHERITED_TOP_LEVEL_FIELDS",
     "EnvelopeCompileOutcome",
     "EnvelopeKernel",
     "EnvelopeLayout",

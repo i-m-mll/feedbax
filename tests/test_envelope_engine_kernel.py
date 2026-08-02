@@ -149,7 +149,7 @@ def test_per_layer_cap_refuses_the_layer_that_states_the_tighter_bound(
         "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
         "name": "loud",
         "reason": prose,
-        "training": {"tags": {"add": ["loud"]}},
+        "training": {"rows_mode": "append", "tags": {"add": ["loud"]}},
     }
     raw = (json.dumps(document, indent=2) + "\n").encode("utf-8")
 
@@ -479,7 +479,14 @@ def test_every_dialect_layer_compiles_to_its_feedbax_output_family(repo: Path) -
 
     compiled = {
         alias: compiler.compile_envelope_file(envelope_path(repo, alias), repo_root=repo)
-        for alias in ("widened", "widened-probe", "widened-summary", "widened-plot", "widened-report")
+        for alias in (
+            "widened",
+            "widened-probe",
+            "widened-summary",
+            "widened-plot",
+            "widened-overlay",
+            "widened-report",
+        )
     }
 
     assert {alias: outcome.layer.value for alias, outcome in compiled.items()} == {
@@ -487,6 +494,7 @@ def test_every_dialect_layer_compiles_to_its_feedbax_output_family(repo: Path) -
         "widened-probe": "evaluation",
         "widened-summary": "analysis",
         "widened-plot": "figure",
+        "widened-overlay": "figure",
         "widened-report": "report",
     }
     assert {alias: outcome.family for alias, outcome in compiled.items()} == {
@@ -494,6 +502,7 @@ def test_every_dialect_layer_compiles_to_its_feedbax_output_family(repo: Path) -
         "widened-probe": "evaluation_run_matrix",
         "widened-summary": "analysis_run",
         "widened-plot": "figure",
+        "widened-overlay": "figure_composition",
         "widened-report": "report",
     }
     assert {outcome.document["schema_id"] for outcome in compiled.values()} == {
@@ -501,7 +510,8 @@ def test_every_dialect_layer_compiles_to_its_feedbax_output_family(repo: Path) -
         "feedbax.spec.evaluation_run_matrix",
         "feedbax.spec.analysis_run",
         "feedbax.spec.figure",
-        "feedbax.spec.report.ordered_figure",
+        "feedbax.spec.figure_composition",
+        "feedbax.spec.report",
     }
 
 
@@ -603,7 +613,7 @@ def test_authored_not_applicability_is_recorded_rather_than_left_silent(repo: Pa
         if item["kind"] == "not_applicable"
     )
     assert absent["basis"] == "authored"
-    assert absent["role_path"] == "sections.0.tables.0"
+    assert absent["role_path"] == "params.sections.0.tables.0"
     assert "rule_id" not in absent
 
 
@@ -747,7 +757,7 @@ def test_an_envelope_alias_parent_resolves_and_pins_its_compiled_bytes(repo: Pat
             "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
             "name": "narrowed",
             "base": "widened",
-            "training": {"tags": {"add": ["narrowed"]}},
+            "training": {"rows_mode": "append", "tags": {"add": ["narrowed"]}},
         },
     )
     compiler = kernel()
@@ -769,7 +779,7 @@ def test_an_envelope_alias_cycle_is_refused(repo: Path) -> None:
                 "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
                 "name": alias,
                 "base": base,
-                "training": {"tags": {"add": [alias]}},
+                "training": {"rows_mode": "append", "tags": {"add": [alias]}},
             },
         )
 
@@ -859,7 +869,7 @@ def test_identical_tracked_bytes_report_ok(repo: Path) -> None:
 
     assert report.ok
     assert report.drift == ()
-    assert len(report.by_finding(ChokeFinding.IDENTICAL)) == 10
+    assert len(report.by_finding(ChokeFinding.IDENTICAL)) == 12
 
 
 def test_a_hand_edited_compiled_document_reports_structured_drift(repo: Path) -> None:
@@ -995,3 +1005,388 @@ def _regenerate(compiler: Any, repo: Path) -> None:
     out_dir = repo / OUTPUT_DIRECTORY
     for path in compiler.envelopes(repo):
         compiler.write_outputs(compiler.compile_envelope_file(path, repo_root=repo), out_dir)
+
+
+# -- the ratified equivalence corrections --------------------------------------
+
+
+def _training_layer(repo: Path, **changes: Any) -> None:
+    """Reauthor the training envelope's layer body in place."""
+    envelope = _read(repo, "widened")
+    envelope["training"] = {**envelope["training"], **changes}
+    _write(repo, "widened", envelope)
+
+
+def test_authored_only_runs_exactly_the_rows_the_envelope_authors(repo: Path) -> None:
+    _training_layer(repo, rows_mode="authored_only")
+
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert [row["row_id"] for row in outcome.document["rows"]] == ["widened"]
+    patches = outcome.compile_lock["resolved_deltas"]["widened.training"]["patches"]
+    assert ("rows", "replace") in [(patch["path"], patch["op"]) for patch in patches]
+
+
+def test_append_keeps_the_inherited_rows_running_beside_the_authored_ones(
+    repo: Path,
+) -> None:
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert [row["row_id"] for row in outcome.document["rows"]] == ["baseline", "widened"]
+
+
+def test_a_new_row_is_labelled_by_its_own_id_rather_than_its_sources(repo: Path) -> None:
+    write_json(
+        repo / TRAINING_BASE,
+        {
+            **json.loads((repo / TRAINING_BASE).read_text()),
+            "rows": [
+                {
+                    "row_id": "baseline",
+                    "label": "the baseline survey",
+                    "seed": 42,
+                    "overrides": [],
+                }
+            ],
+        },
+    )
+
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    rows = {row["row_id"]: row for row in outcome.document["rows"]}
+    assert rows["baseline"]["label"] == "the baseline survey"
+    assert rows["widened"]["label"] == "widened"
+
+
+def test_an_authored_row_label_is_carried_exactly(repo: Path) -> None:
+    envelope = _read(repo, "widened")
+    envelope["training"]["rows"][0]["label"] = "the widened survey"
+    _write(repo, "widened", envelope)
+
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    widened = next(row for row in outcome.document["rows"] if row["row_id"] == "widened")
+    assert widened["label"] == "the widened survey"
+
+
+def test_a_changed_row_inherits_none_of_its_sources_opaque_metadata(repo: Path) -> None:
+    """The source states facts about the experiment it was, not about this one."""
+    write_json(
+        repo / TRAINING_BASE,
+        {
+            **json.loads((repo / TRAINING_BASE).read_text()),
+            "rows": [
+                {
+                    "row_id": "baseline",
+                    "seed": 42,
+                    "overrides": [],
+                    "metadata": {"probe_delta": "none", "launch_set": "survey-1"},
+                }
+            ],
+        },
+    )
+
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    rows = {row["row_id"]: row for row in outcome.document["rows"]}
+    assert rows["baseline"]["metadata"] == {"probe_delta": "none", "launch_set": "survey-1"}
+    assert rows["widened"]["metadata"] == {"replaces": {"row": "baseline", "seed": 42}}
+
+
+def test_a_row_without_authored_replacement_carries_no_metadata_at_all(
+    repo: Path,
+) -> None:
+    envelope = _read(repo, "widened")
+    envelope["training"]["rows"][0].pop("replaces")
+    _write(repo, "widened", envelope)
+
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    widened = next(row for row in outcome.document["rows"] if row["row_id"] == "widened")
+    assert "metadata" not in widened
+
+
+def test_the_compiled_matrix_omits_the_parents_issue_and_opaque_metadata(
+    repo: Path,
+) -> None:
+    """Provenance lives in the lock; the parent's ticket is not this matrix's."""
+    write_json(
+        repo / TRAINING_BASE,
+        {
+            **json.loads((repo / TRAINING_BASE).read_text()),
+            "issue": "q0parent",
+            "metadata": {"orchestration_root": "/runs/survey-1"},
+        },
+    )
+
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert "issue" not in outcome.document
+    assert "metadata" not in outcome.document
+    assert outcome.compile_lock["issue"] == "q1a2b3c"
+
+
+def test_checkpoint_initialization_may_not_name_a_row_the_matrix_no_longer_runs(
+    repo: Path,
+) -> None:
+    envelope = _read(repo, "widened")
+    envelope["training"]["rows_mode"] = "authored_only"
+    envelope["training"]["checkpoint_initialization"][0]["row"] = "baseline"
+    _write(repo, "widened", envelope)
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.UNRESOLVED_ROW_KEY
+    assert "not a row this matrix runs" in str(excinfo.value)
+
+
+# -- figure mode ---------------------------------------------------------------
+
+
+def test_row_expansion_derives_the_multi_row_figure_from_the_row_index(
+    repo: Path,
+) -> None:
+    from tests.fake_project_experiment import ROW_INDEX_BASE
+
+    outcome = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+
+    document = outcome.document
+    assert document["schema_id"] == "feedbax.spec.figure"
+    assert [panel["name"] for panel in document["panels"]] == [
+        "row_1__span",
+        "row_2__span",
+    ]
+    assert [panel["title"] for panel in document["panels"]] == [
+        "near span — span",
+        "far span — span",
+    ]
+    assert document["assembler_params"]["height"] == 600
+    pins = [
+        item for item in outcome.compile_lock["references"] if item["kind"] == "content_pin"
+    ]
+    assert [pin["ref"] for pin in pins] == [ROW_INDEX_BASE]
+
+
+def test_row_expansion_names_no_produced_data_in_the_compiled_plan(repo: Path) -> None:
+    outcome = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+
+    assert not outcome.document.get("inputs")
+    assert not outcome.document.get("input_authorities")
+    assert outcome.compile_lock["references"][0]["kind"] == "planned_product"
+    check_plan_receipt_boundary(outcome.compile_lock)
+
+
+def test_the_expansion_request_and_resolved_rows_carry_execution_identity(
+    repo: Path,
+) -> None:
+    outcome = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+
+    contributions = outcome.compile_lock["identity_contributions"]
+    request = contributions["figure_row_expansion"]
+    assert request["schema_id"] == "feedbax.spec.figure_row_expansion_request"
+    assert request["inputs"] == {"observed": {"per_row": "observations"}}
+    assert [contract["input_role"] for contract in request["role_contracts"]] == ["observed"]
+    assert contributions["resolved_row_set"]["row_ids"] == ["near-span", "far-span"]
+    assert outcome.compile_lock["execution_identity"]["inputs"] == [
+        "compiled_document.content_hash",
+        "identity_contributions.figure_row_expansion",
+        "identity_contributions.resolved_row_set",
+    ]
+
+
+def test_composition_compiles_to_a_composition_document_pinning_its_parent(
+    repo: Path,
+) -> None:
+    from tests.fake_project_experiment import FIGURE_BASE
+
+    outcome = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-overlay"), repo_root=repo
+    )
+
+    assert outcome.document["schema_id"] == "feedbax.spec.figure_composition"
+    assert outcome.document["parent"]["ref"] == FIGURE_BASE
+    assert outcome.document["parent"]["sha256"] == canonical_sha256(
+        json.loads((repo / FIGURE_BASE).read_text())
+    )
+    assert [delta["layer_id"] for delta in outcome.document["deltas"]] == [
+        "widened-overlay"
+    ]
+
+
+def test_the_same_base_under_two_modes_produces_two_different_families(
+    repo: Path,
+) -> None:
+    """A filename never selects semantics; the authored mode does."""
+    compiler = kernel()
+
+    expanded = compiler.compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+    composed = compiler.compile_envelope_file(
+        envelope_path(repo, "widened-overlay"), repo_root=repo
+    )
+
+    assert expanded.compile_lock["base"]["ref"] == composed.compile_lock["base"]["ref"]
+    assert (expanded.family, composed.family) == ("figure", "figure_composition")
+
+
+def test_a_composition_document_is_not_an_experiment_parent(repo: Path) -> None:
+    from tests.fake_project_experiment import FIGURE_BASE
+
+    write_json(
+        repo / "bases" / "composed.figure_composition.json",
+        {
+            "schema_id": "feedbax.spec.figure_composition",
+            "schema_version": "feedbax.spec.figure_composition.v2",
+            "parent": {"ref": FIGURE_BASE, "sha256": "a" * 64},
+            "deltas": [{"layer_id": "prior", "patches": []}],
+        },
+    )
+    _reauthor(repo, "widened-overlay", base="bases/composed.figure_composition.json")
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        kernel().compile_envelope_file(envelope_path(repo, "widened-overlay"), repo_root=repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.CROSS_FAMILY_BASE
+
+
+def test_a_composition_parent_is_pinned_by_path_so_an_alias_is_refused(
+    repo: Path,
+) -> None:
+    _reauthor(repo, "widened-overlay", base="widened-plot")
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        kernel().compile_envelope_file(envelope_path(repo, "widened-overlay"), repo_root=repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
+    assert "content-pins its parent" in str(excinfo.value)
+
+
+def test_a_row_index_that_is_not_one_is_refused_by_identity(repo: Path) -> None:
+    write_json(repo / "bases" / "notes.json", {"schema_id": "quillon.notes", "rows": []})
+    envelope = _read(repo, "widened-plot")
+    envelope["figure"]["rows"] = {"mode": "all", "index": "bases/notes.json"}
+    _write(repo, "widened-plot", envelope)
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        kernel().compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
+    assert "feedbax.spec.authenticated_row_index" in str(excinfo.value)
+
+
+def test_a_selector_that_resolves_to_no_rows_is_an_empty_selection(repo: Path) -> None:
+    from tests.fake_project_experiment import ROW_INDEX_BASE
+
+    envelope = _read(repo, "widened-plot")
+    envelope["figure"]["rows"] = {"mode": "tag", "tag": "absent", "index": ROW_INDEX_BASE}
+    _write(repo, "widened-plot", envelope)
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        kernel().compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.EMPTY_SELECTION
+
+
+def test_an_input_role_without_a_declared_contract_is_refused(repo: Path) -> None:
+    envelope = _read(repo, "widened-plot")
+    envelope["figure"]["inputs"][0]["input_role"] = "unfilled"
+    envelope["figure"]["inputs"][0]["contract"] = {
+        "artifact_role": "span_observations",
+        "artifact_provider": "quillon.custody",
+    }
+    _write(repo, "widened-plot", envelope)
+
+    outcome = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+
+    request = outcome.compile_lock["identity_contributions"]["figure_row_expansion"]
+    assert list(request["inputs"]) == ["unfilled"]
+
+
+# -- the top-level report ------------------------------------------------------
+
+
+def test_the_report_layer_compiles_to_a_top_level_report_spec(repo: Path) -> None:
+    outcome = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-report"), repo_root=repo
+    )
+
+    document = outcome.document
+    assert document["schema_id"] == "feedbax.spec.report"
+    assert document["schema_version"] == "feedbax.spec.report.v1"
+    assert document["report_type"] == "feedbax.ordered_figure_report"
+    assert document["params"]["title"] == "Quillon widened span"
+    assert document["params"]["schema_id"] == "feedbax.spec.report.ordered_figure"
+    assert not document.get("inputs")
+
+
+def test_the_reports_params_are_validated_against_their_declared_content_type(
+    repo: Path,
+) -> None:
+    envelope = _read(repo, "widened-report")
+    envelope["report"]["delta"]["patches"] = [
+        {"path": "params.output_name", "op": "add", "value": "not/a/name.md"}
+    ]
+    _write(repo, "widened-report", envelope)
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        kernel().compile_envelope_file(envelope_path(repo, "widened-report"), repo_root=repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert excinfo.value.field is not None and excinfo.value.field.endswith("#params")
+    assert "output_name" in str(excinfo.value)
+
+
+def test_a_params_only_report_document_is_not_a_report_parent(repo: Path) -> None:
+    """The parent is the whole report; a bare ordered-figure block is not one."""
+    write_json(
+        repo / "bases" / "params_only.report.json",
+        {
+            "schema_id": "feedbax.spec.report.ordered_figure",
+            "schema_version": "feedbax.spec.report.ordered_figure.v3",
+            "title": "Quillon baseline span",
+            "sections": [{"title": "Span", "figures": [], "tables": []}],
+        },
+    )
+    _reauthor(repo, "widened-report", base="bases/params_only.report.json")
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        kernel().compile_envelope_file(envelope_path(repo, "widened-report"), repo_root=repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
+
+
+def test_a_schemaless_report_parent_is_refused_rather_than_admitted(repo: Path) -> None:
+    write_json(
+        repo / "bases" / "schemaless.report.json",
+        {"title": "Quillon baseline span", "sections": []},
+    )
+    _reauthor(repo, "widened-report", base="bases/schemaless.report.json")
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        kernel().compile_envelope_file(envelope_path(repo, "widened-report"), repo_root=repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
+
+
+def test_the_compiled_report_is_the_document_fulfillment_plans_against(
+    repo: Path,
+) -> None:
+    from feedbax.analysis.fulfillment_derivation import COMPILED_PRODUCT_KINDS
+
+    outcome = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-report"), repo_root=repo
+    )
+
+    kind = COMPILED_PRODUCT_KINDS[outcome.document["schema_id"]]
+    assert kind.layer == "report"
+    assert kind.executable
