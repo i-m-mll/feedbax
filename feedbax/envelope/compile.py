@@ -1206,13 +1206,54 @@ def _lower_report(context: LayerCompileContext) -> LoweredLayer:
         )
         for index, binding in enumerate(authored.bindings)
     ]
+    derived, owners = _binding_state_patches(context, authored, references)
+    _reject_authored_binding_overlap(authored.delta, owners, field="report.delta")
     return LoweredLayer(
         contract=REPORT_OUTPUT,
-        deltas=_one_delta(
-            context, _binding_state_patches(context, authored, references), authored.delta
-        ),
+        deltas=_one_delta(context, derived, authored.delta),
         references=references,
     )
+
+
+def _paths_overlap(left: str, right: str) -> bool:
+    """Whether two dotted paths address the same node or one inside the other."""
+    return left == right or left.startswith(f"{right}.") or right.startswith(f"{left}.")
+
+
+def _reject_authored_binding_overlap(
+    authored: MatrixCompositionDelta | None,
+    owners: Mapping[str, str],
+    *,
+    field: str,
+) -> None:
+    """Refuse an authored patch that lands on state a binding decided.
+
+    Binding-state reconciliation derives what the document says about a role
+    from the binding the envelope already stated. An authored patch over that
+    same node is a second authority for one fact, and the delta is applied after
+    the derivation, so the authored value would simply win: the compiled document
+    would state one thing and the compile lock another. There is no
+    acknowledgement for this, because acknowledging it would only record that the
+    author knew the two disagreed.
+
+    ``acknowledges_ancestor_paths`` is untouched by this rule. It records paths an
+    *ancestor* layer wrote that this envelope knowingly rewrites, which is a
+    different relationship from two layers of the same compile claiming one fact.
+    """
+    if authored is None or not owners:
+        return
+    for index, patch in enumerate(authored.patches):
+        for derived_path, role_path in owners.items():
+            if _paths_overlap(patch.path, derived_path):
+                _reject(
+                    ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+                    f"{field}.patches[{index}].path",
+                    f"{patch.path!r} lands on {derived_path!r}, which this compile derived "
+                    f"from the binding on {role_path!r}; the derivation and the patch are "
+                    "two authorities for one fact, and the patch is applied last",
+                    correct_home="a binding decides its role's state; state the role "
+                    "differently in the binding, or patch a path no binding decides",
+                )
 
 
 def _resolve_role_node(document: Mapping[str, Any], role_path: str) -> Any:
@@ -1325,8 +1366,12 @@ def _binding_state_patches(
     context: LayerCompileContext,
     authored: ReportLayerAuthoring,
     references: Sequence[Any],
-) -> list[OverridePatch]:
-    """Return the derived patches that make the document say what the lock says.
+) -> tuple[list[OverridePatch], dict[str, str]]:
+    """Return the derived patches, and which binding owns each path they write.
+
+    The ownership map is what makes an authored delta over derived state a
+    refusal rather than a silent overwrite: every derived path is attributable to
+    the one binding whose state it states.
 
     A report binding decides the *state* of one role. When the inherited document
     also describes that state — it says the role is included, or names the figure
@@ -1350,9 +1395,10 @@ def _binding_state_patches(
     """
     document = context.parent.pinned.document
     if str(document.get("report_type")) not in REPORT_BINDING_STATE_REPORT_TYPES:
-        return []
+        return [], {}
     params_model = REPORT_OUTPUT.params_model(document)
     patches: list[OverridePatch] = []
+    owners: dict[str, str] = {}
     for index, (binding, reference) in enumerate(zip(authored.bindings, references)):
         field = f"report.bindings[{index}]"
         node_model = _role_node_model(params_model, binding.role_path, field=field)
@@ -1363,14 +1409,16 @@ def _binding_state_patches(
             removals = _not_applicable_removals(node_model)
             if removals is None:
                 continue
-            patches.extend(
-                _not_applicable_state_patches(binding.role_path, node, reference, removals)
+            derived = _not_applicable_state_patches(
+                binding.role_path, node, reference, removals
             )
         else:
-            patches.extend(
-                _bound_state_patches(binding.role_path, node, reference, field=field)
+            derived = _bound_state_patches(
+                binding.role_path, node, reference, field=field
             )
-    return patches
+        patches.extend(derived)
+        owners.update({patch.path: binding.role_path for patch in derived})
+    return patches, owners
 
 
 def _state_patch(role_path: str, node: Mapping[str, Any], name: str, value: Any) -> OverridePatch:

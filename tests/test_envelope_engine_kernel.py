@@ -1988,6 +1988,93 @@ def test_a_section_already_stating_its_bound_applicability_is_replaced_not_added
     ]
 
 
+# -- an authored delta may not restate what a binding decided --------------------
+
+
+def _report_delta(repo: Path, patches: list[dict[str, Any]]) -> None:
+    """Give the report envelope one authored composition delta."""
+    envelope = _read(repo, "widened-report")
+    envelope["report"] = {
+        **envelope["report"],
+        "delta": {"layer_id": "widened-report", "patches": patches},
+    }
+    _write(repo, "widened-report", envelope)
+
+
+def _reconciled_section(repo: Path) -> None:
+    """Set up the compile whose binding derives state over section 0."""
+    _report_base_figure(repo, figure_spec_sha256="a" * 64, applicability="included")
+    _report_bindings(repo, [SECTION_NOT_APPLICABLE_BINDING])
+
+
+@pytest.mark.parametrize(
+    ("path", "op", "value"),
+    [
+        # the derived path itself
+        ("params.sections.0.applicability", "replace", "included"),
+        # a path under one the derivation removes
+        ("params.sections.0.figures.0.caption", "replace", "Widened span"),
+        # the node that contains every derived path
+        ("params.sections.0", "replace", {"title": "Span", "figures": []}),
+    ],
+)
+def test_an_authored_patch_over_binding_derived_state_is_refused(
+    repo: Path, path: str, op: str, value: Any
+) -> None:
+    """The delta is applied after the derivation, so it would simply win."""
+    _reconciled_section(repo)
+    _report_delta(repo, [{"path": path, "op": op, "value": value}])
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        _compile_report(repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert path in str(excinfo.value)
+    assert "params.sections.0" in str(excinfo.value)
+    assert str(excinfo.value.field).startswith("report.delta.patches[0]")
+
+
+def test_an_authored_patch_on_a_path_no_binding_decides_still_compiles(
+    repo: Path,
+) -> None:
+    """Only the derived nodes are closed to the delta; the rest of the report is not."""
+    _reconciled_section(repo)
+    _report_delta(
+        repo,
+        [
+            {"path": "params.title", "op": "replace", "value": "Quillon widened span"},
+            {"path": "params.sections.1", "op": "add", "value": {"title": "Appendix"}},
+        ],
+    )
+
+    outcome = _compile_report(repo)
+
+    assert outcome.document["params"]["title"] == "Quillon widened span"
+    assert outcome.document["params"]["sections"][1]["title"] == "Appendix"
+    assert outcome.document["params"]["sections"][0]["applicability"] == "not_applicable"
+
+
+def test_an_authored_delta_is_free_when_the_bindings_derive_nothing(repo: Path) -> None:
+    """No derivation, no owned paths: the ordinary authored delta is untouched."""
+    _report_bindings(
+        repo,
+        [
+            {
+                "role_path": "params.sections.0.figures.0",
+                "ref": {"kind": "not_applicable", "reason": "no panel was produced"},
+            }
+        ],
+    )
+    _report_delta(
+        repo,
+        [{"path": "params.sections.0.title", "op": "replace", "value": "Span"}],
+    )
+
+    outcome = _compile_report(repo)
+
+    assert outcome.document["params"]["sections"][0]["title"] == "Span"
+
+
 def test_recompiling_a_reconciled_section_derives_no_further_patch(repo: Path) -> None:
     """A reconciled base is a fixed point: the second compile changes nothing."""
     from tests.fake_project_experiment import REPORT_BASE
