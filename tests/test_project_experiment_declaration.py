@@ -426,3 +426,46 @@ def test_a_malformed_declaration_stops_before_any_compile(
     assert code == 1
     assert "cannot load the project declaration" in capsys.readouterr().err
     assert not (tmp_path / fixture.OUTPUT_DIRECTORY).exists()
+
+
+# --- declared directories may have more than one segment --------------------
+
+
+def test_a_nested_envelope_directory_owns_what_lies_under_it() -> None:
+    """``_validate_directory`` accepts any normalized relative path, so ownership
+    has to compare every segment. ``feedbax init`` writes ``specs/experiment`` by
+    default, so a first-segment-only comparison would leave a freshly initialized
+    project unable to compile any envelope it authored."""
+    declaration = dataclasses.replace(
+        fixture.PROJECT_DECLARATION,
+        envelope_directory="specs/experiment",
+        output_directory="generated",
+    )
+
+    assert declaration.owns_envelope_ref("specs/experiment/wide.envelope.json")
+    assert declaration.owns_envelope_ref("specs/experiment/nested/wide.envelope.json")
+    assert declaration.owns_envelope_ref("./specs/experiment/wide.envelope.json")
+    assert not declaration.owns_envelope_ref("specs/base/tally.json")
+    assert not declaration.owns_envelope_ref("specs.experiment/wide.envelope.json")
+    assert not declaration.owns_envelope_ref("elsewhere/wide.envelope.json")
+
+
+def test_a_nested_output_directory_still_refuses_a_compiled_base(tmp_path: Path) -> None:
+    """The same segment-prefix rule guards the compiled-output base refusal."""
+    from feedbax.contracts.experiment_envelope import ExperimentEnvelopeRejection
+    from feedbax.envelope import kernel_for
+
+    kernel = kernel_for(
+        dataclasses.replace(
+            fixture.PROJECT_DECLARATION,
+            envelope_directory="specs/experiment",
+            output_directory="build/generated",
+        )
+    )
+
+    kernel.refuse_compiled_output_base("specs/base/tally.json", "base")
+    kernel.refuse_compiled_output_base("build/other/tally.json", "base")
+    with pytest.raises(ExperimentEnvelopeRejection, match="compiled output"):
+        kernel.refuse_compiled_output_base("build/generated/wide.json", "base")
+    with pytest.raises(ExperimentEnvelopeRejection, match="compiled output"):
+        kernel.refuse_compiled_output_base("./build/generated/nested/wide.json", "base")

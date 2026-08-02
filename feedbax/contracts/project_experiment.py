@@ -129,6 +129,24 @@ def _validate_directory(value: str, name: str) -> str:
     return normalized
 
 
+def path_is_within(ref: str, directory: str) -> bool:
+    """Return whether repo-relative *ref* lies anywhere under *directory*.
+
+    Both sides are declared repo-relative POSIX paths, and a declared directory
+    may have any number of segments — ``_validate_directory`` accepts
+    ``specs/experiment`` exactly as it accepts ``studies``. So the comparison is
+    a full segment-prefix match: matching only the first segment would say that
+    ``specs/base/x.json`` lives in ``specs/experiment``, and would say that
+    nothing at all lives in a nested directory.
+
+    The reference is normalized first, so ``a/x``, ``./a/x``, and ``b/../a/x``
+    are one rule rather than three holes.
+    """
+    normalized = PurePosixPath(posixpath.normpath(ref.replace("\\", "/")))
+    expected = PurePosixPath(directory).parts
+    return normalized.parts[: len(expected)] == expected
+
+
 @dataclass(frozen=True)
 class ProjectExperimentDeclaration:
     """Everything one project declares about its authored experiments.
@@ -189,8 +207,7 @@ class ProjectExperimentDeclaration:
 
     def owns_envelope_ref(self, envelope_ref: str) -> bool:
         """Return whether *envelope_ref* lies in this project's envelope directory."""
-        normalized = posixpath.normpath(envelope_ref.replace("\\", "/"))
-        return PurePosixPath(normalized).parts[:1] == (self.envelope_directory,)
+        return path_is_within(envelope_ref, self.envelope_directory)
 
 
 def project_declaration_path(root: Path | str) -> Path:

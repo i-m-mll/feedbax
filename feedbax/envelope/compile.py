@@ -42,7 +42,6 @@ authenticated reference a previous run produced, and it may never author one.
 
 from __future__ import annotations
 
-import posixpath
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field as dataclass_field
@@ -100,7 +99,10 @@ from feedbax.contracts.experiment_envelope_dialect import (
     parse_experiment_envelope,
 )
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.project_experiment import ProjectExperimentDeclaration
+from feedbax.contracts.project_experiment import (
+    ProjectExperimentDeclaration,
+    path_is_within,
+)
 from feedbax.contracts.run_matrix import (
     MatrixCompositionDelta,
     apply_composition_deltas,
@@ -859,8 +861,7 @@ class EnvelopeKernel:
         The path is normalized first, so ``out/x.json``, ``./out/x.json``, and
         ``specs/../out/x.json`` are one rule rather than three holes.
         """
-        normalized = posixpath.normpath(base)
-        if PurePosixPath(normalized).parts[:1] != (self.layout.output_directory,):
+        if not path_is_within(base, self.layout.output_directory):
             return
         _reject(
             ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
