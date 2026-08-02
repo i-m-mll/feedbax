@@ -22,6 +22,7 @@ from feedbax.analysis.fulfillment_plan import (
     FULFILLMENT_PLAN_SCHEMA_ID,
     FULFILLMENT_PLAN_SCHEMA_VERSION_V1,
     FULFILLMENT_PLAN_SUPPORTED_SCHEMA_VERSIONS,
+    ConflictingNodeDeclarationError,
     DuplicateInputEdgeError,
     DuplicateLogicalKeyError,
     EdgeDeclaration,
@@ -306,6 +307,67 @@ def test_two_refs_claiming_one_logical_key_refuse(corpus: _Corpus) -> None:
         expand_fulfillment_plan(target, expand=corpus.expand)
     assert caught.value.key == LogicalKey(SAMPLE_LAYER, "collided")
     assert "sample:collided" in str(caught.value)
+
+
+def test_two_declarations_of_one_node_that_disagree_refuse_rather_than_first_winning() -> None:
+    """A repeat states the same node twice; a conflict states two nodes at one address.
+
+    Two entries at one logical key sharing a source ref used to be admitted
+    without comparing anything else they said, so a second declaration could
+    restate the node's pinned document, the schema it is lowered by, its
+    execution identity, or its boundary, and be discarded in favour of whichever
+    the loader happened to see first. Nothing downstream could report the
+    discarded claim, because nothing downstream ever saw it.
+    """
+    key = LogicalKey(DIGEST_LAYER, "restated")
+    honest = PlanNode(
+        key=key,
+        source_ref="restated.decl",
+        kind=DIGEST_KIND,
+        content_hash="a" * 64,
+        execution_identity="b" * 64,
+    )
+    restated = PlanNode(
+        key=key,
+        source_ref="restated.decl",
+        kind=DIGEST_KIND,
+        content_hash="c" * 64,
+        execution_identity="b" * 64,
+    )
+
+    with pytest.raises(ConflictingNodeDeclarationError) as caught:
+        build_fulfillment_plan(key, (honest, restated), ())
+
+    differences = caught.value.differences
+    assert any(difference.startswith("content_hash:") for difference in differences)
+    assert "a" * 64 in str(caught.value) and "c" * 64 in str(caught.value)
+    assert caught.value.key == key
+
+
+def test_a_genuinely_repeated_node_declaration_is_still_one_node() -> None:
+    """Stating the same node twice says one thing twice, and is admitted."""
+    key = LogicalKey(DIGEST_LAYER, "repeated")
+    node = PlanNode(
+        key=key, source_ref="repeated.decl", kind=DIGEST_KIND, content_hash="d" * 64
+    )
+    plan = build_fulfillment_plan(key, (node, node), ())
+    assert len(plan.nodes) == 1
+    assert plan.nodes[0].content_hash == "d" * 64
+
+
+def test_a_restated_boundary_that_disagrees_refuses_at_plan_construction() -> None:
+    """Erasing a boundary on a second declaration is a disagreement, not a repeat."""
+    key = LogicalKey(DIGEST_LAYER, "bounded")
+    bounded = PlanNode(
+        key=key, source_ref="bounded.decl", kind=DIGEST_KIND, boundary="some.boundary"
+    )
+    unbounded = PlanNode(key=key, source_ref="bounded.decl", kind=DIGEST_KIND)
+
+    with pytest.raises(ConflictingNodeDeclarationError) as caught:
+        build_fulfillment_plan(key, (bounded, unbounded), ())
+    assert any(
+        difference.startswith("boundary:") for difference in caught.value.differences
+    )
 
 
 def test_a_reference_cycle_is_a_structured_refusal(corpus: _Corpus) -> None:
