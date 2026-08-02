@@ -8,6 +8,8 @@ import jax.numpy as jnp
 import jax.tree as jt
 import numpy as np
 import pytest
+import equinox as eqx
+from equinox.nn import State, StateIndex
 
 from feedbax.analysis import (
     EvaluationStateIdentity,
@@ -15,10 +17,12 @@ from feedbax.analysis import (
     EvaluationStateProvenance,
     TrialStructureError,
     capture_evaluation_state,
+    compiled_task_rollout,
     compiled_trial_rollout,
     stack_trials,
 )
 from feedbax.contracts.manifest import EvaluationRunSpec
+from feedbax.runtime.graph import Component
 
 
 class _Context(NamedTuple):
@@ -27,6 +31,73 @@ class _Context(NamedTuple):
     transition: jax.Array
     command: jax.Array
     gain: jax.Array
+
+
+class _LatchedPulse(Component):
+    input_ports = ("signal", "base", "magnitude", "active")
+    output_ports = ("force",)
+
+    latched_index: StateIndex
+    threshold: jax.Array
+
+    def __init__(self, threshold: float) -> None:
+        self.threshold = jnp.asarray(threshold)
+        self.latched_index = StateIndex(jnp.asarray(False))
+
+    def __call__(self, inputs: dict[str, jax.Array], state: Any, *, key: jax.Array):
+        del key
+        latched = state.get(self.latched_index) | (
+            inputs["active"] & (inputs["signal"] >= self.threshold)
+        )
+        state = state.set(self.latched_index, latched)
+        force = inputs["base"] + jnp.where(latched, inputs["magnitude"], 0.0)
+        return {"force": force}, state
+
+
+class _ComponentTask(eqx.Module):
+    """Frozen task operand that owns both the component and the rollout scan."""
+
+    pulse: _LatchedPulse
+
+    def rollout(self, controller_gain: jax.Array, trial: "_ComponentTrial") -> jax.Array:
+        def step(carry, inputs):
+            component_state, position = carry
+            signal, base = inputs
+            outputs, component_state = self.pulse(
+                {
+                    "signal": signal,
+                    "base": controller_gain * base,
+                    "magnitude": trial.magnitude,
+                    "active": trial.active,
+                },
+                component_state,
+                key=jax.random.PRNGKey(0),
+            )
+            position = position + outputs["force"]
+            return (component_state, position), position
+
+        _, positions = jax.lax.scan(
+            step,
+            (State(self.pulse), trial.initial_position),
+            (trial.signal, trial.base),
+        )
+        return positions
+
+
+class _ComponentTrial(NamedTuple):
+    initial_position: jax.Array
+    signal: jax.Array
+    base: jax.Array
+    magnitude: jax.Array
+    active: jax.Array
+
+
+def _rollout_component_task(
+    task: _ComponentTask,
+    controller_gain: jax.Array,
+    trial: _ComponentTrial,
+) -> jax.Array:
+    return task.rollout(controller_gain, trial)
 
 
 class _Trial(NamedTuple):
@@ -181,6 +252,59 @@ def test_compiled_rollout_is_bit_identical_to_python_loop() -> None:
     scalar = stack_trials([_rollout_trial(context, trial) for trial in trials])
 
     _assert_bit_identical(compiled, scalar)
+
+
+def test_compiled_task_rollout_keeps_stateful_component_and_trial_overrides() -> None:
+    task = _ComponentTask(pulse=_LatchedPulse(threshold=0.0))
+    trials = [
+        _ComponentTrial(
+            initial_position=jnp.asarray(0.0),
+            signal=jnp.asarray([-1.0, 0.0, 1.0, 1.0]),
+            base=jnp.ones((4,)),
+            magnitude=jnp.asarray(2.0),
+            active=jnp.asarray(True),
+        ),
+        _ComponentTrial(
+            initial_position=jnp.asarray(0.0),
+            signal=jnp.asarray([-1.0, 0.0, 1.0, 1.0]),
+            base=jnp.ones((4,)),
+            magnitude=jnp.asarray(2.0),
+            active=jnp.asarray(False),
+        ),
+    ]
+    controller_gain = jnp.asarray(0.5)
+    rollout = compiled_task_rollout(_rollout_component_task)
+
+    compiled = rollout(task, controller_gain, stack_trials(trials))
+    direct = stack_trials(
+        [_rollout_component_task(task, controller_gain, trial) for trial in trials]
+    )
+
+    _assert_bit_identical(compiled, direct)
+    assert not jnp.array_equal(compiled[0], compiled[1])
+    assert jnp.array_equal(compiled[1], jnp.asarray([0.5, 1.0, 1.5, 2.0]))
+
+
+def test_compiled_task_rollout_requires_a_callable() -> None:
+    with pytest.raises(TypeError, match="per_trial must be callable"):
+        compiled_task_rollout(object())  # type: ignore[arg-type]
+
+
+def test_compiled_task_rollout_rejects_an_omitted_task_operand() -> None:
+    trials = stack_trials(
+        [
+            _ComponentTrial(
+                initial_position=jnp.asarray(0.0),
+                signal=jnp.zeros((1,)),
+                base=jnp.zeros((1,)),
+                magnitude=jnp.asarray(0.0),
+                active=jnp.asarray(False),
+            )
+        ]
+    )
+
+    with pytest.raises(TypeError, match="complete non-None task"):
+        compiled_task_rollout(_rollout_component_task)(None, jnp.asarray(1.0), trials)
 
 
 def test_capture_prefix_once_and_resume_multiple_rows() -> None:
