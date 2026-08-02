@@ -1,0 +1,340 @@
+"""Binding a row-expanded figure's per-row roles from produced custody.
+
+A row-expanded figure is compiled as *structure*: the ``row_{n}__`` namespaces,
+the panel placement and titles, the legend ownership, the assembler height. What
+it deliberately does not carry is which produced artifact fills each expanded
+row's roles, because authenticating one takes a run and a compile is a plan.
+
+The compile therefore records three facts and stops: the expansion request
+(:class:`~feedbax.contracts.figure_roles.FigureRowExpansionRequest`), the rows it
+resolved (:class:`~feedbax.contracts.row_index.ResolvedRowSet`), and — when any
+role is filled per row — where the custody bindings for those rows will be
+(:class:`~feedbax.contracts.figure_roles.FigureRowCustodyLocator`). This module
+is the other end: at fulfillment, once the rows have actually been produced, it
+locates that custody document, proves it belongs to this expansion, and turns it
+into the runtime overlay the figure executes with.
+
+## Where custody lands, and where it does not
+
+The bound parents and their input authorities are a *runtime overlay*
+(:attr:`~feedbax.analysis.fulfillment_adapters.FigureNodeRequest.runtime_inputs`),
+never an edit to the compiled document. Digests and byte sizes stay outside the
+figure's scientific identity, which is the same boundary the compile drew.
+
+## Only per-row roles come from here
+
+A ``shared`` role names one manifest for every row, states an ordinary reference
+in the envelope, and is therefore bound by the ordinary plan-edge path from an
+admitted receipt. Binding it a second time from the authored key would be two
+bindings that can disagree, so this module contributes the per-row roles and
+nothing else.
+
+## Every failure is a refusal
+
+An absent locator, an absent document, a document belonging to another index or
+another cut of the same index, a row or binding key the document does not carry,
+and a role left pending after resolution are each refused by name. None of them
+is an inapplicability: a per-row role the declaration states is required, and a
+figure that rendered without it would silently be a different figure.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from feedbax.analysis.fulfillment_derivation import (
+    CompiledEnvelope,
+    FulfillmentDerivationError,
+)
+from feedbax.contracts.figures import FigureInputAuthority, FigureInputAuthoritySpec
+from feedbax.contracts.figure_roles import (
+    FigureRoleReferenceError,
+    FigureRowCustodyLocator,
+    FigureRowExpansionRequest,
+    figure_input_binding_records,
+    per_row_binding_keys,
+    resolve_figure_input_roles,
+)
+from feedbax.contracts.manifest import ParentRef
+from feedbax.contracts.row_index import (
+    ResolvedRowSet,
+    RowIndexCustodyBindings,
+    RowSelectionError,
+    load_row_index_custody_bindings,
+)
+
+#: The identity-contribution keys a row-expanded figure's compile records. They
+#: are the compiler's own naming, restated here so a reader can find them without
+#: a compiler.
+ROW_EXPANSION_CONTRIBUTION = "figure_row_expansion"
+RESOLVED_ROW_SET_CONTRIBUTION = "resolved_row_set"
+ROW_CUSTODY_CONTRIBUTION = "row_custody"
+
+
+class RowCustodyFulfillmentError(FulfillmentDerivationError):
+    """A row-expanded figure's per-row custody cannot be located or believed.
+
+    Every instance names the compiled node it refuses, so the refusal points at a
+    declaration or a missing production rather than at this module.
+    """
+
+    def __init__(self, message: str, *, ref: str, custody_ref: str | None = None) -> None:
+        self.ref = ref
+        self.custody_ref = custody_ref
+        super().__init__(f"{ref}: {message}")
+
+
+@dataclass(frozen=True)
+class RowExpansionRecord:
+    """What one compiled figure's lock says about its row expansion.
+
+    ``locator`` is ``None`` exactly when the expansion fills no role per row, in
+    which case there is no custody to find.
+    """
+
+    request: FigureRowExpansionRequest
+    resolved_rows: ResolvedRowSet
+    locator: FigureRowCustodyLocator | None
+
+    @property
+    def per_row_keys(self) -> tuple[str, ...]:
+        """Return the per-row binding keys this expansion's roles require."""
+        return per_row_binding_keys(self.request)
+
+
+@dataclass(frozen=True)
+class RowCustodyOverlay:
+    """The runtime overlay one figure's per-row custody binds.
+
+    Attributes:
+        inputs: The authenticated per-row parents, in expansion order.
+        authorities: One input authority per bound parent, in the same order.
+        bindings: The custody document the overlay was derived from.
+        path: Where that document was read from.
+    """
+
+    inputs: tuple[ParentRef, ...]
+    authorities: tuple[FigureInputAuthoritySpec, ...]
+    bindings: RowIndexCustodyBindings
+    path: Path
+
+
+def read_row_expansion_record(compiled: CompiledEnvelope) -> RowExpansionRecord | None:
+    """Return what one compiled output's lock states about its row expansion.
+
+    Returns ``None`` for every compiled output that is not a row-expanded figure,
+    which is how a caller distinguishes "this node has no per-row custody" from
+    "this node's per-row custody is broken" without inspecting layers itself.
+
+    Raises:
+        RowCustodyFulfillmentError: The lock carries a row-expansion contribution
+            that is incomplete or does not validate. A half-recorded expansion is
+            a broken lock, not an absent one.
+    """
+    ref = str(compiled.lock_path)
+    contributions = compiled.lock.get("identity_contributions")
+    if not isinstance(contributions, Mapping) or ROW_EXPANSION_CONTRIBUTION not in contributions:
+        return None
+    request = _validated(
+        FigureRowExpansionRequest,
+        contributions.get(ROW_EXPANSION_CONTRIBUTION),
+        ref=ref,
+        what=ROW_EXPANSION_CONTRIBUTION,
+    )
+    if RESOLVED_ROW_SET_CONTRIBUTION not in contributions:
+        raise RowCustodyFulfillmentError(
+            f"records a {ROW_EXPANSION_CONTRIBUTION!r} identity contribution but no "
+            f"{RESOLVED_ROW_SET_CONTRIBUTION!r}; a row expansion is the request and the rows "
+            "it was expanded against, and one without the other addresses nothing",
+            ref=ref,
+        )
+    resolved_rows = _validated(
+        ResolvedRowSet,
+        contributions.get(RESOLVED_ROW_SET_CONTRIBUTION),
+        ref=ref,
+        what=RESOLVED_ROW_SET_CONTRIBUTION,
+    )
+    locator = (
+        _validated(
+            FigureRowCustodyLocator,
+            contributions.get(ROW_CUSTODY_CONTRIBUTION),
+            ref=ref,
+            what=ROW_CUSTODY_CONTRIBUTION,
+        )
+        if ROW_CUSTODY_CONTRIBUTION in contributions
+        else None
+    )
+    return RowExpansionRecord(request=request, resolved_rows=resolved_rows, locator=locator)
+
+
+def resolve_row_custody_overlay(
+    compiled: CompiledEnvelope, *, repo_root: Path | str | None
+) -> RowCustodyOverlay | None:
+    """Bind one compiled row-expanded figure's per-row roles, or refuse.
+
+    Returns ``None`` when the compiled output is not a row-expanded figure, or is
+    one whose every role is shared, because neither has a per-row role to fill.
+    Every other outcome is either a complete overlay or a named refusal: there is
+    no partial binding and no fallback to the pending state the compile recorded,
+    which would render a figure missing the data it exists to show.
+
+    Args:
+        compiled: The lock/document pair the figure node executes.
+        repo_root: The trusted repository root the custody ref is resolved
+            against. A row-expanded figure whose environment declares none is
+            refused rather than resolved against the process working directory.
+
+    Raises:
+        RowCustodyFulfillmentError: The custody document is undeclared, absent,
+            unreadable, foreign to this expansion, or incomplete for it.
+    """
+    record = read_row_expansion_record(compiled)
+    if record is None:
+        return None
+    ref = str(compiled.lock_path)
+    keys = record.per_row_keys
+    if not keys:
+        if record.locator is not None:
+            raise RowCustodyFulfillmentError(
+                "records a per-row custody locator while every input role is shared; a "
+                "shared role names its own manifest and binds no row custody",
+                ref=ref,
+            )
+        return None
+    locator = record.locator
+    if locator is None:
+        raise RowCustodyFulfillmentError(
+            f"fills the role(s) {list(keys)} once per expanded row from the row index's "
+            "custody, but its compile lock names no custody bindings document. State the "
+            "document in the figure envelope as 'row_custody' and recompile: a per-row role "
+            "that nothing addresses cannot be bound, and rendering the figure without it "
+            "would silently be a different figure",
+            ref=ref,
+        )
+    _require_locator_matches(locator, record.resolved_rows, ref=ref)
+    bindings, path = _load_custody(locator, repo_root=repo_root, ref=ref)
+    resolved = _resolve_inputs(record, bindings, ref=ref, custody_ref=locator.ref)
+    per_row = tuple(item for item in resolved.inputs if item.binding == "per_row")
+    inputs, authorities = figure_input_binding_records(record.request, per_row)
+    return RowCustodyOverlay(
+        inputs=tuple(ParentRef.model_validate(item) for item in inputs),
+        authorities=tuple(FigureInputAuthority.model_validate(item) for item in authorities),
+        bindings=bindings,
+        path=path,
+    )
+
+
+def _validated(model: type, payload: Any, *, ref: str, what: str):
+    try:
+        return model.model_validate(payload)
+    except (ValueError, TypeError) as exc:
+        raise RowCustodyFulfillmentError(
+            f"records an identity contribution {what!r} that is not a "
+            f"{model.__name__}: {exc}",
+            ref=ref,
+        ) from exc
+
+
+def _require_locator_matches(
+    locator: FigureRowCustodyLocator, resolved_rows: ResolvedRowSet, *, ref: str
+) -> None:
+    """Prove the recorded locator addresses the rows this figure expanded over."""
+    if locator.index_id != resolved_rows.index_id:
+        raise RowCustodyFulfillmentError(
+            f"names custody for row index {locator.index_id!r} while it expanded over "
+            f"{resolved_rows.index_id!r}; one lock cannot describe two row sets",
+            ref=ref,
+            custody_ref=locator.ref,
+        )
+    if locator.index_sha256 != resolved_rows.index_sha256:
+        raise RowCustodyFulfillmentError(
+            f"names custody pinned to row index digest {locator.index_sha256} while its "
+            f"resolved rows were expanded against {resolved_rows.index_sha256}; the lock "
+            "describes two cuts of one index and neither can be trusted for the other",
+            ref=ref,
+            custody_ref=locator.ref,
+        )
+
+
+def _load_custody(
+    locator: FigureRowCustodyLocator, *, repo_root: Path | str | None, ref: str
+) -> tuple[RowIndexCustodyBindings, Path]:
+    """Read the custody document one locator names, or refuse by name."""
+    if repo_root is None:
+        raise RowCustodyFulfillmentError(
+            f"binds per-row custody from {locator.ref!r}, which is a repo-relative path, but "
+            "the fulfillment environment declares no repo_root. A custody document is "
+            "resolved against a declared repository, never against a working directory",
+            ref=ref,
+            custody_ref=locator.ref,
+        )
+    path = Path(repo_root) / locator.ref
+    if not path.is_file():
+        raise RowCustodyFulfillmentError(
+            f"binds per-row custody from {locator.ref!r}, which is not a file at {path}. The "
+            "custody bindings document is produced by the run receipt layer after the rows "
+            "have run; an absent one means not-yet-produced, wrong root, or deleted, and "
+            "never that the per-row roles do not apply",
+            ref=ref,
+            custody_ref=locator.ref,
+        )
+    try:
+        bindings = load_row_index_custody_bindings(path)
+    except (OSError, ValueError) as exc:
+        raise RowCustodyFulfillmentError(
+            f"binds per-row custody from {locator.ref!r}, which does not load as a "
+            f"RowIndexCustodyBindings document: {exc}",
+            ref=ref,
+            custody_ref=locator.ref,
+        ) from exc
+    if bindings.index_id != locator.index_id:
+        raise RowCustodyFulfillmentError(
+            f"binds per-row custody from {locator.ref!r}, whose bindings belong to row index "
+            f"{bindings.index_id!r} rather than {locator.index_id!r}",
+            ref=ref,
+            custody_ref=locator.ref,
+        )
+    return bindings, path
+
+
+def _resolve_inputs(
+    record: RowExpansionRecord,
+    bindings: RowIndexCustodyBindings,
+    *,
+    ref: str,
+    custody_ref: str,
+):
+    """Expand this figure's roles over its rows against located custody."""
+    try:
+        resolved = resolve_figure_input_roles(record.request, record.resolved_rows, bindings)
+    except (RowSelectionError, FigureRoleReferenceError) as exc:
+        raise RowCustodyFulfillmentError(
+            f"binds per-row custody from {custody_ref!r}, which does not satisfy this "
+            f"figure's declared roles over its expanded rows: {exc}",
+            ref=ref,
+            custody_ref=custody_ref,
+        ) from exc
+    if not resolved.fully_bound:
+        raise RowCustodyFulfillmentError(
+            f"binds per-row custody from {custody_ref!r} and is still awaiting a run receipt "
+            f"for {list(resolved.pending_roles)}; a located custody document that leaves a "
+            "declared role pending is incomplete for this figure",
+            ref=ref,
+            custody_ref=custody_ref,
+        )
+    return resolved
+
+
+__all__ = [
+    "RESOLVED_ROW_SET_CONTRIBUTION",
+    "ROW_CUSTODY_CONTRIBUTION",
+    "ROW_EXPANSION_CONTRIBUTION",
+    "RowCustodyFulfillmentError",
+    "RowCustodyOverlay",
+    "RowExpansionRecord",
+    "read_row_expansion_record",
+    "resolve_row_custody_overlay",
+]

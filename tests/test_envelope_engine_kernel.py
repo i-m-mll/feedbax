@@ -631,6 +631,7 @@ def test_an_identity_contribution_dropped_after_emission_is_refused(repo: Path) 
     assert set(lock["identity_contributions"]) == {
         "figure_row_expansion",
         "resolved_row_set",
+        "row_custody",
     }
     del lock["identity_contributions"]["resolved_row_set"]
 
@@ -1594,6 +1595,7 @@ def test_the_expansion_request_and_resolved_rows_carry_execution_identity(
         "compiled_document.content_hash",
         "identity_contributions.figure_row_expansion",
         "identity_contributions.resolved_row_set",
+        "identity_contributions.row_custody",
     ]
 
 
@@ -1825,6 +1827,8 @@ def test_a_figure_runtime_input_that_has_not_run_is_a_locator_in_the_lock(
         "manifest_kind": "quillon.survey_run",
         "manifest_id": "widened-plot-observed",
     }
+    # Nothing is filled per row any more, so there is no row custody to name.
+    envelope["figure"].pop("row_custody")
     _write(repo, "widened-plot", envelope)
 
     outcome = kernel().compile_envelope_file(

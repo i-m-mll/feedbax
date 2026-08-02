@@ -550,12 +550,22 @@ class FigureLayerAuthoring(DialectModel):
     expansion is derived, and a patch layered over a derived document would make
     the derivation negotiable.
 
+    When any role is filled per row, it also states ``row_custody``: the
+    repo-relative path of the
+    :class:`~feedbax.contracts.row_index.RowIndexCustodyBindings` document the
+    rows are produced into. That is a locator, not a production record — the
+    document is written after the rows run, and this envelope compiles whether or
+    not it exists yet — but it is stated rather than derived from the index id,
+    because a naming convention is a rule nothing states, and a per-row role that
+    nothing addresses can never be fulfilled.
+
     ``composition`` states the ordered deltas and nothing about rows.
     """
 
     mode: FigureLayerMode
     inputs: list[FigureInputAuthoring] = Field(default_factory=list)
     rows: RowSetSelector | None = None
+    row_custody: str | None = None
     assembler_title: str | None = None
     delta: FigureCompositionDelta | None = None
 
@@ -590,15 +600,35 @@ class FigureLayerAuthoring(DialectModel):
                 f"row_expansion figure inputs {sorted(unprofiled)} state no per-row or "
                 "shared binding profile; expansion cannot fill a role it cannot address"
             )
+        per_row = sorted(item.input_role for item in self.inputs if item.is_per_row)
+        if per_row and (self.row_custody is None or not self.row_custody.strip()):
+            raise ValueError(
+                f"row_expansion figure inputs {per_row} are filled per expanded row from the "
+                "row index's custody, so the envelope names the custody bindings document "
+                "those rows were produced into, by repo-relative path, as 'row_custody'. "
+                "The document itself is post-run and need not exist yet; what must exist is "
+                "the declaration of where it will be, because a figure whose per-row roles "
+                "nothing addresses can never be fulfilled"
+            )
+        if not per_row and self.row_custody is not None:
+            raise ValueError(
+                "a row_expansion figure states 'row_custody' only when a per-row role is "
+                "filled from it; every role here is shared, and a shared role names its own "
+                "manifest"
+            )
         return self
 
     def _validate_composition(self) -> "FigureLayerAuthoring":
         if self.delta is None:
             raise ValueError("a composition figure states the ordered deltas it composes")
-        if self.rows is not None or self.assembler_title is not None:
+        if (
+            self.rows is not None
+            or self.assembler_title is not None
+            or self.row_custody is not None
+        ):
             raise ValueError(
-                "a composition figure states no row set and no assembler title; those are "
-                "row_expansion vocabulary"
+                "a composition figure states no row set, no row custody, and no assembler "
+                "title; those are row_expansion vocabulary"
             )
         profiled = [item.input_role for item in self.inputs if item.is_row_expanded]
         if profiled:

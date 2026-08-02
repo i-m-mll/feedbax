@@ -669,6 +669,7 @@ class TestPerRowInputReference:
             figure={
                 "mode": "row_expansion",
                 "rows": {"mode": "all", "index": "bases/quillon.row_index.json"},
+                "row_custody": "custody/quillon.row_custody.json",
                 "inputs": [
                     {
                         "input_role": "observed",

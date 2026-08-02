@@ -35,6 +35,15 @@ whole closure before any node of any branch executes, naming each boundary node,
 the consumers that name it with their role paths, and the subtree its receipt
 would unblock.
 
+## Omissions are honored only under a rule this build owns
+
+An input the closure carries as ``not_applicable`` on a ``compiler_rule`` basis
+is honored on the strength of the rule it quotes. The plan kernel deliberately
+does not know what a rule *name* means, so :func:`preflight` proves it here,
+against the closed table in :mod:`feedbax.contracts.applicability_rules`. A rule
+this build cannot state certifies nothing, and the closure is refused rather than
+executed with an input neither bound nor proved inapplicable.
+
 ## Missing receipts are refusals
 
 An input the plan carries as an already-produced external receipt is resolved at
@@ -91,6 +100,10 @@ from feedbax.analysis.fulfillment_plan import (
 )
 from feedbax.analysis.exact_parents import StagedExactParentEntry
 from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
+from feedbax.contracts.applicability_rules import (
+    UnknownStructuralApplicabilityRuleError,
+    require_structural_applicability_rule,
+)
 from feedbax.contracts.manifest import (
     AnyManifest,
     ParentRef,
@@ -403,6 +416,65 @@ def external_parent_ref(
     return authenticated_manifest_ref(manifest, path, role), path
 
 
+class UncertifiedApplicabilityError(FulfillmentDriverError):
+    """The closure omits an input under a structural rule this build does not own.
+
+    A ``compiler_rule`` omission is honored on the strength of the rule it
+    quotes. A rule id this build cannot state certifies nothing, so the omission
+    is refused rather than executed around: the input is neither bound nor proved
+    inapplicable, and running the node would silently produce an artifact missing
+    an input nobody decided about.
+    """
+
+    def __init__(self, target: LogicalKey, failures: Sequence[tuple[PlanEdge, str]]) -> None:
+        self.target = target
+        self.failures = tuple(failures)
+        listing = "; ".join(
+            f"{edge.consumer.text} input {list(edge.role_path)}: {detail}"
+            for edge, detail in self.failures
+        )
+        super().__init__(
+            f"fulfilling {target.text} would honor {len(self.failures)} uncertified "
+            f"applicability decision(s): {listing}"
+        )
+
+    def record(self) -> dict[str, Any]:
+        """Return the structured refusal, deterministic in every field."""
+        return {
+            "target": self.target.text,
+            "uncertified": [
+                {
+                    "consumer": edge.consumer.text,
+                    "role_path": list(edge.role_path),
+                    "rule": edge.rule,
+                    "detail": detail,
+                }
+                for edge, detail in self.failures
+            ],
+        }
+
+
+def require_certified_applicability(plan: FulfillmentPlan) -> None:
+    """Refuse a plan that omits an input under a rule this build does not own.
+
+    The plan kernel deliberately does not know what a rule *name* means, so the
+    proof that a quoted rule is one of Feedbax's closed structural rules is made
+    here, where the closure is about to be executed. Every uncertified decision
+    in the closure is collected before any is raised, so one refusal names the
+    whole problem rather than the first instance of it.
+    """
+    failures: list[tuple[PlanEdge, str]] = []
+    for edge in sorted(plan.certified_omissions(), key=lambda item: item.sort_key):
+        try:
+            require_structural_applicability_rule(
+                edge.rule, ref=f"{edge.consumer.text} input {list(edge.role_path)}"
+            )
+        except UnknownStructuralApplicabilityRuleError as exc:
+            failures.append((edge, str(exc)))
+    if failures:
+        raise UncertifiedApplicabilityError(plan.target, failures)
+
+
 def require_no_external_boundary(plan: FulfillmentPlan) -> None:
     """Refuse a plan that needs a receipt only another entrypoint can produce."""
     boundary_nodes = plan.boundary_nodes()
@@ -439,9 +511,12 @@ def preflight(plan: FulfillmentPlan, index: CompiledOutputIndex) -> FulfillmentC
 
     Raises:
         ExternalBoundaryError: The closure names a boundary node.
+        UncertifiedApplicabilityError: An omission quotes a structural rule this
+            build does not own, so nothing certified it.
         PlanDocumentDriftError: A compiled document no longer hashes to its pin.
     """
     require_no_external_boundary(plan)
+    require_certified_applicability(plan)
     nodes: list[ClosureNode] = []
     for order, plan_node in enumerate(plan.nodes):
         compiled = index.require(plan_node.source_ref)
