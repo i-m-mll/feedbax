@@ -71,6 +71,7 @@ from feedbax.analysis.fulfillment import (
     admit_analysis_receipt,
     admit_evaluation_receipt,
     admit_figure_receipt,
+    admit_manifest_artifact_custody,
     admit_report_receipt,
 )
 from feedbax.analysis.manifest_inputs import resolve_manifest_input
@@ -872,6 +873,14 @@ def _bundle_stage_receipt(
     *raw* is that read and the receipt is built from it. A template product came
     back from the executor with no authenticated read behind it, so *raw* is
     ``None`` and the receipt performs the one read that authenticates it.
+
+    Either way that read authenticates the *manifest* and nothing it points at.
+    Reusing a cached stage product runs the full per-kind admission, artifact
+    byte custody included, so a freshly written product bound on manifest bytes
+    alone would carry weaker custody on its first run than the identical
+    artifacts carry on the next one. The artifact half of that admission is
+    therefore run here, against the manifest this run produced, before any
+    receipt is bound forward.
     """
     node_kind = _NODE_KIND_BY_MANIFEST_KIND.get(str(manifest.kind))
     if node_kind is None:
@@ -880,6 +889,11 @@ def _bundle_stage_receipt(
             f"is not a fulfillment receipt kind; supported="
             f"{sorted(_NODE_KIND_BY_MANIFEST_KIND)}"
         )
+    artifacts = admit_manifest_artifact_custody(
+        manifest, node_kind=node_kind, root=root, manifest_path=path
+    )
+    if not artifacts.admitted:
+        raise FulfillmentAdmissionError(artifacts)
     if raw is not None:
         return FulfillmentReceipt.of_admitted_bytes(
             raw, node_kind=node_kind, path=path, root=root, manifest=manifest

@@ -823,6 +823,53 @@ def _check_artifacts(
             )
 
 
+def admit_manifest_artifact_custody(
+    manifest: AnyManifest,
+    *,
+    node_kind: FulfillmentNodeKind,
+    root: Path | str,
+    manifest_path: Path | str | None = None,
+) -> AdmissionOutcome:
+    """Admit every artifact one manifest declares, by its own recorded bytes.
+
+    This is the artifact half of a full receipt admission, on its own. It runs
+    the same :data:`artifacts_verified` criterion the per-kind admissions run —
+    each artifact must declare a SHA-256 and a byte size, resolve to a location
+    beneath the receipt root, and hash and measure to exactly what it recorded.
+
+    It exists for the one caller that has a produced manifest and its bytes but
+    not the spec that would recompute its identity: a freshly written bundle
+    stage product. Reusing a cached stage product already runs the full per-kind
+    admission, so binding a fresh one on manifest bytes alone would make a first
+    run's custody weaker than a rerun's over the same artifacts.
+
+    Args:
+        manifest: The produced manifest whose artifacts must be authenticated.
+        node_kind: The fulfillment node kind the manifest is a receipt for.
+        root: The receipt root artifact locations resolve beneath.
+        manifest_path: Where the manifest bytes were read, for the refusal.
+
+    Returns:
+        An admitted outcome, or one naming every artifact that failed.
+    """
+    root_path = Path(root)
+    collector = _FailureCollector(
+        node_kind=node_kind,
+        manifest_id=str(manifest.id),
+        manifest_kind=str(manifest.kind),
+        manifest_path=Path(manifest_path) if manifest_path is not None else None,
+    )
+    _check_artifacts(collector, manifest, root=root_path)
+    return _outcome(
+        collector,
+        node_kind=node_kind,
+        manifest_id=str(manifest.id),
+        manifest_kind=str(manifest.kind),
+        manifest_path=Path(manifest_path) if manifest_path is not None else None,
+        manifest_present=True,
+    )
+
+
 def evaluation_expected_parents(spec: EvaluationRunSpec) -> list[ParentRef]:
     """Return the exact provenance parents one evaluation spec must produce.
 

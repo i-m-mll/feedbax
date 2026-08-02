@@ -25,6 +25,7 @@ from feedbax.analysis.figures import (
     figure_manifest_plotly_json,
 )
 from feedbax.analysis.reports import resolve_report_inputs
+from feedbax.analysis.specs import ManifestKindMismatch
 from feedbax.contracts.figures import FigurePiece, FigureSpec
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
@@ -253,7 +254,10 @@ def test_id_addressed_report_input_refuses_a_manifest_of_another_kind(tmp_path: 
         ],
     )
 
-    with pytest.raises(ValueError, match="declares kind 'EvaluationRunManifest'"):
+    # The declared kind is stated to the lookup itself, so the refusal is the
+    # addressing layer's typed one rather than a check after a record was
+    # already chosen.
+    with pytest.raises(ManifestKindMismatch, match="not the required 'EvaluationRunManifest'"):
         resolve_report_inputs(spec, root=tmp_path)
 
 

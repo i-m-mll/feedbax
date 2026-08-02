@@ -41,6 +41,7 @@ from feedbax.contracts.manifest import (
     canonical_json_bytes,
     sha256_bytes,
 )
+from feedbax.contracts.strict_json import strict_json_loads
 
 ROW_INDEX_SCHEMA_ID = "feedbax.spec.authenticated_row_index"
 ROW_INDEX_SCHEMA_VERSION = "feedbax.spec.authenticated_row_index.v1"
@@ -689,7 +690,7 @@ def write_row_index_custody_bindings(
 
 def load_row_index_custody_bindings(path: Path | str) -> RowIndexCustodyBindings:
     """Load one custody-bindings sidecar, failing closed on foreign identity."""
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    payload = strict_json_loads(Path(path).read_text(encoding="utf-8"), ref=str(path))
     if not isinstance(payload, dict):
         raise ValueError("row custody bindings document must be a JSON object")
     return RowIndexCustodyBindings.model_validate(payload)

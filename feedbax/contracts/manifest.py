@@ -31,6 +31,7 @@ from feedbax.contracts.retention_artifact_schema import (
     retention_artifact_schema,
 )
 from feedbax.contracts.schema_namespace import validate_schema_identity
+from feedbax.contracts.strict_json import strict_json_loads
 
 try:
     from importlib.metadata import PackageNotFoundError, version
@@ -2963,7 +2964,7 @@ def write_manifest(
 
 def load_manifest_bytes(raw: bytes) -> AnyManifest:
     """Parse one known Feedbax manifest from already-authenticated raw bytes."""
-    data = json.loads(raw)
+    data = strict_json_loads(raw, ref="manifest document")
     data = _normalize_training_run_set_manifest_data(data)
     data = _normalize_analysis_run_manifest_data(data)
     data = _normalize_report_manifest_data(data)

@@ -52,7 +52,6 @@ names a boundary.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,6 +86,7 @@ from feedbax.contracts.manifest import (
     REPORT_SPEC_SCHEMA_ID,
 )
 from feedbax.contracts.run_matrix import TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
+from feedbax.contracts.strict_json import strict_json_loads
 
 #: The filename suffix one compile writes its lock under. It is the emitter's
 #: own naming, restated here so a reader can find locks without a compiler.
@@ -276,7 +276,7 @@ class CompiledEnvelope:
 
 def _read_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return strict_json_loads(path.read_text(encoding="utf-8"), ref=str(path))
     except (OSError, ValueError) as exc:
         raise CompiledOutputError(f"cannot read compiled output {path}: {exc}") from exc
 

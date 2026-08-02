@@ -66,6 +66,7 @@ from feedbax.contracts.matrix_core import (
 )
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.run_matrix import apply_composition_deltas
+from feedbax.contracts.strict_json import DuplicateJsonKeyError, strict_json_loads
 from feedbax.contracts.manifest import (
     AnyManifest,
     EntrypointRef,
@@ -219,7 +220,7 @@ def _figure_authored_mapping(value: FigureSpecInput) -> dict[str, Any]:
         payload = deepcopy(dict(value))
         _require_durable_figure_identity(payload, label="figure mapping")
         return payload
-    payload = json.loads(Path(value).read_text(encoding="utf-8"))
+    payload = strict_json_loads(Path(value).read_text(encoding="utf-8"), ref=str(value))
     if not isinstance(payload, dict):
         raise ValueError("figure document must contain a JSON object")
     _require_durable_figure_identity(payload, label=f"figure document {str(value)!r}")
@@ -740,7 +741,11 @@ def _resolve_authority_payloads(
                 f"figure artifact provider rejected payload {selector.name!r}"
             ) from exc
         try:
-            payload = json.loads(raw)
+            payload = strict_json_loads(raw, ref=f"figure artifact payload {selector.name!r}")
+        except DuplicateJsonKeyError as exc:
+            raise FigureInputAuthorityError(
+                f"figure artifact payload states a member twice for {selector.name!r}: {exc}"
+            ) from exc
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise FigureInputAuthorityError(
                 f"figure artifact payload is not valid JSON for {selector.name!r}"

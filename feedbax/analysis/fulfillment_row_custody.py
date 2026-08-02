@@ -68,7 +68,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-import json
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -93,6 +92,7 @@ from feedbax.contracts.row_index import (
     RowSelectionError,
     load_row_index_custody_bindings,
 )
+from feedbax.contracts.strict_json import strict_json_loads
 
 #: The identity-contribution keys a row-expanded figure's compile records. They
 #: are the compiler's own naming, restated here so a reader can find them without
@@ -379,7 +379,7 @@ def _authenticated_row_index(
         ) from exc
     try:
         index = AuthenticatedRowIndex.model_validate(
-            json.loads(path.read_text(encoding="utf-8"))
+            strict_json_loads(path.read_text(encoding="utf-8"), ref=str(path))
         )
     except (OSError, ValueError, TypeError) as exc:
         raise RowCustodyFulfillmentError(

@@ -90,6 +90,7 @@ from feedbax.contracts.analysis_composition import (
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.run_aliases import RunAliasCatalog, resolve_run_aliases
 from feedbax.contracts.staged_execution import StagedExecutionDescriptor
+from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.persistence.artifact_custody import ArtifactBlobCustodyError
 from feedbax.persistence.manifest_index import find_manifest_paths_by_id, iter_manifest_files
 from feedbax.analysis.types import AnalysisInputData
@@ -328,7 +329,7 @@ def resolve_analysis_run_authoring(
     if isinstance(value, Mapping):
         raw = value
     else:
-        raw = json.loads(Path(value).read_text(encoding="utf-8"))
+        raw = strict_json_loads(Path(value).read_text(encoding="utf-8"), ref=str(value))
     if is_analysis_run_delta_payload(raw):
         delta = AnalysisRunDeltaSpec.model_validate(raw)
         flattened = flatten_analysis_run_delta(delta, repo_root=repo_root)
