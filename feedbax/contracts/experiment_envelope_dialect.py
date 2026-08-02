@@ -473,10 +473,18 @@ class FigureInputAuthoring(DialectModel):
     once per expanded row from the row index's custody (``per_row``), or once for
     every row from one named manifest (``shared``) — and the closed artifact
     contract that fill must satisfy.
+
+    A ``per_row`` role is the one case with no single locator to state: the
+    expansion fills it once per expanded row from the row index's own custody, so
+    any single ``ref`` would name one row's artifact and be false for every other
+    row. ``ref`` is therefore optional exactly there. A ``shared`` role is filled
+    once for every row from one named manifest, so it states that manifest, and a
+    figure input outside row expansion has nothing filling it at all unless it
+    states one: both fail closed on an omitted ``ref``.
     """
 
     input_role: str
-    ref: AuthoredReference
+    ref: AuthoredReference | None = None
     binding: Literal["per_row", "shared"] | None = None
     binding_key: str | None = None
     contract: FigureRoleContractAuthoring | None = None
@@ -495,7 +503,18 @@ class FigureInputAuthoring(DialectModel):
             )
         if self.binding_key is not None and not self.binding_key.strip():
             raise ValueError("a figure input states a nonempty binding key")
+        if self.ref is None and self.binding != "per_row":
+            raise ValueError(
+                f"figure input {self.input_role!r} states no ref; only a 'per_row' "
+                "row-expansion role omits it, because row expansion fills that role once "
+                "per expanded row and no single locator addresses it"
+            )
         return self
+
+    @property
+    def is_per_row(self) -> bool:
+        """Whether row expansion fills this role once per expanded row."""
+        return self.binding == "per_row"
 
     @property
     def is_row_expanded(self) -> bool:

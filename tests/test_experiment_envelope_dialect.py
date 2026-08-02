@@ -655,3 +655,78 @@ def test_the_report_output_validates_its_ordered_figure_params() -> None:
 def test_an_ordered_figure_params_document_is_no_longer_a_layer_parent() -> None:
     """The parent is the whole report, not the params block inside one."""
     assert layer_of_document({"schema_id": "feedbax.spec.report.ordered_figure"}) is None
+
+
+# -- a per-row role has no single reference to state ---------------------------
+
+
+class TestPerRowInputReference:
+    """``ref`` is optional exactly where a single locator would be false."""
+
+    @staticmethod
+    def _figure(**input_fields: Any) -> dict[str, Any]:
+        return _minimal(
+            figure={
+                "mode": "row_expansion",
+                "rows": {"mode": "all", "index": "bases/quillon.row_index.json"},
+                "inputs": [
+                    {
+                        "input_role": "observed",
+                        "binding_key": "observations",
+                        "contract": {
+                            "kind": "quillon.survey_run",
+                            "artifact_role": "span_observations",
+                            "artifact_provider": "quillon.custody",
+                        },
+                        **input_fields,
+                    }
+                ],
+            }
+        )
+
+    def test_a_per_row_role_may_omit_the_reference_row_expansion_fills(self) -> None:
+        envelope = _parse(self._figure(binding="per_row"))
+
+        assert envelope.figure is not None
+        item = envelope.figure.inputs[0]
+        assert item.ref is None
+        assert item.is_per_row
+        assert item.is_row_expanded
+        assert item.role_reference().model_dump() == {"per_row": "observations"}
+
+    def test_a_shared_role_still_states_the_one_manifest_it_is_filled_from(self) -> None:
+        with pytest.raises(ExperimentEnvelopeRejection) as caught:
+            _parse(self._figure(binding="shared"))
+
+        assert caught.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+        assert "no single locator addresses it" in str(caught.value)
+
+    def test_a_figure_input_outside_row_expansion_still_states_its_reference(self) -> None:
+        with pytest.raises(ExperimentEnvelopeRejection) as caught:
+            _parse(
+                _minimal(
+                    figure={
+                        "mode": "composition",
+                        "delta": {"layer_id": "overlay", "patches": []},
+                        "inputs": [{"input_role": "observed"}],
+                    }
+                )
+            )
+
+        assert caught.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+        assert "states no ref" in str(caught.value)
+
+    def test_a_per_row_role_may_still_state_a_reference(self) -> None:
+        envelope = _parse(
+            self._figure(
+                binding="per_row",
+                ref={
+                    "kind": "receipt",
+                    "manifest_kind": "quillon.survey_run",
+                    "manifest_id": "observed-0",
+                },
+            )
+        )
+
+        assert envelope.figure is not None
+        assert envelope.figure.inputs[0].ref is not None

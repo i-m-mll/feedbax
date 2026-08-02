@@ -1578,3 +1578,291 @@ def test_a_figure_runtime_input_that_has_not_run_is_a_locator_in_the_lock(
         "consumer": "figure_runtime_input",
         "input_role": "observed",
     }
+
+
+# -- tag removal ----------------------------------------------------------------
+
+
+def _training_tags(repo: Path, tags: list[str]) -> None:
+    """Give the training base the inherited tag list a delta is stated over."""
+    document = json.loads((repo / TRAINING_BASE).read_text())
+    document["tags"] = tags
+    write_json(repo / TRAINING_BASE, document)
+
+
+def _generated_delta(outcome: Any) -> dict[str, Any]:
+    """Return the layer the engine derived, as the lock records it."""
+    resolved = outcome.compile_lock["resolved_deltas"]
+    return resolved[f"{outcome.name}.training"]
+
+
+def test_an_inherited_tag_can_be_removed(repo: Path) -> None:
+    _training_tags(repo, ["baseline", "pilot"])
+    _training_layer(repo, tags={"add": ["widened"], "remove": ["baseline", "pilot"]})
+
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert outcome.document["tags"] == ["widened"]
+
+
+def test_the_generated_tag_layer_acknowledges_only_the_paths_it_rewrites(
+    repo: Path,
+) -> None:
+    """Closing the list up behind one removal makes the next land on a written path."""
+    _training_tags(repo, ["baseline", "pilot", "probe"])
+    _training_layer(repo, tags={"remove": ["baseline", "pilot", "probe"]})
+
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    delta = _generated_delta(outcome)
+    tag_paths = [
+        patch["path"] for patch in delta["patches"] if patch["path"].startswith("tags.")
+    ]
+    assert tag_paths == ["tags.0", "tags.0", "tags.0"]
+    assert delta["acknowledges_ancestor_paths"] == ["tags.0"]
+    assert outcome.document["tags"] == []
+
+
+def test_add_only_tag_authoring_acknowledges_nothing(repo: Path) -> None:
+    _training_tags(repo, ["baseline"])
+    _training_layer(repo, tags={"add": ["widened", "probe"]})
+
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert _generated_delta(outcome)["acknowledges_ancestor_paths"] == []
+    assert outcome.document["tags"] == ["baseline", "widened", "probe"]
+
+
+def test_removing_a_tag_the_base_does_not_state_is_still_refused(repo: Path) -> None:
+    _training_tags(repo, ["baseline"])
+    _training_layer(repo, tags={"remove": ["absent"]})
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert "nothing to remove" in str(excinfo.value)
+
+
+# -- report binding state -------------------------------------------------------
+
+
+def _report_base_figure(repo: Path, **figure: Any) -> None:
+    """Give the report base one ordered-figure entry at the bound role."""
+    from tests.fake_project_experiment import REPORT_BASE
+
+    document = json.loads((repo / REPORT_BASE).read_text())
+    document["params"]["sections"][0]["figures"] = [
+        {"input_role": "span", "caption": "Widened span", **figure}
+    ]
+    write_json(repo / REPORT_BASE, document)
+
+
+def _report_bindings(repo: Path, bindings: list[dict[str, Any]]) -> None:
+    envelope = _read(repo, "widened-report")
+    envelope["report"] = {**envelope["report"], "bindings": bindings}
+    _write(repo, "widened-report", envelope)
+
+
+def _compile_report(repo: Path) -> Any:
+    return kernel().compile_envelope_file(
+        envelope_path(repo, "widened-report"), repo_root=repo
+    )
+
+
+NOT_APPLICABLE_BINDING = {
+    "role_path": "params.sections.0.figures.0",
+    "ref": {
+        "kind": "not_applicable",
+        "reason": "the widened survey never produced this panel",
+    },
+}
+FIGURE_BINDING = {
+    "role_path": "params.sections.0.figures.0",
+    "ref": {"kind": "envelope", "alias": "widened-plot"},
+}
+
+
+def test_a_not_applicable_binding_reconciles_the_inherited_applicability(
+    repo: Path,
+) -> None:
+    _report_base_figure(repo, figure_spec_sha256="a" * 64, applicability="included")
+    _report_bindings(repo, [NOT_APPLICABLE_BINDING])
+
+    outcome = _compile_report(repo)
+
+    entry = outcome.document["params"]["sections"][0]["figures"][0]
+    reference = next(
+        item
+        for item in outcome.compile_lock["references"]
+        if item["kind"] == "not_applicable"
+    )
+    assert entry["applicability"] == "not_applicable"
+    assert entry["not_applicable_reason"] == reference["reason"]
+    assert "figure_spec_sha256" not in entry
+    assert "input_role" not in entry
+    assert reference["role_path"] == "params.sections.0.figures.0"
+    assert reference["basis"] == "authored"
+
+
+def test_a_not_applicable_binding_states_the_applicability_the_base_left_default(
+    repo: Path,
+) -> None:
+    """An absent descriptor still claims the contract's default, which is inclusion."""
+    _report_base_figure(repo, figure_spec_sha256="a" * 64)
+    _report_bindings(repo, [NOT_APPLICABLE_BINDING])
+
+    outcome = _compile_report(repo)
+
+    entry = outcome.document["params"]["sections"][0]["figures"][0]
+    assert entry["applicability"] == "not_applicable"
+
+
+def test_a_bound_role_carries_the_digest_of_the_figure_it_is_bound_to(
+    repo: Path,
+) -> None:
+    _report_base_figure(repo, figure_spec_sha256="a" * 64)
+    _report_bindings(repo, [FIGURE_BINDING])
+
+    outcome = _compile_report(repo)
+
+    entry = outcome.document["params"]["sections"][0]["figures"][0]
+    planned = next(
+        item
+        for item in outcome.compile_lock["references"]
+        if item["kind"] == "planned_product"
+    )
+    figure = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+    assert entry["figure_spec_sha256"] == planned["compiled_content_hash"]
+    assert entry["figure_spec_sha256"] == canonical_sha256(figure.document)
+    assert entry["figure_spec_sha256"] != "a" * 64
+
+
+def test_a_role_already_carrying_its_bound_digest_derives_no_patch(repo: Path) -> None:
+    figure = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+    _report_base_figure(repo, figure_spec_sha256=canonical_sha256(figure.document))
+    _report_bindings(repo, [FIGURE_BINDING])
+
+    outcome = _compile_report(repo)
+
+    assert f"{outcome.name}.report" not in outcome.compile_lock["resolved_deltas"]
+
+
+def test_a_receipt_bound_role_cannot_inherit_a_digest_it_cannot_replace(
+    repo: Path,
+) -> None:
+    _report_base_figure(repo, figure_spec_sha256="a" * 64)
+    _report_bindings(
+        repo,
+        [
+            {
+                "role_path": "params.sections.0.figures.0",
+                "ref": {
+                    "kind": "receipt",
+                    "manifest_kind": "quillon.survey_run",
+                    "manifest_id": "widened-plot-0",
+                },
+            }
+        ],
+    )
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        _compile_report(repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert "may never author one" in str(excinfo.value)
+
+
+def test_a_role_the_base_states_as_not_applicable_may_not_be_bound_to_a_product(
+    repo: Path,
+) -> None:
+    _report_base_figure(
+        repo,
+        applicability="not_applicable",
+        not_applicable_reason="the baseline survey has no widened panel",
+        input_role=None,
+    )
+    _report_bindings(repo, [FIGURE_BINDING])
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        _compile_report(repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert "cannot derive the input role" in str(excinfo.value)
+
+
+def test_a_role_the_document_says_nothing_about_stays_a_lock_only_binding(
+    repo: Path,
+) -> None:
+    """The ratified stance stands where there is no inherited state to contradict."""
+    outcome = _compile_report(repo)
+
+    assert outcome.document["params"]["sections"][0]["figures"] == []
+    assert f"{outcome.name}.report" not in outcome.compile_lock["resolved_deltas"]
+
+
+def test_binding_state_is_reconciled_only_inside_a_report_type_feedbax_owns(
+    repo: Path,
+) -> None:
+    from tests.fake_project_experiment import REPORT_BASE
+
+    _report_base_figure(repo, figure_spec_sha256="a" * 64)
+    document = json.loads((repo / REPORT_BASE).read_text())
+    document["report_type"] = "quillon.bulletin"
+    write_json(repo / REPORT_BASE, document)
+    _report_bindings(repo, [NOT_APPLICABLE_BINDING])
+
+    outcome = _compile_report(repo)
+
+    entry = outcome.document["params"]["sections"][0]["figures"][0]
+    assert entry == {
+        "input_role": "span",
+        "caption": "Widened span",
+        "figure_spec_sha256": "a" * 64,
+    }
+
+
+# -- a per-row figure input has no single locator --------------------------------
+
+
+def _per_row_input(repo: Path) -> None:
+    """Drop the false single reference from the per-row role the figure expands."""
+    envelope = _read(repo, "widened-plot")
+    envelope["figure"]["inputs"][0].pop("ref")
+    _write(repo, "widened-plot", envelope)
+
+
+def test_a_per_row_input_without_a_reference_compiles(repo: Path) -> None:
+    _per_row_input(repo)
+
+    outcome = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+
+    request = outcome.compile_lock["identity_contributions"]["figure_row_expansion"]
+    assert request["inputs"]["observed"] == {"per_row": "observations"}
+    assert request["role_contracts"][0]["input_role"] == "observed"
+
+
+def test_the_lock_states_the_per_row_role_rather_than_a_false_locator(
+    repo: Path,
+) -> None:
+    from feedbax.envelope.compile import PER_ROW_INPUT_RULE_ID
+
+    _per_row_input(repo)
+
+    outcome = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+
+    references = outcome.compile_lock["references"]
+    reference = next(item for item in references if item["kind"] == "not_applicable")
+    assert reference["role_path"] == "inputs.observed"
+    assert reference["basis"] == "compiler_rule"
+    assert reference["rule_id"] == PER_ROW_INPUT_RULE_ID
+    assert "per expanded row" in reference["reason"]
+    assert not [item for item in references if item["kind"] == "planned_product"]

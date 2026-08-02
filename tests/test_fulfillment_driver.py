@@ -808,6 +808,38 @@ def test_an_inapplicable_role_binds_nothing_and_blocks_nothing(
     assert [parent.role for parent in manifest.provenance.parents] == ["nominal"]
 
 
+def test_a_per_row_figure_input_binds_no_single_manifest_edge(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """Row expansion fills the role per row, so the closure waits on nothing for it."""
+    from feedbax.contracts.experiment_compile_lock import NotApplicableReference
+    from feedbax.envelope.compile import PER_ROW_INPUT_REASON, PER_ROW_INPUT_RULE_ID
+
+    outputs.plate(
+        "expanded-plate",
+        references=[
+            NotApplicableReference(
+                role_path="inputs.observed",
+                basis="compiler_rule",
+                reason=PER_ROW_INPUT_REASON,
+                rule_id=PER_ROW_INPUT_RULE_ID,
+            )
+        ],
+    )
+    closure = _closure(outputs, "expanded-plate")
+
+    key = LogicalKey("figure", "expanded-plate")
+    assert closure.plan.required_edges(key) == ()
+    omission = closure.plan.certified_omissions(consumer=key)
+    assert [edge.role_path for edge in omission] == [("inputs", "observed")]
+    assert omission[0].rule == PER_ROW_INPUT_RULE_ID
+    assert omission[0].producer is None and omission[0].external is None
+    assert closure.order == ("figure:expanded-plate",)
+    requests = closure_requests(closure, environment=environment, stop_at=key)
+    assert requests[-1].node_kind == "figure"
+    assert requests[-1].runtime_inputs is None
+
+
 # --------------------------------------------------------------------------
 # Rebuild as verification, repair as recovery
 # --------------------------------------------------------------------------
