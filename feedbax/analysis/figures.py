@@ -6,6 +6,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
+import hashlib
 from itertools import product
 import json
 from pathlib import Path
@@ -97,7 +98,10 @@ from feedbax.plot.constructors import (
     get_figure_template,
 )
 from feedbax.plot.io import save_figure_with_spec
-from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.artifact_custody import (
+    ArtifactBlobIntegrityError,
+    ImmutableArtifactBlobProvider,
+)
 
 FIGURE_RENDER_ROLE = "figure_render"
 FIGURE_SPEC_ROLE = "figure_spec"
@@ -1027,7 +1031,18 @@ def _figure_expression_context(
                 if not isinstance(existing.payload, list):
                     existing.payload = [existing.payload]
                 existing.payload.append(manifest_payload)
-        items[f"manifest:{resolved.ref.id}"] = ContextItem(
+        # The id-addressed entry names one manifest. Two inputs sharing an id
+        # but not a payload cannot both be that one manifest, and a silent
+        # last-win here would hand every expression the second one without
+        # anything recording that the first was displaced.
+        manifest_key = f"manifest:{resolved.ref.id}"
+        existing_manifest = items.get(manifest_key)
+        if existing_manifest is not None and existing_manifest.payload != manifest_payload:
+            raise FigureInputAuthorityError(
+                f"figure inputs bind two different manifests to id {resolved.ref.id!r}; "
+                "one identifier addresses one manifest inside one figure"
+            )
+        items[manifest_key] = ContextItem(
             kind="manifest",
             payload=manifest_payload,
         )
@@ -1593,6 +1608,17 @@ def _panel_contents(
     *,
     nonfacet_context: ExpressionContext | None = None,
 ) -> list[PanelContent]:
+    # A panel name is how a trace binding addresses its panel, so two panels
+    # sharing one name make the address ambiguous and the map silently keeps
+    # the last of them. The refusal is here, at the map, rather than in
+    # ``FigureSpec`` validation: the spec is a durable schema surface, and
+    # rejecting duplicate names there would retroactively refuse to load saved
+    # specs that this version can still describe.
+    duplicate_panels = sorted(
+        name for name, count in Counter(panel.name for panel in spec.panels).items() if count > 1
+    )
+    if duplicate_panels:
+        raise ValueError(f"FigureSpec declares duplicate panel names: {duplicate_panels}")
     panel_map = {panel.name: panel for panel in spec.panels}
     traces_by_panel: dict[str, list[Any]] = {name: [] for name in panel_map}
     if not traces_by_panel:
@@ -1808,6 +1834,32 @@ def _binding_data(
     return data
 
 
+def _verify_declared_piece_bytes(piece: Any, ref: ArtifactRef, raw: bytes) -> None:
+    """Refuse piece bytes that disagree with the reference's declared profile.
+
+    A path- or URI-addressed piece is *addressed* by its location, so the
+    location alone proves nothing about what is stored there now. Whatever
+    profile the reference does declare is therefore the only authentication
+    available, and it is checked before the bytes are parsed or used. The
+    canonical-CAS branch performs the equivalent check inside its provider.
+
+    A reference that declares no profile is left as it is: this verifies a
+    claim, it does not invent one.
+    """
+    if ref.size_bytes is not None and len(raw) != ref.size_bytes:
+        raise ArtifactBlobIntegrityError(
+            f"FigurePiece {piece.name!r} artifact size mismatch at {ref.uri}: "
+            f"expected {ref.size_bytes}, found {len(raw)}"
+        )
+    if ref.sha256 is not None:
+        digest = hashlib.sha256(raw).hexdigest()
+        if digest != ref.sha256:
+            raise ArtifactBlobIntegrityError(
+                f"FigurePiece {piece.name!r} artifact sha256 mismatch at {ref.uri}: "
+                f"expected {ref.sha256}, found {digest}"
+            )
+
+
 def _piece_data(piece: Any, root: Path) -> dict[str, Any]:
     if piece.artifact_ref is None or piece.artifact_ref.uri is None:
         return {}
@@ -1820,7 +1872,9 @@ def _piece_data(piece: Any, root: Path) -> dict[str, Any]:
         path = Path(piece.artifact_ref.uri)
         if not path.is_absolute():
             path = root / path
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_bytes()
+        _verify_declared_piece_bytes(piece, piece.artifact_ref, raw)
+        payload = json.loads(raw.decode("utf-8"))
     if piece.data_path:
         payload = _get_payload_path(payload, piece.data_path)
     if not isinstance(payload, dict):

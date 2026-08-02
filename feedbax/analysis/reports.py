@@ -487,7 +487,19 @@ def resolve_report_inputs(
                     authenticated = bound.resolve_manifest_input(ref)
             manifest, manifest_path = authenticated.manifest, authenticated.path
         elif ref.kind.endswith("Manifest"):
+            # This branch addresses a manifest by identifier alone, so the only
+            # thing the ref states that the lookup can be held to is the kind it
+            # declared. A generic recipe that asks for an analysis parent and is
+            # handed a same-id figure would otherwise read the wrong record and
+            # produce a report describing something else. Artifact fulfillment
+            # never reaches here: every parent it lowers carries an
+            # authenticated profile, so this guards standalone execution.
             manifest, manifest_path = find_manifest_by_id(ref.id, root=root_path)
+            if manifest.kind != ref.kind:
+                raise ValueError(
+                    f"report input {ref.id!r} declares kind {ref.kind!r} but the manifest "
+                    f"stored under that id is a {manifest.kind!r}"
+                )
         if isinstance(manifest, AnalysisRunManifest):
             produced_data = list(manifest.produced_data)
         elif isinstance(manifest, EvaluationRunManifest):
