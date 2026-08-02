@@ -689,12 +689,12 @@ def _lower_training(context: LayerCompileContext) -> LoweredLayer:
     by_id = {
         str(row.get("row_id")): row for row in inherited_rows if isinstance(row, Mapping)
     }
-    #: The row keys the *parent document* declares, fixed before any authored row
-    #: joins ``by_id``. A row derived from one of these is derived from the pinned
-    #: parent, and says so in the lock; a row derived from a row this same
-    #: envelope authors was resolved inside this compile, where the parent pin
-    #: names nothing, and its ancestry is the authored chain the lock already
-    #: records through that earlier row.
+    # The row keys the *parent document* declares, fixed before any authored row
+    # joins `by_id`. A row derived from one of these is derived from the pinned
+    # parent, and says so in the lock; a row derived from a row this same envelope
+    # authors was resolved inside this compile, where the parent pin names
+    # nothing, and its ancestry is the authored chain the lock already records
+    # through that earlier row.
     inherited_row_keys = frozenset(by_id)
     base_payload, base_pin = _resolve_matrix_base_payload(
         parent.get("base"), context.repo_root, field=f"{context.parent.ref}#base"
