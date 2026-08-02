@@ -550,14 +550,23 @@ class FigureLayerAuthoring(DialectModel):
     expansion is derived, and a patch layered over a derived document would make
     the derivation negotiable.
 
-    When any role is filled per row, it also states ``row_custody``: the
+    When any role is filled per row, it may also state ``row_custody``: the
     repo-relative path of the
     :class:`~feedbax.contracts.row_index.RowIndexCustodyBindings` document the
     rows are produced into. That is a locator, not a production record — the
     document is written after the rows run, and this envelope compiles whether or
     not it exists yet — but it is stated rather than derived from the index id,
-    because a naming convention is a rule nothing states, and a per-row role that
-    nothing addresses can never be fulfilled.
+    because a naming convention is a rule nothing states.
+
+    It is optional here, and its absence is caught where it actually bites. A
+    row-expansion envelope that predates the declaration still compiles, to
+    byte-identical output, because a compile that recorded a locator nobody
+    authored would be inventing one. What such an envelope cannot do is be
+    *fulfilled*: binding a per-row role needs a custody document to read, so
+    :mod:`feedbax.analysis.fulfillment_row_custody` refuses the figure by name
+    rather than rendering it with the role unfilled. Declaring ``row_custody``
+    when no role is filled per row is still refused here, because a shared role
+    names its own manifest and the declaration would address nothing.
 
     ``composition`` states the ordered deltas and nothing about rows.
     """
@@ -601,14 +610,10 @@ class FigureLayerAuthoring(DialectModel):
                 "shared binding profile; expansion cannot fill a role it cannot address"
             )
         per_row = sorted(item.input_role for item in self.inputs if item.is_per_row)
-        if per_row and (self.row_custody is None or not self.row_custody.strip()):
+        if per_row and self.row_custody is not None and not self.row_custody.strip():
             raise ValueError(
-                f"row_expansion figure inputs {per_row} are filled per expanded row from the "
-                "row index's custody, so the envelope names the custody bindings document "
-                "those rows were produced into, by repo-relative path, as 'row_custody'. "
-                "The document itself is post-run and need not exist yet; what must exist is "
-                "the declaration of where it will be, because a figure whose per-row roles "
-                "nothing addresses can never be fulfilled"
+                "a row_expansion figure states a nonempty 'row_custody' path or states none "
+                "at all; an empty string names no document"
             )
         if not per_row and self.row_custody is not None:
             raise ValueError(

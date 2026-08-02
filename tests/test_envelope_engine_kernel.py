@@ -1599,6 +1599,59 @@ def test_the_expansion_request_and_resolved_rows_carry_execution_identity(
     ]
 
 
+def test_a_row_expansion_without_a_custody_declaration_records_none(repo: Path) -> None:
+    """An envelope authored before ``row_custody`` existed compiles unchanged.
+
+    A compile states what the envelope said. An undeclared locator is therefore
+    an absent contribution rather than an invented one, and the lock a ratified
+    row-expansion envelope compiles to is byte-identical to the one it always
+    compiled to: the same two contributions, the same identity inputs, and an
+    execution identity that re-derives from exactly those facts.
+    """
+    envelope = _read(repo, "widened-plot")
+    del envelope["figure"]["row_custody"]
+    _write(repo, "widened-plot", envelope)
+
+    outcome = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+
+    contributions = outcome.compile_lock["identity_contributions"]
+    assert set(contributions) == {"figure_row_expansion", "resolved_row_set"}
+    assert outcome.compile_lock["execution_identity"]["inputs"] == [
+        "compiled_document.content_hash",
+        "identity_contributions.figure_row_expansion",
+        "identity_contributions.resolved_row_set",
+    ]
+    assert outcome.compile_lock["execution_identity"]["sha256"] == canonical_sha256(
+        {
+            "compiled_document": outcome.compile_lock["compiled_document"]["content_hash"],
+            "figure_row_expansion": canonical_sha256(contributions["figure_row_expansion"]),
+            "resolved_row_set": canonical_sha256(contributions["resolved_row_set"]),
+        }
+    )
+
+
+def test_the_custody_declaration_leaves_the_compiled_figure_untouched(repo: Path) -> None:
+    """Custody is a locator for fulfillment, never part of the figure's identity."""
+    declared = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+    envelope = _read(repo, "widened-plot")
+    del envelope["figure"]["row_custody"]
+    _write(repo, "widened-plot", envelope)
+
+    undeclared = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+
+    assert declared.document == undeclared.document
+    assert (
+        declared.compile_lock["compiled_document"]["content_hash"]
+        == undeclared.compile_lock["compiled_document"]["content_hash"]
+    )
+
+
 def test_composition_compiles_to_a_composition_document_pinning_its_parent(
     repo: Path,
 ) -> None:

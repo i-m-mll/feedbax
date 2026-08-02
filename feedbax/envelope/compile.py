@@ -1055,9 +1055,13 @@ def _figure_row_custody_locator(
     belong to. It pins the *index* digest, which the compile did read, and never
     the custody document's own bytes, which are post-run.
 
-    A figure with no per-row role has nothing to locate, and the dialect has
-    already refused a per-row role stated without a custody declaration, so an
-    absent declaration here means an absent per-row role.
+    There is nothing to record when the figure fills no role per row, and nothing
+    to record when the envelope declares no custody: a compile states what the
+    envelope said, so an undeclared locator is an absent contribution rather than
+    one this function invents. A row-expansion envelope authored before the
+    declaration existed therefore compiles to exactly the bytes it always did,
+    and the refusal for its unfillable per-row roles lands at fulfillment, which
+    is where a custody document is actually needed.
     """
     keys = per_row_binding_keys(request)
     if not keys or authored.row_custody is None:
