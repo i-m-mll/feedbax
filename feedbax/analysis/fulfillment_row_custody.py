@@ -380,7 +380,14 @@ def _load_custody(
             custody_ref=locator.ref,
         )
     path = Path(repo_root) / locator.ref
-    if not path.is_file():
+    # One load, and the two outcomes it can have. Probing for the file and then
+    # opening it is two looks at one path for no gain: absence is what the open
+    # reports, and the distinction the two refusals draw is between "nothing is
+    # there" and "something is there that is not this document", which the one
+    # read decides.
+    try:
+        bindings = load_row_index_custody_bindings(path)
+    except (FileNotFoundError, IsADirectoryError, NotADirectoryError) as exc:
         raise RowCustodyFulfillmentError(
             f"binds per-row custody from {locator.ref!r}, which is not a file at {path}. The "
             "custody bindings document is produced by the run receipt layer after the rows "
@@ -388,9 +395,7 @@ def _load_custody(
             "never that the per-row roles do not apply",
             ref=ref,
             custody_ref=locator.ref,
-        )
-    try:
-        bindings = load_row_index_custody_bindings(path)
+        ) from exc
     except (OSError, ValueError) as exc:
         raise RowCustodyFulfillmentError(
             f"binds per-row custody from {locator.ref!r}, which does not load as a "

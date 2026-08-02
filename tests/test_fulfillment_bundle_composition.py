@@ -21,6 +21,8 @@ What is under test here is the whole path for those two kinds, and nothing else:
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -37,9 +39,14 @@ from feedbax.analysis.fulfillment_adapters import (
     admit_node,
     analysis_bundle_root_identities,
     analysis_bundle_root_run_ids,
+    execute_analysis_bundle_node,
     execute_node,
 )
 from feedbax.analysis.fulfillment_adapters import _require_bundle_roots
+from feedbax.analysis.bundles import (
+    BundleRootVerificationError,
+    DuplicateBundleRootError,
+)
 from feedbax.analysis.fulfillment_derivation import (
     COMPILED_PRODUCT_KINDS,
     UnsupportedCompiledProductError,
@@ -63,7 +70,7 @@ from feedbax.contracts.experiment_compile_lock import (
     ReportParentBinding,
 )
 from feedbax.contracts.figures import FIGURE_COMPOSITION_SPEC_SCHEMA_ID
-from feedbax.contracts.manifest import load_manifest
+from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 from tests.fake_project_experiment.products import (
@@ -586,50 +593,309 @@ def test_a_selected_root_with_no_byte_profile_refuses_against_a_bound_one(
     assert identities[0].manifest_sha256 in message
 
 
-def test_the_post_execution_gate_declares_its_address_only_comparison(
+def test_no_gate_over_bundle_roots_can_be_told_to_skip_the_byte_comparison(
     outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
-    """One deliberate exception, and it is spelled out rather than implied.
+    """The address-only escape hatch is gone from the gate's signature.
 
-    Execution reports back ids. Their bytes were proved at the preflight gate,
-    against the same root, so the post-execution gate re-proves the address.
-    That is a decision the call site states, not a silent consequence of the
-    selected side happening to carry no digest.
+    Both gates over a bundle's roots now compare identities settled by the same
+    verified read, so neither has anything to skip. A flag that could turn the
+    byte comparison off is a flag that would eventually be passed.
     """
+    import inspect
+
+    signature = inspect.signature(_require_bundle_roots)
+    assert "compare_profiles" not in signature.parameters
+
     target = _bound_sheaf(outputs, "sheaf-address-only")
     request = _bundle_request(outputs, target, environment=environment)
     identities = analysis_bundle_root_identities(request)
     assert identities is not None
     address_only = replace(identities[0], manifest_sha256=None, size_bytes=None)
 
-    _require_bundle_roots(
-        request, identities, [address_only], stage="selection", compare_profiles=False
-    )
-    # The same input without the explicit declaration is a refusal.
     with pytest.raises(ValueError, match="no byte profile"):
         _require_bundle_roots(request, identities, [address_only], stage="selection")
 
 
-def test_profiling_a_selected_root_that_cannot_be_read_refuses(
+def test_a_pinned_root_that_cannot_be_read_refuses(
     outputs: QuillonOutputs, environment: FulfillmentEnvironment, tmp_path
 ) -> None:
     """A read failure is a refusal, never a downgrade to address-only identity."""
-    from feedbax.analysis.fulfillment_adapters import _selected_root_identity
+    from feedbax.analysis.bundles import BundleRootVerificationError, verify_bundle_roots
 
     target = _bound_sheaf(outputs, "sheaf-unreadable")
     request = _bundle_request(outputs, target, environment=environment)
     identities = analysis_bundle_root_identities(request)
     assert identities is not None
 
-    class _Selected:
-        kind = identities[0].kind
-        id = identities[0].id
-
     empty_root = tmp_path / "no-receipts-here"
     empty_root.mkdir()
-    with pytest.raises(ValueError) as caught:
-        _selected_root_identity(_Selected(), root=empty_root)
+    with pytest.raises(BundleRootVerificationError) as caught:
+        verify_bundle_roots(identities, root=empty_root)
 
     message = str(caught.value)
     assert identities[0].id in message
-    assert "refusal rather than a comparison that is skipped" in message
+    assert "never a comparison that is skipped" in message
+
+
+# --------------------------------------------------------------------------
+# Cross-phase pinning: preflight and execution consume one proved read
+# --------------------------------------------------------------------------
+
+
+def _root_receipt_path(request: AnalysisBundleNodeRequest, root: Path) -> Path:
+    identities = analysis_bundle_root_identities(request)
+    assert identities is not None and len(identities) == 1
+    return canonical_manifest_path(identities[0].kind, identities[0].id, root=root)
+
+
+def test_substituting_a_root_between_preflight_and_execution_refuses(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
+) -> None:
+    """The round-4 reproduction: swap a bound root's bytes, same kind and id.
+
+    Preflight used to read and profile the root, execution used to re-select and
+    re-read it, freshly authenticating whatever it found, and the gate between
+    the phases compared addresses. So a substitution landing in between was
+    consumed and blessed by execution, and the post-execution gate had nothing
+    to say about it because the id had not changed.
+
+    Now the root is read once and proved against the lock's pin before anything
+    runs. The substitution is caught at that proof, and no stage executes.
+    """
+    target = _bound_sheaf(outputs, "sheaf-cross-phase")
+    request = _bundle_request(outputs, target, environment=environment)
+    root_path = _root_receipt_path(request, Path(environment.root))
+    original = root_path.read_bytes()
+    replacement = json.dumps(
+        {**json.loads(original), "metadata": {"rerun": "second-pass"}}
+    ).encode()
+    assert hashlib.sha256(replacement).hexdigest() != hashlib.sha256(original).hexdigest()
+    root_path.write_bytes(replacement)
+    # Every addressing fact survives; only the bytes moved.
+    substituted = load_manifest(root_path)
+    assert substituted.status == "completed"
+
+    before = calls.analysis
+    with pytest.raises(BundleRootVerificationError) as caught:
+        execute_analysis_bundle_node(request, environment=environment)
+
+    message = str(caught.value)
+    assert "is pinned to manifest_sha256" in message
+    assert hashlib.sha256(replacement).hexdigest() in message
+    assert calls.analysis == before, "no stage runs over a root that failed its pin"
+
+
+def test_bytes_substituted_after_the_pin_is_proved_never_reach_what_is_emitted(
+    outputs: QuillonOutputs,
+    environment: FulfillmentEnvironment,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reads after the proof are addressing, and addressing cannot launder bytes.
+
+    Three reads of a bound root happen across a bundle node, and only the first
+    is authentication. The other two are scans — the bundle predicate deciding
+    which addresses match, and the executor's tiered lookup deciding where a
+    manifest lives. Neither may become a source of identity, and this pins that
+    down the only way that means anything: the spy returns the real bytes to the
+    proving read and tampered bytes to every scan after it, and the node must
+    either refuse or emit products recording the *proved* digest.
+
+    What it must never do is finish while recording the tampered digest, which
+    is what happened when execution re-selected and re-authenticated for itself.
+    """
+    target = _bound_sheaf(outputs, "sheaf-one-read")
+    request = _bundle_request(outputs, target, environment=environment)
+    root = Path(environment.root)
+    root_path = _root_receipt_path(request, root)
+    original = root_path.read_bytes()
+    proved_digest = hashlib.sha256(original).hexdigest()
+    tampered = json.dumps(
+        {**json.loads(original), "metadata": {"swapped": True}}
+    ).encode()
+    tampered_digest = hashlib.sha256(tampered).hexdigest()
+    assert tampered_digest != proved_digest
+
+    reads: list[Path] = []
+    real_read_bytes = Path.read_bytes
+
+    def spying_read_bytes(self: Path) -> bytes:
+        if self == root_path:
+            reads.append(self)
+            if len(reads) > 1:
+                return tampered
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", spying_read_bytes)
+    refusal: Exception | None = None
+    receipts: tuple = ()
+    try:
+        receipts = execute_analysis_bundle_node(request, environment=environment)
+    except Exception as exc:  # noqa: BLE001 - the refusal's type is not the point
+        refusal = exc
+
+    assert len(reads) > 1, "the fixture must actually exercise a post-proof read"
+    recorded = {
+        parent.metadata.get("manifest_sha256")
+        for receipt in receipts
+        for parent in load_manifest(receipt.path).provenance.parents
+        if parent.id == request.root_inputs[0].id
+    }
+    # Refusing is a permitted outcome: a scan that disagrees with the proof can
+    # only ever narrow what runs. Recording the tampered digest is not.
+    assert tampered_digest not in recorded, (
+        "a post-proof read became a source of identity: the emitted parents "
+        f"record {recorded!r} rather than the proved {proved_digest!r}"
+    )
+    if refusal is None:
+        assert recorded == {proved_digest}
+
+
+def test_every_product_records_the_root_under_the_digest_the_pin_proved(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """An untampered run binds the proved digest, not one minted during execution."""
+    target = _bound_sheaf(outputs, "sheaf-proved-digest")
+    request = _bundle_request(outputs, target, environment=environment)
+    root = Path(environment.root)
+    pinned_digest = hashlib.sha256(_root_receipt_path(request, root).read_bytes()).hexdigest()
+
+    receipts = execute_analysis_bundle_node(request, environment=environment)
+
+    assert receipts
+    bound_digests = {
+        parent.metadata.get("manifest_sha256")
+        for receipt in receipts
+        for parent in load_manifest(receipt.path).provenance.parents
+        if parent.id == request.root_inputs[0].id
+    }
+    assert bound_digests == {pinned_digest}
+
+
+def test_the_post_execution_gate_compares_full_identities(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """The honored-set gate has real digests on both sides, not just addresses."""
+    from feedbax.analysis.bundles import verify_bundle_roots
+
+    target = _bound_sheaf(outputs, "sheaf-honored")
+    request = _bundle_request(outputs, target, environment=environment)
+    identities = analysis_bundle_root_identities(request)
+    assert identities is not None
+
+    verified = verify_bundle_roots(identities, root=Path(environment.root))
+    assert [item.identity for item in verified] == list(identities)
+    assert all(item.manifest_sha256 is not None for item in verified)
+    # The gate the post-execution phase runs is the same exact-identity gate,
+    # fed the verified records rather than bare ids.
+    _require_bundle_roots(
+        request, identities, [item.identity for item in verified], stage="selection"
+    )
+
+
+# --------------------------------------------------------------------------
+# One address, one root, on every side of the gate
+# --------------------------------------------------------------------------
+
+
+def test_duplicate_selected_roots_refuse_before_anything_keys_them(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """A repeated address executes twice and compares once; that gap is refused."""
+    target = _bound_sheaf(outputs, "sheaf-dup-selected")
+    request = _bundle_request(outputs, target, environment=environment)
+    identities = analysis_bundle_root_identities(request)
+    assert identities is not None
+
+    with pytest.raises(DuplicateBundleRootError) as caught:
+        _require_bundle_roots(
+            request, identities, [identities[0], identities[0]], stage="preflight"
+        )
+    assert f"{identities[0].kind}:{identities[0].id}" in str(caught.value)
+
+    with pytest.raises(DuplicateBundleRootError):
+        _require_bundle_roots(
+            request, [identities[0], identities[0]], list(identities), stage="preflight"
+        )
+
+
+def test_a_root_scan_that_returns_one_address_twice_refuses(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """Selection is where a corrupt root surfaces, and it refuses there.
+
+    A full scan reaches every manifest file under the root, so two files can
+    hold one address. Downstream that expands into duplicated execution while
+    every set comparison counts it once, which is why it is refused at the one
+    place selection happens rather than at any of the places that consume it.
+    """
+    from feedbax.analysis.bundles import require_unique_root_addresses
+
+    target = _bound_sheaf(outputs, "sheaf-dup-scan")
+    request = _bundle_request(outputs, target, environment=environment)
+    identities = analysis_bundle_root_identities(request)
+    assert identities is not None
+    manifest = load_manifest(_root_receipt_path(request, Path(environment.root)))
+
+    require_unique_root_addresses([manifest], what="a healthy root set")
+    with pytest.raises(DuplicateBundleRootError) as caught:
+        require_unique_root_addresses([manifest, manifest], what="the scanned root set")
+    assert "the scanned root set" in str(caught.value)
+
+
+def test_verification_refuses_two_pins_at_one_address(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    from feedbax.analysis.bundles import verify_bundle_roots
+
+    target = _bound_sheaf(outputs, "sheaf-dup-pins")
+    request = _bundle_request(outputs, target, environment=environment)
+    identities = analysis_bundle_root_identities(request)
+    assert identities is not None
+
+    with pytest.raises(DuplicateBundleRootError):
+        verify_bundle_roots(
+            [identities[0], identities[0]], root=Path(environment.root)
+        )
+
+
+def test_execution_performs_no_selection_of_its_own_over_a_pinned_root_set(
+    outputs: QuillonOutputs,
+    environment: FulfillmentEnvironment,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The decisive structural fact: pinned execution never re-selects.
+
+    The byte-substitution tests can be satisfied by a recipe that happens to
+    choke on tampered input, so they prove the outcome without proving the
+    mechanism. This proves the mechanism directly. Selection is the step that
+    discarded the preflight proof and went looking for roots again; with a
+    verified set in hand, execution must not reach it at all.
+
+    One call is expected and permitted — the predicate gate in
+    ``execute_analysis_bundle_node``, which is what proves the plan's root set
+    is the set the bundle's own predicate selects. Any call after that one is
+    execution re-selecting.
+    """
+    from feedbax.analysis import bundles as bundles_module
+
+    target = _bound_sheaf(outputs, "sheaf-no-reselect")
+    request = _bundle_request(outputs, target, environment=environment)
+
+    calls_to_selection: list[tuple] = []
+    real_select = bundles_module.select_bundle_manifests
+
+    def counting_select(*args, **kwargs):
+        calls_to_selection.append((args, tuple(sorted(kwargs))))
+        return real_select(*args, **kwargs)
+
+    monkeypatch.setattr(bundles_module, "select_bundle_manifests", counting_select)
+    monkeypatch.setattr(
+        "feedbax.analysis.fulfillment_adapters.select_bundle_manifests", counting_select
+    )
+    execute_analysis_bundle_node(request, environment=environment)
+
+    assert len(calls_to_selection) == 1, (
+        "execution re-selected its roots instead of consuming the verified set; "
+        f"selection ran {len(calls_to_selection)} times"
+    )

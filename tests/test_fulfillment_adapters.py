@@ -426,3 +426,50 @@ def test_a_receipt_cannot_be_bound_from_an_admission_that_read_nothing() -> None
 
     with pytest.raises(RuntimeError, match="no manifest bytes were captured"):
         AdmittedManifestBytes().receipt(node_kind="evaluation", root=Path("/nowhere"))
+
+
+def test_a_receipt_cannot_be_constructed_with_a_digest_nobody_measured() -> None:
+    """Verified construction is enforced, not conventional.
+
+    A receipt built by hand with a plausible-looking digest is indistinguishable
+    downstream from one built from real bytes: every forward binding made from
+    it is authenticated on the strength of that number. So the constructor
+    demands a capability token that only the verified constructors mint, and the
+    only way to mint one is to hash bytes that were actually read.
+    """
+    from feedbax.analysis.fulfillment import FulfillmentReceipt
+
+    with pytest.raises(TypeError, match="built from bytes that were actually read"):
+        FulfillmentReceipt(
+            node_kind="evaluation",
+            manifest=object(),
+            path=Path("/nowhere/manifest.json"),
+            root=Path("/nowhere"),
+            manifest_sha256="a" * 64,
+            size_bytes=123,
+        )
+    # A token is not a bearer credential for any profile: it carries the one it
+    # measured, so it cannot be paired with a digest from somewhere else.
+    with pytest.raises(TypeError, match="built from bytes that were actually read"):
+        FulfillmentReceipt(
+            node_kind="evaluation",
+            manifest=object(),
+            path=Path("/nowhere/manifest.json"),
+            root=Path("/nowhere"),
+            manifest_sha256="a" * 64,
+            size_bytes=123,
+            verified=object(),
+        )
+
+
+def test_a_verified_token_cannot_be_paired_with_a_foreign_profile(
+    environment,
+) -> None:
+    """The token names the profile it measured, so the two cannot be mismatched."""
+    from dataclasses import replace as dataclass_replace
+
+    from feedbax.analysis.fulfillment import FulfillmentReceipt
+
+    receipt = fulfill_node(_evaluation_node("eval/token"), environment=environment).receipt
+    with pytest.raises(ValueError, match="not the profile the verified read settled"):
+        dataclass_replace(receipt, manifest_sha256="b" * 64)

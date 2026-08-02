@@ -31,8 +31,11 @@ from feedbax.analysis.execution_context import (
 from feedbax.analysis.exact_parents import StagedExactParents, migrate_staged_exact_parents
 from feedbax.analysis.figures import FIGURE_RENDER_ROLE, execute_figure_spec, resolve_figure_spec
 from feedbax.analysis.materialization import ContextMaterializer
-from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
-from feedbax.analysis.manifest_inputs import is_authenticated_manifest_ref, resolve_manifest_input
+from feedbax.analysis.manifest_inputs import (
+    authenticated_manifest_ref_from_read,
+    is_authenticated_manifest_ref,
+    resolve_manifest_input,
+)
 from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE, execute_report_spec
 from feedbax.analysis.specs import (
     AnalysisRecipeResult,
@@ -88,6 +91,8 @@ from feedbax.contracts.manifest import (
     spec_payload,
     write_manifest,
     load_manifest_bytes,
+    authenticated_manifest_ref_metadata,
+    authenticated_manifest_ref_profile,
 )
 from feedbax.contracts.material_dependencies import (
     IncidentalAdmissionFailure,
@@ -651,6 +656,12 @@ def select_bundle_manifests(
     bundle, _composition = resolve_analysis_bundle_authoring(bundle, repo_root=repo_root)
     allowed_ids = set(run_ids) if run_ids is not None else None
     candidates = iter_candidate_manifests(root, manifest_kind=bundle.predicate.manifest_kind)
+    # A full scan reaches every manifest file under the root, so two files can
+    # hold one address. That is a corrupt root, and it is refused here — at the
+    # single place selection happens — rather than downstream, where the
+    # duplicate would expand into duplicated execution while every set
+    # comparison over it counted one.
+    require_unique_root_addresses(candidates, what="the bundle's candidate root set")
     if bundle.predicate.top_k_by_metric_per_group is not None:
         effective_predicate = bundle.predicate
         if allowed_ids is not None:
@@ -662,12 +673,222 @@ def select_bundle_manifests(
             effective_predicate,
             [_manifest_index_row_for_manifest(manifest) for manifest in candidates],
         )
-        return [by_id[ref.id] for ref in selected if ref.id in by_id]
-    return [
+        chosen = [by_id[ref.id] for ref in selected if ref.id in by_id]
+        require_unique_root_addresses(chosen, what="the bundle's selected root set")
+        return chosen
+    selected = [
         manifest
         for manifest in candidates
         if predicate_matches_manifest(bundle.predicate, manifest, run_ids=allowed_ids)
     ]
+    require_unique_root_addresses(selected, what="the bundle's selected root set")
+    return selected
+
+
+class BundleRootError(ValueError):
+    """Base class for the structured refusals bundle root handling raises."""
+
+
+class DuplicateBundleRootError(BundleRootError):
+    """One bundle root address appears twice in a set that must be exact.
+
+    A bundle's roots are a *set*. Two entries at one ``(kind, id)`` are not a
+    stronger statement of the same thing: per-run expansion iterates the
+    sequence, so a duplicate executes the same work twice, while every
+    comparison over the set keys by address and therefore sees one of them. The
+    two halves disagree about what happened, and the one that decides whether
+    the selection matches the plan is the half that cannot see the duplicate.
+    """
+
+    def __init__(self, what: str, duplicates: Sequence[str]) -> None:
+        self.duplicates = tuple(duplicates)
+        super().__init__(
+            f"{what} names the same root receipt more than once: {list(self.duplicates)}. A "
+            "bundle executes over a set of roots, so one address is one root; a repeated "
+            "address executes duplicated work while every comparison over the set silently "
+            "counts it once."
+        )
+
+
+class BundleRootVerificationError(BundleRootError):
+    """A pinned bundle root is absent, unreadable, or not the bytes that were pinned."""
+
+
+def require_unique_root_addresses(
+    manifests: Sequence[Any], *, what: str
+) -> None:
+    """Refuse a root set that names one ``(kind, id)`` more than once."""
+    seen: dict[tuple[str, str], int] = {}
+    for manifest in manifests:
+        address = (str(manifest.kind), str(manifest.id))
+        seen[address] = seen.get(address, 0) + 1
+    duplicates = sorted(
+        f"{kind}:{manifest_id}" for (kind, manifest_id), count in seen.items() if count > 1
+    )
+    if duplicates:
+        raise DuplicateBundleRootError(what, duplicates)
+
+
+@dataclass(frozen=True)
+class BundleRootIdentity:
+    """One root receipt, as completely as the closure knows how to name it.
+
+    A manifest id is not an identity. Ids are unique within a kind, so the same
+    id names a different artifact under a different kind, and the same id under
+    the same kind names different *bytes* after a rerun. Both facts have to
+    travel with the id or the "exact root set" a lock declares is only an exact
+    set of strings.
+    """
+
+    kind: str
+    id: str
+    manifest_sha256: str | None = None
+    size_bytes: int | None = None
+
+    @property
+    def address(self) -> tuple[str, str]:
+        """The ``(kind, id)`` pair that says *which artifact* this is."""
+        return self.kind, self.id
+
+    def describe(self) -> str:
+        digest = "-" if self.manifest_sha256 is None else self.manifest_sha256[:12]
+        return f"{self.kind}:{self.id}@{digest}"
+
+    @classmethod
+    def of_parent(cls, parent: ParentRef) -> "BundleRootIdentity":
+        """Return the identity one bound parent ref carries."""
+        profile = authenticated_manifest_ref_profile(parent)
+        if profile is None:
+            return cls(kind=parent.kind, id=parent.id)
+        digest, size = profile
+        return cls(kind=parent.kind, id=parent.id, manifest_sha256=digest, size_bytes=size)
+
+
+@dataclass(frozen=True)
+class VerifiedBundleRoot:
+    """One bundle root proved, from a single read, to be the bytes that were pinned.
+
+    This is the cross-phase pin. Preflight and execution used to be two
+    independent selections over one root: preflight read the bytes and profiled
+    them, execution re-selected, re-read, and freshly authenticated whatever it
+    found, and the gate between them compared addresses. Bytes substituted in
+    between were consumed and blessed by the very step that was supposed to
+    authenticate them.
+
+    So the root is read *once*, verified against what the compile lock pinned,
+    and this record is what execution consumes: the manifest is the one parsed
+    from the verified bytes, and every parent ref execution emits restates the
+    verified profile instead of minting a fresh one.
+    """
+
+    kind: str
+    id: str
+    path: Path
+    manifest: AnyManifest
+    manifest_sha256: str
+    size_bytes: int
+
+    @property
+    def address(self) -> tuple[str, str]:
+        return self.kind, self.id
+
+    @property
+    def identity(self) -> BundleRootIdentity:
+        """The full identity this verified read settled."""
+        return BundleRootIdentity(
+            kind=self.kind,
+            id=self.id,
+            manifest_sha256=self.manifest_sha256,
+            size_bytes=self.size_bytes,
+        )
+
+    def parent_ref(self, role: str) -> ParentRef:
+        """Return the authenticated parent this verified read binds."""
+        return ParentRef(
+            kind=self.kind,
+            id=self.id,
+            role=role,
+            uri=None,
+            metadata=authenticated_manifest_ref_metadata(self.manifest_sha256, self.size_bytes),
+        )
+
+
+def verify_bundle_roots(
+    identities: Sequence[BundleRootIdentity],
+    *,
+    root: Path | str,
+) -> tuple[VerifiedBundleRoot, ...]:
+    """Read each pinned root once and prove it is the artifact that was pinned.
+
+    Addressing and authentication are separate proofs, as everywhere else on
+    this surface. That a completed receipt of the named kind and id is stored at
+    the canonical location is addressing; that its bytes are the ones the lock
+    quoted is authentication, and only a pin that carries a byte profile can
+    assert it. A pin without one is the lock's own statement that it
+    authenticated nothing, so the single read is the only authority there and
+    its profile is what the verified root carries.
+
+    Raises:
+        DuplicateBundleRootError: Two pins name one address.
+        BundleRootVerificationError: A pinned root is absent, unreadable, not
+            the named completed receipt, or not the pinned bytes.
+    """
+    root_path = Path(root)
+    require_unique_root_addresses(identities, what="the bound bundle root set")
+    verified: list[VerifiedBundleRoot] = []
+    for identity in identities:
+        path = canonical_manifest_path(identity.kind, identity.id, root=root_path)
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise BundleRootVerificationError(
+                f"bundle root {identity.describe()} is not readable at its canonical location "
+                f"{path}: {exc}. A root the plan named is proved from its own bytes, so an "
+                "unreadable one is a refusal and never a comparison that is skipped."
+            ) from exc
+        try:
+            manifest = load_manifest_bytes(raw)
+        except (ValueError, TypeError) as exc:
+            raise BundleRootVerificationError(
+                f"bundle root {identity.describe()} at {path} does not read as a Feedbax "
+                f"manifest: {exc}"
+            ) from exc
+        if (
+            manifest.kind != identity.kind
+            or manifest.id != identity.id
+            or manifest.status != "completed"
+        ):
+            raise BundleRootVerificationError(
+                f"bundle root {identity.describe()} resolves at {path} to "
+                f"{manifest.kind}:{manifest.id} with status {manifest.status!r}; a bound root "
+                "is the completed receipt the plan named"
+            )
+        found_sha256 = hashlib.sha256(raw).hexdigest()
+        found_size = len(raw)
+        if identity.manifest_sha256 is not None:
+            if found_sha256 != identity.manifest_sha256 or found_size != identity.size_bytes:
+                raise BundleRootVerificationError(
+                    f"bundle root {identity.kind}:{identity.id} is pinned to manifest_sha256="
+                    f"{identity.manifest_sha256} size_bytes={identity.size_bytes} but {path} "
+                    f"holds manifest_sha256={found_sha256} size_bytes={found_size}. The compile "
+                    "lock is the sole authority for which bytes that root names; a rerun that "
+                    "landed at the same address is a different artifact."
+                )
+            bound_sha256 = str(identity.manifest_sha256)
+            bound_size = int(identity.size_bytes or 0)
+        else:
+            bound_sha256, bound_size = found_sha256, found_size
+        verified.append(
+            VerifiedBundleRoot(
+                kind=identity.kind,
+                id=identity.id,
+                path=path,
+                manifest=manifest,
+                manifest_sha256=bound_sha256,
+                size_bytes=bound_size,
+            )
+        )
+    return tuple(verified)
 
 
 def _manifest_index_row_for_manifest(manifest: AnyManifest) -> ManifestIndexRow:
@@ -700,14 +921,31 @@ def _execution_parent_ref_for_manifest(
     *,
     root: Path,
 ) -> ParentRef:
-    """Compile exact evaluation authority for execution without guessing its path."""
+    """Compile exact evaluation authority for execution without guessing its path.
+
+    This is the *ambient* path: no compile lock pinned these roots, so nothing
+    was authenticated to compare the bytes against and the single read below is
+    the only authority there is. When a lock did pin them, execution never
+    reaches here — it consumes :class:`VerifiedBundleRoot` records that were
+    proved against the pin before any stage ran.
+
+    ``find_manifest_by_id`` is addressing: it decides *where* the receipt is,
+    across the canonical, indexed, and scanned tiers. The authenticated profile
+    comes from one read at the address it resolved, so what is bound is what was
+    read.
+    """
 
     if not isinstance(manifest, EvaluationRunManifest):
         return _parent_ref_for_manifest(manifest)
     resolved, path = find_manifest_by_id(manifest.id, root=root)
     if not isinstance(resolved, EvaluationRunManifest):
         raise TypeError(f"Expected EvaluationRunManifest, got {type(resolved).__name__}")
-    return authenticated_manifest_ref(resolved, path, "evaluation_run")
+    return authenticated_manifest_ref_from_read(
+        path,
+        expected_kind=resolved.kind,
+        expected_id=resolved.id,
+        role="evaluation_run",
+    )
 
 
 def _params_for_template(template: AnalysisSpecTemplate) -> dict[str, Any]:
@@ -744,8 +982,33 @@ def _manifest_ref(
     manifest: EvaluationRunManifest | AnalysisRunManifest | FigureManifest | ReportManifest,
     path: Path,
     role: str,
+    raw: bytes | None = None,
 ) -> ParentRef:
-    return authenticated_manifest_ref(manifest, path, role)
+    """Authenticate one just-materialized stage product for the stages that follow.
+
+    *raw* is the bytes a caller already read or wrote. Supplying them is what
+    keeps a stage product from being read once to decide it is usable and again
+    to say what was decided about.
+    """
+    if raw is not None:
+        parsed = load_manifest_bytes(raw)
+        if parsed.kind != manifest.kind or parsed.id != manifest.id:
+            raise BundleRootVerificationError(
+                f"manifest bytes at {path} are {parsed.kind}:{parsed.id}, not "
+                f"{manifest.kind}:{manifest.id}"
+            )
+        return ParentRef(
+            kind=parsed.kind,
+            id=parsed.id,
+            role=role,
+            uri=None,
+            metadata=authenticated_manifest_ref_metadata(
+                hashlib.sha256(raw).hexdigest(), len(raw)
+            ),
+        )
+    return authenticated_manifest_ref_from_read(
+        path, expected_kind=manifest.kind, expected_id=manifest.id, role=role
+    )
 
 
 def _stage_regeneration_payload(
@@ -1657,7 +1920,11 @@ def _execute_evaluation_stage(
         ]
         manifest_id = evaluation_run_manifest_id(spec)
         path = canonical_manifest_path("EvaluationRunManifest", manifest_id, root=root)
-        existing = load_manifest(path) if path.is_file() else None
+        # One read decides whether the cached receipt is usable and supplies the
+        # bytes the forward binding authenticates, so the two cannot describe
+        # different files.
+        cached_raw = path.read_bytes() if path.is_file() else None
+        existing = None if cached_raw is None else load_manifest_bytes(cached_raw)
         if isinstance(existing, EvaluationRunManifest) and existing.status == "completed":
             _validate_completed_evaluation_cache(
                 existing,
@@ -1667,6 +1934,7 @@ def _execute_evaluation_stage(
             )
             manifest = existing
         else:
+            cached_raw = None
             manifest, path = execute_evaluation_run_spec(
                 spec,
                 registry=registries.evaluation_recipes,
@@ -1685,7 +1953,7 @@ def _execute_evaluation_stage(
             )
         products.append(
             StageMaterialization(
-                manifest_ref=_manifest_ref(manifest, path, "evaluation_run"),
+                manifest_ref=_manifest_ref(manifest, path, "evaluation_run", cached_raw),
                 artifacts=tuple(manifest.artifacts),
                 manifest_path=path,
             )
@@ -2152,6 +2420,7 @@ def execute_analysis_bundle(
     root: Path | str | None = None,
     repo_root: Path | str | None = None,
     run_ids: Iterable[str] | None = None,
+    verified_roots: Sequence[VerifiedBundleRoot] | None = None,
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
     checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
@@ -2166,6 +2435,14 @@ def execute_analysis_bundle(
     forwarded unresolved to each expanded `execute_analysis_run_spec` call, so a
     template whose recipe needs checkpoint custody or an artifact provider gets
     the same per-spec binding preflight as a directly executed run spec.
+
+    Args:
+        verified_roots: Roots already read once and proved to be the bytes a
+            compile lock pinned. When supplied, they *are* the root set: no
+            selection runs, nothing is re-read, and every parent ref restates
+            the verified profile. A caller that pinned its roots and then let
+            execution re-select them would be running over whatever now sits at
+            those addresses, which is the substitution the pin exists to catch.
     """
     authored_bundle = bundle
     bundle, flattening = resolve_analysis_bundle_authoring(bundle, repo_root=repo_root)
@@ -2173,11 +2450,23 @@ def execute_analysis_bundle(
         analysis_bundle_composition_provenance(flattening) if flattening is not None else None
     )
     root_path = Path(root) if root is not None else default_manifest_root()
-    matched_manifests = select_bundle_manifests(bundle, root_path, run_ids=run_ids)
-    execution_parent_refs = {
-        manifest.id: _execution_parent_ref_for_manifest(manifest, root=root_path)
-        for manifest in matched_manifests
-    }
+    if verified_roots is not None:
+        require_unique_root_addresses(verified_roots, what="the verified bundle root set")
+        matched_manifests = [verified.manifest for verified in verified_roots]
+        execution_parent_refs = {
+            verified.id: verified.parent_ref(
+                "evaluation_run"
+                if verified.kind == "EvaluationRunManifest"
+                else _parent_ref_for_manifest(verified.manifest).role
+            )
+            for verified in verified_roots
+        }
+    else:
+        matched_manifests = select_bundle_manifests(bundle, root_path, run_ids=run_ids)
+        execution_parent_refs = {
+            manifest.id: _execution_parent_ref_for_manifest(manifest, root=root_path)
+            for manifest in matched_manifests
+        }
     expansions = expand_analysis_bundle(
         authored_bundle,
         matched_manifests,
@@ -2552,6 +2841,7 @@ def execute_staged_analysis_bundle(
     root: Path | str | None = None,
     repo_root: Path | str | None = None,
     run_ids: Iterable[str] | None = None,
+    verified_roots: Sequence[VerifiedBundleRoot] | None = None,
     exact_parents: StagedExactParents | None = None,
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
@@ -2589,7 +2879,21 @@ def execute_staged_analysis_bundle(
 
     root_path = Path(root) if root is not None else default_manifest_root()
     issue_refs = list(issues or [])
-    if exact_parents is None:
+    if exact_parents is None and verified_roots is not None:
+        # The roots were read once and proved against the compile lock's pins
+        # before any stage ran. Re-selecting here would discard that proof and
+        # execute over whatever now occupies those addresses.
+        require_unique_root_addresses(verified_roots, what="the verified bundle root set")
+        matched_manifests = [verified.manifest for verified in verified_roots]
+        bundle_parent_refs = [
+            verified.parent_ref(
+                "evaluation_run"
+                if verified.kind == "EvaluationRunManifest"
+                else _parent_ref_for_manifest(verified.manifest).role
+            )
+            for verified in verified_roots
+        ]
+    elif exact_parents is None:
         matched_manifests = select_bundle_manifests(bundle, root_path, run_ids=run_ids)
         bundle_parent_refs = [
             _execution_parent_ref_for_manifest(manifest, root=root_path)

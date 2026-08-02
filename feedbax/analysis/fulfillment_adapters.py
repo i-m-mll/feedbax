@@ -32,9 +32,14 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Union
 
 from feedbax.analysis.bundles import (
     AnalysisBundleSpec,
+    BundleRootIdentity,
+    DuplicateBundleRootError,
+    VerifiedBundleRoot,
     execute_analysis_bundle,
     execute_staged_analysis_bundle,
+    require_unique_root_addresses,
     select_bundle_manifests,
+    verify_bundle_roots,
 )
 from feedbax.analysis.evaluation import (
     execute_evaluation_run_spec,
@@ -701,41 +706,6 @@ _NODE_KIND_BY_MANIFEST_KIND: dict[str, FulfillmentNodeKind] = {
 }
 
 
-@dataclass(frozen=True)
-class BundleRootIdentity:
-    """One root receipt, as completely as the closure knows how to name it.
-
-    A manifest id is not an identity. Ids are unique within a kind, so the same
-    id names a different artifact under a different kind, and the same id under
-    the same kind names different *bytes* after a rerun. Both facts have to
-    travel with the id or the "exact root set" a lock declares is only an exact
-    set of strings.
-    """
-
-    kind: str
-    id: str
-    manifest_sha256: str | None = None
-    size_bytes: int | None = None
-
-    @property
-    def address(self) -> tuple[str, str]:
-        """The ``(kind, id)`` pair that says *which artifact* this is."""
-        return self.kind, self.id
-
-    def describe(self) -> str:
-        digest = "-" if self.manifest_sha256 is None else self.manifest_sha256[:12]
-        return f"{self.kind}:{self.id}@{digest}"
-
-    @classmethod
-    def of_parent(cls, parent: ParentRef) -> "BundleRootIdentity":
-        """Return the identity one bound parent ref carries."""
-        profile = authenticated_manifest_ref_profile(parent)
-        if profile is None:
-            return cls(kind=parent.kind, id=parent.id)
-        digest, size = profile
-        return cls(kind=parent.kind, id=parent.id, manifest_sha256=digest, size_bytes=size)
-
-
 def analysis_bundle_root_identities(
     request: AnalysisBundleNodeRequest,
 ) -> tuple[BundleRootIdentity, ...] | None:
@@ -797,7 +767,6 @@ def _require_bundle_roots(
     selected: Sequence[BundleRootIdentity],
     *,
     stage: str,
-    compare_profiles: bool = True,
 ) -> None:
     """Refuse a selection that is not exactly the set the closure bound.
 
@@ -811,16 +780,17 @@ def _require_bundle_roots(
     A bound side with no digest is the lock's own statement that it authenticated
     nothing, so address equality is all there is to compare. A bound side *with* a
     digest facing a selected side without one is not that case: it is a byte
-    comparison that did not happen, and it refuses. ``compare_profiles=False`` is
-    the one deliberate exception, for the post-execution gate that re-proves the
-    address against a set already byte-proved at preflight against the same root.
+    comparison that did not happen, and it refuses. There is no flag that turns
+    that refusal off — both gates over a bundle's roots now compare identities
+    that were settled by a verified read, so neither has anything to skip.
 
-    Args:
-        compare_profiles: Whether the selected side is expected to carry a byte
-            profile wherever the bound side does.
+    Duplicates on either side are refused before either side is keyed by
+    address, because keying is exactly what makes a duplicate invisible.
     """
     if identities is None:
         return
+    require_unique_root_addresses(identities, what=f"the bound root set at {stage}")
+    require_unique_root_addresses(selected, what=f"the selected root set at {stage}")
     bound = {identity.address: identity for identity in identities}
     found = {identity.address: identity for identity in selected}
     differences: list[str] = []
@@ -833,7 +803,7 @@ def _require_bundle_roots(
         if chosen is None:
             differences.append(f"{locked.describe()} was named by the plan but not selected")
             continue
-        if locked.manifest_sha256 is None or not compare_profiles:
+        if locked.manifest_sha256 is None:
             continue
         if chosen.manifest_sha256 is None:
             differences.append(
@@ -865,32 +835,26 @@ def _require_bundle_roots(
         )
 
 
-def _selected_root_identity(manifest: Any, *, root: Path) -> BundleRootIdentity:
-    """Return one selected manifest's identity, including its stored bytes.
+def _selected_root_identity(
+    manifest: Any, *, verified: Mapping[tuple[str, str], VerifiedBundleRoot]
+) -> BundleRootIdentity:
+    """Return one selected manifest's identity, from the verified read of it.
 
-    A selected root that cannot be profiled refuses. Selection returned this
-    manifest from this root, so its canonical bytes are readable or the root is
-    not the one the selection describes; either way, degrading to an
-    address-only identity would hand the equality gate a bound digest with
-    nothing to compare it against, and the gate would pass by having nothing to
-    say rather than by agreeing.
+    The profile comes from :func:`~feedbax.analysis.bundles.verify_bundle_roots`,
+    which read this root once and proved it against what the lock pinned. It is
+    not measured again here: a second read is a second file, and two reads
+    bracketing a comparison are exactly how a substitution passes a gate that
+    compares them.
+
+    A selected address the bound set does not contain has no profile, and needs
+    none — the address difference is what refuses it, and reading bytes to
+    describe a root nobody bound would only add a read.
     """
-    path = canonical_manifest_path(str(manifest.kind), str(manifest.id), root=root)
-    try:
-        raw = path.read_bytes()
-    except OSError as exc:
-        raise ValueError(
-            f"selected root receipt {manifest.kind}:{manifest.id} cannot be read at its "
-            f"canonical location {path}: {exc}. A root the plan authenticated is compared by "
-            "its bytes, so a selected root whose bytes are unreadable is a refusal rather "
-            "than a comparison that is skipped."
-        ) from exc
-    return BundleRootIdentity(
-        kind=str(manifest.kind),
-        id=str(manifest.id),
-        manifest_sha256=hashlib.sha256(raw).hexdigest(),
-        size_bytes=len(raw),
-    )
+    address = (str(manifest.kind), str(manifest.id))
+    found = verified.get(address)
+    if found is None:
+        return BundleRootIdentity(kind=address[0], id=address[1])
+    return found.identity
 
 
 def _bundle_stage_receipt(
@@ -935,9 +899,20 @@ def execute_analysis_bundle_node(
     Which entrypoint runs follows from the bundle document's own execution shape,
     which :class:`~feedbax.analysis.bundles.AnalysisBundleSpec` already refuses to
     leave ambiguous: a staged plan runs its ordered stages, and a template bundle
-    expands its templates. Both take the bound root ids as their selection, and
-    both are refused before any recipe runs when that selection is not exactly
-    what the plan named.
+    expands its templates.
+
+    A bound root set is **read once, here**, and proved against the compile
+    lock's pins before any recipe runs. That verified read is what execution
+    consumes: it is handed the proved roots rather than the ids of them, so it
+    performs no selection of its own and opens none of those files again.
+    Passing ids down and letting execution re-select was the whole defect —
+    preflight proved one set of bytes and execution went and fetched another,
+    freshly authenticating whatever it found, with only an address comparison
+    between the two phases to notice.
+
+    So the closure's roots are proved once and consumed once, and both gates —
+    the predicate gate before execution and the honored-set gate after it —
+    compare full identities that came from that single verified read.
 
     Receipts come back in the bundle's own product order — stage order, then the
     order each stage materialized — so two runs over one bundle list identically.
@@ -945,7 +920,6 @@ def execute_analysis_bundle_node(
     bundle = request.bundle
     root = Path(environment.root)
     identities = analysis_bundle_root_identities(request)
-    run_ids = None if identities is None else tuple(identity.id for identity in identities)
     if not bundle.stages and not bundle.templates:
         raise ValueError(
             f"analysis bundle node {request.node_key!r} declares neither a staged plan nor a "
@@ -960,12 +934,20 @@ def execute_analysis_bundle_node(
             "cannot be turned back into them. Run the bundle in an environment whose parents "
             "resolve beneath the receipt root."
         )
+    verified: tuple[VerifiedBundleRoot, ...] | None = None
+    run_ids: tuple[str, ...] | None = None
     if identities is not None:
+        run_ids = tuple(identity.id for identity in identities)
+        # One read per bound root, proved against the lock's pin. Everything
+        # after this — the predicate gate, execution, the honored-set gate —
+        # is derived from these records and never reopens the files.
+        verified = verify_bundle_roots(identities, root=root)
+        by_address = {item.address: item for item in verified}
         _require_bundle_roots(
             request,
             identities,
             [
-                _selected_root_identity(manifest, root=root)
+                _selected_root_identity(manifest, verified=by_address)
                 for manifest in select_bundle_manifests(
                     bundle, root, run_ids=run_ids, repo_root=environment.repo_root
                 )
@@ -978,7 +960,8 @@ def execute_analysis_bundle_node(
             bundle,
             root=root,
             repo_root=environment.repo_root,
-            run_ids=run_ids,
+            run_ids=None if verified is not None else run_ids,
+            verified_roots=verified,
             issues=list(environment.issues),
             registries=environment.registries,
         )
@@ -995,7 +978,8 @@ def execute_analysis_bundle_node(
             bundle,
             root=root,
             repo_root=environment.repo_root,
-            run_ids=run_ids,
+            run_ids=None if verified is not None else run_ids,
+            verified_roots=verified,
             issues=list(environment.issues),
             registries=environment.registries,
         )
@@ -1005,21 +989,31 @@ def execute_analysis_bundle_node(
             )
         )
         products.extend((manifest, path, None) for _, manifest, path in outputs)
-    # What execution reports back is ids. Their kind is not in doubt: selection
-    # fixes its candidates by the bundle predicate's manifest kind, so that is
-    # the kind every matched id has. The bytes were settled at the preflight gate
-    # above, against the same root, so this gate re-proves the address rather
-    # than re-reading every receipt.
-    _require_bundle_roots(
-        request,
-        identities,
-        [
-            BundleRootIdentity(kind=str(bundle.predicate.manifest_kind), id=str(run_id))
-            for run_id in matched
-        ],
-        stage="selection",
-        compare_profiles=False,
-    )
+    if identities is not None:
+        assert verified is not None
+        # Two separate facts, both proved. First, that execution honored the set
+        # it was handed: what it reports back is ids, and they must be exactly
+        # the ids of the verified roots. Second, that the set it consumed is the
+        # set the plan bound — compared over full identities, because the
+        # verified records carry the profile the single read settled. The old
+        # address-only comparison here is what let substituted bytes through:
+        # execution had re-read and re-authenticated them, so their ids still
+        # matched while their bytes were somebody else's.
+        honored = {str(run_id) for run_id in matched}
+        expected_ids = {item.id for item in verified}
+        if honored != expected_ids:
+            raise ValueError(
+                f"analysis bundle node {request.node_key!r} was given the verified root set "
+                f"{sorted(expected_ids)!r} but execution reports it ran over "
+                f"{sorted(honored)!r}; execution consumes the roots it is handed, and a set "
+                "it reports having widened, narrowed, or substituted describes different work"
+            )
+        _require_bundle_roots(
+            request,
+            identities,
+            [item.identity for item in verified],
+            stage="selection",
+        )
     return tuple(
         _bundle_stage_receipt(manifest, path, raw, root=root, node_key=request.node_key)
         for manifest, path, raw in products
