@@ -48,7 +48,10 @@ from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path, PurePosixPath
-from typing import Any, NoReturn
+from types import UnionType
+from typing import Annotated, Any, NoReturn, Union, get_args, get_origin
+
+from pydantic import BaseModel
 
 from feedbax.contracts.authored_canonical import (
     CANONICAL_PIN_ALGORITHM,
@@ -1146,6 +1149,38 @@ REPORT_BINDING_STATE_FIELDS: tuple[str, ...] = (
 #: The applicability value a role bound to authored not-applicability carries.
 REPORT_NOT_APPLICABLE_VALUE = "not_applicable"
 
+#: Where a report document carries the content its ``report_type`` names. The
+#: params model is the authority for role paths inside this block and for
+#: nothing outside it, which is why the walk below starts here rather than at the
+#: report document's own root.
+REPORT_PARAMS_FIELD = "params"
+
+#: The array a not-applicable ordered-figure section must not carry, because a
+#: node the envelope declares not applicable claims no content.
+REPORT_SECTION_FIGURES_FIELD = "figures"
+
+#: For each params node the engine reconciles a not-applicable binding at, the
+#: descriptors that node must not carry once it is not applicable. The table is
+#: keyed by the params model class the role path resolves to — the node's *type*,
+#: not the fields the inherited bytes happen to carry — because which descriptors
+#: a not-applicable node must shed is a fact about the node type, and a base that
+#: states none of them is exactly the case that most needs reconciling. Keys are
+#: ``(module, attribute)`` pairs for the same reason the dialect's output table
+#: is: naming a model must not import the analysis stack.
+#:
+#: A params node absent from this table is one the ordered-figure contract gives
+#: no applicability to (a scalar table, a projection): the binding stands in the
+#: lock and the document says nothing, as before.
+REPORT_NOT_APPLICABLE_REMOVALS: Mapping[tuple[str, str], tuple[str, ...]] = {
+    ("feedbax.analysis.reports", "OrderedFigureReportSection"): (
+        REPORT_SECTION_FIGURES_FIELD,
+    ),
+    ("feedbax.analysis.reports", "OrderedFigureReportFigure"): (
+        REPORT_FIGURE_DIGEST_FIELD,
+        REPORT_INPUT_ROLE_FIELD,
+    ),
+}
+
 
 def _lower_report(context: LayerCompileContext) -> LoweredLayer:
     """Lower ordered report role bindings, including authored not-applicability."""
@@ -1194,6 +1229,90 @@ def _resolve_role_node(document: Mapping[str, Any], role_path: str) -> Any:
     return node
 
 
+def _annotation_candidates(annotation: Any) -> tuple[Any, ...]:
+    """Return the non-``None`` types one annotation may be, unions flattened."""
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        return _annotation_candidates(get_args(annotation)[0])
+    if origin is Union or origin is UnionType:
+        return tuple(
+            candidate
+            for argument in get_args(annotation)
+            for candidate in _annotation_candidates(argument)
+            if candidate is not type(None)
+        )
+    return (annotation,)
+
+
+def _descend_annotation(annotation: Any, part: str) -> Any:
+    """Return the annotation one role-path segment names, or ``None`` if unknown.
+
+    A model field is named; a list element is indexed; a mapping value is keyed.
+    A union descends into each member and answers only when the members agree,
+    because a path whose meaning depends on which member the bytes happen to be
+    is not a path this compiler knows the type of.
+    """
+    resolved: list[Any] = []
+    for candidate in _annotation_candidates(annotation):
+        origin = get_origin(candidate)
+        arguments = get_args(candidate)
+        if origin is None:
+            if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+                declared = candidate.model_fields.get(part)
+                found = None if declared is None else declared.annotation
+            else:
+                found = None
+        elif isinstance(origin, type) and issubclass(origin, Mapping):
+            found = arguments[1] if len(arguments) == 2 else None
+        elif isinstance(origin, type) and issubclass(origin, Sequence) and arguments:
+            found = arguments[0] if part.isdigit() else None
+        else:
+            found = None
+        if found is not None and found not in resolved:
+            resolved.append(found)
+    return resolved[0] if len(resolved) == 1 else None
+
+
+def _role_node_model(params_model: Any, role_path: str, *, field: str) -> Any:
+    """Return the params-model type one role path resolves to.
+
+    ``None`` means the params model is not the authority for this path: either
+    the report type is one whose params Feedbax does not own, or the path
+    addresses the report document outside its ``params`` block, where the report
+    spec itself is the authority and states no binding-state descriptors.
+
+    A path *inside* an owned params block that the model cannot resolve is
+    refused rather than skipped: silently ignoring it would leave a binding whose
+    role names nothing, which is the one outcome the reconciliation exists to
+    prevent.
+    """
+    parts = role_path.split(".")
+    if params_model is None or parts[0] != REPORT_PARAMS_FIELD:
+        return None
+    node_model: Any = params_model
+    for part in parts[1:]:
+        node_model = _descend_annotation(node_model, part)
+        if node_model is None:
+            _reject(
+                ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+                f"{field}.role_path",
+                f"{role_path!r} names nothing in {params_model.__name__}, which is the "
+                "closed content model this report type declares; the compiler cannot say "
+                "what kind of role this binding decides the state of",
+                correct_home="a report role path addresses a node of the content model its "
+                "report_type names; the base states that structure and the binding names a "
+                "place in it",
+            )
+    return node_model
+
+
+def _not_applicable_removals(node_model: Any) -> tuple[str, ...] | None:
+    """Return what a not-applicable node of this type sheds, or ``None``."""
+    if not (isinstance(node_model, type) and issubclass(node_model, BaseModel)):
+        return None
+    return REPORT_NOT_APPLICABLE_REMOVALS.get((node_model.__module__, node_model.__name__))
+
+
 def _binding_state_patches(
     context: LayerCompileContext,
     authored: ReportLayerAuthoring,
@@ -1213,24 +1332,35 @@ def _binding_state_patches(
     reconciliation runs only inside a report type Feedbax owns the params of, and
     only over the closed set of fields that *describe* binding state; authored
     science at the same node is untouched.
+
+    What a role's state *is* comes from the node's type in the params model, not
+    from which descriptors the inherited bytes carry. A section the envelope
+    declares not applicable is the case that makes the difference: its base node
+    commonly states none of the descriptor fields and only an inherited
+    ``figures`` array, and reading state off the bytes present would leave that
+    array standing under a lock that says the section has no content.
     """
     document = context.parent.pinned.document
     if str(document.get("report_type")) not in REPORT_BINDING_STATE_REPORT_TYPES:
         return []
+    params_model = REPORT_OUTPUT.params_model(document)
     patches: list[OverridePatch] = []
     for index, (binding, reference) in enumerate(zip(authored.bindings, references)):
+        field = f"report.bindings[{index}]"
+        node_model = _role_node_model(params_model, binding.role_path, field=field)
         node = _resolve_role_node(document, binding.role_path)
         if not isinstance(node, Mapping):
             continue
-        if not any(name in node for name in REPORT_BINDING_STATE_FIELDS):
-            continue
         if isinstance(reference, NotApplicableReference):
-            patches.extend(_not_applicable_state_patches(binding.role_path, node, reference))
+            removals = _not_applicable_removals(node_model)
+            if removals is None:
+                continue
+            patches.extend(
+                _not_applicable_state_patches(binding.role_path, node, reference, removals)
+            )
         else:
             patches.extend(
-                _bound_state_patches(
-                    binding.role_path, node, reference, field=f"report.bindings[{index}]"
-                )
+                _bound_state_patches(binding.role_path, node, reference, field=field)
             )
     return patches
 
@@ -1243,7 +1373,10 @@ def _state_patch(role_path: str, node: Mapping[str, Any], name: str, value: Any)
 
 
 def _not_applicable_state_patches(
-    role_path: str, node: Mapping[str, Any], reference: NotApplicableReference
+    role_path: str,
+    node: Mapping[str, Any],
+    reference: NotApplicableReference,
+    removals: Sequence[str],
 ) -> list[OverridePatch]:
     """Reconcile one role the envelope declares not applicable.
 
@@ -1252,8 +1385,13 @@ def _not_applicable_state_patches(
     contract's default, which is inclusion, so the contradiction would survive
     the removal. The reason is the one the envelope authored, which is also the
     one the lock's :class:`NotApplicableReference` records — one authored string,
-    two places that quote it. The descriptors that name the artifact the role does
-    *not* have are removed, because a role that is not applicable has none.
+    two places that quote it.
+
+    ``removals`` is what this node *type* must not carry once it is not
+    applicable: for a figure entry, the descriptors naming an artifact it does not
+    have; for a section, the ``figures`` array, because a not-applicable section
+    claims no content. A field the base does not carry yields no patch, so
+    recompiling an already-reconciled base derives nothing.
     """
     patches: list[OverridePatch] = []
     for name, value in (
@@ -1263,7 +1401,7 @@ def _not_applicable_state_patches(
         if name in node and scalar_equal(node[name], value):
             continue
         patches.append(_state_patch(role_path, node, name, value))
-    for name in (REPORT_FIGURE_DIGEST_FIELD, REPORT_INPUT_ROLE_FIELD):
+    for name in removals:
         if name in node:
             patches.append(OverridePatch(path=f"{role_path}.{name}", op="remove"))
     return patches
@@ -1771,6 +1909,7 @@ __all__ = [
     "PER_ROW_INPUT_RULE_ID",
     "REPORT_BINDING_STATE_FIELDS",
     "REPORT_BINDING_STATE_REPORT_TYPES",
+    "REPORT_NOT_APPLICABLE_REMOVALS",
     "TRAINING_UNINHERITED_TOP_LEVEL_FIELDS",
     "EnvelopeCompileOutcome",
     "EnvelopeKernel",
