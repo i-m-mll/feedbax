@@ -42,6 +42,7 @@ from feedbax.analysis.fulfillment_derivation import (
 from feedbax.analysis.fulfillment_driver import (
     AmbiguousNodeReceiptError,
     ExternalBoundaryError,
+    ExternalReceiptAuthenticationError,
     MissingExternalReceiptError,
     PlanDocumentDriftError,
     closure_requests,
@@ -888,19 +889,20 @@ def test_a_receipt_locator_binds_at_its_canonical_location(
     assert calls.evaluation == 1
 
 
-def test_an_authenticated_receipt_reference_binds_the_same_way(
+def test_an_authenticated_receipt_reference_binds_the_bytes_it_quoted(
     outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
     outputs.probe("quoted-source")
     produced = _fulfill(outputs, "quoted-source", environment=environment).results[0].receipt
     raw = produced.path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
     outputs.bulletin(
         "quoted-consumer",
         references=[
             AuthenticatedReceiptReference(
                 manifest_kind="EvaluationRunManifest",
                 manifest_id=produced.manifest_id,
-                manifest_sha256=hashlib.sha256(raw).hexdigest(),
+                manifest_sha256=digest,
                 size_bytes=len(raw),
                 role_path="body.quoted",
                 consumer=ReportParentBinding(parent_kind="probe", parent_id="quoted"),
@@ -910,6 +912,98 @@ def test_an_authenticated_receipt_reference_binds_the_same_way(
     run = _fulfill(outputs, "quoted-consumer", environment=environment)
     bound = load_manifest(run.results[0].receipt.path).provenance.parents
     assert [ref.id for ref in bound] == [produced.manifest_id]
+    # The bound ref carries the same profile the lock quoted, so the digest the
+    # consumer records is the one the compile authenticated rather than a fresh
+    # one minted from whatever happened to be resolvable.
+    assert bound[0].metadata["manifest_sha256"] == digest
+    assert bound[0].metadata["size_bytes"] == len(raw)
+
+
+def test_an_authenticated_receipt_refuses_when_the_stored_bytes_disagree(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
+) -> None:
+    """Same kind, same id, same completed status, different bytes: a refusal.
+
+    Kind, id, and status address a receipt and say it finished; none of them says
+    the bytes are the ones the compile read. A rerun that produced different
+    results lands at exactly the same canonical location with all three intact,
+    so authentication has to be the byte profile the lock quoted or it is not
+    authentication at all.
+    """
+    outputs.probe("substituted-source")
+    produced = (
+        _fulfill(outputs, "substituted-source", environment=environment).results[0].receipt
+    )
+    raw = produced.path.read_bytes()
+    quoted_digest = hashlib.sha256(raw).hexdigest()
+    outputs.bulletin(
+        "substituted-consumer",
+        references=[
+            AuthenticatedReceiptReference(
+                manifest_kind="EvaluationRunManifest",
+                manifest_id=produced.manifest_id,
+                manifest_sha256=quoted_digest,
+                size_bytes=len(raw),
+                role_path="body.quoted",
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="quoted"),
+            )
+        ],
+    )
+    # Rewrite the receipt in place, preserving every field the resolver checks.
+    _mutate(produced.path, metadata={"rerun": "second-pass"})
+    substituted = load_manifest(produced.path)
+    assert substituted.kind == "EvaluationRunManifest"
+    assert substituted.id == produced.manifest_id
+    assert substituted.status == "completed"
+    found_raw = produced.path.read_bytes()
+    assert hashlib.sha256(found_raw).hexdigest() != quoted_digest
+
+    before = calls.report
+    with pytest.raises(ExternalReceiptAuthenticationError) as caught:
+        _fulfill(outputs, "substituted-consumer", environment=environment)
+
+    message = str(caught.value)
+    assert quoted_digest in message
+    assert hashlib.sha256(found_raw).hexdigest() in message
+    detail = caught.value.record_detail()
+    assert detail["lock_manifest_sha256"] == quoted_digest
+    assert detail["found_manifest_sha256"] == hashlib.sha256(found_raw).hexdigest()
+    assert detail["consumer"] == "report:substituted-consumer"
+    assert detail["role_path"] == ["body", "quoted"]
+    assert calls.report == before, "a refused consumer never runs"
+
+
+def test_a_receipt_locator_binds_without_a_byte_profile_to_check(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """A locator quoted no bytes, so changed bytes at its address still bind.
+
+    This is the honest complement of the refusal above rather than a hole in it:
+    a locator is the record of a receipt that did not exist at compile time, and
+    the compile therefore has nothing to authenticate it against. What the two
+    cases together prove is that the *lock* decides which check applies.
+    """
+    outputs.probe("locator-source")
+    produced = _fulfill(outputs, "locator-source", environment=environment).results[0].receipt
+    outputs.bulletin(
+        "locator-consumer",
+        references=[
+            ReceiptLocatorReference(
+                manifest_kind="EvaluationRunManifest",
+                manifest_id=produced.manifest_id,
+                role_path="body.quoted",
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="quoted"),
+            )
+        ],
+    )
+    _mutate(produced.path, metadata={"rerun": "second-pass"})
+
+    run = _fulfill(outputs, "locator-consumer", environment=environment)
+
+    bound = load_manifest(run.results[0].receipt.path).provenance.parents
+    assert bound[0].metadata["manifest_sha256"] == hashlib.sha256(
+        produced.path.read_bytes()
+    ).hexdigest()
 
 
 def test_an_absent_receipt_is_a_refusal_and_never_an_inapplicability(

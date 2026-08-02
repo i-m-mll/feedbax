@@ -699,7 +699,9 @@ def test_a_foreign_schema_version_in_the_custody_document_is_refused(repo: Path)
     _compile_plot(repo)
     path = _write_custody(repo)
     document = json.loads(path.read_text(encoding="utf-8"))
-    document["schema_version"] = "feedbax.spec.row_index_custody_bindings.v2"
+    # A version this build has never heard of. ``.v2`` is the current one, so it
+    # would be accepted; ``.v1`` is a real predecessor with its own rejection.
+    document["schema_version"] = "feedbax.spec.row_index_custody_bindings.v9"
     path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
     index = read_compiled_outputs(repo / "compiled")
 

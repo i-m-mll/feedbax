@@ -458,8 +458,10 @@ REFERENCE_ROW_CUSTODY_SIDECAR = """{
     }
   ],
   "index_id": "target2x_target4x_floor",
+  "index_sha256": \
+"72b578432680b0f151c0eb20f0eb2e2166841ed78af4723bd20f76a7ae4b1aa4",
   "schema_id": "feedbax.spec.row_index_custody_bindings",
-  "schema_version": "feedbax.spec.row_index_custody_bindings.v1"
+  "schema_version": "feedbax.spec.row_index_custody_bindings.v2"
 }
 """
 
@@ -636,7 +638,7 @@ class TestRowIndexCustodyWriter:
 
         path = tmp_path / "custody.json"
         payload = json.loads(REFERENCE_ROW_CUSTODY_SIDECAR)
-        payload["schema_version"] = "feedbax.spec.row_index_custody_bindings.v2"
+        payload["schema_version"] = "feedbax.spec.row_index_custody_bindings.v1"
         path.write_text(json.dumps(payload), encoding="utf-8")
         with pytest.raises(ValueError, match="unsupported RowIndexCustodyBindings schema_version"):
             load_row_index_custody_bindings(path)

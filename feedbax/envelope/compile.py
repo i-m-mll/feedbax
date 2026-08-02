@@ -392,13 +392,20 @@ class LoweredLayer:
 
 @dataclass(frozen=True)
 class EnvelopeCompileOutcome:
-    """The two outputs of one compile: a document and its compile lock."""
+    """The two outputs of one compile: a document and its compile lock.
+
+    ``envelope_schema`` is the dialect version the *authored document* declared,
+    not the version this build calls current. A supported older version compiles
+    as itself, so reporting the current constant would name a grammar the
+    compiled envelope was never held to.
+    """
 
     name: str
     family: str
     layer: ExperimentEnvelopeLayer
     document: Any
     compile_lock: dict[str, Any]
+    envelope_schema: str
 
 
 def scalar_equal(left: Any, right: Any) -> bool:
@@ -873,19 +880,38 @@ def _lower_evaluation(context: LayerCompileContext) -> LoweredLayer:
     patches.extend(
         _params_patches(authored.params, "base.params")
     )
-    reference = _reference_for(
-        context,
-        authored.subject,
-        role_path=f"subjects.{authored.subject_id}",
-        field="evaluation.subject",
-        consumer_of=lambda _kind, _id: EvaluationSubjectBinding(
-            subject_id=authored.subject_id
-        ),
-    )
+    references = [
+        _reference_for(
+            context,
+            authored.subject,
+            role_path=f"subjects.{authored.subject_id}",
+            field="evaluation.subject",
+            consumer_of=lambda _kind, _id: EvaluationSubjectBinding(
+                subject_id=authored.subject_id
+            ),
+        )
+    ]
+    # A further staged prerequisite is bound exactly as the subject is: by
+    # binding name, into the same named-parent slot every materialized row
+    # inherits. It is a second authenticated reference in the lock, which is the
+    # only thing that can authenticate one — the compiled document states the
+    # same names as a plan, and lowering refuses any it does not find here.
+    for index, prerequisite in enumerate(authored.staged_prerequisites or ()):
+        references.append(
+            _reference_for(
+                context,
+                prerequisite.ref,
+                role_path=f"subjects.{prerequisite.name}",
+                field=f"evaluation.staged_prerequisites[{index}].ref",
+                consumer_of=lambda _kind, _id, name=prerequisite.name: (
+                    EvaluationSubjectBinding(subject_id=name)
+                ),
+            )
+        )
     return LoweredLayer(
         contract=EVALUATION_OUTPUT,
         deltas=_one_delta(context, patches, authored.delta),
-        references=[reference],
+        references=references,
     )
 
 
@@ -923,6 +949,23 @@ def _lower_analysis(context: LayerCompileContext) -> LoweredLayer:
         )
         for index, subject in enumerate(authored.subjects)
     ]
+    # A bundle's root set is the one thing about a bundle a predicate cannot
+    # pin: the predicate re-selects whatever the manifest repository holds at
+    # execution time. Authoring the roots puts each one in the lock as an
+    # authenticated reference, and the adapter then binds by exact
+    # manifest-identity set instead of by ambient selection.
+    for index, root in enumerate(authored.roots or ()):
+        references.append(
+            _reference_for(
+                context,
+                root.ref,
+                role_path=f"roots.{root.alias}",
+                field=f"analysis.roots[{index}].ref",
+                consumer_of=lambda _kind, _id, root=root: AnalysisInputBinding(
+                    alias=root.alias, role=root.alias
+                ),
+            )
+        )
     return LoweredLayer(
         contract=contract,
         deltas=_one_delta(context, patches, authored.delta),
@@ -1861,6 +1904,7 @@ class EnvelopeKernel:
             layer=layer,
             document=document,
             compile_lock=lock,
+            envelope_schema=envelope.schema_,
         )
 
     def _compose(self, context: LayerCompileContext, lowered: LoweredLayer) -> dict[str, Any]:

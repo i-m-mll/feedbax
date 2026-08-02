@@ -158,7 +158,7 @@ BASE_SOURCE = """{
 """
 
 ENVELOPE_SOURCE = """{
-  "schema": "feedbax.experiment_envelope.v1",
+  "schema": "feedbax.experiment_envelope.v2",
   "name": "wide-tally",
   "base": "specs/base/tally.evaluation_run_matrix.json",
   "reason": "The four-step span closes before the tally stops growing.",

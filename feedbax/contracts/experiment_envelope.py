@@ -192,23 +192,29 @@ def envelope_schema_of(envelope: Mapping[str, Any]) -> str:
 
 
 def require_builtin_envelope_schema(schema: str) -> None:
-    """Refuse any authored schema other than the one built-in dialect.
+    """Refuse any authored schema outside the one built-in dialect's versions.
 
     There is exactly one dialect, so an envelope declaring anything else is an
-    authoring error the author can fix by naming the supported schema. No
-    fallback, no inference, and no second compiler exists to try instead.
+    authoring error the author can fix by naming a supported version. No
+    fallback, no inference, and no second compiler exists to try instead. The
+    dialect's supported versions are enumerated, never inferred, and each is
+    compiled as the grammar it names rather than being widened into the current
+    one.
     """
     # Local import: the dialect module imports this one for its rejection
-    # vocabulary, so the supported-schema constant can only be read here.
+    # vocabulary, so the supported-schema constants can only be read here.
     from feedbax.contracts.experiment_envelope_dialect import (
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+        EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS,
     )
 
-    if schema != EXPERIMENT_ENVELOPE_SCHEMA_VERSION:
+    if schema not in EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS:
         raise ExperimentEnvelopeRejection(
             ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
             f"authored envelope declares schema {schema!r}, but Feedbax compiles exactly one "
-            f"envelope dialect: {EXPERIMENT_ENVELOPE_SCHEMA_VERSION!r}",
+            f"envelope dialect: supported="
+            f"{list(EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS)}, "
+            f"current={EXPERIMENT_ENVELOPE_SCHEMA_VERSION!r}",
             field=ENVELOPE_SCHEMA_FIELD,
             correct_home=(
                 f"the envelope's {ENVELOPE_SCHEMA_FIELD!r} field, set to "

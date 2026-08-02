@@ -585,7 +585,7 @@
       "schemas": {
         "current": [
           "feedbax.spec.authenticated_row_index.v1",
-          "feedbax.spec.row_index_custody_bindings.v1",
+          "feedbax.spec.row_index_custody_bindings.v2",
           "feedbax.spec.resolved_row_set.v1",
           "feedbax.spec.figure_row_expansion_request.v1",
           "feedbax.spec.resolved_figure_inputs.v1",
@@ -595,6 +595,7 @@
         "rejected": [
           "feedbax.spec.authenticated_row_index.v0",
           "feedbax.spec.row_index_custody_bindings.v0",
+          "feedbax.spec.row_index_custody_bindings.v1",
           "feedbax.spec.resolved_row_set.v0",
           "feedbax.spec.figure_row_expansion_request.v0",
           "feedbax.spec.resolved_figure_inputs.v0",

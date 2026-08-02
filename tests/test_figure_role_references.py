@@ -617,7 +617,10 @@ def test_unknown_schema_versions_reject_rather_than_being_inferred(
     model: type, path: Path
 ) -> None:
     payload = _load(path)
-    for bad in (f"{payload['schema_id']}.v0", f"{payload['schema_id']}.v2", "other.v1"):
+    # ``.v9`` stands in for "a version this build has never heard of"; the
+    # concrete neighbouring versions differ per family and are covered by each
+    # family's own version-boundary test.
+    for bad in (f"{payload['schema_id']}.v0", f"{payload['schema_id']}.v9", "other.v1"):
         with pytest.raises(ValueError, match="unsupported"):
             model.model_validate({**payload, "schema_version": bad})
     with pytest.raises(ValueError, match="unsupported"):
@@ -629,7 +632,6 @@ def test_registered_row_and_figure_role_families_reject_old_versions() -> None:
 
     for kind in (
         "AuthenticatedRowIndex",
-        "RowIndexCustodyBindings",
         "ResolvedRowSet",
         "FigureRowExpansionRequest",
         "ResolvedFigureInputs",
@@ -640,6 +642,22 @@ def test_registered_row_and_figure_role_families_reject_old_versions() -> None:
         assert family.policy.rejected_old_versions == (f"{family.identity}.v0",)
         with pytest.raises(ValueError):
             default_spec_registry.migrate(kind, {"schema_version": f"{family.identity}.v0"})
+
+    # Row custody has a real predecessor, and it is rejected rather than
+    # migrated in place: a v1 document states no index digest, so any digest a
+    # reader supplied would be one nothing observed.
+    custody = default_spec_registry.resolve("RowIndexCustodyBindings")
+    assert custody.policy is not None
+    assert custody.policy.stance == "reject"
+    assert custody.policy.rejected_old_versions == (
+        f"{custody.identity}.v0",
+        f"{custody.identity}.v1",
+    )
+    for absent in (f"{custody.identity}.v0", f"{custody.identity}.v1"):
+        with pytest.raises(ValueError):
+            default_spec_registry.migrate(
+                "RowIndexCustodyBindings", {"schema_version": absent}
+            )
 
 
 def test_shared_reference_is_reused_across_rows_without_row_local_authority(

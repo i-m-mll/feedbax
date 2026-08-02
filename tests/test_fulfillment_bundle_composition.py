@@ -21,6 +21,7 @@ What is under test here is the whole path for those two kinds, and nothing else:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -34,6 +35,7 @@ from feedbax.analysis.fulfillment_adapters import (
     FigureNodeRequest,
     FulfillmentEnvironment,
     admit_node,
+    analysis_bundle_root_run_ids,
     execute_node,
 )
 from feedbax.analysis.fulfillment_derivation import (
@@ -235,6 +237,56 @@ def test_a_bundle_lowers_to_a_bundle_node_bound_to_its_root_receipts(
     assert request.bundle.name == target
     assert [parent.kind for parent in request.root_inputs] == ["EvaluationRunManifest"]
     assert [parent.role for parent in request.root_inputs] == ["observed"]
+
+
+def test_an_unbound_bundle_lowers_with_no_declared_root_set(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """No root reference in the lock is the one case ambient selection stands.
+
+    ``None`` and an empty set are two different statements. ``None`` says the
+    lock authenticated nothing to compare a selection against, so the bundle's
+    own predicate is the only statement about its roots; an empty declared set
+    would say the bundle executes over no receipts, which is not work.
+    """
+    outputs.sheaf("sheaf-unbound")
+
+    request = closure_requests(
+        _closure(outputs, "sheaf-unbound"),
+        environment=environment,
+        stop_at=LogicalKey("analysis", "sheaf-unbound"),
+    )[-1]
+
+    assert isinstance(request, AnalysisBundleNodeRequest)
+    assert request.root_inputs is None
+    assert analysis_bundle_root_run_ids(request) is None
+
+
+def test_a_declared_but_empty_root_set_is_refused_rather_than_read_as_ambient(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    outputs.sheaf("sheaf-empty")
+    request = closure_requests(
+        _closure(outputs, "sheaf-empty"),
+        environment=environment,
+        stop_at=LogicalKey("analysis", "sheaf-empty"),
+    )[-1]
+
+    with pytest.raises(ValueError, match="declares an empty root set"):
+        analysis_bundle_root_run_ids(replace(request, root_inputs=()))
+
+
+def test_a_bound_bundle_binds_by_exact_manifest_identity(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """A declared root set is the exact set, with no ambient fallback beneath it."""
+    target = _bound_sheaf(outputs, "sheaf-exact")
+    request = _bundle_request(outputs, target, environment=environment)
+
+    run_ids = analysis_bundle_root_run_ids(request)
+
+    assert run_ids is not None
+    assert run_ids == tuple(parent.id for parent in request.root_inputs)
 
 
 def test_a_composition_lowers_to_the_ordinary_figure_it_renders_as(

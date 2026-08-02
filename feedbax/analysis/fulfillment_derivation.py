@@ -536,12 +536,44 @@ def derive_fulfillment_plan(
     )
 
 
-def require_external_record(external: Mapping[str, Any] | None, *, field: str) -> tuple[str, str]:
-    """Return the ``(kind, id)`` one external edge record addresses, or refuse.
+@dataclass(frozen=True)
+class ExternalReceiptRecord:
+    """What one external edge states about the receipt it binds.
+
+    The two addressing fields say *where* the receipt is; the byte profile, when
+    the lock quoted one, says *which bytes* are allowed to be there. Both travel
+    together because they are one statement: a lock that authenticated a receipt
+    named bytes, and resolving the canonical location without checking them would
+    turn an authenticated quote back into a bare locator.
+    """
+
+    manifest_kind: str
+    manifest_id: str
+    manifest_sha256: str | None = None
+    size_bytes: int | None = None
+
+    @property
+    def is_authenticated(self) -> bool:
+        """Whether the lock quoted the byte profile the resolved bytes must have."""
+        return self.manifest_sha256 is not None
+
+    @property
+    def locator(self) -> tuple[str, str]:
+        """The canonical ``(kind, id)`` location this record addresses."""
+        return self.manifest_kind, self.manifest_id
+
+
+def require_external_record(
+    external: Mapping[str, Any] | None, *, field: str
+) -> ExternalReceiptRecord:
+    """Return the receipt one external edge record addresses, or refuse.
 
     The record's shape is Feedbax's, derived from a Feedbax reference kind, so
-    reading it is Feedbax's too. A record missing either field is a derivation
-    bug, not something a caller supplies by hand.
+    reading it is Feedbax's too. A record missing either addressing field is a
+    derivation bug, not something a caller supplies by hand, and so is a
+    half-stated byte profile: the lock's own reference model states the digest and
+    the size together or neither, so a record with one of them describes a
+    reference kind that does not exist.
     """
     if external is None:
         raise CompiledOutputError(
@@ -554,7 +586,25 @@ def require_external_record(external: Mapping[str, Any] | None, *, field: str) -
             f"{field} carries the external record {dict(external)!r}, which names no manifest "
             "kind and id; every receipt reference kind states both"
         )
-    return kind, manifest_id
+    digest = external.get("manifest_sha256")
+    size = external.get("size_bytes")
+    if (digest is None) != (size is None):
+        raise CompiledOutputError(
+            f"{field} carries the external record {dict(external)!r}, which states half a byte "
+            "profile; an authenticated receipt reference states manifest_sha256 and size_bytes "
+            "together, and a locator states neither"
+        )
+    if digest is not None and (not isinstance(digest, str) or not isinstance(size, int)):
+        raise CompiledOutputError(
+            f"{field} carries the external record {dict(external)!r}, whose byte profile is not "
+            "a sha256 string and an integer size"
+        )
+    return ExternalReceiptRecord(
+        manifest_kind=kind,
+        manifest_id=manifest_id,
+        manifest_sha256=digest,
+        size_bytes=size,
+    )
 
 
 __all__ = [
@@ -567,6 +617,7 @@ __all__ = [
     "CompiledOutputIndex",
     "CompiledProductKind",
     "DuplicateReferenceRoleError",
+    "ExternalReceiptRecord",
     "FulfillmentDerivationError",
     "UnresolvedPlannedProductError",
     "UnsupportedCompiledProductError",

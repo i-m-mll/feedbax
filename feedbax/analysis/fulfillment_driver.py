@@ -44,7 +44,7 @@ against the closed table in :mod:`feedbax.contracts.applicability_rules`. A rule
 this build cannot state certifies nothing, and the closure is refused rather than
 executed with an input neither bound nor proved inapplicable.
 
-## Missing receipts are refusals
+## Missing receipts are refusals, and the lock says which bytes count
 
 An input the plan carries as an already-produced external receipt is resolved at
 its canonical ``(kind, id, root)`` location, never through the manifest index,
@@ -53,12 +53,21 @@ structured refusal (:class:`MissingExternalReceiptError`), never an
 inapplicability: a missing receipt means not-yet-produced, wrong-root, or
 corrupt, and each of those is its own outcome.
 
+Addressing a receipt is not authenticating it. When the compile lock quoted a
+byte profile — an ``authenticated_receipt`` reference — the bytes found at that
+location are checked against the quote, and disagreement is
+:class:`ExternalReceiptAuthenticationError`. The lock is the sole authority for
+which bytes a reference names: nothing here blesses a manifest on kind, id, and
+status alone, because those three are satisfied equally by a rerun that produced
+different results at the same address.
+
 Execution is strictly serial and deterministic in order, as everything on the
 feedbax fulfillment surface is.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -89,6 +98,7 @@ from feedbax.analysis.fulfillment_custody import (
 from feedbax.analysis.fulfillment_derivation import (
     CompiledEnvelope,
     CompiledOutputIndex,
+    ExternalReceiptRecord,
     require_external_record,
 )
 from feedbax.analysis.fulfillment_lowering import lower_compiled_node
@@ -337,9 +347,10 @@ class NodeBinding:
 
         An edge with a producer in this closure binds that producer's admitted
         receipt. An edge carrying an external record binds the receipt stored at
-        its canonical location; the record's manifest kind and id come from the
-        typed lock reference the edge was derived from, so nothing is guessed and
-        nothing is supplied by a caller.
+        its canonical location; the record's manifest kind, id, and quoted byte
+        profile all come from the typed lock reference the edge was derived from,
+        so nothing is guessed, nothing is supplied by a caller, and a quoted
+        profile that the stored bytes do not match refuses rather than binds.
         """
         receipt = self.producer_receipt(edge)
         if receipt is not None:
@@ -374,9 +385,65 @@ class NodeBinding:
         return f"{edge.consumer.text} input {list(edge.role_path)}"
 
 
+class ExternalReceiptAuthenticationError(FulfillmentDriverError):
+    """The receipt at the canonical location is not the bytes the lock quoted.
+
+    A lock that authenticated a receipt named the exact bytes it read. Kind, id,
+    and status address *where* a receipt is and *whether* it completed; none of
+    them says the bytes are the same ones. So a completed manifest of the right
+    kind and id whose bytes disagree with the quote is a different artifact
+    occupying the same address, and binding it would let a recompiled,
+    re-executed, or substituted run be consumed as the one the compile
+    authenticated.
+    """
+
+    def __init__(
+        self,
+        record: ExternalReceiptRecord,
+        path: Path,
+        *,
+        found_sha256: str,
+        found_size: int,
+        consumer: LogicalKey | None = None,
+        role_path: Sequence[str] = (),
+    ) -> None:
+        self.record = record
+        self.path = path
+        self.found_sha256 = found_sha256
+        self.found_size = found_size
+        self.consumer = consumer
+        self.role_path = tuple(role_path)
+        origin = (
+            f"{consumer.text} declares input {list(self.role_path)} as the authenticated "
+            if consumer is not None
+            else "the plan quotes the authenticated "
+        )
+        super().__init__(
+            f"{origin}{record.manifest_kind} {record.manifest_id!r} with "
+            f"manifest_sha256={record.manifest_sha256} size_bytes={record.size_bytes}, but "
+            f"{path} holds manifest_sha256={found_sha256} size_bytes={found_size}. The compile "
+            "lock is the sole authority for which bytes that reference names; a manifest is "
+            "never blessed on kind, id, and status alone. Recompile the closure against the "
+            "receipt that is actually there, or restore the quoted receipt."
+        )
+
+    def record_detail(self) -> dict[str, Any]:
+        """Return the structured refusal, deterministic in every field."""
+        return {
+            "consumer": None if self.consumer is None else self.consumer.text,
+            "role_path": list(self.role_path),
+            "manifest_kind": self.record.manifest_kind,
+            "manifest_id": self.record.manifest_id,
+            "path": str(self.path),
+            "lock_manifest_sha256": self.record.manifest_sha256,
+            "lock_size_bytes": self.record.size_bytes,
+            "found_manifest_sha256": self.found_sha256,
+            "found_size_bytes": self.found_size,
+        }
+
+
 def resolve_external_receipt(
-    kind: str,
-    manifest_id: str,
+    record: ExternalReceiptRecord,
     *,
     root: Path | str,
     consumer: LogicalKey | None = None,
@@ -387,7 +454,15 @@ def resolve_external_receipt(
     The manifest index is derived acceleration and is never consulted: a receipt
     lives where feedbax's ``(kind, id, root)`` derivation says it lives, so an
     absent or stale index entry cannot change what this resolves.
+
+    Resolution proves two separate things. That a completed receipt of the named
+    kind and id is stored there is *addressing*, and its absence is
+    :class:`MissingExternalReceiptError`. That its bytes are the ones the lock
+    quoted is *authentication*, and only a lock that quoted a byte profile can
+    assert it; when one did, disagreement refuses rather than binding whatever
+    now occupies the address.
     """
+    kind, manifest_id = record.locator
     path = canonical_manifest_path(kind, manifest_id, root=Path(root))
     if not path.is_file():
         raise MissingExternalReceiptError(
@@ -398,21 +473,33 @@ def resolve_external_receipt(
         raise MissingExternalReceiptError(
             kind, manifest_id, path, consumer=consumer, role_path=role_path
         )
+    if record.is_authenticated:
+        raw = path.read_bytes()
+        found_sha256 = hashlib.sha256(raw).hexdigest()
+        found_size = len(raw)
+        if found_sha256 != record.manifest_sha256 or found_size != record.size_bytes:
+            raise ExternalReceiptAuthenticationError(
+                record,
+                path,
+                found_sha256=found_sha256,
+                found_size=found_size,
+                consumer=consumer,
+                role_path=role_path,
+            )
     return manifest, path
 
 
 def external_parent_ref(
-    external: tuple[str, str],
+    record: ExternalReceiptRecord,
     *,
     role: str,
     root: Path | str,
     consumer: LogicalKey | None = None,
     role_path: Sequence[str] = (),
 ) -> tuple[ParentRef, Path]:
-    """Return the authenticated parent one ``(kind, manifest_id)`` pair names."""
-    kind, manifest_id = external
+    """Return the authenticated parent one external receipt record names."""
     manifest, path = resolve_external_receipt(
-        kind, manifest_id, root=root, consumer=consumer, role_path=role_path
+        record, root=root, consumer=consumer, role_path=role_path
     )
     return authenticated_manifest_ref(manifest, path, role), path
 
