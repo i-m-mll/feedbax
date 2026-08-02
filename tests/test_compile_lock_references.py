@@ -33,10 +33,12 @@ from feedbax.contracts.experiment_compile_lock import (
     PlannedProductReference,
     ReceiptLocatorReference,
     ReportParentBinding,
+    RowProvenanceReference,
     build_compile_lock,
     compile_lock_plan_edges,
     load_compile_lock,
     parse_compile_lock_reference,
+    parse_row_provenance_reference,
 )
 from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeRejection,
@@ -93,7 +95,18 @@ def _not_applicable() -> NotApplicableReference:
     )
 
 
-def _inputs(references: list[Any]) -> CompileLockInputs:
+def _row_provenance() -> RowProvenanceReference:
+    return RowProvenanceReference(
+        row_id="widened",
+        source_row_key="baseline",
+        source_ref="bases/baseline.survey.json",
+        source_content_hash=DIGEST_A,
+    )
+
+
+def _inputs(
+    references: list[Any], row_provenance: list[Any] | None = None
+) -> CompileLockInputs:
     return CompileLockInputs(
         envelope_ref="studies/widened.envelope.json",
         envelope_document={"schema": "quillon.study.v1", "name": "widened"},
@@ -104,6 +117,7 @@ def _inputs(references: list[Any]) -> CompileLockInputs:
         contract=CompilerContract("quillon.compiler_contract", "quillon.compiler_contract.v1"),
         implementation=CompilerImplementation(code_unit="tests.test_compile_lock_references"),
         references=references,
+        row_provenance=row_provenance or [],
     )
 
 
@@ -362,3 +376,99 @@ def test_a_planned_product_schema_version_must_extend_its_schema_id() -> None:
     record["product_schema_version"] = "quillon.digest_document.v1"
     with pytest.raises(ExperimentEnvelopeRejection):
         parse_compile_lock_reference(record, field="references[0]")
+
+
+# -- row provenance is its own block, beside the closed union ---------------
+
+
+def test_row_provenance_states_the_row_key_and_the_pinned_document_it_resolved_in() -> None:
+    lock = build_compile_lock(_inputs([], [_row_provenance()]))
+
+    assert lock["row_provenance"] == [
+        {
+            "row_id": "widened",
+            "source_row_key": "baseline",
+            "source_ref": "bases/baseline.survey.json",
+            "source_content_hash": DIGEST_A,
+            "pin_algorithm": CANONICAL_PIN_ALGORITHM,
+        }
+    ]
+    assert load_compile_lock(lock, field="widened.compile-lock.json")["row_provenance"] == (
+        lock["row_provenance"]
+    )
+
+
+def test_a_lock_that_derived_no_row_states_an_empty_row_provenance_block() -> None:
+    assert build_compile_lock(_inputs([]))["row_provenance"] == []
+
+
+def test_row_provenance_accepts_the_mapping_form_a_tracked_lock_holds() -> None:
+    record = _row_provenance().model_dump(mode="json")
+
+    assert build_compile_lock(_inputs([], [record]))["row_provenance"] == [record]
+
+
+def test_row_provenance_is_not_a_member_of_the_reference_union() -> None:
+    assert "row_provenance" not in COMPILE_LOCK_REFERENCE_KINDS
+    with pytest.raises(ExperimentEnvelopeRejection):
+        parse_compile_lock_reference(
+            _row_provenance().model_dump(mode="json"), field="references[0]"
+        )
+
+
+def test_row_provenance_is_not_a_plan_edge() -> None:
+    lock = build_compile_lock(_inputs([_planned_product()], [_row_provenance()]))
+
+    edges = compile_lock_plan_edges(lock, field="widened.compile-lock.json")
+
+    assert [edge.kind for edge in edges] == ["planned_product"]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"row_id": ""},
+        {"source_row_key": "  "},
+        {"source_ref": ""},
+        {"source_content_hash": "DEADBEEF"},
+        {"pin_algorithm": "md5"},
+        {"kind": "row_provenance"},
+        {"consumer": {"consumer": "evaluation_subject", "subject_id": "widened"}},
+    ],
+)
+def test_a_malformed_row_provenance_record_is_refused_by_the_writer(
+    change: dict[str, Any],
+) -> None:
+    record = {**_row_provenance().model_dump(mode="json"), **change}
+
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        build_compile_lock(_inputs([], [record]))
+
+    assert caught.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert caught.value.field == "row_provenance[0]"
+
+
+def test_a_row_provenance_record_edited_after_the_fact_is_refused_by_the_reader() -> None:
+    lock = build_compile_lock(_inputs([], [_row_provenance()]))
+    lock["row_provenance"] = [{"row_id": "widened", "source_row_key": "baseline"}]
+
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        load_compile_lock(lock, field="widened.compile-lock.json")
+
+    assert caught.value.field == "widened.compile-lock.json#row_provenance[0]"
+
+
+def test_a_row_provenance_block_that_is_not_a_list_is_refused_by_the_reader() -> None:
+    lock = build_compile_lock(_inputs([]))
+    lock["row_provenance"] = {"row_id": "widened"}
+
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        load_compile_lock(lock, field="widened.compile-lock.json")
+
+    assert caught.value.field == "widened.compile-lock.json#row_provenance"
+
+
+def test_an_already_typed_row_provenance_record_passes_through_unchanged() -> None:
+    record = _row_provenance()
+
+    assert parse_row_provenance_reference(record, field="row_provenance[0]") is record
