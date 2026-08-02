@@ -727,12 +727,12 @@ def test_bytes_substituted_after_the_pin_is_proved_never_reach_what_is_emitted(
         return real_read_bytes(self)
 
     monkeypatch.setattr(Path, "read_bytes", spying_read_bytes)
+    refusal: Exception | None = None
+    receipts: tuple = ()
     try:
         receipts = execute_analysis_bundle_node(request, environment=environment)
-    except Exception:
-        # Refusing is a permitted outcome: a scan that disagrees with the proof
-        # can only ever narrow what runs, never widen it.
-        return
+    except Exception as exc:  # noqa: BLE001 - the refusal's type is not the point
+        refusal = exc
 
     assert len(reads) > 1, "the fixture must actually exercise a post-proof read"
     recorded = {
@@ -741,8 +741,14 @@ def test_bytes_substituted_after_the_pin_is_proved_never_reach_what_is_emitted(
         for parent in load_manifest(receipt.path).provenance.parents
         if parent.id == request.root_inputs[0].id
     }
-    assert recorded == {proved_digest}
-    assert tampered_digest not in recorded
+    # Refusing is a permitted outcome: a scan that disagrees with the proof can
+    # only ever narrow what runs. Recording the tampered digest is not.
+    assert tampered_digest not in recorded, (
+        "a post-proof read became a source of identity: the emitted parents "
+        f"record {recorded!r} rather than the proved {proved_digest!r}"
+    )
+    if refusal is None:
+        assert recorded == {proved_digest}
 
 
 def test_every_product_records_the_root_under_the_digest_the_pin_proved(
@@ -851,3 +857,45 @@ def test_verification_refuses_two_pins_at_one_address(
         verify_bundle_roots(
             [identities[0], identities[0]], root=Path(environment.root)
         )
+
+
+def test_execution_performs_no_selection_of_its_own_over_a_pinned_root_set(
+    outputs: QuillonOutputs,
+    environment: FulfillmentEnvironment,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The decisive structural fact: pinned execution never re-selects.
+
+    The byte-substitution tests can be satisfied by a recipe that happens to
+    choke on tampered input, so they prove the outcome without proving the
+    mechanism. This proves the mechanism directly. Selection is the step that
+    discarded the preflight proof and went looking for roots again; with a
+    verified set in hand, execution must not reach it at all.
+
+    One call is expected and permitted — the predicate gate in
+    ``execute_analysis_bundle_node``, which is what proves the plan's root set
+    is the set the bundle's own predicate selects. Any call after that one is
+    execution re-selecting.
+    """
+    from feedbax.analysis import bundles as bundles_module
+
+    target = _bound_sheaf(outputs, "sheaf-no-reselect")
+    request = _bundle_request(outputs, target, environment=environment)
+
+    calls_to_selection: list[tuple] = []
+    real_select = bundles_module.select_bundle_manifests
+
+    def counting_select(*args, **kwargs):
+        calls_to_selection.append((args, tuple(sorted(kwargs))))
+        return real_select(*args, **kwargs)
+
+    monkeypatch.setattr(bundles_module, "select_bundle_manifests", counting_select)
+    monkeypatch.setattr(
+        "feedbax.analysis.fulfillment_adapters.select_bundle_manifests", counting_select
+    )
+    execute_analysis_bundle_node(request, environment=environment)
+
+    assert len(calls_to_selection) == 1, (
+        "execution re-selected its roots instead of consuming the verified set; "
+        f"selection ran {len(calls_to_selection)} times"
+    )
