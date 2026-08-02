@@ -68,6 +68,7 @@ from feedbax.analysis.fulfillment import (
     FulfillmentNodeKind,
     FulfillmentReceipt,
     artifact_bytes_path,
+    resolve_artifact_bytes,
 )
 from feedbax.analysis.fulfillment_adapters import (
     EvaluationMatrixNodeRequest,
@@ -555,8 +556,19 @@ def shadow_custody(
 
 
 def _is_inside(candidate: Path, parent: Path) -> bool:
-    absolute_candidate = Path(os.path.abspath(candidate))
-    absolute_parent = Path(os.path.abspath(parent))
+    """Return whether *candidate* physically resolves at or inside *parent*.
+
+    Containment is decided after resolving symlinks on both sides. A lexical
+    comparison accepts a shadow root that merely *looks* like a sibling while
+    being a symlink into authoritative custody, and a shadow that resolves into
+    the authoritative root writes candidate bytes over authoritative ones. Both
+    sides are resolved because a receipt root is itself commonly reached through
+    a symlink, and resolving only one side would refuse legitimate siblings.
+    ``os.path.realpath`` is non-strict, so a shadow root that does not exist yet
+    resolves through its existing prefix.
+    """
+    absolute_candidate = Path(os.path.realpath(candidate))
+    absolute_parent = Path(os.path.realpath(parent))
     return absolute_candidate == absolute_parent or absolute_parent in absolute_candidate.parents
 
 
@@ -980,14 +992,41 @@ def _promote_artifact_bytes(
     quarantined — that name is unlinked immediately before the verified
     replacement is stored, so the window in which neither is present is a single
     filesystem operation wide.
+
+    The bytes this read returns are authenticated against the candidate's own
+    declared digest and size *at this read*, before anything authoritative is
+    touched. Shadow admission proved the shadow bytes earlier, and that proof is
+    stale by the time promotion reads them again: without re-authentication the
+    promotion would publish whatever the shadow path holds now under a manifest
+    that declares what it held then.
     """
-    source = artifact_bytes_path(artifact, root=shadow_root)
+    resolution = resolve_artifact_bytes(artifact, root=shadow_root)
+    source = resolution.path
     if source is None or not source.is_file():
         raise FulfillmentRepairError(
             f"shadow artifact {artifact.logical_name!r} has no resolvable bytes beneath "
-            f"{shadow_root}; a validated candidate must carry its own bytes"
+            f"{shadow_root} ({resolution.describe()}); a validated candidate must carry its "
+            "own bytes"
+        )
+    if not artifact.sha256:
+        raise FulfillmentRepairError(
+            f"shadow artifact {artifact.logical_name!r} declares no SHA-256; a promotion never "
+            "publishes bytes it cannot authenticate"
         )
     data = source.read_bytes()
+    observed_digest = hashlib.sha256(data).hexdigest()
+    if observed_digest != artifact.sha256:
+        raise FulfillmentRepairError(
+            f"shadow artifact {artifact.logical_name!r} at {source} hashes to "
+            f"{observed_digest}, not the declared {artifact.sha256}; the bytes promotion read "
+            "are not the bytes shadow admission authenticated"
+        )
+    if artifact.size_bytes is not None and len(data) != artifact.size_bytes:
+        raise FulfillmentRepairError(
+            f"shadow artifact {artifact.logical_name!r} at {source} is {len(data)} bytes, not "
+            f"the declared {artifact.size_bytes}; the bytes promotion read are not the bytes "
+            "shadow admission authenticated"
+        )
     destination = artifact_bytes_path(artifact, root=root)
     if destination is not None and destination.is_file():
         if hashlib.sha256(destination.read_bytes()).hexdigest() != artifact.sha256:
