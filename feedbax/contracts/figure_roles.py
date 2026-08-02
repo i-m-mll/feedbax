@@ -55,7 +55,11 @@ from feedbax.contracts.figures import (
     FIGURE_INPUT_AUTHORITY_SCHEMA_VERSION,
     FigureSpec,
 )
-from feedbax.contracts.manifest import ParentRef, StrictModel
+from feedbax.contracts.manifest import (
+    ParentRef,
+    StrictModel,
+    authenticated_manifest_ref_metadata,
+)
 from feedbax.contracts.row_index import (
     ResolvedRowSet,
     RowIndexCustodyBindings,
@@ -689,6 +693,8 @@ def expand_figure_rows(
 def figure_input_binding_records(
     request: FigureRowExpansionRequest,
     inputs: Sequence[ResolvedFigureInput],
+    *,
+    authenticated: bool = False,
 ) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
     """Return the ``(inputs, input_authorities)`` records *inputs* bind to.
 
@@ -702,9 +708,23 @@ def figure_input_binding_records(
     the two always address one manifest, and the artifact payload contract comes
     from the role's declared contract rather than from anything the caller says.
 
+    ``authenticated`` selects which of the two records is being built, and the
+    two differ in exactly one way. A figure *document* carries no digests: they
+    are realization facts, they belong in the compile lock, and putting them in
+    the document would invalidate the figure's identity every time custody
+    moved. A *runtime overlay* is the opposite case — it lives outside figure
+    identity and is what execution authenticates against, so it restates the
+    custody profile the resolution already carries
+    (:attr:`ResolvedFigureInput.manifest_sha256` and
+    :attr:`ResolvedFigureInput.size_bytes`) as the parent's authenticated
+    manifest ref metadata. Nothing is invented: the profile comes from the
+    custody document that produced the bytes, and an input that carries no
+    profile is refused rather than bound unauthenticated.
+
     Raises:
         RowSelectionError: If any resolved input is still awaiting a run receipt,
-            so binding it would name data that has not been produced.
+            so binding it would name data that has not been produced, or if
+            ``authenticated`` is set and an input carries no custody profile.
     """
     pending = [item.role for item in inputs if item.parent is None]
     if pending:
@@ -719,6 +739,19 @@ def figure_input_binding_records(
         assert item.parent is not None  # guaranteed by the pending check
         parent = item.parent.model_dump(mode="json", exclude_none=True)
         parent.pop("metadata", None)
+        if authenticated:
+            if item.manifest_sha256 is None or item.size_bytes is None:
+                raise RowSelectionError(
+                    RowSelectionErrorCode.UNRESOLVED_ROW_KEY,
+                    f"figure input role {item.role!r} binds {item.parent.id!r} with no "
+                    "authenticated custody profile; a runtime overlay states the digest and "
+                    "byte size the custody document recorded, and an unauthenticated parent "
+                    "is refused rather than bound",
+                    row_id=item.row_id,
+                )
+            parent["metadata"] = authenticated_manifest_ref_metadata(
+                item.manifest_sha256, item.size_bytes
+            )
         bound.append(parent)
         contract = request.contract(item.input_role)
         authorities.append(

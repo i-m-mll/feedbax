@@ -10,7 +10,15 @@ and nothing ever read a custody bindings document. The claims under test are:
   located document must match;
 * fulfillment *locates and believes* it: a row-expanded figure's node request
   carries one authenticated parent per expanded row per per-row role, with the
-  matching input authority, as a runtime overlay outside figure identity;
+  matching input authority, as a runtime overlay outside figure identity. The
+  overlay restates the custody document's own digest and byte size, and the
+  end-to-end test carries that through figure execution's input resolution over
+  the corpus's own ``AnalysisRunManifest`` custody — with the metadata-free
+  overlay as its negative control, because that state cannot render at all;
+* the *cut* is proved rather than asserted: the pinned row index is re-read and
+  re-canonicalized from the declared repository, and the located custody
+  document's content must belong to that proved cut, so a stale document reusing
+  the index id is refused;
 * every way that can fail is a named refusal — undeclared, absent, foreign to the
   index, foreign to the index *cut*, incomplete for the rows, or unreadable — and
   none of them is ever a silent fallback to the pending state the compile
@@ -22,6 +30,7 @@ because none of this is about any particular science.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import json
 from pathlib import Path
 from typing import Any
@@ -44,7 +53,27 @@ from feedbax.contracts.applicability_rules import (
     PER_ROW_FIGURE_INPUT_RULE,
     certify_not_applicable,
 )
+from feedbax.analysis.execution_context import (
+    StagedExecutionContext,
+    StagedParentArtifactProviderBinding,
+    StagedParentExecutionLocation,
+)
+from feedbax.analysis.figures import (
+    FigureInputAuthorityError,
+    plan_figure_execution,
+    resolve_figure_inputs,
+)
+from feedbax.analysis.manifest_inputs import is_authenticated_manifest_ref
 from feedbax.contracts.figure_roles import FigureRowCustodyLocator
+from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
+    ParentRef,
+    authenticated_manifest_ref_profile,
+    canonical_json_bytes,
+    sha256_bytes,
+    spec_payload,
+)
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.contracts.row_index import (
     AuthenticatedRowIndex,
     build_row_index_custody_bindings,
@@ -101,9 +130,11 @@ def _row_index(repo: Path) -> AuthenticatedRowIndex:
     )
 
 
-def _parent(manifest_id: str, digest: str, size: int) -> dict[str, Any]:
+def _parent(
+    manifest_id: str, digest: str, size: int, *, kind: str = "quillon.survey_run"
+) -> dict[str, Any]:
     return {
-        "kind": "quillon.survey_run",
+        "kind": kind,
         "id": manifest_id,
         "role": "observations",
         "metadata": {
@@ -121,13 +152,14 @@ def _write_custody(
     rows: dict[str, tuple[str, str, int]] | None = None,
     index: AuthenticatedRowIndex | None = None,
     ref: str = ROW_CUSTODY_REF,
+    kind: str = "quillon.survey_run",
 ) -> Path:
     """Write the custody bindings a run receipt layer would have produced."""
     resolved = _row_index(repo) if index is None else index
     document = build_row_index_custody_bindings(
         resolved,
         {
-            row_id: {"observations": _parent(*record)}
+            row_id: {"observations": _parent(*record, kind=kind)}
             for row_id, record in (ROW_MANIFESTS if rows is None else rows).items()
         },
     )
@@ -246,7 +278,38 @@ def test_the_bound_custody_stays_out_of_the_compiled_figure(
 
     assert "inputs" not in request.spec
     assert "input_authorities" not in request.spec
-    assert all(parent.metadata in (None, {}) for parent in request.runtime_inputs)
+
+
+def test_the_overlay_carries_the_authentication_the_custody_document_recorded(
+    repo: Path, environment: FulfillmentEnvironment
+) -> None:
+    """The overlay is what execution authenticates against, so it states the profile.
+
+    The custody document is the authority for these bytes. Dropping its digest
+    and byte size on the way into the overlay would leave every bound parent
+    unauthenticated, which is not a smaller claim but an unresolvable one: figure
+    execution refuses a manifest parent that declares neither an authentication
+    profile nor an explicit locator.
+    """
+    _compile_plot(repo)
+    _write_custody(repo)
+
+    request = _closure_request(repo, environment)
+
+    profiles = {
+        parent.id: authenticated_manifest_ref_profile(parent)
+        for parent in request.runtime_inputs
+    }
+    assert profiles == {
+        "near-span-0": (ROW_MANIFESTS["near-span"][1], ROW_MANIFESTS["near-span"][2]),
+        "far-span-0": (ROW_MANIFESTS["far-span"][1], ROW_MANIFESTS["far-span"][2]),
+    }
+    assert all(is_authenticated_manifest_ref(parent) for parent in request.runtime_inputs)
+    assert all(parent.uri is None for parent in request.runtime_inputs)
+    # The authority quotes the same authenticated parent record it authorizes.
+    assert [authority.parent for authority in request.runtime_input_authorities] == list(
+        request.runtime_inputs
+    )
 
 
 def test_the_authority_carries_the_declared_artifact_contract(
@@ -272,6 +335,166 @@ def test_a_figure_that_is_not_row_expanded_binds_no_custody(tmp_path: Path) -> N
 
     assert read_row_expansion_record(compiled) is None
     assert resolve_row_custody_overlay(compiled, repo_root=tmp_path) is None
+
+
+# -- the overlay reaches figure execution and authenticates ----------------
+
+#: What each row's produced analysis run says. The corpus's per-row custody is
+#: ``AnalysisRunManifest``, which is exactly the kind figure execution refuses
+#: unless the parent carries an authentication profile, so the end-to-end claim
+#: is stated over that kind rather than over a project-local one.
+ROW_PAYLOADS = {
+    "near-span": {"schema_id": "quillon.span_observations", "x": [1, 2]},
+    "far-span": {"schema_id": "quillon.span_observations", "x": [3, 4]},
+}
+
+
+def _use_analysis_run_custody(repo: Path) -> None:
+    """Author the figure against the corpus's own ``AnalysisRunManifest`` custody."""
+    path = envelope_path(repo, "widened-plot")
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    envelope["figure"]["inputs"][0]["contract"]["kind"] = "AnalysisRunManifest"
+    path.write_text(json.dumps(envelope, indent=2) + "\n", encoding="utf-8")
+
+
+def _produced_rows(
+    provider: ImmutableArtifactBlobProvider,
+) -> tuple[dict[str, tuple[str, str, int]], dict[str, str]]:
+    """Produce one completed analysis run per row.
+
+    Returns the ``{row_id: (manifest_id, sha256, size)}`` custody profiles a run
+    receipt layer would record, and where each manifest's bytes landed in the
+    provider.
+    """
+    produced: dict[str, tuple[str, str, int]] = {}
+    locations: dict[str, str] = {}
+    for row_id, payload in ROW_PAYLOADS.items():
+        artifact = provider.store_bytes(
+            json.dumps(payload).encode("utf-8"),
+            role="span_observations",
+            logical_name=f"{row_id}.json",
+            media_type="application/json",
+        )
+        manifest = AnalysisRunManifest(
+            id=f"feedbax-analysis-run:{row_id}",
+            status="completed",
+            analysis_spec=spec_payload(
+                "AnalysisRunSpec",
+                {"analysis_type": "quillon.span_summary", "inputs": [], "params": {}},
+            ),
+            artifacts=[artifact],
+        )
+        raw = canonical_json_bytes(manifest)
+        stored = provider.store_bytes(
+            raw,
+            role="analysis_manifest",
+            logical_name=f"{row_id}.manifest.json",
+            media_type="application/json",
+        )
+        produced[row_id] = (manifest.id, sha256_bytes(raw), len(raw))
+        locations[manifest.id] = str(provider.canonical_relative_path(stored))
+    return produced, locations
+
+
+def _execution_context(
+    provider: ImmutableArtifactBlobProvider,
+    parents: Sequence[ParentRef],
+    locations: dict[str, str],
+) -> StagedExecutionContext:
+    """Bind each overlay parent to the provider that holds its produced bytes."""
+    return StagedExecutionContext(
+        descriptor=None,
+        opened_artifact_providers={"custody": provider},
+        checkpoint_custody_roots={},
+        parent_execution_locations=tuple(
+            StagedParentExecutionLocation(
+                parent=parent,
+                root=provider.root,
+                execution_uri=locations[parent.id],
+                artifact_provider="custody",
+            )
+            for parent in parents
+        ),
+        parent_artifact_provider_bindings=tuple(
+            StagedParentArtifactProviderBinding(parent, "quillon.custody", "custody")
+            for parent in parents
+        ),
+    )
+
+
+def test_a_row_expanded_figure_renders_from_manifest_custody_end_to_end(
+    repo: Path, tmp_path: Path, environment: FulfillmentEnvironment
+) -> None:
+    """The whole chain, over the kind the corpus actually uses.
+
+    Compile the row expansion, produce one ``AnalysisRunManifest`` per row, let
+    fulfillment locate the custody document and build the overlay, and then run
+    figure execution's own input resolution over it. Every per-row parent is
+    authenticated against its real bytes and its declared artifact payload is
+    read, which is what a row-expanded figure could not do while the overlay
+    dropped the custody document's profile.
+    """
+    _use_analysis_run_custody(repo)
+    _compile_plot(repo)
+    provider = ImmutableArtifactBlobProvider(tmp_path / "provider")
+    produced, locations = _produced_rows(provider)
+    _write_custody(repo, rows=produced, kind="AnalysisRunManifest")
+
+    request = _closure_request(repo, environment)
+    context = _execution_context(provider, request.runtime_inputs, locations)
+    plan = plan_figure_execution(
+        request.spec,
+        runtime_inputs=list(request.runtime_inputs),
+        runtime_input_authorities=list(request.runtime_input_authorities),
+        repo_root=repo,
+        execution_context=context,
+        registry=environment.registries.figures,
+    )
+
+    resolved = resolve_figure_inputs(plan.execution_spec, execution_context=context)
+
+    assert [item.ref.role for item in resolved] == ["row_1__observed", "row_2__observed"]
+    assert [item.manifest.id for item in resolved] == [
+        produced["near-span"][0],
+        produced["far-span"][0],
+    ]
+    assert [item.artifact_payloads["observed"] for item in resolved] == [
+        ROW_PAYLOADS["near-span"],
+        ROW_PAYLOADS["far-span"],
+    ]
+
+
+def test_an_overlay_without_the_custody_profile_cannot_render(
+    repo: Path, tmp_path: Path, environment: FulfillmentEnvironment
+) -> None:
+    """The negative control for the same chain, at the same gate.
+
+    Strip exactly what the custody document authenticates and nothing else, and
+    figure execution refuses the manifest parent outright. This is the state a
+    metadata-free overlay leaves every row-expanded figure in, so it is the
+    failure the profile above is load-bearing against.
+    """
+    _use_analysis_run_custody(repo)
+    _compile_plot(repo)
+    provider = ImmutableArtifactBlobProvider(tmp_path / "provider")
+    produced, _locations = _produced_rows(provider)
+    _write_custody(repo, rows=produced, kind="AnalysisRunManifest")
+    request = _closure_request(repo, environment)
+    unauthenticated = [
+        parent.model_copy(update={"metadata": {}}) for parent in request.runtime_inputs
+    ]
+
+    plan = plan_figure_execution(
+        request.spec,
+        runtime_inputs=unauthenticated,
+        repo_root=repo,
+        registry=environment.registries.figures,
+    )
+
+    with pytest.raises(FigureInputAuthorityError) as caught:
+        resolve_figure_inputs(plan.execution_spec, root=environment.root)
+
+    assert "requires an authenticated reference profile" in str(caught.value)
 
 
 # -- every failure is a refusal, never a pending-role fallback -------------
@@ -387,6 +610,64 @@ def test_custody_for_another_cut_of_the_same_index_is_refused(repo: Path) -> Non
         resolve_row_custody_overlay(drifted, repo_root=repo)
 
     assert "two cuts of one index" in str(caught.value)
+
+
+def test_the_pinned_cut_is_proved_from_the_index_bytes_not_asserted(repo: Path) -> None:
+    """The lock's index digest is checked against bytes, not against another copy of itself.
+
+    ``index_sha256`` is the only lock-side digest a row expansion has. Until the
+    index is re-read and re-canonicalized, comparing it with the resolved row
+    set's copy of the same number proves nothing about anything on disk, and the
+    cut a custody document is believed for is whatever the id happens to name.
+    """
+    _compile_plot(repo)
+    _write_custody(repo)
+    index_document = json.loads((repo / ROW_INDEX_BASE).read_text(encoding="utf-8"))
+    index_document["rows"][1]["label"] = "recut far span"
+    (repo / ROW_INDEX_BASE).write_text(
+        json.dumps(index_document, indent=2) + "\n", encoding="utf-8"
+    )
+    index = read_compiled_outputs(repo / "compiled")
+
+    with pytest.raises(RowCustodyFulfillmentError) as caught:
+        resolve_row_custody_overlay(index.envelopes[0], repo_root=repo)
+
+    assert "now canonicalizes to" in str(caught.value)
+    assert "a different cut" in str(caught.value)
+
+
+def test_a_stale_custody_document_reusing_the_index_id_is_refused(repo: Path) -> None:
+    """Sharing an index id proves nothing: two cuts of one index both wear it.
+
+    This custody document is well formed, declares the right ``index_id``, and
+    loads cleanly. It was simply produced against a different cut of that index,
+    so its content — not the lock, and not a second lock-side value — is what has
+    to be checked against the pinned cut.
+    """
+    _compile_plot(repo)
+    other_cut = AuthenticatedRowIndex(
+        index_id="quillon-span-survey",
+        rows=[
+            {"row_id": "near-span", "label": "near span", "tags": ["survey"]},
+            {"row_id": "mid-span", "label": "mid span", "tags": ["survey"]},
+        ],
+    )
+    _write_custody(
+        repo,
+        index=other_cut,
+        rows={
+            "near-span": ROW_MANIFESTS["near-span"],
+            "mid-span": ("mid-span-0", "c" * 64, 1024),
+        },
+    )
+    index = read_compiled_outputs(repo / "compiled")
+
+    with pytest.raises(RowCustodyFulfillmentError) as caught:
+        resolve_row_custody_overlay(index.envelopes[0], repo_root=repo)
+
+    assert "do not belong to the row index cut pinned at" in str(caught.value)
+    assert "mid-span" in str(caught.value)
+    assert "never for one that reuses its index id" in str(caught.value)
 
 
 def test_custody_missing_a_row_is_refused_rather_than_partially_bound(repo: Path) -> None:
