@@ -59,7 +59,10 @@ from feedbax.envelope import (
     load_project_budgets,
     read_authored_document,
 )
-from feedbax.envelope.compile import check_no_co_created_protected_document
+from feedbax.envelope.compile import (
+    REPORT_BINDING_STATE_FIELDS,
+    check_no_co_created_protected_document,
+)
 from feedbax.envelope.entrypoint import DECLARED_LAYERS
 
 from tests.fake_project_experiment import (
@@ -1824,6 +1827,220 @@ def test_binding_state_is_reconciled_only_inside_a_report_type_feedbax_owns(
         "caption": "Widened span",
         "figure_spec_sha256": "a" * 64,
     }
+
+
+# -- a not-applicable section is reconciled by node type, not by inherited bytes --
+
+
+SECTION_NOT_APPLICABLE_BINDING = {
+    "role_path": "params.sections.0",
+    "ref": {
+        "kind": "not_applicable",
+        "reason": "the widened survey has no comparison arm to report on",
+    },
+}
+
+
+def _not_applicable_reference(outcome: Any) -> dict[str, Any]:
+    return next(
+        item
+        for item in outcome.compile_lock["references"]
+        if item["kind"] == "not_applicable"
+    )
+
+
+def test_a_not_applicable_section_states_the_applicability_its_bytes_never_carried(
+    repo: Path,
+) -> None:
+    """The base section describes only content, which is the whole gap."""
+    from tests.fake_project_experiment import REPORT_BASE
+
+    _report_base_figure(repo, figure_spec_sha256="a" * 64, applicability="included")
+    _report_bindings(repo, [SECTION_NOT_APPLICABLE_BINDING])
+    inherited = json.loads((repo / REPORT_BASE).read_text())["params"]["sections"][0]
+    assert not [name for name in REPORT_BINDING_STATE_FIELDS if name in inherited]
+
+    outcome = _compile_report(repo)
+
+    section = outcome.document["params"]["sections"][0]
+    reference = _not_applicable_reference(outcome)
+    assert section["applicability"] == "not_applicable"
+    assert section["not_applicable_reason"] == reference["reason"]
+    assert reference["role_path"] == "params.sections.0"
+    assert reference["basis"] == "authored"
+
+
+def test_a_not_applicable_section_no_longer_claims_the_figures_it_inherited(
+    repo: Path,
+) -> None:
+    _report_base_figure(repo, figure_spec_sha256="a" * 64, applicability="included")
+    _report_bindings(repo, [SECTION_NOT_APPLICABLE_BINDING])
+
+    outcome = _compile_report(repo)
+
+    section = outcome.document["params"]["sections"][0]
+    assert "figures" not in section
+    patches = outcome.compile_lock["resolved_deltas"][f"{outcome.name}.report"]["patches"]
+    assert [(patch["path"], patch["op"]) for patch in patches] == [
+        ("params.sections.0.applicability", "add"),
+        ("params.sections.0.not_applicable_reason", "add"),
+        ("params.sections.0.figures", "remove"),
+    ]
+
+
+def test_a_section_already_stating_its_bound_applicability_is_replaced_not_added(
+    repo: Path,
+) -> None:
+    """A contradicting inherited descriptor is rewritten; an agreeing one is left."""
+    from tests.fake_project_experiment import REPORT_BASE
+
+    document = json.loads((repo / REPORT_BASE).read_text())
+    document["params"]["sections"][0]["applicability"] = "included"
+    write_json(repo / REPORT_BASE, document)
+    _report_bindings(repo, [SECTION_NOT_APPLICABLE_BINDING])
+
+    outcome = _compile_report(repo)
+
+    patches = outcome.compile_lock["resolved_deltas"][f"{outcome.name}.report"]["patches"]
+    assert [(patch["path"], patch["op"]) for patch in patches] == [
+        ("params.sections.0.applicability", "replace"),
+        ("params.sections.0.not_applicable_reason", "add"),
+        ("params.sections.0.figures", "remove"),
+    ]
+
+
+def test_recompiling_a_reconciled_section_derives_no_further_patch(repo: Path) -> None:
+    """A reconciled base is a fixed point: the second compile changes nothing."""
+    from tests.fake_project_experiment import REPORT_BASE
+
+    _report_base_figure(repo, figure_spec_sha256="a" * 64, applicability="included")
+    _report_bindings(repo, [SECTION_NOT_APPLICABLE_BINDING])
+    first = _compile_report(repo)
+    write_json(repo / REPORT_BASE, first.document)
+
+    second = _compile_report(repo)
+
+    assert f"{second.name}.report" not in second.compile_lock["resolved_deltas"]
+    assert second.document["params"]["sections"][0] == first.document["params"]["sections"][0]
+
+
+def test_a_not_applicable_figure_entry_leaves_its_section_content_standing(
+    repo: Path,
+) -> None:
+    """Only the bound node is reconciled; the section around it is not one."""
+    _report_base_figure(repo, figure_spec_sha256="a" * 64, applicability="included")
+    _report_bindings(repo, [NOT_APPLICABLE_BINDING])
+
+    outcome = _compile_report(repo)
+
+    section = outcome.document["params"]["sections"][0]
+    assert "applicability" not in section
+    assert [entry["applicability"] for entry in section["figures"]] == ["not_applicable"]
+
+
+def test_a_role_path_the_report_content_model_does_not_know_is_refused(
+    repo: Path,
+) -> None:
+    _report_bindings(
+        repo,
+        [{**SECTION_NOT_APPLICABLE_BINDING, "role_path": "params.chapters.0"}],
+    )
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        _compile_report(repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert excinfo.value.field == "report.bindings[0].role_path"
+    assert "OrderedFigureReportParams" in str(excinfo.value)
+
+
+def test_a_role_path_below_a_known_node_is_refused_where_the_model_stops(
+    repo: Path,
+) -> None:
+    _report_bindings(
+        repo,
+        [
+            {
+                **SECTION_NOT_APPLICABLE_BINDING,
+                "role_path": "params.sections.0.figures.0.caption.text",
+            }
+        ],
+    )
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        _compile_report(repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+
+
+def test_a_role_path_is_unchecked_where_the_params_model_is_not_the_authority(
+    repo: Path,
+) -> None:
+    """Nothing here reaches into params a recipe owns, not even to refuse a path."""
+    from tests.fake_project_experiment import REPORT_BASE
+
+    document = json.loads((repo / REPORT_BASE).read_text())
+    document["report_type"] = "quillon.bulletin"
+    write_json(repo / REPORT_BASE, document)
+    _report_bindings(
+        repo,
+        [{**SECTION_NOT_APPLICABLE_BINDING, "role_path": "params.chapters.0"}],
+    )
+
+    outcome = _compile_report(repo)
+
+    assert _not_applicable_reference(outcome)["role_path"] == "params.chapters.0"
+    assert f"{outcome.name}.report" not in outcome.compile_lock["resolved_deltas"]
+
+
+def test_a_not_applicable_section_that_still_tabulates_is_refused_not_emptied(
+    repo: Path,
+) -> None:
+    """The engine removes the array it was ratified to remove and nothing else.
+
+    An inherited scalar table is content the ordered-figure contract also forbids
+    a not-applicable section, and this reconciliation does not remove it. The
+    compiled params are therefore refused by the content model itself, which is
+    the honest outcome: the engine never silently deletes authored tables.
+    """
+    from tests.fake_project_experiment import REPORT_BASE
+
+    document = json.loads((repo / REPORT_BASE).read_text())
+    document["params"]["sections"][0]["tables"] = [
+        {"columns": ["arm"], "rows": [["near"]]}
+    ]
+    write_json(repo / REPORT_BASE, document)
+    _report_bindings(repo, [SECTION_NOT_APPLICABLE_BINDING])
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        _compile_report(repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert "not-applicable section cannot declare figure or table content" in str(
+        excinfo.value
+    )
+
+
+def test_a_params_node_the_contract_gives_no_applicability_stays_lock_only(
+    repo: Path,
+) -> None:
+    """A scalar table is a node the model knows and states no applicability for."""
+    from tests.fake_project_experiment import REPORT_BASE
+
+    document = json.loads((repo / REPORT_BASE).read_text())
+    document["params"]["sections"][0]["tables"] = [
+        {"columns": ["arm"], "rows": [["near"]]}
+    ]
+    write_json(repo / REPORT_BASE, document)
+    _report_bindings(
+        repo,
+        [{**SECTION_NOT_APPLICABLE_BINDING, "role_path": "params.sections.0.tables.0"}],
+    )
+
+    outcome = _compile_report(repo)
+
+    assert outcome.document["params"]["sections"][0]["tables"][0]["columns"] == ["arm"]
+    assert f"{outcome.name}.report" not in outcome.compile_lock["resolved_deltas"]
 
 
 # -- a per-row figure input has no single locator --------------------------------
