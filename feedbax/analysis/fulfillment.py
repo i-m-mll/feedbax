@@ -12,6 +12,13 @@ work. Admission is uniform across manifest kinds and requires *all* of:
 6. every required output role is present;
 7. every artifact's SHA-256 and byte size verify against its stored bytes.
 
+Artifact bytes are located inside the receipt root and nowhere else. Location is
+resolved root-relative, refuses absolute and upward-walking recorded paths, and
+then requires the resolved location to lie physically beneath the resolved root,
+so no symlink can present out-of-custody bytes as this receipt's. A
+digest-prefix fallback that matches more than one stored file is refused rather
+than decided by sort order.
+
 Failure is refusal, not a cache miss. A manifest that exists but fails
 admission stops fulfillment with named, structured failures rather than being
 silently overwritten by re-execution, because silent re-execution over a failed
@@ -30,6 +37,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
+import os
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
@@ -118,6 +126,43 @@ AdmissionFailureCode = Literal[
     "artifact_sha256_mismatch",
     "artifact_size_mismatch",
 ]
+
+#: The named reasons an artifact's in-root byte location cannot be resolved.
+#: These refine the ``artifact_bytes_unresolvable`` admission failure without
+#: widening it: the code is the durable fact, the reason is the diagnosis.
+ArtifactBytesUnresolvableReason = Literal[
+    "relative_path_escapes_root",
+    "relative_path_traverses_symlink",
+    "digest_absent",
+    "digest_shard_absent",
+    "digest_unmatched",
+    "digest_ambiguous",
+    "digest_match_traverses_symlink",
+]
+
+
+@dataclass(frozen=True)
+class ArtifactBytesResolution:
+    """Where one artifact's bytes live beneath a receipt root, or why they do not.
+
+    A resolution with no ``path`` always names a ``reason``. It is an in-process
+    value, not a durable emitted format: it carries machine-local file names.
+    """
+
+    path: Path | None
+    reason: ArtifactBytesUnresolvableReason | None = None
+    detail: str | None = None
+    candidates: tuple[str, ...] = ()
+
+    def describe(self) -> str:
+        """Return a stable one-line description of the resolution."""
+        if self.path is not None:
+            return f"resolved to {self.path}"
+        if self.candidates:
+            return f"{self.reason}: {', '.join(self.candidates)}"
+        if self.detail is not None:
+            return f"{self.reason}: {self.detail!r}"
+        return str(self.reason)
 
 
 class AdmissionFailure(StrictModel):
@@ -621,29 +666,88 @@ def _check_output_roles(
 def artifact_bytes_path(artifact: ArtifactRef, *, root: Path) -> Path | None:
     """Return the in-root location of one artifact's bytes, or ``None``.
 
+    This is the path-only view of :func:`resolve_artifact_bytes`; callers that
+    need to say *why* a location was refused use the resolution directly.
+    """
+    return resolve_artifact_bytes(artifact, root=root).path
+
+
+def resolve_artifact_bytes(artifact: ArtifactRef, *, root: Path) -> ArtifactBytesResolution:
+    """Resolve one artifact's in-root byte location, or name why it is refused.
+
     Resolution is root-relative and never follows a machine-local ``uri``: a
     relocated receipt root must still verify. The recorded ``relative_path`` is
     preferred; otherwise the content-addressed layout is derived from the
     declared digest.
+
+    Containment is physical, not lexical. A recorded ``relative_path`` that is
+    absolute or that walks upwards is refused by inspection, and the resolved
+    location is then required to lie beneath the resolved root, so a symlink
+    anywhere along the path cannot make in-root-looking bytes come from outside
+    custody. Both sides are resolved, because a receipt root is itself commonly
+    reached through a symlink.
+
+    A digest-prefix fallback that matches more than one stored file is refused
+    rather than decided by sort order: two files whose names begin with the same
+    digest are two custody candidates, and silently authenticating one of them
+    would make the verdict depend on a filename suffix nobody declared.
     """
     relative = artifact.metadata.get("relative_path")
     if isinstance(relative, str) and relative:
         pure = PurePosixPath(relative.replace("\\", "/"))
-        if not pure.is_absolute() and not any(part in {"", ".", ".."} for part in pure.parts):
-            return root.joinpath(*pure.parts)
-        return None
+        if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
+            return ArtifactBytesResolution(
+                path=None,
+                reason="relative_path_escapes_root",
+                detail=relative,
+            )
+        candidate = root.joinpath(*pure.parts)
+        if not _resolves_inside(candidate, root=root):
+            return ArtifactBytesResolution(
+                path=None,
+                reason="relative_path_traverses_symlink",
+                detail=relative,
+            )
+        return ArtifactBytesResolution(path=candidate)
     digest = artifact.sha256
     if not digest:
-        return None
+        return ArtifactBytesResolution(path=None, reason="digest_absent")
     directory = root / "artifacts" / "sha256" / digest[:2]
     if not directory.is_dir():
-        return None
+        return ArtifactBytesResolution(path=None, reason="digest_shard_absent")
     matches = sorted(
         candidate
         for candidate in directory.iterdir()
         if candidate.is_file() and candidate.name.startswith(digest)
     )
-    return matches[0] if matches else None
+    if not matches:
+        return ArtifactBytesResolution(path=None, reason="digest_unmatched")
+    if len(matches) > 1:
+        return ArtifactBytesResolution(
+            path=None,
+            reason="digest_ambiguous",
+            candidates=tuple(match.name for match in matches),
+        )
+    if not _resolves_inside(matches[0], root=root):
+        return ArtifactBytesResolution(
+            path=None,
+            reason="digest_match_traverses_symlink",
+            candidates=(matches[0].name,),
+        )
+    return ArtifactBytesResolution(path=matches[0])
+
+
+def _resolves_inside(candidate: Path, *, root: Path) -> bool:
+    """Return whether *candidate* physically resolves beneath *root*.
+
+    ``os.path.realpath`` is non-strict, so a location whose bytes are not stored
+    yet resolves through its existing prefix. Both sides are resolved: comparing
+    a resolved candidate against an unresolved root would refuse every legitimate
+    path under a root that is itself reached through a symlink.
+    """
+    resolved_root = Path(os.path.realpath(root))
+    resolved_candidate = Path(os.path.realpath(candidate))
+    return resolved_root in resolved_candidate.parents
 
 
 def _check_artifacts(
@@ -670,14 +774,20 @@ def _check_artifacts(
                 observed=artifact.model_dump(mode="json", exclude_none=True),
             )
             continue
-        path = artifact_bytes_path(artifact, root=root)
+        resolution = resolve_artifact_bytes(artifact, root=root)
+        path = resolution.path
         if path is None:
             collector.add(
                 "artifacts_verified",
                 "artifact_bytes_unresolvable",
-                f"{label} has no resolvable location beneath the receipt root",
+                f"{label} has no resolvable location beneath the receipt root: "
+                f"{resolution.describe()}",
                 observed=artifact.metadata.get("relative_path"),
-                details={"root": str(root)},
+                details={
+                    "root": str(root),
+                    "reason": resolution.reason,
+                    "candidates": list(resolution.candidates),
+                },
             )
             continue
         try:
