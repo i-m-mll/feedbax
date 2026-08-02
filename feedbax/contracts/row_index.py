@@ -41,11 +41,19 @@ from feedbax.contracts.manifest import (
     canonical_json_bytes,
     sha256_bytes,
 )
+from feedbax.contracts.strict_json import strict_json_loads
 
 ROW_INDEX_SCHEMA_ID = "feedbax.spec.authenticated_row_index"
 ROW_INDEX_SCHEMA_VERSION = "feedbax.spec.authenticated_row_index.v1"
 ROW_INDEX_CUSTODY_SCHEMA_ID = "feedbax.spec.row_index_custody_bindings"
-ROW_INDEX_CUSTODY_SCHEMA_VERSION = "feedbax.spec.row_index_custody_bindings.v1"
+ROW_INDEX_CUSTODY_SCHEMA_VERSION_V1 = f"{ROW_INDEX_CUSTODY_SCHEMA_ID}.v1"
+ROW_INDEX_CUSTODY_SCHEMA_VERSION_V2 = f"{ROW_INDEX_CUSTODY_SCHEMA_ID}.v2"
+
+#: v2 is current. It adds ``index_sha256``, the digest of the exact row index
+#: cut these bindings were produced against. v1 carried only ``index_id``, which
+#: names *which* index but not *which cut of it*, so two custody documents from
+#: different cuts of one index were indistinguishable.
+ROW_INDEX_CUSTODY_SCHEMA_VERSION = ROW_INDEX_CUSTODY_SCHEMA_VERSION_V2
 RESOLVED_ROW_SET_SCHEMA_ID = "feedbax.spec.resolved_row_set"
 RESOLVED_ROW_SET_SCHEMA_VERSION = "feedbax.spec.resolved_row_set.v1"
 
@@ -360,20 +368,61 @@ class RowIndexCustodyBindings(StrictModel):
 
     This document is produced by the run receipt layer, never hand-authored,
     and never required for a first-time compile.
+
+    ``index_sha256`` pins the exact row index cut the bindings were produced
+    against. Without it the document says only which index it belongs to, and an
+    index id is stable across cuts: a custody document written for an earlier cut
+    of the same index carries the same id, names rows that still exist, and would
+    bind stale artifacts to a figure with nothing disagreeing. The digest is what
+    makes "belongs to this index" mean "belongs to this cut of it".
+
+    That is why ``feedbax.spec.row_index_custody_bindings.v1`` is refused rather
+    than migrated in place: a v1 document states no digest, and any digest this
+    code filled in would be one it chose rather than one the producing run
+    observed — the exact false authentication the field exists to prevent.
+    :func:`migrate_row_index_custody_payload` is the deterministic upgrade, and it
+    requires the caller to hand over the authoritative index, because only
+    something holding that index can say which cut the bindings came from.
     """
 
     schema_id: str = ROW_INDEX_CUSTODY_SCHEMA_ID
     schema_version: str = ROW_INDEX_CUSTODY_SCHEMA_VERSION
     index_id: str
+    index_sha256: str
     bindings: list[RowCustodyBinding] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _require_supported_version(cls, value: Any) -> Any:
+        """Refuse an unsupported version before any field is looked at.
+
+        Version is checked first on purpose. A v1 document differs from a v2 one
+        by a missing ``index_sha256``, and reporting that as a missing field would
+        describe the symptom while hiding the fact that the document is simply a
+        different, earlier format with a stated upgrade path.
+        """
+        if not isinstance(value, Mapping):
+            return value
+        declared = value.get("schema_version", ROW_INDEX_CUSTODY_SCHEMA_VERSION)
+        if declared != ROW_INDEX_CUSTODY_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported RowIndexCustodyBindings schema_version: "
+                f"{declared!r}; current={ROW_INDEX_CUSTODY_SCHEMA_VERSION!r}. "
+                f"{ROW_INDEX_CUSTODY_SCHEMA_VERSION_V1!r} states no index_sha256 and is "
+                "refused rather than migrated in place: the digest names the index cut the "
+                "bindings were produced against, and this code cannot supply one it did not "
+                "observe. Regenerate the sidecar with build_row_index_custody_bindings, or "
+                "upgrade it with migrate_row_index_custody_payload and the index it belongs to."
+            )
+        return value
 
     @model_validator(mode="after")
     def _validate_bindings(self) -> "RowIndexCustodyBindings":
         if self.schema_id != ROW_INDEX_CUSTODY_SCHEMA_ID:
             raise ValueError(f"unsupported RowIndexCustodyBindings schema_id: {self.schema_id!r}")
-        if self.schema_version != ROW_INDEX_CUSTODY_SCHEMA_VERSION:
+        if not re.fullmatch(r"[0-9a-f]{64}", self.index_sha256):
             raise ValueError(
-                f"unsupported RowIndexCustodyBindings schema_version: {self.schema_version!r}"
+                "RowIndexCustodyBindings index_sha256 must be a lowercase sha256 digest"
             )
         keys = [(binding.row_id, binding.binding_key) for binding in self.bindings]
         duplicates = sorted({key for key in keys if keys.count(key) > 1})
@@ -407,12 +456,29 @@ class RowIndexCustodyBindings(StrictModel):
         return matches[0]
 
     def require_index(self, index: AuthenticatedRowIndex) -> None:
-        """Fail closed when these bindings do not belong to *index*."""
+        """Fail closed when these bindings do not belong to this cut of *index*.
+
+        Both halves are checked, because they answer different questions. The id
+        says these bindings are about this index; the digest says they are about
+        the index *as it is now*. A custody document from an earlier cut passes
+        the first and fails the second, which is the whole reason the digest is
+        recorded.
+        """
         if self.index_id != index.index_id:
             raise RowSelectionError(
                 RowSelectionErrorCode.INDEX_MISMATCH,
                 f"row custody bindings for {self.index_id!r} do not belong to row index "
                 f"{index.index_id!r}",
+                index_id=index.index_id,
+            )
+        observed = index.canonical_sha256()
+        if self.index_sha256 != observed:
+            raise RowSelectionError(
+                RowSelectionErrorCode.INDEX_MISMATCH,
+                f"row custody bindings for index {self.index_id!r} pin index_sha256 "
+                f"{self.index_sha256} but the index they were checked against hashes to "
+                f"{observed}; an index id is stable across cuts, so these bindings belong to "
+                "a different cut of the same index and would attach its artifacts to this one",
                 index_id=index.index_id,
             )
         declared = set(index.row_ids)
@@ -495,9 +561,64 @@ def build_row_index_custody_bindings(
                     ),
                 )
             )
-    document = RowIndexCustodyBindings(index_id=index.index_id, bindings=ordered)
+    document = RowIndexCustodyBindings(
+        index_id=index.index_id,
+        index_sha256=index.canonical_sha256(),
+        bindings=ordered,
+    )
     document.require_index(index)
     return document
+
+
+def migrate_row_index_custody_payload(
+    payload: Mapping[str, Any], *, index: AuthenticatedRowIndex
+) -> dict[str, Any]:
+    """Return one custody payload at the current version, pinned to *index*.
+
+    This is the deterministic upgrade from
+    ``feedbax.spec.row_index_custody_bindings.v1``, and it deliberately takes the
+    index rather than deriving one. A v1 document records which index it belongs
+    to but not which cut, and that missing fact cannot be recovered from the
+    document: the caller supplies the index it is asserting the bindings came
+    from, and the digest is that index's own canonical digest.
+
+    The assertion is checked as far as it can be. The index id must match, and
+    every bound row must be one the supplied index declares, so an index that is
+    not even plausibly the right one refuses here instead of minting a digest
+    that would make the mismatch invisible afterwards.
+
+    A payload already at the current version is returned unchanged after the same
+    check. Any other version refuses: there is nothing to migrate from.
+    """
+    if not isinstance(payload, Mapping):
+        raise ValueError("row custody bindings document must be a JSON object")
+    declared = payload.get("schema_version")
+    if declared == ROW_INDEX_CUSTODY_SCHEMA_VERSION:
+        document = RowIndexCustodyBindings.model_validate(dict(payload))
+        document.require_index(index)
+        return dict(payload)
+    if declared != ROW_INDEX_CUSTODY_SCHEMA_VERSION_V1:
+        raise ValueError(
+            f"unsupported RowIndexCustodyBindings schema_version: {declared!r}; migratable="
+            f"{[ROW_INDEX_CUSTODY_SCHEMA_VERSION_V1]}, current="
+            f"{ROW_INDEX_CUSTODY_SCHEMA_VERSION!r}"
+        )
+    if payload.get("index_id") != index.index_id:
+        raise RowSelectionError(
+            RowSelectionErrorCode.INDEX_MISMATCH,
+            f"row custody bindings for {payload.get('index_id')!r} cannot be migrated against "
+            f"row index {index.index_id!r}; the digest would assert a cut of an index these "
+            "bindings never named",
+            index_id=index.index_id,
+        )
+    migrated = {
+        **dict(payload),
+        "schema_version": ROW_INDEX_CUSTODY_SCHEMA_VERSION,
+        "index_sha256": index.canonical_sha256(),
+    }
+    document = RowIndexCustodyBindings.model_validate(migrated)
+    document.require_index(index)
+    return migrated
 
 
 def serialize_row_index_custody_bindings(document: RowIndexCustodyBindings) -> str:
@@ -514,16 +635,38 @@ def write_row_index_custody_bindings(
     document: RowIndexCustodyBindings,
     path: Path | str,
     *,
-    index: AuthenticatedRowIndex | None = None,
+    index: AuthenticatedRowIndex,
 ) -> Path:
     """Atomically write one custody-bindings sidecar and return its path.
 
     The document is fully serialized to a sibling temporary file and renamed
-    into place, so a reader never observes a partially written sidecar. When
-    *index* is supplied the document is matched against it first.
+    into place, so a reader never observes a partially written sidecar.
+
+    *index* is required, and it is the whole reason this is a function rather
+    than a serialize-and-write call. A custody document states which cut of which
+    index it belongs to, and until something compares that statement with the
+    index itself the statement is only a copy of itself: a document built against
+    an earlier cut, or against a different index, serializes and writes exactly as
+    cleanly as the right one. Writing it lands custody for another cut in the
+    place this cut's custody is read from, and the reader that later refuses it
+    refuses at fulfillment, one production away from where the wrong document was
+    chosen. So the cut is compared here, at the moment the bytes become the
+    durable answer, and a caller that cannot supply the index it is writing
+    custody for does not yet know what it is writing.
+
+    Raises:
+        RowSelectionError: If *index* is absent, or if the document does not
+            belong to this cut of it.
     """
-    if index is not None:
-        document.require_index(index)
+    if index is None:
+        raise RowSelectionError(
+            RowSelectionErrorCode.INDEX_MISMATCH,
+            f"row custody bindings for {document.index_id!r} cannot be written without the "
+            "row index they belong to; the sidecar's index_sha256 states a cut, and an "
+            "unchecked statement is not a proof that the bindings came from it",
+            index_id=document.index_id,
+        )
+    document.require_index(index)
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     text = serialize_row_index_custody_bindings(document)
@@ -547,7 +690,7 @@ def write_row_index_custody_bindings(
 
 def load_row_index_custody_bindings(path: Path | str) -> RowIndexCustodyBindings:
     """Load one custody-bindings sidecar, failing closed on foreign identity."""
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    payload = strict_json_loads(Path(path).read_text(encoding="utf-8"), ref=str(path))
     if not isinstance(payload, dict):
         raise ValueError("row custody bindings document must be a JSON object")
     return RowIndexCustodyBindings.model_validate(payload)
@@ -561,6 +704,8 @@ __all__ = [
     "RESOLVED_ROW_SET_SCHEMA_VERSION",
     "ROW_INDEX_CUSTODY_SCHEMA_ID",
     "ROW_INDEX_CUSTODY_SCHEMA_VERSION",
+    "ROW_INDEX_CUSTODY_SCHEMA_VERSION_V1",
+    "ROW_INDEX_CUSTODY_SCHEMA_VERSION_V2",
     "ROW_INDEX_SCHEMA_ID",
     "ROW_INDEX_SCHEMA_VERSION",
     "AllRowsSelector",
@@ -578,6 +723,7 @@ __all__ = [
     "derive_row_label",
     "expand_row_selector",
     "load_row_index_custody_bindings",
+    "migrate_row_index_custody_payload",
     "normalize_row_tags",
     "serialize_row_index_custody_bindings",
     "write_row_index_custody_bindings",

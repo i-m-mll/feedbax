@@ -106,6 +106,65 @@ class DuplicateLogicalKeyError(FulfillmentPlanError):
         )
 
 
+class ConflictingNodeDeclarationError(FulfillmentPlanError):
+    """Two declarations at one logical key state different facts about it.
+
+    Two entries for one key are only harmless when they are the same statement
+    twice. When they disagree about anything the node carries — the document it
+    pins, the schema it is lowered by, the execution identity it was compiled
+    under, whether it is a boundary — one of them is discarded, and the one that
+    survives is whichever the loader happened to see first. That is a plan
+    silently choosing between two mutually exclusive accounts of what a node is,
+    which is exactly the choice a derived record has no authority to make.
+    """
+
+    def __init__(
+        self, key: "LogicalKey", source_ref: str, differences: Sequence[str]
+    ) -> None:
+        self.key = key
+        self.source_ref = source_ref
+        self.differences = tuple(differences)
+        listing = "; ".join(self.differences)
+        super().__init__(
+            f"the plan declares the logical node {key.text} ({source_ref}) more than once, and "
+            f"the declarations disagree: {listing}. Repeating a node declaration states the "
+            "same node twice; two declarations that differ state two nodes at one address, and "
+            "keeping either one would discard a fact the plan asserts."
+        )
+
+
+class DuplicateInputEdgeError(FulfillmentPlanError):
+    """One node declares two edges at a single input role path.
+
+    A role path addresses one input, and a compile lock refuses to state two
+    references at one role, so a plan carrying two edges there is not a derived
+    record of any lock. It is also the shape that defeats every downstream
+    consumer of the plan: reconciliation, binding, and exact-parent resolution
+    all address an edge by ``(consumer, role_path)``, so a second edge at one
+    role is silently dropped by whichever of them keys last — while remaining
+    fully live for reachability, which is how an injected node reaches the
+    execution order without ever being reconciled against a lock.
+    """
+
+    def __init__(
+        self,
+        consumer: "LogicalKey",
+        role_path: Sequence[str],
+        first: "PlanEdge",
+        second: "PlanEdge",
+    ) -> None:
+        self.consumer = consumer
+        self.role_path = tuple(role_path)
+        self.first = first
+        self.second = second
+        super().__init__(
+            f"{consumer.text} declares input {list(self.role_path)} twice, binding "
+            f"{_edge_binding_text(first)} and {_edge_binding_text(second)}; a role path "
+            "addresses exactly one input, and no compile lock states two references at one "
+            "role, so a plan carrying both is not a derived record of any lock"
+        )
+
+
 class UnresolvedPlanReferenceError(FulfillmentPlanError):
     """A plan names a node no declaration in the plan provides."""
 
@@ -324,6 +383,17 @@ class PlanEdge:
         return (self.consumer.text, self.role_path, canonical_json_bytes(self.record()))
 
 
+def _edge_binding_text(edge: PlanEdge) -> str:
+    """Return what one edge binds, for naming a duplicate without dumping it."""
+    if edge.producer is not None:
+        return f"the product of {edge.producer.text}"
+    if edge.external is not None:
+        kind = edge.external.get("manifest_kind")
+        manifest_id = edge.external.get("manifest_id")
+        return f"the external receipt {kind}:{manifest_id}"
+    return f"nothing ({edge.status})"
+
+
 @dataclass(frozen=True)
 class FulfillmentPlan:
     """One target's dependency closure, in dependency order.
@@ -450,6 +520,20 @@ def fulfillment_plan_from_document(
     )
 
 
+def _node_declaration_differences(first: PlanNode, second: PlanNode) -> list[str]:
+    """Return one difference per fact two declarations of a node disagree on."""
+    differences: list[str] = []
+    first_record = first.record()
+    second_record = second.record()
+    for name in sorted(set(first_record) | set(second_record)):
+        if first_record.get(name) != second_record.get(name):
+            differences.append(
+                f"{name}: one declaration states {first_record.get(name)!r} and the other "
+                f"states {second_record.get(name)!r}"
+            )
+    return differences
+
+
 def build_fulfillment_plan(
     target: LogicalKey,
     nodes: Iterable[PlanNode],
@@ -461,8 +545,9 @@ def build_fulfillment_plan(
 
     The closure is what the target reaches: nodes no path from the target
     reaches, and the edges that name them, are not part of this plan. Within it,
-    every reference must resolve, one logical key names one declaration, and a
-    cycle is named rather than silently truncating the plan.
+    every reference must resolve, one logical key names one declaration, one
+    ``(consumer, role_path)`` names one edge, and a cycle is named rather than
+    silently truncating the plan.
     """
     declared: dict[LogicalKey, PlanNode] = {}
     for node in nodes:
@@ -470,6 +555,16 @@ def build_fulfillment_plan(
         if existing is not None:
             if existing.source_ref != node.source_ref:
                 raise DuplicateLogicalKeyError(node.key, existing.source_ref, node.source_ref)
+            # Same key, same source ref: a repeat is admitted only when it is
+            # the *same declaration*. Comparing the source ref alone let a
+            # second entry restate the node's pinned document, its lowering
+            # schema, its execution identity, or its boundary and be dropped
+            # without anything comparing what it said.
+            differences = _node_declaration_differences(existing, node)
+            if differences:
+                raise ConflictingNodeDeclarationError(
+                    node.key, node.source_ref, differences
+                )
             continue
         declared[node.key] = node
     if target not in declared:
@@ -477,6 +572,7 @@ def build_fulfillment_plan(
 
     declared_edges = list(edges)
     inputs: dict[LogicalKey, list[PlanEdge]] = {key: [] for key in declared}
+    at_role: dict[tuple[LogicalKey, tuple[str, ...]], PlanEdge] = {}
     for edge in declared_edges:
         if edge.producer is not None and edge.producer not in declared:
             raise UnresolvedPlanReferenceError(
@@ -489,6 +585,13 @@ def build_fulfillment_plan(
                 role_path=edge.role_path,
                 relation="consumer",
             )
+        # One role, one edge. This is proved over *every* declared edge rather
+        # than over the closure, so a duplicate cannot survive by hiding on the
+        # side of the plan a target does not reach and then be reached later.
+        first = at_role.get((edge.consumer, edge.role_path))
+        if first is not None:
+            raise DuplicateInputEdgeError(edge.consumer, edge.role_path, first, edge)
+        at_role[(edge.consumer, edge.role_path)] = edge
         inputs[edge.consumer].append(edge)
 
     reached: set[LogicalKey] = set()
@@ -660,6 +763,8 @@ __all__ = [
     "FULFILLMENT_PLAN_SCHEMA_VERSION",
     "FULFILLMENT_PLAN_SCHEMA_VERSION_V1",
     "FULFILLMENT_PLAN_SUPPORTED_SCHEMA_VERSIONS",
+    "ConflictingNodeDeclarationError",
+    "DuplicateInputEdgeError",
     "DuplicateLogicalKeyError",
     "EdgeDeclaration",
     "FulfillmentPlan",

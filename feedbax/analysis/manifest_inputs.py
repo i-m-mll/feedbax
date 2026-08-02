@@ -79,6 +79,49 @@ def authenticated_manifest_ref(
     )
 
 
+def authenticated_manifest_ref_from_read(
+    path: Path | str,
+    *,
+    expected_kind: str,
+    expected_id: str,
+    role: str,
+) -> ParentRef:
+    """Authenticate one manifest by performing the read that profiles it.
+
+    Prefer this over :func:`authenticated_manifest_ref` everywhere a caller does
+    not already hold a proven profile. The difference is the signature, and the
+    signature is the point: this takes a *location* and the identity it is
+    expected to hold, so it reads as what it is — the authenticating read.
+
+    :func:`authenticated_manifest_ref` takes a manifest *object* plus a path,
+    which reads as "authenticate this thing I already have" and invites exactly
+    the defect: a caller that already resolved, verified, or admitted a manifest
+    hands it over, the path is opened again, and the profile recorded as proof
+    describes whatever is there on the second read. When a profile has already
+    been established, restate it — do not mint a new one.
+    """
+    manifest_path = Path(path)
+    raw = manifest_path.read_bytes()
+    parsed = load_manifest_bytes(raw)
+    if parsed.kind != expected_kind or parsed.id != expected_id:
+        raise ValueError(
+            f"Manifest bytes at {manifest_path} are {parsed.kind} {parsed.id!r}, not "
+            f"{expected_kind} {expected_id!r}"
+        )
+    return ParentRef(
+        kind=parsed.kind,
+        id=parsed.id,
+        role=role,
+        uri=None,
+        metadata={
+            "ref_schema_id": AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+            "ref_schema_version": AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+            "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+            "size_bytes": len(raw),
+        },
+    )
+
+
 def _canonical_locator(ref: ParentRef) -> str:
     if ref.kind not in _STAGED_MANIFEST_KINDS:
         raise ValueError(f"Authenticated staged manifest kind {ref.kind!r} is not supported")

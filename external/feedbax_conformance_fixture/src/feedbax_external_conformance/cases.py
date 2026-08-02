@@ -1688,6 +1688,8 @@ def check_figure_role_reference_public_contract() -> bool:
     produced = {row_id: json.dumps({"row": row_id}).encode() for row_id in ("row-a", "row-b")}
     bindings = RowIndexCustodyBindings(
         index_id=index.index_id,
+        # v2 pins the index cut, not just the index: an id is stable across cuts.
+        index_sha256=index.canonical_sha256(),
         bindings=[
             {
                 "row_id": row_id,

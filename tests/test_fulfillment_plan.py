@@ -22,6 +22,8 @@ from feedbax.analysis.fulfillment_plan import (
     FULFILLMENT_PLAN_SCHEMA_ID,
     FULFILLMENT_PLAN_SCHEMA_VERSION_V1,
     FULFILLMENT_PLAN_SUPPORTED_SCHEMA_VERSIONS,
+    ConflictingNodeDeclarationError,
+    DuplicateInputEdgeError,
     DuplicateLogicalKeyError,
     EdgeDeclaration,
     LogicalKey,
@@ -307,6 +309,67 @@ def test_two_refs_claiming_one_logical_key_refuse(corpus: _Corpus) -> None:
     assert "sample:collided" in str(caught.value)
 
 
+def test_two_declarations_of_one_node_that_disagree_refuse_rather_than_first_winning() -> None:
+    """A repeat states the same node twice; a conflict states two nodes at one address.
+
+    Two entries at one logical key sharing a source ref used to be admitted
+    without comparing anything else they said, so a second declaration could
+    restate the node's pinned document, the schema it is lowered by, its
+    execution identity, or its boundary, and be discarded in favour of whichever
+    the loader happened to see first. Nothing downstream could report the
+    discarded claim, because nothing downstream ever saw it.
+    """
+    key = LogicalKey(DIGEST_LAYER, "restated")
+    honest = PlanNode(
+        key=key,
+        source_ref="restated.decl",
+        kind=DIGEST_KIND,
+        content_hash="a" * 64,
+        execution_identity="b" * 64,
+    )
+    restated = PlanNode(
+        key=key,
+        source_ref="restated.decl",
+        kind=DIGEST_KIND,
+        content_hash="c" * 64,
+        execution_identity="b" * 64,
+    )
+
+    with pytest.raises(ConflictingNodeDeclarationError) as caught:
+        build_fulfillment_plan(key, (honest, restated), ())
+
+    differences = caught.value.differences
+    assert any(difference.startswith("content_hash:") for difference in differences)
+    assert "a" * 64 in str(caught.value) and "c" * 64 in str(caught.value)
+    assert caught.value.key == key
+
+
+def test_a_genuinely_repeated_node_declaration_is_still_one_node() -> None:
+    """Stating the same node twice says one thing twice, and is admitted."""
+    key = LogicalKey(DIGEST_LAYER, "repeated")
+    node = PlanNode(
+        key=key, source_ref="repeated.decl", kind=DIGEST_KIND, content_hash="d" * 64
+    )
+    plan = build_fulfillment_plan(key, (node, node), ())
+    assert len(plan.nodes) == 1
+    assert plan.nodes[0].content_hash == "d" * 64
+
+
+def test_a_restated_boundary_that_disagrees_refuses_at_plan_construction() -> None:
+    """Erasing a boundary on a second declaration is a disagreement, not a repeat."""
+    key = LogicalKey(DIGEST_LAYER, "bounded")
+    bounded = PlanNode(
+        key=key, source_ref="bounded.decl", kind=DIGEST_KIND, boundary="some.boundary"
+    )
+    unbounded = PlanNode(key=key, source_ref="bounded.decl", kind=DIGEST_KIND)
+
+    with pytest.raises(ConflictingNodeDeclarationError) as caught:
+        build_fulfillment_plan(key, (bounded, unbounded), ())
+    assert any(
+        difference.startswith("boundary:") for difference in caught.value.differences
+    )
+
+
 def test_a_reference_cycle_is_a_structured_refusal(corpus: _Corpus) -> None:
     corpus.declare(
         "cyclic.decl",
@@ -520,3 +583,118 @@ def test_a_fully_bound_target_certifies_nothing(corpus: _Corpus) -> None:
     assert [edge.role_path for edge in plan.input_edges(plan.target, status="not_applicable")] == [
         ("Nominal", "k2")
     ]
+
+
+# --- one role path, one edge -----------------------------------------------
+
+
+def test_two_edges_at_one_role_path_refuse(corpus: _Corpus) -> None:
+    """The reviewer's reproduction, at the kernel that admits the plan.
+
+    Reachability walks every edge; every later consumer of the plan addresses an
+    edge by ``(consumer, role_path)`` and therefore keys a dict. A duplicate is
+    live for the first and invisible to the second, so an injected producer can
+    enter the execution order without any lock ever being asked about it. One
+    role, one edge, refused where plans are built.
+    """
+    genuine = _sample(corpus, "genuine-source")
+    injected = _sample(corpus, "injected-extra")
+    consumer = LogicalKey(DIGEST_LAYER, "duplicated")
+    with pytest.raises(DuplicateInputEdgeError) as caught:
+        build_fulfillment_plan(
+            consumer,
+            (
+                corpus.declarations[genuine].node,
+                corpus.declarations[injected].node,
+                PlanNode(key=consumer, source_ref="duplicated.decl", kind=DIGEST_KIND),
+            ),
+            (
+                PlanEdge(
+                    consumer,
+                    ("subjects", "paired_trial_bank"),
+                    "required",
+                    "authored",
+                    producer=LogicalKey(SAMPLE_LAYER, "injected-extra"),
+                ),
+                PlanEdge(
+                    consumer,
+                    ("subjects", "paired_trial_bank"),
+                    "required",
+                    "authored",
+                    producer=LogicalKey(SAMPLE_LAYER, "genuine-source"),
+                ),
+            ),
+        )
+    assert caught.value.consumer == consumer
+    assert caught.value.role_path == ("subjects", "paired_trial_bank")
+    assert "injected-extra" in str(caught.value)
+    assert "genuine-source" in str(caught.value)
+
+
+def test_a_duplicate_role_edge_refuses_at_plan_load(corpus: _Corpus) -> None:
+    """A plan document carrying the duplicate is refused when it is read back."""
+    source = _sample(corpus, "loaded-source")
+    injected = _sample(corpus, "loaded-extra")
+    target = _digest(corpus, "loaded-consumer", subject=source)
+    document = expand_fulfillment_plan(target, expand=corpus.expand).document()
+    # The injected node is a real node of the document, exactly as it would be
+    # if somebody edited a plan to smuggle one into the closure: the duplicate
+    # edge is what makes it reachable, and dropping duplicates silently is what
+    # would keep reconciliation from ever seeing it.
+    document["nodes"].insert(0, corpus.declarations[injected].node.record())
+    original = next(edge for edge in document["edges"] if edge["role_path"] == ["subject"])
+    document["edges"].insert(0, {**original, "producer": "sample:loaded-extra"})
+
+    with pytest.raises(DuplicateInputEdgeError) as caught:
+        fulfillment_plan_from_document(document)
+    assert caught.value.role_path == ("subject",)
+
+
+def test_a_duplicate_outside_the_closure_still_refuses(corpus: _Corpus) -> None:
+    """Duplicates are refused over every declared edge, not only reached ones."""
+    source = _sample(corpus, "unreached-source")
+    unreached = LogicalKey(DIGEST_LAYER, "unreached")
+    target = LogicalKey(SAMPLE_LAYER, "unreached-source")
+    with pytest.raises(DuplicateInputEdgeError):
+        build_fulfillment_plan(
+            target,
+            (
+                corpus.declarations[source].node,
+                PlanNode(key=unreached, source_ref="unreached.decl", kind=DIGEST_KIND),
+            ),
+            (
+                PlanEdge(unreached, ("x",), "required", "authored", producer=target),
+                PlanEdge(unreached, ("x",), "required", "authored", producer=target),
+            ),
+        )
+
+
+def test_an_external_duplicate_names_both_receipts_it_binds(corpus: _Corpus) -> None:
+    source = _sample(corpus, "external-consumer-source")
+    consumer = LogicalKey(DIGEST_LAYER, "external-duplicated")
+    with pytest.raises(DuplicateInputEdgeError) as caught:
+        build_fulfillment_plan(
+            consumer,
+            (
+                corpus.declarations[source].node,
+                PlanNode(key=consumer, source_ref="external.decl", kind=DIGEST_KIND),
+            ),
+            (
+                PlanEdge(
+                    consumer,
+                    ("prior",),
+                    "required",
+                    "authored",
+                    external={"manifest_kind": "SampleManifest", "manifest_id": "first"},
+                ),
+                PlanEdge(
+                    consumer,
+                    ("prior",),
+                    "required",
+                    "authored",
+                    external={"manifest_kind": "SampleManifest", "manifest_id": "second"},
+                ),
+            ),
+        )
+    assert "SampleManifest:first" in str(caught.value)
+    assert "SampleManifest:second" in str(caught.value)

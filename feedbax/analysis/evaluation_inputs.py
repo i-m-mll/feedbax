@@ -23,6 +23,7 @@ from feedbax.analysis.execution_context import (
 )
 from feedbax.analysis.manifest_inputs import is_authenticated_manifest_ref
 from feedbax.contracts.manifest import EvaluationRunSpec, ParentRef, TrainingRunManifest
+from feedbax.contracts.strict_json import DuplicateJsonKeyError, strict_json_loads
 
 
 _TRAINING_MANIFEST_KIND = "TrainingRunManifest"
@@ -371,7 +372,11 @@ def _read_candidate(relative: Path, root: Path, root_fd: int) -> _ManifestCandid
 
     path = root.joinpath(*relative.parts)
     try:
-        payload: object = json.loads(raw_bytes)
+        payload: object = strict_json_loads(raw_bytes, ref=str(path))
+    except DuplicateJsonKeyError as exc:
+        raise EvaluationInputManifestError(
+            f"Evaluation input manifest states a member twice: {exc}"
+        ) from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise EvaluationInputManifestError(
             f"Evaluation input manifest is not valid JSON: {path}"
@@ -391,6 +396,14 @@ def _find_id_candidates(
     *,
     selected: _ManifestCandidate | None = None,
 ) -> list[_ManifestCandidate]:
+    """Enumerate every manifest under ``root`` that declares ``manifest_id``.
+
+    This is a *uniqueness census*, not a search that stops at the first hit, so
+    every discovered candidate has to be decided. A candidate that cannot be
+    read or parsed is undecidable: it may well be a second copy of the very ID
+    being resolved, and skipping it makes the surviving copy look unique. So an
+    undecidable candidate refuses the census instead of disappearing from it.
+    """
     manifests_dir = root / "manifests"
     paths = sorted(manifests_dir.glob("**/*.json")) if manifests_dir.is_dir() else []
     candidates: dict[str, _ManifestCandidate] = {}
@@ -407,8 +420,13 @@ def _find_id_candidates(
             continue
         try:
             candidate = _read_candidate(relative, root, root_fd)
-        except EvaluationInputResolutionError:
-            continue
+        except EvaluationInputResolutionError as exc:
+            raise EvaluationInputAmbiguityError(
+                f"Manifest {manifest_id!r} cannot be proved unique under the allowed root: "
+                f"candidate {reference} is unreadable or malformed ({exc}). A uniqueness census "
+                "decides every candidate it discovers; one it cannot decide might be the "
+                "duplicate, so it is a refusal and never a skip."
+            ) from exc
         if isinstance(candidate.payload, dict) and candidate.payload.get("id") == manifest_id:
             candidates[reference] = candidate
     return [candidates[reference] for reference in sorted(candidates)]
@@ -462,6 +480,9 @@ def _validate_training_manifest(
     candidate: _ManifestCandidate,
     ref: ParentRef,
 ) -> TrainingRunManifest:
+    # ``candidate.raw_bytes`` was admitted by ``strict_json_loads`` in
+    # ``_read_candidate``, so a duplicated member name has already refused these
+    # bytes and Pydantic's own last-value-wins JSON parse cannot collapse one here.
     try:
         manifest = TrainingRunManifest.model_validate_json(candidate.raw_bytes)
     except ValidationError as exc:

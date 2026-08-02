@@ -40,9 +40,15 @@ from feedbax.analysis.execution_context import (
     with_staged_manifest_provider_inputs,
     with_staged_repo_root,
 )
+from feedbax.analysis.fulfillment import (
+    AdmissionOutcome,
+    FulfillmentAdmissionError,
+    admit_analysis_receipt,
+    artifact_bytes_path,
+)
 from feedbax.analysis.manifest_inputs import (
     ResolvedManifestInput,
-    authenticated_manifest_ref,
+    authenticated_manifest_ref_from_read,
     is_authenticated_manifest_ref,
     resolve_manifest_input,
 )
@@ -54,6 +60,7 @@ from feedbax.analysis.validation import (
     validate_namespaced_type_key,
 )
 from feedbax.contracts.manifest import (
+    MANIFEST_KIND_DIRECTORIES,
     AnalysisEvaluationStateResolutionCode,
     AnalysisEvaluationStateResolutionDiagnostic,
     AnalysisEvaluationStateSource,
@@ -65,11 +72,13 @@ from feedbax.contracts.manifest import (
     EvaluationRunSpec,
     ParentRef,
     Provenance,
+    canonical_json_bytes,
     canonical_manifest_candidate_paths,
     default_manifest_root,
     analysis_run_manifest_id,
     evaluation_states_cache_path,
     load_manifest,
+    load_manifest_bytes,
 )
 from feedbax.contracts.analysis_composition import (
     AnalysisRunDeltaSpec,
@@ -81,6 +90,8 @@ from feedbax.contracts.analysis_composition import (
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.run_aliases import RunAliasCatalog, resolve_run_aliases
 from feedbax.contracts.staged_execution import StagedExecutionDescriptor
+from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.persistence.artifact_custody import ArtifactBlobCustodyError
 from feedbax.persistence.manifest_index import find_manifest_paths_by_id, iter_manifest_files
 from feedbax.analysis.types import AnalysisInputData
 
@@ -318,7 +329,7 @@ def resolve_analysis_run_authoring(
     if isinstance(value, Mapping):
         raw = value
     else:
-        raw = json.loads(Path(value).read_text(encoding="utf-8"))
+        raw = strict_json_loads(Path(value).read_text(encoding="utf-8"), ref=str(value))
     if is_analysis_run_delta_payload(raw):
         delta = AnalysisRunDeltaSpec.model_validate(raw)
         flattened = flatten_analysis_run_delta(delta, repo_root=repo_root)
@@ -351,8 +362,24 @@ def coerce_analysis_run_spec(
     )[0]
 
 
+class ManifestLocationError(ValueError):
+    """Raised when a manifest candidate's bytes contradict where they are stored.
+
+    A locator that cannot be resolved and bytes filed under another kind's
+    canonical directory are both custody failures, not cache misses: skipping
+    either would let a different record answer for the requested identifier.
+    """
+
+
+class ManifestKindMismatch(ValueError):
+    """Raised when the manifest holding a requested identifier is the wrong kind."""
+
+
 def find_manifest_by_id(
-    manifest_id: str, *, root: Path | str | None = None
+    manifest_id: str,
+    *,
+    root: Path | str | None = None,
+    expected_kind: str | None = None,
 ) -> tuple[AnyManifest, Path]:
     """Find one manifest by ID under a manifest root.
 
@@ -365,6 +392,15 @@ def find_manifest_by_id(
     Tiers resolve in order — canonical paths, indexed paths, full scan — and the
     first tier yielding any match decides the answer. Duplicate matches inside a
     tier refuse, because one identifier must name one record.
+
+    Args:
+        manifest_id: The deterministic identifier one record must hold.
+        root: Manifest root; defaults to :func:`default_manifest_root`.
+        expected_kind: The ``BaseManifest.kind`` the caller requires. A caller
+            that knows the kind states it, because an identifier alone does not:
+            a same-identifier record of another kind is a corrupted or forged
+            answer, and it refuses rather than being returned or silently
+            skipped in favour of a lower tier.
     """
     root_path = Path(root) if root is not None else default_manifest_root()
     # Tiers are evaluated lazily: the full scan must not run when a cheaper tier
@@ -375,37 +411,77 @@ def find_manifest_by_id(
         lambda: iter_manifest_files(root_path),
     )
     for candidates in tiers:
-        matches = _manifest_matches(manifest_id, candidates())
+        matches = _manifest_matches(manifest_id, candidates(), expected_kind=expected_kind)
         if matches:
             return _single_manifest_match(manifest_id, root_path, matches)
     return _single_manifest_match(manifest_id, root_path, [])
 
 
+#: Canonical manifest-root subdirectory name to the single kind it durably stores.
+_MANIFEST_KIND_BY_DIRECTORY: dict[str, str] = {
+    directory: kind for kind, directory in MANIFEST_KIND_DIRECTORIES.items()
+}
+
+
+def _check_manifest_location(manifest: AnyManifest, manifest_path: Path) -> None:
+    """Refuse bytes filed directly under another kind's canonical directory.
+
+    The canonical `(kind, id, root)` layout is authoritative, so the directory a
+    record sits in is a claim about what it is. Bytes whose own ``kind``
+    contradicts that claim are misfiled or substituted, and admitting them would
+    let one kind's canonical location answer for another's. Locations that are
+    not a declared kind directory carry no such claim and are left to the
+    caller's own kind check.
+    """
+    declared = _MANIFEST_KIND_BY_DIRECTORY.get(manifest_path.parent.name)
+    if declared is None or manifest.kind == declared:
+        return
+    raise ManifestLocationError(
+        f"Manifest {manifest.id!r} of kind {manifest.kind!r} is stored at {manifest_path}, "
+        f"the canonical directory for {declared!r}"
+    )
+
+
 def _manifest_matches(
     manifest_id: str,
     candidate_paths: Sequence[Path],
+    *,
+    expected_kind: str | None = None,
 ) -> list[tuple[AnyManifest, Path]]:
     """Load candidate paths that actually hold *manifest_id*, skipping absent bytes.
 
     Absent bytes are a stale locator, not a custody failure, so they are skipped.
     Bytes that exist but cannot be parsed as a known manifest are a real custody
-    failure and propagate.
+    failure and propagate. So is a locator that cannot be resolved: resolution
+    is what proves two candidates are not the same file, and continuing past a
+    failure would drop a candidate that may be the only true record — or admit
+    the same one twice.
     """
     matches: list[tuple[AnyManifest, Path]] = []
     seen: set[Path] = set()
     for manifest_path in candidate_paths:
         try:
             resolved = manifest_path.resolve()
-        except OSError:
-            continue
+        except OSError as exc:
+            raise ManifestLocationError(
+                f"Manifest candidate {manifest_path} for {manifest_id!r} could not be "
+                f"resolved, so it can be neither read nor ruled out: {exc}"
+            ) from exc
         if resolved in seen:
             continue
         if not manifest_path.is_file():
             continue
         seen.add(resolved)
         manifest = load_manifest(manifest_path)
-        if manifest.id == manifest_id:
-            matches.append((manifest, manifest_path))
+        if manifest.id != manifest_id:
+            continue
+        _check_manifest_location(manifest, manifest_path)
+        if expected_kind is not None and manifest.kind != expected_kind:
+            raise ManifestKindMismatch(
+                f"Manifest {manifest_id!r} at {manifest_path} is a {manifest.kind!r}, "
+                f"not the required {expected_kind!r}"
+            )
+        matches.append((manifest, manifest_path))
     return matches
 
 
@@ -485,7 +561,14 @@ def resolve_analysis_inputs(
             manifest, manifest_path = authenticated.manifest, authenticated.path
             manifest_input = authenticated
         elif ref.kind.endswith("Manifest"):
-            manifest, manifest_path = find_manifest_by_id(ref.id, root=root_path)
+            # The authored ref names both the identifier and the kind. Resolving
+            # on the identifier alone would let a same-id record of another kind
+            # stand in for the authored parent.
+            manifest, manifest_path = find_manifest_by_id(
+                ref.id,
+                root=root_path,
+                expected_kind=ref.kind,
+            )
         if ref.kind == "EvaluationRunManifest":
             if spec.evaluation_states_policy == "require_durable":
                 states, state_source = _load_required_durable_evaluation_states(
@@ -539,10 +622,13 @@ def resolve_analysis_inputs(
                             evaluation_manifest_authority=_portable_manifest_authority(ref),
                             supplying_evaluation_manifest_id=manifest.id,
                             resulting_evaluation_manifest_id=rederived.id,
-                            resulting_evaluation_manifest_authority=authenticated_manifest_ref(
-                                rederived,
-                                rederived_path,
-                                "evaluation_run",
+                            resulting_evaluation_manifest_authority=(
+                                authenticated_manifest_ref_from_read(
+                                    rederived_path,
+                                    expected_kind=rederived.kind,
+                                    expected_id=rederived.id,
+                                    role="evaluation_run",
+                                )
                             ),
                         )
                     else:
@@ -570,10 +656,13 @@ def resolve_analysis_inputs(
                         requested_evaluation_manifest_id=ref.id,
                         evaluation_manifest_authority=_portable_manifest_authority(ref),
                         resulting_evaluation_manifest_id=rederived.id,
-                        resulting_evaluation_manifest_authority=authenticated_manifest_ref(
-                            rederived,
-                            rederived_path,
-                            "evaluation_run",
+                        resulting_evaluation_manifest_authority=(
+                            authenticated_manifest_ref_from_read(
+                                rederived_path,
+                                expected_kind=rederived.kind,
+                                expected_id=rederived.id,
+                                role="evaluation_run",
+                            )
                         ),
                     )
             if states is None:
@@ -718,6 +807,30 @@ def _durable_state_source(
         for artifact in manifest.artifacts
         if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
     ]
+    # Durable provenance names one artifact, so exactly one must be there to
+    # name. Indexing the first of an unchecked list picks a winner by manifest
+    # order and records it as *the* durable authority — the same refusal
+    # ``_evaluation_states_artifact_for_durable_policy`` makes for the
+    # require_durable path, owed equally to every caller of this helper.
+    if not artifacts:
+        raise _resolution_error(
+            code="missing_durable_states",
+            manifest_id=ref.id,
+            message=(
+                f"Evaluation manifest {ref.id!r} has no durable evaluation_states artifact "
+                "to record as this analysis run's state provenance."
+            ),
+        )
+    if len(artifacts) != 1:
+        raise _resolution_error(
+            code="provenance_mismatch",
+            manifest_id=ref.id,
+            message=(
+                f"Evaluation manifest {ref.id!r} has {len(artifacts)} evaluation_states "
+                "artifacts; durable authority must be unique."
+            ),
+            details={"artifact_count": len(artifacts)},
+        )
     artifact = artifacts[0]
     authority = _portable_manifest_authority(ref)
     if not is_authenticated_manifest_ref(authority):
@@ -725,10 +838,11 @@ def _durable_state_source(
             raise ValueError(
                 "durable evaluation-state provenance requires the supplying manifest path"
             )
-        authority = authenticated_manifest_ref(
-            manifest,
+        authority = authenticated_manifest_ref_from_read(
             manifest_path,
-            "evaluation_run",
+            expected_kind=manifest.kind,
+            expected_id=manifest.id,
+            role="evaluation_run",
         )
     return AnalysisEvaluationStateSource(
         source_kind="durable",
@@ -902,6 +1016,83 @@ def _preflight_checkpoint_binding_names(
             _preflight_checkpoint_binding_names(item, execution_context)
 
 
+def _admit_cached_analysis_manifest(
+    run_spec: AnalysisRunSpec,
+    manifest: AnalysisRunManifest,
+    *,
+    root: Path,
+    path: Path,
+    execution_context: StagedExecutionContext,
+) -> AdmissionOutcome:
+    """Admit a stored analysis record as this spec's answer, or name why not.
+
+    Serving a stored record instead of executing is an admission, and it is the
+    same admission fulfillment makes: an identifier, a kind, and a completed
+    status say only that *some* analysis was filed under this identifier. The
+    embedded spec, the exact parents, and every artifact's stored bytes are what
+    make it this run's answer.
+
+    Artifact bytes are authenticated root-relative, on purpose: a receipt that
+    moved with its root must still verify, and a machine-local ``uri`` is not
+    evidence. A run that binds staged artifact providers keeps some outputs in
+    custody the root does not contain, so those artifacts are authenticated
+    against the provider that holds them — by digest and byte size, the same
+    facts the root check settles — and the root decides the rest. An artifact
+    that neither authority holds stays in the root's set and refuses there,
+    because "no one can find these bytes" is exactly the answer that must not
+    be read as "these bytes are fine".
+    """
+    provider_held = _provider_authenticated_artifacts(
+        manifest,
+        root=root,
+        execution_context=execution_context,
+    )
+    candidate = manifest
+    if provider_held:
+        candidate = manifest.model_copy(
+            update={
+                "artifacts": [
+                    artifact for artifact in manifest.artifacts if artifact not in provider_held
+                ]
+            }
+        )
+    return admit_analysis_receipt(
+        run_spec,
+        root=root,
+        manifest=candidate,
+        path=path,
+    )
+
+
+def _provider_authenticated_artifacts(
+    manifest: AnalysisRunManifest,
+    *,
+    root: Path,
+    execution_context: StagedExecutionContext,
+) -> list[ArtifactRef]:
+    """Return the artifacts a bound staged provider holds and authenticates.
+
+    Only artifacts the receipt root cannot resolve are offered to the providers,
+    so a provider can never answer for bytes the root is responsible for.
+    ``get_bytes`` validates the recorded digest and byte size against what it
+    reads, so an artifact appears here only after its bytes were proved.
+    """
+    if not execution_context.opened_artifact_providers:
+        return []
+    authenticated: list[ArtifactRef] = []
+    for artifact in manifest.artifacts:
+        if artifact_bytes_path(artifact, root=root) is not None:
+            continue
+        for provider in execution_context.opened_artifact_providers.values():
+            try:
+                provider.get_bytes(artifact, size_bytes=artifact.size_bytes)
+            except (ArtifactBlobCustodyError, OSError):
+                continue
+            authenticated.append(artifact)
+            break
+    return authenticated
+
+
 def execute_analysis_run_spec(
     spec: AnalysisRunSpec | AnalysisRunDeltaSpec | Mapping[str, Any] | Path | str,
     *,
@@ -997,15 +1188,26 @@ def execute_analysis_run_spec(
                 existing_manifest, existing_path = find_manifest_by_id(
                     manifest_id,
                     root=root_path,
+                    expected_kind="AnalysisRunManifest",
                 )
             except FileNotFoundError:
                 pass
             else:
-                if (
-                    isinstance(existing_manifest, AnalysisRunManifest)
-                    and existing_manifest.status == "completed"
-                ):
-                    return existing_manifest, existing_path
+                if not isinstance(existing_manifest, AnalysisRunManifest):
+                    raise TypeError(
+                        f"Expected AnalysisRunManifest at {existing_path}, "
+                        f"got {type(existing_manifest).__name__}"
+                    )
+                outcome = _admit_cached_analysis_manifest(
+                    run_spec,
+                    existing_manifest,
+                    root=root_path,
+                    path=existing_path,
+                    execution_context=execution_context,
+                )
+                if not outcome.admitted:
+                    raise FulfillmentAdmissionError(outcome)
+                return existing_manifest, existing_path
 
         resolved_inputs = resolve_analysis_inputs(
             run_spec,
@@ -1037,6 +1239,12 @@ def execute_analysis_run_spec(
             requested_outputs=requested_outputs_from_spec(run_spec),
             **result.common_inputs,
         )
+    except FulfillmentAdmissionError:
+        # A stored record that fails admission is the evidence of what went
+        # wrong, and it lives at exactly the canonical location a failed
+        # manifest for this run would be written to. Finalizing here would
+        # overwrite the refused bytes with the refusal's own record.
+        raise
     except Exception as exc:
         if isinstance(exc, AnalysisEvaluationStatesResolutionError):
             context.record_evaluation_state_resolution_diagnostic(exc.diagnostic)
@@ -1055,7 +1263,51 @@ def execute_analysis_run_spec(
 
     if context.manifest_path is None:
         raise RuntimeError("Analysis execution completed without writing a manifest")
-    manifest = load_manifest(context.manifest_path)
+    return (
+        _settled_written_analysis_manifest(
+            context.manifest_path,
+            requested_spec=run_spec,
+            expected_id=manifest_id,
+        ),
+        context.manifest_path,
+    )
+
+
+def _settled_written_analysis_manifest(
+    manifest_path: Path,
+    *,
+    requested_spec: AnalysisRunSpec,
+    expected_id: str,
+) -> AnalysisRunManifest:
+    """Return the just-written manifest, settled from the bytes now at *manifest_path*.
+
+    Execution returns a manifest that a caller treats as the record of this run,
+    but the finalized object is not what reaches it: the path is opened again.
+    The bytes are therefore read exactly once and the returned manifest is
+    parsed from that read, so the value handed back is the value the digest of
+    those bytes would cover. Identity is then settled against the deterministic
+    identifier this spec mints and the embedded spec against the spec that was
+    executed, which is what distinguishes this run's record from whatever else
+    could be sitting at the path.
+    """
+    raw = manifest_path.read_bytes()
+    manifest = load_manifest_bytes(raw)
     if not isinstance(manifest, AnalysisRunManifest):
         raise TypeError(f"Expected AnalysisRunManifest, got {type(manifest).__name__}")
-    return manifest, context.manifest_path
+    if manifest.id != expected_id:
+        raise ValueError(
+            f"Analysis execution wrote manifest {manifest.id!r} to {manifest_path}, "
+            f"but this spec mints {expected_id!r}"
+        )
+    if manifest.analysis_spec.kind != "AnalysisRunSpec":
+        raise ValueError(
+            f"Analysis manifest {expected_id!r} embeds a "
+            f"{manifest.analysis_spec.kind!r} spec, not an 'AnalysisRunSpec'"
+        )
+    written_spec = AnalysisRunSpec.model_validate(manifest.analysis_spec.inline)
+    if canonical_json_bytes(written_spec) != canonical_json_bytes(requested_spec):
+        raise ValueError(
+            f"Analysis manifest {expected_id!r} at {manifest_path} embeds a spec that is "
+            "not the AnalysisRunSpec this execution ran"
+        )
+    return manifest

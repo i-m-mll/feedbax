@@ -85,10 +85,24 @@ def _spec_for_analysis_request(
     )
     if payload.evaluation_states_policy == "require_durable":
         from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
-        from feedbax.analysis.specs import find_manifest_by_id
+        from feedbax.analysis.specs import ManifestKindMismatch, find_manifest_by_id
         from feedbax.contracts.manifest import EvaluationRunManifest
 
-        manifest, path = find_manifest_by_id(payload.eval_run_id, root=root)
+        # The caller knows the kind it needs, so the lookup is held to it: an
+        # identifier alone does not decide a record, and a same-id manifest of
+        # another kind is a corrupted answer rather than a lower-priority one.
+        try:
+            manifest, path = find_manifest_by_id(
+                payload.eval_run_id, root=root, expected_kind="EvaluationRunManifest"
+            )
+        except ManifestKindMismatch as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"eval_run_id {payload.eval_run_id!r} does not resolve to an "
+                    f"EvaluationRunManifest: {exc}"
+                ),
+            ) from exc
         if not isinstance(manifest, EvaluationRunManifest):
             raise HTTPException(
                 status_code=400,

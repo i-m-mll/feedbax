@@ -8,23 +8,20 @@ per-trial rollout function is mapped over a stacked-trials pytree with
 compiled per (function, shape/dtype structure) per process and reused for every
 subsequent batch.
 
-The facility is controller-law agnostic. It knows nothing about plants,
-controllers, tasks, or feedbax's `Component`/`Graph` model: the caller supplies
-a pure callable `(context, trial) -> result` where `context` holds every
-trial-invariant operand and `trial` is one slice of the stacked trials.
+The module is controller-law agnostic and performs no time iteration itself:
+the time loop, when there is one, lives inside the caller's per-trial callable.
+Two public seams keep execution ownership explicit:
 
-This is not a second way to run feedbax models, and it does not overlap the
-`Component` execution stack. Models built as `Component`/`Graph` with
-`equinox.nn.State` are batched over trials by `AbstractTask.eval_trials` and
-`eval_ensemble_on_trials` (`feedbax/tasks/task.py`) using `filter_vmap`, and
-their time-step iteration belongs to `run_component`
-(`feedbax/runtime/iteration.py`) — use those for `Component` models. This module
-performs no time iteration whatsoever: the time loop, when there is one, lives
-inside the caller's `per_trial` callable. It exists only for pure non-`Component`
-callables that need sequential `lax.map` batching over trials, with bounded
-memory relative to `vmap` and a compile-once cache contract that prevents
-per-closure retracing, as used by evaluation recipes that own their own
-execution.
+- `compiled_trial_rollout` accepts `(context, trial) -> result` for pure
+  non-`Component` callables whose evaluation recipe owns execution.
+- `compiled_task_rollout` accepts `(task, context, trial) -> result` and makes
+  the complete Equinox-compatible task a mandatory compiled operand. Use it
+  when a task object owns the scan and carries Feedbax components or other
+  stateful execution structure.
+
+Native `AbstractTask` models may continue to use `AbstractTask.eval_trials` and
+`eval_ensemble_on_trials` (`feedbax/tasks/task.py`), whose time-step iteration
+belongs to `run_component` (`feedbax/runtime/iteration.py`).
 """
 
 from __future__ import annotations
@@ -34,6 +31,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Generic, TypeVar
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
@@ -53,6 +51,7 @@ __all__ = [
     "EvaluationStateProvenance",
     "TrialStructureError",
     "capture_evaluation_state",
+    "compiled_task_rollout",
     "compiled_trial_rollout",
     "stack_trials",
 ]
@@ -63,6 +62,7 @@ _PrefixResult = TypeVar("_PrefixResult")
 _State = TypeVar("_State")
 _Trial = TypeVar("_Trial")
 _Result = TypeVar("_Result")
+_Task = TypeVar("_Task")
 
 
 class EvaluationStateIdentityMismatch(ValueError):
@@ -214,6 +214,17 @@ def _mapped_trial_rollout(
     function and shape/dtype structure per process, with no additional cache.
     """
     return jax.lax.map(lambda trial: per_trial(context, trial), trials)
+
+
+@eqx.filter_jit
+def _mapped_task_rollout(
+    per_trial: Callable[[Any, Any, Any], Any],
+    task: Any,
+    context: Any,
+    trials: Any,
+) -> Any:
+    """Map a complete task's per-trial rollout inside one filtered jit."""
+    return jax.lax.map(lambda trial: per_trial(task, context, trial), trials)
 
 
 def _leaf_shape_dtype(leaf: Any) -> tuple[tuple[int, ...], Any]:
@@ -451,6 +462,61 @@ def compiled_trial_rollout(
     rollout.__qualname__ = rollout.__name__
     rollout.__doc__ = (
         "Run stacked trials through the compiled rollout for "
+        f"{getattr(per_trial, '__qualname__', per_trial)!s}."
+    )
+    return rollout
+
+
+def compiled_task_rollout(
+    per_trial: Callable[[_Task, _Context, _Trial], _Result],
+    *,
+    trial_structure: PyTree[jax.ShapeDtypeStruct] | None = None,
+) -> Callable[[_Task, _Context, PyTree[Any]], PyTree[Any]]:
+    """Build a compiled batch callable that requires the complete task operand.
+
+    The returned callable has shape ``(task, context, stacked_trials) ->
+    stacked_results``. ``per_trial`` must be a stable module-level callable with
+    shape ``(task, context, trial) -> result`` and must invoke the task's full
+    rollout. The complete task is therefore an explicit operand rather than a
+    caller-selected projection or closure capture.
+
+    The mapped execution uses :func:`equinox.filter_jit`, so array leaves in an
+    Equinox-compatible task PyTree remain dynamic compiled operands while its
+    non-array leaves participate as static structure. This supports task
+    objects that carry Feedbax components and own their task-specific scan; it
+    does not require an :class:`~feedbax.tasks.AbstractTask`.
+
+    As with :func:`compiled_trial_rollout`, trial leaves are mapped sequentially
+    with :func:`jax.lax.map`, and the wrapper validates their common leading
+    axis before entering the compiled region. Array-valued invariant operands
+    such as controllers and reusable initial memories belong in ``context``.
+
+    Args:
+        per_trial: Stable callable ``(task, context, trial) -> result`` that
+            executes the complete task rollout.
+        trial_structure: Optional single-trial shape/dtype declaration.
+
+    Returns:
+        A callable ``(task, context, stacked_trials) -> stacked_results``.
+
+    Raises:
+        TypeError: If ``per_trial`` is not callable.
+    """
+    if not callable(per_trial):
+        raise TypeError(f"per_trial must be callable, got {type(per_trial).__name__}")
+
+    def rollout(task: _Task, context: _Context, trials: PyTree[Any]) -> PyTree[Any]:
+        if task is None:
+            raise TypeError("task must be a complete non-None task operand")
+        _validate_stacked_trials(trials, trial_structure)
+        return _mapped_task_rollout(per_trial, task, context, trials)
+
+    rollout.__name__ = (
+        f"compiled_task_rollout[{getattr(per_trial, '__name__', 'per_trial')}]"
+    )
+    rollout.__qualname__ = rollout.__name__
+    rollout.__doc__ = (
+        "Run stacked trials through the complete task operand with "
         f"{getattr(per_trial, '__qualname__', per_trial)!s}."
     )
     return rollout

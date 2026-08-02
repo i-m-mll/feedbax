@@ -38,6 +38,7 @@ from feedbax.analysis.validation import (
     validate_report_recipe,
 )
 from feedbax.contracts.staged_execution import StagedExecutionDescriptor
+from feedbax.contracts.strict_json import DuplicateJsonKeyError, strict_json_loads
 from feedbax.contracts.figures import (
     FIGURE_SPEC_SCHEMA_ID,
     FIGURE_SPEC_SCHEMA_VERSION,
@@ -443,7 +444,7 @@ def coerce_report_spec(value: ReportSpec | Mapping[str, Any] | Path | str) -> Re
     if isinstance(value, Mapping):
         payload: Mapping[str, Any] = value
     else:
-        payload = json.loads(Path(value).read_text(encoding="utf-8"))
+        payload = strict_json_loads(Path(value).read_text(encoding="utf-8"), ref=str(value))
         if not isinstance(payload, Mapping):
             raise ValueError("ReportSpec document must be a JSON object")
     return ReportSpec.model_validate(migrate_report_spec_payload(payload).payload)
@@ -487,7 +488,21 @@ def resolve_report_inputs(
                     authenticated = bound.resolve_manifest_input(ref)
             manifest, manifest_path = authenticated.manifest, authenticated.path
         elif ref.kind.endswith("Manifest"):
-            manifest, manifest_path = find_manifest_by_id(ref.id, root=root_path)
+            # This branch addresses a manifest by identifier alone, so the only
+            # thing the ref states that the lookup can be held to is the kind it
+            # declared. A generic recipe that asks for an analysis parent and is
+            # handed a same-id figure would otherwise read the wrong record and
+            # produce a report describing something else. Artifact fulfillment
+            # never reaches here: every parent it lowers carries an
+            # authenticated profile, so this guards standalone execution.
+            #
+            # The kind is stated to the lookup rather than checked after it,
+            # because the addressing tiers are what a wrong-kind record has to
+            # be refused at: checking afterwards accepts whichever tier
+            # answered first and only then notices.
+            manifest, manifest_path = find_manifest_by_id(
+                ref.id, root=root_path, expected_kind=ref.kind
+            )
         if isinstance(manifest, AnalysisRunManifest):
             produced_data = list(manifest.produced_data)
         elif isinstance(manifest, EvaluationRunManifest):
@@ -567,7 +582,14 @@ def resolve_report_scalar_projection(
             f"rejected product role {projection.product_role!r}"
         ) from exc
     try:
-        value: Any = json.loads(raw)
+        value: Any = strict_json_loads(
+            raw, ref=f"scalar projection product role {projection.product_role!r} artifact"
+        )
+    except DuplicateJsonKeyError as exc:
+        raise ValueError(
+            f"scalar projection product role {projection.product_role!r} artifact states a "
+            f"member twice: {exc}"
+        ) from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(
             f"scalar projection product role {projection.product_role!r} artifact is not valid JSON"

@@ -631,6 +631,7 @@ def test_an_identity_contribution_dropped_after_emission_is_refused(repo: Path) 
     assert set(lock["identity_contributions"]) == {
         "figure_row_expansion",
         "resolved_row_set",
+        "row_custody",
     }
     del lock["identity_contributions"]["resolved_row_set"]
 
@@ -1594,7 +1595,61 @@ def test_the_expansion_request_and_resolved_rows_carry_execution_identity(
         "compiled_document.content_hash",
         "identity_contributions.figure_row_expansion",
         "identity_contributions.resolved_row_set",
+        "identity_contributions.row_custody",
     ]
+
+
+def test_a_row_expansion_without_a_custody_declaration_records_none(repo: Path) -> None:
+    """An envelope authored before ``row_custody`` existed compiles unchanged.
+
+    A compile states what the envelope said. An undeclared locator is therefore
+    an absent contribution rather than an invented one, and the lock a ratified
+    row-expansion envelope compiles to is byte-identical to the one it always
+    compiled to: the same two contributions, the same identity inputs, and an
+    execution identity that re-derives from exactly those facts.
+    """
+    envelope = _read(repo, "widened-plot")
+    del envelope["figure"]["row_custody"]
+    _write(repo, "widened-plot", envelope)
+
+    outcome = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+
+    contributions = outcome.compile_lock["identity_contributions"]
+    assert set(contributions) == {"figure_row_expansion", "resolved_row_set"}
+    assert outcome.compile_lock["execution_identity"]["inputs"] == [
+        "compiled_document.content_hash",
+        "identity_contributions.figure_row_expansion",
+        "identity_contributions.resolved_row_set",
+    ]
+    assert outcome.compile_lock["execution_identity"]["sha256"] == canonical_sha256(
+        {
+            "compiled_document": outcome.compile_lock["compiled_document"]["content_hash"],
+            "figure_row_expansion": canonical_sha256(contributions["figure_row_expansion"]),
+            "resolved_row_set": canonical_sha256(contributions["resolved_row_set"]),
+        }
+    )
+
+
+def test_the_custody_declaration_leaves_the_compiled_figure_untouched(repo: Path) -> None:
+    """Custody is a locator for fulfillment, never part of the figure's identity."""
+    declared = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+    envelope = _read(repo, "widened-plot")
+    del envelope["figure"]["row_custody"]
+    _write(repo, "widened-plot", envelope)
+
+    undeclared = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+
+    assert declared.document == undeclared.document
+    assert (
+        declared.compile_lock["compiled_document"]["content_hash"]
+        == undeclared.compile_lock["compiled_document"]["content_hash"]
+    )
 
 
 def test_composition_compiles_to_a_composition_document_pinning_its_parent(
@@ -1825,6 +1880,8 @@ def test_a_figure_runtime_input_that_has_not_run_is_a_locator_in_the_lock(
         "manifest_kind": "quillon.survey_run",
         "manifest_id": "widened-plot-observed",
     }
+    # Nothing is filled per row any more, so there is no row custody to name.
+    envelope["figure"].pop("row_custody")
     _write(repo, "widened-plot", envelope)
 
     outcome = kernel().compile_envelope_file(
@@ -2420,3 +2477,256 @@ def test_the_lock_states_the_per_row_role_rather_than_a_false_locator(
     assert reference["rule_id"] == PER_ROW_INPUT_RULE_ID
     assert "per expanded row" in reference["reason"]
     assert not [item for item in references if item["kind"] == "planned_product"]
+
+
+# -- what the v2 grammar makes authenticable -------------------------------
+#
+# Three constructs exist because the corpus needs facts the lock could not
+# otherwise carry. Each case asserts the *lock*, because the lock is the only
+# thing downstream treats as authority: a compiled document states plans, and a
+# construct that produced no reference would have authored nothing at all.
+
+
+def _authored(repo: Path, alias: str, document: dict[str, Any]) -> Any:
+    """Write one envelope under *alias* and compile it."""
+    _write(repo, alias, document)
+    return kernel().compile_envelope_file(envelope_path(repo, alias), repo_root=repo)
+
+
+def _receipt(manifest_id: str) -> dict[str, Any]:
+    return {
+        "kind": "receipt",
+        "manifest_kind": "quillon.survey_run",
+        "manifest_id": manifest_id,
+        "manifest_sha256": "a" * 64,
+        "size_bytes": 512,
+    }
+
+
+def test_an_evaluation_authors_further_staged_prerequisites_into_its_lock(
+    repo: Path,
+) -> None:
+    """A second named prerequisite reaches the lock, which is what authenticates it.
+
+    An evaluation matrix's rows consume named staged parents, and a compiled
+    document cannot authenticate one. Before this the dialect could author
+    exactly one reference, so a matrix whose base named a second prerequisite had
+    no way to be fulfilled at all.
+    """
+    from tests.fake_project_experiment import EVALUATION_BASE
+
+    outcome = _authored(
+        repo,
+        "paired-probe",
+        {
+            "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+            "name": "paired-probe",
+            "base": EVALUATION_BASE,
+            "evaluation": {
+                "subject": {"kind": "envelope", "alias": "widened"},
+                "subject_id": "trained",
+                "prerequisites": {
+                    "trial_bank": _receipt("bank-0"),
+                    "reference_run": _receipt("reference-0"),
+                },
+            },
+        },
+    )
+
+    references = [
+        item
+        for item in outcome.compile_lock["references"]
+        if item["kind"] != "content_pin"
+    ]
+    assert [item["role_path"] for item in references] == [
+        "subjects.trained",
+        "subjects.trial_bank",
+        "subjects.reference_run",
+    ]
+    assert [item["consumer"]["subject_id"] for item in references] == [
+        "trained",
+        "trial_bank",
+        "reference_run",
+    ]
+    # The subject is a planned product of another envelope; the two prerequisites
+    # quote receipts that already exist, so they are authenticated references and
+    # not locators.
+    assert [item["kind"] for item in references] == [
+        "planned_product",
+        "authenticated_receipt",
+        "authenticated_receipt",
+    ]
+    assert references[1]["manifest_sha256"] == "a" * 64
+
+
+def test_a_prerequisite_may_not_take_the_subjects_own_binding_name(repo: Path) -> None:
+    from tests.fake_project_experiment import EVALUATION_BASE
+
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        _authored(
+            repo,
+            "colliding-probe",
+            {
+                "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+                "name": "colliding-probe",
+                "base": EVALUATION_BASE,
+                "evaluation": {
+                    "subject": {"kind": "envelope", "alias": "widened"},
+                    "subject_id": "trained",
+                    "prerequisites": {"trained": _receipt("bank-0")},
+                },
+            },
+        )
+
+    assert "one binding name addresses exactly one authenticated parent" in str(
+        caught.value
+    )
+
+
+ANALYSIS_BUNDLE_BASE = "bases/baseline.analysis_bundle.json"
+
+ANALYSIS_BUNDLE_BASE_DOCUMENT: dict[str, Any] = {
+    "schema_id": "feedbax.spec.analysis_bundle",
+    "schema_version": "feedbax.spec.analysis_bundle.v6",
+    "name": "baseline-bundle",
+    "predicate": {"manifest_kind": "EvaluationRunManifest"},
+    "templates": [
+        {"name": "span", "analysis_type": "quillon.span_summary", "params": {}}
+    ],
+    "params_base": {"params": {}},
+}
+
+
+def _bundle_envelope(roots: list[dict[str, Any]] | None) -> dict[str, Any]:
+    analysis: dict[str, Any] = {
+        "target": "bundle",
+        "delta": {
+            "layer_id": "widened-bundle",
+            "patches": [{"path": "params_base.params.trim", "op": "add", "value": 1}],
+        },
+    }
+    if roots is not None:
+        analysis["roots"] = roots
+    return {
+        "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+        "name": "widened-bundle",
+        "base": ANALYSIS_BUNDLE_BASE,
+        "analysis": analysis,
+    }
+
+
+def test_a_bundle_authors_its_exact_root_set_into_its_lock(repo: Path) -> None:
+    """The only way a converted bundle can stop widening with its repository.
+
+    A bundle's authored predicate re-selects whatever manifests exist when it
+    runs. Authoring the roots puts each one in the lock, and fulfillment then
+    binds by exact manifest identity instead of by ambient selection.
+    """
+    write_json(repo / ANALYSIS_BUNDLE_BASE, ANALYSIS_BUNDLE_BASE_DOCUMENT)
+
+    outcome = _authored(
+        repo,
+        "widened-bundle",
+        _bundle_envelope(
+            [
+                {"alias": "near", "ref": _receipt("near-run")},
+                {"alias": "far", "ref": _receipt("far-run")},
+            ]
+        ),
+    )
+
+    references = [
+        item
+        for item in outcome.compile_lock["references"]
+        if item["kind"] != "content_pin"
+    ]
+    assert [item["role_path"] for item in references] == ["roots.near", "roots.far"]
+    assert [item["manifest_id"] for item in references] == ["near-run", "far-run"]
+    assert [item["consumer"]["alias"] for item in references] == ["near", "far"]
+
+
+def test_a_bundle_that_declares_no_roots_records_no_root_reference(repo: Path) -> None:
+    """Absent roots is the honest record of a bundle that really selects ambiently."""
+    write_json(repo / ANALYSIS_BUNDLE_BASE, ANALYSIS_BUNDLE_BASE_DOCUMENT)
+
+    outcome = _authored(repo, "widened-bundle", _bundle_envelope(None))
+
+    assert not [
+        item
+        for item in outcome.compile_lock["references"]
+        if item["kind"] != "content_pin"
+    ]
+
+
+def test_a_bundle_root_set_with_no_members_is_refused(repo: Path) -> None:
+    write_json(repo / ANALYSIS_BUNDLE_BASE, ANALYSIS_BUNDLE_BASE_DOCUMENT)
+
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        _authored(repo, "widened-bundle", _bundle_envelope([]))
+
+    assert "states at least one root" in str(caught.value)
+
+
+def test_a_checkpoint_only_training_layer_compiles(repo: Path) -> None:
+    """A fork that inherits its rows and only attaches checkpoint sources.
+
+    The layer authors no row and no tag: what it changes is what the inherited
+    rows are initialized from, which is a change to the runs themselves and is
+    recorded where every other authenticated input is, in the lock.
+    """
+    from tests.fake_project_experiment import TRAINING_BASE
+
+    outcome = _authored(
+        repo,
+        "forked",
+        {
+            "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+            "name": "forked",
+            "base": TRAINING_BASE,
+            "training": {
+                "rows_mode": "append",
+                "checkpoint_initialization": [
+                    {
+                        "row": "baseline",
+                        "mode": "continue_from",
+                        "source": _receipt("baseline-0"),
+                    }
+                ],
+            },
+        },
+    )
+
+    assert [row["row_id"] for row in outcome.document["rows"]] == ["baseline"]
+    assert outcome.document["tags"] == ["baseline"]
+    reference = next(
+        item
+        for item in outcome.compile_lock["references"]
+        if item["kind"] == "authenticated_receipt"
+    )
+    assert reference["role_path"] == "rows.baseline.checkpoint_initialization"
+    assert reference["consumer"] == {
+        "consumer": "checkpoint_initialization",
+        "mode": "continue_from",
+        "row_id": "baseline",
+    }
+
+
+def test_a_training_layer_contributing_nothing_at_all_is_still_refused(
+    repo: Path,
+) -> None:
+    """The relaxation is exactly one construct wide, not an empty-layer licence."""
+    from tests.fake_project_experiment import TRAINING_BASE
+
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        _authored(
+            repo,
+            "empty",
+            {
+                "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+                "name": "empty",
+                "base": TRAINING_BASE,
+                "training": {"rows_mode": "append"},
+            },
+        )
+
+    assert "rows, tags, checkpoint initialization" in str(caught.value)

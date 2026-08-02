@@ -1,10 +1,13 @@
-"""The closed ``feedbax.experiment_envelope.v1`` dialect.
+"""The closed ``feedbax.experiment_envelope`` dialect and its version boundary.
 
-Two properties are under test and nothing else. First, the dialect is *closed*:
-one schema string, one layer per envelope, no unknown fields anywhere, and no
-slot through which a project could widen it. Second, the vocabulary inside it is
-*open*: dotted paths, values, recipe ids, and role strings are carried as data
-and judged by the final Feedbax output model, not by the dialect.
+Three properties are under test and nothing else. First, the dialect is *closed*:
+two enumerated schema strings, one layer per envelope, no unknown fields
+anywhere, and no slot through which a project could widen it. Second, the
+vocabulary inside it is *open*: dotted paths, values, recipe ids, and role
+strings are carried as data and judged by the final Feedbax output model, not by
+the dialect. Third, each version names exactly one grammar: a v1 document is
+accepted as v1, migrates to v2 only through an explicit call, and is refused by
+version if it states a v2 construct.
 
 The invented ``quillon`` vocabulary is used throughout for the same reason it is
 used in the kernel tests: if a case needed a real project's words, it would be
@@ -13,6 +16,7 @@ testing the wrong thing.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -27,11 +31,14 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_FAMILY,
     EXPERIMENT_ENVELOPE_MIGRATION_TABLE,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
     EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS,
     LAYER_OUTPUT_CONTRACTS,
     ExperimentEnvelopeLayer,
     ReceiptReference,
     layer_of_document,
+    migrate_experiment_envelope_payload,
     output_contract_of_document,
     parse_experiment_envelope,
 )
@@ -69,15 +76,40 @@ def _minimal(**layer: Any) -> dict[str, Any]:
     }
 
 
+#: The three authored fragments the version-boundary cases reuse. They are
+#: deliberately the smallest thing each construct accepts, so a failure names the
+#: version rule rather than an unrelated authoring mistake.
+_RECEIPT: dict[str, Any] = {
+    "kind": "receipt",
+    "manifest_kind": "quillon.survey_run",
+    "manifest_id": "baseline-0",
+}
+_ANALYSIS_DELTA: dict[str, Any] = {
+    "layer_id": "probe-bundle",
+    "patches": [{"path": "params_base.trim", "op": "add", "value": 1}],
+}
+_ROLE_CONTRACT: dict[str, Any] = {
+    "kind": "quillon.survey_run",
+    "artifact_role": "span_observations",
+    "artifact_provider": "quillon.custody",
+}
+
+
 # -- the family and its version boundary ----------------------------------
 
 
-def test_the_dialect_is_one_family_at_one_version() -> None:
+def test_the_dialect_is_one_family_at_two_enumerated_versions() -> None:
     assert EXPERIMENT_ENVELOPE_FAMILY == "feedbax.experiment_envelope"
-    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION == "feedbax.experiment_envelope.v1"
+    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1 == "feedbax.experiment_envelope.v1"
+    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2 == "feedbax.experiment_envelope.v2"
+    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2
     assert EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS == (
-        EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
     )
+    assert EXPERIMENT_ENVELOPE_MIGRATION_TABLE == {
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2
+    }
     assert EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION == (
         "feedbax.experiment_envelope.compiler.v1"
     )
@@ -85,7 +117,7 @@ def test_the_dialect_is_one_family_at_one_version() -> None:
 
 @pytest.mark.parametrize(
     "schema",
-    ["feedbax.experiment_envelope.v0", "feedbax.experiment_envelope.v2", "quillon.study.v1", None],
+    ["feedbax.experiment_envelope.v0", "feedbax.experiment_envelope.v3", "quillon.study.v1", None],
 )
 def test_any_other_schema_fails_closed_naming_its_migration_slot(schema: Any) -> None:
     document = _minimal(training={"rows_mode": "append", "tags": {"add": ["probe"]}})
@@ -102,7 +134,128 @@ def test_any_other_schema_fails_closed_naming_its_migration_slot(schema: Any) ->
     )
     message = str(caught.value)
     assert str(EXPERIMENT_ENVELOPE_MIGRATION_TABLE) in message
-    assert "migration_intentionally_absent=yes" in message
+    assert str(list(EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS)) in message
+
+
+# -- the v1/v2 boundary: accept, migrate, reject ---------------------------
+
+
+def _v1(**layer: Any) -> dict[str, Any]:
+    return {**_minimal(**layer), "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1}
+
+
+def test_a_v1_document_is_accepted_and_keeps_its_own_version() -> None:
+    """A prior-version document compiles as itself, not as a wider current one."""
+    envelope = _parse(_v1(training={"rows_mode": "append", "tags": {"add": ["probe"]}}))
+
+    assert envelope.schema_ == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1
+    dumped = envelope.model_dump(mode="json", by_alias=True, exclude_none=True)
+    assert dumped["schema"] == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1
+
+
+@pytest.mark.parametrize(
+    ("layer", "path"),
+    [
+        (
+            {
+                "evaluation": {
+                    "subject_id": "trained",
+                    "subject": _RECEIPT,
+                    "prerequisites": {"bank": _RECEIPT},
+                }
+            },
+            "evaluation.prerequisites",
+        ),
+        (
+            {
+                "analysis": {
+                    "target": "bundle",
+                    "roots": [{"alias": "one", "ref": _RECEIPT}],
+                    "delta": _ANALYSIS_DELTA,
+                }
+            },
+            "analysis.roots",
+        ),
+        (
+            {
+                "figure": {
+                    "mode": "row_expansion",
+                    "rows": {"mode": "all", "index": "bases/rows.row_index.json"},
+                    "row_custody": "generated/rows.custody.json",
+                    "inputs": [
+                        {
+                            "input_role": "per_row_states",
+                            "binding": "per_row",
+                            "binding_key": "states",
+                            "contract": _ROLE_CONTRACT,
+                        }
+                    ],
+                }
+            },
+            "figure.row_custody",
+        ),
+        (
+            {
+                "training": {
+                    "rows_mode": "append",
+                    "checkpoint_initialization": [
+                        {"row": "row-a", "mode": "initialize_from", "source": _RECEIPT}
+                    ],
+                }
+            },
+            "training.checkpoint_initialization",
+        ),
+    ],
+)
+def test_a_v1_document_stating_v2_grammar_is_refused_by_version(
+    layer: dict[str, Any], path: str
+) -> None:
+    """v1 names exactly one grammar; a v2 construct under it is a version refusal."""
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        _parse(_v1(**layer))
+
+    assert caught.value.category is (
+        ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION
+    )
+    message = str(caught.value)
+    assert path in message
+    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2 in message
+    # The same document at v2 is accepted, so the refusal is about the version
+    # boundary and not about the construct being unauthorable.
+    assert _parse(_minimal(**layer)) is not None
+
+
+def test_the_v1_to_v2_migration_is_explicit_and_semantics_preserving() -> None:
+    document = _v1(training={"rows_mode": "append", "tags": {"add": ["probe"]}})
+
+    migrated = migrate_experiment_envelope_payload(document)
+
+    assert migrated["schema"] == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2
+    assert {key: value for key, value in migrated.items() if key != "schema"} == {
+        key: value for key, value in document.items() if key != "schema"
+    }
+    # The migration changes the authored bytes, which is exactly why a compile
+    # never applies it: the original document still parses, as itself.
+    assert _parse(document).schema_ == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1
+    assert _parse(migrated).schema_ == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2
+
+
+def test_migrating_an_unsupported_version_refuses_rather_than_guessing() -> None:
+    document = _minimal(training={"rows_mode": "append", "tags": {"add": ["probe"]}})
+    document["schema"] = "feedbax.experiment_envelope.v3"
+
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        migrate_experiment_envelope_payload(document)
+
+    assert caught.value.category is (
+        ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION
+    )
+
+
+def test_migrating_a_current_document_is_a_no_op() -> None:
+    document = _minimal(training={"rows_mode": "append", "tags": {"add": ["probe"]}})
+
+    assert migrate_experiment_envelope_payload(document) == document
 
 
 # -- exactly one layer ------------------------------------------------------
@@ -660,29 +813,34 @@ def test_an_ordered_figure_params_document_is_no_longer_a_layer_parent() -> None
 # -- a per-row role has no single reference to state ---------------------------
 
 
+#: Where a row-expansion envelope says its per-row custody bindings will be.
+CUSTODY_REF = "custody/quillon.row_custody.json"
+
+
 class TestPerRowInputReference:
     """``ref`` is optional exactly where a single locator would be false."""
 
     @staticmethod
-    def _figure(**input_fields: Any) -> dict[str, Any]:
-        return _minimal(
-            figure={
-                "mode": "row_expansion",
-                "rows": {"mode": "all", "index": "bases/quillon.row_index.json"},
-                "inputs": [
-                    {
-                        "input_role": "observed",
-                        "binding_key": "observations",
-                        "contract": {
-                            "kind": "quillon.survey_run",
-                            "artifact_role": "span_observations",
-                            "artifact_provider": "quillon.custody",
-                        },
-                        **input_fields,
-                    }
-                ],
-            }
-        )
+    def _figure(*, custody: str | None = CUSTODY_REF, **input_fields: Any) -> dict[str, Any]:
+        figure: dict[str, Any] = {
+            "mode": "row_expansion",
+            "rows": {"mode": "all", "index": "bases/quillon.row_index.json"},
+            "inputs": [
+                {
+                    "input_role": "observed",
+                    "binding_key": "observations",
+                    "contract": {
+                        "kind": "quillon.survey_run",
+                        "artifact_role": "span_observations",
+                        "artifact_provider": "quillon.custody",
+                    },
+                    **input_fields,
+                }
+            ],
+        }
+        if custody is not None:
+            figure["row_custody"] = custody
+        return _minimal(figure=figure)
 
     def test_a_per_row_role_may_omit_the_reference_row_expansion_fills(self) -> None:
         envelope = _parse(self._figure(binding="per_row"))
@@ -693,6 +851,27 @@ class TestPerRowInputReference:
         assert item.is_per_row
         assert item.is_row_expanded
         assert item.role_reference().model_dump() == {"per_row": "observations"}
+        assert envelope.figure.row_custody == CUSTODY_REF
+
+    def test_a_per_row_role_may_omit_the_custody_declaration_too(self) -> None:
+        """An envelope authored before the declaration existed still parses.
+
+        Its per-row roles cannot be *bound* — fulfillment refuses the figure by
+        name — but the ratified corpus is not invalidated by a field that did not
+        exist when it was written.
+        """
+        envelope = _parse(self._figure(binding="per_row", custody=None))
+
+        assert envelope.figure is not None
+        assert envelope.figure.row_custody is None
+        assert envelope.figure.inputs[0].is_per_row
+
+    def test_an_empty_custody_declaration_names_no_document(self) -> None:
+        with pytest.raises(ExperimentEnvelopeRejection) as caught:
+            _parse(self._figure(binding="per_row", custody="   "))
+
+        assert caught.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+        assert "states a nonempty 'row_custody' path or states none at all" in str(caught.value)
 
     def test_a_shared_role_still_states_the_one_manifest_it_is_filled_from(self) -> None:
         with pytest.raises(ExperimentEnvelopeRejection) as caught:
@@ -743,3 +922,179 @@ class TestPerRowInputReference:
                     ref={"kind": "envelope", "alias": "widened-summary"},
                 )
             )
+
+    def test_custody_declared_where_nothing_is_filled_per_row_is_refused(self) -> None:
+        """A shared role names its own manifest, so the declaration addresses nothing."""
+        with pytest.raises(ExperimentEnvelopeRejection) as caught:
+            _parse(
+                self._figure(
+                    binding="shared",
+                    ref={
+                        "kind": "receipt",
+                        "manifest_kind": "quillon.survey_run",
+                        "manifest_id": "observed-0",
+                    },
+                )
+            )
+
+        assert caught.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+        assert "only when a per-row role is filled from it" in str(caught.value)
+
+
+# -- the corpus shape fits the ratified evaluation byte budget -------------
+
+
+#: The paired-controller evaluation envelope, re-authored at v2 with the staged
+#: prerequisite its compiled base names. Every scalar is the real corpus value,
+#: because the point of the case is the *size* of the actual shape: a synthetic
+#: stand-in with shorter ids would prove nothing about whether the corpus fits.
+#:
+#: The rlrmp2 evaluation layer caps an authored envelope at 2048 bytes
+#: (``specs/experiment/experiment_envelope.budgets.v3.json``). That document is
+#: ratified project policy and is not Feedbax's to widen, so the authoring form
+#: has to fit it. The list-of-objects spelling this construct started with did
+#: not: it spent about thirty bytes per prerequisite restating a key that JSON
+#: already gives a mapping for free, and pushed this envelope to 2063 bytes.
+PAIRED_CONTROLLER_BANK = (
+    "feedbax-evaluation-run:3686909fa04735e7b802e444885ff71f"
+)
+PAIRED_CONTROLLER_ENVELOPE: dict[str, Any] = {
+    "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
+    "base": "specs/post_run/sisu_paired_controller_response.matrix.v1.json",
+    "name": "sisu-paired-controller-response-continuous",
+    "issue": "b7f3caa",
+    "reason": (
+        "Bind the wave-1 continuous trained run and its capture checkpoints to the "
+        "paired controller response grid."
+    ),
+    "evaluation": {
+        "subject_id": "trained",
+        "subject": {
+            "kind": "receipt",
+            "manifest_kind": "TrainingRunManifest",
+            "manifest_id": "feedbax-training-run:662f6e3d4f17c350bbdf9737b591b405",
+            "manifest_sha256": (
+                "7dbca684ee130475beac8261d5bdbbdb171a25c3f63b762b037c430954d28a33"
+            ),
+            "size_bytes": 262904,
+        },
+        "prerequisites": {
+            "paired_trial_bank": {
+                "kind": "receipt",
+                "manifest_kind": "EvaluationRunManifest",
+                "manifest_id": PAIRED_CONTROLLER_BANK,
+                "manifest_sha256": (
+                    "983beeff4164fd6b19616bc912f8e36f519fa225b45ecf8606e1e5813610f3d5"
+                ),
+                "size_bytes": 22582,
+            }
+        },
+        "delta": {
+            "layer_id": "sisu-paired-controller-response-continuous.subject",
+            "acknowledges_ancestor_paths": [
+                "axes.0.values.0.deltas.7.value",
+                "axes.0.values.0.deltas.8.value",
+                "axes.0.values.0.deltas.9.value",
+                "axes.0.values.0.deltas.10.value",
+            ],
+            "patches": [
+                {
+                    "path": "axes.0.values.0.deltas.7.value",
+                    "op": "replace",
+                    "value": {
+                        "kind": "TrainingCheckpointTransactionManifest",
+                        "id": "tx-1003b37294bf4f9b83b074da256fa4a1",
+                        "role": "training_checkpoint_custody",
+                        "uri": (
+                            "transactions/tx-1003b37294bf4f9b83b074da256fa4a1/manifest.json"
+                        ),
+                        "metadata": {
+                            "manifest_sha256": (
+                                "1f6b6dbbe0f18508a82db0e30951b0983ab213c79944f3ef9bf"
+                                "738330a79acec"
+                            )
+                        },
+                    },
+                },
+                {
+                    "path": "axes.0.values.0.deltas.8.value",
+                    "op": "replace",
+                    "value": "capture-checkpoints",
+                },
+                {
+                    "path": "axes.0.values.0.deltas.9.value",
+                    "op": "replace",
+                    "value": 12000,
+                },
+                {
+                    "path": "axes.0.values.0.deltas.10.value",
+                    "op": "replace",
+                    "value": [
+                        {
+                            "kind": "TrainingRunManifest",
+                            "id": "feedbax-training-run:662f6e3d4f17c350bbdf9737b591b405",
+                            "role": "training_run",
+                            "metadata": {
+                                "ref_schema_id": "feedbax.ref.authenticated_manifest",
+                                "ref_schema_version": (
+                                    "feedbax.ref.authenticated_manifest.v1"
+                                ),
+                                "manifest_sha256": (
+                                    "7dbca684ee130475beac8261d5bdbbdb171a25c3f63b762b03"
+                                    "7c430954d28a33"
+                                ),
+                                "size_bytes": 262904,
+                            },
+                        }
+                    ],
+                },
+            ],
+        },
+    },
+}
+
+#: The ratified rlrmp2 evaluation-layer cap. Restated as a literal on purpose:
+#: reading it out of the project document would make this test pass whenever the
+#: project widened the cap, which is the one outcome it exists to prevent.
+RATIFIED_EVALUATION_MAX_BYTES = 2048
+
+
+def test_the_corpus_paired_controller_shape_fits_its_ratified_byte_budget() -> None:
+    """The real shape, at v2, inside the cap the project already ratified."""
+    minimal = json.dumps(
+        PAIRED_CONTROLLER_ENVELOPE, separators=(",", ":"), sort_keys=True
+    ).encode()
+
+    assert len(minimal) <= RATIFIED_EVALUATION_MAX_BYTES, (
+        f"the corpus shape encodes to {len(minimal)} bytes against a ratified cap of "
+        f"{RATIFIED_EVALUATION_MAX_BYTES}; the authoring form is Feedbax's to make lean, "
+        "and the project's budget is not Feedbax's to widen"
+    )
+
+
+def test_the_corpus_paired_controller_shape_parses_as_the_v2_grammar() -> None:
+    envelope = _parse(PAIRED_CONTROLLER_ENVELOPE)
+
+    assert envelope.schema_ == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2
+    assert envelope.evaluation.subject_id == "trained"
+    assert list(envelope.evaluation.prerequisites) == ["paired_trial_bank"]
+    prerequisite = envelope.evaluation.prerequisites["paired_trial_bank"]
+    assert isinstance(prerequisite, ReceiptReference)
+    assert prerequisite.is_authenticated
+    assert prerequisite.manifest_id == PAIRED_CONTROLLER_BANK
+
+
+def test_the_list_spelling_of_prerequisites_is_gone_rather_than_also_accepted() -> None:
+    """One spelling. The lean mapping is the form, not a second way to say it."""
+    document = {
+        **PAIRED_CONTROLLER_ENVELOPE,
+        "evaluation": {
+            **PAIRED_CONTROLLER_ENVELOPE["evaluation"],
+            "prerequisites": [{"name": "paired_trial_bank", "ref": _RECEIPT}],
+        },
+    }
+
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        _parse(document)
+
+    assert caught.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE

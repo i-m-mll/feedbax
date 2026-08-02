@@ -18,6 +18,7 @@ from feedbax.contracts.expressions import (
     evaluate_expr,
 )
 from feedbax.contracts.manifest import ParentRef, StrictModel, utc_now
+from feedbax.contracts.strict_json import strict_json_loads
 
 
 SELECTION_SPEC_SCHEMA_ID = "feedbax.spec.selection"
@@ -332,7 +333,11 @@ def manifest_index_rows_from_records(
         payload = record.get("payload")
         if not isinstance(payload, dict):
             raw_payload = record.get("payload_json")
-            payload = json.loads(raw_payload) if isinstance(raw_payload, str) else {}
+            payload = (
+                strict_json_loads(raw_payload, ref="manifest index row payload")
+                if isinstance(raw_payload, str)
+                else {}
+            )
         rows.append(
             ManifestIndexRow(
                 id=str(record.get("id") or payload.get("id")),

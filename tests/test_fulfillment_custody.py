@@ -501,6 +501,54 @@ def test_retained_shadow_custody_is_reusable_and_never_authoritative(
             pass
 
 
+def test_a_shadow_root_symlinked_into_authoritative_custody_is_refused(
+    environment, tmp_path: Path
+) -> None:
+    """Containment is physical: a sibling-looking symlink into the root is refused.
+
+    A lexical check passes ``tmp_path/shadow-link`` as a sibling of the receipt
+    root while every write through it lands inside authoritative custody, so the
+    shadow would overwrite the very bytes it exists not to touch.
+    """
+    node = _evaluation_node()
+    fulfill_node(node, environment=environment)
+    inside = Path(environment.root) / "captured-shadow"
+    inside.mkdir(parents=True)
+    link = tmp_path / "shadow-link"
+    link.symlink_to(inside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="must not live inside the authoritative root"):
+        with shadow_custody(environment, shadow_root=link):
+            pass
+
+    assert sorted(entry.name for entry in inside.iterdir()) == [], (
+        "a refused shadow never seeded anything inside authoritative custody"
+    )
+
+
+def test_a_shadow_root_beside_a_symlinked_authoritative_root_still_opens(
+    environment, tmp_path: Path
+) -> None:
+    """Resolving both sides must not refuse a legitimate sibling shadow.
+
+    Receipt roots are commonly reached through a symlink. Resolving only the
+    shadow would compare a physical path against a lexical one and refuse every
+    sibling, so the containment fix is checked from the permissive side too.
+    """
+    node = _evaluation_node()
+    fulfill_node(node, environment=environment)
+    linked_root = tmp_path / "receipts-link"
+    linked_root.symlink_to(Path(environment.root), target_is_directory=True)
+    through_link = FulfillmentEnvironment(
+        root=linked_root,
+        registries=environment.registries,
+        issues=environment.issues,
+    )
+
+    with shadow_custody(through_link, shadow_root=tmp_path / "sibling-shadow") as shadow:
+        assert rebuild_node(node, environment=through_link, shadow=shadow).matched
+
+
 def test_ephemeral_shadow_custody_is_discarded(environment, tmp_path: Path) -> None:
     node = _evaluation_node()
     fulfill_node(node, environment=environment)
@@ -625,6 +673,54 @@ def test_repair_quarantines_failed_bytes_and_promotes_a_validated_replacement(
     executions = recipes.evaluation
     assert fulfill_node(node, environment=environment).disposition == "reused"
     assert recipes.evaluation == executions, "the repaired receipt admits without re-executing"
+
+
+def test_promotion_refuses_shadow_bytes_that_drifted_after_shadow_admission(
+    environment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The read that promotes is the read that must authenticate.
+
+    Shadow admission proves the candidate's bytes, but the promotion reads them
+    again afterwards, and the earlier proof says nothing about the second read.
+    Tampering in that window is exactly the accidental-corruption shape the
+    repair exists to undo, so promotion refuses before touching anything
+    authoritative — the corrupt authoritative name is not even unlinked.
+    """
+    from feedbax.analysis import fulfillment_custody
+
+    node = _evaluation_node()
+    receipt = fulfill_node(node, environment=environment).receipt
+    manifest_bytes = receipt.path.read_bytes()
+    stored = _stored_artifact_path(environment, node)
+    _tamper(stored, b"tampered custody bytes\n")
+
+    authoritative_root = Path(environment.root)
+    real_admit = fulfillment_custody.admit_node
+    tampered_in_shadow: list[Path] = []
+
+    def _admit_then_tamper_the_shadow(request, *, environment, **kwargs):
+        outcome = real_admit(request, environment=environment, **kwargs)
+        shadow_root = Path(environment.root)
+        if shadow_root != authoritative_root and outcome.admitted and not tampered_in_shadow:
+            candidate = load_manifest(Path(outcome.manifest_path))
+            shadow_bytes = artifact_bytes_path(candidate.artifacts[0], root=shadow_root)
+            assert shadow_bytes is not None
+            _tamper(shadow_bytes, b"shadow bytes replaced after admission\n")
+            tampered_in_shadow.append(shadow_bytes)
+        return outcome
+
+    monkeypatch.setattr(fulfillment_custody, "admit_node", _admit_then_tamper_the_shadow)
+
+    with pytest.raises(FulfillmentRepairError, match="not the bytes shadow admission"):
+        repair_node(node, environment=environment)
+
+    assert tampered_in_shadow, "the test must really have drifted the shadow bytes"
+    assert receipt.path.read_bytes() == manifest_bytes
+    assert stored.read_bytes() == b"tampered custody bytes\n", (
+        "a refused promotion never unlinks the authoritative name it was going to replace"
+    )
+    assert not (Path(environment.root) / FULFILLMENT_REPAIR_DIRECTORY).exists()
+    assert _quarantine_files(environment), "the failed bytes are preserved before any promotion"
 
 
 def test_repair_record_is_durable_and_addressed_by_the_failed_bytes(

@@ -206,6 +206,7 @@ from .rollout import (
     EvaluationStateProvenance,
     TrialStructureError,
     capture_evaluation_state,
+    compiled_task_rollout,
     compiled_trial_rollout,
     stack_trials,
 )
@@ -334,6 +335,7 @@ __all__ = [
     "EvaluationRecipeRegistry",
     "ReportRecipeRegistry",
     "capture_evaluation_state",
+    "compiled_task_rollout",
     "compiled_trial_rollout",
     "stack_trials",
     "diff_regenerated_archived",

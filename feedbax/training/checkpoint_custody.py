@@ -83,6 +83,7 @@ from feedbax.contracts.run_matrix import (
     TaskIdentityGate,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.contracts.strict_json import DuplicateJsonKeyError, strict_json_loads
 from feedbax.contracts.training import (
     TRAINING_RUN_SPEC_SCHEMA_ID,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
@@ -2576,7 +2577,9 @@ def _load_checkpoint_document_json(
 ) -> CheckpointDocumentLoadResult[Any]:
     """Migrate one JSON mapping through the shared durable-schema registry."""
     try:
-        payload = json.loads(data)
+        payload = strict_json_loads(data, ref=document_name)
+    except DuplicateJsonKeyError as exc:
+        raise CheckpointIntegrityError(f"{document_name} states a member twice: {exc}") from exc
     except (TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise CheckpointIntegrityError(f"{document_name} is not valid JSON") from exc
     if not isinstance(payload, Mapping):
@@ -4180,7 +4183,7 @@ class _LoadedForkPlanFile:
 
 
 def _load_checkpoint_fork_plan_file(plan_path: Path) -> _LoadedForkPlanFile:
-    raw = json.loads(plan_path.read_text(encoding="utf-8"))
+    raw = strict_json_loads(plan_path.read_text(encoding="utf-8"), ref=str(plan_path))
     plan = _coerce_checkpoint_fork_plan(raw)
     return _LoadedForkPlanFile(
         plan=plan,

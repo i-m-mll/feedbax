@@ -225,6 +225,8 @@ from feedbax.contracts.figures import (
     SCENE_CAMERA_SCHEMA_VERSION,
 )
 from feedbax.contracts.figure_roles import (
+    FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_ID,
+    FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_VERSION,
     FIGURE_ROW_EXPANSION_REQUEST_SCHEMA_ID,
     FIGURE_ROW_EXPANSION_REQUEST_SCHEMA_VERSION,
     RESOLVED_FIGURE_INPUTS_SCHEMA_ID,
@@ -235,6 +237,7 @@ from feedbax.contracts.row_index import (
     RESOLVED_ROW_SET_SCHEMA_VERSION,
     ROW_INDEX_CUSTODY_SCHEMA_ID,
     ROW_INDEX_CUSTODY_SCHEMA_VERSION,
+    ROW_INDEX_CUSTODY_SCHEMA_VERSION_V1,
     ROW_INDEX_SCHEMA_ID,
     ROW_INDEX_SCHEMA_VERSION,
 )
@@ -3093,8 +3096,22 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             owner_module="feedbax.contracts.row_index",
             emitted_by=("run receipt and manifest custody layer",),
             consumed_by=("feedbax.contracts.figure_roles.resolve_figure_input_roles",),
-            description="Post-run authenticated artifact custody bound to compile-time rows.",
-            required_tests=("tests/test_figure_role_references.py",),
+            description=(
+                "Post-run authenticated artifact custody bound to compile-time rows. v2 "
+                "adds index_sha256, which pins the row index cut the bindings were produced "
+                "against; v1 named only the index id, which is stable across cuts."
+            ),
+            rejected_old_versions=(
+                _old(ROW_INDEX_CUSTODY_SCHEMA_ID),
+                ROW_INDEX_CUSTODY_SCHEMA_VERSION_V1,
+            ),
+            notes=(
+                "v1 is rejected rather than migrated in place: it states no index digest, and "
+                "a digest chosen by the reader would be exactly the false authentication the "
+                "field prevents. row_index.migrate_row_index_custody_payload is the explicit "
+                "upgrade and requires the authoritative index from the caller."
+            ),
+            required_tests=("tests/test_row_index_custody_version.py",),
         ),
         _family(
             "ResolvedRowSet",
@@ -3134,6 +3151,21 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             description="Ordered figure inputs resolved from role references, with custody.",
             required_tests=("tests/test_figure_role_references.py",),
+        ),
+        _family(
+            "FigureRowCustodyLocator",
+            FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_ID,
+            FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figure_roles",
+            emitted_by=("feedbax.envelope.compile",),
+            consumed_by=(
+                "feedbax.analysis.fulfillment_row_custody.resolve_row_custody_overlay",
+            ),
+            description=(
+                "Where one row-expanded figure's per-row custody bindings are found, and "
+                "the row index identity the located document must match."
+            ),
+            required_tests=("tests/test_fulfillment_row_custody.py",),
         ),
         _family(
             "ExperimentEnvelopeCompileResult",

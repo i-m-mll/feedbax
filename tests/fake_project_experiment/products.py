@@ -28,7 +28,13 @@ from feedbax.contracts.experiment_compile_lock import (
     PlannedProductReference,
     build_compile_lock,
 )
-from feedbax.contracts.figures import FIGURE_SPEC_SCHEMA_ID, FIGURE_SPEC_SCHEMA_VERSION
+from feedbax.contracts.analysis_bundle_composition import ANALYSIS_BUNDLE_SPEC_SCHEMA_ID
+from feedbax.contracts.figures import (
+    FIGURE_COMPOSITION_SPEC_SCHEMA_ID,
+    FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION,
+    FIGURE_SPEC_SCHEMA_ID,
+    FIGURE_SPEC_SCHEMA_VERSION,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_RUN_SPEC_SCHEMA_ID,
     ANALYSIS_RUN_SPEC_SCHEMA_VERSION,
@@ -40,12 +46,13 @@ from feedbax.contracts.manifest import (
     REPORT_SPEC_SCHEMA_VERSION,
 )
 from feedbax.contracts.experiment_envelope_dialect import (
+    ANALYSIS_BUNDLE_OUTPUT,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
     EXPERIMENT_ENVELOPE_SUFFIX,
 )
 from feedbax.contracts.run_matrix import TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
 
-from tests.fake_project_experiment import ENVELOPE_DIRECTORY, OUTPUT_DIRECTORY
+from tests.fake_project_experiment import BASE_DIRECTORY, ENVELOPE_DIRECTORY, OUTPUT_DIRECTORY
 
 #: The one dialect every authored envelope declares, engine-owned since the
 #: project compiler seam was closed.
@@ -96,6 +103,7 @@ class QuillonOutputs:
         references: Sequence[Any] = (),
         body: Mapping[str, Any] | None = None,
         issue: str | None = None,
+        identity_contributions: Mapping[str, Any] | None = None,
     ) -> EmittedProduct:
         """Write one authored envelope and the two files its compile emits."""
         envelope_ref = f"{ENVELOPE_DIRECTORY}/{name}{ENVELOPE_SUFFIX}"
@@ -122,6 +130,7 @@ class QuillonOutputs:
                 implementation=QUILLON_IMPLEMENTATION,
                 references=references,
                 issue=issue,
+                identity_contributions=dict(identity_contributions or {}),
             )
         )
         self.output_directory.mkdir(parents=True, exist_ok=True)
@@ -212,7 +221,13 @@ class QuillonOutputs:
             references=references,
         )
 
-    def plate(self, name: str, *, references: Sequence[Any] = ()) -> EmittedProduct:
+    def plate(
+        self,
+        name: str,
+        *,
+        references: Sequence[Any] = (),
+        identity_contributions: Mapping[str, Any] | None = None,
+    ) -> EmittedProduct:
         """Emit one figure."""
         return self.emit(
             name,
@@ -221,6 +236,94 @@ class QuillonOutputs:
                 "schema_version": FIGURE_SPEC_SCHEMA_VERSION,
                 "name": name,
                 "assembler": "feedbax.grid_figure",
+            },
+            references=references,
+            identity_contributions=identity_contributions,
+        )
+
+    def sheaf(
+        self,
+        name: str,
+        *,
+        references: Sequence[Any] = (),
+        stages: Sequence[Mapping[str, Any]] | None = None,
+        templates: Sequence[Mapping[str, Any]] | None = None,
+        manifest_kind: str = "EvaluationRunManifest",
+        **params: Any,
+    ) -> EmittedProduct:
+        """Emit one analysis bundle: the analysis layer's other compiled product."""
+        document: dict[str, Any] = {
+            "schema_id": ANALYSIS_BUNDLE_SPEC_SCHEMA_ID,
+            "schema_version": ANALYSIS_BUNDLE_OUTPUT.schema_version,
+            "name": name,
+            "predicate": {"manifest_kind": manifest_kind},
+            "params_base": {"params": {"stage": name, **params}},
+        }
+        if templates is not None:
+            document["templates"] = [dict(template) for template in templates]
+        else:
+            document["stages"] = [
+                dict(stage)
+                for stage in (
+                    stages
+                    if stages is not None
+                    else [
+                        {
+                            "name": "condense",
+                            "kind": "analysis",
+                            "mode": "grouped",
+                            "analysis_type": CONDENSE_TYPE,
+                        }
+                    ]
+                )
+            ]
+        return self.emit(name, document, references=references)
+
+    def montage(
+        self,
+        name: str,
+        *,
+        parent: Mapping[str, Any] | None = None,
+        references: Sequence[Any] = (),
+        layer_id: str = "recolor",
+    ) -> EmittedProduct:
+        """Emit one figure composition over a repo-tracked parent figure document.
+
+        The parent is written into this repository and content-pinned, because a
+        composition names a tracked frozen figure document rather than another
+        product of this engine.
+        """
+        parent_document = dict(
+            parent
+            if parent is not None
+            else {
+                "schema_id": FIGURE_SPEC_SCHEMA_ID,
+                "schema_version": FIGURE_SPEC_SCHEMA_VERSION,
+                "name": f"{name}-parent",
+                "assembler": "feedbax.grid_figure",
+            }
+        )
+        parent_ref = f"{BASE_DIRECTORY}/{name}-parent.figure.json"
+        parent_path = self.root / parent_ref
+        parent_path.parent.mkdir(parents=True, exist_ok=True)
+        parent_path.write_text(
+            json.dumps(parent_document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        return self.emit(
+            name,
+            {
+                "schema_id": FIGURE_COMPOSITION_SPEC_SCHEMA_ID,
+                "schema_version": FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION,
+                "parent": {
+                    "ref": parent_ref,
+                    "sha256": canonical_sha256(parent_document),
+                },
+                "deltas": [
+                    {
+                        "layer_id": layer_id,
+                        "patches": [{"path": "name", "op": "replace", "value": name}],
+                    }
+                ],
             },
             references=references,
         )

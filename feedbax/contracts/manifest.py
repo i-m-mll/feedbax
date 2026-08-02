@@ -10,12 +10,12 @@ import errno
 import hashlib
 import json
 import os
-import shutil
 import stat
 import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +31,7 @@ from feedbax.contracts.retention_artifact_schema import (
     retention_artifact_schema,
 )
 from feedbax.contracts.schema_namespace import validate_schema_identity
+from feedbax.contracts.strict_json import strict_json_loads
 
 try:
     from importlib.metadata import PackageNotFoundError, version
@@ -229,6 +230,36 @@ class ParentRef(StrictModel):
     role: Optional[str] = None
     uri: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+def authenticated_manifest_ref_metadata(digest: str, size_bytes: int) -> dict[str, Any]:
+    """Return the ref metadata one ``(sha256, size)`` custody profile authenticates.
+
+    This is the producer half of :func:`authenticated_manifest_ref_profile`: a
+    caller that already holds an authenticated profile — because a custody
+    document or a compile lock stated it — states it as ref metadata here rather
+    than assembling the four keys itself, so a producer can never emit a profile
+    the reader would refuse.
+
+    Raises:
+        ValueError: The digest is not a lowercase SHA-256 or the size is not a
+            non-negative integer. An invalid profile is refused at the producer
+            rather than written and refused later.
+    """
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise ValueError(f"authenticated manifest ref digest {digest!r} is not a SHA-256")
+    if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes < 0:
+        raise ValueError(f"authenticated manifest ref size {size_bytes!r} is not a byte count")
+    return {
+        "ref_schema_id": AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+        "ref_schema_version": AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+        "manifest_sha256": digest,
+        "size_bytes": size_bytes,
+    }
 
 
 def authenticated_manifest_ref_profile(ref: ParentRef) -> tuple[str, int] | None:
@@ -1914,6 +1945,9 @@ def _close_secure_directory_chain(
         os.close(descriptor)
 
 
+_ARTIFACT_STREAM_CHUNK_BYTES = 1024 * 1024
+
+
 def _write_all_bytes(file_descriptor: int, data: bytes) -> None:
     remaining = memoryview(data)
     while remaining:
@@ -1926,9 +1960,54 @@ def _write_all_bytes(file_descriptor: int, data: bytes) -> None:
 def _read_all_bytes(file_descriptor: int) -> bytes:
     os.lseek(file_descriptor, 0, os.SEEK_SET)
     chunks: list[bytes] = []
-    while chunk := os.read(file_descriptor, 1024 * 1024):
+    while chunk := os.read(file_descriptor, _ARTIFACT_STREAM_CHUNK_BYTES):
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+def _descriptor_content_identity(file_descriptor: int) -> tuple[str, int]:
+    """Return the streamed ``(sha256, size_bytes)`` identity of a descriptor."""
+    os.lseek(file_descriptor, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    size_bytes = 0
+    while chunk := os.read(file_descriptor, _ARTIFACT_STREAM_CHUNK_BYTES):
+        digest.update(chunk)
+        size_bytes += len(chunk)
+    return digest.hexdigest(), size_bytes
+
+
+def _file_content_identity(path: Path) -> tuple[str, int]:
+    """Return the streamed ``(sha256, size_bytes)`` identity of a file."""
+    digest = hashlib.sha256()
+    size_bytes = 0
+    with Path(path).open("rb") as stream:
+        while chunk := stream.read(_ARTIFACT_STREAM_CHUNK_BYTES):
+            digest.update(chunk)
+            size_bytes += len(chunk)
+    return digest.hexdigest(), size_bytes
+
+
+def _write_file_payload(
+    file_descriptor: int,
+    source: Path,
+    *,
+    expected_identity: tuple[str, int],
+) -> None:
+    """Stream a source file into a descriptor and refuse a source that diverged.
+
+    The source is hashed again from the same read that produces the written
+    bytes, so a source mutated between naming and copying fails closed instead
+    of publishing bytes that do not match the recorded content identity.
+    """
+    digest = hashlib.sha256()
+    size_bytes = 0
+    with Path(source).open("rb") as stream:
+        while chunk := stream.read(_ARTIFACT_STREAM_CHUNK_BYTES):
+            _write_all_bytes(file_descriptor, chunk)
+            digest.update(chunk)
+            size_bytes += len(chunk)
+    if (digest.hexdigest(), size_bytes) != expected_identity:
+        raise ArtifactStoreIntegrityError(f"artifact source bytes changed during store: {source}")
 
 
 def _link_artifact_file(
@@ -2006,11 +2085,21 @@ def _remove_private_artifact_staging_name(
     os.close(directory_descriptor)
 
 
-def _secure_store_bytes_artifact(
-    data: bytes,
+def _secure_store_artifact_payload(
     *,
     destination: Path,
+    write_payload: Callable[[int], None],
+    verify_descriptor: Callable[[int], bool],
 ) -> os.stat_result:
+    """Publish one verified payload at a canonical content-addressed name.
+
+    ``write_payload`` writes the intended bytes into a private staging
+    descriptor. ``verify_descriptor`` re-reads a descriptor and reports whether
+    its bytes match the intended content identity; it is applied to the staged
+    bytes and again to the published canonical file, including when the
+    canonical name already existed. Any mismatch fails closed with
+    :class:`ArtifactStoreIntegrityError` and never overwrites the existing name.
+    """
     records = _open_secure_directory_chain(destination.parent, create=True)
     parent_descriptor = records[-1][1]
     final_name = destination.name
@@ -2026,9 +2115,9 @@ def _secure_store_bytes_artifact(
             0o666,
             dir_fd=staging_descriptor,
         )
-        _write_all_bytes(temporary_descriptor, data)
+        write_payload(temporary_descriptor)
         os.fsync(temporary_descriptor)
-        if _read_all_bytes(temporary_descriptor) != data:
+        if not verify_descriptor(temporary_descriptor):
             raise ArtifactStoreIntegrityError(
                 f"artifact temporary bytes failed verification: {destination}"
             )
@@ -2072,13 +2161,13 @@ def _secure_store_bytes_artifact(
             raise ArtifactStoreIntegrityError(
                 f"canonical artifact is not a regular file: {destination}"
             )
-        stored_data = _read_all_bytes(final_descriptor)
+        stored_matches = verify_descriptor(final_descriptor)
         final_stat_after = os.fstat(final_descriptor)
         if (
             (final_stat_before.st_dev, final_stat_before.st_ino)
             != (final_stat_after.st_dev, final_stat_after.st_ino)
             or final_stat_before.st_size != final_stat_after.st_size
-            or stored_data != data
+            or not stored_matches
         ):
             raise ArtifactStoreIntegrityError(
                 f"canonical artifact bytes do not match content identity: {destination}"
@@ -2115,6 +2204,42 @@ def _secure_store_bytes_artifact(
                 # widen cleanup to a public canonical name.
                 os.close(staging_descriptor)
         _close_secure_directory_chain(records)
+
+
+def _secure_store_bytes_artifact(
+    data: bytes,
+    *,
+    destination: Path,
+) -> os.stat_result:
+    """Publish in-memory bytes, byte-comparing the staged and canonical files."""
+    return _secure_store_artifact_payload(
+        destination=destination,
+        write_payload=lambda descriptor: _write_all_bytes(descriptor, data),
+        verify_descriptor=lambda descriptor: _read_all_bytes(descriptor) == data,
+    )
+
+
+def _secure_store_file_artifact(
+    source: Path,
+    *,
+    destination: Path,
+    expected_identity: tuple[str, int],
+) -> os.stat_result:
+    """Publish a source file's bytes, verifying them against a content identity.
+
+    The source is streamed rather than buffered, so large artifacts do not have
+    to fit in memory. Both the staged copy and the published canonical file are
+    re-read and compared against ``expected_identity`` (digest and size).
+    """
+    return _secure_store_artifact_payload(
+        destination=destination,
+        write_payload=lambda descriptor: _write_file_payload(
+            descriptor, source, expected_identity=expected_identity
+        ),
+        verify_descriptor=lambda descriptor: (
+            _descriptor_content_identity(descriptor) == expected_identity
+        ),
+    )
 
 
 DEFAULT_ARTIFACT_MEDIA_TYPE = "application/octet-stream"
@@ -2158,17 +2283,27 @@ def store_artifact(
     media_type: str = "application/octet-stream",
     metadata: Optional[dict[str, Any]] = None,
 ) -> ArtifactRef:
-    """Copy an artifact into the local content-addressed store and return its ref."""
+    """Copy an artifact into the local content-addressed store and return its ref.
+
+    The published canonical bytes are read back and verified against the source
+    content identity before the reference is returned, so the returned digest and
+    size always describe the bytes actually stored. A source that changes during
+    the copy, or a canonical destination that already holds different bytes,
+    fails closed with :class:`ArtifactStoreIntegrityError` without overwriting
+    the existing canonical file.
+    """
     source = Path(source_path)
     if not source.exists():
         raise FileNotFoundError(source)
     root_path = Path(root) if root is not None else default_manifest_root()
-    digest = sha256_file(source)
+    expected_identity = _file_content_identity(source)
+    digest, _ = expected_identity
     dest = _artifact_path(root_path, digest, source.suffix)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if not dest.exists():
-        shutil.copy2(source, dest)
-    stat = dest.stat()
+    artifact_stat = _secure_store_file_artifact(
+        source,
+        destination=Path(os.path.abspath(dest)),
+        expected_identity=expected_identity,
+    )
     artifact_metadata = dict(metadata or {})
     artifact_metadata.setdefault("original_uri", str(source))
     artifact_metadata.setdefault("relative_path", str(dest.relative_to(root_path)))
@@ -2178,7 +2313,7 @@ def store_artifact(
         artifact_id=f"artifact://sha256/{digest}",
         sha256=digest,
         media_type=media_type,
-        size_bytes=stat.st_size,
+        size_bytes=artifact_stat.st_size,
         uri=str(dest),
         metadata=artifact_metadata,
     )
@@ -2192,26 +2327,23 @@ def store_json_artifact(
     logical_name: str,
     metadata: Optional[dict[str, Any]] = None,
 ) -> ArtifactRef:
-    """Write stable JSON into the local content-addressed store."""
-    root_path = Path(root) if root is not None else default_manifest_root()
+    """Write stable JSON into the local content-addressed store.
+
+    The serialized bytes are published through the same verified byte store as
+    :func:`store_bytes_artifact`, so the canonical file is read back and compared
+    against the serialized payload — including when the canonical name already
+    exists. A canonical destination holding different bytes fails closed with
+    :class:`ArtifactStoreIntegrityError`.
+    """
     data = json.dumps(value, indent=2, sort_keys=True).encode() + b"\n"
-    digest = sha256_bytes(data)
-    dest = _artifact_path(root_path, digest, ".json")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if not dest.exists():
-        dest.write_bytes(data)
-    stat = dest.stat()
-    artifact_metadata = dict(metadata or {})
-    artifact_metadata.setdefault("relative_path", str(dest.relative_to(root_path)))
-    return ArtifactRef(
+    return store_bytes_artifact(
+        data,
+        root=root,
         role=role,
         logical_name=logical_name,
-        artifact_id=f"artifact://sha256/{digest}",
-        sha256=digest,
         media_type="application/json",
-        size_bytes=stat.st_size,
-        uri=str(dest),
-        metadata=artifact_metadata,
+        suffix=".json",
+        metadata=metadata,
     )
 
 
@@ -2832,7 +2964,7 @@ def write_manifest(
 
 def load_manifest_bytes(raw: bytes) -> AnyManifest:
     """Parse one known Feedbax manifest from already-authenticated raw bytes."""
-    data = json.loads(raw)
+    data = strict_json_loads(raw, ref="manifest document")
     data = _normalize_training_run_set_manifest_data(data)
     data = _normalize_analysis_run_manifest_data(data)
     data = _normalize_report_manifest_data(data)

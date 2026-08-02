@@ -42,6 +42,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from pathlib import PurePosixPath
+import re
 from typing import Any, Literal, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
@@ -53,7 +55,11 @@ from feedbax.contracts.figures import (
     FIGURE_INPUT_AUTHORITY_SCHEMA_VERSION,
     FigureSpec,
 )
-from feedbax.contracts.manifest import ParentRef, StrictModel
+from feedbax.contracts.manifest import (
+    ParentRef,
+    StrictModel,
+    authenticated_manifest_ref_metadata,
+)
 from feedbax.contracts.row_index import (
     ResolvedRowSet,
     RowIndexCustodyBindings,
@@ -66,6 +72,8 @@ FIGURE_ROW_EXPANSION_REQUEST_SCHEMA_ID = "feedbax.spec.figure_row_expansion_requ
 FIGURE_ROW_EXPANSION_REQUEST_SCHEMA_VERSION = "feedbax.spec.figure_row_expansion_request.v1"
 RESOLVED_FIGURE_INPUTS_SCHEMA_ID = "feedbax.spec.resolved_figure_inputs"
 RESOLVED_FIGURE_INPUTS_SCHEMA_VERSION = "feedbax.spec.resolved_figure_inputs.v1"
+FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_ID = "feedbax.spec.figure_row_custody_locator"
+FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_VERSION = "feedbax.spec.figure_row_custody_locator.v1"
 
 ROW_NAMESPACE_TEMPLATE = "row_{ordinal}__"
 PANEL_TITLE_SEPARATOR = "—"
@@ -329,6 +337,95 @@ class ResolvedFigureInputs(StrictModel):
         return not self.pending_roles
 
 
+class FigureRowCustodyLocator(StrictModel):
+    """Where one row-expanded figure's per-row custody bindings are to be found.
+
+    A ``per_row`` role is filled from the row index's post-run custody, and that
+    custody lives in a :class:`~feedbax.contracts.row_index.RowIndexCustodyBindings`
+    document the receipt layer produces. The compile cannot pin that document's
+    bytes — they do not exist until the rows have run — and it must not derive
+    its location by convention from the index id, because a convention is a rule
+    nothing states. So the declaration *names* the document, the compile records
+    that name here, and fulfillment resolves it once the rows have been produced.
+
+    This record carries a locator and the identity the located document must
+    match. It carries no digest of the custody document itself: that is a
+    realization fact, and pinning it would invalidate the compile every time
+    custody moved.
+
+    Attributes:
+        index_id: The row index the located custody must belong to.
+        index_sha256: The digest of the row index the rows were expanded against,
+            so custody for a re-cut index cannot bind to this expansion.
+        ref: The repo-relative path of the custody bindings document.
+        binding_keys: The per-row binding keys this figure's roles require, in
+            sorted order. A located document missing one of them for any expanded
+            row fails closed rather than binding part of the figure.
+    """
+
+    schema_id: str = FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_ID
+    schema_version: str = FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_VERSION
+    index_id: str
+    index_sha256: str
+    ref: str
+    binding_keys: list[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_locator(self) -> "FigureRowCustodyLocator":
+        if self.schema_id != FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_ID:
+            raise ValueError(
+                f"unsupported FigureRowCustodyLocator schema_id: {self.schema_id!r}"
+            )
+        if self.schema_version != FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported FigureRowCustodyLocator schema_version: {self.schema_version!r}"
+            )
+        if not self.index_id.strip():
+            raise ValueError("FigureRowCustodyLocator index_id must be nonempty")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.index_sha256):
+            raise ValueError("FigureRowCustodyLocator index_sha256 must be lowercase sha256")
+        _validate_custody_ref(self.ref)
+        if len(self.binding_keys) != len(set(self.binding_keys)):
+            raise ValueError("FigureRowCustodyLocator names a binding key twice")
+        if list(self.binding_keys) != sorted(self.binding_keys):
+            raise ValueError(
+                "FigureRowCustodyLocator binding keys are sorted, so one declaration always "
+                "produces one record"
+            )
+        return self
+
+
+def _validate_custody_ref(ref: str) -> str:
+    """Refuse a custody ref that addresses anything but a repo-relative file."""
+    if not ref.strip():
+        raise ValueError("FigureRowCustodyLocator ref must be nonempty")
+    candidate = PurePosixPath(ref)
+    if candidate.is_absolute() or ref.startswith("\\"):
+        raise ValueError(
+            f"figure row custody ref {ref!r} is absolute; a custody document is addressed "
+            "repo-relatively so one repository resolves it the same way everywhere"
+        )
+    if ".." in candidate.parts:
+        raise ValueError(
+            f"figure row custody ref {ref!r} escapes the repository root; a custody document "
+            "is a tracked repository path"
+        )
+    return ref
+
+
+def per_row_binding_keys(request: "FigureRowExpansionRequest") -> tuple[str, ...]:
+    """Return the sorted per-row binding keys one expansion request requires."""
+    return tuple(
+        sorted(
+            {
+                reference.per_row
+                for reference in request.inputs.values()
+                if isinstance(reference, PerRowInputReference)
+            }
+        )
+    )
+
+
 def row_namespace(ordinal: int) -> str:
     """Return the ``row_{n}__`` namespace prefix for a 1-based row ordinal."""
     return ROW_NAMESPACE_TEMPLATE.format(ordinal=ordinal)
@@ -465,7 +562,7 @@ def _expanded_panel(
     return expanded
 
 
-def expand_figure_rows_structure(
+def _expand_figure_rows_structure(
     base_figure: FigureSpec | Mapping[str, Any],
     request: FigureRowExpansionRequest,
     resolved_rows: ResolvedRowSet,
@@ -477,6 +574,13 @@ def expand_figure_rows_structure(
     and title. Nothing here names produced data, so it is derivable before any
     row has ever run. :func:`expand_figure_rows` is this plus the post-run
     custody binding.
+
+    Internal. The supported surfaces are :func:`expand_figure_rows`, which
+    derives the whole bound figure, and the built-in envelope compiler, which is
+    what produces a row-expanded figure's compiled document. The structural half
+    alone is an implementation detail of both: it is neither versioned nor part
+    of the downstream stability contract, and it may change with the derivation
+    rules it implements.
     """
     base = (
         base_figure.model_dump(mode="json", exclude_none=True)
@@ -579,15 +683,76 @@ def expand_figure_rows(
             "resolved figure inputs disagree with the resolved row set",
             index_id=resolved_rows.index_id,
         )
-    payload = expand_figure_rows_structure(base_figure, request, resolved_rows)
+    payload = _expand_figure_rows_structure(base_figure, request, resolved_rows)
+    inputs, authorities = figure_input_binding_records(request, resolved_inputs.inputs)
+    payload["inputs"] = list(inputs)
+    payload["input_authorities"] = list(authorities)
+    return FigureSpec.model_validate(payload)
 
-    inputs: list[dict[str, Any]] = []
+
+def figure_input_binding_records(
+    request: FigureRowExpansionRequest,
+    inputs: Sequence[ResolvedFigureInput],
+    *,
+    authenticated: bool = False,
+) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
+    """Return the ``(inputs, input_authorities)`` records *inputs* bind to.
+
+    This is the one derivation of a figure's bound inputs from resolved roles.
+    :func:`expand_figure_rows` uses it over a whole expansion to build a figure's
+    own document; fulfillment uses it over the per-row subset to build the
+    runtime overlay that binds an already-expanded compiled figure, which is why
+    it takes a sequence of resolved inputs rather than the whole resolution.
+
+    Each authority quotes the same parent record as the input it authorizes, so
+    the two always address one manifest, and the artifact payload contract comes
+    from the role's declared contract rather than from anything the caller says.
+
+    ``authenticated`` selects which of the two records is being built, and the
+    two differ in exactly one way. A figure *document* carries no digests: they
+    are realization facts, they belong in the compile lock, and putting them in
+    the document would invalidate the figure's identity every time custody
+    moved. A *runtime overlay* is the opposite case — it lives outside figure
+    identity and is what execution authenticates against, so it restates the
+    custody profile the resolution already carries
+    (:attr:`ResolvedFigureInput.manifest_sha256` and
+    :attr:`ResolvedFigureInput.size_bytes`) as the parent's authenticated
+    manifest ref metadata. Nothing is invented: the profile comes from the
+    custody document that produced the bytes, and an input that carries no
+    profile is refused rather than bound unauthenticated.
+
+    Raises:
+        RowSelectionError: If any resolved input is still awaiting a run receipt,
+            so binding it would name data that has not been produced, or if
+            ``authenticated`` is set and an input carries no custody profile.
+    """
+    pending = [item.role for item in inputs if item.parent is None]
+    if pending:
+        raise RowSelectionError(
+            RowSelectionErrorCode.UNRESOLVED_ROW_KEY,
+            "figure input binding requires post-run custody for every bound role; still "
+            f"pending: {pending}",
+        )
+    bound: list[dict[str, Any]] = []
     authorities: list[dict[str, Any]] = []
-    for item in resolved_inputs.inputs:
-        assert item.parent is not None  # guaranteed by the fully-bound check
+    for item in inputs:
+        assert item.parent is not None  # guaranteed by the pending check
         parent = item.parent.model_dump(mode="json", exclude_none=True)
         parent.pop("metadata", None)
-        inputs.append(parent)
+        if authenticated:
+            if item.manifest_sha256 is None or item.size_bytes is None:
+                raise RowSelectionError(
+                    RowSelectionErrorCode.UNRESOLVED_ROW_KEY,
+                    f"figure input role {item.role!r} binds {item.parent.id!r} with no "
+                    "authenticated custody profile; a runtime overlay states the digest and "
+                    "byte size the custody document recorded, and an unauthenticated parent "
+                    "is refused rather than bound",
+                    row_id=item.row_id,
+                )
+            parent["metadata"] = authenticated_manifest_ref_metadata(
+                item.manifest_sha256, item.size_bytes
+            )
+        bound.append(parent)
         contract = request.contract(item.input_role)
         authorities.append(
             {
@@ -597,13 +762,13 @@ def expand_figure_rows(
                 "artifact_payloads": [contract.artifact_payload(item.role)],
             }
         )
-    payload["inputs"] = inputs
-    payload["input_authorities"] = authorities
-    return FigureSpec.model_validate(payload)
+    return tuple(bound), tuple(authorities)
 
 
 __all__ = [
     "AUTHORED_AUTHORITY_FIELDS",
+    "FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_ID",
+    "FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_VERSION",
     "FIGURE_ROW_EXPANSION_REQUEST_SCHEMA_ID",
     "FIGURE_ROW_EXPANSION_REQUEST_SCHEMA_VERSION",
     "RESOLVED_FIGURE_INPUTS_SCHEMA_ID",
@@ -611,13 +776,15 @@ __all__ = [
     "FigureInputReference",
     "FigureRoleBindingContract",
     "FigureRoleReferenceError",
+    "FigureRowCustodyLocator",
     "FigureRowExpansionRequest",
     "PerRowInputReference",
     "ResolvedFigureInput",
     "ResolvedFigureInputs",
     "SharedInputReference",
     "expand_figure_rows",
-    "expand_figure_rows_structure",
+    "figure_input_binding_records",
+    "per_row_binding_keys",
     "resolve_figure_input_roles",
     "row_namespace",
 ]

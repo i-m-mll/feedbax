@@ -52,7 +52,6 @@ names a boundary.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,6 +65,7 @@ from feedbax.analysis.fulfillment_plan import (
     PlanNode,
     expand_fulfillment_plan,
 )
+from feedbax.contracts.analysis_bundle_composition import ANALYSIS_BUNDLE_SPEC_SCHEMA_ID
 from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.experiment_compile_lock import (
     AuthenticatedReceiptReference,
@@ -75,7 +75,10 @@ from feedbax.contracts.experiment_compile_lock import (
     compile_lock_plan_edges,
     load_compile_lock,
 )
-from feedbax.contracts.figures import FIGURE_SPEC_SCHEMA_ID
+from feedbax.contracts.figures import (
+    FIGURE_COMPOSITION_SPEC_SCHEMA_ID,
+    FIGURE_SPEC_SCHEMA_ID,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_RUN_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
@@ -83,6 +86,7 @@ from feedbax.contracts.manifest import (
     REPORT_SPEC_SCHEMA_ID,
 )
 from feedbax.contracts.run_matrix import TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
+from feedbax.contracts.strict_json import strict_json_loads
 
 #: The filename suffix one compile writes its lock under. It is the emitter's
 #: own naming, restated here so a reader can find locks without a compiler.
@@ -128,7 +132,9 @@ COMPILED_PRODUCT_KINDS: Mapping[str, CompiledProductKind] = {
         CompiledProductKind(EVALUATION_RUN_SPEC_SCHEMA_ID, "evaluation"),
         CompiledProductKind(EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID, "evaluation"),
         CompiledProductKind(ANALYSIS_RUN_SPEC_SCHEMA_ID, "analysis"),
+        CompiledProductKind(ANALYSIS_BUNDLE_SPEC_SCHEMA_ID, "analysis"),
         CompiledProductKind(FIGURE_SPEC_SCHEMA_ID, "figure"),
+        CompiledProductKind(FIGURE_COMPOSITION_SPEC_SCHEMA_ID, "figure"),
         CompiledProductKind(REPORT_SPEC_SCHEMA_ID, "report"),
     )
 }
@@ -270,7 +276,7 @@ class CompiledEnvelope:
 
 def _read_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return strict_json_loads(path.read_text(encoding="utf-8"), ref=str(path))
     except (OSError, ValueError) as exc:
         raise CompiledOutputError(f"cannot read compiled output {path}: {exc}") from exc
 
@@ -427,6 +433,21 @@ def _edge_declaration(reference: Any, *, consumer: CompiledEnvelope) -> EdgeDecl
     )
 
 
+def lock_edge_declarations(compiled: CompiledEnvelope) -> tuple[EdgeDeclaration, ...]:
+    """Return the edges one compile lock, by itself, determines for its node.
+
+    This is the same derivation :func:`derive_fulfillment_plan` performs, exposed
+    so a *later* stage can re-derive it and compare. A plan is a durable document
+    and travels apart from the locks it was derived from; re-deriving from the
+    lock is the only way to prove that what a plan says a node's inputs are is
+    still what the lock says they are.
+    """
+    return tuple(
+        _edge_declaration(reference, consumer=compiled)
+        for reference in compiled.plan_edge_references()
+    )
+
+
 def _check_planned_product(
     reference: PlannedProductReference,
     *,
@@ -530,12 +551,44 @@ def derive_fulfillment_plan(
     )
 
 
-def require_external_record(external: Mapping[str, Any] | None, *, field: str) -> tuple[str, str]:
-    """Return the ``(kind, id)`` one external edge record addresses, or refuse.
+@dataclass(frozen=True)
+class ExternalReceiptRecord:
+    """What one external edge states about the receipt it binds.
+
+    The two addressing fields say *where* the receipt is; the byte profile, when
+    the lock quoted one, says *which bytes* are allowed to be there. Both travel
+    together because they are one statement: a lock that authenticated a receipt
+    named bytes, and resolving the canonical location without checking them would
+    turn an authenticated quote back into a bare locator.
+    """
+
+    manifest_kind: str
+    manifest_id: str
+    manifest_sha256: str | None = None
+    size_bytes: int | None = None
+
+    @property
+    def is_authenticated(self) -> bool:
+        """Whether the lock quoted the byte profile the resolved bytes must have."""
+        return self.manifest_sha256 is not None
+
+    @property
+    def locator(self) -> tuple[str, str]:
+        """The canonical ``(kind, id)`` location this record addresses."""
+        return self.manifest_kind, self.manifest_id
+
+
+def require_external_record(
+    external: Mapping[str, Any] | None, *, field: str
+) -> ExternalReceiptRecord:
+    """Return the receipt one external edge record addresses, or refuse.
 
     The record's shape is Feedbax's, derived from a Feedbax reference kind, so
-    reading it is Feedbax's too. A record missing either field is a derivation
-    bug, not something a caller supplies by hand.
+    reading it is Feedbax's too. A record missing either addressing field is a
+    derivation bug, not something a caller supplies by hand, and so is a
+    half-stated byte profile: the lock's own reference model states the digest and
+    the size together or neither, so a record with one of them describes a
+    reference kind that does not exist.
     """
     if external is None:
         raise CompiledOutputError(
@@ -548,7 +601,25 @@ def require_external_record(external: Mapping[str, Any] | None, *, field: str) -
             f"{field} carries the external record {dict(external)!r}, which names no manifest "
             "kind and id; every receipt reference kind states both"
         )
-    return kind, manifest_id
+    digest = external.get("manifest_sha256")
+    size = external.get("size_bytes")
+    if (digest is None) != (size is None):
+        raise CompiledOutputError(
+            f"{field} carries the external record {dict(external)!r}, which states half a byte "
+            "profile; an authenticated receipt reference states manifest_sha256 and size_bytes "
+            "together, and a locator states neither"
+        )
+    if digest is not None and (not isinstance(digest, str) or not isinstance(size, int)):
+        raise CompiledOutputError(
+            f"{field} carries the external record {dict(external)!r}, whose byte profile is not "
+            "a sha256 string and an integer size"
+        )
+    return ExternalReceiptRecord(
+        manifest_kind=kind,
+        manifest_id=manifest_id,
+        manifest_sha256=digest,
+        size_bytes=size,
+    )
 
 
 __all__ = [
@@ -561,10 +632,12 @@ __all__ = [
     "CompiledOutputIndex",
     "CompiledProductKind",
     "DuplicateReferenceRoleError",
+    "ExternalReceiptRecord",
     "FulfillmentDerivationError",
     "UnresolvedPlannedProductError",
     "UnsupportedCompiledProductError",
     "derive_fulfillment_plan",
+    "lock_edge_declarations",
     "read_compiled_envelope",
     "read_compiled_outputs",
     "require_external_record",
