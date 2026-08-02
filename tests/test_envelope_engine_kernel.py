@@ -1390,3 +1390,55 @@ def test_the_compiled_report_is_the_document_fulfillment_plans_against(
     kind = COMPILED_PRODUCT_KINDS[outcome.document["schema_id"]]
     assert kind.layer == "report"
     assert kind.executable
+
+
+def test_a_row_slice_is_expressed_as_a_tag_over_the_same_row_index(repo: Path) -> None:
+    """A slice is a selection over the index, not a list inside the envelope."""
+    from tests.fake_project_experiment import ROW_INDEX_BASE
+
+    index = json.loads((repo / ROW_INDEX_BASE).read_text())
+    index["rows"][1]["tags"] = ["survey", "held-out"]
+    write_json(repo / ROW_INDEX_BASE, index)
+    envelope = _read(repo, "widened-plot")
+    envelope["figure"]["rows"] = {
+        "mode": "tag",
+        "tag": "held-out",
+        "index": ROW_INDEX_BASE,
+    }
+    _write(repo, "widened-plot", envelope)
+
+    outcome = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+
+    resolved = outcome.compile_lock["identity_contributions"]["resolved_row_set"]
+    assert resolved["row_ids"] == ["far-span"]
+    assert [panel["name"] for panel in outcome.document["panels"]] == ["row_1__span"]
+
+
+def test_a_figure_runtime_input_that_has_not_run_is_a_locator_in_the_lock(
+    repo: Path,
+) -> None:
+    envelope = _read(repo, "widened-plot")
+    envelope["figure"]["inputs"][0]["ref"] = {
+        "kind": "receipt",
+        "manifest_kind": "quillon.survey_run",
+        "manifest_id": "widened-plot-observed",
+    }
+    _write(repo, "widened-plot", envelope)
+
+    outcome = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+
+    reference = next(
+        item
+        for item in outcome.compile_lock["references"]
+        if item["kind"] == "receipt_locator"
+    )
+    assert "manifest_sha256" not in reference
+    assert reference["role_path"] == "inputs.observed"
+    assert reference["consumer"] == {
+        "consumer": "figure_runtime_input",
+        "input_role": "observed",
+    }
