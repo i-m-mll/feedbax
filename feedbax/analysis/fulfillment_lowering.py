@@ -42,6 +42,21 @@ materialized row inherits. Execution resolves them through the staged execution
 context the environment declares, which is the only thing that knows where the
 bound bytes actually live — so a matrix carrying staged parents refuses to run
 in an environment that declares no such context.
+
+A matrix binds as many staged parents as its lock has typed references, one per
+required role, and the binding *name* is always the role the consumer binding
+addresses. A compiled document may restate a staged parent the lock binds — an
+authored matrix that already names its prerequisite compiles into one — but it
+never *authenticates* one: a restated entry must name exactly the parent the
+lock authenticates, and an entry the lock does not bind at all is refused.
+Non-authenticating fields of a restated entry, such as the artifact provider its
+bytes are staged from, are the document's to state and are carried through.
+
+A content-pinned base receives no injection, because injecting into pinned bytes
+would break the pin they are pinned by. Such a matrix binds its authenticated
+parents at the matrix level only, and the pinned rows must reference them
+themselves; :func:`feedbax.analysis.evaluation.materialize_evaluation_run_matrix`
+refuses per row when they do not.
 """
 
 from __future__ import annotations
@@ -49,6 +64,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
+
+from pydantic import ValidationError
 
 from feedbax.analysis.exact_parents import (
     STAGED_EXACT_PARENTS_SCHEMA_ID,
@@ -244,25 +261,67 @@ def _matrix_with_staged_parents(
 
     The binding *name* is the role the consumer binding addresses — the subject
     id for an evaluation subject — so nothing here invents an addressing string.
+    As many parents are bound as the lock has required references.
+
+    A content-pinned base receives no injection: its bytes are pinned, and the
+    rows it produces must reference the bound parents themselves. Materializing
+    the matrix refuses per row when they do not, so the parent is never silently
+    unconsumed.
     """
     ref = str(node.compiled.lock_path)
-    declared = document.get("staged_parents")
-    if declared:
-        raise NodeLoweringError(
-            f"{ref} binds {len(list(declared))} staged parent(s) in its compiled document "
-            "while its plan also declares required inputs. A compiled document is a plan "
-            "and cannot authenticate a parent; staged parents are bound from the compile "
-            "lock's typed references, which is the single place they are stated."
-        )
+    prerequisites = _staged_prerequisites(node, document, binding=binding)
+    bound = deepcopy(dict(document))
+    bound["staged_parents"] = prerequisites
     base = document.get("base")
-    if not isinstance(base, Mapping) or "evaluation_type" not in base:
+    if isinstance(base, Mapping) and "evaluation_type" in base:
+        bound["base"] = _base_with_staged_prerequisites(base, prerequisites, ref=ref)
+        return bound
+    if isinstance(base, Mapping) and "ref" in base and "sha256" in base:
+        return bound
+    raise NodeLoweringError(
+        f"{ref} declares required input(s) on an evaluation run matrix whose base is "
+        "neither an inline evaluation run spec nor a content-pinned document. A staged "
+        "parent reaches a row through one of those two bases and through nothing else."
+    )
+
+
+def _declared_staged_parents(
+    document: Mapping[str, Any], *, ref: str
+) -> dict[str, StagedEvaluationPrerequisite]:
+    """Return the staged parents one compiled matrix document already states."""
+    declared = document.get("staged_parents")
+    if not declared:
+        return {}
+    if not isinstance(declared, Mapping):
         raise NodeLoweringError(
-            f"{ref} declares required input(s) on an evaluation run matrix whose base is "
-            "content-pinned rather than stated inline. A staged prerequisite is injected "
-            "into the base parameters every row inherits, and pinned bytes cannot receive "
-            "one without breaking their pin. State the matrix base inline, or bind the "
-            "subject in the pinned base itself."
+            f"{ref} states staged_parents that are not a mapping of binding name to "
+            "prerequisite; a staged parent is addressed by exactly one binding name"
         )
+    try:
+        return {
+            str(name): StagedEvaluationPrerequisite.model_validate(value)
+            for name, value in declared.items()
+        }
+    except ValidationError as exc:
+        raise NodeLoweringError(
+            f"{ref} states a staged parent this build cannot read: {exc}"
+        ) from exc
+
+
+def _staged_prerequisites(
+    node: "ClosureNode",
+    document: Mapping[str, Any],
+    *,
+    binding: "NodeBinding",
+) -> dict[str, dict[str, Any]]:
+    """Return every staged prerequisite one matrix's compile lock authenticates.
+
+    The lock is the sole authority for *which* parent each name binds. A name the
+    document also states must name that same parent; a name only the document
+    states has no authenticated source and refuses.
+    """
+    ref = str(node.compiled.lock_path)
+    stated = _declared_staged_parents(document, ref=ref)
     parents, roles = bound_parents(node, binding=binding)
     prerequisites: dict[str, dict[str, Any]] = {}
     for parent, role in zip(parents, roles, strict=True):
@@ -278,26 +337,63 @@ def _matrix_with_staged_parents(
                 f"{ref} binds two required inputs to the staged parent name {name!r}; a "
                 "staged binding names exactly one authenticated parent"
             )
-        prerequisites[name] = StagedEvaluationPrerequisite(parent=parent).model_dump(
-            mode="json", exclude_none=True
+        declared = stated.pop(name, None)
+        if declared is not None and declared.parent != parent:
+            raise NodeLoweringError(
+                f"{ref} states the staged parent {name!r} as {declared.parent.id!r} in its "
+                f"compiled document while its compile lock authenticates {parent.id!r}. A "
+                "compiled document is a plan and cannot authenticate a parent, so a stated "
+                "staged parent may only restate the one the lock binds."
+            )
+        prerequisites[name] = StagedEvaluationPrerequisite(
+            parent=parent,
+            artifact_provider=None if declared is None else declared.artifact_provider,
+        ).model_dump(mode="json", exclude_none=True)
+    if stated:
+        raise NodeLoweringError(
+            f"{ref} states the staged parent(s) {sorted(stated)} in its compiled document, "
+            "which its compile lock does not bind. A compiled document is a plan and cannot "
+            "authenticate a parent; staged parents are bound from the compile lock's typed "
+            "references, which is the single place they are stated."
         )
-    bound = deepcopy(dict(document))
-    bound["staged_parents"] = prerequisites
+    return prerequisites
+
+
+def _base_with_staged_prerequisites(
+    base: Mapping[str, Any],
+    prerequisites: Mapping[str, dict[str, Any]],
+    *,
+    ref: str,
+) -> dict[str, Any]:
+    """Inject the bound prerequisites into the base parameters every row inherits."""
     bound_base = deepcopy(dict(base))
     params = dict(bound_base.get("params") or {})
     staged = dict(params.get("staged_prerequisites") or {})
-    collisions = sorted(set(staged) & set(prerequisites))
-    if collisions:
-        raise NodeLoweringError(
-            f"{ref} already states staged prerequisites {collisions} in its compiled base "
-            "parameters; a compile plan cannot authenticate one, and binding it twice "
-            "would let the two disagree"
-        )
-    staged.update(prerequisites)
+    for name, prerequisite in prerequisites.items():
+        stated = staged.get(name)
+        if stated is not None and not _same_prerequisite(stated, prerequisite, ref=ref):
+            raise NodeLoweringError(
+                f"{ref} already states the staged prerequisite {name!r} in its compiled base "
+                "parameters, naming a different parent than the one its compile lock "
+                "authenticates; a compiled document is a plan and cannot authenticate a "
+                "parent, and binding it twice would let the two disagree"
+            )
+        staged[name] = prerequisite
     params["staged_prerequisites"] = staged
     bound_base["params"] = params
-    bound["base"] = bound_base
-    return bound
+    return bound_base
+
+
+def _same_prerequisite(stated: Any, bound: Mapping[str, Any], *, ref: str) -> bool:
+    """Whether one stated prerequisite is the bound one, read as the contract it is."""
+    try:
+        return StagedEvaluationPrerequisite.model_validate(
+            stated
+        ) == StagedEvaluationPrerequisite.model_validate(bound)
+    except ValidationError as exc:
+        raise NodeLoweringError(
+            f"{ref} states a base staged prerequisite this build cannot read: {exc}"
+        ) from exc
 
 
 def _lower_analysis(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
