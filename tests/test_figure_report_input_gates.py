@@ -1,9 +1,10 @@
-"""Input gates for figure piece bytes and id-addressed figure context.
+"""Input gates for figure piece bytes, id-addressed context, and report parents.
 
 Each test states one accidental-corruption scenario the gate exists to refuse:
 a path-addressed piece whose stored bytes drifted from its declared profile,
-two different manifests sharing one identifier inside a single figure, and two
-panels sharing one name.
+two different manifests sharing one identifier inside a single figure, two
+panels sharing one name, and a report parent addressed by identifier alone
+that resolves to a manifest of another kind.
 """
 
 from __future__ import annotations
@@ -23,8 +24,16 @@ from feedbax.analysis.figures import (
     execute_figure_spec,
     figure_manifest_plotly_json,
 )
+from feedbax.analysis.reports import resolve_report_inputs
 from feedbax.contracts.figures import FigurePiece, FigureSpec
-from feedbax.contracts.manifest import ArtifactRef, ParentRef
+from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
+    ArtifactRef,
+    ParentRef,
+    ReportSpec,
+    spec_payload,
+    write_manifest,
+)
 from feedbax.persistence.artifact_custody import ArtifactBlobIntegrityError
 from feedbax.plot.constructors import (
     FigureRegistry,
@@ -215,3 +224,56 @@ def test_execute_figure_spec_refuses_duplicate_panel_names(
     cause = excinfo.value.__cause__
     assert isinstance(cause, ValueError)
     assert "duplicate panel names: ['left']" in str(cause)
+
+
+def _write_analysis_manifest(root: Path, manifest_id: str) -> Path:
+    manifest = AnalysisRunManifest(
+        id=manifest_id,
+        status="completed",
+        analysis_spec=spec_payload(
+            "AnalysisRunSpec",
+            {"analysis_type": "testpkg.source_analysis"},
+        ),
+    )
+    return write_manifest(manifest, root=root)
+
+
+def test_id_addressed_report_input_refuses_a_manifest_of_another_kind(tmp_path: Path) -> None:
+    manifest_id = "feedbax-analysis-run:report-kind-gate"
+    path = _write_analysis_manifest(tmp_path, manifest_id)
+    spec = ReportSpec(
+        report_type="testpkg.dummy_report",
+        inputs=[
+            ParentRef(
+                kind="EvaluationRunManifest",
+                id=manifest_id,
+                role="evaluation_run",
+                uri=str(path.relative_to(tmp_path)),
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="declares kind 'EvaluationRunManifest'"):
+        resolve_report_inputs(spec, root=tmp_path)
+
+
+def test_id_addressed_report_input_resolves_a_matching_kind(tmp_path: Path) -> None:
+    manifest_id = "feedbax-analysis-run:report-kind-match"
+    path = _write_analysis_manifest(tmp_path, manifest_id)
+    spec = ReportSpec(
+        report_type="testpkg.dummy_report",
+        inputs=[
+            ParentRef(
+                kind="AnalysisRunManifest",
+                id=manifest_id,
+                role="analysis_run",
+                uri=str(path.relative_to(tmp_path)),
+            )
+        ],
+    )
+
+    resolved = resolve_report_inputs(spec, root=tmp_path)
+
+    assert len(resolved) == 1
+    assert resolved[0].manifest is not None
+    assert resolved[0].manifest.kind == "AnalysisRunManifest"
