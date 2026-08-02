@@ -1,11 +1,12 @@
-"""The built-in compiler registration for the one experiment-envelope dialect.
+"""The one built-in compiler for the one experiment-envelope dialect.
 
-``feedbax.experiment_envelope.v1`` is claimed by Feedbax itself, not by any
+``feedbax.experiment_envelope.v1`` is compiled by Feedbax itself, not by any
 project. That is the whole point of the closed dialect: a project cannot claim
 the schema, cannot supply a second compiler for it, and cannot change what a
-compiled document means. The compiler registry still mediates dispatch — so the
-exit-code contract and the collision refusal both keep working — but there is
-exactly one registration in it and Feedbax owns it.
+compiled document means. Dispatch is direct — there is no registry, no
+registration record, and no injectable callable between an authored envelope
+and this function. An envelope declaring any other schema is refused by
+:func:`feedbax.contracts.experiment_envelope.require_builtin_envelope_schema`.
 
 A project reaches this compiler by registering its data declaration. The caller
 resolves which declaration owns an envelope by matching the envelope's
@@ -21,8 +22,6 @@ from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeCompileRequest,
     ExperimentEnvelopeCompileResult,
     ExperimentEnvelopeCompilerError,
-    ExperimentEnvelopeCompilerRegistration,
-    ExperimentEnvelopeCompilerRegistry,
 )
 from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
@@ -87,27 +86,11 @@ def compile_experiment_envelope(
     )
 
 
-BUILTIN_EXPERIMENT_ENVELOPE_COMPILER = ExperimentEnvelopeCompilerRegistration(
-    envelope_schema=EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
-    owner=EXPERIMENT_ENVELOPE_COMPILER_OWNER,
-    compile=compile_experiment_envelope,
-)
-
-
-def register_builtin_experiment_envelope_compiler(
-    registry: ExperimentEnvelopeCompilerRegistry,
-) -> None:
-    """Claim the one dialect for Feedbax's own compiler before plugins register."""
-    registry.register(BUILTIN_EXPERIMENT_ENVELOPE_COMPILER)
-
-
 __all__ = [
-    "BUILTIN_EXPERIMENT_ENVELOPE_COMPILER",
     "DECLARED_LAYERS",
     "EXPERIMENT_ENVELOPE_COMPILER_OWNER",
     "EXPERIMENT_ENVELOPE_IMPLEMENTATION",
     "compile_experiment_envelope",
     "kernel_for",
     "load_project_budgets",
-    "register_builtin_experiment_envelope_compiler",
 ]

@@ -3140,9 +3140,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID,
             EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_VERSION,
             owner_module="feedbax.contracts.experiment_envelope",
-            emitted_by=("downstream experiment envelope compilers",),
+            emitted_by=("feedbax.envelope.entrypoint.compile_experiment_envelope",),
             consumed_by=("python -m feedbax preflight-experiment-envelope",),
-            description="Outcome one downstream envelope compiler returns to the dispatcher.",
+            description="Outcome the built-in envelope compiler returns to the dispatcher.",
             required_tests=("tests/test_experiment_envelope_dispatch.py",),
         ),
         _family(

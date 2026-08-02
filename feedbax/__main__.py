@@ -318,11 +318,13 @@ def _fulfill_experiment_envelope(args: argparse.Namespace, registries: Any) -> i
     return 0
 
 
-def _preflight_experiment_envelope(args: argparse.Namespace, registries: Any) -> int:
-    """Route one authored envelope to its registered downstream compiler.
+def _preflight_experiment_envelope(args: argparse.Namespace) -> int:
+    """Compile one authored envelope with the single built-in dialect compiler.
 
     Exit codes are the documented authoring contract: 0 accepted, 2 rejected
-    with an actionable diagnostic on stderr, 1 infrastructure failure.
+    with an actionable diagnostic on stderr, 1 infrastructure failure. There is
+    no compiler registry to consult: an envelope declaring any schema other than
+    the built-in dialect is rejected by name.
     """
     envelope_path = Path(args.envelope)
     repo_root = Path(args.repo_root).resolve()
@@ -366,7 +368,6 @@ def _preflight_experiment_envelope(args: argparse.Namespace, registries: Any) ->
     try:
         result = dispatch_experiment_envelope(
             envelope,
-            registries.experiment_envelope_compilers,
             envelope_path=envelope_path,
             repo_root=repo_root,
             out_dir=out_dir,
@@ -489,8 +490,8 @@ def build_parser() -> argparse.ArgumentParser:
     envelope_parser = subparsers.add_parser(
         "preflight-experiment-envelope",
         help=(
-            "Compile one authored experiment envelope through the registered downstream "
-            "compiler claiming its schema."
+            "Compile one authored experiment envelope with the single built-in dialect "
+            "compiler."
         ),
     )
     envelope_parser.add_argument("envelope", help="Authored experiment envelope JSON path")
@@ -870,7 +871,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             harness_argv.append("--allow-large-per-row")
         return harness_main(harness_argv, bootstrap_state=bootstrap_state)
     if args.command == "preflight-experiment-envelope":
-        return _preflight_experiment_envelope(args, registries)
+        return _preflight_experiment_envelope(args)
     if args.command == "fulfill-experiment-envelope":
         return _fulfill_experiment_envelope(args, registries)
     if args.command == "execute-training-run-spec":

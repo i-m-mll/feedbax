@@ -142,11 +142,10 @@ GUARANTEED_IMPORTS = {
         "EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_VERSION",
         "ExperimentEnvelopeCompileRequest",
         "ExperimentEnvelopeCompileResult",
-        "ExperimentEnvelopeCompilerRegistration",
-        "ExperimentEnvelopeCompilerRegistry",
         "ExperimentEnvelopeRejection",
         "ExperimentEnvelopeRejectionCategory",
         "dispatch_experiment_envelope",
+        "require_builtin_envelope_schema",
     ),
     "feedbax.lowering": (
         "LowererRegistration",

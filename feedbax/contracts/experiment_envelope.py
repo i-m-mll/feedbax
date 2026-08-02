@@ -1,24 +1,24 @@
-"""Generic authored-experiment envelope dispatch.
+"""Authored-experiment envelope dispatch for the one Feedbax dialect.
 
 Feedbax owns exactly one authoring entrypoint,
-``python -m feedbax preflight-experiment-envelope <envelope>``, and no
-knowledge of any downstream envelope dialect. A downstream project registers a
-compiler that claims one envelope schema string through the ordinary plugin
-bootstrap, with its registry injected like every other family; there is no
-import-time discovery and no module-path convention.
+``python -m feedbax preflight-experiment-envelope <envelope>``, and exactly one
+authored envelope dialect, :data:`EXPERIMENT_ENVELOPE_SCHEMA_VERSION`. There is
+no compiler seam: no project registers a compiler, no plugin claims a schema
+string, and no callable can be injected between an authored envelope and the
+document it compiles to. Dispatch is direct.
 
 The dispatcher's whole job is: read the envelope, read its declared schema,
-find the one compiler claiming that schema, hand it the request, and turn the
-outcome into the documented exit codes.
+refuse it unless that schema is the one built-in dialect, compile it, and turn
+the outcome into the documented exit codes.
 
 * exit 0 — accepted; the compiler wrote its declared outputs
 * exit 2 — the envelope was rejected; stderr names the offending field, the
   rejection category, and the correct home for the content
 * exit 1 — infrastructure failure, distinguishable from a rejection
 
-Rejection categories are a closed set. A compiler that needs a category not
-listed here is describing a different kind of failure and must say so through a
-new schema version rather than inventing a category string.
+Rejection categories are a closed set. A failure that does not name a category
+from this set is describing a different kind of failure and must say so through
+a new schema version rather than inventing a category string.
 """
 
 from __future__ import annotations
@@ -27,20 +27,19 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any
 
 from pydantic import Field, model_validator
 
 from feedbax.contracts.manifest import StrictModel
 from feedbax.contracts.project_experiment import ProjectExperimentDeclaration
-from feedbax.registry_errors import RegistryCollisionError
 
 EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID = "feedbax.spec.experiment_envelope_compile_result"
 EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_VERSION = (
     "feedbax.spec.experiment_envelope_compile_result.v1"
 )
 
-#: The envelope field naming the dialect a downstream compiler claims.
+#: The envelope field naming the dialect the envelope is authored in.
 ENVELOPE_SCHEMA_FIELD = "schema"
 
 
@@ -48,8 +47,8 @@ class ExperimentEnvelopeRejectionCategory(StrEnum):
     """Closed set of authored-envelope rejection categories.
 
     This is the one rejection vocabulary the authoring surface speaks. The
-    engine kernel and every downstream compiler name a category from this set;
-    a compiler that needs a category not listed here is describing a different
+    engine kernel and the dialect compiler name a category from this set; a
+    failure that needs a category not listed here is describing a different
     kind of failure and must say so through a new schema version rather than
     inventing a category string of its own.
     """
@@ -126,13 +125,6 @@ class ExperimentEnvelopeCompilerError(ValueError):
     """Raised when envelope dispatch itself cannot proceed."""
 
 
-class ExperimentEnvelopeCompilerCollisionError(
-    ExperimentEnvelopeCompilerError,
-    RegistryCollisionError,
-):
-    """Raised when two compilers claim the same envelope schema."""
-
-
 @dataclass(frozen=True)
 class ExperimentEnvelopeCompileRequest:
     """Everything the compiler is given, and nothing more.
@@ -150,7 +142,7 @@ class ExperimentEnvelopeCompileRequest:
 
 
 class ExperimentEnvelopeCompileResult(StrictModel):
-    """The versioned outcome a downstream compiler returns to the dispatcher."""
+    """The versioned outcome the dialect compiler returns to the dispatcher."""
 
     schema_id: str = EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID
     schema_version: str = EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_VERSION
@@ -183,81 +175,6 @@ class ExperimentEnvelopeCompileResult(StrictModel):
         return (self.compile_lock_path, self.document_path, *self.extra_outputs)
 
 
-@runtime_checkable
-class ExperimentEnvelopeCompiler(Protocol):
-    """One downstream compiler for one envelope schema."""
-
-    def __call__(
-        self, request: ExperimentEnvelopeCompileRequest
-    ) -> ExperimentEnvelopeCompileResult:
-        """Compile one authored envelope or raise ExperimentEnvelopeRejection."""
-        ...
-
-
-@dataclass(frozen=True)
-class ExperimentEnvelopeCompilerRegistration:
-    """One compiler bound to the exact envelope schema string it claims."""
-
-    envelope_schema: str
-    owner: str
-    compile: Callable[[ExperimentEnvelopeCompileRequest], ExperimentEnvelopeCompileResult]
-
-    def __post_init__(self) -> None:
-        if not self.envelope_schema.strip():
-            raise ExperimentEnvelopeCompilerError(
-                "experiment envelope compiler must claim a nonempty envelope schema"
-            )
-        if not self.owner.strip():
-            raise ExperimentEnvelopeCompilerError(
-                "experiment envelope compiler must declare an owner"
-            )
-        if not callable(self.compile):
-            raise ExperimentEnvelopeCompilerError(
-                "experiment envelope compiler must supply a callable"
-            )
-
-
-class ExperimentEnvelopeCompilerRegistry:
-    """Injected registry resolving one compiler per envelope schema."""
-
-    def __init__(self) -> None:
-        self._sealed = False
-        self._registrations: dict[str, ExperimentEnvelopeCompilerRegistration] = {}
-
-    def register(self, registration: ExperimentEnvelopeCompilerRegistration) -> None:
-        """Register one compiler; a duplicate schema claim fails closed."""
-        if self._sealed:
-            raise RuntimeError("experiment envelope compiler registry is sealed")
-        if not isinstance(registration, ExperimentEnvelopeCompilerRegistration):
-            raise TypeError("registration must be an ExperimentEnvelopeCompilerRegistration")
-        existing = self._registrations.get(registration.envelope_schema)
-        if existing is not None:
-            raise ExperimentEnvelopeCompilerCollisionError(
-                f"envelope schema {registration.envelope_schema!r} is already claimed by "
-                f"{existing.owner!r}"
-            )
-        self._registrations[registration.envelope_schema] = registration
-
-    def get(self, envelope_schema: str) -> ExperimentEnvelopeCompilerRegistration:
-        """Return the single compiler claiming *envelope_schema* or fail closed."""
-        registration = self._registrations.get(envelope_schema)
-        if registration is None:
-            known = ", ".join(sorted(self._registrations)) or "none"
-            raise ExperimentEnvelopeCompilerError(
-                f"no registered compiler claims envelope schema {envelope_schema!r}; "
-                f"registered schemas: {known}"
-            )
-        return registration
-
-    def available_keys(self) -> tuple[str, ...]:
-        """Return every claimed envelope schema, in stable order."""
-        return tuple(sorted(self._registrations))
-
-    def seal(self) -> None:
-        """Prevent further registration after bootstrap completes."""
-        self._sealed = True
-
-
 def envelope_schema_of(envelope: Mapping[str, Any]) -> str:
     """Return the declared envelope schema or reject the document."""
     if not isinstance(envelope, Mapping):
@@ -266,27 +183,56 @@ def envelope_schema_of(envelope: Mapping[str, Any]) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ExperimentEnvelopeRejection(
             ExperimentEnvelopeRejectionCategory.UNKNOWN_FIELD,
-            f"authored envelope declares no {ENVELOPE_SCHEMA_FIELD!r} string, so no compiler "
-            "can claim it",
+            f"authored envelope declares no {ENVELOPE_SCHEMA_FIELD!r} string, so the dialect it "
+            "is written in is unstated",
             field=ENVELOPE_SCHEMA_FIELD,
             correct_home="the envelope's first line, naming its authored schema",
         )
     return value
 
 
+def require_builtin_envelope_schema(schema: str) -> None:
+    """Refuse any authored schema other than the one built-in dialect.
+
+    There is exactly one dialect, so an envelope declaring anything else is an
+    authoring error the author can fix by naming the supported schema. No
+    fallback, no inference, and no second compiler exists to try instead.
+    """
+    # Local import: the dialect module imports this one for its rejection
+    # vocabulary, so the supported-schema constant can only be read here.
+    from feedbax.contracts.experiment_envelope_dialect import (
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+    )
+
+    if schema != EXPERIMENT_ENVELOPE_SCHEMA_VERSION:
+        raise ExperimentEnvelopeRejection(
+            ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+            f"authored envelope declares schema {schema!r}, but Feedbax compiles exactly one "
+            f"envelope dialect: {EXPERIMENT_ENVELOPE_SCHEMA_VERSION!r}",
+            field=ENVELOPE_SCHEMA_FIELD,
+            correct_home=(
+                f"the envelope's {ENVELOPE_SCHEMA_FIELD!r} field, set to "
+                f"{EXPERIMENT_ENVELOPE_SCHEMA_VERSION!r}"
+            ),
+        )
+
+
 def dispatch_experiment_envelope(
     envelope: Mapping[str, Any],
-    registry: ExperimentEnvelopeCompilerRegistry,
     *,
     envelope_path: Path,
     repo_root: Path,
     out_dir: Path,
     project_declaration: ProjectExperimentDeclaration | None = None,
 ) -> ExperimentEnvelopeCompileResult:
-    """Route one authored envelope to the compiler claiming its schema."""
+    """Compile one authored envelope with the single built-in dialect compiler."""
     schema = envelope_schema_of(envelope)
-    registration = registry.get(schema)
-    result = registration.compile(
+    require_builtin_envelope_schema(schema)
+    # Local import: the built-in compiler is an implementation module that
+    # imports this contract, so resolving it at module scope would be a cycle.
+    from feedbax.envelope.entrypoint import compile_experiment_envelope
+
+    result = compile_experiment_envelope(
         ExperimentEnvelopeCompileRequest(
             envelope=envelope,
             envelope_path=envelope_path,
@@ -295,15 +241,10 @@ def dispatch_experiment_envelope(
             project_declaration=project_declaration,
         )
     )
-    if not isinstance(result, ExperimentEnvelopeCompileResult):
-        raise ExperimentEnvelopeCompilerError(
-            f"compiler {registration.owner!r} returned {type(result).__name__}, not an "
-            "ExperimentEnvelopeCompileResult"
-        )
     if result.envelope_schema != schema:
         raise ExperimentEnvelopeCompilerError(
-            f"compiler {registration.owner!r} reported envelope schema "
-            f"{result.envelope_schema!r} for a {schema!r} document"
+            f"the built-in compiler reported envelope schema {result.envelope_schema!r} for a "
+            f"{schema!r} document"
         )
     return result
 
@@ -323,15 +264,12 @@ __all__ = [
     "EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_VERSION",
     "ExperimentEnvelopeCompileRequest",
     "ExperimentEnvelopeCompileResult",
-    "ExperimentEnvelopeCompiler",
-    "ExperimentEnvelopeCompilerCollisionError",
     "ExperimentEnvelopeCompilerError",
-    "ExperimentEnvelopeCompilerRegistration",
-    "ExperimentEnvelopeCompilerRegistry",
     "ExperimentEnvelopeRejection",
     "ExperimentEnvelopeRejectionCategory",
     "PendingProductCustodyError",
     "dispatch_experiment_envelope",
     "envelope_schema_of",
     "missing_outputs",
+    "require_builtin_envelope_schema",
 ]

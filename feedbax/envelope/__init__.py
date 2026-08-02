@@ -101,7 +101,6 @@ from feedbax.envelope.entrypoint import (
     compile_experiment_envelope,
     kernel_for,
     load_project_budgets,
-    register_builtin_experiment_envelope_compiler,
 )
 from feedbax.envelope.resolution import (
     InheritedValue,
@@ -169,7 +168,6 @@ __all__ = [
     "load_project_budgets",
     "parse_experiment_envelope",
     "read_authored_document",
-    "register_builtin_experiment_envelope_compiler",
     "reject_echo",
     "scalar_equal",
     "verify_assertions",
