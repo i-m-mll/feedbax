@@ -466,6 +466,188 @@ def test_lock_loader_rejects_a_foreign_family() -> None:
         load_compile_lock(lock, field="compiled/probe.compile-lock.json")
 
 
+# -- the whole v1 document is validated on read ---------------------------------
+
+
+def _compiled_lock(repo: Path, alias: str = "widened") -> dict[str, Any]:
+    """Return one real compiled lock as tracked JSON, ready to be damaged."""
+    outcome = kernel().compile_envelope_file(envelope_path(repo, alias), repo_root=repo)
+    return json.loads(json.dumps(outcome.compile_lock))
+
+
+def _drop_key(lock: dict[str, Any]) -> None:
+    del lock["base"]
+
+
+def _foreign_key(lock: dict[str, Any]) -> None:
+    lock["compiled_at"] = "2026-08-01"
+
+
+def _blank_name(lock: dict[str, Any]) -> None:
+    lock["name"] = "  "
+
+
+def _blank_issue(lock: dict[str, Any]) -> None:
+    lock["issue"] = ""
+
+
+def _envelope_hash(lock: dict[str, Any]) -> None:
+    lock["envelope"]["envelope_hash"] = "not-a-digest"
+
+
+def _envelope_ref(lock: dict[str, Any]) -> None:
+    del lock["envelope"]["ref"]
+
+
+def _base_domain(lock: dict[str, Any]) -> None:
+    lock["base"]["pin_algorithm"] = "md5"
+
+
+def _base_digest(lock: dict[str, Any]) -> None:
+    lock["base"]["content_hash"] = "0" * 63
+
+
+def _lineage_shape(lock: dict[str, Any]) -> None:
+    lock["lineage"] = {"ref": "bases/baseline.training_run_matrix.json"}
+
+
+def _lineage_pin(lock: dict[str, Any]) -> None:
+    del lock["lineage"][0]["content_hash"]
+
+
+def _delta_key(lock: dict[str, Any]) -> None:
+    key, value = next(iter(lock["resolved_deltas"].items()))
+    lock["resolved_deltas"] = {f"{key}.renamed": value}
+
+
+def _delta_shape(lock: dict[str, Any]) -> None:
+    key = next(iter(lock["resolved_deltas"]))
+    del lock["resolved_deltas"][key]["patches"]
+
+
+def _delta_patch(lock: dict[str, Any]) -> None:
+    key = next(iter(lock["resolved_deltas"]))
+    del lock["resolved_deltas"][key]["patches"][0]["op"]
+
+
+def _assertion_shape(lock: dict[str, Any]) -> None:
+    del lock["assertions"][0]["owner_ref"]
+
+
+def _document_digest(lock: dict[str, Any]) -> None:
+    lock["compiled_document"]["content_hash"] = "zz" + "0" * 62
+
+
+def _document_family(lock: dict[str, Any]) -> None:
+    lock["compiled_document"]["family"] = ""
+
+
+def _contract_version(lock: dict[str, Any]) -> None:
+    lock["compiler_contract"]["contract_version"] = "rival.contract.v1"
+
+
+def _implementation_shape(lock: dict[str, Any]) -> None:
+    del lock["compiler_implementation"]["package_versions"]
+
+
+def _implementation_code_unit(lock: dict[str, Any]) -> None:
+    lock["compiler_implementation"]["code_unit"] = " "
+
+
+def _identity_digest(lock: dict[str, Any]) -> None:
+    lock["execution_identity"]["sha256"] = "a" * 64
+
+
+def _identity_inputs(lock: dict[str, Any]) -> None:
+    lock["execution_identity"]["inputs"] = []
+
+
+@pytest.mark.parametrize(
+    ("damage", "category", "match"),
+    [
+        (_drop_key, ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "base"),
+        (_foreign_key, ExperimentEnvelopeRejectionCategory.UNKNOWN_FIELD, "compiled_at"),
+        (_blank_name, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "name"),
+        (_blank_issue, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "issue"),
+        (_envelope_hash, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "envelope_hash"),
+        (_envelope_ref, ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "ref"),
+        (_base_domain, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "pin_algorithm"),
+        (_base_digest, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "content_hash"),
+        (_lineage_shape, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "lineage is a list"),
+        (_lineage_pin, ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "content_hash"),
+        (_delta_key, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "own layer id"),
+        (_delta_shape, ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "patches"),
+        (_delta_patch, ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "op"),
+        (_assertion_shape, ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "owner_ref"),
+        (_document_digest, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "content_hash"),
+        (_document_family, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "family"),
+        (
+            _contract_version,
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "does not extend contract id",
+        ),
+        (
+            _implementation_shape,
+            ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
+            "package_versions",
+        ),
+        (
+            _implementation_code_unit,
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "code unit",
+        ),
+        (_identity_digest, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "re-derive"),
+        (
+            _identity_inputs,
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "names the facts it was built from",
+        ),
+    ],
+)
+def test_the_loader_refuses_a_lock_damaged_anywhere_in_the_v1_document(
+    repo: Path, damage: Any, category: Any, match: str
+) -> None:
+    """A consumer that trusts a lock trusts all of it, so all of it is checked."""
+    lock = _compiled_lock(repo)
+    damage(lock)
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        load_compile_lock(lock, field="compiled/widened.compile-lock.json")
+
+    assert excinfo.value.category is category
+    assert match in str(excinfo.value)
+
+
+def test_the_loader_accepts_every_compiled_lock_the_fixture_produces(repo: Path) -> None:
+    """The validation is derived from what the compiler emits, not guessed at."""
+    for alias in ("widened", "widened-probe", "widened-summary", "widened-plot"):
+        lock = _compiled_lock(repo, alias)
+        assert load_compile_lock(lock, field=f"compiled/{alias}.compile-lock.json") == lock
+
+
+def test_an_identity_contribution_dropped_after_emission_is_refused(repo: Path) -> None:
+    """The contributions and the identity they were hashed into must agree."""
+    lock = _compiled_lock(repo, "widened-plot")
+    assert set(lock["identity_contributions"]) == {
+        "figure_row_expansion",
+        "resolved_row_set",
+    }
+    del lock["identity_contributions"]["resolved_row_set"]
+
+    with pytest.raises(ExperimentEnvelopeRejection, match="names the facts it was built from"):
+        load_compile_lock(lock, field="compiled/widened-plot.compile-lock.json")
+
+
+def test_an_empty_identity_contributions_block_is_refused(repo: Path) -> None:
+    """The emitter omits the block when there is nothing in it."""
+    lock = _compiled_lock(repo, "widened-plot")
+    lock["identity_contributions"] = {}
+    lock["execution_identity"]["inputs"] = ["compiled_document.content_hash"]
+
+    with pytest.raises(ExperimentEnvelopeRejection, match="empty block is omitted"):
+        load_compile_lock(lock, field="compiled/widened-plot.compile-lock.json")
+
+
 def test_the_lock_migration_slot_exists_in_the_shared_spec_registry() -> None:
     family = default_spec_registry.resolve("ExperimentCompileLock")
 
