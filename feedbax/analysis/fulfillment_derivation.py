@@ -66,6 +66,7 @@ from feedbax.analysis.fulfillment_plan import (
     PlanNode,
     expand_fulfillment_plan,
 )
+from feedbax.contracts.analysis_bundle_composition import ANALYSIS_BUNDLE_SPEC_SCHEMA_ID
 from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.experiment_compile_lock import (
     AuthenticatedReceiptReference,
@@ -75,7 +76,10 @@ from feedbax.contracts.experiment_compile_lock import (
     compile_lock_plan_edges,
     load_compile_lock,
 )
-from feedbax.contracts.figures import FIGURE_SPEC_SCHEMA_ID
+from feedbax.contracts.figures import (
+    FIGURE_COMPOSITION_SPEC_SCHEMA_ID,
+    FIGURE_SPEC_SCHEMA_ID,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_RUN_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
@@ -128,7 +132,9 @@ COMPILED_PRODUCT_KINDS: Mapping[str, CompiledProductKind] = {
         CompiledProductKind(EVALUATION_RUN_SPEC_SCHEMA_ID, "evaluation"),
         CompiledProductKind(EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID, "evaluation"),
         CompiledProductKind(ANALYSIS_RUN_SPEC_SCHEMA_ID, "analysis"),
+        CompiledProductKind(ANALYSIS_BUNDLE_SPEC_SCHEMA_ID, "analysis"),
         CompiledProductKind(FIGURE_SPEC_SCHEMA_ID, "figure"),
+        CompiledProductKind(FIGURE_COMPOSITION_SPEC_SCHEMA_ID, "figure"),
         CompiledProductKind(REPORT_SPEC_SCHEMA_ID, "report"),
     )
 }

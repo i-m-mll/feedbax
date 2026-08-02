@@ -42,6 +42,23 @@ materialized row inherits. Execution resolves them through the staged execution
 context the environment declares, which is the only thing that knows where the
 bound bytes actually live — so a matrix carrying staged parents refuses to run
 in an environment that declares no such context.
+
+## A bundle binds by identity, and a composition is still a figure
+
+Two layers compile into two products each, and the second member of each pair
+lowers here as what it actually is rather than as a new kind of thing.
+
+An analysis *bundle* is to its layer what a matrix is to the evaluation layer:
+one document whose stages are the executions. Its roots are the set of manifests
+its own predicate selects, and a bundle names no role for them, so the closure's
+required edges bind by manifest identity — the bound ids constrain the selection
+and a selection that is not exactly that set refuses. Nothing invents a role
+structure a bundle does not have.
+
+A figure *composition* is authored figure identity, not a second execution: it
+resolves to an ordinary current figure spec, and it therefore lowers to the same
+figure node request a direct figure does, carrying the exact compiled bytes,
+because those bytes are the authored identity its receipt is addressed by.
 """
 
 from __future__ import annotations
@@ -50,12 +67,16 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
 from feedbax.analysis.exact_parents import (
     STAGED_EXACT_PARENTS_SCHEMA_ID,
     STAGED_EXACT_PARENTS_SCHEMA_VERSION,
     StagedExactParents,
 )
+from feedbax.analysis.bundles import AnalysisBundleSpec
 from feedbax.analysis.fulfillment_adapters import (
+    AnalysisBundleNodeRequest,
     AnalysisNodeRequest,
     EvaluationMatrixNodeRequest,
     EvaluationNodeRequest,
@@ -75,7 +96,12 @@ from feedbax.contracts.experiment_compile_lock import (
     FigureRuntimeInputBinding,
     ReportParentBinding,
 )
-from feedbax.contracts.figures import FIGURE_SPEC_SCHEMA_ID
+from feedbax.contracts.analysis_bundle_composition import ANALYSIS_BUNDLE_SPEC_SCHEMA_ID
+from feedbax.contracts.figures import (
+    FIGURE_COMPOSITION_SPEC_SCHEMA_ID,
+    FIGURE_SPEC_SCHEMA_ID,
+    FigureCompositionSpec,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_RUN_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
@@ -310,8 +336,74 @@ def _lower_analysis(node: "ClosureNode", *, binding: "NodeBinding") -> NodeReque
     return AnalysisNodeRequest(node_key=node.key.text, spec=spec, order=node.order)
 
 
+def _validated_document(model: Any, document: Mapping[str, Any], *, ref: str) -> Any:
+    """Return one compiled document as the Feedbax model its schema identity names.
+
+    The document reached this lowering because the layer table recognized its
+    ``schema_id``. Validating it against that identity's model is what makes the
+    recognition mean something: a document that declares the identity but is not
+    a member of it refuses here, named, rather than failing later inside an
+    executor that assumed the table had already decided.
+    """
+    try:
+        return model.model_validate(dict(document))
+    except (ValidationError, ValueError) as exc:
+        raise NodeLoweringError(
+            f"{ref} declares schema_id {document.get('schema_id')!r} but is not a valid "
+            f"{model.__name__}: {exc}"
+        ) from exc
+
+
+def _lower_analysis_bundle(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
+    """Lower one compiled analysis bundle into the node that drives its own plan.
+
+    A bundle addresses its root inputs as the set of manifests its predicate
+    selects, not by role, so the required edges are bound by manifest identity
+    and the role each consumer binding names addresses nothing further. Nothing
+    is invented to fill that gap: the ids constrain the selection exactly, and
+    the adapter refuses a selection that is not the bound set.
+    """
+    document = _document(node)
+    ref = str(node.compiled.document_path)
+    bundle = _validated_document(AnalysisBundleSpec, document, ref=ref)
+    parents, _roles = bound_parents(node, binding=binding)
+    return AnalysisBundleNodeRequest(
+        node_key=node.key.text,
+        bundle=bundle,
+        root_inputs=parents,
+        order=node.order,
+    )
+
+
 def _lower_figure(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
     document = _document(node)
+    parents, _roles = bound_parents(node, binding=binding)
+    return FigureNodeRequest(
+        node_key=node.key.text,
+        spec=document,
+        runtime_inputs=parents if parents else None,
+        order=node.order,
+    )
+
+
+def _lower_figure_composition(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
+    """Lower one compiled figure composition into the figure node it renders as.
+
+    A composition is authored figure identity, not a second kind of execution:
+    resolving it produces an ordinary current figure spec, and the receipt it
+    earns is an ordinary figure receipt. So it lowers to the same node request a
+    direct figure does, carrying the composition document itself — the exact
+    compiled bytes, because those bytes are the figure's authored identity and
+    re-serializing them through a model would address something else.
+
+    The document is validated against its own composition model first. Resolving
+    the parent chain happens at execution, where the repository the pins address
+    is the environment's declaration rather than a guess made here.
+    """
+    document = _document(node)
+    _validated_document(
+        FigureCompositionSpec, document, ref=str(node.compiled.document_path)
+    )
     parents, _roles = bound_parents(node, binding=binding)
     return FigureNodeRequest(
         node_key=node.key.text,
@@ -341,7 +433,9 @@ _LOWERINGS = {
     EVALUATION_RUN_SPEC_SCHEMA_ID: _lower_evaluation,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID: _lower_evaluation_matrix,
     ANALYSIS_RUN_SPEC_SCHEMA_ID: _lower_analysis,
+    ANALYSIS_BUNDLE_SPEC_SCHEMA_ID: _lower_analysis_bundle,
     FIGURE_SPEC_SCHEMA_ID: _lower_figure,
+    FIGURE_COMPOSITION_SPEC_SCHEMA_ID: _lower_figure_composition,
     REPORT_SPEC_SCHEMA_ID: _lower_report,
 }
 

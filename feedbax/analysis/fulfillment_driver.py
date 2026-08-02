@@ -60,6 +60,7 @@ from feedbax.analysis.fulfillment import (
     FulfillmentReceipt,
 )
 from feedbax.analysis.fulfillment_adapters import (
+    AnalysisBundleNodeRequest,
     EvaluationMatrixNodeRequest,
     FulfillmentEnvironment,
     FulfillmentRun,
@@ -298,10 +299,24 @@ class NodeBinding:
         return self.plan.required_edges(key)
 
     def producer_receipt(self, edge: PlanEdge) -> FulfillmentReceipt | None:
-        """Return the admitted receipt one edge's in-closure producer wrote."""
+        """Return the admitted receipt one edge's in-closure producer wrote.
+
+        A producer that did not resolve to a single receipt — an expanded matrix,
+        a driven bundle — refuses here rather than earlier, because a
+        multi-receipt node no consumer names is a legitimate closure member and
+        only a consumer reaching for its receipt makes the ambiguity real.
+        """
         if edge.producer is None:
             return None
-        return self.receipts[edge.producer]
+        receipt = self.receipts.get(edge.producer)
+        if receipt is None:
+            raise AmbiguousNodeReceiptError(
+                f"{edge.consumer.text} declares input {list(edge.role_path)} as the product of "
+                f"{edge.producer.text}, which resolved to no single receipt; a consumer binds "
+                "one authenticated reference per declared input, and this version does not "
+                "choose among the receipts of a multi-receipt node"
+            )
+        return receipt
 
     def parent_ref(self, edge: PlanEdge, *, role: str) -> ParentRef:
         """Return the authenticated reference one required edge binds.
@@ -464,7 +479,9 @@ def fulfill_closure(
         request = _lowered(node, closure=closure, receipts=receipts, environment=environment)
         result = fulfill_node(request, environment=environment)
         results.append(result)
-        receipts[node.key] = _single_receipt(node, result)
+        receipt = _producer_receipt(result)
+        if receipt is not None:
+            receipts[node.key] = receipt
     return FulfillmentRun(results=tuple(results))
 
 
@@ -565,15 +582,18 @@ def _lowered(
     return request
 
 
-def _single_receipt(node: ClosureNode, result: NodeFulfillment) -> FulfillmentReceipt:
-    """Return the one receipt a node's consumers may bind, or refuse the ambiguity."""
+def _producer_receipt(result: NodeFulfillment) -> FulfillmentReceipt | None:
+    """Return the one receipt a node's consumers may bind, if it resolved to one.
+
+    A node that produced several — an expanded matrix, a driven analysis bundle —
+    binds nothing, and that is not an error by itself: such a node is fulfilled
+    like any other, and only a consumer that reaches for its single receipt makes
+    the ambiguity real. :meth:`NodeBinding.producer_receipt` is where that
+    refusal happens, with the consumer and the role it declared both named.
+    """
     if len(result.receipts) == 1:
         return result.receipts[0]
-    raise AmbiguousNodeReceiptError(
-        f"node {node.key.text} produced {len(result.receipts)} receipts; a consumer binds one "
-        f"authenticated reference per declared input, and this version does not choose among "
-        f"the receipts of a multi-receipt {node.kind!r} node"
-    )
+    return None
 
 
 def _admitted_receipt(
@@ -587,6 +607,11 @@ def _admitted_receipt(
         raise AmbiguousNodeReceiptError(
             f"node {node.key.text} is an evaluation matrix; resolving a single receipt for it "
             "would mean choosing among its rows, which this version does not do"
+        )
+    if isinstance(request, AnalysisBundleNodeRequest):
+        raise AmbiguousNodeReceiptError(
+            f"node {node.key.text} is an analysis bundle; resolving a single receipt for it "
+            "would mean choosing among its stage products, which this version does not do"
         )
     outcome = admit_node(request, environment=environment)
     if not outcome.admitted or outcome.manifest_path is None:
