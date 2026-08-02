@@ -977,7 +977,9 @@ def _execution_parent_ref_for_manifest(
 
     if not isinstance(manifest, EvaluationRunManifest):
         return _parent_ref_for_manifest(manifest)
-    resolved, path = find_manifest_by_id(manifest.id, root=root)
+    resolved, path = find_manifest_by_id(
+        manifest.id, root=root, expected_kind="EvaluationRunManifest"
+    )
     if not isinstance(resolved, EvaluationRunManifest):
         raise TypeError(f"Expected EvaluationRunManifest, got {type(resolved).__name__}")
     return authenticated_manifest_ref_from_read(

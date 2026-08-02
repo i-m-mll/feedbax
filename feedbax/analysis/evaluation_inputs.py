@@ -23,6 +23,7 @@ from feedbax.analysis.execution_context import (
 )
 from feedbax.analysis.manifest_inputs import is_authenticated_manifest_ref
 from feedbax.contracts.manifest import EvaluationRunSpec, ParentRef, TrainingRunManifest
+from feedbax.contracts.strict_json import DuplicateJsonKeyError, strict_json_loads
 
 
 _TRAINING_MANIFEST_KIND = "TrainingRunManifest"
@@ -371,7 +372,11 @@ def _read_candidate(relative: Path, root: Path, root_fd: int) -> _ManifestCandid
 
     path = root.joinpath(*relative.parts)
     try:
-        payload: object = json.loads(raw_bytes)
+        payload: object = strict_json_loads(raw_bytes, ref=str(path))
+    except DuplicateJsonKeyError as exc:
+        raise EvaluationInputManifestError(
+            f"Evaluation input manifest states a member twice: {exc}"
+        ) from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise EvaluationInputManifestError(
             f"Evaluation input manifest is not valid JSON: {path}"
@@ -475,6 +480,9 @@ def _validate_training_manifest(
     candidate: _ManifestCandidate,
     ref: ParentRef,
 ) -> TrainingRunManifest:
+    # ``candidate.raw_bytes`` was admitted by ``strict_json_loads`` in
+    # ``_read_candidate``, so a duplicated member name has already refused these
+    # bytes and Pydantic's own last-value-wins JSON parse cannot collapse one here.
     try:
         manifest = TrainingRunManifest.model_validate_json(candidate.raw_bytes)
     except ValidationError as exc:
