@@ -89,6 +89,12 @@ DELEGATED_BY_NAME: dict[str, DelegatedCommand] = {
     command.name: command for command in DELEGATED_COMMANDS
 }
 
+#: Commands this entry point implements itself, because they are about the
+#: project rather than about running science in one.
+PROJECT_COMMANDS: dict[str, str] = {
+    "init": "Create or validate this project's Feedbax skeleton.",
+}
+
 _HELP_FLAGS = frozenset({"-h", "--help", "help"})
 
 
@@ -112,6 +118,13 @@ def _delegated_help() -> str:
     )
 
 
+def _project_help() -> str:
+    width = max(len(name) for name in PROJECT_COMMANDS)
+    return "\n".join(
+        f"  {name.ljust(width)}  {summary}" for name, summary in PROJECT_COMMANDS.items()
+    )
+
+
 def usage() -> str:
     """Render the top-level help text."""
     return "\n".join(
@@ -119,6 +132,9 @@ def usage() -> str:
             "usage: feedbax <command> [args...]",
             "",
             "Feedbax: build, compile, run, and account for computational experiments.",
+            "",
+            "project commands:",
+            _project_help(),
             "",
             "commands:",
             _delegated_help(),
@@ -152,6 +168,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if name in _HELP_FLAGS:
         print(usage())
         return 0
+    if name in PROJECT_COMMANDS:
+        from feedbax.governance.cli import run_project_command
+
+        return run_project_command(name, rest)
     delegated = DELEGATED_BY_NAME.get(name)
     if delegated is not None:
         return _normalize_exit(delegated.entrypoint()(rest))
