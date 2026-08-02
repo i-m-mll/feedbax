@@ -64,7 +64,14 @@ def kernel_for(declaration: ProjectExperimentDeclaration) -> EnvelopeKernel:
 def compile_experiment_envelope(
     request: ExperimentEnvelopeCompileRequest,
 ) -> ExperimentEnvelopeCompileResult:
-    """Compile one authored envelope and write its two outputs."""
+    """Compile one authored envelope and write its two outputs.
+
+    The corpus is checked for colliding output addresses before this compile
+    runs. One envelope cannot see that another one claims its output address,
+    and by the time the outputs are written the collision has already happened,
+    so the whole envelope directory is the unit the check runs over even when
+    the unit of work is a single envelope.
+    """
     declaration = request.project_declaration
     if declaration is None:
         raise ExperimentEnvelopeCompilerError(
@@ -72,6 +79,7 @@ def compile_experiment_envelope(
             "envelope directory holds it; resolve it before dispatch"
         )
     kernel = kernel_for(declaration)
+    kernel.refuse_duplicate_output_addresses(request.repo_root, out_dir=request.out_dir)
     outcome = kernel.compile_envelope_file(request.envelope_path, repo_root=request.repo_root)
     paths = kernel.write_outputs(outcome, request.out_dir)
     return ExperimentEnvelopeCompileResult(

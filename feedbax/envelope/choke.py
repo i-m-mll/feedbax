@@ -111,8 +111,16 @@ def compare_tracked_outputs(
         A structured report. An envelope that no longer compiles is a finding
         rather than a raised exception, so one broken envelope does not hide the
         state of every other one.
+
+    Raises:
+        DuplicateOutputAddressError: Two envelopes compile to one output
+            address. That is a property of the corpus rather than of either
+            envelope, and it makes every finding about the shared address
+            meaningless — whichever envelope compiled last would decide them —
+            so it is raised rather than reported.
     """
     output_root = out_dir if out_dir is not None else repo_root / kernel.layout.output_directory
+    kernel.refuse_duplicate_output_addresses(repo_root, out_dir=output_root)
     entries: list[ChokeEntry] = []
     claimed: set[Path] = set()
 
