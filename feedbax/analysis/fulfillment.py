@@ -55,7 +55,7 @@ from feedbax.contracts.manifest import (
     canonical_json_bytes,
     canonical_manifest_path,
     evaluation_run_manifest_id,
-    load_manifest,
+    load_manifest_bytes,
     report_manifest_id,
 )
 
@@ -215,12 +215,33 @@ class FulfillmentReceipt:
     machine-local path and the loaded manifest object. Durable forward binding
     happens through ``ParentRef``/``StagedExactParents``, which are minted from
     a receipt rather than stored as one.
+
+    The byte profile is part of the receipt rather than something a later
+    consumer measures. A receipt exists because bytes at :attr:`path` were
+    admitted, and :attr:`manifest_sha256` with :attr:`size_bytes` names *those*
+    bytes. Anything that re-opened the path to describe what was admitted would
+    be describing a second file: the bytes can change between admission and
+    binding, and the profile a consumer then records as proof would be the
+    replacement's, minted by the very step that was supposed to authenticate it.
+    So the receipt is always built through :meth:`of_admitted_bytes` or
+    :meth:`admitted`, both of which read once, and every forward binding is
+    derived from the profile they settled.
+
+    Attributes:
+        node_kind: The fulfillment node kind whose receipt this is.
+        manifest: The manifest parsed from the admitted bytes.
+        path: Where those bytes were read from.
+        root: The receipt root ``path`` lives under.
+        manifest_sha256: The SHA-256 of the admitted bytes.
+        size_bytes: The length of the admitted bytes.
     """
 
     node_kind: FulfillmentNodeKind
     manifest: AnyManifest
     path: Path
     root: Path
+    manifest_sha256: str
+    size_bytes: int
 
     @property
     def manifest_id(self) -> str:
@@ -230,14 +251,107 @@ class FulfillmentReceipt:
     def manifest_kind(self) -> str:
         return self.manifest.kind
 
+    @classmethod
+    def of_admitted_bytes(
+        cls,
+        raw: bytes,
+        *,
+        node_kind: FulfillmentNodeKind,
+        path: Path | str,
+        root: Path | str,
+        manifest: AnyManifest | None = None,
+    ) -> "FulfillmentReceipt":
+        """Return the receipt one already-read admitted byte string makes.
+
+        The manifest is parsed from *raw* rather than taken from the caller, so
+        the receipt's identity and its profile describe the same bytes. When the
+        caller also holds a manifest object — an executor's return value, say —
+        it is used only to prove the bytes are the ones it means.
+        """
+        parsed = load_manifest_bytes(raw)
+        if manifest is not None and (
+            parsed.kind != manifest.kind or parsed.id != manifest.id
+        ):
+            raise ValueError(
+                f"manifest bytes at {path} are {parsed.kind} {parsed.id!r} but the receipt "
+                f"names {manifest.kind} {manifest.id!r}"
+            )
+        return cls(
+            node_kind=node_kind,
+            manifest=parsed,
+            path=Path(path),
+            root=Path(root),
+            manifest_sha256=hashlib.sha256(raw).hexdigest(),
+            size_bytes=len(raw),
+        )
+
+    @classmethod
+    def admitted(
+        cls,
+        *,
+        node_kind: FulfillmentNodeKind,
+        path: Path | str,
+        root: Path | str,
+        manifest: AnyManifest | None = None,
+    ) -> "FulfillmentReceipt":
+        """Return the receipt the bytes stored at *path* make, read exactly once."""
+        return cls.of_admitted_bytes(
+            Path(path).read_bytes(),
+            node_kind=node_kind,
+            path=path,
+            root=root,
+            manifest=manifest,
+        )
+
 
 @dataclass(frozen=True)
 class _Candidate:
-    """A located candidate receipt plus its load outcome."""
+    """A located candidate receipt plus its load outcome.
+
+    ``raw`` is the exact byte string admission read, or ``None`` when the caller
+    supplied an in-memory manifest and nothing was read at all.
+    """
 
     manifest: AnyManifest | None
     path: Path
     present: bool
+    raw: bytes | None = None
+
+
+@dataclass
+class AdmittedManifestBytes:
+    """The exact manifest bytes one admission read, handed back to its caller.
+
+    Admission reads the stored manifest in order to decide. A caller that then
+    binds the admitted receipt forward needs *those* bytes: re-opening the path
+    to describe what was admitted describes whatever is there afterwards, and
+    the profile it mints is the replacement's — produced, with perfect
+    confidence, by the very step whose job was to authenticate. Passing one of
+    these into an admission is how a caller collects the read that already
+    happened rather than paying for a second one.
+
+    An admission that read nothing — because the caller supplied an in-memory
+    manifest — leaves :attr:`raw` unset, and :meth:`receipt` refuses rather than
+    reading the path to fill the gap.
+    """
+
+    raw: bytes | None = None
+    path: Path | None = None
+
+    def receipt(
+        self, *, node_kind: FulfillmentNodeKind, root: Path | str
+    ) -> "FulfillmentReceipt":
+        """Return the receipt these admitted bytes make."""
+        if self.raw is None or self.path is None:
+            raise RuntimeError(
+                "no manifest bytes were captured by this admission, so no receipt can be "
+                "bound from it; an admission over an in-memory manifest authenticates no "
+                "stored bytes, and re-reading the path here would authenticate whatever is "
+                "there now instead"
+            )
+        return FulfillmentReceipt.of_admitted_bytes(
+            self.raw, node_kind=node_kind, path=self.path, root=root
+        )
 
 
 def receipt_path(
@@ -261,14 +375,27 @@ def _load_candidate(
     root: Path,
     manifest: AnyManifest | None,
     path: Path | None,
+    capture: AdmittedManifestBytes | None = None,
 ) -> _Candidate:
-    if manifest is not None:
-        resolved = path if path is not None else receipt_path(node_kind, manifest_id, root=root)
-        return _Candidate(manifest=manifest, path=resolved, present=True)
+    """Locate and read one candidate receipt exactly once.
+
+    The stored manifest is parsed from the bytes this read returned rather than
+    loaded a second time from the path, and those bytes are handed to *capture*
+    so the caller can bind the receipt forward from the same read admission
+    decided on.
+    """
     resolved = path if path is not None else receipt_path(node_kind, manifest_id, root=root)
-    if not resolved.is_file():
+    if manifest is not None:
+        return _Candidate(manifest=manifest, path=resolved, present=True)
+    try:
+        raw = resolved.read_bytes()
+    except OSError:
         return _Candidate(manifest=None, path=resolved, present=False)
-    return _Candidate(manifest=load_manifest(resolved), path=resolved, present=True)
+    found = load_manifest_bytes(raw)
+    if capture is not None:
+        capture.raw = raw
+        capture.path = resolved
+    return _Candidate(manifest=found, path=resolved, present=True, raw=raw)
 
 
 class _FailureCollector:
@@ -558,6 +685,7 @@ def admit_evaluation_receipt(
     path: Path | str | None = None,
     expected_parents: Sequence[ParentRef] | None = None,
     required_output_roles: Sequence[str] = (),
+    capture: AdmittedManifestBytes | None = None,
 ) -> AdmissionOutcome:
     """Admit a cached ``EvaluationRunManifest`` as this spec's fulfillment receipt."""
     root_path = Path(root)
@@ -568,6 +696,7 @@ def admit_evaluation_receipt(
         root=root_path,
         manifest=manifest,
         path=Path(path) if path is not None else None,
+        capture=capture,
     )
     collector = _FailureCollector(
         node_kind="evaluation",
@@ -629,6 +758,7 @@ def admit_analysis_receipt(
     path: Path | str | None = None,
     expected_parents: Sequence[ParentRef] | None = None,
     required_output_roles: Sequence[str] = (),
+    capture: AdmittedManifestBytes | None = None,
 ) -> AdmissionOutcome:
     """Admit a cached ``AnalysisRunManifest`` as this spec's fulfillment receipt."""
     root_path = Path(root)
@@ -639,6 +769,7 @@ def admit_analysis_receipt(
         root=root_path,
         manifest=manifest,
         path=Path(path) if path is not None else None,
+        capture=capture,
     )
     collector = _FailureCollector(
         node_kind="analysis",
@@ -696,6 +827,7 @@ def admit_report_receipt(
     path: Path | str | None = None,
     expected_parents: Sequence[ParentRef] | None = None,
     required_output_roles: Sequence[str] = (),
+    capture: AdmittedManifestBytes | None = None,
 ) -> AdmissionOutcome:
     """Admit a cached ``ReportManifest`` as this spec's fulfillment receipt."""
     root_path = Path(root)
@@ -706,6 +838,7 @@ def admit_report_receipt(
         root=root_path,
         manifest=manifest,
         path=Path(path) if path is not None else None,
+        capture=capture,
     )
     collector = _FailureCollector(
         node_kind="report",
@@ -777,6 +910,7 @@ def admit_figure_receipt(
     path: Path | str | None = None,
     expected_parents: Sequence[ParentRef] | None = None,
     required_output_roles: Sequence[str] = (),
+    capture: AdmittedManifestBytes | None = None,
 ) -> AdmissionOutcome:
     """Admit a cached ``FigureManifest`` as this figure node's fulfillment receipt.
 
@@ -801,6 +935,7 @@ def admit_figure_receipt(
         root=root_path,
         manifest=manifest,
         path=Path(path) if path is not None else None,
+        capture=capture,
     )
     collector = _FailureCollector(
         node_kind="figure",

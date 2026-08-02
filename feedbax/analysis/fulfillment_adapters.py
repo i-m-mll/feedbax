@@ -5,9 +5,9 @@ per kind: evaluation (single spec or matrix), analysis run, figure, and report.
 An adapter takes a node request plus already-admitted parent receipts, decides
 between reuse and execution through the uniform admission validators in
 :mod:`feedbax.analysis.fulfillment`, and returns receipts. Forward binding —
-``ParentRef`` construction through ``authenticated_manifest_ref`` and
-``StagedExactParents`` assembly — is mechanical from admitted receipts and
-never re-derived from the filesystem.
+``ParentRef`` construction from the profile a receipt settled at admission, and
+``StagedExactParents`` assembly — is mechanical from admitted receipts and never
+re-derived from the filesystem.
 
 Contract note: ``execute_figure_spec`` is deliberately *not* re-exported here as
 a new public surface. It is outside the ratified figure inventory in
@@ -59,6 +59,7 @@ from feedbax.analysis.figures import (
 from feedbax.analysis.fulfillment import (
     MANIFEST_KIND_BY_NODE_KIND,
     AdmissionOutcome,
+    AdmittedManifestBytes,
     FulfillmentAdmissionError,
     FulfillmentNodeKind,
     FulfillmentReceipt,
@@ -67,10 +68,7 @@ from feedbax.analysis.fulfillment import (
     admit_figure_receipt,
     admit_report_receipt,
 )
-from feedbax.analysis.manifest_inputs import (
-    authenticated_manifest_ref,
-    resolve_manifest_input,
-)
+from feedbax.analysis.manifest_inputs import resolve_manifest_input
 from feedbax.analysis.reports import (
     execute_authored_report_spec,
     execute_report_spec,
@@ -83,6 +81,7 @@ from feedbax.contracts.manifest import (
     ParentRef,
     Provenance,
     ReportSpec,
+    authenticated_manifest_ref_metadata,
     authenticated_manifest_ref_profile,
     canonical_manifest_path,
 )
@@ -333,6 +332,7 @@ def admit_node(
     environment: FulfillmentEnvironment,
     path: Path | None = None,
     manifest: Any | None = None,
+    capture: AdmittedManifestBytes | None = None,
 ) -> AdmissionOutcome:
     """Admit one node's receipt through the uniform per-kind validator.
 
@@ -347,6 +347,9 @@ def admit_node(
         path: Explicit manifest location, when it is not the canonical one.
         manifest: An in-memory manifest to admit instead of reading bytes from
             *path*; artifacts are still verified against the environment root.
+        capture: Collects the exact manifest bytes this admission read, so a
+            caller that binds the admitted receipt forward binds the read that
+            decided rather than opening the path a second time.
     """
     if isinstance(request, EvaluationNodeRequest):
         return admit_evaluation_receipt(
@@ -355,6 +358,7 @@ def admit_node(
             manifest=manifest,
             path=path,
             required_output_roles=request.required_output_roles,
+            capture=capture,
         )
     if isinstance(request, AnalysisNodeRequest):
         return admit_analysis_receipt(
@@ -363,6 +367,7 @@ def admit_node(
             manifest=manifest,
             path=path,
             required_output_roles=request.required_output_roles,
+            capture=capture,
         )
     if isinstance(request, FigureNodeRequest):
         return admit_figure_receipt(
@@ -371,6 +376,7 @@ def admit_node(
             manifest=manifest,
             path=path,
             required_output_roles=request.required_output_roles,
+            capture=capture,
         )
     if isinstance(request, ReportNodeRequest):
         return admit_report_receipt(
@@ -379,6 +385,7 @@ def admit_node(
             manifest=manifest,
             path=path,
             required_output_roles=request.required_output_roles,
+            capture=capture,
         )
     if isinstance(request, EvaluationMatrixNodeRequest):
         raise TypeError(
@@ -435,7 +442,8 @@ def _fulfill_single(
     *,
     environment: FulfillmentEnvironment,
 ) -> NodeFulfillment:
-    outcome = admit_node(request, environment=environment)
+    captured = AdmittedManifestBytes()
+    outcome = admit_node(request, environment=environment, capture=captured)
     if outcome.admitted:
         if outcome.manifest_path is None:
             raise RuntimeError("an admitted receipt must name the bytes that authenticated it")
@@ -444,31 +452,26 @@ def _fulfill_single(
             node_kind=request.node_kind,
             disposition="reused",
             receipts=(
-                FulfillmentReceipt(
-                    node_kind=request.node_kind,
-                    manifest=_load(outcome.manifest_path),
-                    path=Path(outcome.manifest_path),
-                    root=environment.root,
-                ),
+                captured.receipt(node_kind=request.node_kind, root=environment.root),
             ),
             admissions=(outcome,),
         )
     if outcome.manifest_present:
         raise FulfillmentAdmissionError(outcome)
-    manifest, path = execute_node(request, environment=environment)
-    verified = _reverify(request, environment=environment, manifest_path=path)
+    _manifest, path = execute_node(request, environment=environment)
+    # The receipt is the bytes re-admission read, not the executor's return
+    # value and not a later reopening of the path. Re-admission is the moment
+    # the written record was authenticated, so it is the moment whose bytes the
+    # receipt may claim.
+    written = AdmittedManifestBytes()
+    verified = _reverify(
+        request, environment=environment, manifest_path=path, capture=written
+    )
     return NodeFulfillment(
         node_key=request.node_key,
         node_kind=request.node_kind,
         disposition="executed",
-        receipts=(
-            FulfillmentReceipt(
-                node_kind=request.node_kind,
-                manifest=manifest,
-                path=path,
-                root=environment.root,
-            ),
-        ),
+        receipts=(written.receipt(node_kind=request.node_kind, root=environment.root),),
         admissions=(outcome, verified),
     )
 
@@ -478,6 +481,7 @@ def _reverify(
     *,
     environment: FulfillmentEnvironment,
     manifest_path: Path,
+    capture: AdmittedManifestBytes | None = None,
 ) -> AdmissionOutcome:
     """Admit a just-written receipt through the same uniform validator.
 
@@ -485,16 +489,12 @@ def _reverify(
     Re-admitting closes the gap where a first run would accept a record that a
     later run would refuse.
     """
-    outcome = admit_node(request, environment=environment, path=manifest_path)
+    outcome = admit_node(
+        request, environment=environment, path=manifest_path, capture=capture
+    )
     if not outcome.admitted:
         raise FulfillmentAdmissionError(outcome)
     return outcome
-
-
-def _load(path: str):
-    from feedbax.contracts.manifest import load_manifest
-
-    return load_manifest(path)
 
 
 def _execute_evaluation(
@@ -797,6 +797,7 @@ def _require_bundle_roots(
     selected: Sequence[BundleRootIdentity],
     *,
     stage: str,
+    compare_profiles: bool = True,
 ) -> None:
     """Refuse a selection that is not exactly the set the closure bound.
 
@@ -806,6 +807,17 @@ def _require_bundle_roots(
     bytes. A selection that agrees on ids while differing in either is not the
     set the plan named, and executing it would produce an artifact whose recorded
     parents describe work that was not done.
+
+    A bound side with no digest is the lock's own statement that it authenticated
+    nothing, so address equality is all there is to compare. A bound side *with* a
+    digest facing a selected side without one is not that case: it is a byte
+    comparison that did not happen, and it refuses. ``compare_profiles=False`` is
+    the one deliberate exception, for the post-execution gate that re-proves the
+    address against a set already byte-proved at preflight against the same root.
+
+    Args:
+        compare_profiles: Whether the selected side is expected to carry a byte
+            profile wherever the bound side does.
     """
     if identities is None:
         return
@@ -821,7 +833,15 @@ def _require_bundle_roots(
         if chosen is None:
             differences.append(f"{locked.describe()} was named by the plan but not selected")
             continue
-        if locked.manifest_sha256 is None or chosen.manifest_sha256 is None:
+        if locked.manifest_sha256 is None or not compare_profiles:
+            continue
+        if chosen.manifest_sha256 is None:
+            differences.append(
+                f"{locked.kind}:{locked.id} is bound to manifest_sha256="
+                f"{locked.manifest_sha256} size_bytes={locked.size_bytes} but the selected "
+                "receipt states no byte profile to compare it with; a bound profile that "
+                "cannot be checked is not a check that passed"
+            )
             continue
         if (locked.manifest_sha256, locked.size_bytes) != (
             chosen.manifest_sha256,
@@ -846,12 +866,25 @@ def _require_bundle_roots(
 
 
 def _selected_root_identity(manifest: Any, *, root: Path) -> BundleRootIdentity:
-    """Return one selected manifest's identity, including its stored bytes."""
+    """Return one selected manifest's identity, including its stored bytes.
+
+    A selected root that cannot be profiled refuses. Selection returned this
+    manifest from this root, so its canonical bytes are readable or the root is
+    not the one the selection describes; either way, degrading to an
+    address-only identity would hand the equality gate a bound digest with
+    nothing to compare it against, and the gate would pass by having nothing to
+    say rather than by agreeing.
+    """
     path = canonical_manifest_path(str(manifest.kind), str(manifest.id), root=root)
     try:
         raw = path.read_bytes()
-    except OSError:
-        return BundleRootIdentity(kind=str(manifest.kind), id=str(manifest.id))
+    except OSError as exc:
+        raise ValueError(
+            f"selected root receipt {manifest.kind}:{manifest.id} cannot be read at its "
+            f"canonical location {path}: {exc}. A root the plan authenticated is compared by "
+            "its bytes, so a selected root whose bytes are unreadable is a refusal rather "
+            "than a comparison that is skipped."
+        ) from exc
     return BundleRootIdentity(
         kind=str(manifest.kind),
         id=str(manifest.id),
@@ -861,9 +894,21 @@ def _selected_root_identity(manifest: Any, *, root: Path) -> BundleRootIdentity:
 
 
 def _bundle_stage_receipt(
-    manifest: Any, path: Path, *, root: Path, node_key: str
+    manifest: Any,
+    path: Path,
+    raw: bytes | None,
+    *,
+    root: Path,
+    node_key: str,
 ) -> FulfillmentReceipt:
-    """Return one bundle stage product as the receipt its manifest kind makes it."""
+    """Return one bundle stage product as the receipt its manifest kind makes it.
+
+    A staged product was already read and authenticated against its stage's ref
+    by :func:`~feedbax.analysis.manifest_inputs.resolve_manifest_input`, so
+    *raw* is that read and the receipt is built from it. A template product came
+    back from the executor with no authenticated read behind it, so *raw* is
+    ``None`` and the receipt performs the one read that authenticates it.
+    """
     node_kind = _NODE_KIND_BY_MANIFEST_KIND.get(str(manifest.kind))
     if node_kind is None:
         raise ValueError(
@@ -871,8 +916,12 @@ def _bundle_stage_receipt(
             f"is not a fulfillment receipt kind; supported="
             f"{sorted(_NODE_KIND_BY_MANIFEST_KIND)}"
         )
-    return FulfillmentReceipt(
-        node_kind=node_kind, manifest=manifest, path=path, root=root
+    if raw is not None:
+        return FulfillmentReceipt.of_admitted_bytes(
+            raw, node_kind=node_kind, path=path, root=root, manifest=manifest
+        )
+    return FulfillmentReceipt.admitted(
+        node_kind=node_kind, path=path, root=root, manifest=manifest
     )
 
 
@@ -923,7 +972,7 @@ def execute_analysis_bundle_node(
             ],
             stage="preflight",
         )
-    products: list[tuple[Any, Path]] = []
+    products: list[tuple[Any, Path, bytes | None]] = []
     if bundle.stages:
         execution = execute_staged_analysis_bundle(
             bundle,
@@ -937,7 +986,10 @@ def execute_analysis_bundle_node(
         for record in execution.stages:
             for ref in record.manifest_refs:
                 resolved = resolve_manifest_input(ref, root)
-                products.append((resolved.manifest, resolved.path))
+                # resolve_manifest_input read and authenticated these bytes
+                # against the stage's own ref; the receipt is built from that
+                # read rather than from a second opening of the same path.
+                products.append((resolved.manifest, resolved.path, resolved.raw_bytes))
     else:
         outputs = execute_analysis_bundle(
             bundle,
@@ -952,7 +1004,7 @@ def execute_analysis_bundle_node(
                 run_id for expansion, _, _ in outputs for run_id in expansion.matched_run_ids
             )
         )
-        products.extend((manifest, path) for _, manifest, path in outputs)
+        products.extend((manifest, path, None) for _, manifest, path in outputs)
     # What execution reports back is ids. Their kind is not in doubt: selection
     # fixes its candidates by the bundle predicate's manifest kind, so that is
     # the kind every matched id has. The bytes were settled at the preflight gate
@@ -966,10 +1018,11 @@ def execute_analysis_bundle_node(
             for run_id in matched
         ],
         stage="selection",
+        compare_profiles=False,
     )
     return tuple(
-        _bundle_stage_receipt(manifest, path, root=root, node_key=request.node_key)
-        for manifest, path in products
+        _bundle_stage_receipt(manifest, path, raw, root=root, node_key=request.node_key)
+        for manifest, path, raw in products
     )
 
 
@@ -1035,8 +1088,22 @@ def expand_evaluation_matrix_node(
 
 
 def receipt_parent_ref(receipt: FulfillmentReceipt, *, role: str) -> ParentRef:
-    """Mint an authenticated ``ParentRef`` naming exactly this receipt's bytes."""
-    return authenticated_manifest_ref(receipt.manifest, receipt.path, role)
+    """Mint an authenticated ``ParentRef`` naming exactly this receipt's bytes.
+
+    The profile comes from the receipt, which settled it when the bytes were
+    admitted. Re-reading the path here would mint the digest of whatever is
+    there *now*, so bytes substituted after admission would be blessed with
+    their own digest by the step whose whole purpose is to authenticate them.
+    """
+    return ParentRef(
+        kind=receipt.manifest_kind,
+        id=receipt.manifest_id,
+        role=role,
+        uri=None,
+        metadata=authenticated_manifest_ref_metadata(
+            receipt.manifest_sha256, receipt.size_bytes
+        ),
+    )
 
 
 def receipt_exact_parent_entry(
