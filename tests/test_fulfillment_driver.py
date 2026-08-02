@@ -639,6 +639,155 @@ def test_a_matrix_may_not_state_a_staged_parent_its_lock_never_bound(
         _fulfill(outputs, "unbound-consumer", environment=environment)
 
 
+def test_a_restated_staged_parent_may_name_the_artifacts_own_role(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """The paired-controller shape: the document's role and the lock's differ.
+
+    A compiled matrix that inherits ``staged_parents`` from a tracked base
+    restates the parent as the artifact it is — role ``evaluation_run`` — while
+    the binding name the lock owns is what the *consumer* calls that slot, here
+    ``trial_bank``. Those are two true statements about different things, and the
+    restatement's job is only to agree about which artifact.
+
+    So the bound parent takes the lock's role, and the restatement is checked on
+    kind, id, and byte profile alone.
+    """
+    subject = outputs.probe("paired-subject")
+    bank = outputs.probe("paired-bank")
+    fulfill_closure(_closure(outputs, "paired-subject"), environment=environment)
+    produced = _fulfill(outputs, "paired-bank", environment=environment).results[0].receipt
+    raw = produced.path.read_bytes()
+    outputs.emit(
+        "paired-consumer",
+        {
+            "schema_id": "feedbax.spec.evaluation_run_matrix",
+            "schema_version": "feedbax.spec.evaluation_run_matrix.v3",
+            "base": _base_spec("paired-consumer"),
+            "rows": [{"row_id": "paired-consumer-0"}],
+            "staged_parents": {
+                "trial_bank": {
+                    "parent": {
+                        "kind": "EvaluationRunManifest",
+                        "id": produced.manifest_id,
+                        # The artifact's own role, exactly as the corpus base
+                        # states it, and deliberately not the binding name.
+                        "role": "evaluation_run",
+                        "metadata": {
+                            "ref_schema_id": "feedbax.ref.authenticated_manifest",
+                            "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+                            "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+                            "size_bytes": len(raw),
+                        },
+                    },
+                    "artifact_provider": "shared",
+                }
+            },
+        },
+        references=[
+            _subject(subject, role_path="body.subject", subject_id="subject"),
+            _subject(bank, role_path="body.trial_bank", subject_id="trial_bank"),
+        ],
+    )
+
+    request = _matrix_request(outputs, "paired-consumer", environment=environment, upstream=2)
+
+    staged = request.matrix["staged_parents"]
+    assert sorted(staged) == ["subject", "trial_bank"]
+    # The lock's consumer binding decides the role, so the restated
+    # ``evaluation_run`` is not what gets bound.
+    assert staged["trial_bank"]["parent"]["role"] == "trial_bank"
+    assert staged["trial_bank"]["parent"]["id"] == produced.manifest_id
+    assert staged["trial_bank"]["parent"]["metadata"]["manifest_sha256"] == (
+        hashlib.sha256(raw).hexdigest()
+    )
+    # A non-authenticating field the document owns still travels.
+    assert staged["trial_bank"]["artifact_provider"] == "shared"
+    assert request.matrix["base"]["params"]["staged_prerequisites"] == staged
+
+
+def test_a_restated_staged_parent_naming_another_artifact_still_refuses(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """Relaxing the role comparison does not relax the identity comparison."""
+    subject = outputs.probe("disagree-subject")
+    bank = outputs.probe("disagree-bank")
+    fulfill_closure(_closure(outputs, "disagree-subject"), environment=environment)
+    _fulfill(outputs, "disagree-bank", environment=environment)
+    outputs.emit(
+        "disagree-consumer",
+        {
+            "schema_id": "feedbax.spec.evaluation_run_matrix",
+            "schema_version": "feedbax.spec.evaluation_run_matrix.v3",
+            "base": _base_spec("disagree-consumer"),
+            "rows": [{"row_id": "disagree-consumer-0"}],
+            "staged_parents": {
+                "trial_bank": {
+                    "parent": {
+                        "kind": "EvaluationRunManifest",
+                        "id": "feedbax-evaluation-run:some-other-bank",
+                        "role": "evaluation_run",
+                    }
+                }
+            },
+        },
+        references=[
+            _subject(subject, role_path="body.subject", subject_id="subject"),
+            _subject(bank, role_path="body.trial_bank", subject_id="trial_bank"),
+        ],
+    )
+
+    with pytest.raises(NodeLoweringError) as caught:
+        _matrix_request(outputs, "disagree-consumer", environment=environment, upstream=2)
+
+    message = str(caught.value)
+    assert "some-other-bank" in message
+    assert "may only restate the artifact the lock binds" in message
+
+
+def test_a_restated_staged_parent_whose_digest_disagrees_refuses(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """Same artifact, different bytes: the restatement disagrees about the run."""
+    subject = outputs.probe("digest-subject")
+    bank = outputs.probe("digest-bank")
+    fulfill_closure(_closure(outputs, "digest-subject"), environment=environment)
+    produced = _fulfill(outputs, "digest-bank", environment=environment).results[0].receipt
+    outputs.emit(
+        "digest-consumer",
+        {
+            "schema_id": "feedbax.spec.evaluation_run_matrix",
+            "schema_version": "feedbax.spec.evaluation_run_matrix.v3",
+            "base": _base_spec("digest-consumer"),
+            "rows": [{"row_id": "digest-consumer-0"}],
+            "staged_parents": {
+                "trial_bank": {
+                    "parent": {
+                        "kind": "EvaluationRunManifest",
+                        "id": produced.manifest_id,
+                        "role": "evaluation_run",
+                        "metadata": {
+                            "ref_schema_id": "feedbax.ref.authenticated_manifest",
+                            "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+                            "manifest_sha256": DIGEST,
+                            "size_bytes": 1,
+                        },
+                    }
+                }
+            },
+        },
+        references=[
+            _subject(subject, role_path="body.subject", subject_id="subject"),
+            _subject(bank, role_path="body.trial_bank", subject_id="trial_bank"),
+        ],
+    )
+
+    with pytest.raises(NodeLoweringError) as caught:
+        _matrix_request(outputs, "digest-consumer", environment=environment, upstream=2)
+
+    assert "byte profile" in str(caught.value)
+
+
 def test_a_pinned_matrix_base_is_bound_without_being_touched(
     outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:

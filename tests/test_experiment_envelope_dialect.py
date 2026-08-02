@@ -16,6 +16,7 @@ testing the wrong thing.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -160,10 +161,10 @@ def test_a_v1_document_is_accepted_and_keeps_its_own_version() -> None:
                 "evaluation": {
                     "subject_id": "trained",
                     "subject": _RECEIPT,
-                    "staged_prerequisites": [{"name": "bank", "ref": _RECEIPT}],
+                    "prerequisites": {"bank": _RECEIPT},
                 }
             },
-            "evaluation.staged_prerequisites",
+            "evaluation.prerequisites",
         ),
         (
             {
@@ -938,3 +939,162 @@ class TestPerRowInputReference:
 
         assert caught.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
         assert "only when a per-row role is filled from it" in str(caught.value)
+
+
+# -- the corpus shape fits the ratified evaluation byte budget -------------
+
+
+#: The paired-controller evaluation envelope, re-authored at v2 with the staged
+#: prerequisite its compiled base names. Every scalar is the real corpus value,
+#: because the point of the case is the *size* of the actual shape: a synthetic
+#: stand-in with shorter ids would prove nothing about whether the corpus fits.
+#:
+#: The rlrmp2 evaluation layer caps an authored envelope at 2048 bytes
+#: (``specs/experiment/experiment_envelope.budgets.v3.json``). That document is
+#: ratified project policy and is not Feedbax's to widen, so the authoring form
+#: has to fit it. The list-of-objects spelling this construct started with did
+#: not: it spent about thirty bytes per prerequisite restating a key that JSON
+#: already gives a mapping for free, and pushed this envelope to 2063 bytes.
+PAIRED_CONTROLLER_BANK = (
+    "feedbax-evaluation-run:3686909fa04735e7b802e444885ff71f"
+)
+PAIRED_CONTROLLER_ENVELOPE: dict[str, Any] = {
+    "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
+    "base": "specs/post_run/sisu_paired_controller_response.matrix.v1.json",
+    "name": "sisu-paired-controller-response-continuous",
+    "issue": "b7f3caa",
+    "reason": (
+        "Bind the wave-1 continuous trained run and its capture checkpoints to the "
+        "paired controller response grid."
+    ),
+    "evaluation": {
+        "subject_id": "trained",
+        "subject": {
+            "kind": "receipt",
+            "manifest_kind": "TrainingRunManifest",
+            "manifest_id": "feedbax-training-run:662f6e3d4f17c350bbdf9737b591b405",
+            "manifest_sha256": (
+                "7dbca684ee130475beac8261d5bdbbdb171a25c3f63b762b037c430954d28a33"
+            ),
+            "size_bytes": 262904,
+        },
+        "prerequisites": {
+            "paired_trial_bank": {
+                "kind": "receipt",
+                "manifest_kind": "EvaluationRunManifest",
+                "manifest_id": PAIRED_CONTROLLER_BANK,
+                "manifest_sha256": (
+                    "983beeff4164fd6b19616bc912f8e36f519fa225b45ecf8606e1e5813610f3d5"
+                ),
+                "size_bytes": 22582,
+            }
+        },
+        "delta": {
+            "layer_id": "sisu-paired-controller-response-continuous.subject",
+            "acknowledges_ancestor_paths": [
+                "axes.0.values.0.deltas.7.value",
+                "axes.0.values.0.deltas.8.value",
+                "axes.0.values.0.deltas.9.value",
+                "axes.0.values.0.deltas.10.value",
+            ],
+            "patches": [
+                {
+                    "path": "axes.0.values.0.deltas.7.value",
+                    "op": "replace",
+                    "value": {
+                        "kind": "TrainingCheckpointTransactionManifest",
+                        "id": "tx-1003b37294bf4f9b83b074da256fa4a1",
+                        "role": "training_checkpoint_custody",
+                        "uri": (
+                            "transactions/tx-1003b37294bf4f9b83b074da256fa4a1/manifest.json"
+                        ),
+                        "metadata": {
+                            "manifest_sha256": (
+                                "1f6b6dbbe0f18508a82db0e30951b0983ab213c79944f3ef9bf"
+                                "738330a79acec"
+                            )
+                        },
+                    },
+                },
+                {
+                    "path": "axes.0.values.0.deltas.8.value",
+                    "op": "replace",
+                    "value": "capture-checkpoints",
+                },
+                {
+                    "path": "axes.0.values.0.deltas.9.value",
+                    "op": "replace",
+                    "value": 12000,
+                },
+                {
+                    "path": "axes.0.values.0.deltas.10.value",
+                    "op": "replace",
+                    "value": [
+                        {
+                            "kind": "TrainingRunManifest",
+                            "id": "feedbax-training-run:662f6e3d4f17c350bbdf9737b591b405",
+                            "role": "training_run",
+                            "metadata": {
+                                "ref_schema_id": "feedbax.ref.authenticated_manifest",
+                                "ref_schema_version": (
+                                    "feedbax.ref.authenticated_manifest.v1"
+                                ),
+                                "manifest_sha256": (
+                                    "7dbca684ee130475beac8261d5bdbbdb171a25c3f63b762b03"
+                                    "7c430954d28a33"
+                                ),
+                                "size_bytes": 262904,
+                            },
+                        }
+                    ],
+                },
+            ],
+        },
+    },
+}
+
+#: The ratified rlrmp2 evaluation-layer cap. Restated as a literal on purpose:
+#: reading it out of the project document would make this test pass whenever the
+#: project widened the cap, which is the one outcome it exists to prevent.
+RATIFIED_EVALUATION_MAX_BYTES = 2048
+
+
+def test_the_corpus_paired_controller_shape_fits_its_ratified_byte_budget() -> None:
+    """The real shape, at v2, inside the cap the project already ratified."""
+    minimal = json.dumps(
+        PAIRED_CONTROLLER_ENVELOPE, separators=(",", ":"), sort_keys=True
+    ).encode()
+
+    assert len(minimal) <= RATIFIED_EVALUATION_MAX_BYTES, (
+        f"the corpus shape encodes to {len(minimal)} bytes against a ratified cap of "
+        f"{RATIFIED_EVALUATION_MAX_BYTES}; the authoring form is Feedbax's to make lean, "
+        "and the project's budget is not Feedbax's to widen"
+    )
+
+
+def test_the_corpus_paired_controller_shape_parses_as_the_v2_grammar() -> None:
+    envelope = _parse(PAIRED_CONTROLLER_ENVELOPE)
+
+    assert envelope.schema_ == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2
+    assert envelope.evaluation.subject_id == "trained"
+    assert list(envelope.evaluation.prerequisites) == ["paired_trial_bank"]
+    prerequisite = envelope.evaluation.prerequisites["paired_trial_bank"]
+    assert isinstance(prerequisite, ReceiptReference)
+    assert prerequisite.is_authenticated
+    assert prerequisite.manifest_id == PAIRED_CONTROLLER_BANK
+
+
+def test_the_list_spelling_of_prerequisites_is_gone_rather_than_also_accepted() -> None:
+    """One spelling. The lean mapping is the form, not a second way to say it."""
+    document = {
+        **PAIRED_CONTROLLER_ENVELOPE,
+        "evaluation": {
+            **PAIRED_CONTROLLER_ENVELOPE["evaluation"],
+            "prerequisites": [{"name": "paired_trial_bank", "ref": _RECEIPT}],
+        },
+    }
+
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        _parse(document)
+
+    assert caught.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE

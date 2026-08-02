@@ -392,51 +392,37 @@ class TrainingLayerAuthoring(DialectModel):
 # -- evaluation ------------------------------------------------------------
 
 
-class StagedPrerequisiteAuthoring(DialectModel):
-    """One further named prerequisite every row of an evaluation inherits.
-
-    An evaluation has one subject. It may still need other already-produced
-    artifacts to run — a trial bank a paired controller is replayed against, a
-    reference evaluation a contrast is measured from — and those are named staged
-    prerequisites, addressed by binding name exactly as the subject is.
-
-    The compiled matrix's ``staged_parents`` block is *a plan*: it cannot
-    authenticate a parent, and lowering refuses a staged parent the compile lock
-    does not bind. This is the authoring form that puts one in the lock.
-    """
-
-    name: str
-    ref: AuthoredReference
-
-    @model_validator(mode="after")
-    def _validate(self) -> "StagedPrerequisiteAuthoring":
-        if not self.name.strip():
-            raise ValueError("a staged prerequisite states a nonempty binding name")
-        if isinstance(self.ref, NotApplicableAuthoring):
-            raise ValueError(
-                "a staged prerequisite that is not applicable is simply not authored; a "
-                "named prerequisite binding nothing would name an empty staged parent"
-            )
-        return self
-
-
 class EvaluationLayerAuthoring(DialectModel):
     """The subject an evaluation evaluates, and the recipe parameters it runs.
 
-    ``staged_prerequisites`` are the further named artifacts every row inherits
-    alongside the subject. They are v2 grammar: at v1 an evaluation could author
-    exactly one reference, which is why a v1 document whose compiled base states a
-    second staged parent has no way to authenticate it and refuses at lowering.
+    ``prerequisites`` are the further named artifacts every row inherits
+    alongside the subject: a trial bank a paired controller is replayed against,
+    a reference evaluation a contrast is measured from. An evaluation has one
+    subject, but it can need more than one already-produced input to run at all.
 
-    Absent and empty are distinct here, as everywhere else in this dialect. An
-    absent list is an evaluation with one subject and nothing further; an empty
-    one states a prerequisite block with no prerequisite in it, and is refused
-    rather than treated as the absent case.
+    The compiled matrix's ``staged_parents`` block is *a plan*: it cannot
+    authenticate a parent, and lowering refuses a staged parent the compile lock
+    does not bind. This is the authoring form that puts one in the lock. It is v2
+    grammar: at v1 an evaluation could author exactly one reference, which is why
+    a v1 document whose compiled base states a second staged parent has no way to
+    authenticate it and refuses at lowering.
+
+    It is a **mapping from binding name to reference**, mirroring the
+    ``staged_parents`` block it compiles into, for two reasons that both matter.
+    Uniqueness of binding names becomes structural rather than validated, and the
+    form is the smaller one — an authored envelope is judged against a byte
+    budget, and a list of ``{name, ref}`` objects spends roughly thirty bytes per
+    prerequisite restating a key JSON already has.
+
+    Absent and empty are distinct, as everywhere else in this dialect. An absent
+    mapping is an evaluation whose subject is its whole input; an empty one states
+    a prerequisite block with no prerequisite in it, and is refused rather than
+    read as the absent case.
     """
 
     subject: AuthoredReference
     subject_id: str
-    staged_prerequisites: list[StagedPrerequisiteAuthoring] | None = None
+    prerequisites: dict[str, AuthoredReference] | None = None
     recipe: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     delta: MatrixCompositionDelta | None = None
@@ -445,20 +431,26 @@ class EvaluationLayerAuthoring(DialectModel):
     def _validate(self) -> "EvaluationLayerAuthoring":
         if not self.subject_id.strip():
             raise ValueError("an evaluation names its subject id")
-        if self.staged_prerequisites is None:
+        if self.prerequisites is None:
             return self
-        if not self.staged_prerequisites:
+        if not self.prerequisites:
             raise ValueError(
-                "an evaluation that states staged prerequisites states at least one; omit "
-                "'staged_prerequisites' entirely when the subject is the whole input"
+                "an evaluation that states prerequisites states at least one; omit "
+                "'prerequisites' entirely when the subject is the whole input"
             )
-        names = [item.name for item in self.staged_prerequisites]
-        if len(set(names)) != len(names):
-            raise ValueError("staged prerequisite binding names must be unique")
-        if self.subject_id in names:
+        for name, ref in self.prerequisites.items():
+            if not name.strip():
+                raise ValueError("a prerequisite states a nonempty binding name")
+            if isinstance(ref, NotApplicableAuthoring):
+                raise ValueError(
+                    f"prerequisite {name!r} is stated not-applicable; a prerequisite that "
+                    "does not apply is simply not authored, because a named binding that "
+                    "binds nothing would name an empty staged parent"
+                )
+        if self.subject_id in self.prerequisites:
             raise ValueError(
-                f"staged prerequisite {self.subject_id!r} names the evaluation's own "
-                "subject; one binding name addresses exactly one authenticated parent"
+                f"prerequisite {self.subject_id!r} names the evaluation's own subject; one "
+                "binding name addresses exactly one authenticated parent"
             )
         return self
 
@@ -1078,7 +1070,7 @@ class VersionedConstruct:
 V2_ONLY_CONSTRUCTS: tuple[VersionedConstruct, ...] = (
     VersionedConstruct(
         "evaluation",
-        "staged_prerequisites",
+        "prerequisites",
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
         "further named staged prerequisites an evaluation's rows inherit",
     ),
@@ -1260,7 +1252,6 @@ __all__ = [
     "ReportBindingAuthoring",
     "ReportLayerAuthoring",
     "RowReplacement",
-    "StagedPrerequisiteAuthoring",
     "TagsDelta",
     "TrainingLayerAuthoring",
     "TrainingRowAuthoring",
