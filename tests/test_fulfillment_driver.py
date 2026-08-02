@@ -65,8 +65,10 @@ from feedbax.contracts.experiment_compile_lock import (
 )
 from feedbax.contracts.manifest import (
     ReportManifest,
+    canonical_json_bytes,
     canonical_manifest_path,
     load_manifest,
+    sha256_bytes,
     store_bytes_artifact,
 )
 
@@ -397,16 +399,44 @@ def test_a_compiled_spec_that_already_declares_inputs_refuses(
         _fulfill(outputs, "pre-bound", environment=environment)
 
 
-def _matrix_request(outputs: QuillonOutputs, target: str, *, environment):
+def _matrix_request(outputs: QuillonOutputs, target: str, *, environment, upstream: int = 1):
     """Fulfil everything upstream of one matrix node and return its request."""
     closure = _closure(outputs, target)
-    fulfill_closure(truncated_closure(closure, 1), environment=environment)
+    fulfill_closure(truncated_closure(closure, upstream), environment=environment)
     requests = closure_requests(
         _closure(outputs, target),
         environment=environment,
         stop_at=LogicalKey("evaluation", target),
     )
     return requests[-1]
+
+
+def _base_spec(stage: str, **params: Any) -> dict[str, Any]:
+    """The evaluation run spec a content-pinned matrix base holds."""
+    return {
+        "schema_id": "feedbax.spec.evaluation_run",
+        "schema_version": "feedbax.spec.evaluation_run.v1",
+        "evaluation_type": PROBE_TYPE,
+        "params": {"stage": stage, **params},
+    }
+
+
+def _write_base_spec(outputs: QuillonOutputs, relative: str, payload: dict[str, Any]) -> str:
+    """Write one content-pinned base into the repo and return its canonical pin."""
+    path = outputs.root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return sha256_bytes(canonical_json_bytes(payload))
+
+
+def _pinned_matrix(relative: str, sha256: str) -> dict[str, Any]:
+    """An axis matrix over a content-pinned base, which no injection may touch."""
+    return {
+        "schema_id": "feedbax.spec.evaluation_run_matrix",
+        "schema_version": "feedbax.spec.evaluation_run_matrix.v3",
+        "base": {"ref": relative, "sha256": sha256},
+        "axes": [{"id": "stage", "values": [{"id": "one"}, {"id": "two"}]}],
+    }
 
 
 def test_an_evaluation_matrix_binds_a_closure_edge_as_a_staged_parent(
@@ -506,29 +536,183 @@ def test_a_matrix_that_already_states_a_staged_parent_refuses_to_bind_it_twice(
         _fulfill(outputs, "twice-consumer", environment=environment)
 
 
-def test_a_matrix_with_a_pinned_base_cannot_receive_a_staged_prerequisite(
+def test_a_matrix_binds_every_typed_prerequisite_its_lock_authenticates(
     outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
-    """Injecting into pinned bytes would break the pin they are pinned by."""
-    source = outputs.probe("pinned-source")
+    """One matrix binds as many staged parents as its lock has required roles."""
+    from feedbax.analysis.evaluation import materialize_evaluation_run_matrix
+
+    first = outputs.probe("multi-first")
+    second = outputs.probe("multi-second")
+    outputs.probe_matrix(
+        "multi-consumer",
+        references=[
+            _subject(first, role_path="body.first", subject_id="baseline"),
+            _subject(second, role_path="body.second", subject_id="perturbed"),
+        ],
+    )
+
+    request = _matrix_request(outputs, "multi-consumer", environment=environment, upstream=2)
+
+    staged = request.matrix["staged_parents"]
+    assert list(staged) == ["baseline", "perturbed"]
+    assert [staged[name]["parent"]["role"] for name in staged] == ["baseline", "perturbed"]
+    assert staged["baseline"]["parent"]["id"] != staged["perturbed"]["parent"]["id"]
+    assert request.matrix["base"]["params"]["staged_prerequisites"] == staged
+
+    rows = materialize_evaluation_run_matrix(
+        request.matrix, registry=environment.registries.evaluation_recipes
+    )
+    for row in rows:
+        assert row.payload.params["staged_prerequisites"] == staged
+
+
+def test_a_matrix_may_restate_the_staged_parent_its_lock_authenticates(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """A restated entry is read, not trusted: its provider survives, its parent must agree."""
+    source = outputs.probe("restate-source")
+    outputs.probe_matrix(
+        "restate-probe",
+        references=[_subject(source, role_path="body.subject", subject_id="subject")],
+    )
+    bound = _matrix_request(outputs, "restate-probe", environment=environment)
+    authenticated = bound.matrix["staged_parents"]["subject"]["parent"]
+
     outputs.emit(
-        "pinned-consumer",
+        "restate-consumer",
         {
             "schema_id": "feedbax.spec.evaluation_run_matrix",
             "schema_version": "feedbax.spec.evaluation_run_matrix.v3",
-            "base": {"ref": "bases/pinned.json", "sha256": "a" * 64},
-            "axes": [
-                {
-                    "id": "stage",
-                    "path": "params.stage",
-                    "values": [{"id": "one"}, {"id": "two"}],
-                }
-            ],
+            "base": _base_spec("restate-consumer"),
+            "rows": [{"row_id": "restate-consumer-0"}],
+            "staged_parents": {
+                "subject": {"parent": authenticated, "artifact_provider": "evidence"}
+            },
         },
         references=[_subject(source, role_path="body.subject", subject_id="subject")],
     )
-    with pytest.raises(NodeLoweringError, match="content-pinned"):
-        _fulfill(outputs, "pinned-consumer", environment=environment)
+
+    request = _matrix_request(outputs, "restate-consumer", environment=environment)
+
+    staged = request.matrix["staged_parents"]
+    assert staged["subject"]["parent"] == authenticated
+    assert staged["subject"]["artifact_provider"] == "evidence"
+    assert request.matrix["base"]["params"]["staged_prerequisites"] == staged
+
+
+def test_a_matrix_may_not_state_a_staged_parent_its_lock_never_bound(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """A name only the document states has no authenticated source."""
+    source = outputs.probe("unbound-source")
+    outputs.emit(
+        "unbound-consumer",
+        {
+            "schema_id": "feedbax.spec.evaluation_run_matrix",
+            "schema_version": "feedbax.spec.evaluation_run_matrix.v3",
+            "base": _base_spec("unbound-consumer"),
+            "rows": [{"row_id": "unbound-consumer-0"}],
+            "staged_parents": {
+                "extra": {
+                    "parent": {
+                        "kind": "EvaluationRunManifest",
+                        "id": "feedbax-evaluation-run:extra",
+                        "role": "extra",
+                        "metadata": {
+                            "manifest_sha256": DIGEST,
+                            "ref_schema_id": "feedbax.ref.authenticated_manifest",
+                            "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+                            "size_bytes": 1,
+                        },
+                    }
+                }
+            },
+        },
+        references=[_subject(source, role_path="body.subject", subject_id="subject")],
+    )
+    with pytest.raises(NodeLoweringError, match="cannot authenticate a parent"):
+        _fulfill(outputs, "unbound-consumer", environment=environment)
+
+
+def test_a_pinned_matrix_base_is_bound_without_being_touched(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """Pinned bytes keep their pin; the authenticated parent binds at matrix level."""
+    source = outputs.probe("pinned-source")
+    pin = _write_base_spec(outputs, "bases/pinned.json", _base_spec("pinned"))
+    outputs.emit(
+        "pinned-consumer",
+        _pinned_matrix("bases/pinned.json", pin),
+        references=[_subject(source, role_path="body.subject", subject_id="subject")],
+    )
+
+    request = _matrix_request(outputs, "pinned-consumer", environment=environment)
+
+    assert request.matrix["base"] == {"ref": "bases/pinned.json", "sha256": pin}
+    staged = request.matrix["staged_parents"]
+    assert list(staged) == ["subject"]
+    assert staged["subject"]["parent"]["kind"] == "EvaluationRunManifest"
+
+
+def test_a_pinned_matrix_row_that_ignores_the_bound_parent_refuses(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """The parent is never silently unconsumed: every row must reference it."""
+    from feedbax.analysis.evaluation import materialize_evaluation_run_matrix
+
+    source = outputs.probe("ignored-source")
+    pin = _write_base_spec(outputs, "bases/ignored.json", _base_spec("ignored"))
+    outputs.emit(
+        "ignored-consumer",
+        _pinned_matrix("bases/ignored.json", pin),
+        references=[_subject(source, role_path="body.subject", subject_id="subject")],
+    )
+    request = _matrix_request(outputs, "ignored-consumer", environment=environment)
+
+    with pytest.raises(ValueError, match="does not reference staged parent"):
+        materialize_evaluation_run_matrix(
+            request.matrix,
+            registry=environment.registries.evaluation_recipes,
+            repo_root=outputs.root,
+        )
+
+
+def test_a_pinned_matrix_row_that_states_the_bound_parent_materializes(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """A pinned base that already consumes the parent runs under the lock's binding."""
+    from feedbax.analysis.evaluation import materialize_evaluation_run_matrix
+
+    source = outputs.probe("consumed-source")
+    first = _write_base_spec(outputs, "bases/consumed.json", _base_spec("consumed"))
+    outputs.emit(
+        "consumed-consumer",
+        _pinned_matrix("bases/consumed.json", first),
+        references=[_subject(source, role_path="body.subject", subject_id="subject")],
+    )
+    staged = _matrix_request(
+        outputs, "consumed-consumer", environment=environment
+    ).matrix["staged_parents"]
+
+    consuming = _base_spec("consumed", staged_prerequisites=staged)
+    second = _write_base_spec(outputs, "bases/consumed.json", consuming)
+    outputs.emit(
+        "consumed-consumer",
+        _pinned_matrix("bases/consumed.json", second),
+        references=[_subject(source, role_path="body.subject", subject_id="subject")],
+    )
+    request = _matrix_request(outputs, "consumed-consumer", environment=environment)
+
+    rows = materialize_evaluation_run_matrix(
+        request.matrix,
+        registry=environment.registries.evaluation_recipes,
+        repo_root=outputs.root,
+    )
+
+    assert [row.row_id for row in rows] == ["stage-one", "stage-two"]
+    for row in rows:
+        assert row.payload.params["staged_prerequisites"] == staged
 
 
 # --------------------------------------------------------------------------
