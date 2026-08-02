@@ -87,6 +87,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     FIGURE_COMPOSITION_OUTPUT,
     FIGURE_OUTPUT,
     REPORT_OUTPUT,
+    REPORT_PARAMS_MODELS,
     TRAINING_OUTPUT,
     AnalysisLayerAuthoring,
     EvaluationLayerAuthoring,
@@ -549,22 +550,43 @@ def _params_patches(params: Mapping[str, Any], prefix: str) -> list[OverridePatc
 
 def _tag_patches(
     inherited: Sequence[Any], tags: Any, *, field: str
-) -> list[OverridePatch]:
-    """Return ordered patches realizing a tags delta over the inherited list.
+) -> tuple[list[OverridePatch], list[str]]:
+    """Return ordered patches realizing a tags delta, and the paths they rewrite.
 
     Additions are emitted first, appending past the end, and removals second
     against the list as it then stands. Doing it the other way round would have a
-    removal free an index that a later addition immediately reclaims, and one
-    composition layer may not write the same path twice.
+    removal free an index that a later addition immediately reclaims.
+
+    Removing more than one tag necessarily writes the same index twice: the list
+    closes up behind the first removal, so the second tag arrives at a position
+    an earlier patch already decided. Composition refuses an unacknowledged
+    overwrite, and a training envelope has no layer-level delta to acknowledge
+    through, so the *generated* layer states the acknowledgement itself. That is
+    normative derivation, not an authoring loophole: the engine is acknowledging
+    a path the engine's own derivation just wrote, computed from the tags delta
+    and the inherited list and from nothing else. Add-only authoring writes each
+    index once and acknowledges nothing, exactly as before.
+
+    Returns:
+        The ordered patches, and the sorted paths the generated layer rewrites.
     """
     if tags is None:
-        return []
+        return [], []
     current = list(inherited)
     patches: list[OverridePatch] = []
+    written: set[str] = set()
+    rewritten: set[str] = set()
+
+    def emit(patch: OverridePatch) -> None:
+        if patch.path in written:
+            rewritten.add(patch.path)
+        written.add(patch.path)
+        patches.append(patch)
+
     for tag in tags.add:
         if tag in current:
             reject_echo(f"{field}.add", tag, "the resolved parent")
-        patches.append(OverridePatch(path=f"tags.{len(current)}", op="add", value=tag))
+        emit(OverridePatch(path=f"tags.{len(current)}", op="add", value=tag))
         current.append(tag)
     for tag in tags.remove:
         if tag not in current:
@@ -575,9 +597,9 @@ def _tag_patches(
                 correct_home="a tags delta removes a tag the base states",
             )
         index = current.index(tag)
-        patches.append(OverridePatch(path=f"tags.{index}", op="remove"))
+        emit(OverridePatch(path=f"tags.{index}", op="remove"))
         current.pop(index)
-    return patches
+    return patches, sorted(rewritten)
 
 
 def _resolve_matrix_base_payload(
@@ -783,9 +805,10 @@ def _lower_training(context: LayerCompileContext) -> LoweredLayer:
         rows = authored_rows
         patches.append(OverridePatch(path="rows", op="replace", value=authored_rows))
 
-    patches.extend(
-        _tag_patches(parent.get("tags") or [], authored.tags, field="training.tags")
+    tag_patches, tag_acknowledgements = _tag_patches(
+        parent.get("tags") or [], authored.tags, field="training.tags"
     )
+    patches.extend(tag_patches)
 
     runnable = {str(row.get("row_id")) for row in rows}
     for index, item in enumerate(authored.checkpoint_initialization):
@@ -812,7 +835,7 @@ def _lower_training(context: LayerCompileContext) -> LoweredLayer:
         )
     return LoweredLayer(
         contract=TRAINING_OUTPUT,
-        deltas=_one_delta(context, patches),
+        deltas=_one_delta(context, patches, acknowledges=tag_acknowledgements),
         references=references,
         row_provenance=row_provenance,
     )
@@ -893,6 +916,21 @@ def _lower_analysis(context: LayerCompileContext) -> LoweredLayer:
     )
 
 
+#: The versioned structural rule under which a ``per_row`` figure input role
+#: carries no single runtime locator. The role is not unbound: row expansion
+#: fills it once per expanded row from the row index's own custody, and the
+#: per-row profile and its closed artifact contract are recorded in the lock's
+#: ``figure_row_expansion`` identity contribution. What is *not* applicable is
+#: the single-locator reference slot, and stating that is different from leaving
+#: the role silent.
+PER_ROW_INPUT_RULE_ID = "feedbax.experiment_envelope.per_row_figure_input.v1"
+PER_ROW_INPUT_REASON = (
+    "row expansion fills this role once per expanded row from the row index's custody, "
+    "so no single locator addresses it; the per-row profile and its artifact contract "
+    "are recorded in the figure_row_expansion identity contribution"
+)
+
+
 def _lower_figure(context: LayerCompileContext) -> LoweredLayer:
     """Lower one figure operation, dispatched on the mode the envelope states."""
     authored = context.envelope.content
@@ -908,18 +946,30 @@ def _lower_figure(context: LayerCompileContext) -> LoweredLayer:
             "row_expansion and a composition figure; a composition document is this "
             "engine's own output shape, not an experiment parent",
         )
-    references = [
-        _reference_for(
-            context,
-            item.ref,
-            role_path=f"inputs.{item.input_role}",
-            field=f"figure.inputs[{index}].ref",
-            consumer_of=lambda _kind, _id, item=item: FigureRuntimeInputBinding(
-                input_role=item.input_role
-            ),
+    references: list[Any] = []
+    for index, item in enumerate(authored.inputs):
+        role_path = f"inputs.{item.input_role}"
+        if item.ref is None:
+            references.append(
+                NotApplicableReference(
+                    role_path=role_path,
+                    basis="compiler_rule",
+                    reason=PER_ROW_INPUT_REASON,
+                    rule_id=PER_ROW_INPUT_RULE_ID,
+                )
+            )
+            continue
+        references.append(
+            _reference_for(
+                context,
+                item.ref,
+                role_path=role_path,
+                field=f"figure.inputs[{index}].ref",
+                consumer_of=lambda _kind, _id, item=item: FigureRuntimeInputBinding(
+                    input_role=item.input_role
+                ),
+            )
         )
-        for index, item in enumerate(authored.inputs)
-    ]
     if authored.mode is FigureLayerMode.ROW_EXPANSION:
         return _lower_figure_row_expansion(context, authored, references)
     return _lower_figure_composition(context, authored, references)
@@ -1068,6 +1118,35 @@ def _lower_figure_composition(
     )
 
 
+#: The report types whose ``params`` the report layer contract itself knows well
+#: enough to reconcile binding state inside. A type absent from this table
+#: carries params whose owner is the recipe that registered it, and nothing here
+#: touches them; the table is the same Feedbax-owned identity
+#: :data:`~feedbax.contracts.experiment_envelope_dialect.REPORT_PARAMS_MODELS`
+#: validates against, because knowing a field's meaning and validating it are the
+#: same knowledge.
+REPORT_BINDING_STATE_REPORT_TYPES: frozenset[str] = frozenset(REPORT_PARAMS_MODELS)
+
+#: The fields an ordered-figure report node uses to *describe* the state of the
+#: role it stands for. The set is closed and enumerated rather than swept for:
+#: a heuristic over field names would reconcile authored science the moment a
+#: project chose a similar-looking word, and these four are Feedbax's own
+#: (:mod:`feedbax.analysis.reports`).
+REPORT_APPLICABILITY_FIELD = "applicability"
+REPORT_FIGURE_DIGEST_FIELD = "figure_spec_sha256"
+REPORT_INPUT_ROLE_FIELD = "input_role"
+REPORT_NOT_APPLICABLE_REASON_FIELD = "not_applicable_reason"
+REPORT_BINDING_STATE_FIELDS: tuple[str, ...] = (
+    REPORT_APPLICABILITY_FIELD,
+    REPORT_FIGURE_DIGEST_FIELD,
+    REPORT_INPUT_ROLE_FIELD,
+    REPORT_NOT_APPLICABLE_REASON_FIELD,
+)
+
+#: The applicability value a role bound to authored not-applicability carries.
+REPORT_NOT_APPLICABLE_VALUE = "not_applicable"
+
+
 def _lower_report(context: LayerCompileContext) -> LoweredLayer:
     """Lower ordered report role bindings, including authored not-applicability."""
     authored = context.envelope.content
@@ -1086,8 +1165,159 @@ def _lower_report(context: LayerCompileContext) -> LoweredLayer:
     ]
     return LoweredLayer(
         contract=REPORT_OUTPUT,
-        deltas=_one_delta(context, [], authored.delta),
+        deltas=_one_delta(
+            context, _binding_state_patches(context, authored, references), authored.delta
+        ),
         references=references,
+    )
+
+
+def _resolve_role_node(document: Mapping[str, Any], role_path: str) -> Any:
+    """Return what the inherited document carries at one dotted role path.
+
+    ``None`` means the document carries nothing there, which is the ordinary case
+    and not an error: a report base commonly declares an empty slot list and the
+    binding is the only statement about the role.
+    """
+    node: Any = document
+    for part in role_path.split("."):
+        if isinstance(node, Mapping):
+            if part not in node:
+                return None
+            node = node[part]
+        elif isinstance(node, Sequence) and not isinstance(node, (str, bytes)):
+            if not part.isdigit() or int(part) >= len(node):
+                return None
+            node = node[int(part)]
+        else:
+            return None
+    return node
+
+
+def _binding_state_patches(
+    context: LayerCompileContext,
+    authored: ReportLayerAuthoring,
+    references: Sequence[Any],
+) -> list[OverridePatch]:
+    """Return the derived patches that make the document say what the lock says.
+
+    A report binding decides the *state* of one role. When the inherited document
+    also describes that state — it says the role is included, or names the figure
+    spec digest that fills it — the two can disagree, and a compiled document that
+    claims a role is included while its lock records not-applicability is
+    misinformation of exactly the species the parent's ``issue`` was.
+
+    These patches are engine derivations, not authored content: every value comes
+    from the binding the envelope already stated and from the reference it lowered
+    to, so there is nothing here for an author to spell a second way. The
+    reconciliation runs only inside a report type Feedbax owns the params of, and
+    only over the closed set of fields that *describe* binding state; authored
+    science at the same node is untouched.
+    """
+    document = context.parent.pinned.document
+    if str(document.get("report_type")) not in REPORT_BINDING_STATE_REPORT_TYPES:
+        return []
+    patches: list[OverridePatch] = []
+    for index, (binding, reference) in enumerate(zip(authored.bindings, references)):
+        node = _resolve_role_node(document, binding.role_path)
+        if not isinstance(node, Mapping):
+            continue
+        if not any(name in node for name in REPORT_BINDING_STATE_FIELDS):
+            continue
+        if isinstance(reference, NotApplicableReference):
+            patches.extend(_not_applicable_state_patches(binding.role_path, node, reference))
+        else:
+            patches.extend(
+                _bound_state_patches(
+                    binding.role_path, node, reference, field=f"report.bindings[{index}]"
+                )
+            )
+    return patches
+
+
+def _state_patch(role_path: str, node: Mapping[str, Any], name: str, value: Any) -> OverridePatch:
+    """Return the patch that makes one descriptor field state ``value``."""
+    return OverridePatch(
+        path=f"{role_path}.{name}", op="replace" if name in node else "add", value=value
+    )
+
+
+def _not_applicable_state_patches(
+    role_path: str, node: Mapping[str, Any], reference: NotApplicableReference
+) -> list[OverridePatch]:
+    """Reconcile one role the envelope declares not applicable.
+
+    The document is made to state the bound state rather than to forget it:
+    dropping the ``applicability`` descriptor would leave the node claiming the
+    contract's default, which is inclusion, so the contradiction would survive
+    the removal. The reason is the one the envelope authored, which is also the
+    one the lock's :class:`NotApplicableReference` records — one authored string,
+    two places that quote it. The descriptors that name the artifact the role does
+    *not* have are removed, because a role that is not applicable has none.
+    """
+    patches: list[OverridePatch] = []
+    for name, value in (
+        (REPORT_APPLICABILITY_FIELD, REPORT_NOT_APPLICABLE_VALUE),
+        (REPORT_NOT_APPLICABLE_REASON_FIELD, reference.reason),
+    ):
+        if name in node and scalar_equal(node[name], value):
+            continue
+        patches.append(_state_patch(role_path, node, name, value))
+    for name in (REPORT_FIGURE_DIGEST_FIELD, REPORT_INPUT_ROLE_FIELD):
+        if name in node:
+            patches.append(OverridePatch(path=f"{role_path}.{name}", op="remove"))
+    return patches
+
+
+def _bound_state_patches(
+    role_path: str, node: Mapping[str, Any], reference: Any, *, field: str
+) -> list[OverridePatch]:
+    """Reconcile one role the envelope binds to a product.
+
+    The inherited ``figure_spec_sha256`` authenticates whatever figure the base
+    was authored against, and this envelope has bound the role to a different one.
+    When the binding is a planned product that compiles to a figure spec, the
+    digest is replaced by that document's content hash: both are the canonical
+    hash of the same figure spec bytes, computed in the one hash domain
+    (:data:`~feedbax.contracts.authored_canonical.CANONICAL_PIN_ALGORITHM`), so
+    this quotes the compile's own product rather than authoring a post-run fact.
+    Every other binding is refused: a receipt names a manifest, not a figure spec,
+    and clearing the digest alone would leave an included figure the report
+    contract cannot validate, so there is no honest reconciliation to derive.
+    """
+    if node.get(REPORT_APPLICABILITY_FIELD) == REPORT_NOT_APPLICABLE_VALUE:
+        _reject(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            f"{field}.role_path",
+            f"{role_path!r} is inherited as {REPORT_NOT_APPLICABLE_VALUE!r} while this "
+            "envelope binds it to a product; the compiler cannot derive the input role and "
+            "figure digest an included role states",
+            correct_home="bind a role the base leaves included, or state this binding as "
+            "not_applicable and leave the base's statement standing",
+        )
+    if REPORT_FIGURE_DIGEST_FIELD not in node:
+        return []
+    if (
+        isinstance(reference, PlannedProductReference)
+        and reference.product_schema_id == FIGURE_OUTPUT.schema_id
+    ):
+        if scalar_equal(node[REPORT_FIGURE_DIGEST_FIELD], reference.compiled_content_hash):
+            return []
+        return [
+            OverridePatch(
+                path=f"{role_path}.{REPORT_FIGURE_DIGEST_FIELD}",
+                op="replace",
+                value=reference.compiled_content_hash,
+            )
+        ]
+    _reject(
+        ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+        f"{field}.ref",
+        f"{role_path!r} inherits a {REPORT_FIGURE_DIGEST_FIELD} authenticating a different "
+        "figure spec, and this binding names no compiled figure whose digest could replace "
+        "it; a compile may quote a digest something else produced and may never author one",
+        correct_home=f"bind the role to the envelope that compiles the figure, or remove the "
+        f"inherited {REPORT_FIGURE_DIGEST_FIELD} from the base this envelope changes",
     )
 
 
@@ -1095,12 +1325,19 @@ def _one_delta(
     context: LayerCompileContext,
     generated: Sequence[OverridePatch],
     authored: MatrixCompositionDelta | None = None,
+    *,
+    acknowledges: Sequence[str] = (),
 ) -> list[MatrixCompositionDelta]:
     """Return the ordered composition layers one envelope contributes.
 
     The generated layer comes first and the authored native delta second, so an
     authored patch that overwrites something the envelope's own structured fields
     decided has to acknowledge it exactly as it would an ancestor's.
+
+    ``acknowledges`` names the paths the *generated* layer knowingly rewrites
+    within itself, which only a derivation that realizes one authored statement
+    as several ordered patches produces. It is never widened by anything
+    authored: the lowerer computes it beside the patches it computed.
     """
     deltas: list[MatrixCompositionDelta] = []
     if generated:
@@ -1108,6 +1345,7 @@ def _one_delta(
             MatrixCompositionDelta(
                 layer_id=f"{context.envelope.name}.{context.layer.value}",
                 patches=list(generated),
+                acknowledges_ancestor_paths=list(acknowledges),
             )
         )
     if authored is not None:
@@ -1529,6 +1767,10 @@ def compiled_document_pin(document: Any) -> dict[str, str]:
 
 __all__ = [
     "DOCUMENT_SOURCES_KEY",
+    "PER_ROW_INPUT_REASON",
+    "PER_ROW_INPUT_RULE_ID",
+    "REPORT_BINDING_STATE_FIELDS",
+    "REPORT_BINDING_STATE_REPORT_TYPES",
     "TRAINING_UNINHERITED_TOP_LEVEL_FIELDS",
     "EnvelopeCompileOutcome",
     "EnvelopeKernel",
