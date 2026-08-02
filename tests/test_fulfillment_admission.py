@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import plotly.graph_objects as go
@@ -17,9 +18,11 @@ from feedbax.analysis.fulfillment import (
     admit_evaluation_receipt,
     admit_figure_receipt,
     admit_report_receipt,
+    artifact_bytes_path,
     evaluation_expected_parents,
     migrate_admission_outcome,
     receipt_path,
+    resolve_artifact_bytes,
 )
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
@@ -279,6 +282,128 @@ def test_artifact_without_digest_refuses(tmp_path: Path) -> None:
     outcome = admit_evaluation_receipt(spec, root=tmp_path)
     assert not outcome.admitted
     assert "artifact_digest_absent" in outcome.codes
+
+
+# --- Artifact byte location containment --------------------------------------
+
+
+def _located_artifact(relative_path: str, *, data: bytes = b"located payload\n") -> ArtifactRef:
+    """An artifact whose bytes are claimed at exactly one recorded location."""
+    return ArtifactRef(
+        role="evaluation_states",
+        logical_name="states.bin",
+        sha256=hashlib.sha256(data).hexdigest(),
+        size_bytes=len(data),
+        metadata={"relative_path": relative_path},
+    )
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    ["/etc/passwd", "../outside/states.bin", "artifacts/../../outside/states.bin"],
+)
+def test_recorded_relative_paths_that_leave_the_root_do_not_resolve(
+    tmp_path: Path, relative_path: str
+) -> None:
+    """Absolute and upward-walking recorded paths resolve to nothing.
+
+    This is the lexical half of containment and it holds by inspection of the
+    recorded string, before any filesystem access.
+    """
+    artifact = _located_artifact(relative_path)
+
+    resolution = resolve_artifact_bytes(artifact, root=tmp_path)
+
+    assert artifact_bytes_path(artifact, root=tmp_path) is None
+    assert resolution.reason == "relative_path_escapes_root"
+
+
+def test_a_recorded_path_through_a_symlink_out_of_the_root_does_not_resolve(
+    tmp_path: Path,
+) -> None:
+    """A lexically contained path whose bytes are physically outside is refused.
+
+    Every component of ``artifacts/escape/states.bin`` is an ordinary name, so
+    lexical containment accepts it; the bytes it reaches live outside custody.
+    """
+    root = tmp_path / "receipts"
+    outside = tmp_path / "outside"
+    outside.mkdir(parents=True)
+    payload = b"out-of-custody payload\n"
+    (outside / "states.bin").write_bytes(payload)
+    (root / "artifacts").mkdir(parents=True)
+    (root / "artifacts" / "escape").symlink_to(outside, target_is_directory=True)
+    artifact = _located_artifact("artifacts/escape/states.bin", data=payload)
+
+    resolution = resolve_artifact_bytes(artifact, root=root)
+
+    assert resolution.path is None, "out-of-custody bytes never stand in for a receipt's own"
+    assert resolution.reason == "relative_path_traverses_symlink"
+
+    spec = _evaluation_spec()
+    _write_evaluation(root, spec, artifacts=[artifact])
+    outcome = admit_evaluation_receipt(spec, root=root)
+    assert not outcome.admitted
+    assert "artifact_bytes_unresolvable" in outcome.codes
+    unresolvable = next(f for f in outcome.failures if f.code == "artifact_bytes_unresolvable")
+    assert unresolvable.details["reason"] == "relative_path_traverses_symlink"
+
+
+def test_an_ambiguous_digest_prefix_refuses_instead_of_picking_by_sort_order(
+    tmp_path: Path,
+) -> None:
+    """Two stored files sharing one digest prefix are two candidates, not a winner."""
+    stored = store_bytes_artifact(
+        b"ambiguous payload\n",
+        root=tmp_path,
+        role="evaluation_states",
+        logical_name="states.bin",
+        suffix=".bin",
+    )
+    digest = stored.sha256
+    assert digest is not None
+    shard = tmp_path / "artifacts" / "sha256" / digest[:2]
+    (shard / f"{digest}.aliased").write_bytes(b"a different byte stream entirely\n")
+    # The digest-prefix fallback only runs when no location was recorded.
+    without_location = stored.model_copy(update={"metadata": {}})
+
+    resolution = resolve_artifact_bytes(without_location, root=tmp_path)
+
+    assert resolution.path is None
+    assert resolution.reason == "digest_ambiguous"
+    assert resolution.candidates == (f"{digest}.aliased", f"{digest}.bin")
+    assert artifact_bytes_path(without_location, root=tmp_path) is None
+
+    spec = _evaluation_spec()
+    _write_evaluation(tmp_path, spec, artifacts=[without_location])
+    outcome = admit_evaluation_receipt(spec, root=tmp_path)
+    assert not outcome.admitted
+    unresolvable = next(f for f in outcome.failures if f.code == "artifact_bytes_unresolvable")
+    assert unresolvable.details["reason"] == "digest_ambiguous"
+    assert unresolvable.details["candidates"] == [f"{digest}.aliased", f"{digest}.bin"]
+
+
+def test_an_unambiguous_digest_prefix_still_resolves(tmp_path: Path) -> None:
+    """The fallback is unchanged when exactly one stored file carries the digest."""
+    stored = store_bytes_artifact(
+        b"unambiguous payload\n",
+        root=tmp_path,
+        role="evaluation_states",
+        logical_name="states.bin",
+        suffix=".bin",
+    )
+    without_location = stored.model_copy(update={"metadata": {}})
+
+    resolution = resolve_artifact_bytes(without_location, root=tmp_path)
+
+    assert resolution.reason is None
+    assert resolution.path == tmp_path / "artifacts" / "sha256" / stored.sha256[:2] / (
+        f"{stored.sha256}.bin"
+    )
+
+    spec = _evaluation_spec()
+    _write_evaluation(tmp_path, spec, artifacts=[without_location])
+    assert admit_evaluation_receipt(spec, root=tmp_path).admitted
 
 
 def test_analysis_receipt_admits_and_refuses_on_spec_drift(tmp_path: Path) -> None:
