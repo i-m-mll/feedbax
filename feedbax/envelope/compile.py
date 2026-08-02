@@ -44,7 +44,9 @@ authenticated reference a previous run produced, and it may never author one.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+import json
+import posixpath
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path, PurePosixPath
@@ -186,6 +188,116 @@ def _reject(
     )
 
 
+#: What an alias is, said once, for every refusal that has to explain itself.
+_ALIAS_CORRECT_HOME = (
+    "an alias names another envelope by its path stem under the project's envelope "
+    "directory — 'leaf' or 'study/leaf' — in canonical relative POSIX form"
+)
+
+
+class UncontainedEnvelopeAliasError(ExperimentEnvelopeRejection):
+    """An alias does not name a path the envelope directory contains.
+
+    An alias is a *path stem*, so it is exactly the place a directory traversal
+    hides in. The rule is proved on the joined path rather than on the authored
+    string, because the authored string is what a traversal is written to look
+    innocent as.
+
+    Nothing is normalized on the author's behalf. An alias that would have to be
+    rewritten to become legal does not unambiguously name one envelope, and this
+    engine refuses ambiguity rather than picking a reading of it.
+
+    Attributes:
+        alias: The authored alias, exactly as written.
+        envelope_directory: The directory the alias had to stay inside.
+        reason: Which part of the containment grammar it broke.
+        resolved: The joined repo-relative path, when the alias got far enough
+            to have one.
+    """
+
+    def __init__(
+        self,
+        alias: str,
+        *,
+        envelope_directory: str,
+        reason: str,
+        field: str,
+        resolved: str | None = None,
+    ) -> None:
+        joined = "" if resolved is None else f", which joins to {resolved!r}"
+        super().__init__(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            f"{alias!r} is not an envelope alias contained by {envelope_directory!r}: "
+            f"{reason}{joined}",
+            field=field,
+            correct_home=_ALIAS_CORRECT_HOME,
+        )
+        self.alias = alias
+        self.envelope_directory = envelope_directory
+        self.reason = reason
+        self.resolved = resolved
+
+
+class DuplicateOutputAddressError(ExperimentEnvelopeRejection):
+    """Two authored envelopes in one project compile to the same output address.
+
+    An envelope's authored ``name`` — not its path — addresses both of its
+    compiled outputs. Two envelopes stating one name therefore write over each
+    other, and the loser is whichever compiled first: a silent loss of a
+    compiled document that no per-envelope check can see, because neither
+    envelope is wrong on its own. Directory namespacing makes basename
+    collisions natural and so makes this collision reachable, which is why the
+    corpus is checked as a corpus, before anything is written.
+
+    Attributes:
+        name: The authored name both envelopes state.
+        envelope_refs: Every colliding envelope, repo-relative, in path order.
+        output_path: The output address they share.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        envelope_refs: Iterable[str],
+        output_path: str,
+        *,
+        field: str | None = None,
+    ) -> None:
+        refs = tuple(envelope_refs)
+        super().__init__(
+            ExperimentEnvelopeRejectionCategory.DUPLICATE_KEY,
+            f"{len(refs)} envelopes state the name {name!r}, so they compile to the one "
+            f"output address {output_path!r}: {', '.join(refs)}",
+            field=field if field is not None else f"{refs[0]}#name",
+            correct_home="an envelope's name is the identity of its compiled outputs and is "
+            "unique across the project; a subdirectory namespaces the alias that reaches an "
+            "envelope, not the address its outputs are written to",
+        )
+        self.name = name
+        self.envelope_refs = refs
+        self.output_path = output_path
+
+
+def _authored_output_name(path: Path) -> str | None:
+    """Return the output-addressing name one authored envelope states, if any.
+
+    This is deliberately a shallow read rather than a compile. An envelope whose
+    bytes are unreadable, whose JSON is malformed, or which states no name is
+    refused by its own compile with its own diagnostic naming it; claiming that
+    failure here would report one broken envelope as a corpus-wide collision.
+    """
+    try:
+        document = json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(document, Mapping):
+        return None
+    name = document.get("name")
+    if isinstance(name, str) and name.strip():
+        return name
+    return None
+
+
 @dataclass(frozen=True)
 class EnvelopeLayout:
     """Where a project files its authored envelopes and its compiled outputs.
@@ -212,9 +324,66 @@ class EnvelopeLayout:
             output_directory=declaration.output_directory,
         )
 
-    def alias_ref(self, alias: str) -> str:
-        """Return the repo-relative envelope path one alias names."""
-        return str(PurePosixPath(self.envelope_directory) / f"{alias}{self.envelope_suffix}")
+    def alias_ref(self, alias: str, *, field: str = "envelope.alias") -> str:
+        """Return the repo-relative envelope path one alias names.
+
+        The alias is a path stem under :attr:`envelope_directory`, so it is held
+        to the grammar of a contained relative POSIX path before it is joined,
+        and the joined path is then proved to lie inside that directory. Both
+        halves are kept: the grammar names what the author must fix, and the
+        containment proof is what actually holds, so a later loosening of the
+        grammar cannot quietly reopen the escape.
+
+        Args:
+            alias: The authored alias, exactly as written.
+            field: The authored position named in a refusal.
+
+        Returns:
+            The repo-relative path of the envelope the alias names.
+
+        Raises:
+            UncontainedEnvelopeAliasError: The alias is absolute, carries ``..``,
+                a backslash, an empty or ``.`` segment, or any other noncanonical
+                form, or joins to a path outside the envelope directory.
+        """
+        self._refuse_uncontained_alias(alias, field=field)
+        ref = str(PurePosixPath(self.envelope_directory) / f"{alias}{self.envelope_suffix}")
+        if posixpath.normpath(ref) != ref or not path_is_within(ref, self.envelope_directory):
+            raise UncontainedEnvelopeAliasError(
+                alias,
+                envelope_directory=self.envelope_directory,
+                reason="the path it names is not inside the envelope directory",
+                field=field,
+                resolved=ref,
+            )
+        return ref
+
+    def _refuse_uncontained_alias(self, alias: str, *, field: str) -> None:
+        """Refuse every alias form that is not a contained relative POSIX stem."""
+
+        def refuse(reason: str) -> NoReturn:
+            raise UncontainedEnvelopeAliasError(
+                alias,
+                envelope_directory=self.envelope_directory,
+                reason=reason,
+                field=field,
+            )
+
+        if not isinstance(alias, str) or not alias:
+            refuse("an alias is a nonempty string")
+        if alias != alias.strip():
+            refuse("it carries leading or trailing whitespace")
+        if "\\" in alias:
+            refuse("it carries a backslash, which is not a POSIX path separator")
+        if alias.startswith("/") or PurePosixPath(alias).is_absolute():
+            refuse("it is an absolute path rather than a stem under the envelope directory")
+        segments = alias.split("/")
+        if any(segment == "" for segment in segments):
+            refuse("it carries an empty path segment")
+        if any(segment in (".", "..") for segment in segments):
+            refuse("it carries a '.' or '..' segment, which walks out of the envelope directory")
+        if posixpath.normpath(alias) != alias:
+            refuse("it is not in canonical form")
 
 
 #: The block a Feedbax matrix document names the further documents it reads in.
@@ -1772,7 +1941,11 @@ class EnvelopeKernel:
     def _resolve_alias_parent(
         self, repo_root: Path, base: str, stack: tuple[str, ...], field: str
     ) -> ResolvedParent:
-        alias_ref = self.layout.alias_ref(base)
+        alias_ref = self.layout.alias_ref(base, field=field)
+        # The joined path is checked too, not only the authored string: a project
+        # whose envelope directory sits under its output directory would
+        # otherwise reach compiled output through an alias that looks contained.
+        self.refuse_compiled_output_base(alias_ref, field)
         if not (repo_root / alias_ref).is_file():
             _reject(
                 ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
@@ -1838,7 +2011,8 @@ class EnvelopeKernel:
         parent = self.resolve_parent(repo_root, envelope.base, _stack, expected_layer=layer)
 
         def compile_upstream(alias: str, field: str) -> EnvelopeCompileOutcome:
-            upstream_ref = self.layout.alias_ref(alias)
+            upstream_ref = self.layout.alias_ref(alias, field=field)
+            self.refuse_compiled_output_base(upstream_ref, field)
             if not (repo_root / upstream_ref).is_file():
                 _reject(
                     ExperimentEnvelopeRejectionCategory.UNRESOLVED_UPSTREAM_REFERENCE,
@@ -1992,10 +2166,18 @@ class EnvelopeKernel:
 
     # -- output ------------------------------------------------------------
 
+    def compile_lock_path(self, name: str, out_dir: Path) -> Path:
+        """Return the compile-lock address one authored name claims.
+
+        This address is derived from the name alone, so it is the address two
+        envelopes collide at whatever layers they author.
+        """
+        return out_dir / f"{name}.compile-lock.json"
+
     def output_paths(self, outcome: EnvelopeCompileOutcome, out_dir: Path) -> dict[str, Path]:
         """Return where one compile's two outputs belong, without writing them."""
         return {
-            "compile_lock": out_dir / f"{outcome.name}.compile-lock.json",
+            "compile_lock": self.compile_lock_path(outcome.name, out_dir),
             "document": out_dir / f"{outcome.name}.{outcome.family}.json",
         }
 
@@ -2008,11 +2190,75 @@ class EnvelopeKernel:
         return paths
 
     def envelopes(self, repo_root: Path) -> list[Path]:
-        """Return every authored envelope in the project's envelope directory."""
+        """Return every authored envelope in the project's envelope directory.
+
+        The walk recurses, so a project may file its envelopes in subdirectories
+        and still have the whole corpus enumerated: an alias is a path stem, so a
+        subdirectory is a real part of an envelope's address rather than a place
+        the engine stops looking. Order is the deterministic repo-relative POSIX
+        path order, so two runs on one tree enumerate identically.
+
+        Compiled output stays flat and is not affected: this is the enumeration
+        of *authored* documents only.
+        """
         directory = repo_root / self.layout.envelope_directory
         if not directory.is_dir():
             return []
-        return sorted(directory.glob(f"*{self.layout.envelope_suffix}"))
+        return sorted(
+            directory.rglob(f"*{self.layout.envelope_suffix}"), key=lambda path: path.as_posix()
+        )
+
+    def output_claims(self, repo_root: Path) -> dict[str, tuple[str, ...]]:
+        """Return which envelopes claim each authored output name.
+
+        Every envelope in the corpus is read shallowly for the one field that
+        addresses its outputs. An envelope that states no readable name is
+        omitted rather than guessed at: its own compile refuses it, and naming
+        the same failure twice in two vocabularies helps nobody.
+        """
+        claims: dict[str, list[str]] = {}
+        for path in self.envelopes(repo_root):
+            name = _authored_output_name(path)
+            if name is None:
+                continue
+            claims.setdefault(name, []).append(_repo_relative(path, repo_root))
+        return {name: tuple(refs) for name, refs in claims.items()}
+
+    def refuse_duplicate_output_addresses(
+        self, repo_root: Path, *, out_dir: Path | None = None
+    ) -> None:
+        """Refuse a corpus in which two envelopes compile to one output address.
+
+        This is a property of the corpus, not of any one envelope, so it is
+        checked over the whole envelope directory and before anything is
+        written. Compiling first and detecting the collision afterwards would
+        already have overwritten one of the two compiled documents.
+
+        Args:
+            repo_root: Root the envelope directory resolves against.
+            out_dir: Where compiled output is written, so the refusal can name
+                the address that collides. Defaults to the layout's output
+                directory under ``repo_root``.
+
+        Raises:
+            DuplicateOutputAddressError: Two or more envelopes state one name.
+        """
+        output_root = out_dir if out_dir is not None else repo_root / self.layout.output_directory
+        for name, refs in sorted(self.output_claims(repo_root).items()):
+            if len(refs) > 1:
+                raise DuplicateOutputAddressError(
+                    name,
+                    refs,
+                    _repo_relative(self.compile_lock_path(name, output_root), repo_root),
+                )
+
+
+def _repo_relative(path: Path, repo_root: Path) -> str:
+    """Return *path* as a repo-relative POSIX string when it is one."""
+    try:
+        return path.relative_to(repo_root).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 def check_no_co_created_protected_document(
@@ -2058,12 +2304,14 @@ __all__ = [
     "REPORT_BINDING_STATE_REPORT_TYPES",
     "REPORT_NOT_APPLICABLE_REMOVALS",
     "TRAINING_UNINHERITED_TOP_LEVEL_FIELDS",
+    "DuplicateOutputAddressError",
     "EnvelopeCompileOutcome",
     "EnvelopeKernel",
     "EnvelopeLayout",
     "LayerCompileContext",
     "LoweredLayer",
     "ResolvedParent",
+    "UncontainedEnvelopeAliasError",
     "authored_layer_of",
     "check_echo",
     "check_no_co_created_protected_document",
