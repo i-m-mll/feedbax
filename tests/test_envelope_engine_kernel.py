@@ -184,10 +184,83 @@ def test_the_same_content_is_admitted_under_the_layer_with_the_wider_cap(
     assert parsed["reason"] == prose
 
 
-def test_project_caps_are_validated_but_left_to_the_project(budgets: AuthoringBudgets) -> None:
-    assert budgets.for_layer("training").project_cap("max_probes") == 6
-    with pytest.raises(KeyError):
-        budgets.for_layer("report").project_cap("max_probes")
+def test_optional_caps_are_stated_only_where_the_dimension_exists(
+    budgets: AuthoringBudgets,
+) -> None:
+    """``max_rows`` binds the one layer that authors rows, and nothing else."""
+    assert budgets.for_layer("training").optional_cap("max_rows") == 2
+    assert budgets.for_layer("report").optional_cap("max_rows") is None
+    with pytest.raises(KeyError, match="not an optional budget cap"):
+        budgets.for_layer("training").optional_cap("max_probes")
+
+
+def test_budget_document_refuses_a_project_cap_nothing_enforces() -> None:
+    """A declared cap nothing checks reads as a bound while permitting everything."""
+    document = _budget_document()
+    document["layers"]["training"]["project_caps"] = {"max_probes": 6}
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        AuthoringBudgets.from_document(
+            document, field="budget.json", declared_layers=DECLARED_LAYERS
+        )
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert "max_probes" in str(excinfo.value)
+    assert "['max_rows']" in str(excinfo.value)
+
+
+def test_budget_document_refuses_a_nonpositive_optional_cap() -> None:
+    document = _budget_document()
+    document["layers"]["training"]["project_caps"] = {"max_rows": 0}
+
+    with pytest.raises(ExperimentEnvelopeRejection, match="positive integer"):
+        AuthoringBudgets.from_document(
+            document, field="budget.json", declared_layers=DECLARED_LAYERS
+        )
+
+
+def _authored_training_rows(repo: Path, count: int) -> None:
+    """Re-author the training envelope so it states exactly *count* rows."""
+    envelope = _read(repo, "widened")
+    envelope["training"]["rows"] = [
+        {"from": "baseline", "id": f"widened-{index}", "seed": 43 + index}
+        for index in range(count)
+    ]
+    envelope["training"].pop("checkpoint_initialization", None)
+    _write(repo, "widened", envelope)
+
+
+def test_authoring_rows_up_to_the_row_cap_compiles(repo: Path) -> None:
+    """The cap is a bound, not a target: authoring exactly it is admitted."""
+    _authored_training_rows(repo, 2)
+
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert [row["row_id"] for row in outcome.document["rows"]] == [
+        "baseline",
+        "widened-0",
+        "widened-1",
+    ]
+
+
+def test_authoring_more_rows_than_the_cap_is_refused(repo: Path) -> None:
+    _authored_training_rows(repo, 3)
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.BUDGET_EXCEEDED
+    assert "3 authored rows exceeds" in str(excinfo.value)
+    assert str(excinfo.value.field).endswith("#training.rows")
+
+
+def test_a_layer_that_authors_no_rows_is_bound_by_no_row_cap(repo: Path) -> None:
+    """The figure layer's budget states no max_rows, so nothing here bounds it."""
+    outcome = kernel().compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+
+    assert len(outcome.document["panels"]) == 2
 
 
 def test_budget_document_refuses_a_section_with_a_mistyped_cap() -> None:
@@ -391,6 +464,188 @@ def test_lock_loader_rejects_a_foreign_family() -> None:
 
     with pytest.raises(ExperimentEnvelopeRejection, match="schema_id"):
         load_compile_lock(lock, field="compiled/probe.compile-lock.json")
+
+
+# -- the whole v1 document is validated on read ---------------------------------
+
+
+def _compiled_lock(repo: Path, alias: str = "widened") -> dict[str, Any]:
+    """Return one real compiled lock as tracked JSON, ready to be damaged."""
+    outcome = kernel().compile_envelope_file(envelope_path(repo, alias), repo_root=repo)
+    return json.loads(json.dumps(outcome.compile_lock))
+
+
+def _drop_key(lock: dict[str, Any]) -> None:
+    del lock["base"]
+
+
+def _foreign_key(lock: dict[str, Any]) -> None:
+    lock["compiled_at"] = "2026-08-01"
+
+
+def _blank_name(lock: dict[str, Any]) -> None:
+    lock["name"] = "  "
+
+
+def _blank_issue(lock: dict[str, Any]) -> None:
+    lock["issue"] = ""
+
+
+def _envelope_hash(lock: dict[str, Any]) -> None:
+    lock["envelope"]["envelope_hash"] = "not-a-digest"
+
+
+def _envelope_ref(lock: dict[str, Any]) -> None:
+    del lock["envelope"]["ref"]
+
+
+def _base_domain(lock: dict[str, Any]) -> None:
+    lock["base"]["pin_algorithm"] = "md5"
+
+
+def _base_digest(lock: dict[str, Any]) -> None:
+    lock["base"]["content_hash"] = "0" * 63
+
+
+def _lineage_shape(lock: dict[str, Any]) -> None:
+    lock["lineage"] = {"ref": "bases/baseline.training_run_matrix.json"}
+
+
+def _lineage_pin(lock: dict[str, Any]) -> None:
+    del lock["lineage"][0]["content_hash"]
+
+
+def _delta_key(lock: dict[str, Any]) -> None:
+    key, value = next(iter(lock["resolved_deltas"].items()))
+    lock["resolved_deltas"] = {f"{key}.renamed": value}
+
+
+def _delta_shape(lock: dict[str, Any]) -> None:
+    key = next(iter(lock["resolved_deltas"]))
+    del lock["resolved_deltas"][key]["patches"]
+
+
+def _delta_patch(lock: dict[str, Any]) -> None:
+    key = next(iter(lock["resolved_deltas"]))
+    del lock["resolved_deltas"][key]["patches"][0]["op"]
+
+
+def _assertion_shape(lock: dict[str, Any]) -> None:
+    del lock["assertions"][0]["owner_ref"]
+
+
+def _document_digest(lock: dict[str, Any]) -> None:
+    lock["compiled_document"]["content_hash"] = "zz" + "0" * 62
+
+
+def _document_family(lock: dict[str, Any]) -> None:
+    lock["compiled_document"]["family"] = ""
+
+
+def _contract_version(lock: dict[str, Any]) -> None:
+    lock["compiler_contract"]["contract_version"] = "rival.contract.v1"
+
+
+def _implementation_shape(lock: dict[str, Any]) -> None:
+    del lock["compiler_implementation"]["package_versions"]
+
+
+def _implementation_code_unit(lock: dict[str, Any]) -> None:
+    lock["compiler_implementation"]["code_unit"] = " "
+
+
+def _identity_digest(lock: dict[str, Any]) -> None:
+    lock["execution_identity"]["sha256"] = "a" * 64
+
+
+def _identity_inputs(lock: dict[str, Any]) -> None:
+    lock["execution_identity"]["inputs"] = []
+
+
+@pytest.mark.parametrize(
+    ("damage", "category", "match"),
+    [
+        (_drop_key, ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "base"),
+        (_foreign_key, ExperimentEnvelopeRejectionCategory.UNKNOWN_FIELD, "compiled_at"),
+        (_blank_name, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "name"),
+        (_blank_issue, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "issue"),
+        (_envelope_hash, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "envelope_hash"),
+        (_envelope_ref, ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "ref"),
+        (_base_domain, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "pin_algorithm"),
+        (_base_digest, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "content_hash"),
+        (_lineage_shape, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "lineage is a list"),
+        (_lineage_pin, ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "content_hash"),
+        (_delta_key, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "own layer id"),
+        (_delta_shape, ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "patches"),
+        (_delta_patch, ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "op"),
+        (_assertion_shape, ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "owner_ref"),
+        (_document_digest, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "content_hash"),
+        (_document_family, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "family"),
+        (
+            _contract_version,
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "does not extend contract id",
+        ),
+        (
+            _implementation_shape,
+            ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
+            "package_versions",
+        ),
+        (
+            _implementation_code_unit,
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "code unit",
+        ),
+        (_identity_digest, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "re-derive"),
+        (
+            _identity_inputs,
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "names the facts it was built from",
+        ),
+    ],
+)
+def test_the_loader_refuses_a_lock_damaged_anywhere_in_the_v1_document(
+    repo: Path, damage: Any, category: Any, match: str
+) -> None:
+    """A consumer that trusts a lock trusts all of it, so all of it is checked."""
+    lock = _compiled_lock(repo)
+    damage(lock)
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        load_compile_lock(lock, field="compiled/widened.compile-lock.json")
+
+    assert excinfo.value.category is category
+    assert match in str(excinfo.value)
+
+
+def test_the_loader_accepts_every_compiled_lock_the_fixture_produces(repo: Path) -> None:
+    """The validation is derived from what the compiler emits, not guessed at."""
+    for alias in ("widened", "widened-probe", "widened-summary", "widened-plot"):
+        lock = _compiled_lock(repo, alias)
+        assert load_compile_lock(lock, field=f"compiled/{alias}.compile-lock.json") == lock
+
+
+def test_an_identity_contribution_dropped_after_emission_is_refused(repo: Path) -> None:
+    """The contributions and the identity they were hashed into must agree."""
+    lock = _compiled_lock(repo, "widened-plot")
+    assert set(lock["identity_contributions"]) == {
+        "figure_row_expansion",
+        "resolved_row_set",
+    }
+    del lock["identity_contributions"]["resolved_row_set"]
+
+    with pytest.raises(ExperimentEnvelopeRejection, match="names the facts it was built from"):
+        load_compile_lock(lock, field="compiled/widened-plot.compile-lock.json")
+
+
+def test_an_empty_identity_contributions_block_is_refused(repo: Path) -> None:
+    """The emitter omits the block when there is nothing in it."""
+    lock = _compiled_lock(repo, "widened-plot")
+    lock["identity_contributions"] = {}
+    lock["execution_identity"]["inputs"] = ["compiled_document.content_hash"]
+
+    with pytest.raises(ExperimentEnvelopeRejection, match="empty block is omitted"):
+        load_compile_lock(lock, field="compiled/widened-plot.compile-lock.json")
 
 
 def test_the_lock_migration_slot_exists_in_the_shared_spec_registry() -> None:
@@ -1316,7 +1571,9 @@ def test_row_expansion_names_no_produced_data_in_the_compiled_plan(repo: Path) -
 
     assert not outcome.document.get("inputs")
     assert not outcome.document.get("input_authorities")
-    assert outcome.compile_lock["references"][0]["kind"] == "planned_product"
+    kinds = {item["kind"] for item in outcome.compile_lock["references"]}
+    assert "planned_product" not in kinds
+    assert "not_applicable" in kinds
     check_plan_receipt_boundary(outcome.compile_lock)
 
 
@@ -1559,6 +1816,10 @@ def test_a_figure_runtime_input_that_has_not_run_is_a_locator_in_the_lock(
     repo: Path,
 ) -> None:
     envelope = _read(repo, "widened-plot")
+    # A locator belongs to a role one manifest fills for every row; a per-row
+    # role has no single locator and the dialect refuses one on it.
+    envelope["figure"]["inputs"][0]["binding"] = "shared"
+    envelope["figure"]["inputs"][0]["binding_key"] = "widened-plot-observed"
     envelope["figure"]["inputs"][0]["ref"] = {
         "kind": "receipt",
         "manifest_kind": "quillon.survey_run",
@@ -1909,6 +2170,93 @@ def test_a_section_already_stating_its_bound_applicability_is_replaced_not_added
     ]
 
 
+# -- an authored delta may not restate what a binding decided --------------------
+
+
+def _report_delta(repo: Path, patches: list[dict[str, Any]]) -> None:
+    """Give the report envelope one authored composition delta."""
+    envelope = _read(repo, "widened-report")
+    envelope["report"] = {
+        **envelope["report"],
+        "delta": {"layer_id": "widened-report", "patches": patches},
+    }
+    _write(repo, "widened-report", envelope)
+
+
+def _reconciled_section(repo: Path) -> None:
+    """Set up the compile whose binding derives state over section 0."""
+    _report_base_figure(repo, figure_spec_sha256="a" * 64, applicability="included")
+    _report_bindings(repo, [SECTION_NOT_APPLICABLE_BINDING])
+
+
+@pytest.mark.parametrize(
+    ("path", "op", "value"),
+    [
+        # the derived path itself
+        ("params.sections.0.applicability", "replace", "included"),
+        # a path under one the derivation removes
+        ("params.sections.0.figures.0.caption", "replace", "Widened span"),
+        # the node that contains every derived path
+        ("params.sections.0", "replace", {"title": "Span", "figures": []}),
+    ],
+)
+def test_an_authored_patch_over_binding_derived_state_is_refused(
+    repo: Path, path: str, op: str, value: Any
+) -> None:
+    """The delta is applied after the derivation, so it would simply win."""
+    _reconciled_section(repo)
+    _report_delta(repo, [{"path": path, "op": op, "value": value}])
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        _compile_report(repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert path in str(excinfo.value)
+    assert "params.sections.0" in str(excinfo.value)
+    assert str(excinfo.value.field).startswith("report.delta.patches[0]")
+
+
+def test_an_authored_patch_on_a_path_no_binding_decides_still_compiles(
+    repo: Path,
+) -> None:
+    """Only the derived nodes are closed to the delta; the rest of the report is not."""
+    _reconciled_section(repo)
+    _report_delta(
+        repo,
+        [
+            {"path": "params.title", "op": "replace", "value": "Quillon widened span"},
+            {"path": "params.sections.1", "op": "add", "value": {"title": "Appendix"}},
+        ],
+    )
+
+    outcome = _compile_report(repo)
+
+    assert outcome.document["params"]["title"] == "Quillon widened span"
+    assert outcome.document["params"]["sections"][1]["title"] == "Appendix"
+    assert outcome.document["params"]["sections"][0]["applicability"] == "not_applicable"
+
+
+def test_an_authored_delta_is_free_when_the_bindings_derive_nothing(repo: Path) -> None:
+    """No derivation, no owned paths: the ordinary authored delta is untouched."""
+    _report_bindings(
+        repo,
+        [
+            {
+                "role_path": "params.sections.0.figures.0",
+                "ref": {"kind": "not_applicable", "reason": "no panel was produced"},
+            }
+        ],
+    )
+    _report_delta(
+        repo,
+        [{"path": "params.sections.0.title", "op": "replace", "value": "Span"}],
+    )
+
+    outcome = _compile_report(repo)
+
+    assert outcome.document["params"]["sections"][0]["title"] == "Span"
+
+
 def test_recompiling_a_reconciled_section_derives_no_further_patch(repo: Path) -> None:
     """A reconciled base is a fixed point: the second compile changes nothing."""
     from tests.fake_project_experiment import REPORT_BASE
@@ -2046,16 +2394,7 @@ def test_a_params_node_the_contract_gives_no_applicability_stays_lock_only(
 # -- a per-row figure input has no single locator --------------------------------
 
 
-def _per_row_input(repo: Path) -> None:
-    """Drop the false single reference from the per-row role the figure expands."""
-    envelope = _read(repo, "widened-plot")
-    envelope["figure"]["inputs"][0].pop("ref")
-    _write(repo, "widened-plot", envelope)
-
-
 def test_a_per_row_input_without_a_reference_compiles(repo: Path) -> None:
-    _per_row_input(repo)
-
     outcome = kernel().compile_envelope_file(
         envelope_path(repo, "widened-plot"), repo_root=repo
     )
@@ -2069,8 +2408,6 @@ def test_the_lock_states_the_per_row_role_rather_than_a_false_locator(
     repo: Path,
 ) -> None:
     from feedbax.envelope.compile import PER_ROW_INPUT_RULE_ID
-
-    _per_row_input(repo)
 
     outcome = kernel().compile_envelope_file(
         envelope_path(repo, "widened-plot"), repo_root=repo

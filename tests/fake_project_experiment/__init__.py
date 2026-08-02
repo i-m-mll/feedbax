@@ -252,7 +252,6 @@ FIGURE_ENVELOPE: dict[str, Any] = {
         "inputs": [
             {
                 "input_role": "observed",
-                "ref": {"kind": "envelope", "alias": "widened-summary"},
                 "binding": "per_row",
                 "binding_key": "observations",
                 "contract": {

@@ -725,6 +725,364 @@ def build_compile_lock(inputs: CompileLockInputs) -> dict[str, Any]:
     return lock
 
 
+#: The blocks every v1 lock states. ``base`` is stated as ``null`` for a root
+#: document rather than omitted, so absence is a malformed lock, not a root one.
+REQUIRED_COMPILE_LOCK_KEYS: tuple[str, ...] = (
+    "schema_id",
+    "schema_version",
+    "name",
+    "envelope",
+    "base",
+    "lineage",
+    "row_provenance",
+    "resolved_deltas",
+    "references",
+    "assertions",
+    "compiled_document",
+    "compiler_contract",
+    "compiler_implementation",
+    "execution_identity",
+)
+
+#: The blocks a v1 lock states only when it has something to say: the tracking
+#: reference the envelope authored, and the contributions that widened execution
+#: identity. Nothing else may appear at the top level.
+OPTIONAL_COMPILE_LOCK_KEYS: tuple[str, ...] = ("issue", "identity_contributions")
+
+_IDENTITY_DOCUMENT_INPUT = "compiled_document.content_hash"
+
+
+def _lock_reject(
+    field: str,
+    message: str,
+    category: ExperimentEnvelopeRejectionCategory = (
+        ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    ),
+) -> Any:
+    raise ExperimentEnvelopeRejection(category, message, field=field)
+
+
+def _lock_mapping(value: Any, field: str, what: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        _lock_reject(field, f"{what} is an object; found {type(value).__name__}")
+    return value
+
+
+def _lock_sequence(value: Any, field: str, what: str) -> Sequence[Any]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        _lock_reject(field, f"{what} is a list; found {type(value).__name__}")
+    return value
+
+
+def _lock_text(value: Any, field: str, what: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        _lock_reject(field, f"{what} is a nonempty string; found {value!r}")
+    return value
+
+
+def _lock_digest(value: Any, field: str, what: str) -> str:
+    _lock_text(value, field, what)
+    if not _DIGEST_RE.fullmatch(value):
+        _lock_reject(field, f"{what} is a lowercase sha256 digest; found {value!r}")
+    return value
+
+
+def _lock_keys(value: Mapping[str, Any], expected: Sequence[str], field: str, what: str) -> None:
+    missing = sorted(set(expected) - set(value))
+    if missing:
+        _lock_reject(
+            field,
+            f"{what} states {missing!r}",
+            ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
+        )
+    unknown = sorted(set(value) - set(expected))
+    if unknown:
+        _lock_reject(
+            field,
+            f"{what} states nothing outside {sorted(expected)!r}; found {unknown!r}",
+            ExperimentEnvelopeRejectionCategory.UNKNOWN_FIELD,
+        )
+
+
+def _lock_pin(value: Any, field: str, what: str, *, extra: Sequence[str] = ()) -> None:
+    """Validate one content-pin record: a ref, its digest, and the hash domain."""
+    record = _lock_mapping(value, field, what)
+    _lock_keys(record, ("ref", "content_hash", "pin_algorithm", *extra), field, what)
+    for name in ("ref", *extra):
+        _lock_text(record[name], f"{field}.{name}", f"{what} {name}")
+    _lock_digest(record["content_hash"], f"{field}.content_hash", f"{what} content_hash")
+    if record["pin_algorithm"] != CANONICAL_PIN_ALGORITHM:
+        _lock_reject(
+            f"{field}.pin_algorithm",
+            f"{what} pin_algorithm is {CANONICAL_PIN_ALGORITHM!r}; found "
+            f"{record['pin_algorithm']!r}",
+        )
+
+
+def _validate_lock_envelope(lock: Mapping[str, Any], field: str) -> None:
+    what = "a compile lock's envelope block"
+    record = _lock_mapping(lock["envelope"], f"{field}#envelope", what)
+    _lock_keys(
+        record, ("schema", "ref", "envelope_hash", "pin_algorithm"), f"{field}#envelope", what
+    )
+    _lock_text(record["schema"], f"{field}#envelope.schema", f"{what} schema")
+    _lock_text(record["ref"], f"{field}#envelope.ref", f"{what} ref")
+    _lock_digest(
+        record["envelope_hash"], f"{field}#envelope.envelope_hash", f"{what} envelope_hash"
+    )
+    if record["pin_algorithm"] != CANONICAL_PIN_ALGORITHM:
+        _lock_reject(
+            f"{field}#envelope.pin_algorithm",
+            f"{what} pin_algorithm is {CANONICAL_PIN_ALGORITHM!r}; found "
+            f"{record['pin_algorithm']!r}",
+        )
+
+
+def _validate_lock_lineage(lock: Mapping[str, Any], field: str) -> None:
+    if lock["base"] is not None:
+        _lock_pin(
+            lock["base"],
+            f"{field}#base",
+            "a compile lock's resolved parent pin",
+            extra=("kind",),
+        )
+    pins = _lock_sequence(lock["lineage"], f"{field}#lineage", "a compile lock's lineage")
+    for index, pin in enumerate(pins):
+        _lock_pin(pin, f"{field}#lineage[{index}]", "a compile lock's lineage pin")
+
+
+def _validate_lock_resolved_deltas(lock: Mapping[str, Any], field: str) -> None:
+    """Validate the layers the compile resolved, keyed by their own layer ids."""
+    what = "a compile lock's resolved deltas"
+    deltas = _lock_mapping(lock["resolved_deltas"], f"{field}#resolved_deltas", what)
+    for key, value in deltas.items():
+        locator = f"{field}#resolved_deltas.{key}"
+        _lock_text(key, locator, f"{what} key")
+        record = _lock_mapping(value, locator, "a resolved delta")
+        _lock_keys(
+            record,
+            ("layer_id", "patches", "acknowledges_ancestor_paths"),
+            locator,
+            "a resolved delta",
+        )
+        if record["layer_id"] != key:
+            _lock_reject(
+                f"{locator}.layer_id",
+                f"a resolved delta is keyed by its own layer id; {key!r} holds "
+                f"{record['layer_id']!r}",
+            )
+        patches = _lock_sequence(record["patches"], f"{locator}.patches", "a delta's patches")
+        for index, patch in enumerate(patches):
+            entry = _lock_mapping(patch, f"{locator}.patches[{index}]", "a delta patch")
+            for name in ("path", "op"):
+                if name not in entry:
+                    _lock_reject(
+                        f"{locator}.patches[{index}]",
+                        f"a delta patch states {name!r}",
+                        ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
+                    )
+                _lock_text(
+                    entry[name], f"{locator}.patches[{index}].{name}", f"a delta patch {name}"
+                )
+        acknowledged = _lock_sequence(
+            record["acknowledges_ancestor_paths"],
+            f"{locator}.acknowledges_ancestor_paths",
+            "a delta's acknowledged ancestor paths",
+        )
+        for index, path in enumerate(acknowledged):
+            _lock_text(
+                path,
+                f"{locator}.acknowledges_ancestor_paths[{index}]",
+                "an acknowledged ancestor path",
+            )
+
+
+def _validate_lock_assertions(lock: Mapping[str, Any], field: str) -> None:
+    what = "a compile lock's assertions"
+    records = _lock_sequence(lock["assertions"], f"{field}#assertions", what)
+    for index, value in enumerate(records):
+        locator = f"{field}#assertions[{index}]"
+        record = _lock_mapping(value, locator, "a checked assertion")
+        _lock_keys(
+            record, ("path", "expected", "actual", "owner_ref"), locator, "a checked assertion"
+        )
+        _lock_text(record["path"], f"{locator}.path", "a checked assertion path")
+        _lock_text(
+            record["owner_ref"], f"{locator}.owner_ref", "a checked assertion owner_ref"
+        )
+
+
+def _validate_lock_provenance(lock: Mapping[str, Any], field: str) -> None:
+    """Validate the compiled document's identity and the compiler that produced it."""
+    what = "a compile lock's compiled document block"
+    compiled = _lock_mapping(lock["compiled_document"], f"{field}#compiled_document", what)
+    _lock_keys(
+        compiled,
+        ("family", "content_hash", "pin_algorithm"),
+        f"{field}#compiled_document",
+        what,
+    )
+    _lock_text(compiled["family"], f"{field}#compiled_document.family", f"{what} family")
+    _lock_digest(
+        compiled["content_hash"],
+        f"{field}#compiled_document.content_hash",
+        f"{what} content_hash",
+    )
+    if compiled["pin_algorithm"] != CANONICAL_PIN_ALGORITHM:
+        _lock_reject(
+            f"{field}#compiled_document.pin_algorithm",
+            f"{what} pin_algorithm is {CANONICAL_PIN_ALGORITHM!r}; found "
+            f"{compiled['pin_algorithm']!r}",
+        )
+
+    contract = _lock_mapping(
+        lock["compiler_contract"], f"{field}#compiler_contract", "a compiler contract"
+    )
+    _lock_keys(
+        contract,
+        ("contract_id", "contract_version"),
+        f"{field}#compiler_contract",
+        "a compiler contract",
+    )
+    contract_id = _lock_text(
+        contract["contract_id"], f"{field}#compiler_contract.contract_id", "a contract id"
+    )
+    contract_version = _lock_text(
+        contract["contract_version"],
+        f"{field}#compiler_contract.contract_version",
+        "a contract version",
+    )
+    if not contract_version.startswith(f"{contract_id}."):
+        _lock_reject(
+            f"{field}#compiler_contract.contract_version",
+            f"contract version {contract_version!r} does not extend contract id "
+            f"{contract_id!r}",
+        )
+
+    implementation = _lock_mapping(
+        lock["compiler_implementation"],
+        f"{field}#compiler_implementation",
+        "a compiler implementation",
+    )
+    _lock_keys(
+        implementation,
+        ("code_unit", "package_versions"),
+        f"{field}#compiler_implementation",
+        "a compiler implementation",
+    )
+    _lock_text(
+        implementation["code_unit"],
+        f"{field}#compiler_implementation.code_unit",
+        "a compiler code unit",
+    )
+    packages = _lock_mapping(
+        implementation["package_versions"],
+        f"{field}#compiler_implementation.package_versions",
+        "compiler package versions",
+    )
+    for name, installed in packages.items():
+        locator = f"{field}#compiler_implementation.package_versions.{name}"
+        _lock_text(name, locator, "a compiler package name")
+        # ``None`` is the stated fact that a named package is not installed.
+        if installed is not None:
+            _lock_text(installed, locator, "a compiler package version")
+
+
+def _validate_lock_execution_identity(lock: Mapping[str, Any], field: str) -> None:
+    """Re-derive execution identity from the lock's own facts.
+
+    Everything the writer hashed is in the document the reader is holding, so an
+    identity that does not reproduce is not a fact this lock can support. The
+    input list is derived the same way, which is what makes a contribution that
+    was added or dropped after emission visible rather than silent.
+    """
+    what = "a compile lock's execution identity"
+    identity = _lock_mapping(lock["execution_identity"], f"{field}#execution_identity", what)
+    _lock_keys(identity, ("sha256", "inputs"), f"{field}#execution_identity", what)
+    _lock_digest(
+        identity["sha256"], f"{field}#execution_identity.sha256", f"{what} sha256"
+    )
+    inputs = _lock_sequence(
+        identity["inputs"], f"{field}#execution_identity.inputs", f"{what} inputs"
+    )
+    contributions = lock.get("identity_contributions", {})
+    expected_inputs = [
+        _IDENTITY_DOCUMENT_INPUT,
+        *(f"identity_contributions.{key}" for key in sorted(contributions)),
+    ]
+    if list(inputs) != expected_inputs:
+        _lock_reject(
+            f"{field}#execution_identity.inputs",
+            f"{what} names the facts it was built from; expected {expected_inputs!r}, "
+            f"found {list(inputs)!r}",
+        )
+    preimage: dict[str, Any] = {
+        "compiled_document": lock["compiled_document"]["content_hash"]
+    }
+    for key in sorted(contributions):
+        preimage[key] = canonical_sha256(contributions[key])
+    expected_sha256 = canonical_sha256(preimage)
+    if identity["sha256"] != expected_sha256:
+        _lock_reject(
+            f"{field}#execution_identity.sha256",
+            f"{what} does not re-derive from this lock's own facts; expected "
+            f"{expected_sha256!r}, found {identity['sha256']!r}",
+        )
+
+
+def _validate_v1_compile_lock(lock: Mapping[str, Any], field: str) -> None:
+    """Validate the whole v1 document, not only the blocks a reader happens to use.
+
+    A lock is the compile-side half of the custody boundary: every consumer that
+    trusts it trusts all of it. Validating identity and references while leaving
+    the parent pin, the resolved deltas, the compiler provenance, and the
+    execution identity unchecked would mean a lock edited anywhere else loads
+    cleanly and is discovered downstream, or not at all.
+    """
+    missing = sorted(set(REQUIRED_COMPILE_LOCK_KEYS) - set(lock))
+    if missing:
+        _lock_reject(
+            field,
+            f"a compile lock states {missing!r}",
+            ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
+        )
+    known = {*REQUIRED_COMPILE_LOCK_KEYS, *OPTIONAL_COMPILE_LOCK_KEYS}
+    unknown = sorted(set(lock) - known)
+    if unknown:
+        _lock_reject(
+            field,
+            f"a compile lock states nothing outside {sorted(known)!r}; found {unknown!r}",
+            ExperimentEnvelopeRejectionCategory.UNKNOWN_FIELD,
+        )
+    _lock_text(lock["name"], f"{field}#name", "a compile lock's name")
+    if "issue" in lock:
+        _lock_text(lock["issue"], f"{field}#issue", "a compile lock's issue")
+    if "identity_contributions" in lock:
+        contributions = _lock_mapping(
+            lock["identity_contributions"],
+            f"{field}#identity_contributions",
+            "a compile lock's identity contributions",
+        )
+        if not contributions:
+            _lock_reject(
+                f"{field}#identity_contributions",
+                "a compile lock states identity contributions only when it has some; an "
+                "empty block is omitted",
+            )
+        for key in contributions:
+            _lock_text(
+                key,
+                f"{field}#identity_contributions",
+                "an identity contribution key",
+            )
+    _validate_lock_envelope(lock, field)
+    _validate_lock_lineage(lock, field)
+    _validate_lock_resolved_deltas(lock, field)
+    _validate_lock_assertions(lock, field)
+    _validate_lock_provenance(lock, field)
+    _validate_lock_execution_identity(lock, field)
+
+
 def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
     """Read one compile lock, failing closed on an unsupported version.
 
@@ -734,6 +1092,13 @@ def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
     caught by the reader as well as by the writer. Every reference is re-validated
     against the closed union for the same reason: a lock whose references were
     edited into a shape the plan lane cannot read is caught here, not there.
+
+    The rest of the v1 document is validated to the same standard — the envelope
+    pin, the parent and its lineage, the resolved deltas, the checked assertions,
+    the compiled document's identity, both halves of compiler provenance, and an
+    execution identity re-derived from the lock's own facts. A reader that
+    validated only what it happened to touch would let a lock edited anywhere
+    else load cleanly.
     """
     if not isinstance(document, Mapping):
         raise ExperimentEnvelopeRejection(
@@ -778,6 +1143,7 @@ def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
         )
     for index, record in enumerate(provenance):
         parse_row_provenance_reference(record, field=f"{field}#row_provenance[{index}]")
+    _validate_v1_compile_lock(lock, field)
     return lock
 
 
@@ -799,6 +1165,8 @@ def compile_lock_plan_edges(lock: Mapping[str, Any], *, field: str) -> tuple[Any
 __all__ = [
     "COMPILE_LOCK_PLAN_EDGE_KINDS",
     "COMPILE_LOCK_REFERENCE_KINDS",
+    "OPTIONAL_COMPILE_LOCK_KEYS",
+    "REQUIRED_COMPILE_LOCK_KEYS",
     "EXPERIMENT_COMPILE_LOCK_MIGRATION_TABLE",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_ID",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION",

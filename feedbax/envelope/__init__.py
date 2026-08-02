@@ -60,6 +60,7 @@ from feedbax.contracts.experiment_compile_lock import (
 from feedbax.envelope.authoring import (
     enforce_assertion_budget,
     enforce_budget,
+    enforce_row_budget,
     guard_authored_bytes,
     read_authored_document,
 )
@@ -101,7 +102,6 @@ from feedbax.envelope.entrypoint import (
     compile_experiment_envelope,
     kernel_for,
     load_project_budgets,
-    register_builtin_experiment_envelope_compiler,
 )
 from feedbax.envelope.resolution import (
     InheritedValue,
@@ -159,6 +159,7 @@ __all__ = [
     "content_pin",
     "emit_text",
     "enforce_assertion_budget",
+    "enforce_row_budget",
     "enforce_budget",
     "format_choke_findings",
     "guard_authored_bytes",
@@ -169,7 +170,6 @@ __all__ = [
     "load_project_budgets",
     "parse_experiment_envelope",
     "read_authored_document",
-    "register_builtin_experiment_envelope_compiler",
     "reject_echo",
     "scalar_equal",
     "verify_assertions",

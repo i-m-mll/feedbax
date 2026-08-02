@@ -542,8 +542,8 @@ class TestFigureMode:
                             {
                                 "input_role": "observed",
                                 "ref": {"kind": "envelope", "alias": "x"},
-                                "binding": "per_row",
-                                "binding_key": "observations",
+                                "binding": "shared",
+                                "binding_key": "m-0",
                                 "contract": {
                                     "artifact_role": "r",
                                     "artifact_provider": "p",
@@ -716,17 +716,30 @@ class TestPerRowInputReference:
         assert caught.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
         assert "states no ref" in str(caught.value)
 
-    def test_a_per_row_role_may_still_state_a_reference(self) -> None:
-        envelope = _parse(
-            self._figure(
-                binding="per_row",
-                ref={
-                    "kind": "receipt",
-                    "manifest_kind": "quillon.survey_run",
-                    "manifest_id": "observed-0",
-                },
+    def test_a_per_row_role_may_not_state_a_reference(self) -> None:
+        """A locator on a per-row role is a false fact, not an extra one."""
+        with pytest.raises(ExperimentEnvelopeRejection) as caught:
+            _parse(
+                self._figure(
+                    binding="per_row",
+                    ref={
+                        "kind": "receipt",
+                        "manifest_kind": "quillon.survey_run",
+                        "manifest_id": "observed-0",
+                    },
+                )
             )
-        )
 
-        assert envelope.figure is not None
-        assert envelope.figure.inputs[0].ref is not None
+        assert caught.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+        assert "is a 'per_row' role and states a ref" in str(caught.value)
+        assert "false for every other row" in str(caught.value)
+
+    def test_a_per_row_role_may_not_state_an_envelope_reference_either(self) -> None:
+        """The refusal is about the single-locator slot, not one locator kind."""
+        with pytest.raises(ExperimentEnvelopeRejection, match="states a ref"):
+            _parse(
+                self._figure(
+                    binding="per_row",
+                    ref={"kind": "envelope", "alias": "widened-summary"},
+                )
+            )

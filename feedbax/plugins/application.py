@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from feedbax.component_registry import ComponentRegistry
-from feedbax.contracts.experiment_envelope import ExperimentEnvelopeCompilerRegistry
-from feedbax.envelope.entrypoint import register_builtin_experiment_envelope_compiler
 from feedbax.analysis.evaluation import EvaluationRecipeRegistry
 from feedbax.analysis.evaluation_compaction import EvaluationBatchConsumerRegistry
 from feedbax.analysis.evaluation_product_union import (
@@ -44,7 +42,6 @@ class ApplicationRegistryBundle:
     figures: FigureRegistry
     conformance_checks: CheckRegistry
     drivers: DriverRegistry
-    experiment_envelope_compilers: ExperimentEnvelopeCompilerRegistry
 
     def seal(self) -> None:
         self.components.seal()
@@ -60,7 +57,6 @@ class ApplicationRegistryBundle:
         self.figures.seal()
         self.conformance_checks.seal()
         self.drivers.seal()
-        self.experiment_envelope_compilers.seal()
 
 
 COMPONENTS = RegistryKey(
@@ -136,13 +132,6 @@ DRIVERS = RegistryKey(
     registered_keys=lambda value: value.registered_names(),
 )
 
-EXPERIMENT_ENVELOPE_COMPILERS = RegistryKey(
-    "experiment_envelope_compilers",
-    "experiment_envelope_compilers",
-    ExperimentEnvelopeCompilerRegistry,
-    registered_keys=lambda value: value.available_keys(),
-)
-
 APPLICATION_REGISTRY_KEYS = (
     COMPONENTS,
     TRAINING_METHODS,
@@ -157,7 +146,6 @@ APPLICATION_REGISTRY_KEYS = (
     FIGURES,
     CONFORMANCE_CHECKS,
     DRIVERS,
-    EXPERIMENT_ENVELOPE_COMPILERS,
 )
 
 
@@ -172,8 +160,6 @@ def new_application_registry_bundle(
     register_default_figure_constructors(figures)
     reports = ReportRecipeRegistry()
     register_builtin_report_recipes(reports)
-    envelope_compilers = ExperimentEnvelopeCompilerRegistry()
-    register_builtin_experiment_envelope_compiler(envelope_compilers)
     return ApplicationRegistryBundle(
         components=components,
         training_methods=default_training_method_registry(),
@@ -188,7 +174,6 @@ def new_application_registry_bundle(
         figures=figures,
         conformance_checks=build_core_check_registry(),
         drivers=build_builtin_driver_registry(),
-        experiment_envelope_compilers=envelope_compilers,
     )
 
 
