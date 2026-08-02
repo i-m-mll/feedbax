@@ -389,7 +389,11 @@ def _load_candidate(
         return _Candidate(manifest=manifest, path=resolved, present=True)
     try:
         raw = resolved.read_bytes()
-    except OSError:
+    except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
+        # Nothing is stored at the canonical location. Every other read failure
+        # propagates: a receipt that exists and cannot be read is a custody
+        # problem, and reporting it as absent would invite fulfillment to
+        # execute over it.
         return _Candidate(manifest=None, path=resolved, present=False)
     found = load_manifest_bytes(raw)
     if capture is not None:
