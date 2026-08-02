@@ -558,7 +558,7 @@ def _expanded_panel(
     return expanded
 
 
-def expand_figure_rows_structure(
+def _expand_figure_rows_structure(
     base_figure: FigureSpec | Mapping[str, Any],
     request: FigureRowExpansionRequest,
     resolved_rows: ResolvedRowSet,
@@ -570,6 +570,13 @@ def expand_figure_rows_structure(
     and title. Nothing here names produced data, so it is derivable before any
     row has ever run. :func:`expand_figure_rows` is this plus the post-run
     custody binding.
+
+    Internal. The supported surfaces are :func:`expand_figure_rows`, which
+    derives the whole bound figure, and the built-in envelope compiler, which is
+    what produces a row-expanded figure's compiled document. The structural half
+    alone is an implementation detail of both: it is neither versioned nor part
+    of the downstream stability contract, and it may change with the derivation
+    rules it implements.
     """
     base = (
         base_figure.model_dump(mode="json", exclude_none=True)
@@ -672,7 +679,7 @@ def expand_figure_rows(
             "resolved figure inputs disagree with the resolved row set",
             index_id=resolved_rows.index_id,
         )
-    payload = expand_figure_rows_structure(base_figure, request, resolved_rows)
+    payload = _expand_figure_rows_structure(base_figure, request, resolved_rows)
     inputs, authorities = figure_input_binding_records(request, resolved_inputs.inputs)
     payload["inputs"] = list(inputs)
     payload["input_authorities"] = list(authorities)
@@ -743,7 +750,6 @@ __all__ = [
     "ResolvedFigureInputs",
     "SharedInputReference",
     "expand_figure_rows",
-    "expand_figure_rows_structure",
     "figure_input_binding_records",
     "per_row_binding_keys",
     "resolve_figure_input_roles",

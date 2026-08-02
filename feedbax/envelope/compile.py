@@ -115,7 +115,7 @@ from feedbax.contracts.figure_roles import (
     FigureRoleBindingContract,
     FigureRowCustodyLocator,
     FigureRowExpansionRequest,
-    expand_figure_rows_structure,
+    _expand_figure_rows_structure,
     per_row_binding_keys,
 )
 from feedbax.contracts.manifest import OverridePatch
@@ -1016,7 +1016,7 @@ def _lower_figure_row_expansion(
         )
     request = _figure_row_expansion_request(context, authored)
     try:
-        document = expand_figure_rows_structure(
+        document = _expand_figure_rows_structure(
             context.parent.pinned.document, request, resolved_rows
         )
     except (ValueError, KeyError, TypeError) as exc:
