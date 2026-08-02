@@ -10,8 +10,9 @@ Branch: `feature/compat-internal-cleanup-residuals`.
 - Root package exports from `feedbax/__init__.py`, including IO helpers,
   graph/model types, selectors, tree helpers, CDE types, graph templates, and
   version/log-level values.
-- CLI entry points: `feedbax-run`, `feedbax-analysis`, `feedbax-train`,
-  `feedbax-provider`.
+- CLI entry points: the unified `feedbax` command, plus `feedbax-run`,
+  `feedbax-analysis`, `feedbax-figure`, `feedbax-train`, `feedbax-provider`,
+  and `feedbax-orchestrate`.
 - Plugin entry point group: `feedbax.plugins`.
 - FastAPI and WebSocket paths under `/api/*` and `/ws/*`, including graphs,
   components, provider, training, trajectories, runs, figures, analysis,

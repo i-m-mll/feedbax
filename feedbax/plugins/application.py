@@ -8,7 +8,6 @@ from pathlib import Path
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.experiment_envelope import ExperimentEnvelopeCompilerRegistry
 from feedbax.envelope.entrypoint import register_builtin_experiment_envelope_compiler
-from feedbax.contracts.project_experiment import ProjectExperimentRegistry
 from feedbax.analysis.evaluation import EvaluationRecipeRegistry
 from feedbax.analysis.evaluation_compaction import EvaluationBatchConsumerRegistry
 from feedbax.analysis.evaluation_product_union import (
@@ -46,7 +45,6 @@ class ApplicationRegistryBundle:
     conformance_checks: CheckRegistry
     drivers: DriverRegistry
     experiment_envelope_compilers: ExperimentEnvelopeCompilerRegistry
-    project_experiments: ProjectExperimentRegistry
 
     def seal(self) -> None:
         self.components.seal()
@@ -63,7 +61,6 @@ class ApplicationRegistryBundle:
         self.conformance_checks.seal()
         self.drivers.seal()
         self.experiment_envelope_compilers.seal()
-        self.project_experiments.seal()
 
 
 COMPONENTS = RegistryKey(
@@ -146,13 +143,6 @@ EXPERIMENT_ENVELOPE_COMPILERS = RegistryKey(
     registered_keys=lambda value: value.available_keys(),
 )
 
-PROJECT_EXPERIMENTS = RegistryKey(
-    "project_experiments",
-    "project_experiments",
-    ProjectExperimentRegistry,
-    registered_keys=lambda value: value.available_keys(),
-)
-
 APPLICATION_REGISTRY_KEYS = (
     COMPONENTS,
     TRAINING_METHODS,
@@ -168,7 +158,6 @@ APPLICATION_REGISTRY_KEYS = (
     CONFORMANCE_CHECKS,
     DRIVERS,
     EXPERIMENT_ENVELOPE_COMPILERS,
-    PROJECT_EXPERIMENTS,
 )
 
 
@@ -200,7 +189,6 @@ def new_application_registry_bundle(
         conformance_checks=build_core_check_registry(),
         drivers=build_builtin_driver_registry(),
         experiment_envelope_compilers=envelope_compilers,
-        project_experiments=ProjectExperimentRegistry(),
     )
 
 

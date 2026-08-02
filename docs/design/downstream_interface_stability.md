@@ -181,6 +181,37 @@ process-global state. `feedbax.plugin.declaration.v1` used only the string
 window, v1 declarations reject after adoption rather than being silently
 reinterpreted. V2 requires `downstream_protocol_version` explicitly.
 
+## Console entry points: the unified `feedbax` command
+
+Feedbax installs one unified console entry point, `feedbax`, which routes every
+`python -m feedbax` engine subcommand plus the six absorbed subcommands `run`,
+`analysis`, `figure`, `train`, `provider`, and `orchestrate`. The unified script
+is the entry point new work should target.
+
+The per-command scripts `feedbax-run`, `feedbax-analysis`, `feedbax-figure`,
+`feedbax-train`, `feedbax-provider`, and `feedbax-orchestrate` remain installed
+and behaviorally unchanged. Two of them are enumerated as stable behavior in the
+guarantee table above — `feedbax-analysis` (`report-surface`,
+`evaluation-surface`, `analysis-authoring`) and `feedbax-figure`
+(`figure-composition`) — so they are guaranteed for every supported numeric
+protocol and cannot be removed by an implementation change.
+
+Deprecation path, recorded now so no later change has to reconstruct it:
+
+- Successor: `feedbax <command>` replaces `feedbax-<command>` one-for-one, with
+  identical arguments and identical exit codes, because the unified script
+  delegates to the same main.
+- The per-command scripts are superseded, not deprecated-in-effect: they are
+  still supported and still tested. Nothing downstream must migrate today.
+- Removing any of them follows this policy's change procedure in full — owner
+  ratification, an earlier release that declares the deprecation, the stated
+  compatibility duration, a green external fixture across the window, the
+  required release class, release notes naming the replacement, and a focused
+  rejection test. For the two enumerated scripts this additionally requires
+  editing their guarantee rows.
+- Until that procedure completes, both spellings are correct and neither is a
+  transitional shim.
+
 ## Change procedure
 
 A breaking proposal opens an issue naming affected protocols, imports,

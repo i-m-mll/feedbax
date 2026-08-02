@@ -21,7 +21,11 @@ from feedbax.contracts.experiment_envelope import (
     dispatch_experiment_envelope,
     missing_outputs,
 )
-from feedbax.contracts.project_experiment import ProjectExperimentDeclarationError
+from feedbax.contracts.project_experiment import (
+    ProjectExperimentDeclarationError,
+    load_project_declaration,
+    project_declaration_path,
+)
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.run_matrix import ExecutionDependency
 from feedbax.contracts.training import (
@@ -338,14 +342,27 @@ def _preflight_experiment_envelope(args: argparse.Namespace, registries: Any) ->
             file=sys.stderr,
         )
         return 1
-    # Which project's layout and budgets apply is resolved from the envelope's
-    # directory, which is data, before the compiler runs. A schema whose compiler
-    # needs no declaration is dispatched without one; the Feedbax dialect's
-    # compiler says so itself rather than being told here.
-    try:
-        declaration = registries.project_experiments.for_envelope_ref(envelope_ref)
-    except ProjectExperimentDeclarationError:
-        declaration = None
+    # Which layout and budgets apply is read from the stated root's declaration
+    # file, which is data, before the compiler runs. Nothing is scanned for and
+    # nothing is inferred: an unreadable or unsupported declaration stops here,
+    # and a root that declares nothing dispatches without one so that a schema
+    # whose compiler needs no declaration still runs. The Feedbax dialect's own
+    # compiler says it needs one rather than being told so here.
+    declaration_path = project_declaration_path(repo_root)
+    declaration = None
+    if declaration_path.exists():
+        try:
+            declaration = load_project_declaration(repo_root)
+        except ProjectExperimentDeclarationError as exc:
+            print(f"cannot load the project declaration: {exc}", file=sys.stderr)
+            return 1
+        if not declaration.owns_envelope_ref(envelope_ref):
+            print(
+                f"experiment envelope {envelope_ref} lies outside the envelope directory "
+                f"{declaration.envelope_directory!r} that {declaration_path} declares",
+                file=sys.stderr,
+            )
+            return 1
     try:
         result = dispatch_experiment_envelope(
             envelope,
@@ -378,8 +395,12 @@ def _preflight_experiment_envelope(args: argparse.Namespace, registries: Any) ->
     return 0
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    command_started_at = time.perf_counter()
+def build_parser() -> argparse.ArgumentParser:
+    """Build the engine parser every `python -m feedbax` command is dispatched from.
+
+    The unified ``feedbax`` console script routes engine subcommands here, so the
+    two entry points can never drift into two different command inventories.
+    """
     parser = argparse.ArgumentParser(prog="python -m feedbax")
     subparsers = parser.add_subparsers(dest="command", required=True)
     execute_parser = subparsers.add_parser(
@@ -781,6 +802,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     )
 
+    return parser
+
+
+def engine_command_names() -> tuple[str, ...]:
+    """Return every subcommand name this parser registers, in stable order.
+
+    The unified ``feedbax`` console script asks for this inventory rather than
+    keeping a copy of it, so the two entry points cannot advertise two different
+    sets of engine commands.
+    """
+    return tuple(
+        sorted(
+            name
+            for action in build_parser()._actions
+            if isinstance(action, argparse._SubParsersAction)
+            for name in action.choices
+        )
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    command_started_at = time.perf_counter()
+    parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "check-project-science-surface":
         return run_science_surface_cli(
