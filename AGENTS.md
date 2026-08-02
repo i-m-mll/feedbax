@@ -95,6 +95,48 @@ sufficient for durable emitted specs; implementation issues and auth specs must
 include focused acceptance evidence for old-version accept, migrate, or reject
 behavior.
 
+## Naming Scope
+
+A name states a concept. Parameters live in the body of the thing named, where
+they can be read, diffed, and migrated; a name that restates a parameter becomes
+false as soon as that parameter is revised. This applies to specs, envelopes,
+locks, matrices, figures, analyses, reports, design documents, and fixtures —
+anything durable enough to be referenced by something else.
+
+- **Concept identity only.** Never a report-slot code (`k4`, `d1`), a model or
+  cohort index (`m2`), or a parameter value or descriptor (knot count, grid
+  span, scalar setpoint). Those change; the concept does not.
+  `m2_robustness_report.v4` → `task_aware_robustness_report.v4`.
+- **No campaign or coordination strings.** Wave and stage ordinals (`wave1`,
+  `stage2`), umbrella or issue handles, branch, worktree, and session names say
+  when and how work was organized, not what the thing is; that provenance
+  belongs in the ledger and in commit history, where it stays accurate.
+  `wave1_stage.lock` → `controller_geometry.lock`.
+- **Adopted defaults version on succession; contrast variants may name their
+  dimension.** Revising a recipe's parameters keeps the concept and bumps the
+  version, so the succession is legible. Name a varied dimension only when the
+  variation *is* the experiment. `near_zero_knots.lock` → `sampling.lock.v2`,
+  but `target2x.lock` → `sampling_target2x.lock` keeps `target2x`.
+- **Study scoping is structural.** A study-specific document lives in a
+  subdirectory named for the study, under its layer directory, and does not
+  repeat the study in the filename; generic documents stay at the layer root.
+  `post_run/<study>_induced_gain.base.json` →
+  `post_run/<study>/induced_gain.base.json`.
+- **Presentation never names substance.** A figure or analysis identity must not
+  depend on its slot or role in a report — reports bind figures, not the reverse
+  — or reordering a report invalidates a name.
+- **Schema and type identities are durable interface.** A registered schema id,
+  component type id, or template id is renamed only through the migration policy
+  above, never as a side effect of renaming the file carrying it; consumers bind
+  the identity, not the path.
+
+The test for a candidate name: if a value in the body changed tomorrow, would
+the name become wrong? Then it is describing a value. Name the concept.
+
+These rules are exported to downstream projects verbatim in
+`feedbax/governance/templates/agent_instructions.v1.md`, installed by
+`feedbax instructions install`. Change both together.
+
 ## UI Conventions
 
 **No-jitter**: Interactive/editable page elements must not change geometry (size, position, spacing) when interacted with, except as explicitly intended (e.g. expand/collapse). Hover states, focus rings, edit mode transitions must preserve element dimensions.

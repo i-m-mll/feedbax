@@ -10,7 +10,7 @@ The block is delimited by markers that carry their own identity::
 
     <!-- feedbax:agent-instructions:start
     schema=feedbax.agent_instructions.v1
-    template=1
+    template=2
     generated-by=feedbax-0.2.0
     sha256=<hash of the body between the markers>
     -->
@@ -49,7 +49,7 @@ AGENT_INSTRUCTIONS_SCHEMA_VERSION = "feedbax.agent_instructions.v1"
 
 #: The template revision this Feedbax knows how to write and validate. A block
 #: carrying a higher number was written by a newer Feedbax and is never rewritten.
-AGENT_INSTRUCTIONS_TEMPLATE_VERSION = 1
+AGENT_INSTRUCTIONS_TEMPLATE_VERSION = 2
 
 #: The template resource shipped in the wheel.
 AGENT_INSTRUCTIONS_TEMPLATE_PACKAGE = "feedbax.governance.templates"

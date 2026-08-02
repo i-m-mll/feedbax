@@ -63,6 +63,7 @@ def test_the_template_covers_every_section_the_contract_requires() -> None:
         "The mental model",
         "Project map",
         "The experiment model",
+        "Naming: a name states a concept, never a value",
         "The residence boundary",
         "What a science plugin may be",
         "Command orientation",
@@ -215,7 +216,8 @@ def test_a_missing_header_field_refuses(tmp_path: Path) -> None:
 
 def test_a_non_integer_template_version_refuses(tmp_path: Path) -> None:
     target = tmp_path / "AGENTS.md"
-    target.write_text(_block().replace("template=1", "template=one"))
+    current = f"template={ai.AGENT_INSTRUCTIONS_TEMPLATE_VERSION}"
+    target.write_text(_block().replace(current, "template=one"))
 
     with pytest.raises(ai.AgentInstructionsError, match="not an integer"):
         ai.install(tmp_path, target=target)
