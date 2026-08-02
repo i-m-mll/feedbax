@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import plotly.graph_objects as go
@@ -22,6 +24,7 @@ from feedbax.analysis.fulfillment_adapters import (
     expand_evaluation_matrix_node,
     fulfill_node,
     fulfill_nodes,
+    receipt_exact_parent_entry,
     receipt_parent_ref,
     report_execution_spec,
     staged_exact_parents_from_receipts,
@@ -358,3 +361,68 @@ def test_analysis_node_executes_then_reuses(environment) -> None:
     assert second.disposition == "reused"
     assert analysis_calls["count"] == 1
     assert second.receipt.path == first.receipt.path
+
+
+# --------------------------------------------------------------------------
+# A receipt carries the identity admission settled, and never re-derives it
+# --------------------------------------------------------------------------
+
+
+def test_a_receipt_carries_the_profile_of_the_bytes_that_were_admitted(
+    environment,
+) -> None:
+    receipt = fulfill_node(_evaluation_node("eval/profile"), environment=environment).receipt
+    raw = receipt.path.read_bytes()
+
+    assert receipt.manifest_sha256 == hashlib.sha256(raw).hexdigest()
+    assert receipt.size_bytes == len(raw)
+    ref = receipt_parent_ref(receipt, role="evaluation_run")
+    assert ref.metadata["manifest_sha256"] == receipt.manifest_sha256
+    assert ref.metadata["size_bytes"] == receipt.size_bytes
+
+
+def test_binding_after_a_byte_substitution_emits_the_admitted_digest(
+    environment, tmp_path: Path
+) -> None:
+    """The reviewer's reproduction: admit, substitute, bind.
+
+    The replacement is the same kind, the same id, and still completed, so every
+    addressing fact about it is intact. Only its bytes differ. Binding must
+    restate the digest admission authenticated — which no longer matches the
+    file, and should not, because the file is no longer what was admitted — and
+    must never mint the replacement's own digest, which would bless bytes that
+    were never admitted with a profile produced by the authentication step.
+    """
+    result = fulfill_node(_evaluation_node("eval/substituted"), environment=environment)
+    receipt = result.receipt
+    admitted_digest = receipt.manifest_sha256
+    original = receipt.path.read_bytes()
+
+    replacement = json.dumps(
+        {**json.loads(original), "metadata": {"rerun": "second-pass"}}
+    ).encode()
+    assert hashlib.sha256(replacement).hexdigest() != admitted_digest
+    receipt.path.write_bytes(replacement)
+    # Every addressing fact survives the substitution; only the bytes changed.
+    substituted = load_manifest(receipt.path)
+    assert substituted.kind == receipt.manifest_kind
+    assert substituted.id == receipt.manifest_id
+    assert substituted.status == "completed"
+
+    ref = receipt_parent_ref(receipt, role="evaluation_run")
+    entry = receipt_exact_parent_entry(receipt, role="evaluation_run")
+
+    assert ref.metadata["manifest_sha256"] == admitted_digest
+    assert ref.metadata["manifest_sha256"] != hashlib.sha256(replacement).hexdigest()
+    assert entry.parent == ref
+
+    # Restore, so no other assertion in this module observes the substitution.
+    receipt.path.write_bytes(original)
+
+
+def test_a_receipt_cannot_be_bound_from_an_admission_that_read_nothing() -> None:
+    """An in-memory admission authenticates no stored bytes, so it binds none."""
+    from feedbax.analysis.fulfillment import AdmittedManifestBytes
+
+    with pytest.raises(RuntimeError, match="no manifest bytes were captured"):
+        AdmittedManifestBytes().receipt(node_kind="evaluation", root=Path("/nowhere"))

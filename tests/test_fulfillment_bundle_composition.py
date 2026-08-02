@@ -555,3 +555,81 @@ def test_a_bundle_stating_no_work_refuses(
     outputs.sheaf("sheaf-empty", stages=[])
     with pytest.raises(ValueError, match="neither a staged plan nor a template set"):
         _fulfill(outputs, "sheaf-empty", environment=environment)
+
+
+# --------------------------------------------------------------------------
+# The bundle root gate never passes by having nothing to compare
+# --------------------------------------------------------------------------
+
+
+def test_a_selected_root_with_no_byte_profile_refuses_against_a_bound_one(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """The reviewer's case: an address-only selected side is not agreement.
+
+    The bound side carries the digest the lock authenticated. A selected side
+    that carries none is not a weaker match — it is a byte comparison that never
+    happened, and a gate that passes for want of anything to say is a gate that
+    is not there.
+    """
+    target = _bound_sheaf(outputs, "sheaf-profileless")
+    request = _bundle_request(outputs, target, environment=environment)
+    identities = analysis_bundle_root_identities(request)
+    assert identities is not None
+    unprofiled = replace(identities[0], manifest_sha256=None, size_bytes=None)
+
+    with pytest.raises(ValueError) as caught:
+        _require_bundle_roots(request, identities, [unprofiled], stage="preflight")
+
+    message = str(caught.value)
+    assert "no byte profile" in message
+    assert identities[0].manifest_sha256 in message
+
+
+def test_the_post_execution_gate_declares_its_address_only_comparison(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """One deliberate exception, and it is spelled out rather than implied.
+
+    Execution reports back ids. Their bytes were proved at the preflight gate,
+    against the same root, so the post-execution gate re-proves the address.
+    That is a decision the call site states, not a silent consequence of the
+    selected side happening to carry no digest.
+    """
+    target = _bound_sheaf(outputs, "sheaf-address-only")
+    request = _bundle_request(outputs, target, environment=environment)
+    identities = analysis_bundle_root_identities(request)
+    assert identities is not None
+    address_only = replace(identities[0], manifest_sha256=None, size_bytes=None)
+
+    _require_bundle_roots(
+        request, identities, [address_only], stage="selection", compare_profiles=False
+    )
+    # The same input without the explicit declaration is a refusal.
+    with pytest.raises(ValueError, match="no byte profile"):
+        _require_bundle_roots(request, identities, [address_only], stage="selection")
+
+
+def test_profiling_a_selected_root_that_cannot_be_read_refuses(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, tmp_path
+) -> None:
+    """A read failure is a refusal, never a downgrade to address-only identity."""
+    from feedbax.analysis.fulfillment_adapters import _selected_root_identity
+
+    target = _bound_sheaf(outputs, "sheaf-unreadable")
+    request = _bundle_request(outputs, target, environment=environment)
+    identities = analysis_bundle_root_identities(request)
+    assert identities is not None
+
+    class _Selected:
+        kind = identities[0].kind
+        id = identities[0].id
+
+    empty_root = tmp_path / "no-receipts-here"
+    empty_root.mkdir()
+    with pytest.raises(ValueError) as caught:
+        _selected_root_identity(_Selected(), root=empty_root)
+
+    message = str(caught.value)
+    assert identities[0].id in message
+    assert "refusal rather than a comparison that is skipped" in message
