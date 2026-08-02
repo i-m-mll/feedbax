@@ -783,7 +783,10 @@ def test_an_incomplete_receipt_is_refused_rather_than_bound(
 def test_an_inapplicable_role_binds_nothing_and_blocks_nothing(
     outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
-    from feedbax.contracts.experiment_compile_lock import NotApplicableReference
+    from feedbax.contracts.applicability_rules import (
+        PER_ROW_FIGURE_INPUT_RULE,
+        certify_not_applicable,
+    )
 
     source = outputs.probe("partial-source")
     outputs.bulletin(
@@ -794,12 +797,7 @@ def test_an_inapplicable_role_binds_nothing_and_blocks_nothing(
                 role_path="body.nominal",
                 consumer=ReportParentBinding(parent_kind="probe", parent_id="nominal"),
             ),
-            NotApplicableReference(
-                role_path="body.appendix",
-                basis="compiler_rule",
-                reason="no producer in this closure binds the role",
-                rule_id="feedbax.rule.unbound_role.v1",
-            ),
+            certify_not_applicable("body.appendix", PER_ROW_FIGURE_INPUT_RULE),
         ],
     )
     run = _fulfill(outputs, "partial-bulletin", environment=environment)
