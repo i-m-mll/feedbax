@@ -634,16 +634,38 @@ def write_row_index_custody_bindings(
     document: RowIndexCustodyBindings,
     path: Path | str,
     *,
-    index: AuthenticatedRowIndex | None = None,
+    index: AuthenticatedRowIndex,
 ) -> Path:
     """Atomically write one custody-bindings sidecar and return its path.
 
     The document is fully serialized to a sibling temporary file and renamed
-    into place, so a reader never observes a partially written sidecar. When
-    *index* is supplied the document is matched against it first.
+    into place, so a reader never observes a partially written sidecar.
+
+    *index* is required, and it is the whole reason this is a function rather
+    than a serialize-and-write call. A custody document states which cut of which
+    index it belongs to, and until something compares that statement with the
+    index itself the statement is only a copy of itself: a document built against
+    an earlier cut, or against a different index, serializes and writes exactly as
+    cleanly as the right one. Writing it lands custody for another cut in the
+    place this cut's custody is read from, and the reader that later refuses it
+    refuses at fulfillment, one production away from where the wrong document was
+    chosen. So the cut is compared here, at the moment the bytes become the
+    durable answer, and a caller that cannot supply the index it is writing
+    custody for does not yet know what it is writing.
+
+    Raises:
+        RowSelectionError: If *index* is absent, or if the document does not
+            belong to this cut of it.
     """
-    if index is not None:
-        document.require_index(index)
+    if index is None:
+        raise RowSelectionError(
+            RowSelectionErrorCode.INDEX_MISMATCH,
+            f"row custody bindings for {document.index_id!r} cannot be written without the "
+            "row index they belong to; the sidecar's index_sha256 states a cut, and an "
+            "unchecked statement is not a proof that the bindings came from it",
+            index_id=document.index_id,
+        )
+    document.require_index(index)
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     text = serialize_row_index_custody_bindings(document)

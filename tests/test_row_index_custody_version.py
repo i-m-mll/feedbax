@@ -212,3 +212,60 @@ def test_the_written_sidecar_carries_the_digest_it_was_built_against(
 
     assert reloaded.index_sha256 == index.canonical_sha256()
     reloaded.require_index(index)
+
+
+def test_writing_custody_for_another_cut_is_refused_before_any_bytes_land(
+    tmp_path: Path,
+) -> None:
+    """The cut comparison is the write's job, not the eventual reader's.
+
+    This document is well formed and internally consistent: it states the cut it
+    was built against, and it would load cleanly from anywhere. It is simply
+    custody for a different cut of the index the caller is writing custody for,
+    which is the one thing serialization cannot notice. Refusing here leaves the
+    sidecar untouched, so the wrong cut never becomes the durable answer at the
+    path this cut's custody is read from.
+    """
+    produced_against = _index("near", "far")
+    document = _custody(produced_against)
+    recut = _index("near", "far", "middle")
+    target = tmp_path / "span.row_custody.json"
+
+    with pytest.raises(RowSelectionError) as caught:
+        write_row_index_custody_bindings(document, target, index=recut)
+
+    assert caught.value.code is RowSelectionErrorCode.INDEX_MISMATCH
+    assert not target.exists()
+    assert not list(tmp_path.iterdir())
+
+
+def test_writing_custody_without_the_index_cannot_be_expressed() -> None:
+    """The index is not an optional check the caller may decline to run.
+
+    While it was omissible, the omission was the failure: a call that passed no
+    index wrote whatever document it was handed, and the only thing that had ever
+    compared that document with an index was the caller that chose it.
+    """
+    index = _index("near", "far")
+
+    with pytest.raises(TypeError, match="index"):
+        write_row_index_custody_bindings(  # type: ignore[call-arg]
+            _custody(index), "unwritten.row_custody.json"
+        )
+
+
+def test_an_explicitly_absent_index_is_a_typed_refusal(tmp_path: Path) -> None:
+    """A type hint is not a runtime gate, so ``None`` refuses in the taxonomy."""
+    index = _index("near", "far")
+    target = tmp_path / "span.row_custody.json"
+
+    with pytest.raises(RowSelectionError) as caught:
+        write_row_index_custody_bindings(
+            _custody(index),
+            target,
+            index=None,  # type: ignore[arg-type]
+        )
+
+    assert caught.value.code is RowSelectionErrorCode.INDEX_MISMATCH
+    assert "cannot be written without the row index" in str(caught.value)
+    assert not target.exists()

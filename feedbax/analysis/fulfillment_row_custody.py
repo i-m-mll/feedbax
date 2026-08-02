@@ -34,6 +34,19 @@ canonical digest re-derived; it must equal the digest the lock pinned, and the
 located custody document's bindings must belong to that proved cut. A stale
 document from another cut is refused rather than bound row by row.
 
+## Both refs are resolved inside the declared repository
+
+The row index and the custody document are both named repo-relatively, and a
+repo-relative name is a claim about *which* repository holds the bytes. Joining
+one onto ``repo_root`` does not by itself keep it there: an absolute ref replaces
+the root outright, an upward ref walks past it, and a symlinked directory
+component leaves it without either. Every one of those reaches a document the
+declared repository does not hold, and the digest checks downstream would not
+notice, because they compare bytes with bytes and never ask whose repository the
+bytes came from. A right document authenticated under the wrong repository
+identity is the failure containment exists to refuse, so both joins resolve
+symlinks and require the result to stay under the resolved root.
+
 ## Only per-row roles come from here
 
 A ``shared`` role names one manifest for every row, states an ordinary reference
@@ -56,7 +69,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from feedbax.analysis.fulfillment_derivation import (
@@ -204,7 +217,8 @@ def resolve_row_custody_overlay(
 
     Raises:
         RowCustodyFulfillmentError: The custody document is undeclared, absent,
-            unreadable, foreign to this expansion, or incomplete for it.
+            unreadable, foreign to this expansion, incomplete for it, or reached
+            by a ref that leaves the declared repository.
     """
     record = read_row_expansion_record(compiled)
     if record is None:
@@ -255,6 +269,43 @@ def _validated(model: type, payload: Any, *, ref: str, what: str):
             f"{model.__name__}: {exc}",
             ref=ref,
         ) from exc
+
+
+def _repo_contained_path(ref: str, repo_root: Path | str) -> Path:
+    """Return the path *ref* names beneath *repo_root*, or refuse to name one.
+
+    A repo-relative ref addresses one repository's bytes, so containment is part
+    of what the ref means rather than a precaution taken around it. Three ways
+    out are refused before any read: an absolute ref, which discards the root on
+    join; an upward ref, which walks past it; and a resolved location outside the
+    root, which is what a symlinked directory component produces while every
+    lexical part of the ref still looks repo-relative.
+
+    The returned path is the *resolved* one, so the bytes that are read are the
+    bytes containment was proved for. Resolution is non-strict: an absent
+    document resolves and is then refused by the read that finds nothing, which
+    is a different fact from a document the repository does not hold.
+
+    Raises:
+        ValueError: The ref is empty, absolute, upward, or resolves outside
+            *repo_root*. The message states which, as a sentence fragment the
+            caller completes with what the ref was being read for.
+    """
+    if not ref.strip():
+        raise ValueError("it names an empty path")
+    if PurePosixPath(ref).is_absolute() or Path(ref).is_absolute() or ref.startswith("\\"):
+        raise ValueError("it is an absolute path rather than a repo-relative one")
+    if ".." in PurePosixPath(ref).parts or ".." in Path(ref).parts:
+        raise ValueError("it traverses upward out of the repository")
+    root = Path(repo_root).resolve(strict=False)
+    resolved = (root / ref).resolve(strict=False)
+    if not resolved.is_relative_to(root):
+        raise ValueError(
+            f"it resolves to {resolved}, which is outside the repository root {root}; a "
+            "symlinked path component leaves the repository while every part of the ref "
+            "still reads as repo-relative"
+        )
+    return resolved
 
 
 def _require_locator_matches(
@@ -315,7 +366,17 @@ def _authenticated_row_index(
             ref=ref,
             custody_ref=locator.ref,
         )
-    path = Path(repo_root) / index_ref
+    try:
+        path = _repo_contained_path(index_ref, repo_root)
+    except ValueError as exc:
+        raise RowCustodyFulfillmentError(
+            f"authenticates its row index cut from {index_ref!r}, which is not a path inside "
+            f"the declared repository: {exc}. The cut is proved from the index's own bytes, "
+            "and a valid index reached outside the declared repository would prove a cut of "
+            "some other repository's index under this one's identity",
+            ref=ref,
+            custody_ref=locator.ref,
+        ) from exc
     try:
         index = AuthenticatedRowIndex.model_validate(
             json.loads(path.read_text(encoding="utf-8"))
@@ -379,7 +440,19 @@ def _load_custody(
             ref=ref,
             custody_ref=locator.ref,
         )
-    path = Path(repo_root) / locator.ref
+    try:
+        path = _repo_contained_path(locator.ref, repo_root)
+    except ValueError as exc:
+        raise RowCustodyFulfillmentError(
+            f"binds per-row custody from {locator.ref!r}, which is not a path inside the "
+            f"declared repository: {exc}. A custody document is believed for the repository "
+            "that holds it, and one reached outside the declared root could be a perfectly "
+            "valid document belonging to another repository entirely — which the digest "
+            "checks would not notice, because they compare bytes and never ask whose "
+            "repository the bytes came from",
+            ref=ref,
+            custody_ref=locator.ref,
+        ) from exc
     # One load, and the two outcomes it can have. Probing for the file and then
     # opening it is two looks at one path for no gain: absence is what the open
     # reports, and the distinction the two refusals draw is between "nothing is

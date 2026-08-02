@@ -163,7 +163,7 @@ def _write_custody(
             for row_id, record in (ROW_MANIFESTS if rows is None else rows).items()
         },
     )
-    return write_row_index_custody_bindings(document, repo / ref)
+    return write_row_index_custody_bindings(document, repo / ref, index=resolved)
 
 
 def _closure_request(repo: Path, environment: FulfillmentEnvironment):
@@ -756,6 +756,190 @@ def test_the_selector_the_compile_expanded_is_what_custody_binds(repo: Path) -> 
     assert record is not None
     expanded = expand_row_selector(record.request.rows, _row_index(repo))
     assert list(expanded.row_ids) == list(record.resolved_rows.row_ids)
+
+
+# -- both refs are resolved inside the declared repository ------------------
+
+#: The census's own statement of what containment is for. The digest checks
+#: downstream compare bytes with bytes; nothing in them asks whose repository the
+#: bytes came from. So the failure they cannot see is not a wrong document but a
+#: right one — correct index, correct cut, correct rows — reached outside the
+#: declared root and thereby authenticated under this repository's identity.
+
+
+@pytest.fixture
+def nested_repo(tmp_path: Path) -> Path:
+    """One quillon repository *inside* tmp_path.
+
+    The ordinary ``repo`` fixture is tmp_path itself, which leaves "outside the
+    repository" with nowhere xdist-safe to live. Nesting the repository one level
+    down makes the escape expressible without writing outside tmp_path.
+    """
+    root = tmp_path / "repo"
+    write_repo(root)
+    return root
+
+
+def _external_custody(repo: Path, destination: Path) -> Path:
+    """Write a valid custody document for *repo*'s index somewhere *repo* is not."""
+    resolved = _row_index(repo)
+    document = build_row_index_custody_bindings(
+        resolved,
+        {
+            row_id: {"observations": _parent(*record)}
+            for row_id, record in ROW_MANIFESTS.items()
+        },
+    )
+    return write_row_index_custody_bindings(document, destination, index=resolved)
+
+
+def _with_index_ref(repo: Path, index_ref: str):
+    """Return the compiled figure with its resolved row set naming *index_ref*."""
+    lock = json.loads((repo / "compiled" / "widened-plot.compile-lock.json").read_text("utf-8"))
+    lock["identity_contributions"]["resolved_row_set"]["index_ref"] = index_ref
+    compiled = read_compiled_outputs(repo / "compiled").envelopes[0]
+    return type(compiled)(
+        lock=lock,
+        document=compiled.document,
+        lock_path=compiled.lock_path,
+        document_path=compiled.document_path,
+    )
+
+
+def test_a_custody_document_outside_the_repository_is_refused_though_it_is_valid(
+    nested_repo: Path, tmp_path: Path
+) -> None:
+    """The same bytes bind from inside the repository and are refused from outside.
+
+    Nothing about the document changes between the two halves of this test. What
+    changes is which repository holds it: in the second half the declared custody
+    directory is a symlink out of the repository, so every part of the ref still
+    reads as repo-relative while the bytes it reaches belong to somewhere else.
+    A digest check cannot tell these apart, because both times the digests agree.
+    """
+    _compile_plot(nested_repo)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    held_elsewhere = _external_custody(nested_repo, outside / "quillon.row_custody.json")
+
+    # First, the control: the identical document, held by the repository itself.
+    inside = nested_repo / ROW_CUSTODY_REF
+    inside.parent.mkdir(parents=True, exist_ok=True)
+    inside.write_bytes(held_elsewhere.read_bytes())
+    overlay = resolve_row_custody_overlay(
+        read_compiled_outputs(nested_repo / "compiled").envelopes[0], repo_root=nested_repo
+    )
+    assert overlay is not None
+    assert [parent.id for parent in overlay.inputs] == ["near-span-0", "far-span-0"]
+
+    # Now the same bytes, reached by leaving the repository through a symlink.
+    inside.unlink()
+    inside.parent.rmdir()
+    inside.parent.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RowCustodyFulfillmentError) as caught:
+        resolve_row_custody_overlay(
+            read_compiled_outputs(nested_repo / "compiled").envelopes[0], repo_root=nested_repo
+        )
+
+    assert "is not a path inside the declared repository" in str(caught.value)
+    assert "outside the repository root" in str(caught.value)
+    assert "never ask whose repository the bytes came from" in str(caught.value)
+
+
+def test_a_row_index_outside_the_repository_is_refused_though_it_hashes_right(
+    nested_repo: Path, tmp_path: Path
+) -> None:
+    """The cut proof is only a proof about *this* repository's index.
+
+    The external index here is byte-identical to the declared one, so it
+    canonicalizes to exactly the digest the lock pinned and would pass the cut
+    check outright. That is the point: without containment the proof would be
+    made against an index the declared repository does not hold.
+    """
+    _compile_plot(nested_repo)
+    _write_custody(nested_repo)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "quillon.row_index.json").write_bytes(
+        (nested_repo / ROW_INDEX_BASE).read_bytes()
+    )
+    (nested_repo / "elsewhere").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RowCustodyFulfillmentError) as caught:
+        resolve_row_custody_overlay(
+            _with_index_ref(nested_repo, "elsewhere/quillon.row_index.json"),
+            repo_root=nested_repo,
+        )
+
+    assert "is not a path inside the declared repository" in str(caught.value)
+    assert "outside the repository root" in str(caught.value)
+    assert "some other repository's index" in str(caught.value)
+
+
+def test_an_absolute_row_index_ref_discards_the_declared_root_and_is_refused(
+    nested_repo: Path, tmp_path: Path
+) -> None:
+    """Joining an absolute ref onto a root does not keep it under that root.
+
+    ``index_ref`` is carried by the resolved row set rather than by the locator,
+    and the locator's own validation does not reach it, so the containment it
+    gets is the one applied where it is read.
+    """
+    _compile_plot(nested_repo)
+    _write_custody(nested_repo)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    absolute = outside / "quillon.row_index.json"
+    absolute.write_bytes((nested_repo / ROW_INDEX_BASE).read_bytes())
+
+    with pytest.raises(RowCustodyFulfillmentError) as caught:
+        resolve_row_custody_overlay(
+            _with_index_ref(nested_repo, str(absolute)), repo_root=nested_repo
+        )
+
+    assert "is an absolute path rather than a repo-relative one" in str(caught.value)
+
+
+def test_a_row_index_ref_that_walks_out_of_the_repository_is_refused(
+    nested_repo: Path, tmp_path: Path
+) -> None:
+    _compile_plot(nested_repo)
+    _write_custody(nested_repo)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "quillon.row_index.json").write_bytes(
+        (nested_repo / ROW_INDEX_BASE).read_bytes()
+    )
+
+    with pytest.raises(RowCustodyFulfillmentError) as caught:
+        resolve_row_custody_overlay(
+            _with_index_ref(nested_repo, "../outside/quillon.row_index.json"),
+            repo_root=nested_repo,
+        )
+
+    assert "traverses upward out of the repository" in str(caught.value)
+
+
+def test_a_symlink_that_stays_inside_the_repository_is_not_an_escape(
+    nested_repo: Path,
+) -> None:
+    """Containment is about where a ref lands, not about how it got there.
+
+    A repository that holds its custody behind an internal symlink is holding its
+    own bytes, and refusing that would be refusing a layout rather than a threat.
+    """
+    _compile_plot(nested_repo)
+    real = nested_repo / "held" / "quillon.row_custody.json"
+    _external_custody(nested_repo, real)
+    (nested_repo / "custody").symlink_to(nested_repo / "held", target_is_directory=True)
+
+    overlay = resolve_row_custody_overlay(
+        read_compiled_outputs(nested_repo / "compiled").envelopes[0], repo_root=nested_repo
+    )
+
+    assert overlay is not None
+    assert [parent.id for parent in overlay.inputs] == ["near-span-0", "far-span-0"]
 
 
 def test_a_per_row_omission_still_reaches_the_lock_through_the_closed_rule(
