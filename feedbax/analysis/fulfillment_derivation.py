@@ -433,6 +433,21 @@ def _edge_declaration(reference: Any, *, consumer: CompiledEnvelope) -> EdgeDecl
     )
 
 
+def lock_edge_declarations(compiled: CompiledEnvelope) -> tuple[EdgeDeclaration, ...]:
+    """Return the edges one compile lock, by itself, determines for its node.
+
+    This is the same derivation :func:`derive_fulfillment_plan` performs, exposed
+    so a *later* stage can re-derive it and compare. A plan is a durable document
+    and travels apart from the locks it was derived from; re-deriving from the
+    lock is the only way to prove that what a plan says a node's inputs are is
+    still what the lock says they are.
+    """
+    return tuple(
+        _edge_declaration(reference, consumer=compiled)
+        for reference in compiled.plan_edge_references()
+    )
+
+
 def _check_planned_product(
     reference: PlannedProductReference,
     *,
@@ -622,6 +637,7 @@ __all__ = [
     "UnresolvedPlannedProductError",
     "UnsupportedCompiledProductError",
     "derive_fulfillment_plan",
+    "lock_edge_declarations",
     "read_compiled_envelope",
     "read_compiled_outputs",
     "require_external_record",
