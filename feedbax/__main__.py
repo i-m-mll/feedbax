@@ -21,6 +21,11 @@ from feedbax.contracts.experiment_envelope import (
     dispatch_experiment_envelope,
     missing_outputs,
 )
+from feedbax.contracts.project_experiment import (
+    ProjectExperimentDeclarationError,
+    load_project_declaration,
+    project_declaration_path,
+)
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.run_matrix import ExecutionDependency
 from feedbax.contracts.training import (
@@ -28,6 +33,10 @@ from feedbax.contracts.training import (
     TrainingRunSpec,
     resolve_training_run_spec,
     validate_training_run_spec_semantics,
+)
+from feedbax.governance.science_surface import (
+    build_parser as build_science_surface_parser,
+    run_cli as run_science_surface_cli,
 )
 from feedbax.plugins.composition import compose_application
 from feedbax.contracts.worker import ProgressCoordinate
@@ -258,11 +267,64 @@ def _dump_manifest_requests(
     return requests
 
 
-def _preflight_experiment_envelope(args: argparse.Namespace, registries: Any) -> int:
-    """Route one authored envelope to its registered downstream compiler.
+def _fulfill_experiment_envelope(args: argparse.Namespace, registries: Any) -> int:
+    """Fulfill one compiled experiment target's whole dependency closure.
+
+    Exit codes are the documented fulfillment contract: 0 fulfilled, 2 a stable
+    typed rejection with an actionable diagnostic on stderr, 1 infrastructure
+    failure.
+    """
+    from feedbax.analysis.fulfillment import FulfillmentAdmissionError
+    from feedbax.analysis.fulfillment_adapters import FulfillmentEnvironment
+    from feedbax.analysis.fulfillment_custody import FulfillmentDriftError
+    from feedbax.analysis.fulfillment_derivation import FulfillmentDerivationError
+    from feedbax.analysis.fulfillment_driver import FulfillmentDriverError
+    from feedbax.analysis.fulfillment_experiment import fulfill_experiment_envelope
+    from feedbax.analysis.fulfillment_plan import (
+        FulfillmentPlanError,
+        UnsupportedFulfillmentPlanVersionError,
+    )
+
+    repo_root = Path(args.repo_root).resolve()
+    out_dir = Path(args.out_dir)
+    if not out_dir.is_absolute():
+        out_dir = repo_root / out_dir
+    environment = FulfillmentEnvironment(
+        root=Path(args.receipt_root).resolve(),
+        registries=registries,
+        repo_root=repo_root,
+        issues=tuple(args.issue or ()),
+    )
+    try:
+        fulfillment = fulfill_experiment_envelope(
+            args.target, output_directory=out_dir, environment=environment
+        )
+    except (
+        ExperimentEnvelopeRejection,
+        FulfillmentAdmissionError,
+        FulfillmentDerivationError,
+        FulfillmentDriftError,
+        FulfillmentDriverError,
+        FulfillmentPlanError,
+        UnsupportedFulfillmentPlanVersionError,
+    ) as rejection:
+        print(f"{type(rejection).__name__}: {rejection}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"fulfillment failed on infrastructure: {exc}", file=sys.stderr)
+        return 1
+    json.dump(fulfillment.summary(), fp=sys.stdout, indent=2, sort_keys=True)
+    print()
+    return 0
+
+
+def _preflight_experiment_envelope(args: argparse.Namespace) -> int:
+    """Compile one authored envelope with the single built-in dialect compiler.
 
     Exit codes are the documented authoring contract: 0 accepted, 2 rejected
-    with an actionable diagnostic on stderr, 1 infrastructure failure.
+    with an actionable diagnostic on stderr, 1 infrastructure failure. There is
+    no compiler registry to consult: an envelope declaring any schema other than
+    the built-in dialect is rejected by name.
     """
     envelope_path = Path(args.envelope)
     repo_root = Path(args.repo_root).resolve()
@@ -275,12 +337,41 @@ def _preflight_experiment_envelope(args: argparse.Namespace, registries: Any) ->
         print(f"cannot read experiment envelope {envelope_path}: {exc}", file=sys.stderr)
         return 1
     try:
+        envelope_ref = str(envelope_path.resolve().relative_to(repo_root))
+    except ValueError:
+        print(
+            f"experiment envelope {envelope_path} is outside repo root {repo_root}",
+            file=sys.stderr,
+        )
+        return 1
+    # Which layout and budgets apply is read from the stated root's declaration
+    # file, which is data, before the compiler runs. Nothing is scanned for and
+    # nothing is inferred: an unreadable or unsupported declaration stops here,
+    # and a root that declares nothing dispatches without one so that a schema
+    # whose compiler needs no declaration still runs. The Feedbax dialect's own
+    # compiler says it needs one rather than being told so here.
+    declaration_path = project_declaration_path(repo_root)
+    declaration = None
+    if declaration_path.exists():
+        try:
+            declaration = load_project_declaration(repo_root)
+        except ProjectExperimentDeclarationError as exc:
+            print(f"cannot load the project declaration: {exc}", file=sys.stderr)
+            return 1
+        if not declaration.owns_envelope_ref(envelope_ref):
+            print(
+                f"experiment envelope {envelope_ref} lies outside the envelope directory "
+                f"{declaration.envelope_directory!r} that {declaration_path} declares",
+                file=sys.stderr,
+            )
+            return 1
+    try:
         result = dispatch_experiment_envelope(
             envelope,
-            registries.experiment_envelope_compilers,
             envelope_path=envelope_path,
             repo_root=repo_root,
             out_dir=out_dir,
+            project_declaration=declaration,
         )
     except ExperimentEnvelopeRejection as rejection:
         print(rejection.render(), file=sys.stderr)
@@ -305,8 +396,12 @@ def _preflight_experiment_envelope(args: argparse.Namespace, registries: Any) ->
     return 0
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    command_started_at = time.perf_counter()
+def build_parser() -> argparse.ArgumentParser:
+    """Build the engine parser every `python -m feedbax` command is dispatched from.
+
+    The unified ``feedbax`` console script routes engine subcommands here, so the
+    two entry points can never drift into two different command inventories.
+    """
     parser = argparse.ArgumentParser(prog="python -m feedbax")
     subparsers = parser.add_subparsers(dest="command", required=True)
     execute_parser = subparsers.add_parser(
@@ -395,8 +490,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     envelope_parser = subparsers.add_parser(
         "preflight-experiment-envelope",
         help=(
-            "Compile one authored experiment envelope through the registered downstream "
-            "compiler claiming its schema."
+            "Compile one authored experiment envelope with the single built-in dialect "
+            "compiler."
         ),
     )
     envelope_parser.add_argument("envelope", help="Authored experiment envelope JSON path")
@@ -416,6 +511,45 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Import a module that registers a downstream experiment envelope compiler "
             "before dispatch; may be repeated."
+        ),
+    )
+    fulfill_parser = subparsers.add_parser(
+        "fulfill-experiment-envelope",
+        help=(
+            "Fulfill one compiled experiment target's dependency closure from the compile "
+            "locks and documents in an output directory."
+        ),
+    )
+    fulfill_parser.add_argument(
+        "target",
+        help="Envelope path or compiled name of the artifact to fulfill.",
+    )
+    fulfill_parser.add_argument(
+        "--out-dir",
+        default="generated",
+        help="Directory holding the compile locks and compiled documents.",
+    )
+    fulfill_parser.add_argument(
+        "--receipt-root",
+        required=True,
+        help="Receipt root every admitted and executed manifest lives beneath.",
+    )
+    fulfill_parser.add_argument(
+        "--repo-root",
+        default=".",
+        help="Repository root the compiled documents' relative references resolve against.",
+    )
+    fulfill_parser.add_argument(
+        "--issue",
+        action="append",
+        help="Issue reference recorded on produced manifests; may be repeated.",
+    )
+    fulfill_parser.add_argument(
+        "--plugin",
+        action="append",
+        help=(
+            "Import a module that registers evaluation, analysis, figure, or report "
+            "implementations before the walk; may be repeated."
         ),
     )
     adopt_root = subparsers.add_parser(
@@ -659,7 +793,44 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
 
+    build_science_surface_parser(
+        subparsers.add_parser(
+            "check-project-science-surface",
+            help=(
+                "Deny-by-default gate: check a downstream project's production Python against "
+                "the science-surface policy ratified on a protected baseline ref."
+            ),
+        )
+    )
+
+    return parser
+
+
+def engine_command_names() -> tuple[str, ...]:
+    """Return every subcommand name this parser registers, in stable order.
+
+    The unified ``feedbax`` console script asks for this inventory rather than
+    keeping a copy of it, so the two entry points cannot advertise two different
+    sets of engine commands.
+    """
+    return tuple(
+        sorted(
+            name
+            for action in build_parser()._actions
+            if isinstance(action, argparse._SubParsersAction)
+            for name in action.choices
+        )
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    command_started_at = time.perf_counter()
+    parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "check-project-science-surface":
+        return run_science_surface_cli(
+            root=args.root, policy=args.policy, baseline_ref=args.baseline_ref
+        )
     bootstrap_state = asyncio.run(
         compose_application(modules=tuple(getattr(args, "plugin", None) or ()))
     )
@@ -700,7 +871,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             harness_argv.append("--allow-large-per-row")
         return harness_main(harness_argv, bootstrap_state=bootstrap_state)
     if args.command == "preflight-experiment-envelope":
-        return _preflight_experiment_envelope(args, registries)
+        return _preflight_experiment_envelope(args)
+    if args.command == "fulfill-experiment-envelope":
+        return _fulfill_experiment_envelope(args, registries)
     if args.command == "execute-training-run-spec":
         run_spec = validate_training_run_spec(_read_json(args.spec))
         resolved_method = resolve_training_run_spec(run_spec, registries.training_methods)

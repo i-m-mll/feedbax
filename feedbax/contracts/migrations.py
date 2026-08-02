@@ -238,6 +238,14 @@ from feedbax.contracts.row_index import (
     ROW_INDEX_SCHEMA_ID,
     ROW_INDEX_SCHEMA_VERSION,
 )
+from feedbax.contracts.authoring_budget import (
+    AUTHORING_BUDGET_SCHEMA_ID,
+    AUTHORING_BUDGET_SCHEMA_VERSION,
+)
+from feedbax.contracts.experiment_compile_lock import (
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_ID,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
+)
 from feedbax.contracts.experiment_envelope import (
     EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID,
     EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_VERSION,
@@ -3132,10 +3140,39 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID,
             EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_VERSION,
             owner_module="feedbax.contracts.experiment_envelope",
-            emitted_by=("downstream experiment envelope compilers",),
+            emitted_by=("feedbax.envelope.entrypoint.compile_experiment_envelope",),
             consumed_by=("python -m feedbax preflight-experiment-envelope",),
-            description="Outcome one downstream envelope compiler returns to the dispatcher.",
+            description="Outcome the built-in envelope compiler returns to the dispatcher.",
             required_tests=("tests/test_experiment_envelope_dispatch.py",),
+        ),
+        _family(
+            "ExperimentCompileLock",
+            EXPERIMENT_COMPILE_LOCK_SCHEMA_ID,
+            EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.experiment_compile_lock",
+            emitted_by=("feedbax.envelope.compile.EnvelopeKernel.compile_envelope",),
+            consumed_by=(
+                "feedbax.envelope.choke.compare_tracked_outputs",
+                "downstream execution and resume",
+            ),
+            description=(
+                "Compile-time plan pinning what an envelope compile read and decided, "
+                "with compiler contract and implementation provenance recorded apart."
+            ),
+            required_tests=("tests/test_envelope_engine_kernel.py",),
+        ),
+        _family(
+            "AuthoringBudget",
+            AUTHORING_BUDGET_SCHEMA_ID,
+            AUTHORING_BUDGET_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.authoring_budget",
+            emitted_by=("downstream project authoring-budget resources",),
+            consumed_by=("feedbax.envelope.authoring.read_authored_document",),
+            description=(
+                "Per-layer authored-document caps: Feedbax owns the document and the "
+                "enforcement, the project owns the layer names and the numbers."
+            ),
+            required_tests=("tests/test_envelope_engine_kernel.py",),
         ),
         _family(
             "FigureTemplate",

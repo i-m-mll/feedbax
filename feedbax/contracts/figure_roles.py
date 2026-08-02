@@ -465,36 +465,19 @@ def _expanded_panel(
     return expanded
 
 
-def expand_figure_rows(
+def expand_figure_rows_structure(
     base_figure: FigureSpec | Mapping[str, Any],
     request: FigureRowExpansionRequest,
     resolved_rows: ResolvedRowSet,
-    resolved_inputs: ResolvedFigureInputs,
-) -> FigureSpec:
-    """Derive the multi-row :class:`FigureSpec` for one resolved row set.
+) -> dict[str, Any]:
+    """Derive the multi-row figure payload, leaving its inputs unbound.
 
-    The base figure is the single-row scientific statement; nothing about the
-    expansion is authored. Row-index order alone determines the ``row_{n}__``
-    namespace, panel placement and titles, legend ownership, colorbar
-    placement, and assembler height.
-
-    Raises:
-        RowSelectionError: If any expanded role still awaits a run receipt, so
-            the figure would name data that has not been produced.
+    This is the half of the expansion that a *plan* can state: namespaces, panel
+    placement and titles, legend ownership, colorbar placement, assembler height
+    and title. Nothing here names produced data, so it is derivable before any
+    row has ever run. :func:`expand_figure_rows` is this plus the post-run
+    custody binding.
     """
-    if not resolved_inputs.fully_bound:
-        raise RowSelectionError(
-            RowSelectionErrorCode.UNRESOLVED_ROW_KEY,
-            "figure expansion requires post-run custody for every per-row role; still "
-            f"pending: {list(resolved_inputs.pending_roles)}",
-            index_id=resolved_inputs.index_id,
-        )
-    if list(resolved_inputs.row_ids) != list(resolved_rows.row_ids):
-        raise RowSelectionError(
-            RowSelectionErrorCode.INDEX_MISMATCH,
-            "resolved figure inputs disagree with the resolved row set",
-            index_id=resolved_rows.index_id,
-        )
     base = (
         base_figure.model_dump(mode="json", exclude_none=True)
         if isinstance(base_figure, FigureSpec)
@@ -563,6 +546,40 @@ def expand_figure_rows(
             placement["panel"] = f"{first_namespace}{placement['panel']}"
             colorbar["placement"] = placement
         payload["colorbar"] = colorbar
+    return payload
+
+
+def expand_figure_rows(
+    base_figure: FigureSpec | Mapping[str, Any],
+    request: FigureRowExpansionRequest,
+    resolved_rows: ResolvedRowSet,
+    resolved_inputs: ResolvedFigureInputs,
+) -> FigureSpec:
+    """Derive the multi-row :class:`FigureSpec` for one resolved row set.
+
+    The base figure is the single-row scientific statement; nothing about the
+    expansion is authored. Row-index order alone determines the ``row_{n}__``
+    namespace, panel placement and titles, legend ownership, colorbar
+    placement, and assembler height.
+
+    Raises:
+        RowSelectionError: If any expanded role still awaits a run receipt, so
+            the figure would name data that has not been produced.
+    """
+    if not resolved_inputs.fully_bound:
+        raise RowSelectionError(
+            RowSelectionErrorCode.UNRESOLVED_ROW_KEY,
+            "figure expansion requires post-run custody for every per-row role; still "
+            f"pending: {list(resolved_inputs.pending_roles)}",
+            index_id=resolved_inputs.index_id,
+        )
+    if list(resolved_inputs.row_ids) != list(resolved_rows.row_ids):
+        raise RowSelectionError(
+            RowSelectionErrorCode.INDEX_MISMATCH,
+            "resolved figure inputs disagree with the resolved row set",
+            index_id=resolved_rows.index_id,
+        )
+    payload = expand_figure_rows_structure(base_figure, request, resolved_rows)
 
     inputs: list[dict[str, Any]] = []
     authorities: list[dict[str, Any]] = []
@@ -600,6 +617,7 @@ __all__ = [
     "ResolvedFigureInputs",
     "SharedInputReference",
     "expand_figure_rows",
+    "expand_figure_rows_structure",
     "resolve_figure_input_roles",
     "row_namespace",
 ]
