@@ -26,6 +26,7 @@ from feedbax.contracts.expressions import (
     ExpressionSelectAmbiguous,
     ExpressionTypeError,
     Filter,
+    MapObjectList,
     NamedPredicateRef,
     NamedPredicateUnresolved,
     Not,
@@ -639,6 +640,101 @@ def test_structural_value_expr_union_validates_value_query_and_coalesce_payloads
     assert isinstance(coalesce, Coalesce)
     with pytest.raises(ValidationError):
         adapter.validate_python({"item": "manifest", "queries": []})
+
+
+def test_map_object_list_parses_hashes_and_preserves_order_duplicates_and_numbers() -> None:
+    adapter = TypeAdapter(ValueExpr)
+    payload = {
+        "kind": "map_object_list",
+        "items": {"item": "manifest", "path": "values"},
+        "template": {"record": {"fixed": 7}, "enabled": True},
+        "item_output_path": "record.value",
+    }
+    query = adapter.validate_python(payload)
+    assert isinstance(query, MapObjectList)
+    assert canonical_expression_json(query) == (
+        '{"item_output_path":"record.value","items":{"item":"manifest",'
+        '"path":"values"},"kind":"map_object_list","template":{"enabled":true,'
+        '"record":{"fixed":7}}}'
+    )
+    assert expression_hash(query) == expression_hash(
+        adapter.validate_python(dict(reversed(payload.items())))
+    )
+
+    source = [1, 1, 2.5, -0.0, {"nested": [3]}]
+    result = evaluate_query(query, _ctx({"values": source}))
+    assert result == [
+        {"record": {"fixed": 7, "value": 1}, "enabled": True},
+        {"record": {"fixed": 7, "value": 1}, "enabled": True},
+        {"record": {"fixed": 7, "value": 2.5}, "enabled": True},
+        {"record": {"fixed": 7, "value": -0.0}, "enabled": True},
+        {"record": {"fixed": 7, "value": {"nested": [3]}}, "enabled": True},
+    ]
+    result[0]["record"]["fixed"] = 99
+    result[-1]["record"]["value"]["nested"].append(4)
+    assert result[1]["record"]["fixed"] == 7
+    assert source[-1] == {"nested": [3]}
+
+
+def test_map_object_list_fails_closed_for_missing_or_non_list_items() -> None:
+    query = MapObjectList(
+        items=ValueQuery(item="manifest", path="values"),
+        template={"record": {}},
+        item_output_path="record.value",
+    )
+
+    with pytest.raises(ExpressionPathMissing):
+        evaluate_query(query, _ctx({}))
+    with pytest.raises(ExpressionItemMissing):
+        evaluate_query(
+            MapObjectList(
+                items=ValueQuery(item="missing", path="values"),
+                template={"record": {}},
+                item_output_path="record.value",
+            ),
+            _ctx({"values": []}),
+        )
+    with pytest.raises(ExpressionTypeError, match="requires a list"):
+        evaluate_query(query, _ctx({"values": {"not": "a list"}}))
+    with pytest.raises(ExpressionTypeError, match="must return a JSON list"):
+        evaluate_query(query, _ctx({"values": [float("nan")]}))
+    with pytest.raises(ExpressionTypeError, match="must return a JSON list"):
+        evaluate_query(query, _ctx({"values": [SimpleNamespace(value=1)]}))
+
+
+@pytest.mark.parametrize(
+    ("template", "path", "message"),
+    [
+        ({}, "", "not dotted-path-like"),
+        ({}, ".value", "not dotted-path-like"),
+        ({}, "record.value", "missing segment"),
+        ({"record": 1}, "record.value", "terminate in an object"),
+        ({"record": {"value": None}}, "record.value", "collides"),
+        ({"record": {"value": 1}}, "record.value", "collides"),
+        ({"record": {}, "bad": float("nan")}, "record.value", "closed JSON value"),
+    ],
+)
+def test_map_object_list_rejects_invalid_or_colliding_output_paths(
+    template: object,
+    path: str,
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        MapObjectList(
+            items=ValueQuery(item="manifest", path="values"),
+            template=template,
+            item_output_path=path,
+        )
+
+
+def test_map_object_list_depth_includes_its_items_query() -> None:
+    expr = Compare(item="entry", path="x", op="eq", value=True)
+    for _ in range(MAX_EXPR_DEPTH - 3):
+        expr = Not(expr=expr)
+    items = ValueQuery(item="manifest", path="values", filter=Filter(where=expr))
+
+    with pytest.raises(ValidationError, match="exceeds max supported depth"):
+        MapObjectList(items=items, template={}, item_output_path="value")
 
 
 def test_manifest_predicate_expressibility_without_bundle_behavior_change() -> None:

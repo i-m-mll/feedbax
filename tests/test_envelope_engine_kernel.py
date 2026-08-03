@@ -72,6 +72,7 @@ from feedbax.envelope.compile import (
     check_no_co_created_protected_document,
 )
 from feedbax.envelope.entrypoint import DECLARED_LAYERS
+from feedbax.training.run_matrix import materialize_adapted_run_matrix
 
 from tests.fake_project_experiment import (
     ENVELOPE_DIRECTORY,
@@ -1993,6 +1994,198 @@ def test_root_derivation_validation_maps_to_exact_authored_fields(repo: Path) ->
         )
     assert no_source.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
     assert no_source.value.field == "training.root.derivations"
+
+
+def test_root_list_projection_is_exact_and_binds_both_compact_source_pins(
+    repo: Path,
+) -> None:
+    primary_points = [
+        [0.15, 0.0],
+        [0.149429204714, 0.013073361412],
+        [0.147721162952, 0.02604722665],
+        [0.144888873943, 0.038822856765],
+        [0.140953893118, 0.051303021499],
+        [0.135946168055, 0.063392739261],
+        [0.129903810568, 0.075],
+        [0.086036465453, 0.122872806643],
+        [0.075, 0.129903810568],
+        [0.063392739261, 0.135946168055],
+        [0.051303021499, 0.140953893118],
+        [0.038822856765, 0.144888873943],
+        [0.02604722665, 0.147721162952],
+        [0.013073361412, 0.149429204714],
+        [0.0, 0.15],
+        [-0.013073361412, 0.149429204714],
+        [-0.02604722665, 0.147721162952],
+        [-0.038822856765, 0.144888873943],
+        [-0.051303021499, 0.140953893118],
+        [-0.063392739261, 0.135946168055],
+        [-0.075, 0.129903810568],
+        [-0.122872806643, 0.086036465453],
+        [-0.129903810568, 0.075],
+        [-0.135946168055, 0.063392739261],
+        [-0.140953893118, 0.051303021499],
+        [-0.144888873943, 0.038822856765],
+        [-0.147721162952, 0.02604722665],
+        [-0.149429204714, 0.013073361412],
+        [-0.15, 0.0],
+        [-0.149429204714, -0.013073361412],
+        [-0.147721162952, -0.02604722665],
+        [-0.144888873943, -0.038822856765],
+        [-0.140953893118, -0.051303021499],
+        [-0.135946168055, -0.063392739261],
+        [-0.129903810568, -0.075],
+        [-0.086036465453, -0.122872806643],
+        [-0.075, -0.129903810568],
+        [-0.063392739261, -0.135946168055],
+        [-0.051303021499, -0.140953893118],
+        [-0.038822856765, -0.144888873943],
+        [-0.02604722665, -0.147721162952],
+        [-0.013073361412, -0.149429204714],
+        [-0.0, -0.15],
+        [0.013073361412, -0.149429204714],
+        [0.02604722665, -0.147721162952],
+        [0.038822856765, -0.144888873943],
+        [0.051303021499, -0.140953893118],
+        [0.063392739261, -0.135946168055],
+        [0.075, -0.129903810568],
+        [0.122872806643, -0.086036465453],
+        [0.129903810568, -0.075],
+        [0.135946168055, -0.063392739261],
+        [0.140953893118, -0.051303021499],
+        [0.144888873943, -0.038822856765],
+        [0.147721162952, -0.02604722665],
+        [0.149429204714, -0.013073361412],
+    ]
+    reserved_points = [
+        [0.122872806643, 0.086036465453],
+        [0.114906666468, 0.096418141453],
+        [0.106066017178, 0.106066017178],
+        [0.096418141453, 0.114906666468],
+        [-0.086036465453, 0.122872806643],
+        [-0.096418141453, 0.114906666468],
+        [-0.106066017178, 0.106066017178],
+        [-0.114906666468, 0.096418141453],
+        [-0.122872806643, -0.086036465453],
+        [-0.114906666468, -0.096418141453],
+        [-0.106066017178, -0.106066017178],
+        [-0.096418141453, -0.114906666468],
+        [0.086036465453, -0.122872806643],
+        [0.096418141453, -0.114906666468],
+        [0.106066017178, -0.106066017178],
+        [0.114906666468, -0.096418141453],
+    ]
+    source_documents = {
+        "inputs/primary-points.json": {"points": primary_points},
+        "inputs/reserved-points.json": {"points": reserved_points},
+    }
+    for ref, document in source_documents.items():
+        write_json(repo / ref, document)
+
+    training_run = _standard_run_spec_payload()
+    ref = "intent/generic.training_run.json"
+    write_json(repo / ref, training_run)
+    template = {
+        "initial": {"encoding": "constant", "shape": [36], "value": 0.0},
+        "signal": {"encoding": "constant", "shape": [60, 1], "value": 1.0},
+    }
+    outcome = _compile_root(
+        repo,
+        {
+            "kind": "training_run",
+            "ref": ref,
+            "content_hash": canonical_sha256(training_run),
+            "rows": [{"id": "condition-a"}],
+            "sources": [
+                {"alias": "primary", "kind": "json", "uri": "inputs/primary-points.json"},
+                {"alias": "reserved", "kind": "json", "uri": "inputs/reserved-points.json"},
+            ],
+            "derivations": [
+                {
+                    "output_path": "method_payload.payload.metadata.primary_records",
+                    "query": {
+                        "kind": "map_object_list",
+                        "items": {"item": "primary", "path": "points"},
+                        "template": template,
+                        "item_output_path": "target",
+                    },
+                },
+                {
+                    "output_path": "method_payload.payload.metadata.reserved_records",
+                    "query": {
+                        "kind": "map_object_list",
+                        "items": {"item": "reserved", "path": "points"},
+                        "template": template,
+                        "item_output_path": "target",
+                    },
+                },
+            ],
+        },
+    )
+
+    pins = {
+        item["ref"]: item["content_hash"]
+        for item in outcome.compile_lock["references"]
+        if item["kind"] == "content_pin" and item["ref"] in source_documents
+    }
+    assert pins == {
+        "inputs/primary-points.json": (
+            "ab3ae3941afb7594964d805787ace3d4647fb52d0856156ea037e5e49a251f0f"
+        ),
+        "inputs/reserved-points.json": (
+            "c251b5f6eb96220a8f18dc2e80d5f726528d3814e7a5635476ed4758d531230c"
+        ),
+    }
+
+    seen_by_lowerer: list[dict[str, Any]] = []
+
+    def lower(authored_row: Any, _context: Any) -> None:
+        seen_by_lowerer.append(authored_row.payload)
+        return None
+
+    materialize_adapted_run_matrix(
+        outcome.document,
+        repo_root=repo,
+        row_lowerer=lower,
+        row_validator=lambda _payload, _row_id: None,
+    )
+    metadata = seen_by_lowerer[0]["method_payload"]["payload"]["metadata"]
+
+    def expected(points: list[list[float]]) -> list[dict[str, Any]]:
+        return [{**template, "target": point} for point in points]
+
+    assert len(metadata["primary_records"]) == 56
+    assert len(metadata["reserved_records"]) == 16
+    assert metadata["primary_records"] == expected(primary_points)
+    assert metadata["reserved_records"] == expected(reserved_points)
+
+    def reject_mapped_records(_authored_row: Any, _context: Any) -> None:
+        raise ValueError("row lowerer rejected mapped records")
+
+    with pytest.raises(ValueError, match="row lowerer rejected mapped records"):
+        materialize_adapted_run_matrix(
+            outcome.document,
+            repo_root=repo,
+            row_lowerer=reject_mapped_records,
+            row_validator=lambda _payload, _row_id: None,
+        )
+
+    source_documents["inputs/primary-points.json"]["points"][0] = [9.0, 9.0]
+    write_json(
+        repo / "inputs/primary-points.json",
+        source_documents["inputs/primary-points.json"],
+    )
+    changed = _compile_root(
+        repo,
+        json.loads(envelope_path(repo, "rooted").read_text())["training"]["root"],
+    )
+    changed_pins = {
+        item["ref"]: item["content_hash"]
+        for item in changed.compile_lock["references"]
+        if item["kind"] == "content_pin" and item["ref"] in source_documents
+    }
+    assert changed_pins["inputs/primary-points.json"] != pins["inputs/primary-points.json"]
+    assert changed_pins["inputs/reserved-points.json"] == pins["inputs/reserved-points.json"]
 
 
 def test_root_output_validation_maps_invalid_row_and_payload_syntax(repo: Path) -> None:

@@ -10,7 +10,7 @@ from typing import Annotated, Any, Literal, Mapping, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
 
-from feedbax.contracts.expressions import Coalesce, ValueExpr, ValueQuery
+from feedbax.contracts.expressions import Coalesce, MapObjectList, ValueExpr, ValueQuery
 from feedbax.contracts.extraction import SourceBinding
 from feedbax.contracts.matrix_core import RowDerivation
 from feedbax.contracts.manifest import (
@@ -1162,6 +1162,8 @@ def _query_can_evaluate_without_sources(query: ValueExpr) -> bool:
         return query.default is not None or all(
             "default" in child.model_fields_set for child in query.queries
         )
+    if isinstance(query, MapObjectList):
+        return "default" in query.items.model_fields_set
     return False
 
 
@@ -1171,4 +1173,6 @@ def _query_uses_only_row_context(query: ValueExpr) -> bool:
         return query.item == "row"
     if isinstance(query, Coalesce):
         return all(child.item == "row" for child in query.queries)
+    if isinstance(query, MapObjectList):
+        return query.items.item == "row"
     return False

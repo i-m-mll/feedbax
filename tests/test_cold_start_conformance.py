@@ -840,6 +840,11 @@ run = TrainingRunSpec(
 
 run_ref = "specs/intent/generic.training_run.json"
 (repo / run_ref).write_text(emit_text(run), encoding="utf-8")
+source_ref = "specs/intent/generic.items.json"
+(repo / source_ref).write_text(
+    emit_text({"items": [[1.25, -0.0], [1.25, -0.0], [2.5, 3.75]]}),
+    encoding="utf-8",
+)
 composition = CompositionNode(
     name="generic-composition",
     parent=InlineIntentParent(
@@ -921,6 +926,16 @@ envelopes = {
                 "ref": run_ref,
                 "content_hash": canonical_sha256(run),
                 "rows": [{"id": "condition-c"}],
+                "sources": [{"alias": "items", "kind": "json", "uri": source_ref}],
+                "derivations": [{
+                    "output_path": "method_payload.payload.metadata.records",
+                    "query": {
+                        "kind": "map_object_list",
+                        "items": {"item": "items", "path": "items"},
+                        "template": {"fixed": {"shape": [2]}},
+                        "item_output_path": "value",
+                    },
+                }],
             }
         },
     },
@@ -979,6 +994,26 @@ assert dependency["checkpoint_transaction_id"] == "source-transaction"
 assert dependency["source_barrier"] == "after_segment"
 assert "execution_hash" not in json.dumps(dependency)
 assert outcomes["training-run-root"].document["base"]["content_hash"] == canonical_sha256(run)
+training_run = materialize_adapted_run_matrix(
+    outcomes["training-run-root"].document,
+    repo_root=repo,
+    row_validator=lambda _payload, _row_id: None,
+)
+assert training_run.rows[0].authored_payload["method_payload"]["payload"]["metadata"][
+    "records"
+] == [
+    {"fixed": {"shape": [2]}, "value": [1.25, -0.0]},
+    {"fixed": {"shape": [2]}, "value": [1.25, -0.0]},
+    {"fixed": {"shape": [2]}, "value": [2.5, 3.75]},
+]
+source_pin = next(
+    item
+    for item in outcomes["training-run-root"].compile_lock["references"]
+    if item.get("ref") == source_ref
+)
+assert source_pin["content_hash"] == canonical_sha256(
+    {"items": [[1.25, -0.0], [1.25, -0.0], [2.5, 3.75]]}
+)
 print(json.dumps({
     "schemas": sorted(outcome.envelope_schema for outcome in outcomes.values()),
     "families": sorted(outcome.family for outcome in outcomes.values()),

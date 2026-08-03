@@ -28,6 +28,7 @@ from feedbax.contracts.expressions import (
     ExpressionContext,
     ExpressionEvaluationError,
     ExpressionPathMissing,
+    MapObjectList,
     ValueQuery,
     evaluate_expr,
     evaluate_query,
@@ -1903,9 +1904,11 @@ def _get_payload_path(payload: Any, path: str) -> Any:
 
 
 def _evaluate_value(value: Any, context: ExpressionContext) -> Any:
-    if isinstance(value, (ValueQuery, Coalesce)):
+    if isinstance(value, (ValueQuery, Coalesce, MapObjectList)):
         return evaluate_query(value, context)
     if isinstance(value, Mapping):
+        if value.get("kind") == "map_object_list":
+            return evaluate_query(MapObjectList.model_validate(value), context)
         if "queries" in value:
             return evaluate_query(Coalesce.model_validate(value), context)
         if "item" in value:
@@ -1921,11 +1924,13 @@ def _binding_expression_hashes(binding: TraceBinding) -> list[str]:
     if binding.include_when is not None:
         hashes.append(expression_hash(binding.include_when))
     for value in binding.data.values():
-        if isinstance(value, (ValueQuery, Coalesce)):
+        if isinstance(value, (ValueQuery, Coalesce, MapObjectList)):
             hashes.append(expression_hash(value))
         elif isinstance(value, Mapping):
             try:
-                if "queries" in value:
+                if value.get("kind") == "map_object_list":
+                    hashes.append(expression_hash(MapObjectList.model_validate(value)))
+                elif "queries" in value:
                     hashes.append(expression_hash(Coalesce.model_validate(value)))
                 elif "item" in value:
                     hashes.append(expression_hash(ValueQuery.model_validate(value)))
