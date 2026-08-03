@@ -2,7 +2,7 @@
 
 Every case here is about *mechanism*: canonical hashing, budgets, the compile
 lock's plan/receipt boundary, fail-closed loading, lineage resolution, the
-five-layer compile, and the choke point. The science is entirely ``quillon``'s,
+closed-layer compile, and the choke point. The science is entirely ``quillon``'s,
 and ``quillon`` is made up, which is the point — a test that needed a real
 project's vocabulary would be testing the wrong layer.
 """
@@ -138,12 +138,49 @@ def _layer_root_authority(kind: str, **fields: Any) -> dict[str, Any]:
     }
 
 
+def _comparison_policy_authority() -> dict[str, Any]:
+    return _layer_root_authority(
+        "comparison_policy",
+        roles={
+            "reference": {
+                "source_class": "quillon.loss_trace",
+                "label": "Reference",
+                "training_policy": "fixed",
+                "trace_schema_id": "quillon.trace",
+                "trace_schema_version": "quillon.trace.v1",
+                "retention_contract": "contracts/reference.json",
+                "figure_template": "terminal",
+            },
+            "candidate": {
+                "source_class": "quillon.loss_trace",
+                "label": "Candidate",
+                "training_policy": "adaptive",
+                "figure_template": "terminal",
+            },
+        },
+        figure_templates={
+            "terminal": {
+                "name": "terminal",
+                "description": "Generic terminal comparison",
+                "assembler": "quillon.comparison_grid",
+            }
+        },
+        comparison_policy={
+            "supported_source_class": "quillon.loss_trace",
+            "required_cadence": "per_checkpoint",
+            "required_equal_authority": ["training_data", "optimizer"],
+            "mismatch_policy": "fail_closed",
+        },
+    )
+
+
 def _compile_layer_root(
     repo: Path,
     alias: str,
     authority: dict[str, Any],
     layer: dict[str, Any],
     *,
+    layer_name: str | None = None,
     payload_path: list[str] | None = None,
     whole_document: dict[str, Any] | None = None,
 ) -> Any:
@@ -155,10 +192,12 @@ def _compile_layer_root(
         root["payload_path"] = payload_path
     content = dict(layer)
     content["root"] = root
+    if layer_name is None:
+        layer_name = "analysis" if "target" in content else "figure"
     envelope = {
         "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
         "name": alias,
-        "analysis" if "target" in content else "figure": content,
+        layer_name: content,
     }
     write_envelope(envelope_path(repo, alias), envelope)
     return kernel().compile_envelope_file(envelope_path(repo, alias), repo_root=repo)
@@ -2952,7 +2991,7 @@ def test_checkpoint_initialization_may_not_name_a_row_the_matrix_no_longer_runs(
 # -- v4 analysis/figure layer roots -------------------------------------------
 
 
-def test_all_three_layer_root_kinds_compile_with_one_pin_and_no_parent(repo: Path) -> None:
+def test_all_four_layer_root_kinds_compile_with_one_pin_and_no_parent(repo: Path) -> None:
     run = _compile_layer_root(
         repo,
         "root-analysis-run",
@@ -3011,6 +3050,13 @@ def test_all_three_layer_root_kinds_compile_with_one_pin_and_no_parent(repo: Pat
             },
         },
     )
+    comparison = _compile_layer_root(
+        repo,
+        "root-comparison-policy",
+        _comparison_policy_authority(),
+        {},
+        layer_name="comparison",
+    )
 
     assert run.document == {
         "schema_id": "feedbax.spec.analysis_run",
@@ -3029,11 +3075,23 @@ def test_all_three_layer_root_kinds_compile_with_one_pin_and_no_parent(repo: Pat
     assert figure.document["inputs"] == []
     assert figure.document["input_authorities"] == []
     assert figure.document["assembler_params"]["height"] == 450
+    assert comparison.document["schema_id"] == "feedbax.spec.comparison_policy"
+    assert comparison.document["schema_version"] == "feedbax.spec.comparison_policy.v1"
+    assert comparison.document["name"] == "root-comparison-policy"
+    assert list(comparison.document["roles"]) == ["reference", "candidate"]
+    assert comparison.document["comparison_policy"]["mismatch_policy"] == "fail_closed"
+    assert canonical_sha256(comparison.document) == (
+        "06f6eb8fb69efdbe29f089aecf4fde289b8fa14f31f3fc38b8f81a5943d35bf8"
+    )
+    assert canonical_sha256(comparison.compile_lock) == (
+        "d5091f4194cb7c0030becce6ef7f7f9a016bbfe0d174311dfa373b62249d629e"
+    )
 
     for outcome, kind in (
         (run, "analysis_run"),
         (bundle, "analysis_bundle"),
         (figure, "figure"),
+        (comparison, "comparison_policy"),
     ):
         lock = outcome.compile_lock
         assert lock["base"] is None
@@ -3063,6 +3121,78 @@ def test_v3_compilation_keeps_compiler_v2_bytes(repo: Path) -> None:
     assert outcome.compile_lock["compiler_contract"]["contract_version"] == (
         EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2
     )
+
+
+def test_comparison_root_selector_changes_semantic_identity_after_whole_file_pin(
+    repo: Path,
+) -> None:
+    first = _comparison_policy_authority()
+    second = json.loads(json.dumps(first))
+    second["roles"]["candidate"]["label"] = "Alternate"
+    whole = {"members": {"first": first, "second": second}, "padding": "x" * 6_000}
+    outcome = _compile_layer_root(
+        repo,
+        "selected-comparison",
+        first,
+        {},
+        layer_name="comparison",
+        payload_path=["members", "first"],
+        whole_document=whole,
+    )
+
+    identity = outcome.compile_lock["identity_contributions"]["layer_root"]
+    assert identity == {
+        "kind": "comparison_policy",
+        "ref": "authorities/selected-comparison.json",
+        "sha256": canonical_sha256(whole),
+        "payload_path": ["members", "first"],
+        "selected_authority_sha256": canonical_sha256(first),
+    }
+    assert len(envelope_path(repo, "selected-comparison").read_bytes()) < 2_048
+    assert len((repo / "authorities/selected-comparison.json").read_bytes()) > 6_000
+
+    envelope = _read(repo, "selected-comparison")
+    envelope["comparison"]["root"]["payload_path"] = ["members", "second"]
+    _write(repo, "selected-comparison", envelope)
+    selected_second = kernel().compile_envelope_file(
+        envelope_path(repo, "selected-comparison"), repo_root=repo
+    )
+    assert selected_second.document["roles"]["candidate"]["label"] == "Alternate"
+    assert selected_second.compile_lock["identity_contributions"]["layer_root"][
+        "selected_authority_sha256"
+    ] == canonical_sha256(second)
+
+    envelope["comparison"]["root"]["sha256"] = "0" * 64
+    _write(repo, "selected-comparison", envelope)
+    with pytest.raises(ExperimentEnvelopeRejection) as wrong_pin:
+        kernel().compile_envelope_file(envelope_path(repo, "selected-comparison"), repo_root=repo)
+    assert wrong_pin.value.category is ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
+
+
+def test_comparison_root_kind_and_typed_shape_fail_closed(repo: Path) -> None:
+    with pytest.raises(ExperimentEnvelopeRejection) as mismatch:
+        _compile_layer_root(
+            repo,
+            "comparison-wrong-kind",
+            _layer_root_authority("figure", assembler="quillon.panel_assembler"),
+            {},
+            layer_name="comparison",
+        )
+    assert mismatch.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert "requires authority kind 'comparison_policy'" in str(mismatch.value)
+
+    malformed = _comparison_policy_authority()
+    malformed["roles"].pop("candidate")
+    with pytest.raises(ExperimentEnvelopeRejection) as invalid:
+        _compile_layer_root(
+            repo,
+            "comparison-invalid-shape",
+            malformed,
+            {},
+            layer_name="comparison",
+        )
+    assert invalid.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert "at least two source roles" in str(invalid.value)
 
 
 def test_selector_is_verified_after_whole_file_and_changes_selected_identity(repo: Path) -> None:
