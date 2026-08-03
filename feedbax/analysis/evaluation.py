@@ -98,6 +98,7 @@ from feedbax.analysis.execution_context import (
 )
 from feedbax.analysis.manifest_inputs import (
     is_authenticated_manifest_ref,
+    restated_parent_differences,
     resolve_manifest_input,
 )
 from feedbax.analysis.evaluation_inputs import resolve_evaluation_inputs
@@ -939,7 +940,10 @@ def _validate_matrix_staged_parent_references(
         if not isinstance(staged, Mapping):
             raise TypeError("evaluation params.staged_prerequisites must be a mapping or null")
         for name, prerequisite in matrix.staged_parents.items():
-            input_match = prerequisite.parent in row.payload.inputs
+            input_match = any(
+                not restated_parent_differences(prerequisite.parent, input_ref)
+                for input_ref in row.payload.inputs
+            )
             staged_match = name in staged and (
                 StagedEvaluationPrerequisite.model_validate(staged[name]) == prerequisite
             )
