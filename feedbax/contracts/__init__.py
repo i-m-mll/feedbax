@@ -318,13 +318,17 @@ from feedbax.contracts.spec_storage import (
     training_spec_canonical_bytes,
 )
 from feedbax.contracts.run_composition import (
+    CompiledTrainingRowParent,
     CompositionNode,
+    CompositionNodeV2,
     ExecutionDependencyLayer,
     NamedCompositionLane,
     authored_envelope_hash,
+    composition_identity_projection,
     composed_intent_hash,
     flatten_composition,
     flatten_repo_composition,
+    parse_composition_node,
 )
 from feedbax.contracts.lineage import LineageDag, LineageEvent, store_lineage_event
 from feedbax.contracts.intent_diff import detect_near_duplicate_lanes, layered_semantic_diff
@@ -958,15 +962,19 @@ __all__ = [
     "canonical_training_run_spec_bytes",
     "canonical_training_run_spec_projection",
     "canonical_training_run_spec_sha256",
+    "CompiledTrainingRowParent",
     "CompositionNode",
+    "CompositionNodeV2",
     "ExecutionDependencyLayer",
     "NamedCompositionLane",
     "LineageDag",
     "LineageEvent",
     "authored_envelope_hash",
+    "composition_identity_projection",
     "composed_intent_hash",
     "flatten_composition",
     "flatten_repo_composition",
+    "parse_composition_node",
     "store_lineage_event",
     "detect_near_duplicate_lanes",
     "layered_semantic_diff",

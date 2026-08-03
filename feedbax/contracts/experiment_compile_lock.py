@@ -859,12 +859,29 @@ def _validate_lock_resolved_deltas(lock: Mapping[str, Any], field: str) -> None:
         locator = f"{field}#resolved_deltas.{key}"
         _lock_text(key, locator, f"{what} key")
         record = _lock_mapping(value, locator, "a resolved delta")
+        optional_schema_fields = tuple(
+            name for name in ("schema_id", "schema_version") if name in record
+        )
         _lock_keys(
             record,
-            ("layer_id", "patches", "acknowledges_ancestor_paths"),
+            (
+                "layer_id",
+                "patches",
+                "acknowledges_ancestor_paths",
+                *optional_schema_fields,
+            ),
             locator,
             "a resolved delta",
         )
+        if len(optional_schema_fields) == 1:
+            missing = ({"schema_id", "schema_version"} - set(optional_schema_fields)).pop()
+            _lock_reject(
+                locator,
+                f"a resolved delta states {missing!r} with its schema boundary",
+                ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
+            )
+        for name in optional_schema_fields:
+            _lock_text(record[name], f"{locator}.{name}", f"a resolved delta {name}")
         if record["layer_id"] != key:
             _lock_reject(
                 f"{locator}.layer_id",

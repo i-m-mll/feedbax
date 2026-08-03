@@ -9,22 +9,24 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
+from feedbax.contracts.authored_canonical import CANONICAL_PIN_ALGORITHM
 from feedbax.contracts.manifest import StrictModel
 from feedbax.contracts.run_matrix import (
-    ContinuationReconciliation,
-    DurableSlotTransform,
+    ContinuationReconciliation as ContinuationReconciliation,
+    DurableSlotTransform as DurableSlotTransform,
     ExecutionDependency,
-    ForkFromSelectedCheckpoint,
-    LineageGraftDependency,
+    ForkFromSelectedCheckpoint as ForkFromSelectedCheckpoint,
+    LineageGraftDependency as LineageGraftDependency,
     MatrixCompositionDelta,
-    StoppedRowStatus,
-    TaskIdentityGate,
+    StoppedRowStatus as StoppedRowStatus,
+    TaskIdentityGate as TaskIdentityGate,
     apply_composition_deltas,
 )
 from feedbax.contracts.spec_storage import training_spec_sha256, validate_sha256
 
 COMPOSITION_SCHEMA_ID = "feedbax.spec.training_run_composition"
-COMPOSITION_SCHEMA_VERSION = f"{COMPOSITION_SCHEMA_ID}.v1"
+COMPOSITION_SCHEMA_VERSION_V1 = f"{COMPOSITION_SCHEMA_ID}.v1"
+COMPOSITION_SCHEMA_VERSION = f"{COMPOSITION_SCHEMA_ID}.v2"
 EXECUTION_DEPENDENCY_SCHEMA_ID = "feedbax.spec.training_execution_dependencies"
 EXECUTION_DEPENDENCY_SCHEMA_VERSION = f"{EXECUTION_DEPENDENCY_SCHEMA_ID}.v1"
 
@@ -68,6 +70,45 @@ CompositionParent: TypeAlias = Annotated[
 ]
 
 
+class CanonicalJsonDocumentPin(StrictModel):
+    """Repository document pinned in the canonical-json-v1 hash domain."""
+
+    ref: str
+    sha256: str
+
+    @model_validator(mode="after")
+    def _pin(self) -> "CanonicalJsonDocumentPin":
+        if not self.ref.strip():
+            raise ValueError("document pin ref must not be empty")
+        _digest(self.sha256, "/sha256")
+        return self
+
+
+class CompiledTrainingRowParent(StrictModel):
+    """One exact governed row from a pinned matrix-v6 compile."""
+
+    kind: Literal["compiled_training_row"] = "compiled_training_row"
+    matrix: CanonicalJsonDocumentPin
+    compile_lock: CanonicalJsonDocumentPin
+    row_id: str
+    symbolic_name: str | None = None
+
+    @model_validator(mode="after")
+    def _row(self) -> "CompiledTrainingRowParent":
+        if not self.row_id.strip():
+            raise ValueError("/parent/row_id must not be empty")
+        return self
+
+
+CompositionParentV2: TypeAlias = Annotated[
+    InlineIntentParent
+    | AuthoredIntentParent
+    | ResolvedOutputParent
+    | CompiledTrainingRowParent,
+    Field(discriminator="kind"),
+]
+
+
 CompositionDelta = MatrixCompositionDelta
 
 
@@ -75,7 +116,7 @@ class CompositionNode(StrictModel):
     """Single-parent composition; only the flattened terminal is target-validated."""
 
     schema_id: str = COMPOSITION_SCHEMA_ID
-    schema_version: str = COMPOSITION_SCHEMA_VERSION
+    schema_version: str = COMPOSITION_SCHEMA_VERSION_V1
     name: str
     parent: CompositionParent
     deltas: list[CompositionDelta] = Field(default_factory=list)
@@ -87,6 +128,32 @@ class CompositionNode(StrictModel):
     def _identity(self) -> "CompositionNode":
         if self.schema_id != COMPOSITION_SCHEMA_ID:
             raise ValueError(f"/schema_id expected {COMPOSITION_SCHEMA_ID!r}")
+        if self.schema_version != COMPOSITION_SCHEMA_VERSION_V1:
+            raise ValueError(
+                f"/schema_version expected {COMPOSITION_SCHEMA_VERSION_V1!r}; "
+                "migration_intentionally_absent=yes"
+            )
+        if not self.name.strip():
+            raise ValueError("/name must not be empty")
+        return self
+
+
+class CompositionNodeV2(StrictModel):
+    """Composition v2, adding only the compiled-matrix-row parent."""
+
+    schema_id: str = COMPOSITION_SCHEMA_ID
+    schema_version: str = COMPOSITION_SCHEMA_VERSION
+    name: str
+    parent: CompositionParentV2
+    deltas: list[CompositionDelta] = Field(default_factory=list)
+    sources: list[dict[str, Any]] = Field(default_factory=list)
+    selectors: list[dict[str, Any]] = Field(default_factory=list)
+    seeds: list[int] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _identity(self) -> "CompositionNodeV2":
+        if self.schema_id != COMPOSITION_SCHEMA_ID:
+            raise ValueError(f"/schema_id expected {COMPOSITION_SCHEMA_ID!r}")
         if self.schema_version != COMPOSITION_SCHEMA_VERSION:
             raise ValueError(
                 f"/schema_version expected {COMPOSITION_SCHEMA_VERSION!r}; "
@@ -95,6 +162,9 @@ class CompositionNode(StrictModel):
         if not self.name.strip():
             raise ValueError("/name must not be empty")
         return self
+
+
+CompositionDocument: TypeAlias = CompositionNode | CompositionNodeV2
 
 
 class NamedCompositionLane(StrictModel):
@@ -126,15 +196,30 @@ class FlattenedIntent(StrictModel):
 
 
 ParentResolver = Callable[
-    [AuthoredIntentParent | ResolvedOutputParent], CompositionNode | dict[str, Any]
+    [AuthoredIntentParent | ResolvedOutputParent | CompiledTrainingRowParent],
+    CompositionDocument | dict[str, Any],
 ]
 
 
-def composition_envelope(node: CompositionNode) -> dict[str, Any]:
+def composition_identity_projection(node: CompositionDocument) -> dict[str, Any]:
     """Identity allowlist; readability refs and lane names are not identity-bearing."""
     parent = node.parent.model_dump(mode="json", exclude_none=True)
-    parent.pop("ref", None)
-    parent.pop("symbolic_name", None)
+    if isinstance(node.parent, CompiledTrainingRowParent):
+        parent = {
+            "kind": node.parent.kind,
+            "matrix": {
+                "sha256": node.parent.matrix.sha256,
+                "pin_algorithm": CANONICAL_PIN_ALGORITHM,
+            },
+            "compile_lock": {
+                "sha256": node.parent.compile_lock.sha256,
+                "pin_algorithm": CANONICAL_PIN_ALGORITHM,
+            },
+            "row_id": node.parent.row_id,
+        }
+    else:
+        parent.pop("ref", None)
+        parent.pop("symbolic_name", None)
     return {
         "schema_id": node.schema_id,
         "schema_version": node.schema_version,
@@ -146,13 +231,32 @@ def composition_envelope(node: CompositionNode) -> dict[str, Any]:
     }
 
 
-def authored_envelope_hash(node: CompositionNode) -> str:
-    return training_spec_sha256(composition_envelope(node))
+def composition_envelope(node: CompositionDocument) -> dict[str, Any]:
+    """Backward-compatible name for the public composition identity projection."""
+    return composition_identity_projection(node)
 
 
-def flatten_composition(node: CompositionNode, resolve_parent: ParentResolver) -> FlattenedIntent:
+def authored_envelope_hash(node: CompositionDocument) -> str:
+    return training_spec_sha256(composition_identity_projection(node))
+
+
+def parse_composition_node(document: Mapping[str, Any]) -> CompositionDocument:
+    """Parse one explicit composition version without inferring or migrating it."""
+    version = document.get("schema_version")
+    if version == COMPOSITION_SCHEMA_VERSION_V1:
+        return CompositionNode.model_validate(document)
+    if version == COMPOSITION_SCHEMA_VERSION:
+        return CompositionNodeV2.model_validate(document)
+    raise ValueError(
+        f"unsupported {COMPOSITION_SCHEMA_ID} schema_version {version!r}; "
+        f"supported={[COMPOSITION_SCHEMA_VERSION_V1, COMPOSITION_SCHEMA_VERSION]!r}; "
+        "migration_intentionally_absent=yes"
+    )
+
+
+def flatten_composition(node: CompositionDocument, resolve_parent: ParentResolver) -> FlattenedIntent:
     """Flatten root-to-child, checking pins and cross-layer override acknowledgements."""
-    layers: list[CompositionNode] = []
+    layers: list[CompositionDocument] = []
     seen: set[str] = set()
     current = node
     while True:
@@ -167,8 +271,8 @@ def flatten_composition(node: CompositionNode, resolve_parent: ParentResolver) -
             break
         resolved = resolve_parent(parent)
         if isinstance(parent, AuthoredIntentParent):
-            if not isinstance(resolved, CompositionNode):
-                raise ValueError("/parent authored_intent must resolve to CompositionNode")
+            if not isinstance(resolved, (CompositionNode, CompositionNodeV2)):
+                raise ValueError("/parent authored_intent must resolve to a composition node")
             actual = authored_envelope_hash(resolved)
             if actual != parent.content_hash:
                 raise ValueError(
@@ -177,6 +281,11 @@ def flatten_composition(node: CompositionNode, resolve_parent: ParentResolver) -
                 )
             current = resolved
             continue
+        if isinstance(parent, CompiledTrainingRowParent):
+            if not isinstance(resolved, dict):
+                raise ValueError("/parent compiled_training_row must resolve to a mapping")
+            payload = dict(resolved)
+            break
         if not isinstance(resolved, dict):
             raise ValueError("/parent resolved_output must resolve to a mapping")
         actual = training_spec_sha256(resolved)
