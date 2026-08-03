@@ -136,6 +136,41 @@ def test_patch_precondition_failures_name_layer(payload: dict[str, object], delt
         apply_composition_deltas(payload, [delta])
 
 
+def test_repeated_dash_appends_in_one_layer_do_not_overlap_each_other() -> None:
+    resolved, attribution, written = apply_composition_deltas(
+        {"items": [0]},
+        [
+            CompositionDelta(
+                layer_id="child",
+                patches=[
+                    {"op": "add", "path": "items.-", "value": 1},
+                    {"op": "add", "path": "items.-", "value": 2},
+                ],
+            )
+        ],
+    )
+
+    assert resolved == {"items": [0, 1, 2]}
+    assert attribution == {"items.-": "child"}
+    assert written == {"items.-"}
+
+
+def test_dash_append_does_not_hide_a_later_parent_path_overlap() -> None:
+    with pytest.raises(ValueError, match=r"/deltas/child/items.*overlaps"):
+        apply_composition_deltas(
+            {"items": [0]},
+            [
+                CompositionDelta(
+                    layer_id="child",
+                    patches=[
+                        {"op": "add", "path": "items.-", "value": 1},
+                        {"op": "replace", "path": "items", "value": []},
+                    ],
+                )
+            ],
+        )
+
+
 def test_unacknowledged_ancestor_override_names_layer() -> None:
     with pytest.raises(ValueError, match=r"/deltas/child/x.*without explicit acknowledgement"):
         apply_composition_deltas(

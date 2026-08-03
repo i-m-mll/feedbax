@@ -165,6 +165,28 @@ def test_apply_override_patches_append_via_dash_token() -> None:
     assert patched == {"items": [0, 1, 2]}
 
 
+@pytest.mark.parametrize(
+    ("index", "expected"),
+    [
+        (0, [9, 0, 1, 2]),
+        (1, [0, 9, 1, 2]),
+    ],
+)
+def test_apply_override_patches_inserts_at_in_range_list_index(
+    index: int,
+    expected: list[int],
+) -> None:
+    base = {"items": [0, 1, 2]}
+
+    patched = apply_override_patches(
+        base,
+        [{"path": f"items.{index}", "op": "add", "value": 9}],  # type: ignore[list-item]
+    )
+
+    assert patched == {"items": expected}
+    assert base == {"items": [0, 1, 2]}
+
+
 def test_apply_override_patches_nested_append_into_deltas_patches_list() -> None:
     base = {
         "deltas": [
