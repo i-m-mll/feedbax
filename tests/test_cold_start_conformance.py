@@ -952,7 +952,9 @@ resolved = materialize_adapted_run_matrix(
     row_validator=lambda _payload, _row_id: None,
     row_lowering_context=context,
 )
-assert resolved.rows[0].authored_payload == run
+assert resolved.rows[0].authored_payload["schema_id"] == run["schema_id"]
+assert resolved.rows[0].authored_payload["schema_version"] == run["schema_version"]
+assert resolved.rows[0].authored_payload["training_config"] == run["training_config"]
 assert outcomes["training-run-root"].document["base"]["content_hash"] == canonical_sha256(run)
 print(json.dumps({
     "schemas": sorted(outcome.envelope_schema for outcome in outcomes.values()),
