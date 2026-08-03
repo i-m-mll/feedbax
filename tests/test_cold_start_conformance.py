@@ -845,6 +845,24 @@ source_ref = "specs/intent/generic.items.json"
     emit_text({"items": [[1.25, -0.0], [1.25, -0.0], [2.5, 3.75]]}),
     encoding="utf-8",
 )
+authority = {
+    "schema_id": "feedbax.spec.root_training_authority",
+    "schema_version": "feedbax.spec.root_training_authority.v1",
+    "sources": [{"alias": "items", "kind": "json", "uri": source_ref}],
+    "derivations": [
+        {
+            "output_path": "method_payload.payload.metadata.records",
+            "query": {
+                "kind": "map_object_list",
+                "items": {"item": "items", "path": "items"},
+                "template": {"fixed": {"shape": [2]}},
+                "item_output_path": "value",
+            },
+        }
+    ],
+}
+authority_ref = "specs/intent/generic.root_training_authority.json"
+(repo / authority_ref).write_text(emit_text(authority), encoding="utf-8")
 composition = CompositionNode(
     name="generic-composition",
     parent=InlineIntentParent(
@@ -927,16 +945,7 @@ envelopes = {
                 "ref": run_ref,
                 "content_hash": canonical_sha256(run),
                 "rows": [{"id": "condition-c"}],
-                "sources": [{"alias": "items", "kind": "json", "uri": source_ref}],
-                "derivations": [{
-                    "output_path": "method_payload.payload.metadata.records",
-                    "query": {
-                        "kind": "map_object_list",
-                        "items": {"item": "items", "path": "items"},
-                        "template": {"fixed": {"shape": [2]}},
-                        "item_output_path": "value",
-                    },
-                }],
+                "authority": {"ref": authority_ref, "sha256": canonical_sha256(authority)},
             }
         },
     },
@@ -1016,6 +1025,12 @@ source_pin = next(
 assert source_pin["content_hash"] == canonical_sha256(
     {"items": [[1.25, -0.0], [1.25, -0.0], [2.5, 3.75]]}
 )
+authority_pin = next(
+    item
+    for item in outcomes["training-run-root"].compile_lock["references"]
+    if item.get("ref") == authority_ref
+)
+assert authority_pin["content_hash"] == canonical_sha256(authority)
 print(json.dumps({
     "schemas": sorted(outcome.envelope_schema for outcome in outcomes.values()),
     "families": sorted(outcome.family for outcome in outcomes.values()),
