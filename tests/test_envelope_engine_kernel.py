@@ -44,7 +44,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1,
     REPORT_OUTPUT,
-    TRAINING_OUTPUT,
+    TRAINING_OUTPUT_V6,
     ExperimentEnvelopeLayer,
 )
 from feedbax.contracts.migrations import default_spec_registry
@@ -1478,7 +1478,7 @@ def test_authored_composition_root_preserves_both_hash_domains_and_root_identity
 
     outcome = _compile_root(repo, root)
 
-    assert outcome.document["schema_version"] == "feedbax.spec.training_run_matrix.v5"
+    assert outcome.document["schema_version"] == "feedbax.spec.training_run_matrix.v6"
     assert outcome.document["base"] == {
         "kind": "authored_intent",
         "ref": ref,
@@ -1565,11 +1565,114 @@ def test_resolved_output_composition_root_is_not_materialized_at_compile_time(
         "kind": "resolved_output",
         "ref": immutable_ref,
         "resolved_root_hash": "3" * 64,
+        "row_id": "source-row",
+        "checkpoint_transaction_id": "checkpoint-1",
     }
     assert outcome.compile_lock["references"] == []
     identity = outcome.compile_lock["identity_contributions"]["training_root"]["parent"]
     assert identity["row_id"] == "source-row"
     assert identity["checkpoint_transaction_id"] == "checkpoint-1"
+
+
+def test_root_selected_checkpoint_lowers_exact_resolved_authority_and_barrier(
+    repo: Path,
+) -> None:
+    root = {
+        "kind": "composition",
+        "parent": {
+            "kind": "resolved_output",
+            "ref": "artifact-blob:generic-source",
+            "resolved_root_hash": "3" * 64,
+            "row_id": "source-row",
+            "checkpoint_transaction_id": "checkpoint-1",
+        },
+        "selected_checkpoint": {
+            "checkpoint_root_hash": "4" * 64,
+            "source_barrier": "after_segment",
+        },
+        "rows": [{"id": "condition-a"}],
+        "fork": {
+            "lr_continuation": "continue",
+            "parity": "require",
+            "absolute_lr_tolerance": 1e-12,
+        },
+    }
+
+    outcome = _compile_root(repo, root)
+    dependency = outcome.document["execution_dependencies"][0]
+    assert dependency == {
+        "kind": "fork_from_selected_checkpoint",
+        "source_authority": {
+            "kind": "resolved_output_root",
+            "resolved_root_hash": "3" * 64,
+        },
+        "source_row_id": "source-row",
+        "checkpoint_transaction_id": "checkpoint-1",
+        "checkpoint_root_hash": "4" * 64,
+        "source_barrier": "after_segment",
+        "slot_transforms": [],
+    }
+    assert "execution_hash" not in str(dependency)
+    first_hash = outcome.compile_lock["compiled_document"]["content_hash"]
+
+    root["selected_checkpoint"]["source_barrier"] = "after_validation"
+    second = _compile_root(repo, root)
+    assert second.compile_lock["compiled_document"]["content_hash"] != first_hash
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_row",
+        "missing_transaction",
+        "checkpoint_initialization",
+        "authored_parent",
+    ],
+)
+def test_root_selected_checkpoint_refuses_incomplete_or_competing_authority(
+    repo: Path, mutation: str
+) -> None:
+    parent = {
+        "kind": "resolved_output",
+        "ref": "artifact-blob:generic-source",
+        "resolved_root_hash": "3" * 64,
+        "row_id": "source-row",
+        "checkpoint_transaction_id": "checkpoint-1",
+    }
+    root: dict[str, Any] = {
+        "kind": "composition",
+        "parent": parent,
+        "selected_checkpoint": {
+            "checkpoint_root_hash": "4" * 64,
+            "source_barrier": "after_segment",
+        },
+        "rows": [{"id": "condition-a"}],
+        "fork": {"lr_continuation": "continue", "parity": "require"},
+    }
+    if mutation == "missing_row":
+        parent.pop("row_id")
+    elif mutation == "missing_transaction":
+        parent.pop("checkpoint_transaction_id")
+    elif mutation == "checkpoint_initialization":
+        root["checkpoint_initialization"] = [
+            {
+                "row": "condition-a",
+                "mode": "continue_from",
+                "source": {
+                    "kind": "receipt",
+                    "manifest_kind": "generic.training",
+                    "manifest_id": "source",
+                },
+            }
+        ]
+    else:
+        root["parent"] = {
+            "kind": "authored_intent",
+            "ref": "intent/source.json",
+            "content_hash": "3" * 64,
+        }
+    with pytest.raises(ExperimentEnvelopeRejection):
+        _compile_root(repo, root)
 
 
 def test_training_run_v4_root_is_canonical_pinned_and_emits_no_matrix_deltas(
@@ -1759,7 +1862,7 @@ def test_validation_runtime_errors_are_not_reclassified_as_authoring_rejections(
             )
 
     with monkeypatch.context() as scoped:
-        scoped.setattr(TRAINING_OUTPUT.model(), "model_validate", classmethod(explode))
+        scoped.setattr(TRAINING_OUTPUT_V6.model(), "model_validate", classmethod(explode))
         with pytest.raises(RuntimeError, match="validator implementation failed"):
             _compile_root(
                 repo,
@@ -1769,6 +1872,8 @@ def test_validation_runtime_errors_are_not_reclassified_as_authoring_rejections(
                         "kind": "resolved_output",
                         "ref": "artifact-blob:terminal",
                         "resolved_root_hash": "8" * 64,
+                        "row_id": "source-row",
+                        "checkpoint_transaction_id": "checkpoint-1",
                     },
                     "rows": [{"id": "condition-a"}],
                 },
@@ -1932,6 +2037,8 @@ def test_root_checkpoint_envelope_binding_is_lock_only_and_rows_are_exact(
             "kind": "resolved_output",
             "ref": "artifact-blob:terminal",
             "resolved_root_hash": "5" * 64,
+            "row_id": "source-row",
+            "checkpoint_transaction_id": "checkpoint-1",
         },
         "rows": [{"id": "condition-a"}],
         "checkpoint_initialization": [

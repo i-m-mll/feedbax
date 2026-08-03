@@ -95,9 +95,10 @@ from feedbax.contracts.matrix_core import RowDerivation
 from feedbax.contracts.row_index import RowSetSelector
 from feedbax.contracts.run_composition import AuthoredIntentParent, ResolvedOutputParent
 from feedbax.contracts.run_matrix import (
-    ExecutionDependency,
+    DurableSlotTransformV6,
+    ExecutionDependencyV6,
     MatrixCompositionDelta,
-    MatrixForkSpec,
+    MatrixForkSpecV6,
 )
 
 #: The unversioned identity of the dialect family.
@@ -392,10 +393,10 @@ class RootTrainingMatrixFields(DialectModel):
     """Existing typed matrix fields shared by both closed root source kinds."""
 
     rows: list[RootTrainingRowAuthoring] = Field(min_length=1)
-    execution_dependencies: list[ExecutionDependency] = Field(default_factory=list)
+    execution_dependencies: list[ExecutionDependencyV6] = Field(default_factory=list)
     sources: list[SourceBinding] = Field(default_factory=list)
     derivations: list[RowDerivation] = Field(default_factory=list)
-    fork: MatrixForkSpec | None = None
+    fork: MatrixForkSpecV6 | None = None
     tags: list[str] = Field(default_factory=list)
     checkpoint_initialization: list[CheckpointInitializationAuthoring] = Field(default_factory=list)
 
@@ -421,12 +422,29 @@ CompositionRootParent: TypeAlias = Annotated[
 ]
 
 
+class RootSelectedCheckpointAuthoring(DialectModel):
+    """Root-relative checkpoint authority selected from one resolved parent row."""
+
+    checkpoint_root_hash: str
+    source_barrier: str = Field(min_length=1)
+    slot_transforms: list[DurableSlotTransformV6] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate(self) -> "RootSelectedCheckpointAuthoring":
+        if len(self.checkpoint_root_hash) != 64 or any(
+            char not in "0123456789abcdef" for char in self.checkpoint_root_hash
+        ):
+            raise ValueError("selected checkpoint root hash must be a lowercase sha256")
+        return self
+
+
 class CompositionTrainingRootAuthoring(RootTrainingMatrixFields):
     """A matrix rooted in a pinned composition.v1 parent declaration."""
 
     kind: Literal["composition"] = "composition"
     parent: CompositionRootParent
     deltas: list[MatrixCompositionDelta] = Field(default_factory=list)
+    selected_checkpoint: RootSelectedCheckpointAuthoring | None = None
 
     @model_validator(mode="after")
     def _validate_layers(self) -> "CompositionTrainingRootAuthoring":
@@ -434,6 +452,34 @@ class CompositionTrainingRootAuthoring(RootTrainingMatrixFields):
         layer_ids.extend(row.delta.layer_id for row in self.rows if row.delta is not None)
         if len(set(layer_ids)) != len(layer_ids):
             raise ValueError("root composition and row delta layer ids must be unique")
+        if isinstance(self.parent, ResolvedOutputParent) and (
+            self.parent.row_id is None or self.parent.checkpoint_transaction_id is None
+        ):
+            raise ValueError(
+                "a v3 resolved-output root parent requires row_id and checkpoint_transaction_id"
+            )
+        selected = self.selected_checkpoint
+        if selected is None:
+            return self
+        if not isinstance(self.parent, ResolvedOutputParent):
+            raise ValueError("root selected_checkpoint requires one resolved-output parent")
+        if self.parent.row_id is None or self.parent.checkpoint_transaction_id is None:
+            raise ValueError(
+                "root selected_checkpoint requires parent row_id and checkpoint_transaction_id"
+            )
+        if self.checkpoint_initialization:
+            raise ValueError(
+                "root selected_checkpoint cannot coexist with checkpoint_initialization"
+            )
+        if any(
+            dependency.kind == "fork_from_selected_checkpoint"
+            for dependency in self.execution_dependencies
+        ):
+            raise ValueError(
+                "root selected_checkpoint is the sole authored selected-checkpoint dependency"
+            )
+        if self.fork is None:
+            raise ValueError("root selected_checkpoint requires a fork policy")
         return self
 
 
@@ -1060,6 +1106,13 @@ TRAINING_OUTPUT = LayerOutputContract(
     "training_run_matrix",
     "feedbax.spec.training_run_matrix",
     "feedbax.spec.training_run_matrix.v5",
+    ("feedbax.contracts.run_matrix", "TrainingRunMatrixSpecV5"),
+)
+TRAINING_OUTPUT_V6 = LayerOutputContract(
+    ExperimentEnvelopeLayer.TRAINING,
+    "training_run_matrix",
+    "feedbax.spec.training_run_matrix",
+    "feedbax.spec.training_run_matrix.v6",
     ("feedbax.contracts.run_matrix", "TrainingRunMatrixSpec"),
 )
 EVALUATION_OUTPUT = LayerOutputContract(
@@ -1167,7 +1220,13 @@ def output_contract_of_document(
     """Return the output contract a compiled or frozen document conforms to."""
     if not isinstance(document, Mapping):
         return None
-    return LAYER_OUTPUT_CONTRACTS.get(str(document.get("schema_id")))
+    contract = LAYER_OUTPUT_CONTRACTS.get(str(document.get("schema_id")))
+    if (
+        contract is TRAINING_OUTPUT
+        and document.get("schema_version") == TRAINING_OUTPUT_V6.schema_version
+    ):
+        return TRAINING_OUTPUT_V6
+    return contract
 
 
 @dataclass(frozen=True)
@@ -1376,6 +1435,7 @@ __all__ = [
     "REPORT_OUTPUT",
     "REPORT_PARAMS_MODELS",
     "TRAINING_OUTPUT",
+    "TRAINING_OUTPUT_V6",
     "V2_ONLY_CONSTRUCTS",
     "AnalysisBundleRootAuthoring",
     "AnalysisLayerAuthoring",
@@ -1401,6 +1461,7 @@ __all__ = [
     "RowReplacement",
     "RootTrainingMatrixFields",
     "RootTrainingRowAuthoring",
+    "RootSelectedCheckpointAuthoring",
     "TagsDelta",
     "TrainingLayerAuthoring",
     "TrainingRootAuthoring",

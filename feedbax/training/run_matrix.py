@@ -39,17 +39,20 @@ from feedbax.contracts.run_matrix import (
     AuthoredTrainingRow,
     AuthoredIntentMatrixBaseSpec,
     ForkFromSelectedCheckpoint,
+    ForkFromSelectedCheckpointV6,
     InlineMatrixBaseSpec,
     MatrixDerivation,
     RowLowererIdentity,
     RUN_MATRIX_MATERIALIZATION_SCHEMA_ID,
     RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION,
     ResolvedOutputMatrixBaseSpec,
-    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+    ResolvedOutputMatrixBaseSpecV6,
+    ResolvedOutputRootForkSourceAuthority,
     TrainingRowLoweringResult,
     TrainingRowPlanningProvenance,
     TrainingRowProvenance,
     TrainingRunMatrixSpec,
+    TrainingRunMatrixSpecV5,
     TaskIdentityGate,
     apply_composition_deltas,
     apply_override_patches,
@@ -102,6 +105,22 @@ class RunMatrixError(ValueError):
 
 class ForkParityError(RunMatrixError):
     """Raised when forked checkpoint slot parity fails."""
+
+
+MatrixSpec = TrainingRunMatrixSpecV5 | TrainingRunMatrixSpec
+
+
+def _selected_checkpoint_dependency(
+    spec: MatrixSpec,
+) -> ForkFromSelectedCheckpoint | ForkFromSelectedCheckpointV6 | None:
+    dependencies = [
+        item
+        for item in spec.execution_dependencies
+        if isinstance(item, (ForkFromSelectedCheckpoint, ForkFromSelectedCheckpointV6))
+    ]
+    if len(dependencies) > 1:
+        raise RunMatrixError("matrix declares more than one selected checkpoint dependency")
+    return None if not dependencies else dependencies[0]
 
 
 class _LoadedSourceManifest(dict[str, Any]):
@@ -424,7 +443,7 @@ def _materialize_run_matrix(
     row_lowerer: TrainingRowLowerer | None = None,
     row_lowering_context: Any | None = None,
 ) -> MaterializedRunMatrix:
-    if isinstance(spec, TrainingRunMatrixSpec):
+    if isinstance(spec, (TrainingRunMatrixSpecV5, TrainingRunMatrixSpec)):
         matrix = spec
     else:
         migrated = default_spec_registry.migrate("TrainingRunMatrixSpec", spec)
@@ -481,7 +500,7 @@ def _materialize_run_matrix(
         provenance=Provenance(issues=[matrix.issue] if matrix.issue else []),
         metadata={
             "matrix_spec_sha256": _matrix_sha256(matrix),
-            "matrix_schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+            "matrix_schema_version": matrix.schema_version,
             "explicit_rows": bool(matrix.rows),
             **copy.deepcopy(matrix.metadata),
         },
@@ -567,7 +586,9 @@ def render_spec_lock_table(
             (
                 dependency.source_row_id
                 for dependency in spec.execution_dependencies
-                if isinstance(dependency, ForkFromSelectedCheckpoint)
+                if isinstance(
+                    dependency, (ForkFromSelectedCheckpoint, ForkFromSelectedCheckpointV6)
+                )
             ),
             "",
         ),
@@ -627,6 +648,92 @@ def _resolved_schedule_lines(
         end = "ongoing" if window.end_batch is None else f"{window.end_batch:,}"
         lines.append(f"{row.row_id} LR schedule: batches {window.start_batch:,} -> {end}")
     return lines
+
+
+def _validate_v6_fork_authority(
+    spec: MatrixSpec,
+    materialized: MaterializedRunMatrix,
+    *,
+    source_manifest: Mapping[str, Any],
+    row_target_only_slots: Mapping[str, Mapping[str, Mapping[str, Any]]] | None,
+) -> None:
+    """Recheck matrix-v6 source and target-only authority without inventing identity."""
+    dependency = _selected_checkpoint_dependency(spec)
+    if not isinstance(dependency, ForkFromSelectedCheckpointV6):
+        return
+    if isinstance(dependency.source_authority, ResolvedOutputRootForkSourceAuthority):
+        integrity = source_manifest.get("content_integrity_digest")
+        transaction_root = (
+            integrity.get("transaction_root_sha256") if isinstance(integrity, Mapping) else None
+        )
+        metadata = source_manifest.get("metadata")
+        source_row = metadata.get("matrix_row_id") if isinstance(metadata, Mapping) else None
+        if source_row is None:
+            source_row = source_manifest.get("row_id")
+        observed = (
+            source_row,
+            source_manifest.get("transaction_id"),
+            transaction_root,
+            source_manifest.get("barrier"),
+        )
+        expected = (
+            dependency.source_row_id,
+            dependency.checkpoint_transaction_id,
+            dependency.checkpoint_root_hash,
+            dependency.source_barrier,
+        )
+        if observed != expected:
+            raise RunMatrixError(
+                "matrix-v6 selected checkpoint row, transaction, root, or barrier authority drifts; "
+                f"declared={expected!r} observed={observed!r}"
+            )
+    rows = {row.row_id: row for row in materialized.rows}
+    expected_target_only: dict[str, dict[str, dict[str, Any]]] = {}
+    for transform in dependency.slot_transforms:
+        authority = transform.target_only
+        if authority is None:
+            continue
+        assert transform.target_row_id is not None
+        row = rows[transform.target_row_id]
+        if row.spec is None:
+            raise RunMatrixError(
+                f"target-only transform row {row.row_id!r} has no canonical TrainingRunSpec"
+            )
+        method_ref = row.spec.method_ref.key
+        if authority.method_ref != method_ref:
+            raise RunMatrixError(
+                f"target-only transform method authority mismatch for row {row.row_id!r}; "
+                f"declared={authority.method_ref!r} actual={method_ref!r}"
+            )
+        slot = next(
+            (
+                item
+                for item in row.spec.worker_execution.method_contract.state_slots
+                if item.name == transform.slot
+            ),
+            None,
+        )
+        if slot is None:
+            raise RunMatrixError(
+                f"target-only transform names unknown row slot {row.row_id!r}:{transform.slot!r}"
+            )
+        slot_identity = training_spec_sha256(slot.model_dump(mode="json", exclude_none=True))
+        if authority.slot_identity != slot_identity:
+            raise RunMatrixError(
+                f"target-only transform slot identity mismatch for "
+                f"{row.row_id!r}:{transform.slot!r}"
+            )
+        expected_target_only.setdefault(row.row_id, {})[transform.slot] = authority.model_dump(
+            mode="json", exclude_none=True
+        )
+    supplied = {
+        row_id: {slot: dict(value) for slot, value in slots.items()}
+        for row_id, slots in (row_target_only_slots or {}).items()
+    }
+    if supplied != expected_target_only:
+        raise RunMatrixError(
+            "target-only slot runtime declarations do not match signed matrix-v6 authority"
+        )
 
 
 def fork_matrix_checkpoints(
@@ -792,6 +899,13 @@ def fork_matrix_checkpoints(
         unexpected = sorted(set(values or {}) - row_ids)
         if unexpected:
             raise RunMatrixError(f"{label} contain unknown rows {unexpected!r}")
+    source_manifest_for_authority = _read_latest_manifest(source_checkpoint_root)
+    _validate_v6_fork_authority(
+        spec,
+        materialized,
+        source_manifest=source_manifest_for_authority,
+        row_target_only_slots=row_target_only_slots,
+    )
     reporter = lr_reporter or StandardLrContinuationReporter(method_registry)
     cached_lr_points = (
         {
@@ -802,7 +916,7 @@ def fork_matrix_checkpoints(
         else _preflight_lr_continuation_points(
             spec,
             materialized,
-            source_manifest=_read_latest_manifest(source_checkpoint_root),
+            source_manifest=source_manifest_for_authority,
             source_checkpoint_root=source_checkpoint_root,
             reporter=reporter,
         )
@@ -897,7 +1011,10 @@ def fork_matrix_checkpoints(
                     (
                         dependency.source_row_id
                         for dependency in spec.execution_dependencies
-                        if isinstance(dependency, ForkFromSelectedCheckpoint)
+                        if isinstance(
+                            dependency,
+                            (ForkFromSelectedCheckpoint, ForkFromSelectedCheckpointV6),
+                        )
                     ),
                     None,
                 ),
@@ -1122,6 +1239,16 @@ def _resolve_composed_base(
                 ResolvedOutputParent(
                     ref=spec.base.ref,
                     resolved_root_hash=spec.base.resolved_root_hash,
+                    row_id=(
+                        spec.base.row_id
+                        if isinstance(spec.base, ResolvedOutputMatrixBaseSpecV6)
+                        else None
+                    ),
+                    checkpoint_transaction_id=(
+                        spec.base.checkpoint_transaction_id
+                        if isinstance(spec.base, ResolvedOutputMatrixBaseSpecV6)
+                        else None
+                    ),
                 )
             )
         except ValueError as exc:

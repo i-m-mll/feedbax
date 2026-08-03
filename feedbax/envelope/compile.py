@@ -96,7 +96,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     FIGURE_OUTPUT,
     REPORT_OUTPUT,
     REPORT_PARAMS_MODELS,
-    TRAINING_OUTPUT,
+    TRAINING_OUTPUT_V6,
     AnalysisLayerAuthoring,
     EvaluationLayerAuthoring,
     ExperimentEnvelope,
@@ -1028,7 +1028,7 @@ def _root_payload_path(document: Mapping[str, Any], path: str | None, *, field: 
 def _lower_root_training(
     context: LayerCompileContext, authored: TrainingLayerAuthoring
 ) -> LoweredLayer:
-    """Construct an existing v5 matrix from one of the two closed root kinds."""
+    """Construct a matrix-v6 root from one of the two closed root kinds."""
     root = authored.root
     assert root is not None
     references: list[Any] = []
@@ -1050,11 +1050,20 @@ def _lower_root_training(
                 base["symbolic_name"] = parent.symbolic_name
         else:
             assert isinstance(parent, ResolvedOutputParent)
+            if (parent.row_id is None) != (parent.checkpoint_transaction_id is None):
+                _reject(
+                    ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+                    "training.root.parent",
+                    "a resolved-output parent states row_id and checkpoint_transaction_id together",
+                )
             base = {
                 "kind": "resolved_output",
                 "ref": parent.ref,
                 "resolved_root_hash": parent.resolved_root_hash,
             }
+            if parent.row_id is not None:
+                base["row_id"] = parent.row_id
+                base["checkpoint_transaction_id"] = parent.checkpoint_transaction_id
             if parent.symbolic_name is not None:
                 base["symbolic_name"] = parent.symbolic_name
         matrix_deltas = list(root.deltas)
@@ -1117,16 +1126,39 @@ def _lower_root_training(
                 ),
             )
         )
+    dependencies = [
+        dependency.model_dump(mode="json", exclude_none=True)
+        for dependency in root.execution_dependencies
+    ]
+    if isinstance(root, CompositionTrainingRootAuthoring) and root.selected_checkpoint is not None:
+        parent = root.parent
+        assert isinstance(parent, ResolvedOutputParent)
+        assert parent.row_id is not None
+        assert parent.checkpoint_transaction_id is not None
+        dependencies.append(
+            {
+                "kind": "fork_from_selected_checkpoint",
+                "source_authority": {
+                    "kind": "resolved_output_root",
+                    "resolved_root_hash": parent.resolved_root_hash,
+                },
+                "source_row_id": parent.row_id,
+                "checkpoint_transaction_id": parent.checkpoint_transaction_id,
+                "checkpoint_root_hash": root.selected_checkpoint.checkpoint_root_hash,
+                "source_barrier": root.selected_checkpoint.source_barrier,
+                "slot_transforms": [
+                    transform.model_dump(mode="json", exclude_none=True)
+                    for transform in root.selected_checkpoint.slot_transforms
+                ],
+            }
+        )
     document: dict[str, Any] = {
-        "schema_id": TRAINING_OUTPUT.schema_id,
-        "schema_version": TRAINING_OUTPUT.schema_version,
+        "schema_id": TRAINING_OUTPUT_V6.schema_id,
+        "schema_version": TRAINING_OUTPUT_V6.schema_version,
         "name": context.envelope.name,
         "base": base,
         "deltas": [delta.model_dump(mode="json", exclude_none=True) for delta in matrix_deltas],
-        "execution_dependencies": [
-            dependency.model_dump(mode="json", exclude_none=True)
-            for dependency in root.execution_dependencies
-        ],
+        "execution_dependencies": dependencies,
         "sources": [source.model_dump(mode="json", exclude_none=True) for source in root.sources],
         "derivations": [
             derivation.model_dump(mode="json", exclude_none=True) for derivation in root.derivations
@@ -1149,7 +1181,7 @@ def _lower_root_training(
     lock_deltas = [*matrix_deltas]
     lock_deltas.extend(row.delta for row in root.rows if row.delta is not None)
     return LoweredLayer(
-        contract=TRAINING_OUTPUT,
+        contract=TRAINING_OUTPUT_V6,
         deltas=(),
         document=document,
         references=references,
@@ -1287,7 +1319,7 @@ def _lower_training(context: LayerCompileContext) -> LoweredLayer:
             )
         )
     return LoweredLayer(
-        contract=TRAINING_OUTPUT,
+        contract=context.parent.contract,
         deltas=_one_delta(context, patches, acknowledges=tag_acknowledgements),
         references=references,
         row_provenance=row_provenance,

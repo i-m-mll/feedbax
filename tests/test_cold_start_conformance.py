@@ -896,8 +896,19 @@ envelopes = {
                     "kind": "resolved_output",
                     "ref": "artifact-blob:generic-terminal",
                     "resolved_root_hash": canonical_sha256(run),
+                    "row_id": "source-row",
+                    "checkpoint_transaction_id": "source-transaction",
+                },
+                "selected_checkpoint": {
+                    "checkpoint_root_hash": "9" * 64,
+                    "source_barrier": "after_segment",
                 },
                 "rows": [{"id": "condition-b"}],
+                "fork": {
+                    "lr_continuation": "continue",
+                    "parity": "require",
+                    "absolute_lr_tolerance": 1e-12,
+                },
             }
         },
     },
@@ -932,6 +943,8 @@ assert composed.rows[0].authored_payload["training_config"]["batch_size"] == 2
 resolved_parent = ResolvedOutputParent(
     ref="artifact-blob:generic-terminal",
     resolved_root_hash=canonical_sha256(run),
+    row_id="source-row",
+    checkpoint_transaction_id="source-transaction",
 )
 context = TrainingRowLoweringContext((GovernedTrainingRowParent(
     provenance=TrainingRowParentProvenance(
@@ -944,6 +957,7 @@ context = TrainingRowLoweringContext((GovernedTrainingRowParent(
         schema_id=run["schema_id"],
         schema_version=run["schema_version"],
     ),
+    parent=resolved_parent,
     payload=run,
 ),))
 resolved = materialize_adapted_run_matrix(
@@ -955,6 +969,15 @@ resolved = materialize_adapted_run_matrix(
 assert resolved.rows[0].authored_payload["schema_id"] == run["schema_id"]
 assert resolved.rows[0].authored_payload["schema_version"] == run["schema_version"]
 assert resolved.rows[0].authored_payload["training_config"] == run["training_config"]
+dependency = outcomes["resolved-root"].document["execution_dependencies"][0]
+assert dependency["source_authority"] == {
+    "kind": "resolved_output_root",
+    "resolved_root_hash": canonical_sha256(run),
+}
+assert dependency["source_row_id"] == "source-row"
+assert dependency["checkpoint_transaction_id"] == "source-transaction"
+assert dependency["source_barrier"] == "after_segment"
+assert "execution_hash" not in json.dumps(dependency)
 assert outcomes["training-run-root"].document["base"]["content_hash"] == canonical_sha256(run)
 print(json.dumps({
     "schemas": sorted(outcome.envelope_schema for outcome in outcomes.values()),

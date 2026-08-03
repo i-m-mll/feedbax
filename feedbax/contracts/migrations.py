@@ -114,6 +114,7 @@ from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4,
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5,
     TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID,
     TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_VERSION,
     TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID,
@@ -2402,6 +2403,33 @@ def _migrate_training_run_matrix_v4_to_v5_payload(payload: dict[str, Any]) -> di
             "the matrix with row-local derivations"
         )
     migrated["schema_id"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
+    migrated["schema_version"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5
+    return migrated
+
+
+def _migrate_training_run_matrix_v5_to_v6_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Wrap only authentic v5 execution hashes in the closed v6 authority union."""
+    migrated = deepcopy(payload)
+    base = migrated.get("base")
+    if isinstance(base, Mapping) and base.get("kind") == "resolved_output":
+        raise ValueError(
+            "TrainingRunMatrixSpec v5 resolved-output bases cannot migrate to v6 because "
+            "v5 does not preserve row_id and checkpoint_transaction_id"
+        )
+    for dependency in migrated.get("execution_dependencies", ()):
+        if dependency.get("kind") != "fork_from_selected_checkpoint":
+            continue
+        execution_hash = dependency.pop("source_execution_hash", None)
+        if not isinstance(execution_hash, str) or not execution_hash:
+            raise ValueError(
+                "TrainingRunMatrixSpec v5 selected checkpoints cannot migrate without an "
+                "authentic source_execution_hash; Feedbax never synthesizes execution identity"
+            )
+        dependency["source_authority"] = {
+            "kind": "execution_hash",
+            "execution_hash": execution_hash,
+        }
+    migrated["schema_id"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
     migrated["schema_version"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
     return migrated
 
@@ -3158,9 +3186,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_VERSION,
             owner_module="feedbax.contracts.figure_roles",
             emitted_by=("feedbax.envelope.compile",),
-            consumed_by=(
-                "feedbax.analysis.fulfillment_row_custody.resolve_row_custody_overlay",
-            ),
+            consumed_by=("feedbax.analysis.fulfillment_row_custody.resolve_row_custody_overlay",),
             description=(
                 "Where one row-expanded figure's per-row custody bindings are found, and "
                 "the row index identity the located document must match."
@@ -3396,6 +3422,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
                 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3,
                 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4,
+                TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5,
             ),
             rejected_old_versions=("feedbax.spec.training_run_matrix.v0",),
             required_tests=(
@@ -5755,9 +5782,7 @@ default_spec_registry.register_migration(
         target_version=FIGURE_COMPOSITION_SPEC_SCHEMA_VERSION,
         migration_id="figure-composition-v1-to-v2-figure-specific-structural-additions",
         migrate=_migrate_figure_composition_v1_to_v2_payload,
-        description=(
-            "Preserve v1 patch semantics while admitting figure-scoped typed additions."
-        ),
+        description=("Preserve v1 patch semantics while admitting figure-scoped typed additions."),
     ),
 )
 default_spec_registry.register_migration(
@@ -5892,12 +5917,25 @@ default_spec_registry.register_migration(
     "TrainingRunMatrixSpec",
     SchemaMigration(
         source_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4,
-        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5,
         migration_id="training-run-matrix-v4-to-v5-per-row-derivations",
         migrate=_migrate_training_run_matrix_v4_to_v5_payload,
         description=(
             "Accept only matrices without base-only derivations; legacy derivations must be "
             "re-authored with explicit per-row semantics."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingRunMatrixSpec",
+    SchemaMigration(
+        source_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5,
+        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        migration_id="training-run-matrix-v5-to-v6-closed-fork-authority",
+        migrate=_migrate_training_run_matrix_v5_to_v6_payload,
+        description=(
+            "Wrap authentic execution hashes in the closed fork source-authority union; "
+            "never synthesize resolved-output selectors or execution identity."
         ),
     ),
 )

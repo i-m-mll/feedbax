@@ -89,6 +89,7 @@ def _resolved_context(
                     schema_id="example.intent",
                     schema_version="example.intent.v1",
                 ),
+                parent=parent,
                 payload=payload,
             ),
         )
@@ -236,6 +237,8 @@ def test_resolved_output_base_requires_governed_custody_and_applies_rows_after_d
     parent = ResolvedOutputParent(
         ref="artifact-blob:terminal",
         resolved_root_hash=training_spec_sha256(terminal),
+        row_id="source-row",
+        checkpoint_transaction_id="source-transaction",
     )
     matrix = TrainingRunMatrixSpec.model_validate(
         {
@@ -244,6 +247,8 @@ def test_resolved_output_base_requires_governed_custody_and_applies_rows_after_d
                 "kind": "resolved_output",
                 "ref": parent.ref,
                 "resolved_root_hash": parent.resolved_root_hash,
+                "row_id": parent.row_id,
+                "checkpoint_transaction_id": parent.checkpoint_transaction_id,
             },
             "deltas": [
                 {

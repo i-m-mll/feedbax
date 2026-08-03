@@ -46,15 +46,18 @@ class GovernedTrainingRowParent:
     """Immutable declared parent bytes supplied to row lowering by ASSEMBLE."""
 
     provenance: TrainingRowParentProvenance
+    parent: AuthoredIntentParent | ResolvedOutputParent
     _payload_json: bytes
 
     def __init__(
         self,
         *,
         provenance: TrainingRowParentProvenance,
+        parent: AuthoredIntentParent | ResolvedOutputParent,
         payload: Mapping[str, Any],
     ) -> None:
         object.__setattr__(self, "provenance", provenance.model_copy(deep=True))
+        object.__setattr__(self, "parent", parent.model_copy(deep=True))
         object.__setattr__(self, "_payload_json", training_spec_canonical_bytes(payload))
 
     def payload(self) -> dict[str, Any]:
@@ -111,6 +114,11 @@ class TrainingRowLoweringContext:
                 f"governed training-row parent {parent.kind}:{parent.ref!r} is {state}"
             )
         governed = matches[0]
+        if governed.parent != parent:
+            raise TrainingRowLowererRegistryError(
+                f"governed training-row parent {parent.kind}:{parent.ref!r} "
+                "row, transaction, or semantic authority drifted"
+            )
         expected_hash = (
             parent.content_hash
             if isinstance(parent, AuthoredIntentParent)

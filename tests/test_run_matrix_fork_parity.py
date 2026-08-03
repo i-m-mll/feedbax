@@ -25,6 +25,7 @@ from feedbax.contracts.run_matrix import (
     StoppedRowStatus,
     TrainingRunMatrixSpec,
 )
+from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.contracts.training import (
     TrainingMethodRegistry,
     default_training_method_registry,
@@ -46,6 +47,7 @@ from feedbax.training.run_matrix import (
     _recorded_optimizer_step,
     _source_completed_step,
     _validate_typed_checkpoint_dependencies,
+    _validate_v6_fork_authority,
     fork_matrix_checkpoints,
     main,
 )
@@ -127,6 +129,105 @@ def test_fork_parity_reads_actual_mapped_batch_and_optimizer_state() -> None:
             optimizer_diverged,
             registry=default_training_method_registry(),
         )
+
+
+def test_matrix_v6_resolved_fork_rechecks_checkpoint_and_target_slot_authority(
+    tmp_path: Path, application_registry_bundle
+) -> None:
+    materialized = materialize_run_matrix(
+        _matrix(_training_run_payload()),
+        repo_root=tmp_path,
+        method_registry=application_registry_bundle.training_methods,
+        row_lowerer=application_registry_bundle.row_lowerers.lower,
+    )
+    row = materialized.rows[0]
+    assert row.spec is not None
+    slot = row.spec.worker_execution.method_contract.state_slots[0]
+    authority = {
+        "method_ref": row.spec.method_ref.key,
+        "slot_identity": training_spec_sha256(slot.model_dump(mode="json", exclude_none=True)),
+    }
+    matrix = TrainingRunMatrixSpec.model_validate(
+        {
+            "name": "resolved-root-fork",
+            "base": {
+                "kind": "resolved_output",
+                "ref": "artifact-blob:generic-source",
+                "resolved_root_hash": "a" * 64,
+                "row_id": "source-row",
+                "checkpoint_transaction_id": "source-transaction",
+            },
+            "rows": [{"row_id": row.row_id, "overrides": []}],
+            "fork": {"lr_continuation": "continue", "parity": "require"},
+            "execution_dependencies": [
+                {
+                    "kind": "fork_from_selected_checkpoint",
+                    "source_authority": {
+                        "kind": "resolved_output_root",
+                        "resolved_root_hash": "a" * 64,
+                    },
+                    "source_row_id": "source-row",
+                    "checkpoint_transaction_id": "source-transaction",
+                    "checkpoint_root_hash": "b" * 64,
+                    "source_barrier": "after_segment",
+                    "slot_transforms": [
+                        {
+                            "transform_id": "generic.initialize_slot",
+                            "version": "v1",
+                            "implementation_sha256": "c" * 64,
+                            "stage": "target_post",
+                            "target_row_id": row.row_id,
+                            "slot": slot.name,
+                            "target_only": authority,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    manifest = {
+        "transaction_id": "source-transaction",
+        "barrier": "after_segment",
+        "metadata": {"matrix_row_id": "source-row"},
+        "content_integrity_digest": {"transaction_root_sha256": "b" * 64},
+    }
+    _validate_v6_fork_authority(
+        matrix,
+        materialized,
+        source_manifest=manifest,
+        row_target_only_slots={row.row_id: {slot.name: authority}},
+    )
+
+    with pytest.raises(RunMatrixError, match="row, transaction, root, or barrier"):
+        _validate_v6_fork_authority(
+            matrix,
+            materialized,
+            source_manifest={**manifest, "barrier": "wrong"},
+            row_target_only_slots={row.row_id: {slot.name: authority}},
+        )
+    with pytest.raises(RunMatrixError, match="runtime declarations"):
+        _validate_v6_fork_authority(
+            matrix,
+            materialized,
+            source_manifest=manifest,
+            row_target_only_slots={},
+        )
+    for field, value, message in (
+        ("method_ref", "generic/other/v1", "method authority mismatch"),
+        ("slot_identity", "0" * 64, "slot identity mismatch"),
+    ):
+        drifted_payload = matrix.model_dump(mode="json", exclude_none=True)
+        drifted_payload["execution_dependencies"][0]["slot_transforms"][0]["target_only"][field] = (
+            value
+        )
+        drifted = TrainingRunMatrixSpec.model_validate(drifted_payload)
+        with pytest.raises(RunMatrixError, match=message):
+            _validate_v6_fork_authority(
+                drifted,
+                materialized,
+                source_manifest=manifest,
+                row_target_only_slots={row.row_id: {slot.name: authority}},
+            )
 
 
 def _write_topology_latest(

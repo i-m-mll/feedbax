@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 from pathlib import Path
 import re
 from typing import Annotated, Any, Literal, Mapping, TypeAlias
@@ -26,17 +27,14 @@ TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training_run_matrix.v
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2 = "feedbax.spec.training_run_matrix.v2"
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3 = "feedbax.spec.training_run_matrix.v3"
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4 = "feedbax.spec.training_run_matrix.v4"
-TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run_matrix.v5"
+TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5 = "feedbax.spec.training_run_matrix.v5"
+TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run_matrix.v6"
 AUTHORED_TRAINING_ROW_SCHEMA_ID = "feedbax.spec.authored_training_row"
 AUTHORED_TRAINING_ROW_SCHEMA_VERSION = f"{AUTHORED_TRAINING_ROW_SCHEMA_ID}.v1"
 TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID = "feedbax.spec.training_row_lowering_result"
-TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION = (
-    f"{TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID}.v1"
-)
+TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION = f"{TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID}.v1"
 TRAINING_ROW_LOWERER_REF_SCHEMA_ID = "feedbax.spec.training_row_lowerer_ref"
-TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION_V1 = (
-    f"{TRAINING_ROW_LOWERER_REF_SCHEMA_ID}.v1"
-)
+TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION_V1 = f"{TRAINING_ROW_LOWERER_REF_SCHEMA_ID}.v1"
 TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION = f"{TRAINING_ROW_LOWERER_REF_SCHEMA_ID}.v2"
 TRAINING_ROW_LOWERING_CONTEXT_API_VERSION = "feedbax.training_row_lowering_context.v1"
 TRAINING_ROW_LOWERER_REF_FIELD = "feedbax_row_lowerer"
@@ -44,15 +42,11 @@ TRAINING_ROW_PROVENANCE_SCHEMA_ID = "feedbax.spec.training_row_provenance"
 TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1 = f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v1"
 TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V2 = f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v2"
 TRAINING_ROW_PROVENANCE_SCHEMA_VERSION = f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v3"
-TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_ID = (
-    "feedbax.spec.training_row_planning_provenance"
-)
+TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_ID = "feedbax.spec.training_row_planning_provenance"
 TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION_V1 = (
     f"{TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_ID}.v1"
 )
-TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION = (
-    f"{TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_ID}.v2"
-)
+TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION = f"{TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_ID}.v2"
 RUN_MATRIX_MATERIALIZATION_SCHEMA_ID = "feedbax.manifest.run_matrix_materialization"
 RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION_V1 = "feedbax.run_matrix_materialization.v1"
 RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION_V2 = f"{RUN_MATRIX_MATERIALIZATION_SCHEMA_ID}.v2"
@@ -66,16 +60,10 @@ TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION = (
 TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID = "feedbax.orchestration.training_run_matrix_authority"
 TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_VERSION = f"{TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID}.v1"
 RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1 = "feedbax.runpod_preflight_evidence"
-RUNPOD_PREFLIGHT_BASE_EVIDENCE_SCHEMA_ID = (
-    "feedbax.orchestration.runpod_preflight_base_evidence"
-)
+RUNPOD_PREFLIGHT_BASE_EVIDENCE_SCHEMA_ID = "feedbax.orchestration.runpod_preflight_base_evidence"
 RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID = "feedbax.orchestration.runpod_preflight_evidence"
-RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1 = (
-    f"{RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1}.v1"
-)
-RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION = (
-    f"{RUNPOD_PREFLIGHT_BASE_EVIDENCE_SCHEMA_ID}.v2"
-)
+RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1 = f"{RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1}.v1"
+RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION = f"{RUNPOD_PREFLIGHT_BASE_EVIDENCE_SCHEMA_ID}.v2"
 RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2 = f"{RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID}.v2"
 RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3 = f"{RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID}.v3"
 RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V4 = f"{RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID}.v4"
@@ -86,7 +74,10 @@ class TrainingRunMatrixArtifactBinding(StrictModel):
     """Portable identity of the one governed matrix shared by every row."""
 
     schema_id: Literal["feedbax.spec.training_run_matrix"]
-    schema_version: Literal["feedbax.spec.training_run_matrix.v5"]
+    schema_version: Literal[
+        "feedbax.spec.training_run_matrix.v5",
+        "feedbax.spec.training_run_matrix.v6",
+    ]
     artifact_id: str = Field(min_length=1)
     artifact_sha256: str
     canonical_sha256: str
@@ -307,9 +298,7 @@ class RowLowererIdentity(StrictModel):
 class TrainingRowLowererRef(StrictModel):
     """Content-pinned authority selecting a public authored-row lowerer."""
 
-    schema_id: Literal["feedbax.spec.training_row_lowerer_ref"] = (
-        TRAINING_ROW_LOWERER_REF_SCHEMA_ID
-    )
+    schema_id: Literal["feedbax.spec.training_row_lowerer_ref"] = TRAINING_ROW_LOWERER_REF_SCHEMA_ID
     schema_version: Literal["feedbax.spec.training_row_lowerer_ref.v2"] = (
         TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION
     )
@@ -330,9 +319,7 @@ class TrainingRowLowererRef(StrictModel):
 class AuthoredTrainingRow(StrictModel):
     """Axis-patched authored row supplied to a registered row lowerer."""
 
-    schema_id: Literal["feedbax.spec.authored_training_row"] = (
-        AUTHORED_TRAINING_ROW_SCHEMA_ID
-    )
+    schema_id: Literal["feedbax.spec.authored_training_row"] = AUTHORED_TRAINING_ROW_SCHEMA_ID
     schema_version: Literal["feedbax.spec.authored_training_row.v1"] = (
         AUTHORED_TRAINING_ROW_SCHEMA_VERSION
     )
@@ -408,9 +395,7 @@ class TrainingRowPlanningProvenance(StrictModel):
 class TrainingRowProvenance(StrictModel):
     """Canonical authored-to-execution provenance for one materialized row."""
 
-    schema_id: Literal["feedbax.spec.training_row_provenance"] = (
-        TRAINING_ROW_PROVENANCE_SCHEMA_ID
-    )
+    schema_id: Literal["feedbax.spec.training_row_provenance"] = TRAINING_ROW_PROVENANCE_SCHEMA_ID
     schema_version: Literal["feedbax.spec.training_row_provenance.v3"] = (
         TRAINING_ROW_PROVENANCE_SCHEMA_VERSION
     )
@@ -435,8 +420,7 @@ class TrainingRowProvenance(StrictModel):
     @model_validator(mode="after")
     def _canonical_parent_inputs(self) -> "TrainingRowProvenance":
         keys = [
-            (item.parent_kind, item.ref, item.role, item.artifact_id)
-            for item in self.parent_inputs
+            (item.parent_kind, item.ref, item.role, item.artifact_id) for item in self.parent_inputs
         ]
         if keys != sorted(keys) or len(keys) != len(set(keys)):
             raise ValueError("parent_inputs must be unique and canonically ordered")
@@ -483,6 +467,26 @@ class ResolvedOutputMatrixBaseSpec(StrictModel):
 
 MatrixBaseSpec: TypeAlias = Annotated[
     InlineMatrixBaseSpec | AuthoredIntentMatrixBaseSpec | ResolvedOutputMatrixBaseSpec,
+    Field(discriminator="kind"),
+]
+
+
+class ResolvedOutputMatrixBaseSpecV6(ResolvedOutputMatrixBaseSpec):
+    """Resolved output selected to one exact row checkpoint in matrix v6."""
+
+    row_id: str = Field(min_length=1)
+    checkpoint_transaction_id: str = Field(min_length=1)
+
+    @field_validator("row_id")
+    @classmethod
+    def _validate_row_id(cls, value: str) -> str:
+        if not _PATH_SAFE_RE.match(value):
+            raise ValueError("/base/row_id must be path-safe")
+        return value
+
+
+MatrixBaseSpecV6: TypeAlias = Annotated[
+    InlineMatrixBaseSpec | AuthoredIntentMatrixBaseSpec | ResolvedOutputMatrixBaseSpecV6,
     Field(discriminator="kind"),
 ]
 
@@ -560,6 +564,65 @@ class DurableSlotTransform(StrictModel):
         return self
 
 
+class TargetOnlySlotAuthority(StrictModel):
+    """Exact target method and slot declaration for one newly initialized slot."""
+
+    method_ref: str = Field(min_length=1)
+    slot_identity: str
+
+    @field_validator("slot_identity")
+    @classmethod
+    def _slot_identity(cls, value: str) -> str:
+        _validate_digest(value, "/dependencies/slot_identity")
+        return value
+
+
+class DurableSlotTransformV6(DurableSlotTransform):
+    """Matrix-v6 durable transform with closed target-only slot authority."""
+
+    target_only: TargetOnlySlotAuthority | None = None
+
+    @model_validator(mode="after")
+    def _v6_placement(self) -> "DurableSlotTransformV6":
+        if self.stage == "source_pre" and self.target_row_id is not None:
+            raise ValueError("source_pre durable transforms cannot name target_row_id")
+        if self.target_only is not None and self.stage != "target_post":
+            raise ValueError("target-only slot authority is legal only on target_post transforms")
+        return self
+
+
+class ExecutionHashForkSourceAuthority(StrictModel):
+    """Exact produced execution identity for an ordinary checkpoint fork."""
+
+    kind: Literal["execution_hash"] = "execution_hash"
+    execution_hash: str
+
+    @field_validator("execution_hash")
+    @classmethod
+    def _execution_hash(cls, value: str) -> str:
+        _validate_digest(value, "/dependencies/source_authority/execution_hash")
+        return value
+
+
+class ResolvedOutputRootForkSourceAuthority(StrictModel):
+    """Exact resolved-output semantic root when no execution hash exists."""
+
+    kind: Literal["resolved_output_root"] = "resolved_output_root"
+    resolved_root_hash: str
+
+    @field_validator("resolved_root_hash")
+    @classmethod
+    def _resolved_root_hash(cls, value: str) -> str:
+        _validate_digest(value, "/dependencies/source_authority/resolved_root_hash")
+        return value
+
+
+ForkSourceAuthority: TypeAlias = Annotated[
+    ExecutionHashForkSourceAuthority | ResolvedOutputRootForkSourceAuthority,
+    Field(discriminator="kind"),
+]
+
+
 class ForkFromSelectedCheckpoint(StrictModel):
     kind: Literal["fork_from_selected_checkpoint"] = "fork_from_selected_checkpoint"
     source_execution_hash: str
@@ -572,6 +635,32 @@ class ForkFromSelectedCheckpoint(StrictModel):
     def _hashes(self) -> "ForkFromSelectedCheckpoint":
         _validate_digest(self.source_execution_hash, "/dependencies/source_execution_hash")
         _validate_digest(self.checkpoint_root_hash, "/dependencies/checkpoint_root_hash")
+        return self
+
+
+class ForkFromSelectedCheckpointV6(StrictModel):
+    """Matrix-v6 selected checkpoint with one closed source authority domain."""
+
+    kind: Literal["fork_from_selected_checkpoint"] = "fork_from_selected_checkpoint"
+    source_authority: ForkSourceAuthority
+    source_row_id: str
+    checkpoint_transaction_id: str
+    checkpoint_root_hash: str
+    source_barrier: str | None = None
+    slot_transforms: list[DurableSlotTransformV6] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _authority(self) -> "ForkFromSelectedCheckpointV6":
+        _validate_digest(self.checkpoint_root_hash, "/dependencies/checkpoint_root_hash")
+        if not _PATH_SAFE_RE.match(self.source_row_id):
+            raise ValueError("/dependencies/source_row_id must be path-safe")
+        if not self.checkpoint_transaction_id:
+            raise ValueError("/dependencies/checkpoint_transaction_id must be nonempty")
+        if isinstance(self.source_authority, ResolvedOutputRootForkSourceAuthority):
+            if self.source_barrier is None or not self.source_barrier.strip():
+                raise ValueError("resolved-output-root fork authority requires source_barrier")
+        elif self.source_barrier is not None:
+            raise ValueError("execution-hash fork authority does not acquire a source_barrier")
         return self
 
 
@@ -634,6 +723,15 @@ ExecutionDependency: TypeAlias = Annotated[
     Field(discriminator="kind"),
 ]
 
+ExecutionDependencyV6: TypeAlias = Annotated[
+    ForkFromSelectedCheckpointV6
+    | ContinuationReconciliation
+    | LineageGraftDependency
+    | StoppedRowStatus
+    | TaskIdentityGate,
+    Field(discriminator="kind"),
+]
+
 
 class MatrixForkSpec(StrictModel):
     """Fork-from-source-checkpoint launch semantics for a matrix."""
@@ -643,36 +741,49 @@ class MatrixForkSpec(StrictModel):
     expected_slots: list[str] = Field(default_factory=list)
 
 
-class TrainingRunMatrixSpec(StrictModel):
-    """Durable governed authoring contract for a matrix of training runs."""
+class MatrixForkSpecV6(MatrixForkSpec):
+    """Matrix-v6 fork policy with signed absolute LR comparison authority."""
+
+    absolute_lr_tolerance: float | None = None
+
+    @model_validator(mode="after")
+    def _validate_tolerance(self) -> "MatrixForkSpecV6":
+        tolerance = self.absolute_lr_tolerance
+        if tolerance is None:
+            return self
+        if not math.isfinite(tolerance) or tolerance < 0:
+            raise ValueError("/fork/absolute_lr_tolerance must be finite and nonnegative")
+        if self.parity != "require" or self.lr_continuation != "continue":
+            raise ValueError(
+                "/fork/absolute_lr_tolerance requires continue LR semantics and required parity"
+            )
+        return self
+
+
+class _TrainingRunMatrixSpecCore(StrictModel):
+    """Fields and invariants shared without reinterpretation by matrix v5 and v6."""
 
     schema_id: str = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
-    schema_version: str = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
+    schema_version: str
     name: str
     issue: str | None = None
-    base: MatrixBaseSpec
+    base: Any
     deltas: list[MatrixCompositionDelta] = Field(default_factory=list)
-    execution_dependencies: list[ExecutionDependency] = Field(default_factory=list)
+    execution_dependencies: list[Any] = Field(default_factory=list)
     sources: list[SourceBinding] = Field(default_factory=list)
     derivations: list[MatrixDerivation] = Field(default_factory=list)
     rows: list[MatrixRow] = Field(default_factory=list)
     axes: list[TrainingSweepAxis] = Field(default_factory=list)
     combination: TrainingSweepCombinationSpec = Field(default_factory=TrainingSweepCombinationSpec)
-    fork: MatrixForkSpec | None = None
+    fork: Any | None = None
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @model_validator(mode="after")
-    def _validate_spec(self) -> "TrainingRunMatrixSpec":
+    def _validate_common(self) -> None:
         if self.schema_id != TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID:
             raise ValueError(
                 f"/schema_id unsupported TrainingRunMatrixSpec schema_id {self.schema_id!r}; "
                 f"expected {TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID!r}"
-            )
-        if self.schema_version != TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION:
-            raise ValueError(
-                "/schema_version unsupported TrainingRunMatrixSpec schema_version "
-                f"{self.schema_version!r}; expected {TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION!r}"
             )
         if not self.name.strip():
             raise ValueError("/name must not be empty")
@@ -699,8 +810,89 @@ class TrainingRunMatrixSpec(StrictModel):
                     _query_can_evaluate_without_sources(derivation.query)
                     or _query_uses_only_row_context(derivation.query)
                 ):
-                    raise ValueError("/derivations require /sources unless all queries have defaults")
+                    raise ValueError(
+                        "/derivations require /sources unless all queries have defaults"
+                    )
+
+
+class TrainingRunMatrixSpecV5(_TrainingRunMatrixSpecCore):
+    """Exact durable matrix-v5 contract retained for parsing and runtime use."""
+
+    schema_version: Literal["feedbax.spec.training_run_matrix.v5"] = (
+        TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5
+    )
+    base: MatrixBaseSpec
+    execution_dependencies: list[ExecutionDependency] = Field(default_factory=list)
+    fork: MatrixForkSpec | None = None
+
+    @model_validator(mode="after")
+    def _validate_spec(self) -> "TrainingRunMatrixSpecV5":
+        self._validate_common()
         return self
+
+
+class TrainingRunMatrixSpec(_TrainingRunMatrixSpecCore):
+    """Current durable matrix-v6 contract with closed fork authority."""
+
+    schema_version: Literal["feedbax.spec.training_run_matrix.v6"] = (
+        TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
+    )
+    base: MatrixBaseSpecV6
+    execution_dependencies: list[ExecutionDependencyV6] = Field(default_factory=list)
+    fork: MatrixForkSpecV6 | None = None
+
+    @model_validator(mode="after")
+    def _validate_spec(self) -> "TrainingRunMatrixSpec":
+        self._validate_common()
+        forks = [
+            item
+            for item in self.execution_dependencies
+            if isinstance(item, ForkFromSelectedCheckpointV6)
+        ]
+        if len(forks) > 1:
+            raise ValueError("/execution_dependencies admits at most one selected checkpoint")
+        row_ids = {row.row_id for row in self.rows}
+        placed: set[tuple[str, str]] = set()
+        for dependency in forks:
+            for transform in dependency.slot_transforms:
+                if transform.stage != "target_post":
+                    continue
+                assert transform.target_row_id is not None
+                if transform.target_row_id not in row_ids:
+                    raise ValueError(
+                        "/execution_dependencies target transform names an unknown matrix row"
+                    )
+                key = (transform.target_row_id, transform.slot)
+                if key in placed:
+                    raise ValueError(
+                        "/execution_dependencies target row-slot transforms must be unique"
+                    )
+                placed.add(key)
+        if forks:
+            dependency = forks[0]
+            if isinstance(self.base, ResolvedOutputMatrixBaseSpecV6):
+                if not isinstance(
+                    dependency.source_authority, ResolvedOutputRootForkSourceAuthority
+                ):
+                    raise ValueError(
+                        "/base resolved output and /execution_dependencies source authority disagree"
+                    )
+                if (
+                    dependency.source_authority.resolved_root_hash != self.base.resolved_root_hash
+                    or dependency.source_row_id != self.base.row_id
+                    or dependency.checkpoint_transaction_id != self.base.checkpoint_transaction_id
+                ):
+                    raise ValueError(
+                        "/base resolved output and /execution_dependencies selected checkpoint drift"
+                    )
+            elif isinstance(dependency.source_authority, ResolvedOutputRootForkSourceAuthority):
+                raise ValueError(
+                    "/execution_dependencies resolved-output-root authority requires a resolved-output base"
+                )
+        return self
+
+
+TrainingRunMatrixSpecVersioned: TypeAlias = TrainingRunMatrixSpecV5 | TrainingRunMatrixSpec
 
 
 def apply_override_patches(
@@ -762,9 +954,7 @@ def apply_composition_deltas(
         resulting_schema = _payload_schema_identity(result)
         resulting_identities = _schema_identities(result)
         declared_additions = dict(
-            (allowed_same_schema_structural_additions_by_layer or {}).get(
-                delta.layer_id, {}
-            )
+            (allowed_same_schema_structural_additions_by_layer or {}).get(delta.layer_id, {})
         )
         added_identities = {
             path: identity
@@ -887,15 +1077,11 @@ def _apply_patch(root: dict[str, Any], patch: OverridePatch) -> None:
         return
     if patch.op == "replace":
         if not exists:
-            raise ValueError(
-                f"override replace patch targets a missing key/index: {patch.path!r}"
-            )
+            raise ValueError(f"override replace patch targets a missing key/index: {patch.path!r}")
         _set_child(parent, leaf, deepcopy(patch.value), path=patch.path)
         return
     if not exists:
-        raise ValueError(
-            f"override remove patch targets a missing key/index: {patch.path!r}"
-        )
+        raise ValueError(f"override remove patch targets a missing key/index: {patch.path!r}")
     _remove_child(parent, leaf, path=patch.path)
 
 

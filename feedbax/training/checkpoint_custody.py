@@ -77,7 +77,10 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.run_matrix import (
     ContinuationReconciliation,
     ExecutionDependency,
+    ExecutionDependencyV6,
+    ExecutionHashForkSourceAuthority,
     ForkFromSelectedCheckpoint,
+    ForkFromSelectedCheckpointV6,
     LineageGraftDependency,
     StoppedRowStatus,
     TaskIdentityGate,
@@ -3307,7 +3310,7 @@ def checkpoint_fork_plan_sha256(plan: CheckpointForkPlan) -> str:
 
 def validate_checkpoint_fork_execution_dependencies(
     plan: CheckpointForkPlan,
-    dependencies: Sequence[ExecutionDependency],
+    dependencies: Sequence[ExecutionDependency | ExecutionDependencyV6],
     *, allow_task_identity: bool = False,
 ) -> None:
     unsupported = [
@@ -3318,15 +3321,28 @@ def validate_checkpoint_fork_execution_dependencies(
     ]
     if unsupported:
         raise CheckpointCompatibilityError(f"unsupported checkpoint fork dependencies {unsupported!r}")
-    forks = [item for item in dependencies if isinstance(item, ForkFromSelectedCheckpoint)]
+    forks = [
+        item
+        for item in dependencies
+        if isinstance(item, (ForkFromSelectedCheckpoint, ForkFromSelectedCheckpointV6))
+    ]
     if len(forks) != 1:
         raise CheckpointCompatibilityError("checkpoint fork requires one typed fork dependency")
     fork = forks[0]
     source = plan.source
+    if isinstance(fork, ForkFromSelectedCheckpointV6):
+        if not isinstance(fork.source_authority, ExecutionHashForkSourceAuthority):
+            raise CheckpointCompatibilityError(
+                "resolved-output-root fork authority uses direct checkpoint custody; "
+                "CheckpointForkPlan v1 cannot relabel it as an execution hash"
+            )
+        source_execution_hash = fork.source_authority.execution_hash
+    else:
+        source_execution_hash = fork.source_execution_hash
     if (
         source.expected_transaction_id != fork.checkpoint_transaction_id
         or source.expected_transaction_root_sha256 != fork.checkpoint_root_hash
-        or source.source_execution_hash != fork.source_execution_hash
+        or source.source_execution_hash != source_execution_hash
         or source.source_row_id != fork.source_row_id
     ):
         raise CheckpointCompatibilityError("checkpoint fork source authority drifts")
@@ -3340,6 +3356,12 @@ def validate_checkpoint_fork_execution_dependencies(
                 "target_row_id": target,
                 "slot": record.slot,
                 "parameters": record.parameters,
+                **(
+                    {"target_only": step.target_only_slots[record.slot]}
+                    if isinstance(fork, ForkFromSelectedCheckpointV6)
+                    and record.slot in step.target_only_slots
+                    else {}
+                ),
             }
             for record in step.records
         ]
