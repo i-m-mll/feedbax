@@ -928,10 +928,21 @@ def apply_composition_deltas(
     current_schema = _payload_schema_identity(result)
     for delta in deltas:
         acknowledged = set(delta.acknowledges_ancestor_paths)
+        same_layer_appends: set[str] = set()
         declared_boundary = (delta.schema_id, delta.schema_version)
         prior_identities = _schema_identities(result)
         for patch in delta.patches:
-            conflicts = sorted(path for path in written if _paths_overlap(path, patch.path))
+            conflicts = sorted(
+                path
+                for path in written
+                if _paths_overlap(path, patch.path)
+                and not (
+                    patch.op == "add"
+                    and patch.path.endswith(".-")
+                    and path == patch.path
+                    and path in same_layer_appends
+                )
+            )
             unacknowledged = [
                 path
                 for path in conflicts
@@ -951,6 +962,8 @@ def apply_composition_deltas(
             except ValueError as error:
                 raise ValueError(f"/deltas/{delta.layer_id}: {error}") from error
             written.add(patch.path)
+            if patch.op == "add" and patch.path.endswith(".-"):
+                same_layer_appends.add(patch.path)
             attribution[patch.path] = delta.layer_id
         resulting_schema = _payload_schema_identity(result)
         resulting_identities = _schema_identities(result)
@@ -1072,6 +1085,9 @@ def _apply_patch(root: dict[str, Any], patch: OverridePatch) -> None:
         return
     exists = _contains_key(parent, leaf)
     if patch.op == "add":
+        if isinstance(parent, list) and exists:
+            parent.insert(int(leaf), deepcopy(patch.value))
+            return
         if exists:
             raise ValueError(f"override add patch path already exists: {patch.path!r}")
         _set_child(parent, leaf, deepcopy(patch.value), path=patch.path)
