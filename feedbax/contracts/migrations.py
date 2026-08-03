@@ -90,6 +90,8 @@ from feedbax.contracts.extraction import (
     EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
 )
 from feedbax.contracts.experiment_envelope_dialect import (
+    EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID,
+    EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
     ROOT_TRAINING_AUTHORITY_SCHEMA_ID,
     ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
 )
@@ -3706,6 +3708,23 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             consumed_by=("feedbax.envelope.compile",),
             description="Content-pinned source and derivation authority for root training.",
             rejected_old_versions=(f"{ROOT_TRAINING_AUTHORITY_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_experiment_envelope_dialect.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "ExperimentLayerRootAuthority",
+            EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID,
+            EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.experiment_envelope_dialect",
+            emitted_by=("root analysis and figure envelope authors",),
+            consumed_by=("feedbax.envelope.compile",),
+            description=(
+                "Content-pinned closed scientific authority for root analysis runs, "
+                "analysis bundles, and figures."
+            ),
+            rejected_old_versions=(f"{EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID}.v0",),
             required_tests=(
                 "tests/test_experiment_envelope_dialect.py",
                 "tests/test_structured_spec_migrations.py",

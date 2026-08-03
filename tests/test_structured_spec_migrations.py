@@ -102,6 +102,8 @@ from feedbax.contracts.extraction import (
     EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
 )
 from feedbax.contracts.experiment_envelope_dialect import (
+    EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID,
+    EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
     ROOT_TRAINING_AUTHORITY_SCHEMA_ID,
     ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
 )
@@ -1024,9 +1026,7 @@ def test_default_registry_migrates_figure_runtime_binding_v1_and_rejects_v0() ->
         },
     ).payload
     assert migrated["authored_figure_source_sha256"] is None
-    assert migrated["authored_identity_unavailable_reason"] == (
-        "v1_recorded_resolved_hash_only"
-    )
+    assert migrated["authored_identity_unavailable_reason"] == ("v1_recorded_resolved_hash_only")
     assert migrated["resolved_figure_spec_sha256"] == "a" * 64
     with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
         default_spec_registry.migrate(
@@ -1179,6 +1179,16 @@ def test_root_training_authority_and_composition_versions_have_explicit_policy()
     assert composition.policy.stance == "reject"
     assert composition.policy.supported_old_versions == (COMPOSITION_SCHEMA_VERSION_V1,)
     assert default_spec_registry.available_migrations("TrainingRunComposition") == ()
+
+    layer_root = default_spec_registry.resolve("ExperimentLayerRootAuthority")
+    assert layer_root.identity == EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID
+    assert layer_root.current_version == EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION
+    assert layer_root.policy is not None
+    assert layer_root.policy.stance == "reject"
+    assert layer_root.policy.rejected_old_versions == (
+        f"{EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID}.v0",
+    )
+    assert default_spec_registry.available_migrations("ExperimentLayerRootAuthority") == ()
 
     parsed = parse_composition_node(
         {
