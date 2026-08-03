@@ -51,6 +51,79 @@ def is_authenticated_manifest_ref(ref: ParentRef) -> bool:
     return authenticated_manifest_ref_profile(ref) is not None
 
 
+def restated_parent_differences(stated: ParentRef, bound: ParentRef) -> tuple[str, ...]:
+    """Return how a document's restated parent disagrees with the bound one.
+
+    A compiled document cannot authenticate a parent, so the only thing its
+    restatement can do is agree or disagree about **which artifact** the binding
+    names. That is three facts: the manifest kind, the manifest id, and the
+    authenticated byte profile the restatement carries if it carries one.
+
+    ``role`` is deliberately not among them, and its absence is the contract
+    rather than a tolerance. A ``ParentRef``'s role is the *consumer's* addressing
+    string, and for a staged prerequisite the consumer binding in the compile
+    lock is what states it — that is where the binding name comes from in the
+    first place. A document that also carried a role would either restate the
+    lock's, adding nothing, or contradict it, in which case honoring the document
+    would let a plan rename a binding the lock owns. Neither is a reason to
+    refuse an otherwise identical artifact: the corpus habit of recording an
+    artifact's own kind-ish role ("evaluation_run") beside a binding the lock
+    names ("paired_trial_bank") is two true statements about different things.
+
+    ``uri`` is excluded for the same reason: where bytes are staged from is the
+    executing environment's, not the plan's.
+    """
+    differences: list[str] = []
+    if stated.kind != bound.kind:
+        differences.append(
+            f"kind: the document restates {stated.kind!r} and the lock binds {bound.kind!r}"
+        )
+    if stated.id != bound.id:
+        differences.append(
+            f"id: the document restates {stated.id!r} and the lock binds {bound.id!r}"
+        )
+    stated_profile, stated_defect = _restated_profile(stated)
+    bound_profile, bound_defect = _restated_profile(bound)
+    if stated_defect is not None:
+        differences.append(
+            f"byte profile: the document states an authentication profile this build cannot "
+            f"read ({stated_defect}); a half-stated profile is not a weaker claim than none, "
+            "it is an unreadable one, and it is refused rather than dropped from the "
+            "comparison"
+        )
+    if bound_defect is not None:
+        differences.append(
+            f"byte profile: the bound parent states an authentication profile this build "
+            f"cannot read ({bound_defect}); the binding side is the authority, so an "
+            "unreadable profile there is a refusal and never a comparison that is skipped"
+        )
+    if stated_defect is None and bound_defect is None:
+        if stated_profile is not None and stated_profile != bound_profile:
+            differences.append(
+                f"byte profile: the document restates {stated_profile} and the lock binds "
+                f"{bound_profile}"
+            )
+    return tuple(differences)
+
+
+def _restated_profile(ref: ParentRef) -> tuple[tuple[str, int] | None, str | None]:
+    """Return one ref's byte profile and, if it is unreadable, why.
+
+    Three outcomes, and they are three different facts. A complete profile is a
+    profile. No profile at all is the honest absence of a claim, which a
+    *document* is entitled to: it cannot authenticate a parent, so restating
+    nothing about bytes adds nothing to refuse over. A *partial* profile is
+    neither: something stated half an authentication, and treating that as
+    "states nothing" would let a malformed claim silently drop out of the
+    comparison it was supposed to be subject to. So it comes back as a defect
+    the caller reports.
+    """
+    try:
+        return authenticated_manifest_ref_profile(ref), None
+    except ValueError as exc:
+        return None, str(exc)
+
+
 def authenticated_manifest_ref(
     manifest: AnyManifest,
     path: Path | str,

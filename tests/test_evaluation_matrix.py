@@ -1132,3 +1132,93 @@ def test_matrix_staged_parent_contract_fails_closed_before_row_creation(
             root=tmp_path / "rows",
             parent_manifest_root="relative/parents",
         )
+
+
+def test_matrix_staged_parent_input_matches_material_identity_not_consumer_role(
+    evaluation_registry,
+) -> None:
+    profile = {
+        "ref_schema_id": "feedbax.ref.authenticated_manifest",
+        "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+        "manifest_sha256": "a" * 64,
+        "size_bytes": 17,
+    }
+    executable_input = ParentRef(
+        kind="TrainingRunManifest",
+        id="feedbax-training-run:staged-subject",
+        role="training_run",
+        metadata=profile,
+    )
+    staged_parent = executable_input.model_copy(update={"role": "trained"})
+    matrix = EvaluationRunMatrixSpec(
+        base=EvaluationRunSpec(
+            evaluation_type="example.staged_matrix",
+            inputs=[executable_input],
+        ),
+        rows=[MatrixRow(row_id="row-a")],
+        staged_parents={
+            "trained": StagedEvaluationPrerequisite(parent=staged_parent),
+        },
+    )
+
+    [row] = materialize_evaluation_run_matrix(matrix, registry=evaluation_registry)
+
+    assert row.payload.inputs == [executable_input]
+    assert row.payload.inputs[0].role == "training_run"
+    assert matrix.staged_parents["trained"].parent == staged_parent
+    assert matrix.staged_parents["trained"].parent.role == "trained"
+
+
+@pytest.mark.parametrize(
+    "staged_update",
+    [
+        {"kind": "EvaluationRunManifest"},
+        {"id": "feedbax-training-run:other"},
+        {
+            "metadata": {
+                "ref_schema_id": "feedbax.ref.authenticated_manifest",
+                "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+                "manifest_sha256": "b" * 64,
+                "size_bytes": 17,
+            }
+        },
+        {
+            "metadata": {
+                "ref_schema_id": "feedbax.ref.authenticated_manifest",
+                "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+                "manifest_sha256": "a" * 64,
+                "size_bytes": 18,
+            }
+        },
+    ],
+    ids=["kind", "id", "digest", "size"],
+)
+def test_matrix_staged_parent_input_refuses_different_material_identity(
+    staged_update: dict[str, object],
+    evaluation_registry,
+) -> None:
+    executable_input = ParentRef(
+        kind="TrainingRunManifest",
+        id="feedbax-training-run:staged-subject",
+        role="training_run",
+        metadata={
+            "ref_schema_id": "feedbax.ref.authenticated_manifest",
+            "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+            "manifest_sha256": "a" * 64,
+            "size_bytes": 17,
+        },
+    )
+    staged_parent = executable_input.model_copy(update={"role": "trained", **staged_update})
+    matrix = EvaluationRunMatrixSpec(
+        base=EvaluationRunSpec(
+            evaluation_type="example.staged_matrix",
+            inputs=[executable_input],
+        ),
+        rows=[MatrixRow(row_id="row-a")],
+        staged_parents={
+            "trained": StagedEvaluationPrerequisite(parent=staged_parent),
+        },
+    )
+
+    with pytest.raises(ValueError, match="does not reference staged parent"):
+        materialize_evaluation_run_matrix(matrix, registry=evaluation_registry)
