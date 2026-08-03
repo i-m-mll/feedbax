@@ -26,8 +26,8 @@ import pytest
 from feedbax.__main__ import main
 from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION,
-    EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
     EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS,
+    compiler_contract_version_for_schema,
 )
 from feedbax.contracts.project_experiment import (
     PROJECT_DECLARATION_FILENAME,
@@ -370,8 +370,8 @@ def test_a_declared_project_compiles_through_the_feedbax_compiler(
     lock = json.loads(
         (tmp_path / fixture.OUTPUT_DIRECTORY / "widened.compile-lock.json").read_text()
     )
-    assert lock["compiler_contract"]["contract_version"] == (
-        EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION
+    assert lock["compiler_contract"]["contract_version"] == compiler_contract_version_for_schema(
+        payload["envelope_schema"]
     )
 
 
