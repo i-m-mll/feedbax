@@ -18,6 +18,7 @@ from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4,
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
 )
 from feedbax.contracts.shadow_launch import (
@@ -251,6 +252,7 @@ def test_golden_governed_path_restores_one_authenticated_continuation_batch(tmp_
     )
     env = {
         **os.environ,
+        "PATH": os.pathsep.join([str(Path(sys.executable).parent), os.environ.get("PATH", "")]),
         "PYTHONPATH": os.pathsep.join([str(tmp_path), str(repo), os.environ.get("PYTHONPATH", "")]),
     }
     lower_sha = _run(
@@ -440,6 +442,10 @@ def test_golden_governed_path_restores_one_authenticated_continuation_batch(tmp_
         ),
         (
             TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4,
+            TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5,
+        ),
+        (
+            TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5,
             TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
         ),
     ]

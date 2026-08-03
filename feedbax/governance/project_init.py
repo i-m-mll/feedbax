@@ -107,6 +107,16 @@ DEFAULT_AUTHORING_BUDGET_LAYERS: dict[str, dict[str, int]] = {
         "max_object_keys": 32,
         "max_assertions": 4,
     },
+    "comparison": {
+        "max_lines": 80,
+        "max_bytes": 4096,
+        "max_scalar_bytes": 512,
+        "max_ast_nodes": 120,
+        "max_depth": 12,
+        "max_items": 32,
+        "max_object_keys": 32,
+        "max_assertions": 4,
+    },
     "report": {
         "max_lines": 96,
         "max_bytes": 8192,

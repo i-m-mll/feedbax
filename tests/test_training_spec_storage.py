@@ -13,10 +13,12 @@ from pydantic import ValidationError
 from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID, GRAPH_SPEC_SCHEMA_VERSION_V3
 from feedbax.contracts.training import default_training_method_registry
 from feedbax.contracts.manifest import TrainingRunManifest, TrainingSweepAxis
+from feedbax.contracts.run_composition import ResolvedOutputParent
 from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     RowLowererIdentity,
+    TrainingRowParentProvenance,
     TrainingRowLoweringResult,
     TrainingRunMatrixSpec,
 )
@@ -30,6 +32,10 @@ from feedbax.contracts.spec_storage import (
 )
 from feedbax.training.run_matrix import (
     materialize_adapted_run_matrix,
+)
+from feedbax.training.row_lowering import (
+    GovernedTrainingRowParent,
+    TrainingRowLoweringContext,
 )
 from feedbax.training.spec_storage import (
     compile_training_run_matrix,
@@ -682,21 +688,49 @@ def test_assembled_bundle_carries_the_same_typed_row_provenance(tmp_path: Path) 
 def test_resolved_output_materializes_and_rejects_tampering(tmp_path: Path) -> None:
     from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 
-    snapshot = build_resolved_semantics_snapshot({"value": 3})
+    resolved_payload = {"value": 3}
+    snapshot = build_resolved_semantics_snapshot(resolved_payload)
     snapshot_path = tmp_path / "snapshot.json"
     snapshot_path.write_bytes(training_spec_canonical_bytes(snapshot))
+    parent = ResolvedOutputParent(
+        ref="snapshot.json",
+        resolved_root_hash=training_spec_sha256(resolved_payload),
+        row_id="source-row",
+        checkpoint_transaction_id="source-transaction",
+    )
+    context = TrainingRowLoweringContext(
+        (
+            GovernedTrainingRowParent(
+                provenance=TrainingRowParentProvenance(
+                    role="terminal",
+                    parent_kind="resolved_output",
+                    ref=parent.ref,
+                    semantic_hash=parent.resolved_root_hash,
+                    artifact_id="terminal-artifact",
+                    artifact_sha256=training_spec_sha256(resolved_payload),
+                    schema_id="example.intent",
+                    schema_version="example.intent.v1",
+                ),
+                parent=parent,
+                payload=resolved_payload,
+            ),
+        )
+    )
     payload = _matrix({"unused": True}).model_dump(mode="json")
     payload["base"] = {
         "kind": "resolved_output",
-        "ref": "snapshot.json",
-        "resolved_root_hash": snapshot["root_hash"],
+        "ref": parent.ref,
+        "resolved_root_hash": parent.resolved_root_hash,
+        "row_id": parent.row_id,
+        "checkpoint_transaction_id": parent.checkpoint_transaction_id,
     }
     materialized = materialize_adapted_run_matrix(
         TrainingRunMatrixSpec.model_validate(payload),
         repo_root=tmp_path,
         row_validator=lambda _payload, _row_id: None,
+        row_lowering_context=context,
     )
-    assert materialized.rows[0].payload == {"value": 3}
+    assert materialized.rows[0].payload == resolved_payload
 
     tampered = json.loads(snapshot_path.read_text(encoding="utf-8"))
     scalar_hash = next(
@@ -706,11 +740,20 @@ def test_resolved_output_materializes_and_rejects_tampering(tmp_path: Path) -> N
     snapshot_path.write_text(json.dumps(tampered), encoding="utf-8")
     with pytest.raises(ValueError, match="hash mismatch"):
         decode_resolved_snapshot(tampered)
-    with pytest.raises(ValueError, match="hash mismatch"):
+    with pytest.raises(ValueError, match="semantic hash drifted"):
         materialize_adapted_run_matrix(
             TrainingRunMatrixSpec.model_validate(payload),
             repo_root=tmp_path,
             row_validator=lambda _payload, _row_id: None,
+            row_lowering_context=TrainingRowLoweringContext(
+                (
+                    GovernedTrainingRowParent(
+                        provenance=context.parents[0].provenance,
+                        parent=parent,
+                        payload={"value": 4},
+                    ),
+                )
+            ),
         )
 
 
@@ -765,14 +808,20 @@ def test_reference_variants_are_distinct_and_recursive_authored_base_composes(
         "content_hash": training_spec_sha256(parent),
     }
     authored = TrainingRunMatrixSpec.model_validate(authored_payload)
-    snapshot = build_resolved_semantics_snapshot({"value": 1})
-    snapshot_path = tmp_path / "snapshot.json"
-    snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+    resolved_payload = {"value": 1}
+    parent_ref = ResolvedOutputParent(
+        ref="snapshot.json",
+        resolved_root_hash=training_spec_sha256(resolved_payload),
+        row_id="source-row",
+        checkpoint_transaction_id="source-transaction",
+    )
     resolved_payload = authored.model_dump(mode="json")
     resolved_payload["base"] = {
         "kind": "resolved_output",
-        "ref": "snapshot.json",
-        "resolved_root_hash": snapshot["root_hash"],
+        "ref": parent_ref.ref,
+        "resolved_root_hash": parent_ref.resolved_root_hash,
+        "row_id": parent_ref.row_id,
+        "checkpoint_transaction_id": parent_ref.checkpoint_transaction_id,
     }
     resolved = TrainingRunMatrixSpec.model_validate(resolved_payload)
     assert authored.base.kind == "authored_intent"
@@ -795,6 +844,24 @@ def test_reference_variants_are_distinct_and_recursive_authored_base_composes(
         recursive,
         repo_root=tmp_path,
         row_validator=lambda payload, _row_id: seen.append(payload) or None,
+        row_lowering_context=TrainingRowLoweringContext(
+            (
+                GovernedTrainingRowParent(
+                    provenance=TrainingRowParentProvenance(
+                        role="terminal",
+                        parent_kind="resolved_output",
+                        ref=parent_ref.ref,
+                        semantic_hash=parent_ref.resolved_root_hash,
+                        artifact_id="terminal-artifact",
+                        artifact_sha256=parent_ref.resolved_root_hash,
+                        schema_id="example.intent",
+                        schema_version="example.intent.v1",
+                    ),
+                    parent=parent_ref,
+                    payload={"value": 1},
+                ),
+            )
+        ),
     )
     assert seen == [{"value": 2}]
 
