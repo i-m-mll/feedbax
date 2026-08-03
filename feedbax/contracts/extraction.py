@@ -27,6 +27,7 @@ from feedbax.contracts.expressions import (
     ContextItem,
     ExpressionContext,
     ExpressionPathMissing,
+    MapObjectList,
     Select,
     ValueExpr,
     ValueQuery,
@@ -339,6 +340,8 @@ def _source_pointer(source: SourceBinding) -> str:
         if len(query.queries) != 1:
             return ""
         query = query.queries[0]
+    if isinstance(query, MapObjectList):
+        query = query.items
     if query.select is None:
         return query.path if query is not None else ""
     selector = _select_pointer(query.select)
@@ -409,6 +412,8 @@ def _query_items(query: ValueExpr) -> set[str]:
         return {query.item}
     if isinstance(query, Coalesce):
         return set().union(*(_query_items(child) for child in query.queries))
+    if isinstance(query, MapObjectList):
+        return {query.items.item}
     raise TypeError(f"unsupported value query type: {type(query).__name__}")
 
 
