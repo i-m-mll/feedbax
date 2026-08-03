@@ -972,10 +972,10 @@ def _composition_root_pins(
             )
         pins.append(ContentPinReference(ref=current.ref, content_hash=pinned.content_hash))
         if isinstance(node.parent, CompiledTrainingRowParent):
-            from feedbax.training.run_matrix import _verify_compiled_training_row_parent
+            from feedbax.training.run_matrix import verify_compiled_training_row_parent
 
             try:
-                _verify_compiled_training_row_parent(node.parent, repo_root=repo_root)
+                verify_compiled_training_row_parent(node.parent, repo_root=repo_root)
             except ValueError as exc:
                 _reject(
                     ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,

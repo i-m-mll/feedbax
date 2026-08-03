@@ -139,7 +139,7 @@ def _load_pinned_canonical_document(
     return document
 
 
-def _verify_compiled_training_row_parent(
+def verify_compiled_training_row_parent(
     parent: CompiledTrainingRowParent,
     *,
     repo_root: Path,
@@ -237,7 +237,7 @@ def _resolve_compiled_training_row_parent(
     row_lowering_context: Any | None = None,
 ) -> dict[str, Any]:
     """Materialize and select one governed effective matrix-v6 row payload."""
-    matrix = _verify_compiled_training_row_parent(parent, repo_root=repo_root)
+    matrix = verify_compiled_training_row_parent(parent, repo_root=repo_root)
     materialized = materialize_adapted_run_matrix(
         matrix,
         repo_root=repo_root,
