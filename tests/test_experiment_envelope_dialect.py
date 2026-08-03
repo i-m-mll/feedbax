@@ -37,8 +37,11 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
     EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS,
     LAYER_OUTPUT_CONTRACTS,
+    ROOT_TRAINING_AUTHORITY_SCHEMA_ID,
+    ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
     ExperimentEnvelopeLayer,
     ReceiptReference,
+    RootTrainingAuthority,
     compiler_contract_version_for_schema,
     layer_of_document,
     migrate_experiment_envelope_payload,
@@ -359,6 +362,63 @@ def test_v3_training_root_is_a_closed_two_kind_union_with_explicit_rows() -> Non
             }
         )
     assert unknown.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+
+
+def test_root_training_authority_is_one_closed_public_schema_and_one_small_ref() -> None:
+    authority = RootTrainingAuthority.model_validate(
+        {
+            "schema_id": ROOT_TRAINING_AUTHORITY_SCHEMA_ID,
+            "schema_version": ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
+            "sources": [{"alias": "points", "kind": "json", "uri": "inputs/points.json"}],
+            "derivations": [
+                {
+                    "output_path": "method_payload.payload.records",
+                    "query": {"item": "points", "path": "items"},
+                }
+            ],
+        }
+    )
+    assert authority.schema_version == "feedbax.spec.root_training_authority.v1"
+
+    root = _composition_root()
+    root["authority"] = {
+        "ref": "authorities/root-training.json",
+        "sha256": "3" * 64,
+        "payload_path": ["shared"],
+    }
+    parsed = _parse(
+        {
+            "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
+            "name": "probe",
+            "training": {"root": root},
+        }
+    )
+    assert parsed.training.root.authority.model_dump(mode="json") == root["authority"]
+
+    invalid_payloads = (
+        {
+            "schema_version": ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
+        },
+        {
+            "schema_id": ROOT_TRAINING_AUTHORITY_SCHEMA_ID,
+        },
+        {
+            "schema_id": "feedbax.spec.unknown",
+            "schema_version": ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
+        },
+        {
+            "schema_id": ROOT_TRAINING_AUTHORITY_SCHEMA_ID,
+            "schema_version": "feedbax.spec.root_training_authority.v2",
+        },
+        {
+            "schema_id": ROOT_TRAINING_AUTHORITY_SCHEMA_ID,
+            "schema_version": ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
+            "invented": True,
+        },
+    )
+    for payload in invalid_payloads:
+        with pytest.raises(ValueError):
+            RootTrainingAuthority.model_validate(payload)
 
 
 @pytest.mark.parametrize(

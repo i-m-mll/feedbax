@@ -108,6 +108,8 @@ from feedbax.contracts.experiment_envelope_dialect import (
     ReceiptReference,
     ReportLayerAuthoring,
     CompositionTrainingRootAuthoring,
+    ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
+    RootTrainingAuthority,
     TrainingRunRootAuthoring,
     TrainingLayerAuthoring,
     TrainingRowsMode,
@@ -123,6 +125,7 @@ from feedbax.contracts.figure_roles import (
     per_row_binding_keys,
 )
 from feedbax.contracts.manifest import OverridePatch
+from feedbax.contracts.matrix_core import load_content_pinned_json_document
 from feedbax.contracts.run_composition import (
     AuthoredIntentParent,
     CompositionNode,
@@ -997,6 +1000,96 @@ def _root_source_pins(
     ]
 
 
+def _load_root_training_authority(
+    context: LayerCompileContext, root: Any
+) -> tuple[RootTrainingAuthority | None, ContentPinReference | None]:
+    """Verify one whole authority document, then validate its selected object."""
+    authored = root.authority
+    if authored is None:
+        return None, None
+    _root_json_ref(context.repo_root, authored.ref, field="training.root.authority.ref")
+    try:
+        _document, selected = load_content_pinned_json_document(
+            authored,
+            repo_root=context.repo_root,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if "payload_path" in message:
+            category = (
+                ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+                if "must select a JSON object" in message
+                else ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
+            )
+            field = "training.root.authority.payload_path"
+        else:
+            category = (
+                ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+                if "must contain a JSON object" in message
+                else ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
+            )
+            field = "training.root.authority"
+        _reject(category, field, message)
+    try:
+        authority = RootTrainingAuthority.model_validate(selected)
+    except ValidationError as exc:
+        errors = exc.errors()
+        kinds = {entry["type"] for entry in errors}
+        if "extra_forbidden" in kinds:
+            category = ExperimentEnvelopeRejectionCategory.UNKNOWN_FIELD
+        elif kinds == {"missing"} and all(len(entry["loc"]) == 1 for entry in errors):
+            category = ExperimentEnvelopeRejectionCategory.MISSING_FIELD
+        else:
+            category = ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+        _reject(
+            category,
+            "training.root.authority",
+            f"selected payload is not a {ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION}: {exc}",
+        )
+    return authority, ContentPinReference(ref=authored.ref, content_hash=authored.sha256)
+
+
+def _combine_root_training_lists(
+    authority: RootTrainingAuthority | None,
+    root: Any,
+) -> tuple[list[Any], list[Any]]:
+    """Prepend authority entries and reject duplicates at their authored origin."""
+    authority_sources = [] if authority is None else authority.sources
+    authority_derivations = [] if authority is None else authority.derivations
+    sources = [*authority_sources, *root.sources]
+    derivations = [*authority_derivations, *root.derivations]
+
+    seen_aliases: set[str] = set()
+    for origin, entries in (
+        ("training.root.authority.sources", authority_sources),
+        ("training.root.sources", root.sources),
+    ):
+        for index, source in enumerate(entries):
+            if source.alias in seen_aliases:
+                _reject(
+                    ExperimentEnvelopeRejectionCategory.DUPLICATE_KEY,
+                    f"{origin}[{index}].alias",
+                    f"source alias {source.alias!r} is authored more than once",
+                )
+            seen_aliases.add(source.alias)
+
+    seen_outputs: set[str] = set()
+    for origin, entries in (
+        ("training.root.authority.derivations", authority_derivations),
+        ("training.root.derivations", root.derivations),
+    ):
+        for index, derivation in enumerate(entries):
+            if derivation.output_path in seen_outputs:
+                _reject(
+                    ExperimentEnvelopeRejectionCategory.DUPLICATE_KEY,
+                    f"{origin}[{index}].output_path",
+                    "derivation output_path "
+                    f"{derivation.output_path!r} is authored more than once",
+                )
+            seen_outputs.add(derivation.output_path)
+    return sources, derivations
+
+
 def _root_payload_path(document: Mapping[str, Any], path: str | None, *, field: str) -> Any:
     """Resolve an optional explicit dotted payload path without fallback."""
     payload: Any = document
@@ -1032,6 +1125,8 @@ def _lower_root_training(
     root = authored.root
     assert root is not None
     references: list[Any] = []
+    authority, authority_pin = _load_root_training_authority(context, root)
+    sources, derivations = _combine_root_training_lists(authority, root)
     if isinstance(root, CompositionTrainingRootAuthoring):
         parent = root.parent
         if isinstance(parent, AuthoredIntentParent):
@@ -1099,7 +1194,9 @@ def _lower_root_training(
             base["symbolic_name"] = root.symbolic_name
         matrix_deltas = []
 
-    references.extend(_root_source_pins(context, root.sources))
+    if authority_pin is not None:
+        references.append(authority_pin)
+    references.extend(_root_source_pins(context, sources))
     rows: list[dict[str, Any]] = []
     for row in root.rows:
         compiled_row: dict[str, Any] = {
@@ -1160,9 +1257,9 @@ def _lower_root_training(
         "base": base,
         "deltas": [delta.model_dump(mode="json", exclude_none=True) for delta in matrix_deltas],
         "execution_dependencies": dependencies,
-        "sources": [source.model_dump(mode="json", exclude_none=True) for source in root.sources],
+        "sources": [source.model_dump(mode="json", exclude_none=True) for source in sources],
         "derivations": [
-            derivation.model_dump(mode="json", exclude_none=True) for derivation in root.derivations
+            derivation.model_dump(mode="json", exclude_none=True) for derivation in derivations
         ],
         "rows": rows,
         "axes": [],

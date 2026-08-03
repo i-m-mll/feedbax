@@ -42,6 +42,8 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1,
     REPORT_OUTPUT,
     TRAINING_OUTPUT_V6,
@@ -79,6 +81,7 @@ from tests.fake_project_experiment import (
     OUTPUT_DIRECTORY,
     PROJECT_DECLARATION,
     TRAINING_BASE,
+    TRAINING_ENVELOPE,
     envelope_path,
     write_envelope,
     write_json,
@@ -1424,6 +1427,55 @@ def _regenerate(compiler: Any, repo: Path) -> None:
 # -- v3 root training --------------------------------------------------------
 
 
+def test_prior_and_authority_free_root_document_lock_bytes_match_signed_base(
+    repo: Path,
+) -> None:
+    expected = {
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1: (
+            "1d918888b54f08e5a15449e97621260332d931521b28cb2e3f6bc6f5db5b2af7"
+        ),
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2: (
+            "d6db3543cf5bdea2e4ab59f0a5934aa7e51629b2f0d304a318c7d31df257bf03"
+        ),
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION: (
+            "a6edabd2ae82b750daf2b13c318620de76d98ae847c3139c6a3b73be9ef3235a"
+        ),
+    }
+    path = envelope_path(repo, "training")
+    for schema in (
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
+    ):
+        document = json.loads(json.dumps(TRAINING_ENVELOPE))
+        document["schema"] = schema
+        write_envelope(path, document)
+        outcome = kernel().compile_envelope_file(path, repo_root=repo)
+        assert canonical_sha256(
+            {"document": outcome.document, "lock": outcome.compile_lock}
+        ) == expected[schema]
+
+    write_envelope(
+        path,
+        _root_envelope(
+            {
+                "kind": "composition",
+                "parent": {
+                    "kind": "resolved_output",
+                    "ref": "artifact-blob:generic-source",
+                    "resolved_root_hash": "3" * 64,
+                    "row_id": "source-row",
+                    "checkpoint_transaction_id": "checkpoint-1",
+                },
+                "rows": [{"id": "condition-a"}],
+            }
+        ),
+    )
+    outcome = kernel().compile_envelope_file(path, repo_root=repo)
+    assert canonical_sha256(
+        {"document": outcome.document, "lock": outcome.compile_lock}
+    ) == expected[EXPERIMENT_ENVELOPE_SCHEMA_VERSION]
+
+
 def test_authored_composition_root_preserves_both_hash_domains_and_root_identity(
     repo: Path,
 ) -> None:
@@ -2002,6 +2054,330 @@ def test_root_derivation_validation_maps_to_exact_authored_fields(repo: Path) ->
     assert no_source.value.field == "training.root.derivations"
 
 
+def test_root_authority_is_selected_flattened_and_shared_by_two_consumers(repo: Path) -> None:
+    authority_source_ref = "inputs/shared-items.json"
+    local_source_ref = "inputs/local-items.json"
+    write_json(repo / authority_source_ref, {"items": [1, 2]})
+    write_json(repo / local_source_ref, {"items": [3]})
+    authority = {
+        "schema_id": "feedbax.spec.root_training_authority",
+        "schema_version": "feedbax.spec.root_training_authority.v1",
+        "sources": [{"alias": "shared", "kind": "json", "uri": authority_source_ref}],
+        "derivations": [
+            {
+                "output_path": "method_payload.payload.metadata.shared",
+                "query": {
+                    "kind": "map_object_list",
+                    "items": {"item": "shared", "path": "items"},
+                    "template": {"fixed": True},
+                    "item_output_path": "value",
+                },
+            }
+        ],
+    }
+    authority_ref = "authorities/shared-root.json"
+    whole_document = {"selected": authority, "unselected": {"sentinel": True}}
+    write_json(repo / authority_ref, whole_document)
+
+    training_run = _standard_run_spec_payload()
+    run_ref = "intent/generic.training_run.json"
+    write_json(repo / run_ref, training_run)
+    root = {
+        "kind": "training_run",
+        "ref": run_ref,
+        "content_hash": canonical_sha256(training_run),
+        "rows": [{"id": "condition-a"}],
+        "authority": {
+            "ref": authority_ref,
+            "sha256": canonical_sha256(whole_document),
+            "payload_path": ["selected"],
+        },
+        "sources": [{"alias": "local", "kind": "json", "uri": local_source_ref}],
+        "derivations": [
+            {
+                "output_path": "method_payload.payload.metadata.local",
+                "query": {"item": "local", "path": "items"},
+            }
+        ],
+    }
+
+    first = _compile_root(repo, root)
+    second = _compile_root(repo, {**root, "rows": [{"id": "condition-b"}]})
+    assert first.document["sources"] == second.document["sources"] == [
+        {**authority["sources"][0], "optional": False},
+        {**root["sources"][0], "optional": False},
+    ]
+    assert first.document["derivations"] == second.document["derivations"] == [
+        authority["derivations"][0],
+        root["derivations"][0],
+    ]
+    assert "authority" not in first.document
+    assert first.compile_lock["identity_contributions"]["training_root"]["authority"] == (
+        root["authority"]
+    )
+    pins = {
+        (item["ref"], item["content_hash"])
+        for item in first.compile_lock["references"]
+        if item["kind"] == "content_pin"
+    }
+    assert (authority_ref, canonical_sha256(whole_document)) in pins
+    assert (authority_source_ref, canonical_sha256({"items": [1, 2]})) in pins
+    assert (local_source_ref, canonical_sha256({"items": [3]})) in pins
+    assert "map_object_list" not in json.dumps(root)
+
+
+@pytest.mark.parametrize(
+    "mutation,category,field,match",
+    [
+        (
+            "wrong_hash",
+            ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
+            "training.root.authority",
+            "hash mismatch",
+        ),
+        (
+            "escape",
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "training.root.authority.ref",
+            "canonical repository-relative",
+        ),
+        (
+            "missing_file",
+            ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
+            "training.root.authority",
+            "cannot load",
+        ),
+        (
+            "missing_path",
+            ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
+            "training.root.authority.payload_path",
+            "missing object key",
+        ),
+        (
+            "nonobject_path",
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "training.root.authority.payload_path",
+            "must select a JSON object",
+        ),
+        (
+            "missing_schema",
+            ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
+            "training.root.authority",
+            "root_training_authority.v1",
+        ),
+        (
+            "wrong_schema",
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "training.root.authority",
+            "root_training_authority",
+        ),
+        (
+            "wrong_version",
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "training.root.authority",
+            "root_training_authority.v1",
+        ),
+        (
+            "malformed_source",
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "training.root.authority",
+            "uri",
+        ),
+        (
+            "unknown_field",
+            ExperimentEnvelopeRejectionCategory.UNKNOWN_FIELD,
+            "training.root.authority",
+            "Extra inputs are not permitted",
+        ),
+    ],
+)
+def test_root_authority_refuses_invalid_pin_selection_or_closed_schema(
+    repo: Path,
+    mutation: str,
+    category: ExperimentEnvelopeRejectionCategory,
+    field: str,
+    match: str,
+) -> None:
+    authority = {
+        "schema_id": "feedbax.spec.root_training_authority",
+        "schema_version": "feedbax.spec.root_training_authority.v1",
+        "sources": [],
+        "derivations": [],
+    }
+    whole_document: dict[str, Any] = {"selected": authority, "scalar": 1}
+    authority_ref = "authorities/shared-root.json"
+    write_json(repo / authority_ref, whole_document)
+    authority_authoring: dict[str, Any] = {
+        "ref": authority_ref,
+        "sha256": canonical_sha256(whole_document),
+        "payload_path": ["selected"],
+    }
+    if mutation == "wrong_hash":
+        authority_authoring["sha256"] = "0" * 64
+    elif mutation == "escape":
+        authority_authoring["ref"] = "../shared-root.json"
+    elif mutation == "missing_file":
+        authority_authoring["ref"] = "authorities/missing.json"
+    elif mutation == "missing_path":
+        authority_authoring["payload_path"] = ["missing"]
+    elif mutation == "nonobject_path":
+        authority_authoring["payload_path"] = ["scalar"]
+    elif mutation == "missing_schema":
+        authority.pop("schema_id")
+    elif mutation == "wrong_schema":
+        authority["schema_id"] = "feedbax.spec.unknown"
+    elif mutation == "wrong_version":
+        authority["schema_version"] = "feedbax.spec.root_training_authority.v2"
+    elif mutation == "malformed_source":
+        authority["sources"] = [{"alias": "broken", "kind": "json"}]
+    else:
+        authority["invented"] = True
+    if mutation in {
+        "missing_schema",
+        "wrong_schema",
+        "wrong_version",
+        "malformed_source",
+        "unknown_field",
+    }:
+        authority_authoring["sha256"] = canonical_sha256(whole_document)
+        write_json(repo / authority_ref, whole_document)
+
+    with pytest.raises(ExperimentEnvelopeRejection, match=match) as caught:
+        _compile_root(
+            repo,
+            {
+                "kind": "composition",
+                "parent": {
+                    "kind": "resolved_output",
+                    "ref": "artifact-blob:generic-source",
+                    "resolved_root_hash": "3" * 64,
+                    "row_id": "source-row",
+                    "checkpoint_transaction_id": "checkpoint-1",
+                },
+                "rows": [{"id": "condition-a"}],
+                "authority": authority_authoring,
+            },
+        )
+    assert caught.value.category is category
+    assert caught.value.field == field
+
+
+def test_root_authority_refuses_absolute_ref_and_unpinnable_import(repo: Path) -> None:
+    base_root = {
+        "kind": "composition",
+        "parent": {
+            "kind": "resolved_output",
+            "ref": "artifact-blob:generic-source",
+            "resolved_root_hash": "3" * 64,
+            "row_id": "source-row",
+            "checkpoint_transaction_id": "checkpoint-1",
+        },
+        "rows": [{"id": "condition-a"}],
+    }
+    with pytest.raises(ExperimentEnvelopeRejection, match="relative path") as absolute:
+        _compile_root(
+            repo,
+            {
+                **base_root,
+                "authority": {"ref": "/authority.json", "sha256": "0" * 64},
+            },
+        )
+    assert absolute.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+
+    authority = {
+        "schema_id": "feedbax.spec.root_training_authority",
+        "schema_version": "feedbax.spec.root_training_authority.v1",
+        "sources": [{"alias": "missing", "kind": "json", "uri": "inputs/missing.json"}],
+        "derivations": [],
+    }
+    authority_ref = "authorities/shared-root.json"
+    write_json(repo / authority_ref, authority)
+    with pytest.raises(ExperimentEnvelopeRejection, match="cannot be pinned"):
+        _compile_root(
+            repo,
+            {
+                **base_root,
+                "authority": {"ref": authority_ref, "sha256": canonical_sha256(authority)},
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "kind,local,expected_field",
+    [
+        (
+            "alias",
+            False,
+            "training.root.authority.sources[1].alias",
+        ),
+        (
+            "alias",
+            True,
+            "training.root.sources[0].alias",
+        ),
+        (
+            "output",
+            False,
+            "training.root.authority.derivations[1].output_path",
+        ),
+        (
+            "output",
+            True,
+            "training.root.derivations[0].output_path",
+        ),
+    ],
+)
+def test_root_authority_refuses_internal_and_cross_boundary_collisions_before_pinning(
+    repo: Path,
+    kind: str,
+    local: bool,
+    expected_field: str,
+) -> None:
+    authority = {
+        "schema_id": "feedbax.spec.root_training_authority",
+        "schema_version": "feedbax.spec.root_training_authority.v1",
+        "sources": [{"alias": "shared", "kind": "json", "uri": "inputs/missing.json"}],
+        "derivations": [
+            {"output_path": "payload.shared", "query": {"item": "shared", "path": "items"}}
+        ],
+    }
+    if not local and kind == "alias":
+        authority["sources"].append(
+            {"alias": "shared", "kind": "json", "uri": "inputs/also-missing.json"}
+        )
+    if not local and kind == "output":
+        authority["derivations"].append(
+            {"output_path": "payload.shared", "query": {"item": "other", "path": "items"}}
+        )
+    authority_ref = "authorities/shared-root.json"
+    write_json(repo / authority_ref, authority)
+    root: dict[str, Any] = {
+        "kind": "composition",
+        "parent": {
+            "kind": "resolved_output",
+            "ref": "artifact-blob:generic-source",
+            "resolved_root_hash": "3" * 64,
+            "row_id": "source-row",
+            "checkpoint_transaction_id": "checkpoint-1",
+        },
+        "rows": [{"id": "condition-a"}],
+        "authority": {"ref": authority_ref, "sha256": canonical_sha256(authority)},
+    }
+    if local and kind == "alias":
+        root["sources"] = [
+            {"alias": "shared", "kind": "json", "uri": "inputs/local-missing.json"}
+        ]
+    if local and kind == "output":
+        root["derivations"] = [
+            {"output_path": "payload.shared", "query": {"item": "local", "path": "items"}}
+        ]
+
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        _compile_root(repo, root)
+    assert caught.value.category is ExperimentEnvelopeRejectionCategory.DUPLICATE_KEY
+    assert caught.value.field == expected_field
+
+
 def test_root_list_projection_is_exact_and_binds_both_compact_source_pins(
     repo: Path,
 ) -> None:
@@ -2095,6 +2471,36 @@ def test_root_list_projection_is_exact_and_binds_both_compact_source_pins(
         "initial": {"encoding": "constant", "shape": [36], "value": 0.0},
         "signal": {"encoding": "constant", "shape": [60, 1], "value": 1.0},
     }
+    authority = {
+        "schema_id": "feedbax.spec.root_training_authority",
+        "schema_version": "feedbax.spec.root_training_authority.v1",
+        "sources": [
+            {"alias": "primary", "kind": "json", "uri": "inputs/primary-points.json"},
+            {"alias": "reserved", "kind": "json", "uri": "inputs/reserved-points.json"},
+        ],
+        "derivations": [
+            {
+                "output_path": "method_payload.payload.metadata.primary_records",
+                "query": {
+                    "kind": "map_object_list",
+                    "items": {"item": "primary", "path": "points"},
+                    "template": template,
+                    "item_output_path": "target",
+                },
+            },
+            {
+                "output_path": "method_payload.payload.metadata.reserved_records",
+                "query": {
+                    "kind": "map_object_list",
+                    "items": {"item": "reserved", "path": "points"},
+                    "template": template,
+                    "item_output_path": "target",
+                },
+            },
+        ],
+    }
+    authority_ref = "authorities/record-geometry.json"
+    write_json(repo / authority_ref, authority)
     outcome = _compile_root(
         repo,
         {
@@ -2102,30 +2508,7 @@ def test_root_list_projection_is_exact_and_binds_both_compact_source_pins(
             "ref": ref,
             "content_hash": canonical_sha256(training_run),
             "rows": [{"id": "condition-a"}],
-            "sources": [
-                {"alias": "primary", "kind": "json", "uri": "inputs/primary-points.json"},
-                {"alias": "reserved", "kind": "json", "uri": "inputs/reserved-points.json"},
-            ],
-            "derivations": [
-                {
-                    "output_path": "method_payload.payload.metadata.primary_records",
-                    "query": {
-                        "kind": "map_object_list",
-                        "items": {"item": "primary", "path": "points"},
-                        "template": template,
-                        "item_output_path": "target",
-                    },
-                },
-                {
-                    "output_path": "method_payload.payload.metadata.reserved_records",
-                    "query": {
-                        "kind": "map_object_list",
-                        "items": {"item": "reserved", "path": "points"},
-                        "template": template,
-                        "item_output_path": "target",
-                    },
-                },
-            ],
+            "authority": {"ref": authority_ref, "sha256": canonical_sha256(authority)},
         },
     )
 

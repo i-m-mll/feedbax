@@ -91,7 +91,7 @@ from feedbax.contracts.figure_roles import (
 )
 from feedbax.contracts.figures import FigureCompositionDelta
 from feedbax.contracts.manifest import StrictModel
-from feedbax.contracts.matrix_core import RowDerivation
+from feedbax.contracts.matrix_core import ContentPinnedJsonBase, RowDerivation
 from feedbax.contracts.row_index import RowSetSelector
 from feedbax.contracts.run_composition import AuthoredIntentParent, ResolvedOutputParent
 from feedbax.contracts.run_matrix import (
@@ -119,6 +119,10 @@ EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = (
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
 )
+
+#: One closed, content-pinned structure shared by root-authored training matrices.
+ROOT_TRAINING_AUTHORITY_SCHEMA_ID = "feedbax.spec.root_training_authority"
+ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION = f"{ROOT_TRAINING_AUTHORITY_SCHEMA_ID}.v1"
 
 #: Versions with a deterministic upgrade to a later one, applied by
 #: :func:`migrate_experiment_envelope_payload` and never by a compile.
@@ -389,10 +393,20 @@ class RootTrainingRowAuthoring(DialectModel):
         return self.id if self.label is None else self.label
 
 
+class RootTrainingAuthority(StrictModel):
+    """Reusable source and derivation structure for root training authoring."""
+
+    schema_id: Literal["feedbax.spec.root_training_authority"]
+    schema_version: Literal["feedbax.spec.root_training_authority.v1"]
+    sources: list[SourceBinding]
+    derivations: list[RowDerivation]
+
+
 class RootTrainingMatrixFields(DialectModel):
     """Existing typed matrix fields shared by both closed root source kinds."""
 
     rows: list[RootTrainingRowAuthoring] = Field(min_length=1)
+    authority: ContentPinnedJsonBase | None = None
     execution_dependencies: list[ExecutionDependencyV6] = Field(default_factory=list)
     sources: list[SourceBinding] = Field(default_factory=list)
     derivations: list[RowDerivation] = Field(default_factory=list)
@@ -1461,6 +1475,9 @@ __all__ = [
     "ReportLayerAuthoring",
     "RowReplacement",
     "RootTrainingMatrixFields",
+    "RootTrainingAuthority",
+    "ROOT_TRAINING_AUTHORITY_SCHEMA_ID",
+    "ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION",
     "RootTrainingRowAuthoring",
     "RootSelectedCheckpointAuthoring",
     "TagsDelta",
