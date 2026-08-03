@@ -1,7 +1,7 @@
 """The closed ``feedbax.experiment_envelope`` dialect and its version boundary.
 
 Three properties are under test and nothing else. First, the dialect is *closed*:
-three enumerated schema strings, one layer per envelope, no unknown fields
+four enumerated schema strings, one layer per envelope, no unknown fields
 anywhere, and no slot through which a project could widen it. Second, the
 vocabulary inside it is *open*: dotted paths, values, recipe ids, and role
 strings are carried as data and judged by the final Feedbax output model, not by
@@ -45,6 +45,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
     AnalysisBundleLayerRootAuthority,
     AnalysisRunLayerRootAuthority,
+    ComparisonPolicyLayerRootAuthority,
     ExperimentEnvelopeLayer,
     FigureLayerRootAuthority,
     ReceiptReference,
@@ -55,6 +56,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     output_contract_of_document,
     parse_experiment_envelope,
 )
+from feedbax.contracts.figures import ComparisonPolicySpec
 from feedbax.envelope import kernel_for
 from feedbax.envelope.compile import authored_layer_of
 
@@ -454,7 +456,42 @@ def _layer_root(kind: str) -> dict[str, Any]:
     }
 
 
-def test_layer_root_authority_is_one_closed_direct_three_kind_union() -> None:
+def _comparison_policy_fields() -> dict[str, Any]:
+    return {
+        "roles": {
+            "reference": {
+                "source_class": "quillon.loss_trace",
+                "label": "Reference",
+                "training_policy": "fixed",
+                "trace_schema_id": "quillon.trace",
+                "trace_schema_version": "quillon.trace.v1",
+                "retention_contract": "contracts/reference.json",
+                "figure_template": "terminal",
+            },
+            "candidate": {
+                "source_class": "quillon.loss_trace",
+                "label": "Candidate",
+                "training_policy": "adaptive",
+                "figure_template": "terminal",
+            },
+        },
+        "figure_templates": {
+            "terminal": {
+                "name": "terminal",
+                "description": "Generic terminal comparison",
+                "assembler": "quillon.comparison_grid",
+            }
+        },
+        "comparison_policy": {
+            "supported_source_class": "quillon.loss_trace",
+            "required_cadence": "per_checkpoint",
+            "required_equal_authority": ["training_data", "optimizer"],
+            "mismatch_policy": "fail_closed",
+        },
+    }
+
+
+def test_layer_root_authority_is_one_closed_direct_four_kind_union() -> None:
     run = AnalysisRunLayerRootAuthority.model_validate(
         {
             **_layer_root("analysis_run"),
@@ -482,30 +519,84 @@ def test_layer_root_authority_is_one_closed_direct_three_kind_union() -> None:
             "metadata": {"purpose": "generic"},
         }
     )
+    comparison = ComparisonPolicyLayerRootAuthority.model_validate(
+        {**_layer_root("comparison_policy"), **_comparison_policy_fields()}
+    )
 
     assert run.kind == "analysis_run"
     assert bundle.kind == "analysis_bundle"
     assert figure.kind == "figure"
+    assert comparison.kind == "comparison_policy"
 
     forbidden = {
         "analysis_run": ("analysis_type", "inputs", "name"),
         "analysis_bundle": ("name", "inputs"),
         "figure": ("name", "inputs", "input_authorities"),
+        "comparison_policy": ("schema_id", "name", "delta"),
     }
     models = {
         "analysis_run": AnalysisRunLayerRootAuthority,
         "analysis_bundle": AnalysisBundleLayerRootAuthority,
         "figure": FigureLayerRootAuthority,
+        "comparison_policy": ComparisonPolicyLayerRootAuthority,
     }
     minimal = {
         "analysis_run": {"params": {}},
         "analysis_bundle": {},
         "figure": {"assembler": "quillon.panel_assembler"},
+        "comparison_policy": _comparison_policy_fields(),
     }
     for kind, names in forbidden.items():
         for name in names:
             with pytest.raises(ValueError):
                 models[kind].model_validate({**_layer_root(kind), **minimal[kind], name: []})
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("one_role", "at least two"),
+        ("empty_role_key", "role keys must be nonempty"),
+        ("partial_trace", "all-or-none pair"),
+        ("absolute_retention", "repo-relative"),
+        ("missing_template", "resolve exactly once"),
+        ("duplicate_equality", "must be unique"),
+        ("open_mismatch", "Input should be 'fail_closed'"),
+        ("wrong_version", "unsupported ComparisonPolicySpec schema_version"),
+        ("unknown_role_field", "Extra inputs are not permitted"),
+    ],
+)
+def test_comparison_policy_contract_is_closed_and_cross_validated(
+    mutation: str,
+    message: str,
+) -> None:
+    payload = {
+        "schema_id": "feedbax.spec.comparison_policy",
+        "schema_version": "feedbax.spec.comparison_policy.v1",
+        "name": "generic-comparison",
+        **_comparison_policy_fields(),
+    }
+    if mutation == "one_role":
+        payload["roles"].pop("candidate")
+    elif mutation == "empty_role_key":
+        payload["roles"][""] = payload["roles"].pop("candidate")
+    elif mutation == "partial_trace":
+        payload["roles"]["candidate"]["trace_schema_id"] = "quillon.trace"
+    elif mutation == "absolute_retention":
+        payload["roles"]["candidate"]["retention_contract"] = "/tmp/contract.json"
+    elif mutation == "missing_template":
+        payload["roles"]["candidate"]["figure_template"] = "missing"
+    elif mutation == "duplicate_equality":
+        payload["comparison_policy"]["required_equal_authority"] = ["seed", "seed"]
+    elif mutation == "open_mismatch":
+        payload["comparison_policy"]["mismatch_policy"] = "warn"
+    elif mutation == "wrong_version":
+        payload["schema_version"] = "feedbax.spec.comparison_policy.v0"
+    else:
+        payload["roles"]["candidate"]["payload"] = {}
+
+    with pytest.raises(ValueError, match=message):
+        ComparisonPolicySpec.model_validate(payload)
 
 
 @pytest.mark.parametrize(
@@ -529,6 +620,27 @@ def test_layer_roots_are_v4_only(schema: str) -> None:
     with pytest.raises(ExperimentEnvelopeRejection) as caught:
         _parse(document)
     assert caught.value.category is ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
+    ],
+)
+def test_comparison_layer_is_v4_only(schema: str) -> None:
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        _parse(
+            {
+                "schema": schema,
+                "name": "comparison-policy",
+                "comparison": {"root": {"ref": "authority.json", "sha256": "3" * 64}},
+            }
+        )
+    assert caught.value.category is ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION
+    assert "comparison" in str(caught.value)
 
 
 def test_layer_root_and_base_are_mutually_exclusive_and_kind_shape_is_exact() -> None:
@@ -561,6 +673,29 @@ def test_layer_root_and_base_are_mutually_exclusive_and_kind_shape_is_exact() ->
             }
         )
     assert inline.value.category is ExperimentEnvelopeRejectionCategory.UNKNOWN_FIELD
+
+    with pytest.raises(ExperimentEnvelopeRejection, match="does not also state base"):
+        _parse(
+            {
+                "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+                "name": "comparison-policy",
+                "base": "bases/comparison.json",
+                "comparison": {"root": {"ref": "authority.json", "sha256": "3" * 64}},
+            }
+        )
+
+    with pytest.raises(ExperimentEnvelopeRejection) as comparison_delta:
+        _parse(
+            {
+                "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+                "name": "comparison-policy",
+                "comparison": {
+                    "root": {"ref": "authority.json", "sha256": "3" * 64},
+                    "delta": {"layer_id": "forbidden", "patches": []},
+                },
+            }
+        )
+    assert comparison_delta.value.category is ExperimentEnvelopeRejectionCategory.UNKNOWN_FIELD
 
     with pytest.raises(ExperimentEnvelopeRejection, match="row_expansion vocabulary"):
         _parse(
@@ -665,12 +800,13 @@ def test_an_envelope_that_authors_two_layers_is_refused() -> None:
     assert "exactly one layer" in str(caught.value)
 
 
-def test_the_layer_set_is_the_five_feedbax_artifact_families() -> None:
+def test_the_layer_set_is_the_closed_feedbax_artifact_families() -> None:
     assert [layer.value for layer in ExperimentEnvelopeLayer] == [
         "training",
         "evaluation",
         "analysis",
         "figure",
+        "comparison",
         "report",
     ]
     assert {contract.layer for contract in LAYER_OUTPUT_CONTRACTS.values()} == set(
@@ -930,6 +1066,7 @@ def test_a_value_the_output_model_refuses_is_a_rejection_not_a_bad_document(
         ("feedbax.spec.analysis_bundle", "analysis", "analysis_bundle"),
         ("feedbax.spec.figure", "figure", "figure"),
         ("feedbax.spec.figure_composition", "figure", "figure_composition"),
+        ("feedbax.spec.comparison_policy", "comparison", "comparison_policy"),
         ("feedbax.spec.report", "report", "report"),
     ],
 )

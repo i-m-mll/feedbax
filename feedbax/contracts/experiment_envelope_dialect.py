@@ -5,7 +5,7 @@ project does not define an envelope family, a layer, a lowerer, or a rule: it
 authors documents in this dialect and Feedbax compiles them into the spec
 families it already owns.
 
-## Three numbered versions, each with one meaning
+## Four numbered versions, each with one meaning
 
 The dialect is a durable authored format, so what a version *accepts* is part of
 its identity. ``feedbax.experiment_envelope.v1`` is exactly the grammar it was
@@ -55,8 +55,9 @@ artifact: an envelope that authored two layers would compile to two documents
 with one lock, one name, and one identity, and nothing downstream could say
 which of the two a later reference meant.
 
-The five layers are Feedbax's five existing artifact families, not a taxonomy
-invented here. A sixth family gets a new dialect version, not an extension slot.
+The layers are Feedbax's closed artifact families, not a taxonomy invented
+here. The still-unreleased v4 grammar includes comparison policy as a typed,
+root-only family; it is not an extension slot.
 
 ## Authored references are typed and closed
 
@@ -91,9 +92,15 @@ from feedbax.contracts.figure_roles import (
     SharedInputReference,
 )
 from feedbax.contracts.figures import (
+    COMPARISON_POLICY_SCHEMA_ID,
+    COMPARISON_POLICY_SCHEMA_VERSION,
+    ComparisonPolicySpec,
+    ComparisonRequirement,
+    ComparisonSourceRole,
     FigureColorbar,
     FigureCompositionDelta,
     FigureSlotFamily,
+    FigureTemplate,
     PanelSpec,
     TraceBinding,
     TraceFamily,
@@ -136,7 +143,7 @@ EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = (
 ROOT_TRAINING_AUTHORITY_SCHEMA_ID = "feedbax.spec.root_training_authority"
 ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION = f"{ROOT_TRAINING_AUTHORITY_SCHEMA_ID}.v1"
 
-#: One closed union for scientific structure shared by root analysis and figure envelopes.
+#: One closed union for scientific structure shared by root layer envelopes.
 EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID = "feedbax.spec.experiment_layer_root_authority"
 EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION = f"{EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID}.v1"
 
@@ -179,12 +186,13 @@ EXPERIMENT_ENVELOPE_SUFFIX = ".envelope.json"
 
 
 class ExperimentEnvelopeLayer(StrEnum):
-    """The five artifact families an envelope may author, and no others."""
+    """The closed artifact families an envelope may author, and no others."""
 
     TRAINING = "training"
     EVALUATION = "evaluation"
     ANALYSIS = "analysis"
     FIGURE = "figure"
+    COMPARISON = "comparison"
     REPORT = "report"
 
 
@@ -491,8 +499,35 @@ class FigureLayerRootAuthority(StrictModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ComparisonPolicyLayerRootAuthority(StrictModel):
+    """Scientific comparison-policy fields, excluding compiler-owned identity and name."""
+
+    schema_id: Literal["feedbax.spec.experiment_layer_root_authority"]
+    schema_version: Literal["feedbax.spec.experiment_layer_root_authority.v1"]
+    kind: Literal["comparison_policy"]
+    roles: dict[str, ComparisonSourceRole]
+    figure_templates: dict[str, FigureTemplate]
+    comparison_policy: ComparisonRequirement
+
+    @model_validator(mode="after")
+    def _validate_against_output_model(self) -> "ComparisonPolicyLayerRootAuthority":
+        ComparisonPolicySpec.model_validate(
+            {
+                "name": "layer-root-authority-validation",
+                **self.model_dump(
+                    mode="json",
+                    exclude={"schema_id", "schema_version", "kind"},
+                ),
+            }
+        )
+        return self
+
+
 ExperimentLayerRootAuthority: TypeAlias = Annotated[
-    AnalysisRunLayerRootAuthority | AnalysisBundleLayerRootAuthority | FigureLayerRootAuthority,
+    AnalysisRunLayerRootAuthority
+    | AnalysisBundleLayerRootAuthority
+    | FigureLayerRootAuthority
+    | ComparisonPolicyLayerRootAuthority,
     Field(discriminator="kind"),
 ]
 
@@ -1094,6 +1129,15 @@ class FigureLayerAuthoring(DialectModel):
         return self
 
 
+# -- comparison -----------------------------------------------------------
+
+
+class ComparisonLayerAuthoring(DialectModel):
+    """One root-only comparison-policy output selected from typed authority."""
+
+    root: ContentPinnedJsonBase
+
+
 # -- report ----------------------------------------------------------------
 
 
@@ -1154,6 +1198,7 @@ class ExperimentEnvelope(DialectModel):
     evaluation: EvaluationLayerAuthoring | None = None
     analysis: AnalysisLayerAuthoring | None = None
     figure: FigureLayerAuthoring | None = None
+    comparison: ComparisonLayerAuthoring | None = None
     report: ReportLayerAuthoring | None = None
 
     @model_validator(mode="after")
@@ -1174,6 +1219,7 @@ class ExperimentEnvelope(DialectModel):
             (self.training is not None and self.training.root is not None)
             or (self.analysis is not None and self.analysis.root is not None)
             or (self.figure is not None and self.figure.root is not None)
+            or self.comparison is not None
         )
         if root and self.base is not None:
             raise ValueError("a root envelope does not also state base")
@@ -1298,6 +1344,13 @@ FIGURE_COMPOSITION_OUTPUT = LayerOutputContract(
     "feedbax.spec.figure_composition.v2",
     ("feedbax.contracts.figures", "FigureCompositionSpec"),
 )
+COMPARISON_POLICY_OUTPUT = LayerOutputContract(
+    ExperimentEnvelopeLayer.COMPARISON,
+    "comparison_policy",
+    COMPARISON_POLICY_SCHEMA_ID,
+    COMPARISON_POLICY_SCHEMA_VERSION,
+    ("feedbax.contracts.figures", "ComparisonPolicySpec"),
+)
 #: Report ``report_type`` to the closed model validating that report's ``params``.
 #: Both sides are Feedbax-owned, so this is Feedbax code; a report type absent
 #: from it carries params whose owner is the recipe that registered the type.
@@ -1330,6 +1383,7 @@ LAYER_OUTPUT_CONTRACTS: Mapping[str, LayerOutputContract] = {
         ANALYSIS_BUNDLE_OUTPUT,
         FIGURE_OUTPUT,
         FIGURE_COMPOSITION_OUTPUT,
+        COMPARISON_POLICY_OUTPUT,
         REPORT_OUTPUT,
     )
 }
@@ -1470,6 +1524,14 @@ def _require_declared_grammar(document: Mapping[str, Any], *, declared: str, fie
                 EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
                 declared,
             )
+    if "comparison" in document and declared != EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4:
+        _reject_unversioned_construct(
+            field,
+            "comparison",
+            "a content-pinned root comparison policy",
+            EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+            declared,
+        )
     if isinstance(training, Mapping) and not has_root and "rows_mode" not in training:
         raise ExperimentEnvelopeRejection(
             ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
@@ -1583,6 +1645,7 @@ __all__ = [
     "ANALYSIS_BUNDLE_OUTPUT",
     "ANALYSIS_RUN_OUTPUT",
     "CHECKPOINT_ONLY_TRAINING_LAYER_VERSION",
+    "COMPARISON_POLICY_OUTPUT",
     "EVALUATION_OUTPUT",
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID",
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION",
@@ -1616,6 +1679,8 @@ __all__ = [
     "AnalysisSubjectAuthoring",
     "AuthoredReference",
     "CheckpointInitializationAuthoring",
+    "ComparisonLayerAuthoring",
+    "ComparisonPolicyLayerRootAuthority",
     "CompositionRootParent",
     "CompositionTrainingRootAuthoring",
     "DialectModel",

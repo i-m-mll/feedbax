@@ -1,4 +1,4 @@
-"""The authored-envelope engine: one dialect, one compiler, five layers.
+"""The authored-envelope engine: one dialect, one compiler, closed layers.
 
 Feedbax owns the mechanism by which an authored envelope becomes a compiled
 document plus a compile lock, and it owns the dialect that mechanism reads. A
@@ -17,7 +17,7 @@ The kernel is four mechanisms:
   document schema owned here and the numbers owned by the project
   (:mod:`feedbax.contracts.authoring_budget`, :mod:`feedbax.envelope.authoring`);
 * **compilation** — parent resolution over a content-pinned lineage, assertion
-  verification, echo refusal, the five-layer lowering, and lock emission
+  verification, echo refusal, closed-layer lowering, and lock emission
   (:mod:`feedbax.contracts.experiment_envelope_dialect`,
   :mod:`feedbax.envelope.compile`, :mod:`feedbax.envelope.resolution`);
 * **the choke point** — proof that tracked compiled bytes are what the envelopes
@@ -90,6 +90,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
     AnalysisBundleLayerRootAuthority,
     AnalysisRunLayerRootAuthority,
+    ComparisonPolicyLayerRootAuthority,
     CompositionTrainingRootAuthoring,
     ExperimentEnvelope,
     ExperimentEnvelopeLayer,
@@ -162,6 +163,7 @@ __all__ = [
     "AuthoringBudgets",
     "AnalysisBundleLayerRootAuthority",
     "AnalysisRunLayerRootAuthority",
+    "ComparisonPolicyLayerRootAuthority",
     "ChokeEntry",
     "ChokeFinding",
     "ChokeReport",

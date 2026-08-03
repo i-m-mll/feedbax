@@ -2,7 +2,7 @@
 
 Feedbax owns the dialect (:mod:`feedbax.contracts.experiment_envelope_dialect`)
 and this is the compiler for it. There is one compiler, one compiler contract,
-and five layers, because there is one dialect. A project contributes a data
+and its closed layers, because there is one dialect. A project contributes a data
 declaration saying where its files live and nothing else; it supplies no
 callable, so there is no seam through which a project could change what a
 compiled document means.
@@ -89,6 +89,7 @@ from feedbax.contracts.experiment_envelope import (
 from feedbax.contracts.experiment_envelope_dialect import (
     ANALYSIS_BUNDLE_OUTPUT,
     ANALYSIS_RUN_OUTPUT,
+    COMPARISON_POLICY_OUTPUT,
     EVALUATION_OUTPUT,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID,
     EXPERIMENT_ENVELOPE_SUFFIX,
@@ -100,6 +101,8 @@ from feedbax.contracts.experiment_envelope_dialect import (
     AnalysisBundleLayerRootAuthority,
     AnalysisLayerAuthoring,
     AnalysisRunLayerRootAuthority,
+    ComparisonLayerAuthoring,
+    ComparisonPolicyLayerRootAuthority,
     EvaluationLayerAuthoring,
     ExperimentEnvelope,
     ExperimentEnvelopeLayer,
@@ -885,7 +888,7 @@ def _prove_patches_apply(
         )
 
 
-# -- the five layers -------------------------------------------------------
+# -- the closed layers -----------------------------------------------------
 
 
 #: Top-level matrix fields a derived training document never inherits.
@@ -1146,7 +1149,7 @@ def _load_layer_root_authority(
     *,
     field: str,
 ) -> tuple[ExperimentLayerRootAuthority, ContentPinReference, str]:
-    """Load one analysis/figure root member through the shared verified seam."""
+    """Load one root-layer member through the shared verified seam."""
     authority, pin, selected_sha256 = _load_content_pinned_authority(
         context,
         authored,
@@ -1160,6 +1163,7 @@ def _load_layer_root_authority(
             AnalysisRunLayerRootAuthority,
             AnalysisBundleLayerRootAuthority,
             FigureLayerRootAuthority,
+            ComparisonPolicyLayerRootAuthority,
         ),
     )
     return authority, pin, selected_sha256
@@ -2029,10 +2033,51 @@ def _lower_figure_composition(
 #: same knowledge.
 REPORT_BINDING_STATE_REPORT_TYPES: frozenset[str] = frozenset(REPORT_PARAMS_MODELS)
 
+
 #: The fields an ordered-figure report node uses to *describe* the state of the
 #: role it stands for. The set is closed and enumerated rather than swept for:
 #: a heuristic over field names would reconcile authored science the moment a
 #: project chose a similar-looking word, and these four are Feedbax's own
+def _lower_comparison(context: LayerCompileContext) -> LoweredLayer:
+    """Construct one root-only ComparisonPolicySpec from typed authority."""
+    authored = context.envelope.content
+    assert isinstance(authored, ComparisonLayerAuthoring)
+    authority, root_pin, selected_authority_sha256 = _load_layer_root_authority(
+        context,
+        authored.root,
+        field="comparison.root",
+    )
+    if not isinstance(authority, ComparisonPolicyLayerRootAuthority):
+        _reject(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "comparison.root",
+            f"comparison layer requires authority kind 'comparison_policy', got {authority.kind!r}",
+        )
+    document = {
+        "schema_id": COMPARISON_POLICY_OUTPUT.schema_id,
+        "schema_version": COMPARISON_POLICY_OUTPUT.schema_version,
+        "name": context.envelope.name,
+        **authority.model_dump(
+            mode="json",
+            exclude={"schema_id", "schema_version", "kind"},
+            exclude_none=True,
+        ),
+    }
+    return LoweredLayer(
+        contract=COMPARISON_POLICY_OUTPUT,
+        deltas=(),
+        document=document,
+        references=(root_pin,),
+        identity_contributions={
+            "layer_root": _layer_root_identity(
+                authored.root,
+                authority,
+                selected_authority_sha256,
+            )
+        },
+    )
+
+
 #: (:mod:`feedbax.analysis.reports`).
 REPORT_APPLICABILITY_FIELD = "applicability"
 REPORT_FIGURE_DIGEST_FIELD = "figure_spec_sha256"
@@ -2437,6 +2482,7 @@ _LAYER_LOWERERS: Mapping[ExperimentEnvelopeLayer, Callable[[LayerCompileContext]
     ExperimentEnvelopeLayer.EVALUATION: _lower_evaluation,
     ExperimentEnvelopeLayer.ANALYSIS: _lower_analysis,
     ExperimentEnvelopeLayer.FIGURE: _lower_figure,
+    ExperimentEnvelopeLayer.COMPARISON: _lower_comparison,
     ExperimentEnvelopeLayer.REPORT: _lower_report,
 }
 
@@ -2635,6 +2681,7 @@ class EnvelopeKernel:
             (envelope.training is not None and envelope.training.root is not None)
             or (envelope.analysis is not None and envelope.analysis.root is not None)
             or (envelope.figure is not None and envelope.figure.root is not None)
+            or envelope.comparison is not None
         )
         if envelope.base is None and not root_envelope:
             _reject(

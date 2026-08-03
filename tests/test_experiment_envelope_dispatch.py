@@ -33,9 +33,12 @@ from feedbax.contracts.experiment_envelope import (
     require_builtin_envelope_schema,
 )
 from feedbax.contracts.experiment_envelope_dialect import (
+    EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID,
+    EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
     EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS,
 )
+from feedbax.envelope import canonical_sha256
 from feedbax.plugins.composition import compose_application
 
 import tests.fake_project_experiment as fixture
@@ -115,6 +118,65 @@ def test_rerunning_an_unchanged_envelope_rewrites_identical_bytes(
     assert _run(tmp_path, "widened") == 0
 
     assert lock.read_bytes() == first
+
+
+def test_entrypoint_dispatches_the_v4_comparison_policy_root(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixture.write_repo(tmp_path)
+    authority = {
+        "schema_id": EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID,
+        "schema_version": EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
+        "kind": "comparison_policy",
+        "roles": {
+            "reference": {
+                "source_class": "quillon.loss_trace",
+                "label": "Reference",
+                "training_policy": "fixed",
+            },
+            "candidate": {
+                "source_class": "quillon.loss_trace",
+                "label": "Candidate",
+                "training_policy": "adaptive",
+                "figure_template": "terminal",
+            },
+        },
+        "figure_templates": {
+            "terminal": {
+                "name": "terminal",
+                "description": "Generic terminal comparison",
+                "assembler": "quillon.comparison_grid",
+            }
+        },
+        "comparison_policy": {
+            "supported_source_class": "quillon.loss_trace",
+            "required_cadence": "per_checkpoint",
+            "required_equal_authority": ["training_data"],
+            "mismatch_policy": "fail_closed",
+        },
+    }
+    ref = "authorities/dispatch-comparison.json"
+    fixture.write_json(tmp_path / ref, authority)
+    fixture.write_envelope(
+        fixture.envelope_path(tmp_path, "dispatch-comparison"),
+        {
+            "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+            "name": "dispatch-comparison",
+            "comparison": {"root": {"ref": ref, "sha256": canonical_sha256(authority)}},
+        },
+    )
+
+    assert _run(tmp_path, "dispatch-comparison") == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["family"] == "comparison_policy"
+    assert payload["envelope_schema"] == EXPERIMENT_ENVELOPE_SCHEMA_VERSION
+    document = json.loads(
+        (tmp_path / fixture.OUTPUT_DIRECTORY / payload["document_path"]).read_text()
+    )
+    assert document["schema_id"] == "feedbax.spec.comparison_policy"
+    assert document["schema_version"] == "feedbax.spec.comparison_policy.v1"
+    assert document["name"] == "dispatch-comparison"
 
 
 # --- an unsupported schema is refused by name -------------------------------
