@@ -104,7 +104,9 @@ def test_out_dir_override_is_honoured(tmp_path: Path) -> None:
     assert (tmp_path / "elsewhere" / "widened.compile-lock.json").is_file()
 
 
-def test_rerunning_an_unchanged_envelope_rewrites_identical_bytes(tmp_path: Path) -> None:
+def test_rerunning_an_unchanged_envelope_rewrites_identical_bytes(
+    tmp_path: Path,
+) -> None:
     fixture.write_repo(tmp_path)
     assert _run(tmp_path, "widened") == 0
     lock = tmp_path / fixture.OUTPUT_DIRECTORY / "widened.compile-lock.json"
@@ -143,7 +145,7 @@ def test_require_builtin_envelope_schema_accepts_only_the_one_dialect() -> None:
     for supported in EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS:
         require_builtin_envelope_schema(supported)
 
-    for schema in (FOREIGN_SCHEMA, "", "feedbax.experiment_envelope.v3"):
+    for schema in (FOREIGN_SCHEMA, "", "feedbax.experiment_envelope.v4"):
         with pytest.raises(ExperimentEnvelopeRejection) as caught:
             require_builtin_envelope_schema(schema)
         assert caught.value.category is (

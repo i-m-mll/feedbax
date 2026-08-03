@@ -5,13 +5,14 @@ project does not define an envelope family, a layer, a lowerer, or a rule: it
 authors documents in this dialect and Feedbax compiles them into the spec
 families it already owns.
 
-## Two numbered versions, and no third meaning of "v1"
+## Three numbered versions, each with one meaning
 
 The dialect is a durable authored format, so what a version *accepts* is part of
 its identity. ``feedbax.experiment_envelope.v1`` is exactly the grammar it was
-ratified with; ``feedbax.experiment_envelope.v2`` is the current grammar and
-adds four authored constructs (see :data:`V2_ONLY_CONSTRUCTS`). Both versions are
-supported and neither is reinterpreted as the other:
+ratified with; ``feedbax.experiment_envelope.v2`` adds four authored constructs
+(see :data:`V2_ONLY_CONSTRUCTS`), while ``feedbax.experiment_envelope.v3`` is
+current and adds the closed typed training root. All three versions are
+supported and none is reinterpreted as another:
 
 * a v1 document is held to the v1 grammar. Declaring a v2 construct under v1 is
   refused by version, naming the construct and the version that owns it, rather
@@ -20,7 +21,7 @@ supported and neither is reinterpreted as the other:
   string is what the compile lock records and what the envelope hash covers, so
   a corpus authored at v1 does not move because a v2 exists;
 * :func:`migrate_experiment_envelope_payload` is the explicit, deterministic
-  upgrade to v2. It is a *payload* migration an author runs, never something a
+  schema-only upgrade through v2 to v3. It is a *payload* migration an author runs, never something a
   compile does silently: migrating changes the authored bytes, and authored
   bytes are the identity every compiled lock is pinned by.
 
@@ -78,6 +79,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import ConfigDict, Field, ValidationError, model_validator
 
 from feedbax.contracts.checkpoint_initialization import CheckpointInitializationMode
+from feedbax.contracts.extraction import SourceBinding
 from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeRejection,
     ExperimentEnvelopeRejectionCategory,
@@ -89,8 +91,14 @@ from feedbax.contracts.figure_roles import (
 )
 from feedbax.contracts.figures import FigureCompositionDelta
 from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.matrix_core import RowDerivation
 from feedbax.contracts.row_index import RowSetSelector
-from feedbax.contracts.run_matrix import MatrixCompositionDelta
+from feedbax.contracts.run_composition import AuthoredIntentParent, ResolvedOutputParent
+from feedbax.contracts.run_matrix import (
+    ExecutionDependency,
+    MatrixCompositionDelta,
+    MatrixForkSpec,
+)
 
 #: The unversioned identity of the dialect family.
 EXPERIMENT_ENVELOPE_FAMILY = "feedbax.experiment_envelope"
@@ -98,29 +106,48 @@ EXPERIMENT_ENVELOPE_FAMILY = "feedbax.experiment_envelope"
 #: The authored schema strings an envelope may declare.
 EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v1"
 EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v2"
+EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v3"
 
 #: The current grammar. A new document is authored at this version.
-EXPERIMENT_ENVELOPE_SCHEMA_VERSION = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2
+EXPERIMENT_ENVELOPE_SCHEMA_VERSION = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3
 
-#: Enumerated, never inferred. Both members are compiled as authored: a v1
-#: document is held to the v1 grammar and keeps its v1 identity.
+#: Enumerated, never inferred. Every member is compiled as authored: a v1 or v2
+#: document is held to its declared grammar and keeps that identity.
 EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = (
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
 )
 
 #: Versions with a deterministic upgrade to a later one, applied by
 #: :func:`migrate_experiment_envelope_payload` and never by a compile.
 EXPERIMENT_ENVELOPE_MIGRATION_TABLE: dict[str, str] = {
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
 }
 
 #: The compiler contract is global. There is no per-project contract indirection:
 #: one dialect compiled by one compiler means one contract for every project.
 EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID = f"{EXPERIMENT_ENVELOPE_FAMILY}.compiler"
-EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION = (
-    f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v1"
-)
+EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1 = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v1"
+EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v2"
+
+
+def compiler_contract_version_for_schema(schema: str) -> str:
+    """Return the exact compiler contract owned by one declared envelope grammar."""
+    if schema in (
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
+    ):
+        return EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1
+    if schema == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3:
+        return EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION
+    raise ExperimentEnvelopeRejection(
+        ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+        f"no compiler contract is registered for envelope schema {schema!r}",
+        field="envelope.schema",
+    )
+
 
 #: The suffix an authored envelope file carries.
 EXPERIMENT_ENVELOPE_SUFFIX = ".envelope.json"
@@ -202,9 +229,7 @@ class ReceiptReference(DialectModel):
                 "a receipt reference states both manifest_sha256 and size_bytes or neither"
             )
         if not authenticated and self.execution_uri is not None:
-            raise ValueError(
-                "a receipt locator has no execution uri; only a produced receipt does"
-            )
+            raise ValueError("a receipt locator has no execution uri; only a produced receipt does")
         return self
 
     @property
@@ -341,6 +366,94 @@ class TrainingRowsMode(StrEnum):
     APPEND = "append"
 
 
+class RootTrainingRowAuthoring(DialectModel):
+    """One explicitly named row of a root-authored training matrix."""
+
+    id: str
+    label: str | None = None
+    seed: int | None = None
+    delta: MatrixCompositionDelta | None = None
+
+    @model_validator(mode="after")
+    def _validate(self) -> "RootTrainingRowAuthoring":
+        if not self.id.strip():
+            raise ValueError("a root training row states its own nonempty id")
+        if self.label is not None and not self.label.strip():
+            raise ValueError("a root training row that states a label states a nonempty one")
+        return self
+
+    @property
+    def effective_label(self) -> str:
+        """Return the authored label, or the row's explicit id when omitted."""
+        return self.id if self.label is None else self.label
+
+
+class RootTrainingMatrixFields(DialectModel):
+    """Existing typed matrix fields shared by both closed root source kinds."""
+
+    rows: list[RootTrainingRowAuthoring] = Field(min_length=1)
+    execution_dependencies: list[ExecutionDependency] = Field(default_factory=list)
+    sources: list[SourceBinding] = Field(default_factory=list)
+    derivations: list[RowDerivation] = Field(default_factory=list)
+    fork: MatrixForkSpec | None = None
+    tags: list[str] = Field(default_factory=list)
+    checkpoint_initialization: list[CheckpointInitializationAuthoring] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_matrix_fields(self) -> "RootTrainingMatrixFields":
+        row_ids = [row.id for row in self.rows]
+        if len(set(row_ids)) != len(row_ids):
+            raise ValueError("root training row ids must be unique")
+        initialized = [item.row for item in self.checkpoint_initialization]
+        if len(set(initialized)) != len(initialized):
+            raise ValueError("a root row states at most one checkpoint initialization")
+        missing = sorted(set(initialized) - set(row_ids))
+        if missing:
+            raise ValueError(
+                f"checkpoint initialization names rows absent from this root: {missing}"
+            )
+        return self
+
+
+CompositionRootParent: TypeAlias = Annotated[
+    AuthoredIntentParent | ResolvedOutputParent,
+    Field(discriminator="kind"),
+]
+
+
+class CompositionTrainingRootAuthoring(RootTrainingMatrixFields):
+    """A matrix rooted in a pinned composition.v1 parent declaration."""
+
+    kind: Literal["composition"] = "composition"
+    parent: CompositionRootParent
+    deltas: list[MatrixCompositionDelta] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_layers(self) -> "CompositionTrainingRootAuthoring":
+        layer_ids = [delta.layer_id for delta in self.deltas]
+        layer_ids.extend(row.delta.layer_id for row in self.rows if row.delta is not None)
+        if len(set(layer_ids)) != len(layer_ids):
+            raise ValueError("root composition and row delta layer ids must be unique")
+        return self
+
+
+class TrainingRunRootAuthoring(RootTrainingMatrixFields):
+    """A matrix rooted in a canonical-content-pinned training_run.v4 document."""
+
+    kind: Literal["training_run"] = "training_run"
+    ref: str
+    content_hash: str
+    pin_algorithm: Literal["canonical_json_v1"] = "canonical_json_v1"
+    payload_path: str | None = None
+    symbolic_name: str | None = None
+
+
+TrainingRootAuthoring: TypeAlias = Annotated[
+    CompositionTrainingRootAuthoring | TrainingRunRootAuthoring,
+    Field(discriminator="kind"),
+]
+
+
 class TrainingLayerAuthoring(DialectModel):
     """Rows inherited from the parent matrix, plus tags and checkpoint sources.
 
@@ -358,15 +471,29 @@ class TrainingLayerAuthoring(DialectModel):
     grammar: v1 required rows or tags, and a v1 document is still held to that.
     """
 
-    rows_mode: TrainingRowsMode
+    root: TrainingRootAuthoring | None = None
+    rows_mode: TrainingRowsMode | None = None
     rows: list[TrainingRowAuthoring] = Field(default_factory=list)
     tags: TagsDelta | None = None
-    checkpoint_initialization: list[CheckpointInitializationAuthoring] = Field(
-        default_factory=list
-    )
+    checkpoint_initialization: list[CheckpointInitializationAuthoring] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate(self) -> "TrainingLayerAuthoring":
+        if self.root is not None:
+            relative_fields = (
+                self.rows_mode is not None,
+                bool(self.rows),
+                self.tags is not None,
+                bool(self.checkpoint_initialization),
+            )
+            if any(relative_fields):
+                raise ValueError(
+                    "training.root is mutually exclusive with rows_mode, rows, tags, and "
+                    "training-level checkpoint_initialization"
+                )
+            return self
+        if self.rows_mode is None:
+            raise ValueError("a relative training layer states rows_mode explicitly")
         if not self.rows and self.tags is None and not self.checkpoint_initialization:
             raise ValueError(
                 "a training layer authors rows, tags, checkpoint initialization, or a "
@@ -634,9 +761,7 @@ class FigureInputAuthoring(DialectModel):
         if not self.input_role.strip():
             raise ValueError("a figure input states a nonempty input role")
         expanded = (self.binding, self.binding_key, self.contract)
-        if any(item is None for item in expanded) and any(
-            item is not None for item in expanded
-        ):
+        if any(item is None for item in expanded) and any(item is not None for item in expanded):
             raise ValueError(
                 "a row-expanded figure input states binding, binding_key, and contract "
                 "together; a partial profile is neither a per-row nor a shared role"
@@ -672,9 +797,7 @@ class FigureInputAuthoring(DialectModel):
     def role_reference(self) -> FigureInputReference:
         """Return the closed ``per_row``/``shared`` reference this input declares."""
         if self.binding is None or self.binding_key is None:
-            raise ValueError(
-                f"figure input {self.input_role!r} declares no row-expansion binding"
-            )
+            raise ValueError(f"figure input {self.input_role!r} declares no row-expansion binding")
         if self.binding == "per_row":
             return PerRowInputReference(per_row=self.binding_key)
         return SharedInputReference(shared=self.binding_key)
@@ -793,9 +916,7 @@ class ReportBindingAuthoring(DialectModel):
 
     @model_validator(mode="after")
     def _validate(self) -> "ReportBindingAuthoring":
-        if not self.role_path.strip() or any(
-            not part for part in self.role_path.split(".")
-        ):
+        if not self.role_path.strip() or any(not part for part in self.role_path.split(".")):
             raise ValueError(f"report role path is not a dotted path: {self.role_path!r}")
         return self
 
@@ -822,7 +943,7 @@ class ReportLayerAuthoring(DialectModel):
 class ExperimentEnvelope(DialectModel):
     """One authored envelope: common fields plus exactly one layer.
 
-    The model is the *union* of the supported grammars, because both versions
+    The model is the *union* of the supported grammars, because all versions
     parse into one set of Python objects. Which constructs a given document may
     use is decided before validation, by its declared version, in
     :func:`parse_experiment_envelope`; ``schema_`` keeps the version the document
@@ -830,7 +951,9 @@ class ExperimentEnvelope(DialectModel):
     """
 
     schema_: Literal[
-        "feedbax.experiment_envelope.v1", "feedbax.experiment_envelope.v2"
+        "feedbax.experiment_envelope.v1",
+        "feedbax.experiment_envelope.v2",
+        "feedbax.experiment_envelope.v3",
     ] = Field(alias="schema")
     name: str
     base: str | None = None
@@ -850,15 +973,18 @@ class ExperimentEnvelope(DialectModel):
         if self.base is not None and not self.base.strip():
             raise ValueError("an envelope that states a base states a nonempty one")
         authored = [
-            layer.value
-            for layer in ExperimentEnvelopeLayer
-            if self.layer_of(layer) is not None
+            layer.value for layer in ExperimentEnvelopeLayer if self.layer_of(layer) is not None
         ]
         if len(authored) != 1:
             raise ValueError(
                 f"an envelope authors exactly one layer, found {authored or 'none'}; "
                 f"layers={[layer.value for layer in ExperimentEnvelopeLayer]}"
             )
+        training_root = self.training is not None and self.training.root is not None
+        if training_root and self.base is not None:
+            raise ValueError("a root training envelope does not also state base")
+        if training_root and self.assert_:
+            raise ValueError("a root training envelope has no inherited lineage to assert")
         paths = [assertion.path for assertion in self.assert_]
         if len(set(paths)) != len(paths):
             raise ValueError("an envelope asserts each path at most once")
@@ -871,9 +997,7 @@ class ExperimentEnvelope(DialectModel):
     @property
     def layer(self) -> ExperimentEnvelopeLayer:
         """Return the one layer this envelope authors."""
-        return next(
-            layer for layer in ExperimentEnvelopeLayer if self.layer_of(layer) is not None
-        )
+        return next(layer for layer in ExperimentEnvelopeLayer if self.layer_of(layer) is not None)
 
     @property
     def content(self) -> Any:
@@ -1037,7 +1161,9 @@ def layer_of_document(document: Mapping[str, Any]) -> ExperimentEnvelopeLayer | 
     return None if contract is None else contract.layer
 
 
-def output_contract_of_document(document: Mapping[str, Any]) -> LayerOutputContract | None:
+def output_contract_of_document(
+    document: Mapping[str, Any],
+) -> LayerOutputContract | None:
     """Return the output contract a compiled or frozen document conforms to."""
     if not isinstance(document, Mapping):
         return None
@@ -1108,10 +1234,26 @@ def _reject_unversioned_construct(
     )
 
 
-def _require_declared_grammar(
-    document: Mapping[str, Any], *, declared: str, field: str
-) -> None:
+def _require_declared_grammar(document: Mapping[str, Any], *, declared: str, field: str) -> None:
     """Refuse a construct the document's own declared version does not have."""
+    training = document.get("training")
+    has_root = isinstance(training, Mapping) and "root" in training
+    if has_root and declared != EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3:
+        _reject_unversioned_construct(
+            field,
+            "training.root",
+            "a training matrix rooted in a typed non-matrix scientific parent",
+            EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
+            declared,
+        )
+    if isinstance(training, Mapping) and not has_root and "rows_mode" not in training:
+        raise ExperimentEnvelopeRejection(
+            ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
+            f"{declared!r} training grammar requires an explicit 'rows_mode' field",
+            field=f"{field}#training.rows_mode",
+        )
+    if declared == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3:
+        return
     if declared == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2:
         return
     for construct in V2_ONLY_CONSTRUCTS:
@@ -1120,7 +1262,6 @@ def _require_declared_grammar(
             _reject_unversioned_construct(
                 field, construct.path, construct.describes, construct.version, declared
             )
-    training = document.get("training")
     if isinstance(training, Mapping) and not training.get("rows") and not training.get("tags"):
         if training.get("checkpoint_initialization"):
             _reject_unversioned_construct(
@@ -1137,11 +1278,12 @@ def migrate_experiment_envelope_payload(
 ) -> dict[str, Any]:
     """Return one authored envelope payload at the current dialect version.
 
-    The upgrade is deterministic and semantics-preserving: every v1 construct
-    means the same thing at v2, so the migration restates the version and changes
-    nothing else. It is deliberately *not* applied by a compile — the authored
-    bytes are the identity a compile lock pins, and silently rewriting them would
-    move every downstream reference to a document nobody authored.
+    Each step is deterministic and semantics-preserving: every v1 construct
+    means the same thing at v2, and every v2 construct means the same thing at
+    v3, so each migration restates the version and changes nothing else. It is
+    deliberately *not* applied by a compile — the authored bytes are the identity
+    a compile lock pins, and silently rewriting them would move every downstream
+    reference to a document nobody authored.
 
     A document already at the current version is returned unchanged. An
     unsupported version refuses here, by version, as it does at parse.
@@ -1149,8 +1291,11 @@ def migrate_experiment_envelope_payload(
     declared = _require_supported_schema(document, field=field)
     if declared == EXPERIMENT_ENVELOPE_SCHEMA_VERSION:
         return dict(document)
-    target = EXPERIMENT_ENVELOPE_MIGRATION_TABLE[declared]
-    return {**dict(document), "schema": target}
+    migrated = dict(document)
+    while declared != EXPERIMENT_ENVELOPE_SCHEMA_VERSION:
+        declared = EXPERIMENT_ENVELOPE_MIGRATION_TABLE[declared]
+        migrated = {**migrated, "schema": declared}
+    return migrated
 
 
 def _require_supported_schema(document: Mapping[str, Any], *, field: str) -> str:
@@ -1174,9 +1319,7 @@ def _require_supported_schema(document: Mapping[str, Any], *, field: str) -> str
     return str(declared)
 
 
-def parse_experiment_envelope(
-    document: Mapping[str, Any], *, field: str
-) -> ExperimentEnvelope:
+def parse_experiment_envelope(document: Mapping[str, Any], *, field: str) -> ExperimentEnvelope:
     """Parse one authored envelope, failing closed on anything unsupported.
 
     The declared ``schema`` is checked before the body so an envelope written
@@ -1216,11 +1359,13 @@ __all__ = [
     "EVALUATION_OUTPUT",
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID",
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION",
+    "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1",
     "EXPERIMENT_ENVELOPE_FAMILY",
     "EXPERIMENT_ENVELOPE_MIGRATION_TABLE",
     "EXPERIMENT_ENVELOPE_SCHEMA_VERSION",
     "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1",
     "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2",
+    "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3",
     "EXPERIMENT_ENVELOPE_SUFFIX",
     "EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS",
     "FIGURE_COMPOSITION_OUTPUT",
@@ -1237,6 +1382,8 @@ __all__ = [
     "AnalysisSubjectAuthoring",
     "AuthoredReference",
     "CheckpointInitializationAuthoring",
+    "CompositionRootParent",
+    "CompositionTrainingRootAuthoring",
     "DialectModel",
     "EnvelopeAssertion",
     "EvaluationLayerAuthoring",
@@ -1252,13 +1399,18 @@ __all__ = [
     "ReportBindingAuthoring",
     "ReportLayerAuthoring",
     "RowReplacement",
+    "RootTrainingMatrixFields",
+    "RootTrainingRowAuthoring",
     "TagsDelta",
     "TrainingLayerAuthoring",
+    "TrainingRootAuthoring",
+    "TrainingRunRootAuthoring",
     "TrainingRowAuthoring",
     "TrainingRowsMode",
     "UpstreamEnvelopeReference",
     "VersionedConstruct",
     "layer_of_document",
+    "compiler_contract_version_for_schema",
     "migrate_experiment_envelope_payload",
     "output_contract_of_document",
     "parse_experiment_envelope",

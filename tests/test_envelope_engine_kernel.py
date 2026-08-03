@@ -42,9 +42,17 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+    EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1,
+    REPORT_OUTPUT,
+    TRAINING_OUTPUT,
     ExperimentEnvelopeLayer,
 )
 from feedbax.contracts.migrations import default_spec_registry
+from feedbax.contracts.run_composition import (
+    CompositionNode,
+    InlineIntentParent,
+    authored_envelope_hash,
+)
 from feedbax.envelope import (
     CANONICAL_PIN_ALGORITHM,
     ChokeFinding,
@@ -75,6 +83,7 @@ from tests.fake_project_experiment import (
     write_json,
     write_repo,
 )
+from tests.test_training_method_plugin_cli import _standard_run_spec_payload
 
 TRAINING_FAMILY = "training_run_matrix"
 TRAINING_SCHEMA_ID = "feedbax.spec.training_run_matrix"
@@ -94,6 +103,21 @@ def repo(tmp_path: Path) -> Path:
 def kernel() -> Any:
     """Return the one compiler bound to the fake project's data declaration."""
     return kernel_for(PROJECT_DECLARATION)
+
+
+def _root_envelope(root: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+        "name": "rooted-matrix",
+        "issue": "generic-root-proof",
+        "training": {"root": root},
+    }
+
+
+def _compile_root(repo: Path, root: dict[str, Any]) -> Any:
+    path = envelope_path(repo, "rooted")
+    write_envelope(path, _root_envelope(root))
+    return kernel().compile_envelope_file(path, repo_root=repo)
 
 
 # -- canonical form ------------------------------------------------------
@@ -133,7 +157,9 @@ def test_budget_states_one_section_per_dialect_layer(budgets: AuthoringBudgets) 
     assert budgets.budget_id == _budget_document()["budget_id"]
 
 
-def test_widest_caps_are_the_maximum_any_layer_states(budgets: AuthoringBudgets) -> None:
+def test_widest_caps_are_the_maximum_any_layer_states(
+    budgets: AuthoringBudgets,
+) -> None:
     widest = budgets.widest
 
     assert widest.max_scalar_bytes == max(
@@ -223,8 +249,7 @@ def _authored_training_rows(repo: Path, count: int) -> None:
     """Re-author the training envelope so it states exactly *count* rows."""
     envelope = _read(repo, "widened")
     envelope["training"]["rows"] = [
-        {"from": "baseline", "id": f"widened-{index}", "seed": 43 + index}
-        for index in range(count)
+        {"from": "baseline", "id": f"widened-{index}", "seed": 43 + index} for index in range(count)
     ]
     envelope["training"].pop("checkpoint_initialization", None)
     _write(repo, "widened", envelope)
@@ -256,9 +281,7 @@ def test_authoring_more_rows_than_the_cap_is_refused(repo: Path) -> None:
 
 def test_a_layer_that_authors_no_rows_is_bound_by_no_row_cap(repo: Path) -> None:
     """The figure layer's budget states no max_rows, so nothing here bounds it."""
-    outcome = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-plot"), repo_root=repo
-    )
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
 
     assert len(outcome.document["panels"]) == 2
 
@@ -362,7 +385,7 @@ def test_the_compiler_contract_is_global_rather_than_per_project(repo: Path) -> 
     outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
     assert outcome.compile_lock["compiler_contract"]["contract_version"] == (
-        EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION
+        EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1
     )
     assert not hasattr(PROJECT_DECLARATION, "compiler_contract_id")
     assert not hasattr(PROJECT_DECLARATION, "compiler_contract_version")
@@ -566,20 +589,52 @@ def _identity_inputs(lock: dict[str, Any]) -> None:
     ("damage", "category", "match"),
     [
         (_drop_key, ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "base"),
-        (_foreign_key, ExperimentEnvelopeRejectionCategory.UNKNOWN_FIELD, "compiled_at"),
+        (
+            _foreign_key,
+            ExperimentEnvelopeRejectionCategory.UNKNOWN_FIELD,
+            "compiled_at",
+        ),
         (_blank_name, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "name"),
         (_blank_issue, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "issue"),
-        (_envelope_hash, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "envelope_hash"),
+        (
+            _envelope_hash,
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "envelope_hash",
+        ),
         (_envelope_ref, ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "ref"),
-        (_base_domain, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "pin_algorithm"),
-        (_base_digest, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "content_hash"),
-        (_lineage_shape, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "lineage is a list"),
-        (_lineage_pin, ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "content_hash"),
+        (
+            _base_domain,
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "pin_algorithm",
+        ),
+        (
+            _base_digest,
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "content_hash",
+        ),
+        (
+            _lineage_shape,
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "lineage is a list",
+        ),
+        (
+            _lineage_pin,
+            ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
+            "content_hash",
+        ),
         (_delta_key, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "own layer id"),
         (_delta_shape, ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "patches"),
         (_delta_patch, ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "op"),
-        (_assertion_shape, ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "owner_ref"),
-        (_document_digest, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "content_hash"),
+        (
+            _assertion_shape,
+            ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
+            "owner_ref",
+        ),
+        (
+            _document_digest,
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "content_hash",
+        ),
         (_document_family, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "family"),
         (
             _contract_version,
@@ -596,7 +651,11 @@ def _identity_inputs(lock: dict[str, Any]) -> None:
             ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
             "code unit",
         ),
-        (_identity_digest, ExperimentEnvelopeRejectionCategory.INVALID_VALUE, "re-derive"),
+        (
+            _identity_digest,
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "re-derive",
+        ),
         (
             _identity_inputs,
             ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
@@ -618,7 +677,9 @@ def test_the_loader_refuses_a_lock_damaged_anywhere_in_the_v1_document(
     assert match in str(excinfo.value)
 
 
-def test_the_loader_accepts_every_compiled_lock_the_fixture_produces(repo: Path) -> None:
+def test_the_loader_accepts_every_compiled_lock_the_fixture_produces(
+    repo: Path,
+) -> None:
     """The validation is derived from what the compiler emits, not guessed at."""
     for alias in ("widened", "widened-probe", "widened-summary", "widened-plot"):
         lock = _compiled_lock(repo, alias)
@@ -687,9 +748,7 @@ def test_lineage_names_the_document_that_owns_an_inherited_value(repo: Path) -> 
 
 
 def test_lineage_pins_every_document_it_consulted(repo: Path) -> None:
-    pinned = PinnedDocument.of(
-        TRAINING_BASE, json.loads((repo / TRAINING_BASE).read_text())
-    )
+    pinned = PinnedDocument.of(TRAINING_BASE, json.loads((repo / TRAINING_BASE).read_text()))
 
     pins = build_lineage(repo, pinned).pins()
 
@@ -709,7 +768,9 @@ def test_lineage_resolves_a_value_bound_by_a_patch_list() -> None:
     assert found is not None and found.value == 11
 
 
-def test_lineage_pins_the_documents_a_parent_reads_through_its_sources(repo: Path) -> None:
+def test_lineage_pins_the_documents_a_parent_reads_through_its_sources(
+    repo: Path,
+) -> None:
     write_json(
         repo / "bases" / "cadence.table.json",
         {"schema_id": "quillon.cadence_table", "cadence": 2},
@@ -751,7 +812,13 @@ def test_a_source_that_cannot_be_read_is_refused_rather_than_silently_unpinned(
 ) -> None:
     _training_sources(
         repo,
-        [{"alias": "cadence", "kind": "quillon.cadence_table", "uri": "bases/absent.json"}],
+        [
+            {
+                "alias": "cadence",
+                "kind": "quillon.cadence_table",
+                "uri": "bases/absent.json",
+            }
+        ],
     )
 
     with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
@@ -886,13 +953,16 @@ def test_the_lock_records_the_native_delta_it_resolved(repo: Path) -> None:
 
     assert set(outcome.compile_lock["resolved_deltas"]) == {"widened.training"}
     patches = outcome.compile_lock["resolved_deltas"]["widened.training"]["patches"]
-    assert [patch["path"] for patch in patches] == ["name", "rows.1", "tags.1", "tags.0"]
+    assert [patch["path"] for patch in patches] == [
+        "name",
+        "rows.1",
+        "tags.1",
+        "tags.0",
+    ]
 
 
 def test_a_cross_layer_reference_pins_only_pre_run_facts(repo: Path) -> None:
-    outcome = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-probe"), repo_root=repo
-    )
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-probe"), repo_root=repo)
 
     reference = outcome.compile_lock["references"][0]
     assert reference["kind"] == "planned_product"
@@ -914,9 +984,7 @@ def test_a_cross_layer_reference_pins_only_pre_run_facts(repo: Path) -> None:
 def test_a_receipt_without_a_digest_is_a_locator_not_a_fabricated_authentication(
     repo: Path,
 ) -> None:
-    outcome = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-summary"), repo_root=repo
-    )
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-summary"), repo_root=repo)
 
     reference = outcome.compile_lock["references"][0]
     assert reference["kind"] == "receipt_locator"
@@ -928,7 +996,9 @@ def test_a_receipt_without_a_digest_is_a_locator_not_a_fabricated_authentication
     }
 
 
-def test_an_authored_receipt_with_a_digest_is_quoted_as_authenticated(repo: Path) -> None:
+def test_an_authored_receipt_with_a_digest_is_quoted_as_authenticated(
+    repo: Path,
+) -> None:
     outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
     reference = next(
@@ -944,15 +1014,13 @@ def test_an_authored_receipt_with_a_digest_is_quoted_as_authenticated(repo: Path
     }
 
 
-def test_authored_not_applicability_is_recorded_rather_than_left_silent(repo: Path) -> None:
-    outcome = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-report"), repo_root=repo
-    )
+def test_authored_not_applicability_is_recorded_rather_than_left_silent(
+    repo: Path,
+) -> None:
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-report"), repo_root=repo)
 
     absent = next(
-        item
-        for item in outcome.compile_lock["references"]
-        if item["kind"] == "not_applicable"
+        item for item in outcome.compile_lock["references"] if item["kind"] == "not_applicable"
     )
     assert absent["basis"] == "authored"
     assert absent["role_path"] == "params.sections.0.tables.0"
@@ -966,9 +1034,7 @@ def test_a_payload_in_its_own_file_is_recorded_as_a_content_pin(repo: Path) -> N
 
     outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
-    pin = next(
-        item for item in outcome.compile_lock["references"] if item["kind"] == "content_pin"
-    )
+    pin = next(item for item in outcome.compile_lock["references"] if item["kind"] == "content_pin")
     assert pin["ref"] == "bases/survey.payload.json"
     assert "consumer" not in pin
 
@@ -996,7 +1062,9 @@ def test_an_assertion_that_holds_is_recorded_with_its_owner(repo: Path) -> None:
     ]
 
 
-def test_an_assertion_that_fails_names_the_document_that_owns_the_value(repo: Path) -> None:
+def test_an_assertion_that_fails_names_the_document_that_owns_the_value(
+    repo: Path,
+) -> None:
     _reauthor(repo, "widened", **{"assert": [{"path": "base.inline.cadence", "equals": 99}]})
 
     with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
@@ -1012,9 +1080,7 @@ def test_an_assertion_may_not_guard_a_path_the_envelope_changes(repo: Path) -> N
     with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
         kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
-    assert excinfo.value.category is (
-        ExperimentEnvelopeRejectionCategory.ILLEGAL_ASSERTION_PATH
-    )
+    assert excinfo.value.category is (ExperimentEnvelopeRejectionCategory.ILLEGAL_ASSERTION_PATH)
 
 
 def test_an_assertion_on_an_uninherited_path_has_nothing_to_check(repo: Path) -> None:
@@ -1032,9 +1098,7 @@ def test_an_echoed_inherited_name_is_refused(repo: Path) -> None:
     with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
         kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
-    assert excinfo.value.category is (
-        ExperimentEnvelopeRejectionCategory.ECHOED_INHERITED_VALUE
-    )
+    assert excinfo.value.category is (ExperimentEnvelopeRejectionCategory.ECHOED_INHERITED_VALUE)
     assert TRAINING_BASE in str(excinfo.value)
 
 
@@ -1047,9 +1111,7 @@ def test_an_echoed_inherited_seed_is_refused(repo: Path) -> None:
     with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
         kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
-    assert excinfo.value.category is (
-        ExperimentEnvelopeRejectionCategory.ECHOED_INHERITED_VALUE
-    )
+    assert excinfo.value.category is (ExperimentEnvelopeRejectionCategory.ECHOED_INHERITED_VALUE)
 
 
 def test_a_base_under_the_output_directory_is_refused(repo: Path) -> None:
@@ -1082,7 +1144,9 @@ def test_a_cross_layer_base_is_refused(repo: Path) -> None:
     assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.CROSS_FAMILY_BASE
 
 
-def test_a_base_of_no_feedbax_output_family_is_not_an_experiment_parent(repo: Path) -> None:
+def test_a_base_of_no_feedbax_output_family_is_not_an_experiment_parent(
+    repo: Path,
+) -> None:
     write_json(repo / "bases" / "stray.json", {"schema_id": "quillon.notes", "name": "stray"})
     _reauthor(repo, "widened", base="bases/stray.json", **{"assert": []})
 
@@ -1092,7 +1156,9 @@ def test_a_base_of_no_feedbax_output_family_is_not_an_experiment_parent(repo: Pa
     assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
 
 
-def test_an_envelope_alias_parent_resolves_and_pins_its_compiled_bytes(repo: Path) -> None:
+def test_an_envelope_alias_parent_resolves_and_pins_its_compiled_bytes(
+    repo: Path,
+) -> None:
     write_envelope(
         envelope_path(repo, "narrowed"),
         {
@@ -1167,12 +1233,8 @@ def test_write_outputs_is_byte_reproducible(repo: Path) -> None:
     outcome = compiler.compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
     out_dir = repo / OUTPUT_DIRECTORY
 
-    first = {
-        path: path.read_bytes() for path in compiler.write_outputs(outcome, out_dir).values()
-    }
-    second = {
-        path: path.read_bytes() for path in compiler.write_outputs(outcome, out_dir).values()
-    }
+    first = {path: path.read_bytes() for path in compiler.write_outputs(outcome, out_dir).values()}
+    second = {path: path.read_bytes() for path in compiler.write_outputs(outcome, out_dir).values()}
 
     assert first == second
     assert set(first) == set(compiler.output_paths(outcome, out_dir).values())
@@ -1196,7 +1258,9 @@ def test_a_co_created_protected_document_is_refused() -> None:
 
 def test_an_ordinary_authoring_change_is_admitted() -> None:
     check_no_co_created_protected_document(
-        ["studies/widened.envelope.json"], "studies/widened.envelope.json", (".base.json",)
+        ["studies/widened.envelope.json"],
+        "studies/widened.envelope.json",
+        (".base.json",),
     )
 
 
@@ -1224,9 +1288,7 @@ def test_a_hand_edited_compiled_document_reports_structured_drift(repo: Path) ->
 
     assert not report.ok
     drift = report.by_finding(ChokeFinding.DIFFERS)
-    assert [entry.path for entry in drift] == [
-        f"{OUTPUT_DIRECTORY}/widened.{TRAINING_FAMILY}.json"
-    ]
+    assert [entry.path for entry in drift] == [f"{OUTPUT_DIRECTORY}/widened.{TRAINING_FAMILY}.json"]
     assert drift[0].envelope_ref == f"{ENVELOPE_DIRECTORY}/widened.envelope.json"
 
 
@@ -1251,7 +1313,9 @@ def test_a_compiled_document_no_envelope_produces_reports_orphaned(repo: Path) -
     assert [entry.path for entry in orphans] == [f"{OUTPUT_DIRECTORY}/stray.json"]
 
 
-def test_an_envelope_that_no_longer_compiles_is_a_finding_not_an_exception(repo: Path) -> None:
+def test_an_envelope_that_no_longer_compiles_is_a_finding_not_an_exception(
+    repo: Path,
+) -> None:
     """One broken envelope is reported, not raised, and takes its dependants with it.
 
     ``widened-probe`` names ``widened`` as an upstream reference, so breaking
@@ -1356,6 +1420,557 @@ def _regenerate(compiler: Any, repo: Path) -> None:
         compiler.write_outputs(compiler.compile_envelope_file(path, repo_root=repo), out_dir)
 
 
+# -- v3 root training --------------------------------------------------------
+
+
+def test_authored_composition_root_preserves_both_hash_domains_and_root_identity(
+    repo: Path,
+) -> None:
+    node = CompositionNode(
+        name="generic-task-composition",
+        parent=InlineIntentParent(
+            payload={
+                "schema_id": "quillon.training_intent",
+                "schema_version": "quillon.training_intent.v1",
+                "gain": 1,
+            },
+            schema_id="quillon.training_intent",
+            schema_version="quillon.training_intent.v1",
+        ),
+    )
+    document = node.model_dump(mode="json", exclude_none=True)
+    ref = "intent/generic.composition.json"
+    write_json(repo / ref, document)
+    semantic_hash = authored_envelope_hash(node)
+    canonical_hash = canonical_sha256(document)
+    assert semantic_hash != canonical_hash
+
+    root = {
+        "kind": "composition",
+        "parent": {
+            "kind": "authored_intent",
+            "ref": ref,
+            "content_hash": semantic_hash,
+            "symbolic_name": "generic-task-composition",
+        },
+        "deltas": [{"layer_id": "root-layer"}],
+        "rows": [
+            {
+                "id": "condition-a",
+                "label": "Condition A",
+                "seed": 11,
+                "delta": {"layer_id": "condition-a-layer"},
+            }
+        ],
+        "checkpoint_initialization": [
+            {
+                "row": "condition-a",
+                "mode": "initialize_from",
+                "source": {
+                    "kind": "receipt",
+                    "manifest_kind": "quillon.training",
+                    "manifest_id": "generic-parent",
+                },
+            }
+        ],
+        "tags": ["generic"],
+    }
+
+    outcome = _compile_root(repo, root)
+
+    assert outcome.document["schema_version"] == "feedbax.spec.training_run_matrix.v5"
+    assert outcome.document["base"] == {
+        "kind": "authored_intent",
+        "ref": ref,
+        "content_hash": canonical_hash,
+        "pin_algorithm": "canonical_json_v1",
+        "symbolic_name": "generic-task-composition",
+    }
+    assert outcome.document["rows"] == [
+        {
+            "row_id": "condition-a",
+            "label": "Condition A",
+            "overrides": [],
+            "seed": 11,
+            "metadata": {},
+        }
+    ]
+    lock = outcome.compile_lock
+    assert lock["base"] is None
+    assert lock["lineage"] == []
+    assert lock["row_provenance"] == []
+    assert set(lock["resolved_deltas"]) == {"root-layer", "condition-a-layer"}
+    assert (
+        lock["identity_contributions"]["training_root"]["parent"]["content_hash"] == semantic_hash
+    )
+    content_pin = next(item for item in lock["references"] if item["kind"] == "content_pin")
+    assert content_pin["content_hash"] == canonical_hash
+    assert any(
+        item.get("consumer", {}).get("consumer") == "checkpoint_initialization"
+        for item in lock["references"]
+    )
+
+
+def test_authored_composition_root_refuses_a_semantic_parent_hash_mismatch(
+    repo: Path,
+) -> None:
+    node = CompositionNode(
+        name="generic-composition",
+        parent=InlineIntentParent(
+            payload={
+                "schema_id": "quillon.intent",
+                "schema_version": "quillon.intent.v1",
+            },
+            schema_id="quillon.intent",
+            schema_version="quillon.intent.v1",
+        ),
+    )
+    ref = "intent/generic.composition.json"
+    write_json(repo / ref, node.model_dump(mode="json", exclude_none=True))
+
+    with pytest.raises(ExperimentEnvelopeRejection, match="authored composition hash mismatch"):
+        _compile_root(
+            repo,
+            {
+                "kind": "composition",
+                "parent": {
+                    "kind": "authored_intent",
+                    "ref": ref,
+                    "content_hash": "0" * 64,
+                },
+                "rows": [{"id": "condition-a"}],
+            },
+        )
+
+
+def test_resolved_output_composition_root_is_not_materialized_at_compile_time(
+    repo: Path,
+) -> None:
+    immutable_ref = "artifact-blob:56756c94"
+    root = {
+        "kind": "composition",
+        "parent": {
+            "kind": "resolved_output",
+            "ref": immutable_ref,
+            "resolved_root_hash": "3" * 64,
+            "row_id": "source-row",
+            "checkpoint_transaction_id": "checkpoint-1",
+        },
+        "rows": [{"id": "condition-a"}],
+    }
+
+    outcome = _compile_root(repo, root)
+
+    assert outcome.document["base"] == {
+        "kind": "resolved_output",
+        "ref": immutable_ref,
+        "resolved_root_hash": "3" * 64,
+    }
+    assert outcome.compile_lock["references"] == []
+    identity = outcome.compile_lock["identity_contributions"]["training_root"]["parent"]
+    assert identity["row_id"] == "source-row"
+    assert identity["checkpoint_transaction_id"] == "checkpoint-1"
+
+
+def test_training_run_v4_root_is_canonical_pinned_and_emits_no_matrix_deltas(
+    repo: Path,
+) -> None:
+    training_run = _standard_run_spec_payload()
+    ref = "intent/generic.training_run.json"
+    write_json(repo / ref, training_run)
+    digest = canonical_sha256(training_run)
+
+    outcome = _compile_root(
+        repo,
+        {
+            "kind": "training_run",
+            "ref": ref,
+            "content_hash": digest,
+            "rows": [{"id": "condition-a", "seed": 5}],
+        },
+    )
+
+    assert outcome.document["base"]["content_hash"] == digest
+    assert outcome.document["base"]["pin_algorithm"] == "canonical_json_v1"
+    assert outcome.document["rows"][0]["label"] == "condition-a"
+    assert outcome.document["rows"][0]["metadata"] == {}
+    assert outcome.document["deltas"] == []
+    assert outcome.compile_lock["resolved_deltas"] == {}
+    assert outcome.compile_lock["references"] == [
+        {
+            "kind": "content_pin",
+            "ref": ref,
+            "content_hash": digest,
+            "pin_algorithm": "canonical_json_v1",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "/absolute/training.json",
+        "../escaped.training.json",
+        "intent/./noncanonical.training.json",
+        "intent/not-json.txt",
+    ],
+)
+def test_training_run_root_refuses_noncanonical_or_uncontained_refs(repo: Path, ref: str) -> None:
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        _compile_root(
+            repo,
+            {
+                "kind": "training_run",
+                "ref": ref,
+                "content_hash": "4" * 64,
+                "rows": [{"id": "condition-a"}],
+            },
+        )
+    assert caught.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+
+
+def test_training_run_root_refuses_missing_invalid_schema_and_pin_drift(
+    repo: Path,
+) -> None:
+    with pytest.raises(ExperimentEnvelopeRejection) as missing:
+        _compile_root(
+            repo,
+            {
+                "kind": "training_run",
+                "ref": "intent/missing.training.json",
+                "content_hash": "4" * 64,
+                "rows": [{"id": "condition-a"}],
+            },
+        )
+    assert missing.value.category is ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
+    assert missing.value.field == "training.root.ref"
+
+    invalid = _standard_run_spec_payload()
+    invalid["schema_version"] = "feedbax.spec.training_run.v3"
+    ref = "intent/invalid.training.json"
+    write_json(repo / ref, invalid)
+    with pytest.raises(ExperimentEnvelopeRejection, match="training_run.v4") as schema:
+        _compile_root(
+            repo,
+            {
+                "kind": "training_run",
+                "ref": ref,
+                "content_hash": canonical_sha256(invalid),
+                "rows": [{"id": "condition-a"}],
+            },
+        )
+    assert schema.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert schema.value.field == "training.root.ref"
+
+    valid = _standard_run_spec_payload()
+    write_json(repo / ref, valid)
+    with pytest.raises(ExperimentEnvelopeRejection, match="content hash mismatch") as drift:
+        _compile_root(
+            repo,
+            {
+                "kind": "training_run",
+                "ref": ref,
+                "content_hash": "4" * 64,
+                "rows": [{"id": "condition-a"}],
+            },
+        )
+    assert drift.value.category is ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
+    assert drift.value.field == "training.root.content_hash"
+
+    with pytest.raises(ExperimentEnvelopeRejection) as payload:
+        _compile_root(
+            repo,
+            {
+                "kind": "training_run",
+                "ref": ref,
+                "content_hash": canonical_sha256(valid),
+                "payload_path": "missing.payload",
+                "rows": [{"id": "condition-a"}],
+            },
+        )
+    assert payload.value.category is ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
+    assert payload.value.field == "training.root.payload_path"
+
+
+def test_invalid_composition_document_is_a_closed_root_rejection(repo: Path) -> None:
+    ref = "intent/invalid.composition.json"
+    invalid = {
+        "schema_id": "feedbax.spec.training_run_composition",
+        "schema_version": "feedbax.spec.training_run_composition.v2",
+        "name": "invalid",
+        "parent": {
+            "kind": "resolved_output",
+            "ref": "artifact-blob:terminal",
+            "resolved_root_hash": "6" * 64,
+        },
+    }
+    write_json(repo / ref, invalid)
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        _compile_root(
+            repo,
+            {
+                "kind": "composition",
+                "parent": {
+                    "kind": "authored_intent",
+                    "ref": ref,
+                    "content_hash": "7" * 64,
+                },
+                "rows": [{"id": "condition-a"}],
+            },
+        )
+    assert caught.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert caught.value.field == "training.root.parent"
+
+
+def test_validation_runtime_errors_are_not_reclassified_as_authoring_rejections(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    node = CompositionNode(
+        name="generic",
+        parent=InlineIntentParent(
+            payload={
+                "schema_id": "quillon.intent",
+                "schema_version": "quillon.intent.v1",
+            },
+            schema_id="quillon.intent",
+            schema_version="quillon.intent.v1",
+        ),
+    )
+    ref = "intent/generic.composition.json"
+    write_json(repo / ref, node.model_dump(mode="json", exclude_none=True))
+
+    def explode(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("validator implementation failed")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(CompositionNode, "model_validate", classmethod(explode))
+        with pytest.raises(RuntimeError, match="validator implementation failed"):
+            _compile_root(
+                repo,
+                {
+                    "kind": "composition",
+                    "parent": {
+                        "kind": "authored_intent",
+                        "ref": ref,
+                        "content_hash": authored_envelope_hash(node),
+                    },
+                    "rows": [{"id": "condition-a"}],
+                },
+            )
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(TRAINING_OUTPUT.model(), "model_validate", classmethod(explode))
+        with pytest.raises(RuntimeError, match="validator implementation failed"):
+            _compile_root(
+                repo,
+                {
+                    "kind": "composition",
+                    "parent": {
+                        "kind": "resolved_output",
+                        "ref": "artifact-blob:terminal",
+                        "resolved_root_hash": "8" * 64,
+                    },
+                    "rows": [{"id": "condition-a"}],
+                },
+            )
+
+    report = kernel().compile_envelope_file(envelope_path(repo, "widened-report"), repo_root=repo)
+    params_model = REPORT_OUTPUT.params_model(report.document)
+    assert params_model is not None
+    with monkeypatch.context() as scoped:
+        scoped.setattr(params_model, "model_validate", classmethod(explode))
+        with pytest.raises(RuntimeError, match="validator implementation failed"):
+            kernel().compile_envelope_file(envelope_path(repo, "widened-report"), repo_root=repo)
+
+
+def test_root_sources_are_closed_unique_contained_and_pinned_when_present(
+    repo: Path,
+) -> None:
+    training_run = _standard_run_spec_payload()
+    ref = "intent/generic.training_run.json"
+    write_json(repo / ref, training_run)
+    digest = canonical_sha256(training_run)
+    source_ref = "inputs/generic.json"
+    write_json(repo / source_ref, {"value": 1})
+    base_root = {
+        "kind": "training_run",
+        "ref": ref,
+        "content_hash": digest,
+        "rows": [{"id": "condition-a"}],
+    }
+
+    outcome = _compile_root(
+        repo,
+        {
+            **base_root,
+            "sources": [
+                {"alias": "present", "kind": "json", "uri": source_ref},
+                {
+                    "alias": "optional",
+                    "kind": "json",
+                    "uri": "inputs/optional.json",
+                    "optional": True,
+                    "missing_payload": {},
+                },
+            ],
+        },
+    )
+    assert [item["ref"] for item in outcome.compile_lock["references"]] == [
+        ref,
+        source_ref,
+    ]
+
+    with pytest.raises(ExperimentEnvelopeRejection, match="cannot be pinned"):
+        _compile_root(
+            repo,
+            {
+                **base_root,
+                "sources": [{"alias": "required", "kind": "json", "uri": "inputs/missing.json"}],
+            },
+        )
+    with pytest.raises(ExperimentEnvelopeRejection, match="canonical repository-relative"):
+        _compile_root(
+            repo,
+            {
+                **base_root,
+                "sources": [
+                    {
+                        "alias": "optional",
+                        "kind": "json",
+                        "uri": "../optional.json",
+                        "optional": True,
+                        "missing_payload": {},
+                    }
+                ],
+            },
+        )
+    with pytest.raises(ExperimentEnvelopeRejection) as duplicate:
+        _compile_root(
+            repo,
+            {
+                **base_root,
+                "sources": [
+                    {"alias": "same", "kind": "json", "uri": source_ref},
+                    {"alias": "same", "kind": "json", "uri": source_ref},
+                ],
+            },
+        )
+    assert duplicate.value.category is ExperimentEnvelopeRejectionCategory.DUPLICATE_KEY
+    assert duplicate.value.field == "training.root.sources[1].alias"
+
+
+def test_root_derivation_validation_maps_to_exact_authored_fields(repo: Path) -> None:
+    training_run = _standard_run_spec_payload()
+    ref = "intent/generic.training_run.json"
+    write_json(repo / ref, training_run)
+    base_root = {
+        "kind": "training_run",
+        "ref": ref,
+        "content_hash": canonical_sha256(training_run),
+        "rows": [{"id": "condition-a"}],
+    }
+    duplicate_derivations = [
+        {"output_path": "derived.value", "query": {"item": "source"}},
+        {"output_path": "derived.value", "query": {"item": "source"}},
+    ]
+    with pytest.raises(ExperimentEnvelopeRejection) as duplicate:
+        _compile_root(repo, {**base_root, "derivations": duplicate_derivations})
+    assert duplicate.value.category is ExperimentEnvelopeRejectionCategory.DUPLICATE_KEY
+    assert duplicate.value.field == "training.root.derivations[1].output_path"
+
+    with pytest.raises(ExperimentEnvelopeRejection) as no_source:
+        _compile_root(
+            repo,
+            {
+                **base_root,
+                "derivations": [duplicate_derivations[0]],
+            },
+        )
+    assert no_source.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert no_source.value.field == "training.root.derivations"
+
+
+def test_root_output_validation_maps_invalid_row_and_payload_syntax(repo: Path) -> None:
+    training_run = _standard_run_spec_payload()
+    ref = "intent/generic.training_run.json"
+    write_json(repo / ref, training_run)
+    digest = canonical_sha256(training_run)
+    with pytest.raises(ExperimentEnvelopeRejection) as row:
+        _compile_root(
+            repo,
+            {
+                "kind": "training_run",
+                "ref": ref,
+                "content_hash": digest,
+                "rows": [{"id": "not/path-safe"}],
+            },
+        )
+    assert row.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert row.value.field == "training.root.rows[0].id"
+
+    with pytest.raises(ExperimentEnvelopeRejection) as payload:
+        _compile_root(
+            repo,
+            {
+                "kind": "training_run",
+                "ref": ref,
+                "content_hash": digest,
+                "payload_path": "graph..inline",
+                "rows": [{"id": "condition-a"}],
+            },
+        )
+    assert payload.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert payload.value.field == "training.root.payload_path"
+
+
+def test_root_checkpoint_envelope_binding_is_lock_only_and_rows_are_exact(
+    repo: Path,
+) -> None:
+    root = {
+        "kind": "composition",
+        "parent": {
+            "kind": "resolved_output",
+            "ref": "artifact-blob:terminal",
+            "resolved_root_hash": "5" * 64,
+        },
+        "rows": [{"id": "condition-a"}],
+        "checkpoint_initialization": [
+            {
+                "row": "condition-a",
+                "mode": "continue_from",
+                "source": {"kind": "envelope", "alias": "widened-summary"},
+            }
+        ],
+    }
+    outcome = _compile_root(repo, root)
+    assert "checkpoint_initialization" not in outcome.document
+    planned = outcome.compile_lock["references"][0]
+    assert planned["kind"] == "planned_product"
+    assert planned["consumer"]["consumer"] == "checkpoint_initialization"
+
+    root["checkpoint_initialization"][0]["row"] = "missing"
+    with pytest.raises(ExperimentEnvelopeRejection, match="absent from this root"):
+        _compile_root(repo, root)
+    root["checkpoint_initialization"] = [
+        {
+            "row": "condition-a",
+            "mode": "continue_from",
+            "source": {"kind": "envelope", "alias": "widened-summary"},
+        },
+        {
+            "row": "condition-a",
+            "mode": "initialize_from",
+            "source": {
+                "kind": "receipt",
+                "manifest_kind": "quillon.training",
+                "manifest_id": "other",
+            },
+        },
+    ]
+    with pytest.raises(ExperimentEnvelopeRejection, match="at most one"):
+        _compile_root(repo, root)
+
+
 # -- the ratified equivalence corrections --------------------------------------
 
 
@@ -1381,7 +1996,10 @@ def test_append_keeps_the_inherited_rows_running_beside_the_authored_ones(
 ) -> None:
     outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
-    assert [row["row_id"] for row in outcome.document["rows"]] == ["baseline", "widened"]
+    assert [row["row_id"] for row in outcome.document["rows"]] == [
+        "baseline",
+        "widened",
+    ]
 
 
 @pytest.mark.parametrize("rows_mode", ["append", "authored_only"])
@@ -1397,9 +2015,7 @@ def test_a_derived_row_records_the_parent_row_it_was_resolved_from(
             "row_id": "widened",
             "source_row_key": "baseline",
             "source_ref": TRAINING_BASE,
-            "source_content_hash": canonical_sha256(
-                json.loads((repo / TRAINING_BASE).read_text())
-            ),
+            "source_content_hash": canonical_sha256(json.loads((repo / TRAINING_BASE).read_text())),
             "pin_algorithm": CANONICAL_PIN_ALGORITHM,
         }
     ]
@@ -1430,7 +2046,9 @@ def test_a_layer_that_derives_no_row_records_no_row_provenance(repo: Path) -> No
     assert evaluation.compile_lock["row_provenance"] == []
 
 
-def test_a_new_row_is_labelled_by_its_own_id_rather_than_its_sources(repo: Path) -> None:
+def test_a_new_row_is_labelled_by_its_own_id_rather_than_its_sources(
+    repo: Path,
+) -> None:
     write_json(
         repo / TRAINING_BASE,
         {
@@ -1484,7 +2102,10 @@ def test_a_changed_row_inherits_none_of_its_sources_opaque_metadata(repo: Path) 
     outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
     rows = {row["row_id"]: row for row in outcome.document["rows"]}
-    assert rows["baseline"]["metadata"] == {"probe_delta": "none", "launch_set": "survey-1"}
+    assert rows["baseline"]["metadata"] == {
+        "probe_delta": "none",
+        "launch_set": "survey-1",
+    }
     assert rows["widened"]["metadata"] == {"replaces": {"row": "baseline", "seed": 42}}
 
 
@@ -1544,9 +2165,7 @@ def test_row_expansion_derives_the_multi_row_figure_from_the_row_index(
 ) -> None:
     from tests.fake_project_experiment import ROW_INDEX_BASE
 
-    outcome = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-plot"), repo_root=repo
-    )
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
 
     document = outcome.document
     assert document["schema_id"] == "feedbax.spec.figure"
@@ -1559,16 +2178,12 @@ def test_row_expansion_derives_the_multi_row_figure_from_the_row_index(
         "far span — span",
     ]
     assert document["assembler_params"]["height"] == 600
-    pins = [
-        item for item in outcome.compile_lock["references"] if item["kind"] == "content_pin"
-    ]
+    pins = [item for item in outcome.compile_lock["references"] if item["kind"] == "content_pin"]
     assert [pin["ref"] for pin in pins] == [ROW_INDEX_BASE]
 
 
 def test_row_expansion_names_no_produced_data_in_the_compiled_plan(repo: Path) -> None:
-    outcome = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-plot"), repo_root=repo
-    )
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
 
     assert not outcome.document.get("inputs")
     assert not outcome.document.get("input_authorities")
@@ -1581,9 +2196,7 @@ def test_row_expansion_names_no_produced_data_in_the_compiled_plan(repo: Path) -
 def test_the_expansion_request_and_resolved_rows_carry_execution_identity(
     repo: Path,
 ) -> None:
-    outcome = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-plot"), repo_root=repo
-    )
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
 
     contributions = outcome.compile_lock["identity_contributions"]
     request = contributions["figure_row_expansion"]
@@ -1612,9 +2225,7 @@ def test_a_row_expansion_without_a_custody_declaration_records_none(repo: Path) 
     del envelope["figure"]["row_custody"]
     _write(repo, "widened-plot", envelope)
 
-    outcome = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-plot"), repo_root=repo
-    )
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
 
     contributions = outcome.compile_lock["identity_contributions"]
     assert set(contributions) == {"figure_row_expansion", "resolved_row_set"}
@@ -1632,18 +2243,16 @@ def test_a_row_expansion_without_a_custody_declaration_records_none(repo: Path) 
     )
 
 
-def test_the_custody_declaration_leaves_the_compiled_figure_untouched(repo: Path) -> None:
+def test_the_custody_declaration_leaves_the_compiled_figure_untouched(
+    repo: Path,
+) -> None:
     """Custody is a locator for fulfillment, never part of the figure's identity."""
-    declared = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-plot"), repo_root=repo
-    )
+    declared = kernel().compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
     envelope = _read(repo, "widened-plot")
     del envelope["figure"]["row_custody"]
     _write(repo, "widened-plot", envelope)
 
-    undeclared = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-plot"), repo_root=repo
-    )
+    undeclared = kernel().compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
 
     assert declared.document == undeclared.document
     assert (
@@ -1657,18 +2266,14 @@ def test_composition_compiles_to_a_composition_document_pinning_its_parent(
 ) -> None:
     from tests.fake_project_experiment import FIGURE_BASE
 
-    outcome = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-overlay"), repo_root=repo
-    )
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-overlay"), repo_root=repo)
 
     assert outcome.document["schema_id"] == "feedbax.spec.figure_composition"
     assert outcome.document["parent"]["ref"] == FIGURE_BASE
     assert outcome.document["parent"]["sha256"] == canonical_sha256(
         json.loads((repo / FIGURE_BASE).read_text())
     )
-    assert [delta["layer_id"] for delta in outcome.document["deltas"]] == [
-        "widened-overlay"
-    ]
+    assert [delta["layer_id"] for delta in outcome.document["deltas"]] == ["widened-overlay"]
 
 
 def test_the_same_base_under_two_modes_produces_two_different_families(
@@ -1677,9 +2282,7 @@ def test_the_same_base_under_two_modes_produces_two_different_families(
     """A filename never selects semantics; the authored mode does."""
     compiler = kernel()
 
-    expanded = compiler.compile_envelope_file(
-        envelope_path(repo, "widened-plot"), repo_root=repo
-    )
+    expanded = compiler.compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
     composed = compiler.compile_envelope_file(
         envelope_path(repo, "widened-overlay"), repo_root=repo
     )
@@ -1737,7 +2340,11 @@ def test_a_selector_that_resolves_to_no_rows_is_an_empty_selection(repo: Path) -
     from tests.fake_project_experiment import ROW_INDEX_BASE
 
     envelope = _read(repo, "widened-plot")
-    envelope["figure"]["rows"] = {"mode": "tag", "tag": "absent", "index": ROW_INDEX_BASE}
+    envelope["figure"]["rows"] = {
+        "mode": "tag",
+        "tag": "absent",
+        "index": ROW_INDEX_BASE,
+    }
     _write(repo, "widened-plot", envelope)
 
     with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
@@ -1755,9 +2362,7 @@ def test_an_input_role_without_a_declared_contract_is_refused(repo: Path) -> Non
     }
     _write(repo, "widened-plot", envelope)
 
-    outcome = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-plot"), repo_root=repo
-    )
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
 
     request = outcome.compile_lock["identity_contributions"]["figure_row_expansion"]
     assert list(request["inputs"]) == ["unfilled"]
@@ -1767,9 +2372,7 @@ def test_an_input_role_without_a_declared_contract_is_refused(repo: Path) -> Non
 
 
 def test_the_report_layer_compiles_to_a_top_level_report_spec(repo: Path) -> None:
-    outcome = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-report"), repo_root=repo
-    )
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-report"), repo_root=repo)
 
     document = outcome.document
     assert document["schema_id"] == "feedbax.spec.report"
@@ -1834,9 +2437,7 @@ def test_the_compiled_report_is_the_document_fulfillment_plans_against(
 ) -> None:
     from feedbax.analysis.fulfillment_derivation import COMPILED_PRODUCT_KINDS
 
-    outcome = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-report"), repo_root=repo
-    )
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-report"), repo_root=repo)
 
     kind = COMPILED_PRODUCT_KINDS[outcome.document["schema_id"]]
     assert kind.layer == "report"
@@ -1858,9 +2459,7 @@ def test_a_row_slice_is_expressed_as_a_tag_over_the_same_row_index(repo: Path) -
     }
     _write(repo, "widened-plot", envelope)
 
-    outcome = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-plot"), repo_root=repo
-    )
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
 
     resolved = outcome.compile_lock["identity_contributions"]["resolved_row_set"]
     assert resolved["row_ids"] == ["far-span"]
@@ -1884,14 +2483,10 @@ def test_a_figure_runtime_input_that_has_not_run_is_a_locator_in_the_lock(
     envelope["figure"].pop("row_custody")
     _write(repo, "widened-plot", envelope)
 
-    outcome = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-plot"), repo_root=repo
-    )
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
 
     reference = next(
-        item
-        for item in outcome.compile_lock["references"]
-        if item["kind"] == "receipt_locator"
+        item for item in outcome.compile_lock["references"] if item["kind"] == "receipt_locator"
     )
     assert "manifest_sha256" not in reference
     assert reference["role_path"] == "inputs.observed"
@@ -1936,9 +2531,7 @@ def test_the_generated_tag_layer_acknowledges_only_the_paths_it_rewrites(
     outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
 
     delta = _generated_delta(outcome)
-    tag_paths = [
-        patch["path"] for patch in delta["patches"] if patch["path"].startswith("tags.")
-    ]
+    tag_paths = [patch["path"] for patch in delta["patches"] if patch["path"].startswith("tags.")]
     assert tag_paths == ["tags.0", "tags.0", "tags.0"]
     assert delta["acknowledges_ancestor_paths"] == ["tags.0"]
     assert outcome.document["tags"] == []
@@ -1986,9 +2579,7 @@ def _report_bindings(repo: Path, bindings: list[dict[str, Any]]) -> None:
 
 
 def _compile_report(repo: Path) -> Any:
-    return kernel().compile_envelope_file(
-        envelope_path(repo, "widened-report"), repo_root=repo
-    )
+    return kernel().compile_envelope_file(envelope_path(repo, "widened-report"), repo_root=repo)
 
 
 NOT_APPLICABLE_BINDING = {
@@ -2014,9 +2605,7 @@ def test_a_not_applicable_binding_reconciles_the_inherited_applicability(
 
     entry = outcome.document["params"]["sections"][0]["figures"][0]
     reference = next(
-        item
-        for item in outcome.compile_lock["references"]
-        if item["kind"] == "not_applicable"
+        item for item in outcome.compile_lock["references"] if item["kind"] == "not_applicable"
     )
     assert entry["applicability"] == "not_applicable"
     assert entry["not_applicable_reason"] == reference["reason"]
@@ -2049,22 +2638,16 @@ def test_a_bound_role_carries_the_digest_of_the_figure_it_is_bound_to(
 
     entry = outcome.document["params"]["sections"][0]["figures"][0]
     planned = next(
-        item
-        for item in outcome.compile_lock["references"]
-        if item["kind"] == "planned_product"
+        item for item in outcome.compile_lock["references"] if item["kind"] == "planned_product"
     )
-    figure = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-plot"), repo_root=repo
-    )
+    figure = kernel().compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
     assert entry["figure_spec_sha256"] == planned["compiled_content_hash"]
     assert entry["figure_spec_sha256"] == canonical_sha256(figure.document)
     assert entry["figure_spec_sha256"] != "a" * 64
 
 
 def test_a_role_already_carrying_its_bound_digest_derives_no_patch(repo: Path) -> None:
-    figure = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-plot"), repo_root=repo
-    )
+    figure = kernel().compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
     _report_base_figure(repo, figure_spec_sha256=canonical_sha256(figure.document))
     _report_bindings(repo, [FIGURE_BINDING])
 
@@ -2161,9 +2744,7 @@ SECTION_NOT_APPLICABLE_BINDING = {
 
 def _not_applicable_reference(outcome: Any) -> dict[str, Any]:
     return next(
-        item
-        for item in outcome.compile_lock["references"]
-        if item["kind"] == "not_applicable"
+        item for item in outcome.compile_lock["references"] if item["kind"] == "not_applicable"
     )
 
 
@@ -2411,9 +2992,7 @@ def test_a_not_applicable_section_that_still_tabulates_is_refused_not_emptied(
     from tests.fake_project_experiment import REPORT_BASE
 
     document = json.loads((repo / REPORT_BASE).read_text())
-    document["params"]["sections"][0]["tables"] = [
-        {"columns": ["arm"], "rows": [["near"]]}
-    ]
+    document["params"]["sections"][0]["tables"] = [{"columns": ["arm"], "rows": [["near"]]}]
     write_json(repo / REPORT_BASE, document)
     _report_bindings(repo, [SECTION_NOT_APPLICABLE_BINDING])
 
@@ -2421,9 +3000,7 @@ def test_a_not_applicable_section_that_still_tabulates_is_refused_not_emptied(
         _compile_report(repo)
 
     assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
-    assert "not-applicable section cannot declare figure or table content" in str(
-        excinfo.value
-    )
+    assert "not-applicable section cannot declare figure or table content" in str(excinfo.value)
 
 
 def test_a_params_node_the_contract_gives_no_applicability_stays_lock_only(
@@ -2433,9 +3010,7 @@ def test_a_params_node_the_contract_gives_no_applicability_stays_lock_only(
     from tests.fake_project_experiment import REPORT_BASE
 
     document = json.loads((repo / REPORT_BASE).read_text())
-    document["params"]["sections"][0]["tables"] = [
-        {"columns": ["arm"], "rows": [["near"]]}
-    ]
+    document["params"]["sections"][0]["tables"] = [{"columns": ["arm"], "rows": [["near"]]}]
     write_json(repo / REPORT_BASE, document)
     _report_bindings(
         repo,
@@ -2452,9 +3027,7 @@ def test_a_params_node_the_contract_gives_no_applicability_stays_lock_only(
 
 
 def test_a_per_row_input_without_a_reference_compiles(repo: Path) -> None:
-    outcome = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-plot"), repo_root=repo
-    )
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
 
     request = outcome.compile_lock["identity_contributions"]["figure_row_expansion"]
     assert request["inputs"]["observed"] == {"per_row": "observations"}
@@ -2466,9 +3039,7 @@ def test_the_lock_states_the_per_row_role_rather_than_a_false_locator(
 ) -> None:
     from feedbax.envelope.compile import PER_ROW_INPUT_RULE_ID
 
-    outcome = kernel().compile_envelope_file(
-        envelope_path(repo, "widened-plot"), repo_root=repo
-    )
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
 
     references = outcome.compile_lock["references"]
     reference = next(item for item in references if item["kind"] == "not_applicable")
@@ -2534,9 +3105,7 @@ def test_an_evaluation_authors_further_staged_prerequisites_into_its_lock(
     )
 
     references = [
-        item
-        for item in outcome.compile_lock["references"]
-        if item["kind"] != "content_pin"
+        item for item in outcome.compile_lock["references"] if item["kind"] != "content_pin"
     ]
     assert [item["role_path"] for item in references] == [
         "subjects.trained",
@@ -2578,9 +3147,7 @@ def test_a_prerequisite_may_not_take_the_subjects_own_binding_name(repo: Path) -
             },
         )
 
-    assert "one binding name addresses exactly one authenticated parent" in str(
-        caught.value
-    )
+    assert "one binding name addresses exactly one authenticated parent" in str(caught.value)
 
 
 ANALYSIS_BUNDLE_BASE = "bases/baseline.analysis_bundle.json"
@@ -2590,9 +3157,7 @@ ANALYSIS_BUNDLE_BASE_DOCUMENT: dict[str, Any] = {
     "schema_version": "feedbax.spec.analysis_bundle.v6",
     "name": "baseline-bundle",
     "predicate": {"manifest_kind": "EvaluationRunManifest"},
-    "templates": [
-        {"name": "span", "analysis_type": "quillon.span_summary", "params": {}}
-    ],
+    "templates": [{"name": "span", "analysis_type": "quillon.span_summary", "params": {}}],
     "params_base": {"params": {}},
 }
 
@@ -2636,9 +3201,7 @@ def test_a_bundle_authors_its_exact_root_set_into_its_lock(repo: Path) -> None:
     )
 
     references = [
-        item
-        for item in outcome.compile_lock["references"]
-        if item["kind"] != "content_pin"
+        item for item in outcome.compile_lock["references"] if item["kind"] != "content_pin"
     ]
     assert [item["role_path"] for item in references] == ["roots.near", "roots.far"]
     assert [item["manifest_id"] for item in references] == ["near-run", "far-run"]
@@ -2652,9 +3215,7 @@ def test_a_bundle_that_declares_no_roots_records_no_root_reference(repo: Path) -
     outcome = _authored(repo, "widened-bundle", _bundle_envelope(None))
 
     assert not [
-        item
-        for item in outcome.compile_lock["references"]
-        if item["kind"] != "content_pin"
+        item for item in outcome.compile_lock["references"] if item["kind"] != "content_pin"
     ]
 
 

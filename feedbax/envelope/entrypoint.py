@@ -1,11 +1,11 @@
 """The one built-in compiler for the one experiment-envelope dialect.
 
-``feedbax.experiment_envelope.v1`` is compiled by Feedbax itself, not by any
-project. That is the whole point of the closed dialect: a project cannot claim
-the schema, cannot supply a second compiler for it, and cannot change what a
-compiled document means. Dispatch is direct — there is no registry, no
-registration record, and no injectable callable between an authored envelope
-and this function. An envelope declaring any other schema is refused by
+Every supported ``feedbax.experiment_envelope`` version is compiled by Feedbax
+itself, not by any project. That is the whole point of the closed dialect: a
+project cannot claim the schema, cannot supply a second compiler for it, and
+cannot change what a compiled document means. Dispatch is direct — there is no
+registry, no registration record, and no injectable callable between an
+authored envelope and this function. An envelope outside the enumerated set is refused by
 :func:`feedbax.contracts.experiment_envelope.require_builtin_envelope_schema`.
 
 A project reaches this compiler by registering its data declaration. The caller
@@ -16,7 +16,10 @@ in on the request. Nothing about the compile is decided by a project name.
 
 from __future__ import annotations
 
-from feedbax.contracts.authoring_budget import AuthoringBudgets, load_authoring_budget_document
+from feedbax.contracts.authoring_budget import (
+    AuthoringBudgets,
+    load_authoring_budget_document,
+)
 from feedbax.contracts.experiment_compile_lock import CompilerImplementation
 from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeCompileRequest,
@@ -47,9 +50,7 @@ def load_project_budgets(declaration: ProjectExperimentDeclaration) -> Authoring
     field = f"{resource.resource_id}#{resource.document_name}"
     raw = (resource.root / resource.document_name).read_bytes()
     document = load_authoring_budget_document(raw, field=field)
-    return AuthoringBudgets.from_document(
-        document, field=field, declared_layers=DECLARED_LAYERS
-    )
+    return AuthoringBudgets.from_document(document, field=field, declared_layers=DECLARED_LAYERS)
 
 
 def kernel_for(declaration: ProjectExperimentDeclaration) -> EnvelopeKernel:

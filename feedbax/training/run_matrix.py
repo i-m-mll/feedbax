@@ -56,12 +56,16 @@ from feedbax.contracts.run_matrix import (
 )
 from feedbax.contracts.run_composition import (
     COMPOSITION_SCHEMA_ID,
+    AuthoredIntentParent,
     CompositionNode,
-    flatten_repo_composition,
+    ResolvedOutputParent,
+    flatten_composition,
 )
 from feedbax.contracts.migrations import default_spec_registry, migrate_graph_spec
-from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
-from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
+from feedbax.contracts.spec_storage import (
+    training_spec_canonical_bytes,
+    training_spec_sha256,
+)
 from feedbax.contracts.checkpoints import (
     CheckpointForkBarrierMapping,
     CheckpointForkPlan,
@@ -88,7 +92,6 @@ from feedbax.training.checkpoint_custody import (
 from feedbax.training.optimizers import learning_rate_at_step
 from feedbax.training.row_lowering import TrainingRowLoweringContext
 from feedbax.training.schedule_clocks import resolve_schedule_window
-
 
 RUN_MATRIX_FORK_PARITY_SCHEMA_VERSION = "feedbax.run_matrix_fork_parity.v1"
 
@@ -426,7 +429,11 @@ def _materialize_run_matrix(
     else:
         migrated = default_spec_registry.migrate("TrainingRunMatrixSpec", spec)
         matrix = TrainingRunMatrixSpec.model_validate(migrated.payload)
-    base_payload = _resolve_base_payload(matrix, repo_root=repo_root)
+    base_payload = _resolve_base_payload(
+        matrix,
+        repo_root=repo_root,
+        row_lowering_context=row_lowering_context,
+    )
     source_context = (
         load_expression_context(matrix.sources, repo_root)
         if matrix.sources
@@ -640,11 +647,13 @@ def fork_matrix_checkpoints(
     row_target_transform_metadata: Mapping[str, Mapping[str, Any]] | None = None,
     row_target_transformed_slots: Mapping[str, Sequence[str]] | None = None,
     row_target_only_slots: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
-    row_barrier_mappings: Mapping[
-        str,
-        CheckpointForkBarrierMapping | Mapping[str, Any],
-    ]
-    | None = None,
+    row_barrier_mappings: (
+        Mapping[
+            str,
+            CheckpointForkBarrierMapping | Mapping[str, Any],
+        ]
+        | None
+    ) = None,
     skip_fork: bool = False,
     lr_reporter: LrContinuationReporter | None = None,
     method_registry: TrainingMethodRegistry,
@@ -971,16 +980,33 @@ def variation_values(variation: TrainingSweepAxisVariation) -> list[Any]:
     raise RunMatrixError(f"unsupported sweep sampler {variation.sampler!r}")
 
 
-def _resolve_base_payload(spec: TrainingRunMatrixSpec, *, repo_root: Path) -> dict[str, Any]:
-    resolved, _ = resolve_base_payload_with_attribution(spec, repo_root=repo_root)
+def _resolve_base_payload(
+    spec: TrainingRunMatrixSpec,
+    *,
+    repo_root: Path,
+    row_lowering_context: Any | None = None,
+) -> dict[str, Any]:
+    resolved, _ = resolve_base_payload_with_attribution(
+        spec,
+        repo_root=repo_root,
+        row_lowering_context=row_lowering_context,
+    )
     return resolved
 
 
 def resolve_base_payload_with_attribution(
-    spec: TrainingRunMatrixSpec, *, repo_root: Path
+    spec: TrainingRunMatrixSpec,
+    *,
+    repo_root: Path,
+    row_lowering_context: Any | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Resolve composed intent and retain the last-writing layer for each patched path."""
-    resolved, attribution, _ = _resolve_composed_base(spec, repo_root=repo_root, resolving=set())
+    resolved, attribution, _ = _resolve_composed_base(
+        spec,
+        repo_root=repo_root,
+        resolving=set(),
+        row_lowering_context=row_lowering_context,
+    )
     graph_source = resolved.get("graph")
     if isinstance(graph_source, Mapping) and isinstance(graph_source.get("inline"), Mapping):
         migrated_graph = migrate_graph_spec(graph_source["inline"], path="graph.inline")
@@ -996,6 +1022,7 @@ def _resolve_composed_base(
     *,
     repo_root: Path,
     resolving: set[Path],
+    row_lowering_context: Any | None = None,
 ) -> tuple[dict[str, Any], dict[str, str], set[str]]:
     if isinstance(spec.base, InlineMatrixBaseSpec):
         document = copy.deepcopy(spec.base.inline)
@@ -1021,7 +1048,10 @@ def _resolve_composed_base(
             resolving.add(canonical_path)
             try:
                 parent_payload, attribution, written = _resolve_composed_base(
-                    parent, repo_root=repo_root, resolving=resolving
+                    parent,
+                    repo_root=repo_root,
+                    resolving=resolving,
+                    row_lowering_context=row_lowering_context,
                 )
             finally:
                 resolving.remove(canonical_path)
@@ -1038,10 +1068,36 @@ def _resolve_composed_base(
                     "/base/payload_path is not supported for a composition document"
                 )
             try:
-                flattened = flatten_repo_composition(
-                    CompositionNode.model_validate(document),
-                    repo_root=repo_root,
-                    source_ref=spec.base.ref,
+                root = repo_root.resolve()
+                source_path = (root / spec.base.ref).resolve()
+
+                def resolve_parent(
+                    parent: AuthoredIntentParent | ResolvedOutputParent,
+                ) -> CompositionNode | dict[str, Any]:
+                    if isinstance(parent, ResolvedOutputParent):
+                        if row_lowering_context is None:
+                            raise ValueError(
+                                "/parent resolved_output has no governed lowering custody"
+                            )
+                        return row_lowering_context.resolve_parent(parent)
+                    path = Path(parent.ref)
+                    if path.is_absolute():
+                        raise ValueError(f"/parent/ref must be repository-relative: {parent.ref}")
+                    resolved_path = (root / path).resolve()
+                    if not resolved_path.is_relative_to(root):
+                        raise ValueError(f"/parent/ref escapes repo root: {parent.ref}")
+                    if resolved_path == source_path:
+                        raise ValueError(f"/parent/ref authored composition cycle: {parent.ref}")
+                    try:
+                        parent_document = json.loads(resolved_path.read_text(encoding="utf-8"))
+                    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                        raise ValueError(
+                            f"/parent/ref cannot load JSON document: {parent.ref}"
+                        ) from exc
+                    return CompositionNode.model_validate(parent_document)
+
+                flattened = flatten_composition(
+                    CompositionNode.model_validate(document), resolve_parent
                 )
                 resolved, local_attribution, written = apply_composition_deltas(
                     flattened.payload,
@@ -1057,11 +1113,19 @@ def _resolve_composed_base(
             payload_path = spec.base.payload_path
     else:
         assert isinstance(spec.base, ResolvedOutputMatrixBaseSpec)
-        path = repo_root / spec.base.ref
-        snapshot = json.loads(path.read_text(encoding="utf-8"))
-        if snapshot.get("root_hash") != spec.base.resolved_root_hash:
-            raise RunMatrixError(f"/base/ref resolved root hash mismatch: {spec.base.ref}")
-        document = decode_resolved_snapshot(snapshot)
+        if row_lowering_context is None:
+            raise RunMatrixError(
+                f"/base/ref resolved output has no governed lowering custody: {spec.base.ref}"
+            )
+        try:
+            document = row_lowering_context.resolve_parent(
+                ResolvedOutputParent(
+                    ref=spec.base.ref,
+                    resolved_root_hash=spec.base.resolved_root_hash,
+                )
+            )
+        except ValueError as exc:
+            raise RunMatrixError(f"/base/ref resolved output custody failed: {exc}") from exc
         payload_path = spec.base.payload_path
     payload = _get_dotted(document, payload_path)
     if not isinstance(payload, dict):
@@ -1211,7 +1275,10 @@ def _materialize_sweep_rows(
     run_set_axes = TrainingRunSetAxes(
         axes=axes_with_values,
         combination=matrix.combination,
-        metadata={"axis_count": len(axes_with_values), "run_count": len(indexed_coordinates)},
+        metadata={
+            "axis_count": len(axes_with_values),
+            "run_count": len(indexed_coordinates),
+        },
     )
     rows: list[MaterializedMatrixRow] = []
     for index, value_indices in enumerate(indexed_coordinates):

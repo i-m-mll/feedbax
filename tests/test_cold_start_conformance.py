@@ -409,9 +409,7 @@ def authored(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(source, encoding="utf-8")
     policy = root / "ci" / "feedbax-science-surface.toml"
-    policy.write_text(
-        policy.read_text(encoding="utf-8") + RATIFIED_SCIENCE_ENTRY, encoding="utf-8"
-    )
+    policy.write_text(policy.read_text(encoding="utf-8") + RATIFIED_SCIENCE_ENTRY, encoding="utf-8")
     _git(["init", "-q", "-b", BASELINE_REF, "."], cwd=root)
     _git(["add", "-A"], cwd=root)
     _git(["commit", "-q", "-m", "cold start"], cwd=root)
@@ -481,17 +479,13 @@ def test_init_states_the_schema_identity_of_everything_durable_it_writes(
     assert declaration["authoring_budget"] == "specs/experiment/authoring_budget.json"
 
     budget = json.loads(
-        (initialized.root / "specs/experiment/authoring_budget.json").read_text(
-            encoding="utf-8"
-        )
+        (initialized.root / "specs/experiment/authoring_budget.json").read_text(encoding="utf-8")
     )
     assert budget["schema_id"] == AUTHORING_BUDGET_SCHEMA_ID
     assert budget["schema_version"] == AUTHORING_BUDGET_SCHEMA_VERSION
     assert set(budget["layers"]) == set(DEFAULT_AUTHORING_BUDGET_LAYERS)
 
-    policy = (initialized.root / "ci/feedbax-science-surface.toml").read_text(
-        encoding="utf-8"
-    )
+    policy = (initialized.root / "ci/feedbax-science-surface.toml").read_text(encoding="utf-8")
     assert f"schema_version = {POLICY_SCHEMA_VERSION}" in policy
 
 
@@ -499,9 +493,7 @@ def test_init_says_out_loud_that_the_gate_is_not_yet_authoritative(
     initialized: ColdStartProject,
 ) -> None:
     """A green first run that meant nothing would be worse than no run at all."""
-    assert "is not authoritative until it is committed and ratified" in (
-        initialized.init_stdout
-    )
+    assert "is not authoritative until it is committed and ratified" in (initialized.init_stdout)
 
 
 def test_a_second_init_and_instructions_install_change_nothing(
@@ -556,7 +548,15 @@ def test_the_project_contains_no_machinery(authored: ColdStartProject) -> None:
     python_files = [name for name in tracked if name.endswith(".py")]
     assert python_files == sorted((f"src/{PACKAGE_NAME}/__init__.py", SCIENCE_REF))
     science = (authored.root / SCIENCE_REF).read_text(encoding="utf-8")
-    for machinery in ("argparse", "compile", "lower", "emit", "parse", "walk", "dispatch"):
+    for machinery in (
+        "argparse",
+        "compile",
+        "lower",
+        "emit",
+        "parse",
+        "walk",
+        "dispatch",
+    ):
         assert machinery not in science, machinery
 
 
@@ -755,6 +755,216 @@ def test_an_unknown_target_is_a_stable_refusal_rather_than_a_crash(
     )
     assert refused.returncode == 2
     assert "CompiledOutputError" in refused.stderr
+
+
+def test_installed_wheel_compiles_and_materializes_both_v3_training_root_families(
+    framework: InstalledFramework, tmp_path: Path
+) -> None:
+    """The public v3 roots work without this checkout or ``PYTHONPATH``."""
+    root = tmp_path / "root-envelope-proof"
+    root.mkdir()
+    framework.cli(["init", "."], cwd=root)
+    script = r"""
+import json
+import pathlib
+import sys
+
+from feedbax.contracts.authored_canonical import canonical_sha256, emit_text
+from feedbax.contracts.run_composition import (
+    CompositionNode,
+    InlineIntentParent,
+    ResolvedOutputParent,
+    authored_envelope_hash,
+)
+from feedbax.contracts.run_matrix import TrainingRowParentProvenance
+from feedbax.contracts.training import (
+    LossTermSpec,
+    ObjectiveSlotSpec,
+    TaskSpec,
+    TrainingConfig,
+    TrainingRunSpec,
+    WorkerExecutionSpec,
+    standard_supervised_effective_phase_spec,
+    standard_supervised_method_contract,
+    standard_supervised_method_payload,
+    standard_supervised_method_ref,
+)
+from feedbax.contracts.project_experiment import load_project_declaration
+from feedbax.envelope import kernel_for
+from feedbax.training.row_lowering import (
+    GovernedTrainingRowParent,
+    TrainingRowLoweringContext,
+)
+from feedbax.training.run_matrix import materialize_adapted_run_matrix
+
+repo = pathlib.Path(sys.argv[1])
+envelope_dir = repo / "specs" / "experiment"
+intent_dir = repo / "specs" / "intent"
+intent_dir.mkdir(parents=True)
+
+run = TrainingRunSpec(
+    graph={
+        "inline": {
+            "nodes": {
+                "gain": {
+                    "type": "Gain",
+                    "params": {"gain": 1.0},
+                    "input_ports": ["input"],
+                    "output_ports": ["output"],
+                }
+            },
+            "wires": [],
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "input_bindings": {"input": ["gain", "input"]},
+            "output_bindings": {"output": ["gain", "output"]},
+        }
+    },
+    task=TaskSpec(type="GenericTask", params={"n_steps": 1}),
+    training_config=TrainingConfig(n_batches=1, batch_size=1),
+    objective=ObjectiveSlotSpec(
+        loss=LossTermSpec(
+            type="target_state",
+            label="target",
+            selector="port:gain.output",
+            target_value=[0.0],
+        )
+    ),
+    method_ref=standard_supervised_method_ref(),
+    method_payload=standard_supervised_method_payload(),
+    worker_execution=WorkerExecutionSpec(
+        method_contract=standard_supervised_method_contract(),
+        effective_phase=standard_supervised_effective_phase_spec(),
+    ),
+).model_dump(mode="json", exclude_none=True)
+
+run_ref = "specs/intent/generic.training_run.json"
+(repo / run_ref).write_text(emit_text(run), encoding="utf-8")
+composition = CompositionNode(
+    name="generic-composition",
+    parent=InlineIntentParent(
+        payload=run,
+        schema_id=run["schema_id"],
+        schema_version=run["schema_version"],
+    ),
+)
+composition_document = composition.model_dump(mode="json", exclude_none=True)
+composition_ref = "specs/intent/generic.composition.json"
+(repo / composition_ref).write_text(emit_text(composition_document), encoding="utf-8")
+
+envelopes = {
+    "composition-root": {
+        "schema": "feedbax.experiment_envelope.v3",
+        "name": "composition-root",
+        "training": {
+            "root": {
+                "kind": "composition",
+                "parent": {
+                    "kind": "authored_intent",
+                    "ref": composition_ref,
+                    "content_hash": authored_envelope_hash(composition),
+                },
+                "deltas": [{
+                    "layer_id": "matrix",
+                    "patches": [{
+                        "op": "replace",
+                        "path": "training_config.n_batches",
+                        "value": 2,
+                    }],
+                }],
+                "rows": [{
+                    "id": "condition-a",
+                    "delta": {
+                        "layer_id": "condition-a",
+                        "patches": [{
+                            "op": "replace",
+                            "path": "training_config.batch_size",
+                            "value": 2,
+                        }],
+                    },
+                }],
+            }
+        },
+    },
+    "resolved-root": {
+        "schema": "feedbax.experiment_envelope.v3",
+        "name": "resolved-root",
+        "training": {
+            "root": {
+                "kind": "composition",
+                "parent": {
+                    "kind": "resolved_output",
+                    "ref": "artifact-blob:generic-terminal",
+                    "resolved_root_hash": canonical_sha256(run),
+                },
+                "rows": [{"id": "condition-b"}],
+            }
+        },
+    },
+    "training-run-root": {
+        "schema": "feedbax.experiment_envelope.v3",
+        "name": "training-run-root",
+        "training": {
+            "root": {
+                "kind": "training_run",
+                "ref": run_ref,
+                "content_hash": canonical_sha256(run),
+                "rows": [{"id": "condition-c"}],
+            }
+        },
+    },
+}
+kernel = kernel_for(load_project_declaration(repo))
+outcomes = {}
+for name, envelope in envelopes.items():
+    path = envelope_dir / f"{name}.envelope.json"
+    path.write_text(emit_text(envelope), encoding="utf-8")
+    outcomes[name] = kernel.compile_envelope_file(path, repo_root=repo)
+
+composed = materialize_adapted_run_matrix(
+    outcomes["composition-root"].document,
+    repo_root=repo,
+    row_validator=lambda _payload, _row_id: None,
+)
+assert composed.rows[0].authored_payload["training_config"]["n_batches"] == 2
+assert composed.rows[0].authored_payload["training_config"]["batch_size"] == 2
+
+resolved_parent = ResolvedOutputParent(
+    ref="artifact-blob:generic-terminal",
+    resolved_root_hash=canonical_sha256(run),
+)
+context = TrainingRowLoweringContext((GovernedTrainingRowParent(
+    provenance=TrainingRowParentProvenance(
+        role="terminal",
+        parent_kind="resolved_output",
+        ref=resolved_parent.ref,
+        semantic_hash=resolved_parent.resolved_root_hash,
+        artifact_id="generic-terminal",
+        artifact_sha256=canonical_sha256(run),
+        schema_id=run["schema_id"],
+        schema_version=run["schema_version"],
+    ),
+    payload=run,
+),))
+resolved = materialize_adapted_run_matrix(
+    outcomes["resolved-root"].document,
+    repo_root=repo,
+    row_validator=lambda _payload, _row_id: None,
+    row_lowering_context=context,
+)
+assert resolved.rows[0].authored_payload == run
+assert outcomes["training-run-root"].document["base"]["content_hash"] == canonical_sha256(run)
+print(json.dumps({
+    "schemas": sorted(outcome.envelope_schema for outcome in outcomes.values()),
+    "families": sorted(outcome.family for outcome in outcomes.values()),
+}))
+"""
+    completed = _run([framework.python, "-c", script, root], cwd=root)
+    proof = json.loads(completed.stdout)
+    assert proof == {
+        "schemas": ["feedbax.experiment_envelope.v3"] * 3,
+        "families": ["training_run_matrix"] * 3,
+    }
 
 
 def test_the_fixture_never_reached_back_into_this_checkout(

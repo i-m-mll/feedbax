@@ -8,14 +8,22 @@ from feedbax.contracts.run_composition import (
     CompositionDelta,
     CompositionNode,
     InlineIntentParent,
+    ResolvedOutputParent,
     authored_envelope_hash,
 )
-from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
+from feedbax.contracts.run_matrix import (
+    TrainingRowParentProvenance,
+    TrainingRunMatrixSpec,
+)
 from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.training.run_matrix import (
     RunMatrixError,
     materialize_adapted_run_matrix,
     resolve_base_payload_with_attribution,
+)
+from feedbax.training.row_lowering import (
+    GovernedTrainingRowParent,
+    TrainingRowLoweringContext,
 )
 
 
@@ -62,6 +70,28 @@ def _matrix(child_document: dict[str, object]) -> TrainingRunMatrixSpec:
                 }
             ],
         }
+    )
+
+
+def _resolved_context(
+    parent: ResolvedOutputParent, payload: dict[str, object]
+) -> TrainingRowLoweringContext:
+    return TrainingRowLoweringContext(
+        (
+            GovernedTrainingRowParent(
+                provenance=TrainingRowParentProvenance(
+                    role="terminal",
+                    parent_kind="resolved_output",
+                    ref=parent.ref,
+                    semantic_hash=parent.resolved_root_hash,
+                    artifact_id="terminal-artifact",
+                    artifact_sha256=training_spec_sha256(payload),
+                    schema_id="example.intent",
+                    schema_version="example.intent.v1",
+                ),
+                payload=payload,
+            ),
+        )
     )
 
 
@@ -192,3 +222,94 @@ def test_matrix_rejects_composition_source_reference_cycle(tmp_path: Path) -> No
             _matrix(child_document),
             repo_root=tmp_path,
         )
+
+
+def test_resolved_output_base_requires_governed_custody_and_applies_rows_after_deltas(
+    tmp_path: Path,
+) -> None:
+    terminal = {
+        "schema_id": "example.intent",
+        "schema_version": "example.intent.v1",
+        "gain": 1,
+        "width": 8,
+    }
+    parent = ResolvedOutputParent(
+        ref="artifact-blob:terminal",
+        resolved_root_hash=training_spec_sha256(terminal),
+    )
+    matrix = TrainingRunMatrixSpec.model_validate(
+        {
+            "name": "resolved-terminal",
+            "base": {
+                "kind": "resolved_output",
+                "ref": parent.ref,
+                "resolved_root_hash": parent.resolved_root_hash,
+            },
+            "deltas": [
+                {
+                    "layer_id": "matrix",
+                    "patches": [_replace("unused", "width", 16).patches[0]],
+                }
+            ],
+            "rows": [
+                {
+                    "row_id": "condition-a",
+                    "overrides": [{"op": "replace", "path": "gain", "value": 4}],
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(RunMatrixError, match="no governed lowering custody"):
+        materialize_adapted_run_matrix(
+            matrix,
+            repo_root=tmp_path,
+            row_validator=lambda _payload, _row_id: None,
+        )
+
+    materialized = materialize_adapted_run_matrix(
+        matrix,
+        repo_root=tmp_path,
+        row_validator=lambda _payload, _row_id: None,
+        row_lowering_context=_resolved_context(parent, terminal),
+    )
+    assert materialized.rows[0].authored_payload["width"] == 16
+    assert materialized.rows[0].authored_payload["gain"] == 4
+
+
+def test_authored_composition_uses_governed_resolved_terminal_without_repo_loading(
+    tmp_path: Path,
+) -> None:
+    terminal = {
+        "schema_id": "example.intent",
+        "schema_version": "example.intent.v1",
+        "gain": 1,
+        "width": 8,
+    }
+    parent = ResolvedOutputParent(
+        ref="artifact-blob:terminal",
+        resolved_root_hash=training_spec_sha256(terminal),
+    )
+    child = CompositionNode(
+        name="resolved-child",
+        parent=parent,
+        deltas=[_replace("child", "gain", 2)],
+    )
+    child_document = _write_node(tmp_path / "child.json", child)
+    matrix = _matrix(child_document)
+
+    with pytest.raises(RunMatrixError, match="no governed lowering custody"):
+        resolve_base_payload_with_attribution(matrix, repo_root=tmp_path)
+
+    materialized = materialize_adapted_run_matrix(
+        matrix,
+        repo_root=tmp_path,
+        row_validator=lambda _payload, _row_id: None,
+        row_lowering_context=_resolved_context(parent, terminal),
+    )
+    assert materialized.rows[0].authored_payload == {
+        "schema_id": "example.intent",
+        "schema_version": "example.intent.v1",
+        "gain": 4,
+        "width": 32,
+    }
