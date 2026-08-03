@@ -1222,3 +1222,152 @@ def test_matrix_staged_parent_input_refuses_different_material_identity(
 
     with pytest.raises(ValueError, match="does not reference staged parent"):
         materialize_evaluation_run_matrix(matrix, registry=evaluation_registry)
+
+
+def test_matrix_staged_prerequisite_matches_material_identity_not_consumer_role(
+    evaluation_registry,
+) -> None:
+    profile = {
+        "ref_schema_id": "feedbax.ref.authenticated_manifest",
+        "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+        "manifest_sha256": "a" * 64,
+        "size_bytes": 17,
+    }
+    artifact_parent = ParentRef(
+        kind="EvaluationRunManifest",
+        id="feedbax-evaluation-run:paired-trial-bank",
+        role="evaluation_run",
+        metadata=profile,
+    )
+    consumer_parent = artifact_parent.model_copy(update={"role": "paired_trial_bank"})
+    stated_prerequisite = StagedEvaluationPrerequisite(
+        parent=artifact_parent,
+        artifact_provider="shared",
+    )
+    matrix = EvaluationRunMatrixSpec(
+        base=EvaluationRunSpec(
+            evaluation_type="example.staged_matrix",
+            params={"staged_prerequisites": {"paired_trial_bank": stated_prerequisite}},
+        ),
+        rows=[MatrixRow(row_id="row-a")],
+        staged_parents={
+            "paired_trial_bank": StagedEvaluationPrerequisite(
+                parent=consumer_parent,
+                artifact_provider="shared",
+            ),
+        },
+    )
+
+    [row] = materialize_evaluation_run_matrix(matrix, registry=evaluation_registry)
+
+    materialized = StagedEvaluationPrerequisite.model_validate(
+        row.payload.params["staged_prerequisites"]["paired_trial_bank"]
+    )
+    assert materialized.parent.role == "evaluation_run"
+    assert matrix.staged_parents["paired_trial_bank"].parent.role == "paired_trial_bank"
+    assert materialized.artifact_provider == "shared"
+
+
+@pytest.mark.parametrize(
+    "stated_update",
+    [
+        {"kind": "AnalysisRunManifest"},
+        {"id": "feedbax-evaluation-run:other-bank"},
+        {
+            "metadata": {
+                "ref_schema_id": "feedbax.ref.authenticated_manifest",
+                "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+                "manifest_sha256": "b" * 64,
+                "size_bytes": 17,
+            }
+        },
+        {
+            "metadata": {
+                "ref_schema_id": "feedbax.ref.authenticated_manifest",
+                "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+                "manifest_sha256": "a" * 64,
+                "size_bytes": 18,
+            }
+        },
+    ],
+    ids=["kind", "id", "digest", "size"],
+)
+def test_matrix_staged_prerequisite_refuses_different_material_identity(
+    stated_update: dict[str, object],
+    evaluation_registry,
+) -> None:
+    profile = {
+        "ref_schema_id": "feedbax.ref.authenticated_manifest",
+        "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+        "manifest_sha256": "a" * 64,
+        "size_bytes": 17,
+    }
+    consumer_parent = ParentRef(
+        kind="EvaluationRunManifest",
+        id="feedbax-evaluation-run:paired-trial-bank",
+        role="paired_trial_bank",
+        metadata=profile,
+    )
+    stated_parent = consumer_parent.model_copy(update={"role": "evaluation_run", **stated_update})
+    matrix = EvaluationRunMatrixSpec(
+        base=EvaluationRunSpec(
+            evaluation_type="example.staged_matrix",
+            params={
+                "staged_prerequisites": {
+                    "paired_trial_bank": StagedEvaluationPrerequisite(
+                        parent=stated_parent,
+                        artifact_provider="shared",
+                    )
+                }
+            },
+        ),
+        rows=[MatrixRow(row_id="row-a")],
+        staged_parents={
+            "paired_trial_bank": StagedEvaluationPrerequisite(
+                parent=consumer_parent,
+                artifact_provider="shared",
+            ),
+        },
+    )
+
+    with pytest.raises(ValueError, match="does not reference staged parent"):
+        materialize_evaluation_run_matrix(matrix, registry=evaluation_registry)
+
+
+def test_matrix_staged_prerequisite_refuses_different_artifact_provider(
+    evaluation_registry,
+) -> None:
+    parent = ParentRef(
+        kind="EvaluationRunManifest",
+        id="feedbax-evaluation-run:paired-trial-bank",
+        role="paired_trial_bank",
+        metadata={
+            "ref_schema_id": "feedbax.ref.authenticated_manifest",
+            "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+            "manifest_sha256": "a" * 64,
+            "size_bytes": 17,
+        },
+    )
+    matrix = EvaluationRunMatrixSpec(
+        base=EvaluationRunSpec(
+            evaluation_type="example.staged_matrix",
+            params={
+                "staged_prerequisites": {
+                    "paired_trial_bank": StagedEvaluationPrerequisite(
+                        parent=parent.model_copy(update={"role": "evaluation_run"}),
+                        artifact_provider="row-provider",
+                    )
+                }
+            },
+        ),
+        rows=[MatrixRow(row_id="row-a")],
+        staged_parents={
+            "paired_trial_bank": StagedEvaluationPrerequisite(
+                parent=parent,
+                artifact_provider="matrix-provider",
+            ),
+        },
+    )
+
+    with pytest.raises(ValueError, match="does not reference staged parent"):
+        materialize_evaluation_run_matrix(matrix, registry=evaluation_registry)

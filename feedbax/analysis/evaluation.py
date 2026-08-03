@@ -944,8 +944,14 @@ def _validate_matrix_staged_parent_references(
                 not restated_parent_differences(prerequisite.parent, input_ref)
                 for input_ref in row.payload.inputs
             )
-            staged_match = name in staged and (
-                StagedEvaluationPrerequisite.model_validate(staged[name]) == prerequisite
+            stated_prerequisite = (
+                StagedEvaluationPrerequisite.model_validate(staged[name])
+                if name in staged
+                else None
+            )
+            staged_match = stated_prerequisite is not None and (
+                stated_prerequisite.artifact_provider == prerequisite.artifact_provider
+                and not restated_parent_differences(prerequisite.parent, stated_prerequisite.parent)
             )
             if not input_match and not staged_match:
                 raise ValueError(
