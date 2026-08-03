@@ -79,6 +79,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import ConfigDict, Field, ValidationError, model_validator
 
 from feedbax.contracts.checkpoint_initialization import CheckpointInitializationMode
+from feedbax.contracts.expressions import Expr, ValueExpr
 from feedbax.contracts.extraction import SourceBinding
 from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeRejection,
@@ -89,8 +90,16 @@ from feedbax.contracts.figure_roles import (
     PerRowInputReference,
     SharedInputReference,
 )
-from feedbax.contracts.figures import FigureCompositionDelta
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.figures import (
+    FigureColorbar,
+    FigureCompositionDelta,
+    FigureSlotFamily,
+    PanelSpec,
+    TraceBinding,
+    TraceFamily,
+)
+from feedbax.contracts.graph import AnalysisInputRequirement
+from feedbax.contracts.manifest import EvaluationStatesConsumptionPolicy, StrictModel
 from feedbax.contracts.matrix_core import ContentPinnedJsonBase, RowDerivation
 from feedbax.contracts.row_index import RowSetSelector
 from feedbax.contracts.run_composition import AuthoredIntentParent, ResolvedOutputParent
@@ -100,6 +109,7 @@ from feedbax.contracts.run_matrix import (
     MatrixCompositionDelta,
     MatrixForkSpecV6,
 )
+from feedbax.contracts.selection import ManifestPredicate
 
 #: The unversioned identity of the dialect family.
 EXPERIMENT_ENVELOPE_FAMILY = "feedbax.experiment_envelope"
@@ -108,9 +118,10 @@ EXPERIMENT_ENVELOPE_FAMILY = "feedbax.experiment_envelope"
 EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v1"
 EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v2"
 EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v3"
+EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v4"
 
 #: The current grammar. A new document is authored at this version.
-EXPERIMENT_ENVELOPE_SCHEMA_VERSION = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3
+EXPERIMENT_ENVELOPE_SCHEMA_VERSION = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4
 
 #: Enumerated, never inferred. Every member is compiled as authored: a v1 or v2
 #: document is held to its declared grammar and keeps that identity.
@@ -118,24 +129,31 @@ EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = (
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
 )
 
 #: One closed, content-pinned structure shared by root-authored training matrices.
 ROOT_TRAINING_AUTHORITY_SCHEMA_ID = "feedbax.spec.root_training_authority"
 ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION = f"{ROOT_TRAINING_AUTHORITY_SCHEMA_ID}.v1"
 
+#: One closed union for scientific structure shared by root analysis and figure envelopes.
+EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID = "feedbax.spec.experiment_layer_root_authority"
+EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION = f"{EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID}.v1"
+
 #: Versions with a deterministic upgrade to a later one, applied by
 #: :func:`migrate_experiment_envelope_payload` and never by a compile.
 EXPERIMENT_ENVELOPE_MIGRATION_TABLE: dict[str, str] = {
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
 }
 
 #: The compiler contract is global. There is no per-project contract indirection:
 #: one dialect compiled by one compiler means one contract for every project.
 EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID = f"{EXPERIMENT_ENVELOPE_FAMILY}.compiler"
 EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1 = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v1"
-EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v2"
+EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2 = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v2"
+EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v3"
 
 
 def compiler_contract_version_for_schema(schema: str) -> str:
@@ -146,6 +164,8 @@ def compiler_contract_version_for_schema(schema: str) -> str:
     ):
         return EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1
     if schema == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3:
+        return EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2
+    if schema == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4:
         return EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION
     raise ExperimentEnvelopeRejection(
         ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
@@ -400,6 +420,81 @@ class RootTrainingAuthority(StrictModel):
     schema_version: Literal["feedbax.spec.root_training_authority.v1"]
     sources: list[SourceBinding]
     derivations: list[RowDerivation]
+
+
+class AnalysisRunLayerRootAuthority(StrictModel):
+    """Scientific root fields for one analysis run, excluding compiler-owned fields."""
+
+    schema_id: Literal["feedbax.spec.experiment_layer_root_authority"]
+    schema_version: Literal["feedbax.spec.experiment_layer_root_authority.v1"]
+    kind: Literal["analysis_run"]
+    input_requirements: list[AnalysisInputRequirement] = Field(default_factory=list)
+    evaluation_states_policy: EvaluationStatesConsumptionPolicy = "recompute"
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class AnalysisBundleLayerRootAuthority(StrictModel):
+    """Scientific root fields for one analysis bundle, excluding identity and name."""
+
+    schema_id: Literal["feedbax.spec.experiment_layer_root_authority"]
+    schema_version: Literal["feedbax.spec.experiment_layer_root_authority.v1"]
+    kind: Literal["analysis_bundle"]
+    description: str | None = None
+    predicate: ManifestPredicate = Field(
+        default_factory=lambda: ManifestPredicate(manifest_kind="EvaluationRunManifest")
+    )
+    templates: list[dict[str, Any]] = Field(default_factory=list)
+    params_base: dict[str, Any] = Field(default_factory=lambda: {"params": {}})
+    stages: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_against_output_model(self) -> "AnalysisBundleLayerRootAuthority":
+        # Import lazily: importing the analysis execution package while this
+        # contract module initializes creates a migrations/dialect cycle. The
+        # existing output model remains the sole owner of all nested field types
+        # and cross-field rules; this authority only removes compiler-owned keys.
+        from feedbax.analysis.bundles import AnalysisBundleSpec
+
+        AnalysisBundleSpec.model_validate(
+            {
+                "name": "layer-root-authority-validation",
+                **self.model_dump(
+                    mode="json",
+                    exclude={"schema_id", "schema_version", "kind"},
+                ),
+            }
+        )
+        return self
+
+
+class FigureLayerRootAuthority(StrictModel):
+    """Scientific root fields for one figure, excluding identity, name, and inputs."""
+
+    schema_id: Literal["feedbax.spec.experiment_layer_root_authority"]
+    schema_version: Literal["feedbax.spec.experiment_layer_root_authority.v1"]
+    kind: Literal["figure"]
+    template: str | None = None
+    assembler: str | None = None
+    assembler_params: dict[str, Any] = Field(default_factory=dict)
+    slot_bindings: dict[str, TraceBinding | list[TraceBinding]] = Field(default_factory=dict)
+    slot_families: list[FigureSlotFamily] | None = None
+    traces: list[TraceBinding] = Field(default_factory=list)
+    trace_families: list[TraceFamily] | None = None
+    colorbar: FigureColorbar | None = None
+    panels: list[PanelSpec] = Field(default_factory=list)
+    pieces: list[str] = Field(default_factory=list)
+    exclude_pieces: list[str] = Field(default_factory=list)
+    facet_bindings: dict[str, ValueExpr] = Field(default_factory=dict)
+    figure_routing: dict[str, Any] = Field(default_factory=dict)
+    run_condition: Expr | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+ExperimentLayerRootAuthority: TypeAlias = Annotated[
+    AnalysisRunLayerRootAuthority | AnalysisBundleLayerRootAuthority | FigureLayerRootAuthority,
+    Field(discriminator="kind"),
+]
 
 
 class RootTrainingMatrixFields(DialectModel):
@@ -700,6 +795,7 @@ class AnalysisLayerAuthoring(DialectModel):
     """
 
     target: Literal["run", "bundle"] = "run"
+    root: ContentPinnedJsonBase | None = None
     subjects: list[AnalysisSubjectAuthoring] = Field(default_factory=list)
     roots: list[AnalysisBundleRootAuthoring] | None = None
     recipe: str | None = None
@@ -715,6 +811,10 @@ class AnalysisLayerAuthoring(DialectModel):
             raise ValueError(
                 "an analysis bundle states its templates as a delta; subjects and a "
                 "recipe belong to a single analysis run"
+            )
+        if self.root is not None and self.target == "run" and self.recipe is None:
+            raise ValueError(
+                "a root analysis run supplies analysis_type through its required recipe"
             )
         if self.roots is not None:
             if self.target != "bundle":
@@ -753,6 +853,7 @@ class FigureLayerMode(StrEnum):
 
     ROW_EXPANSION = "row_expansion"
     COMPOSITION = "composition"
+    ROOT = "root"
 
 
 class FigureRoleContractAuthoring(DialectModel):
@@ -894,6 +995,7 @@ class FigureLayerAuthoring(DialectModel):
     """
 
     mode: FigureLayerMode
+    root: ContentPinnedJsonBase | None = None
     inputs: list[FigureInputAuthoring] = Field(default_factory=list)
     rows: RowSetSelector | None = None
     row_custody: str | None = None
@@ -907,9 +1009,13 @@ class FigureLayerAuthoring(DialectModel):
             raise ValueError("figure input roles must be unique")
         if self.mode is FigureLayerMode.ROW_EXPANSION:
             return self._validate_row_expansion()
+        if self.mode is FigureLayerMode.ROOT:
+            return self._validate_root()
         return self._validate_composition()
 
     def _validate_row_expansion(self) -> "FigureLayerAuthoring":
+        if self.root is not None:
+            raise ValueError("a row_expansion figure does not also state a layer root")
         if self.delta is not None:
             raise ValueError(
                 "a row_expansion figure authors no delta; the expansion is derived from "
@@ -945,7 +1051,29 @@ class FigureLayerAuthoring(DialectModel):
             )
         return self
 
+    def _validate_root(self) -> "FigureLayerAuthoring":
+        if self.root is None:
+            raise ValueError("a root figure states its content-pinned layer root")
+        if (
+            self.rows is not None
+            or self.assembler_title is not None
+            or self.row_custody is not None
+        ):
+            raise ValueError(
+                "a root figure states no row set, no row custody, and no assembler title; "
+                "those are row_expansion vocabulary"
+            )
+        profiled = [item.input_role for item in self.inputs if item.is_row_expanded]
+        if profiled:
+            raise ValueError(
+                f"root figure inputs {sorted(profiled)} state a per-row or shared binding "
+                "profile, which only row_expansion resolves"
+            )
+        return self
+
     def _validate_composition(self) -> "FigureLayerAuthoring":
+        if self.root is not None:
+            raise ValueError("a composition figure does not also state a layer root")
         if self.delta is None:
             raise ValueError("a composition figure states the ordered deltas it composes")
         if (
@@ -1015,6 +1143,7 @@ class ExperimentEnvelope(DialectModel):
         "feedbax.experiment_envelope.v1",
         "feedbax.experiment_envelope.v2",
         "feedbax.experiment_envelope.v3",
+        "feedbax.experiment_envelope.v4",
     ] = Field(alias="schema")
     name: str
     base: str | None = None
@@ -1041,11 +1170,15 @@ class ExperimentEnvelope(DialectModel):
                 f"an envelope authors exactly one layer, found {authored or 'none'}; "
                 f"layers={[layer.value for layer in ExperimentEnvelopeLayer]}"
             )
-        training_root = self.training is not None and self.training.root is not None
-        if training_root and self.base is not None:
-            raise ValueError("a root training envelope does not also state base")
-        if training_root and self.assert_:
-            raise ValueError("a root training envelope has no inherited lineage to assert")
+        root = (
+            (self.training is not None and self.training.root is not None)
+            or (self.analysis is not None and self.analysis.root is not None)
+            or (self.figure is not None and self.figure.root is not None)
+        )
+        if root and self.base is not None:
+            raise ValueError("a root envelope does not also state base")
+        if root and self.assert_:
+            raise ValueError("a root envelope has no inherited lineage to assert")
         paths = [assertion.path for assertion in self.assert_]
         if len(set(paths)) != len(paths):
             raise ValueError("an envelope asserts each path at most once")
@@ -1312,7 +1445,10 @@ def _require_declared_grammar(document: Mapping[str, Any], *, declared: str, fie
     """Refuse a construct the document's own declared version does not have."""
     training = document.get("training")
     has_root = isinstance(training, Mapping) and "root" in training
-    if has_root and declared != EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3:
+    if has_root and declared not in (
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+    ):
         _reject_unversioned_construct(
             field,
             "training.root",
@@ -1320,13 +1456,30 @@ def _require_declared_grammar(document: Mapping[str, Any], *, declared: str, fie
             EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
             declared,
         )
+    for layer_name in ("analysis", "figure"):
+        layer = document.get(layer_name)
+        if (
+            isinstance(layer, Mapping)
+            and "root" in layer
+            and declared != EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4
+        ):
+            _reject_unversioned_construct(
+                field,
+                f"{layer_name}.root",
+                f"a content-pinned root {layer_name} authority",
+                EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+                declared,
+            )
     if isinstance(training, Mapping) and not has_root and "rows_mode" not in training:
         raise ExperimentEnvelopeRejection(
             ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
             f"{declared!r} training grammar requires an explicit 'rows_mode' field",
             field=f"{field}#training.rows_mode",
         )
-    if declared == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3:
+    if declared in (
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
+    ):
         return
     if declared == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2:
         return
@@ -1434,12 +1587,16 @@ __all__ = [
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID",
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION",
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1",
+    "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2",
+    "EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID",
+    "EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION",
     "EXPERIMENT_ENVELOPE_FAMILY",
     "EXPERIMENT_ENVELOPE_MIGRATION_TABLE",
     "EXPERIMENT_ENVELOPE_SCHEMA_VERSION",
     "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1",
     "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2",
     "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3",
+    "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4",
     "EXPERIMENT_ENVELOPE_SUFFIX",
     "EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS",
     "FIGURE_COMPOSITION_OUTPUT",
@@ -1453,7 +1610,9 @@ __all__ = [
     "TRAINING_OUTPUT_V6",
     "V2_ONLY_CONSTRUCTS",
     "AnalysisBundleRootAuthoring",
+    "AnalysisBundleLayerRootAuthority",
     "AnalysisLayerAuthoring",
+    "AnalysisRunLayerRootAuthority",
     "AnalysisSubjectAuthoring",
     "AuthoredReference",
     "CheckpointInitializationAuthoring",
@@ -1467,8 +1626,10 @@ __all__ = [
     "FigureInputAuthoring",
     "FigureLayerAuthoring",
     "FigureLayerMode",
+    "FigureLayerRootAuthority",
     "FigureRoleContractAuthoring",
     "LayerOutputContract",
+    "ExperimentLayerRootAuthority",
     "NotApplicableAuthoring",
     "ReceiptReference",
     "ReportBindingAuthoring",

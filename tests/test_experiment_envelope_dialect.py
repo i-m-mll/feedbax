@@ -29,17 +29,24 @@ from feedbax.contracts.experiment_envelope import (
 from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1,
+    EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2,
+    EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID,
+    EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
     EXPERIMENT_ENVELOPE_FAMILY,
     EXPERIMENT_ENVELOPE_MIGRATION_TABLE,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
     EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS,
     LAYER_OUTPUT_CONTRACTS,
     ROOT_TRAINING_AUTHORITY_SCHEMA_ID,
     ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
+    AnalysisBundleLayerRootAuthority,
+    AnalysisRunLayerRootAuthority,
     ExperimentEnvelopeLayer,
+    FigureLayerRootAuthority,
     ReceiptReference,
     RootTrainingAuthority,
     compiler_contract_version_for_schema,
@@ -104,26 +111,32 @@ _ROLE_CONTRACT: dict[str, Any] = {
 # -- the family and its version boundary ----------------------------------
 
 
-def test_the_dialect_is_one_family_at_three_enumerated_versions() -> None:
+def test_the_dialect_is_one_family_at_four_enumerated_versions() -> None:
     assert EXPERIMENT_ENVELOPE_FAMILY == "feedbax.experiment_envelope"
     assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1 == "feedbax.experiment_envelope.v1"
     assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2 == "feedbax.experiment_envelope.v2"
     assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3 == "feedbax.experiment_envelope.v3"
-    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3
+    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4 == "feedbax.experiment_envelope.v4"
+    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4
     assert EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS == (
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
     )
     assert EXPERIMENT_ENVELOPE_MIGRATION_TABLE == {
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
     }
     assert EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION == (
-        "feedbax.experiment_envelope.compiler.v2"
+        "feedbax.experiment_envelope.compiler.v3"
     )
     assert EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1 == (
         "feedbax.experiment_envelope.compiler.v1"
+    )
+    assert EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2 == (
+        "feedbax.experiment_envelope.compiler.v2"
     )
     assert compiler_contract_version_for_schema(EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1) == (
         EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1
@@ -132,6 +145,9 @@ def test_the_dialect_is_one_family_at_three_enumerated_versions() -> None:
         EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1
     )
     assert compiler_contract_version_for_schema(EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3) == (
+        EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2
+    )
+    assert compiler_contract_version_for_schema(EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4) == (
         EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION
     )
 
@@ -140,7 +156,7 @@ def test_the_dialect_is_one_family_at_three_enumerated_versions() -> None:
     "schema",
     [
         "feedbax.experiment_envelope.v0",
-        "feedbax.experiment_envelope.v4",
+        "feedbax.experiment_envelope.v5",
         "quillon.study.v1",
         None,
     ],
@@ -252,28 +268,37 @@ def test_the_v1_to_current_migration_is_explicit_and_semantics_preserving() -> N
 
     migrated = migrate_experiment_envelope_payload(document)
 
-    assert migrated["schema"] == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3
+    assert migrated["schema"] == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4
     assert {key: value for key, value in migrated.items() if key != "schema"} == {
         key: value for key, value in document.items() if key != "schema"
     }
     # The migration changes the authored bytes, which is exactly why a compile
     # never applies it: the original document still parses, as itself.
     assert _parse(document).schema_ == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1
-    assert _parse(migrated).schema_ == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3
+    assert _parse(migrated).schema_ == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4
 
 
-def test_the_v2_to_v3_migration_only_restates_schema() -> None:
+def test_the_v2_to_current_migration_only_restates_schema() -> None:
     document = _minimal(training={"rows_mode": "append", "tags": {"add": ["probe"]}})
     document["schema"] = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2
 
     migrated = migrate_experiment_envelope_payload(document)
 
-    assert migrated == {**document, "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3}
+    assert migrated == {**document, "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4}
+
+
+def test_the_v3_to_v4_migration_only_restates_schema() -> None:
+    document = _minimal(training={"rows_mode": "append", "tags": {"add": ["probe"]}})
+    document["schema"] = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3
+
+    migrated = migrate_experiment_envelope_payload(document)
+
+    assert migrated == {**document, "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4}
 
 
 def test_migrating_an_unsupported_version_refuses_rather_than_guessing() -> None:
     document = _minimal(training={"rows_mode": "append", "tags": {"add": ["probe"]}})
-    document["schema"] = "feedbax.experiment_envelope.v4"
+    document["schema"] = "feedbax.experiment_envelope.v5"
 
     with pytest.raises(ExperimentEnvelopeRejection) as caught:
         migrate_experiment_envelope_payload(document)
@@ -419,6 +444,136 @@ def test_root_training_authority_is_one_closed_public_schema_and_one_small_ref()
     for payload in invalid_payloads:
         with pytest.raises(ValueError):
             RootTrainingAuthority.model_validate(payload)
+
+
+def _layer_root(kind: str) -> dict[str, Any]:
+    return {
+        "schema_id": EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID,
+        "schema_version": EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
+        "kind": kind,
+    }
+
+
+def test_layer_root_authority_is_one_closed_direct_three_kind_union() -> None:
+    run = AnalysisRunLayerRootAuthority.model_validate(
+        {
+            **_layer_root("analysis_run"),
+            "input_requirements": [],
+            "evaluation_states_policy": "require_durable",
+            "params": {"window": 4},
+        }
+    )
+    bundle = AnalysisBundleLayerRootAuthority.model_validate(
+        {
+            **_layer_root("analysis_bundle"),
+            "description": "generic staged analysis",
+            "predicate": {"manifest_kind": "EvaluationRunManifest"},
+            "templates": [],
+            "params_base": {"params": {"window": 4}},
+            "stages": [],
+            "metadata": {"owner": "framework-test"},
+        }
+    )
+    figure = FigureLayerRootAuthority.model_validate(
+        {
+            **_layer_root("figure"),
+            "assembler": "quillon.panel_assembler",
+            "panels": [],
+            "metadata": {"purpose": "generic"},
+        }
+    )
+
+    assert run.kind == "analysis_run"
+    assert bundle.kind == "analysis_bundle"
+    assert figure.kind == "figure"
+
+    forbidden = {
+        "analysis_run": ("analysis_type", "inputs", "name"),
+        "analysis_bundle": ("name", "inputs"),
+        "figure": ("name", "inputs", "input_authorities"),
+    }
+    models = {
+        "analysis_run": AnalysisRunLayerRootAuthority,
+        "analysis_bundle": AnalysisBundleLayerRootAuthority,
+        "figure": FigureLayerRootAuthority,
+    }
+    minimal = {
+        "analysis_run": {"params": {}},
+        "analysis_bundle": {},
+        "figure": {"assembler": "quillon.panel_assembler"},
+    }
+    for kind, names in forbidden.items():
+        for name in names:
+            with pytest.raises(ValueError):
+                models[kind].model_validate({**_layer_root(kind), **minimal[kind], name: []})
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
+    ],
+)
+def test_layer_roots_are_v4_only(schema: str) -> None:
+    document = {
+        "schema": schema,
+        "name": "root-analysis",
+        "analysis": {
+            "target": "run",
+            "recipe": "quillon.analysis",
+            "root": {"ref": "authority.json", "sha256": "3" * 64},
+        },
+    }
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        _parse(document)
+    assert caught.value.category is ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION
+
+
+def test_layer_root_and_base_are_mutually_exclusive_and_kind_shape_is_exact() -> None:
+    with pytest.raises(ExperimentEnvelopeRejection, match="does not also state base"):
+        _parse(
+            {
+                "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+                "name": "root-analysis",
+                "base": "bases/analysis.json",
+                "analysis": {
+                    "target": "run",
+                    "recipe": "quillon.analysis",
+                    "root": {"ref": "authority.json", "sha256": "3" * 64},
+                },
+            }
+        )
+
+    with pytest.raises(ExperimentEnvelopeRejection) as inline:
+        _parse(
+            {
+                "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+                "name": "inline-analysis",
+                "analysis": {
+                    "target": "run",
+                    "recipe": "quillon.analysis",
+                    "root": {
+                        "payload": _layer_root("analysis_run"),
+                    },
+                },
+            }
+        )
+    assert inline.value.category is ExperimentEnvelopeRejectionCategory.UNKNOWN_FIELD
+
+    with pytest.raises(ExperimentEnvelopeRejection, match="row_expansion vocabulary"):
+        _parse(
+            {
+                "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+                "name": "root-figure",
+                "figure": {
+                    "mode": "root",
+                    "root": {"ref": "authority.json", "sha256": "3" * 64},
+                    "rows": {"mode": "all", "index": "rows.json"},
+                },
+            }
+        )
 
 
 @pytest.mark.parametrize(

@@ -41,9 +41,14 @@ from feedbax.contracts.experiment_envelope import (
 from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION,
+    EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2,
+    EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID,
+    EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1,
     REPORT_OUTPUT,
     TRAINING_OUTPUT_V6,
@@ -122,6 +127,41 @@ def _compile_root(repo: Path, root: dict[str, Any]) -> Any:
     path = envelope_path(repo, "rooted")
     write_envelope(path, _root_envelope(root))
     return kernel().compile_envelope_file(path, repo_root=repo)
+
+
+def _layer_root_authority(kind: str, **fields: Any) -> dict[str, Any]:
+    return {
+        "schema_id": EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID,
+        "schema_version": EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
+        "kind": kind,
+        **fields,
+    }
+
+
+def _compile_layer_root(
+    repo: Path,
+    alias: str,
+    authority: dict[str, Any],
+    layer: dict[str, Any],
+    *,
+    payload_path: list[str] | None = None,
+    whole_document: dict[str, Any] | None = None,
+) -> Any:
+    ref = f"authorities/{alias}.json"
+    document = authority if whole_document is None else whole_document
+    write_json(repo / ref, document)
+    root: dict[str, Any] = {"ref": ref, "sha256": canonical_sha256(document)}
+    if payload_path is not None:
+        root["payload_path"] = payload_path
+    content = dict(layer)
+    content["root"] = root
+    envelope = {
+        "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+        "name": alias,
+        "analysis" if "target" in content else "figure": content,
+    }
+    write_envelope(envelope_path(repo, alias), envelope)
+    return kernel().compile_envelope_file(envelope_path(repo, alias), repo_root=repo)
 
 
 # -- canonical form ------------------------------------------------------
@@ -1437,7 +1477,7 @@ def test_prior_and_authority_free_root_document_lock_bytes_match_signed_base(
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2: (
             "d6db3543cf5bdea2e4ab59f0a5934aa7e51629b2f0d304a318c7d31df257bf03"
         ),
-        EXPERIMENT_ENVELOPE_SCHEMA_VERSION: (
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3: (
             "a6edabd2ae82b750daf2b13c318620de76d98ae847c3139c6a3b73be9ef3235a"
         ),
     }
@@ -1450,30 +1490,35 @@ def test_prior_and_authority_free_root_document_lock_bytes_match_signed_base(
         document["schema"] = schema
         write_envelope(path, document)
         outcome = kernel().compile_envelope_file(path, repo_root=repo)
-        assert canonical_sha256(
-            {"document": outcome.document, "lock": outcome.compile_lock}
-        ) == expected[schema]
+        assert (
+            canonical_sha256({"document": outcome.document, "lock": outcome.compile_lock})
+            == expected[schema]
+        )
 
     write_envelope(
         path,
-        _root_envelope(
-            {
-                "kind": "composition",
-                "parent": {
-                    "kind": "resolved_output",
-                    "ref": "artifact-blob:generic-source",
-                    "resolved_root_hash": "3" * 64,
-                    "row_id": "source-row",
-                    "checkpoint_transaction_id": "checkpoint-1",
-                },
-                "rows": [{"id": "condition-a"}],
-            }
-        ),
+        {
+            **_root_envelope(
+                {
+                    "kind": "composition",
+                    "parent": {
+                        "kind": "resolved_output",
+                        "ref": "artifact-blob:generic-source",
+                        "resolved_root_hash": "3" * 64,
+                        "row_id": "source-row",
+                        "checkpoint_transaction_id": "checkpoint-1",
+                    },
+                    "rows": [{"id": "condition-a"}],
+                }
+            ),
+            "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
+        },
     )
     outcome = kernel().compile_envelope_file(path, repo_root=repo)
-    assert canonical_sha256(
-        {"document": outcome.document, "lock": outcome.compile_lock}
-    ) == expected[EXPERIMENT_ENVELOPE_SCHEMA_VERSION]
+    assert (
+        canonical_sha256({"document": outcome.document, "lock": outcome.compile_lock})
+        == expected[EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3]
+    )
 
 
 def test_authored_composition_root_preserves_both_hash_domains_and_root_identity(
@@ -1626,10 +1671,13 @@ def test_generated_schema_boundary_delta_round_trips_the_compile_lock(repo: Path
         },
     )
 
-    assert load_compile_lock(
-        outcome.compile_lock,
-        field="generated/schema-boundary.compile-lock.json",
-    ) == outcome.compile_lock
+    assert (
+        load_compile_lock(
+            outcome.compile_lock,
+            field="generated/schema-boundary.compile-lock.json",
+        )
+        == outcome.compile_lock
+    )
 
     missing = json.loads(json.dumps(outcome.compile_lock))
     del missing["resolved_deltas"]["schema-boundary"]["schema_version"]
@@ -2151,17 +2199,26 @@ def test_root_authority_is_selected_flattened_and_shared_by_two_consumers(repo: 
 
     first = _compile_root(repo, root)
     second = _compile_root(repo, {**root, "rows": [{"id": "condition-b"}]})
-    assert first.document["sources"] == second.document["sources"] == [
-        {**authority["sources"][0], "optional": False},
-        {**root["sources"][0], "optional": False},
-    ]
-    assert first.document["derivations"] == second.document["derivations"] == [
-        authority["derivations"][0],
-        root["derivations"][0],
-    ]
+    assert (
+        first.document["sources"]
+        == second.document["sources"]
+        == [
+            {**authority["sources"][0], "optional": False},
+            {**root["sources"][0], "optional": False},
+        ]
+    )
+    assert (
+        first.document["derivations"]
+        == second.document["derivations"]
+        == [
+            authority["derivations"][0],
+            root["derivations"][0],
+        ]
+    )
     assert "authority" not in first.document
-    assert first.compile_lock["identity_contributions"]["training_root"]["authority"] == (
-        root["authority"]
+    assert (
+        first.compile_lock["identity_contributions"]["training_root"]["authority"]
+        == (root["authority"])
     )
     pins = {
         (item["ref"], item["content_hash"])
@@ -2412,9 +2469,7 @@ def test_root_authority_refuses_internal_and_cross_boundary_collisions_before_pi
         "authority": {"ref": authority_ref, "sha256": canonical_sha256(authority)},
     }
     if local and kind == "alias":
-        root["sources"] = [
-            {"alias": "shared", "kind": "json", "uri": "inputs/local-missing.json"}
-        ]
+        root["sources"] = [{"alias": "shared", "kind": "json", "uri": "inputs/local-missing.json"}]
     if local and kind == "output":
         root["derivations"] = [
             {"output_path": "payload.shared", "query": {"item": "local", "path": "items"}}
@@ -2892,6 +2947,357 @@ def test_checkpoint_initialization_may_not_name_a_row_the_matrix_no_longer_runs(
 
     assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.UNRESOLVED_ROW_KEY
     assert "not a row this matrix runs" in str(excinfo.value)
+
+
+# -- v4 analysis/figure layer roots -------------------------------------------
+
+
+def test_all_three_layer_root_kinds_compile_with_one_pin_and_no_parent(repo: Path) -> None:
+    run = _compile_layer_root(
+        repo,
+        "root-analysis-run",
+        _layer_root_authority(
+            "analysis_run",
+            input_requirements=[],
+            evaluation_states_policy="require_durable",
+            params={"window": 4},
+        ),
+        {
+            "target": "run",
+            "recipe": "quillon.span_summary",
+            "params": {"stride": 2},
+        },
+    )
+    bundle = _compile_layer_root(
+        repo,
+        "root-analysis-bundle",
+        _layer_root_authority(
+            "analysis_bundle",
+            description="generic bundle",
+            predicate={"manifest_kind": "EvaluationRunManifest"},
+            templates=[],
+            params_base={"params": {"trim": 1}},
+            stages=[],
+            metadata={},
+        ),
+        {"target": "bundle"},
+    )
+    figure = _compile_layer_root(
+        repo,
+        "root-figure",
+        _layer_root_authority(
+            "figure",
+            assembler="quillon.span_assembler",
+            assembler_params={"height": 300},
+            panels=[{"name": "span", "title": "span", "row": 1, "col": 1}],
+        ),
+        {
+            "mode": "root",
+            "inputs": [
+                {
+                    "input_role": "summary",
+                    "ref": {
+                        "kind": "receipt",
+                        "manifest_kind": "quillon.analysis_run",
+                        "manifest_id": "summary-1",
+                        "manifest_sha256": "7" * 64,
+                        "size_bytes": 4096,
+                    },
+                }
+            ],
+            "delta": {
+                "layer_id": "figure-height",
+                "patches": [{"path": "assembler_params.height", "op": "replace", "value": 450}],
+            },
+        },
+    )
+
+    assert run.document == {
+        "schema_id": "feedbax.spec.analysis_run",
+        "schema_version": "feedbax.spec.analysis_run.v2",
+        "analysis_type": "quillon.span_summary",
+        "inputs": [],
+        "input_requirements": [],
+        "evaluation_states_policy": "require_durable",
+        "params": {"window": 4, "stride": 2},
+    }
+    assert bundle.document["schema_version"] == "feedbax.spec.analysis_bundle.v6"
+    assert bundle.document["name"] == "root-analysis-bundle"
+    assert bundle.document["params_base"]["params"] == {"trim": 1}
+    assert figure.document["schema_version"] == "feedbax.spec.figure.v2"
+    assert figure.document["name"] == "root-figure"
+    assert figure.document["inputs"] == []
+    assert figure.document["input_authorities"] == []
+    assert figure.document["assembler_params"]["height"] == 450
+
+    for outcome, kind in (
+        (run, "analysis_run"),
+        (bundle, "analysis_bundle"),
+        (figure, "figure"),
+    ):
+        lock = outcome.compile_lock
+        assert lock["base"] is None
+        assert lock["lineage"] == []
+        pins = [item for item in lock["references"] if item["kind"] == "content_pin"]
+        assert len(pins) == 1
+        identity = lock["identity_contributions"]["layer_root"]
+        assert identity["kind"] == kind
+        assert identity["sha256"] == pins[0]["content_hash"]
+        assert len(identity["selected_authority_sha256"]) == 64
+        assert lock["compiler_contract"]["contract_version"] == (
+            EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION
+        )
+    assert any(
+        reference["kind"] == "authenticated_receipt"
+        for reference in figure.compile_lock["references"]
+    )
+
+
+def test_v3_compilation_keeps_compiler_v2_bytes(repo: Path) -> None:
+    envelope = _read(repo, "widened")
+    envelope["schema"] = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3
+    _write(repo, "widened", envelope)
+
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert outcome.compile_lock["compiler_contract"]["contract_version"] == (
+        EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2
+    )
+
+
+def test_selector_is_verified_after_whole_file_and_changes_selected_identity(repo: Path) -> None:
+    first = _layer_root_authority("analysis_run", params={"window": 3})
+    second = _layer_root_authority("analysis_run", params={"window": 5})
+    whole = {"members": {"first": first, "second": second}, "padding": "x" * 20_000}
+    outcome = _compile_layer_root(
+        repo,
+        "selected-analysis",
+        first,
+        {"target": "run", "recipe": "quillon.span_summary"},
+        payload_path=["members", "first"],
+        whole_document=whole,
+    )
+    envelope_bytes = envelope_path(repo, "selected-analysis").read_bytes()
+
+    assert len(envelope_bytes) < 2_048
+    assert len((repo / "authorities/selected-analysis.json").read_bytes()) > 20_000
+    assert outcome.document["params"] == {"window": 3}
+    identity = outcome.compile_lock["identity_contributions"]["layer_root"]
+    assert identity["payload_path"] == ["members", "first"]
+    assert identity["selected_authority_sha256"] == canonical_sha256(first)
+
+    envelope = _read(repo, "selected-analysis")
+    envelope["analysis"]["root"]["payload_path"] = ["members", "second"]
+    _write(repo, "selected-analysis", envelope)
+    selected_second = kernel().compile_envelope_file(
+        envelope_path(repo, "selected-analysis"), repo_root=repo
+    )
+    assert selected_second.document["params"] == {"window": 5}
+    assert (
+        selected_second.compile_lock["identity_contributions"]["layer_root"][
+            "selected_authority_sha256"
+        ]
+        != identity["selected_authority_sha256"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "category", "message"),
+    [
+        ("missing_ref", ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "Field required"),
+        ("missing_pin", ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "Field required"),
+        ("missing_file", ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE, "cannot load"),
+        ("wrong_pin", ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE, "hash mismatch"),
+        (
+            "missing_selector",
+            ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
+            "missing object key",
+        ),
+        (
+            "non_object",
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "must select a JSON object",
+        ),
+        (
+            "wrong_version",
+            ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+            "unsupported layer root authority",
+        ),
+        (
+            "missing_schema_id",
+            ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
+            "selected payload",
+        ),
+        (
+            "missing_schema_version",
+            ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
+            "selected payload",
+        ),
+        ("missing_kind", ExperimentEnvelopeRejectionCategory.MISSING_FIELD, "selected payload"),
+        ("unknown_field", ExperimentEnvelopeRejectionCategory.UNKNOWN_FIELD, "selected payload"),
+    ],
+)
+def test_layer_root_failures_use_the_closed_rejection_vocabulary(
+    repo: Path,
+    mutation: str,
+    category: ExperimentEnvelopeRejectionCategory,
+    message: str,
+) -> None:
+    authority = _layer_root_authority("analysis_run", params={})
+    whole: dict[str, Any] = {"selected": authority, "scalar": 3}
+    ref = "authorities/refusal.json"
+    write_json(repo / ref, whole)
+    root: dict[str, Any] = {
+        "ref": ref,
+        "sha256": canonical_sha256(whole),
+        "payload_path": ["selected"],
+    }
+    if mutation == "missing_ref":
+        root.pop("ref")
+    elif mutation == "missing_pin":
+        root.pop("sha256")
+    elif mutation == "missing_file":
+        root["ref"] = "authorities/missing.json"
+    elif mutation == "wrong_pin":
+        root["sha256"] = "0" * 64
+    elif mutation == "missing_selector":
+        root["payload_path"] = ["missing"]
+    elif mutation == "non_object":
+        root["payload_path"] = ["scalar"]
+    else:
+        selected = dict(authority)
+        if mutation == "wrong_version":
+            selected["schema_version"] = f"{EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID}.v0"
+        elif mutation == "missing_schema_id":
+            selected.pop("schema_id")
+        elif mutation == "missing_schema_version":
+            selected.pop("schema_version")
+        elif mutation == "missing_kind":
+            selected.pop("kind")
+        else:
+            selected["payload"] = {}
+        whole["selected"] = selected
+        write_json(repo / ref, whole)
+        root["sha256"] = canonical_sha256(whole)
+    write_envelope(
+        envelope_path(repo, "root-refusal"),
+        {
+            "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+            "name": "root-refusal",
+            "analysis": {
+                "target": "run",
+                "recipe": "quillon.span_summary",
+                "root": root,
+            },
+        },
+    )
+
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        kernel().compile_envelope_file(envelope_path(repo, "root-refusal"), repo_root=repo)
+    assert caught.value.category is category
+    assert message in str(caught.value)
+    if mutation == "wrong_version":
+        assert caught.value.field == "analysis.root.schema_version"
+
+
+def test_layer_root_kind_mismatch_and_nested_identity_delta_fail_closed(repo: Path) -> None:
+    with pytest.raises(ExperimentEnvelopeRejection) as mismatch:
+        _compile_layer_root(
+            repo,
+            "wrong-kind",
+            _layer_root_authority("figure", assembler="quillon.span_assembler"),
+            {"target": "run", "recipe": "quillon.span_summary"},
+        )
+    assert mismatch.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert "requires authority kind 'analysis_run'" in str(mismatch.value)
+
+    rooted = _compile_layer_root(
+        repo,
+        "nested-result",
+        _layer_root_authority(
+            "analysis_run",
+            params={
+                "result": {
+                    "schema_id": "quillon.result",
+                    "schema_version": "quillon.result.v1",
+                    "fields": [],
+                }
+            },
+        ),
+        {"target": "run", "recipe": "quillon.span_summary"},
+    )
+    assert rooted.document["params"]["result"]["schema_version"] == "quillon.result.v1"
+
+    with pytest.raises(ExperimentEnvelopeRejection, match="without a declared"):
+        _compile_layer_root(
+            repo,
+            "nested-result-delta",
+            _layer_root_authority("analysis_run", params={}),
+            {
+                "target": "run",
+                "recipe": "quillon.span_summary",
+                "delta": {
+                    "layer_id": "typed-result",
+                    "patches": [
+                        {
+                            "path": "params.result",
+                            "op": "add",
+                            "value": {
+                                "schema_id": "quillon.result",
+                                "schema_version": "quillon.result.v1",
+                            },
+                        }
+                    ],
+                },
+            },
+        )
+
+
+def test_malformed_nested_bundle_authority_uses_output_model_and_closed_rejection(
+    repo: Path,
+) -> None:
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        _compile_layer_root(
+            repo,
+            "malformed-bundle",
+            _layer_root_authority(
+                "analysis_bundle",
+                predicate={"manifest_kind": "EvaluationRunManifest"},
+                stages=[{"name": "missing-required-kind"}],
+            ),
+            {"target": "bundle"},
+        )
+
+    assert caught.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert "analysis_bundle.stages.0.kind" in str(caught.value)
+    assert "kind" in str(caught.value)
+
+
+def test_rooted_figure_feeds_existing_row_expansion(repo: Path) -> None:
+    from tests.fake_project_experiment import FIGURE_BASE, ROW_INDEX_BASE
+
+    base = json.loads((repo / FIGURE_BASE).read_text())
+    authority = _layer_root_authority(
+        "figure",
+        **{
+            key: value
+            for key, value in base.items()
+            if key not in {"schema_id", "schema_version", "name", "inputs", "input_authorities"}
+        },
+    )
+    _compile_layer_root(repo, "rooted-figure", authority, {"mode": "root"})
+    expansion = _read(repo, "widened-plot")
+    expansion["base"] = "rooted-figure"
+    _write(repo, "widened-plot", expansion)
+
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
+
+    assert [panel["name"] for panel in outcome.document["panels"]] == [
+        "row_1__span",
+        "row_2__span",
+    ]
+    pins = [item for item in outcome.compile_lock["references"] if item["kind"] == "content_pin"]
+    assert [pin["ref"] for pin in pins] == [ROW_INDEX_BASE]
 
 
 # -- figure mode ---------------------------------------------------------------

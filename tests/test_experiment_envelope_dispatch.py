@@ -145,7 +145,7 @@ def test_require_builtin_envelope_schema_accepts_only_the_one_dialect() -> None:
     for supported in EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS:
         require_builtin_envelope_schema(supported)
 
-    for schema in (FOREIGN_SCHEMA, "", "feedbax.experiment_envelope.v4"):
+    for schema in (FOREIGN_SCHEMA, "", "feedbax.experiment_envelope.v5"):
         with pytest.raises(ExperimentEnvelopeRejection) as caught:
             require_builtin_envelope_schema(schema)
         assert caught.value.category is (
