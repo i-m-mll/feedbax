@@ -231,11 +231,6 @@ def composition_identity_projection(node: CompositionDocument) -> dict[str, Any]
     }
 
 
-def composition_envelope(node: CompositionDocument) -> dict[str, Any]:
-    """Backward-compatible name for the public composition identity projection."""
-    return composition_identity_projection(node)
-
-
 def authored_envelope_hash(node: CompositionDocument) -> str:
     return training_spec_sha256(composition_identity_projection(node))
 

@@ -101,6 +101,17 @@ from feedbax.contracts.extraction import (
     EXTRACTION_PRODUCT_SPEC_SCHEMA_ID,
     EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
 )
+from feedbax.contracts.experiment_envelope_dialect import (
+    ROOT_TRAINING_AUTHORITY_SCHEMA_ID,
+    ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
+)
+from feedbax.contracts.run_composition import (
+    COMPOSITION_SCHEMA_ID,
+    COMPOSITION_SCHEMA_VERSION,
+    COMPOSITION_SCHEMA_VERSION_V1,
+    CompositionNode,
+    parse_composition_node,
+)
 from feedbax.contracts.manifest import (
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3,
     FIGURE_MANIFEST_SCHEMA_ID,
@@ -1148,6 +1159,41 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["SpecPayload"].namespace == SchemaNamespaceKind.MANIFEST
     assert not families["RegistryEntry"].durable
     assert not families["StudioSchemaRegistry"].durable
+
+
+def test_root_training_authority_and_composition_versions_have_explicit_policy() -> None:
+    authority = default_spec_registry.resolve("RootTrainingAuthority")
+    assert authority.identity == ROOT_TRAINING_AUTHORITY_SCHEMA_ID
+    assert authority.current_version == ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION
+    assert authority.policy is not None
+    assert authority.policy.stance == "reject"
+    assert authority.policy.required_tests == (
+        "tests/test_experiment_envelope_dialect.py",
+        "tests/test_structured_spec_migrations.py",
+    )
+
+    composition = default_spec_registry.resolve("TrainingRunComposition")
+    assert composition.identity == COMPOSITION_SCHEMA_ID
+    assert composition.current_version == COMPOSITION_SCHEMA_VERSION
+    assert composition.policy is not None
+    assert composition.policy.stance == "reject"
+    assert composition.policy.supported_old_versions == (COMPOSITION_SCHEMA_VERSION_V1,)
+    assert default_spec_registry.available_migrations("TrainingRunComposition") == ()
+
+    parsed = parse_composition_node(
+        {
+            "schema_id": COMPOSITION_SCHEMA_ID,
+            "schema_version": COMPOSITION_SCHEMA_VERSION_V1,
+            "name": "v1-remains-its-own-grammar",
+            "parent": {
+                "kind": "inline",
+                "payload": {},
+                "schema_id": "example.intent",
+                "schema_version": "example.intent.v1",
+            },
+        }
+    )
+    assert isinstance(parsed, CompositionNode)
 
 
 @pytest.mark.parametrize(

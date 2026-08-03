@@ -34,7 +34,7 @@ from feedbax.training.run_matrix import (
     materialize_adapted_run_matrix,
     _resolve_compiled_training_row_parent,
     resolve_base_payload_with_attribution,
-    _verify_compiled_training_row_parent,
+    verify_compiled_training_row_parent,
 )
 from feedbax.training.row_lowering import (
     GovernedTrainingRowParent,
@@ -584,10 +584,10 @@ def test_compiled_row_parent_refuses_pin_lock_row_and_reference_drift(tmp_path: 
         content_hash=canonical_sha256(source),
     )
     parent = _write_compiled_matrix(tmp_path, references=[reference])
-    _verify_compiled_training_row_parent(parent, repo_root=tmp_path)
+    verify_compiled_training_row_parent(parent, repo_root=tmp_path)
 
     with pytest.raises(RunMatrixError, match="matrix.*pin mismatch"):
-        _verify_compiled_training_row_parent(
+        verify_compiled_training_row_parent(
             parent.model_copy(
                 update={"matrix": parent.matrix.model_copy(update={"sha256": "0" * 64})}
             ),
@@ -619,13 +619,13 @@ def test_compiled_row_parent_refuses_pin_lock_row_and_reference_drift(tmp_path: 
         }
     )
     with pytest.raises(RunMatrixError, match="content_hash does not match matrix"):
-        _verify_compiled_training_row_parent(mismatched_parent, repo_root=tmp_path)
+        verify_compiled_training_row_parent(mismatched_parent, repo_root=tmp_path)
     lock_path.write_text(json.dumps(original_lock), encoding="utf-8")
 
     source["changed"] = True
     (tmp_path / "source.json").write_text(json.dumps(source), encoding="utf-8")
     with pytest.raises(RunMatrixError, match="references/0.*pin mismatch"):
-        _verify_compiled_training_row_parent(parent, repo_root=tmp_path)
+        verify_compiled_training_row_parent(parent, repo_root=tmp_path)
 
 
 def test_compiled_row_parent_requires_governed_resolved_output_custody(tmp_path: Path) -> None:

@@ -89,6 +89,10 @@ from feedbax.contracts.extraction import (
     EXTRACTION_PRODUCT_SPEC_SCHEMA_ID,
     EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
 )
+from feedbax.contracts.experiment_envelope_dialect import (
+    ROOT_TRAINING_AUTHORITY_SCHEMA_ID,
+    ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
+)
 from feedbax.contracts.run_matrix import (
     AUTHORED_TRAINING_ROW_SCHEMA_ID,
     AUTHORED_TRAINING_ROW_SCHEMA_VERSION,
@@ -177,6 +181,7 @@ from feedbax.contracts.remote_smoke import (
 from feedbax.contracts.run_composition import (
     COMPOSITION_SCHEMA_ID,
     COMPOSITION_SCHEMA_VERSION,
+    COMPOSITION_SCHEMA_VERSION_V1,
     EXECUTION_DEPENDENCY_SCHEMA_ID,
     EXECUTION_DEPENDENCY_SCHEMA_VERSION,
 )
@@ -3684,8 +3689,27 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("authored training program composition",),
             consumed_by=("training intent flattening",),
             description="Single-parent recursive authored composition with ordered deltas.",
+            supported_old_versions=(COMPOSITION_SCHEMA_VERSION_V1,),
             rejected_old_versions=(f"{COMPOSITION_SCHEMA_ID}.v0",),
             required_tests=("tests/test_training_run_composition.py",),
+            notes=(
+                "v1 remains parser-supported as its exact grammar; it is not migrated to v2 "
+                "because v2 adds a parent kind and authored identity must not change silently."
+            ),
+        ),
+        _family(
+            "RootTrainingAuthority",
+            ROOT_TRAINING_AUTHORITY_SCHEMA_ID,
+            ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.experiment_envelope_dialect",
+            emitted_by=("root training envelope authors",),
+            consumed_by=("feedbax.envelope.compile",),
+            description="Content-pinned source and derivation authority for root training.",
+            rejected_old_versions=(f"{ROOT_TRAINING_AUTHORITY_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_experiment_envelope_dialect.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "CheckpointStructure",
