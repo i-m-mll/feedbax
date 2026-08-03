@@ -278,6 +278,7 @@ def test_matrix_v6_binds_resolved_parent_and_target_only_authority() -> None:
             "kind": "fork_from_selected_checkpoint",
             "source_authority": {
                 "kind": "resolved_output_root",
+                "source_run_id": "source-run",
                 "resolved_root_hash": "c" * 64,
             },
             "source_row_id": "source",
@@ -302,6 +303,40 @@ def test_matrix_v6_binds_resolved_parent_and_target_only_authority() -> None:
     ]
     assert TrainingRunMatrixSpec.model_validate(payload).base.row_id == "source"
 
+    source_authority = payload["execution_dependencies"][0]["source_authority"]
+    source_run_id = source_authority.pop("source_run_id")
+    with pytest.raises(ValidationError, match="source_run_id"):
+        TrainingRunMatrixSpec.model_validate(payload)
+    source_authority["source_run_id"] = source_run_id
+
     payload["execution_dependencies"][0]["source_row_id"] = "other"
     with pytest.raises(ValidationError, match="selected checkpoint drift"):
         TrainingRunMatrixSpec.model_validate(payload)
+
+
+def test_matrix_v6_accepts_equal_resolved_source_run_and_row_ids() -> None:
+    payload = _minimal_spec()
+    payload["base"] = {
+        "kind": "resolved_output",
+        "ref": "artifact-blob:source",
+        "resolved_root_hash": "c" * 64,
+        "row_id": "source",
+        "checkpoint_transaction_id": "transaction",
+    }
+    payload["execution_dependencies"] = [
+        {
+            "kind": "fork_from_selected_checkpoint",
+            "source_authority": {
+                "kind": "resolved_output_root",
+                "source_run_id": "source",
+                "resolved_root_hash": "c" * 64,
+            },
+            "source_row_id": "source",
+            "checkpoint_transaction_id": "transaction",
+            "checkpoint_root_hash": "d" * 64,
+            "source_barrier": "after_segment",
+        }
+    ]
+
+    dependency = TrainingRunMatrixSpec.model_validate(payload).execution_dependencies[0]
+    assert dependency.source_authority.source_run_id == dependency.source_row_id == "source"

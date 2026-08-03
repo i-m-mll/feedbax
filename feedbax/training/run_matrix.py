@@ -662,6 +662,13 @@ def _validate_v6_fork_authority(
     if not isinstance(dependency, ForkFromSelectedCheckpointV6):
         return
     if isinstance(dependency.source_authority, ResolvedOutputRootForkSourceAuthority):
+        observed_run_id = source_manifest.get("run_id")
+        if observed_run_id != dependency.source_authority.source_run_id:
+            raise RunMatrixError(
+                "matrix-v6 selected checkpoint run authority drifts; "
+                f"declared={dependency.source_authority.source_run_id!r} "
+                f"observed={observed_run_id!r}"
+            )
         integrity = source_manifest.get("content_integrity_digest")
         transaction_root = (
             integrity.get("transaction_root_sha256") if isinstance(integrity, Mapping) else None
@@ -670,21 +677,24 @@ def _validate_v6_fork_authority(
         source_row = metadata.get("matrix_row_id") if isinstance(metadata, Mapping) else None
         if source_row is None:
             source_row = source_manifest.get("row_id")
+        if source_row is not None and source_row != dependency.source_row_id:
+            raise RunMatrixError(
+                "matrix-v6 selected checkpoint row authority drifts; "
+                f"declared={dependency.source_row_id!r} observed={source_row!r}"
+            )
         observed = (
-            source_row,
             source_manifest.get("transaction_id"),
             transaction_root,
             source_manifest.get("barrier"),
         )
         expected = (
-            dependency.source_row_id,
             dependency.checkpoint_transaction_id,
             dependency.checkpoint_root_hash,
             dependency.source_barrier,
         )
         if observed != expected:
             raise RunMatrixError(
-                "matrix-v6 selected checkpoint row, transaction, root, or barrier authority drifts; "
+                "matrix-v6 selected checkpoint transaction, root, or barrier authority drifts; "
                 f"declared={expected!r} observed={observed!r}"
             )
     rows = {row.row_id: row for row in materialized.rows}

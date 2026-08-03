@@ -900,6 +900,7 @@ envelopes = {
                     "checkpoint_transaction_id": "source-transaction",
                 },
                 "selected_checkpoint": {
+                    "source_run_id": "source-run",
                     "checkpoint_root_hash": "9" * 64,
                     "source_barrier": "after_segment",
                 },
@@ -972,6 +973,7 @@ assert resolved.rows[0].authored_payload["training_config"] == run["training_con
 dependency = outcomes["resolved-root"].document["execution_dependencies"][0]
 assert dependency["source_authority"] == {
     "kind": "resolved_output_root",
+    "source_run_id": "source-run",
     "resolved_root_hash": canonical_sha256(run),
 }
 assert dependency["source_row_id"] == "source-row"

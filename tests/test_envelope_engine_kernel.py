@@ -1587,6 +1587,7 @@ def test_root_selected_checkpoint_lowers_exact_resolved_authority_and_barrier(
             "checkpoint_transaction_id": "checkpoint-1",
         },
         "selected_checkpoint": {
+            "source_run_id": "source-run",
             "checkpoint_root_hash": "4" * 64,
             "source_barrier": "after_segment",
         },
@@ -1604,6 +1605,7 @@ def test_root_selected_checkpoint_lowers_exact_resolved_authority_and_barrier(
         "kind": "fork_from_selected_checkpoint",
         "source_authority": {
             "kind": "resolved_output_root",
+            "source_run_id": "source-run",
             "resolved_root_hash": "3" * 64,
         },
         "source_row_id": "source-row",
@@ -1625,6 +1627,7 @@ def test_root_selected_checkpoint_lowers_exact_resolved_authority_and_barrier(
     [
         "missing_row",
         "missing_transaction",
+        "missing_source_run",
         "checkpoint_initialization",
         "authored_parent",
     ],
@@ -1643,6 +1646,7 @@ def test_root_selected_checkpoint_refuses_incomplete_or_competing_authority(
         "kind": "composition",
         "parent": parent,
         "selected_checkpoint": {
+            "source_run_id": "source-run",
             "checkpoint_root_hash": "4" * 64,
             "source_barrier": "after_segment",
         },
@@ -1653,6 +1657,8 @@ def test_root_selected_checkpoint_refuses_incomplete_or_competing_authority(
         parent.pop("row_id")
     elif mutation == "missing_transaction":
         parent.pop("checkpoint_transaction_id")
+    elif mutation == "missing_source_run":
+        root["selected_checkpoint"].pop("source_run_id")
     elif mutation == "checkpoint_initialization":
         root["checkpoint_initialization"] = [
             {

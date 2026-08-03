@@ -425,6 +425,7 @@ CompositionRootParent: TypeAlias = Annotated[
 class RootSelectedCheckpointAuthoring(DialectModel):
     """Root-relative checkpoint authority selected from one resolved parent row."""
 
+    source_run_id: str = Field(min_length=1)
     checkpoint_root_hash: str
     source_barrier: str = Field(min_length=1)
     slot_transforms: list[DurableSlotTransformV6] = Field(default_factory=list)

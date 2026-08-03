@@ -164,6 +164,7 @@ def test_matrix_v6_resolved_fork_rechecks_checkpoint_and_target_slot_authority(
                     "kind": "fork_from_selected_checkpoint",
                     "source_authority": {
                         "kind": "resolved_output_root",
+                        "source_run_id": "source-run",
                         "resolved_root_hash": "a" * 64,
                     },
                     "source_row_id": "source-row",
@@ -186,6 +187,7 @@ def test_matrix_v6_resolved_fork_rechecks_checkpoint_and_target_slot_authority(
         }
     )
     manifest = {
+        "run_id": "source-run",
         "transaction_id": "source-transaction",
         "barrier": "after_segment",
         "metadata": {"matrix_row_id": "source-row"},
@@ -198,13 +200,66 @@ def test_matrix_v6_resolved_fork_rechecks_checkpoint_and_target_slot_authority(
         row_target_only_slots={row.row_id: {slot.name: authority}},
     )
 
-    with pytest.raises(RunMatrixError, match="row, transaction, root, or barrier"):
-        _validate_v6_fork_authority(
-            matrix,
-            materialized,
-            source_manifest={**manifest, "barrier": "wrong"},
-            row_target_only_slots={row.row_id: {slot.name: authority}},
-        )
+    for observed_run_id in (None, "wrong-run"):
+        drifted_manifest = {**manifest, "run_id": observed_run_id}
+        if observed_run_id is None:
+            drifted_manifest.pop("run_id")
+        with pytest.raises(RunMatrixError, match="run authority drifts"):
+            _validate_v6_fork_authority(
+                matrix,
+                materialized,
+                source_manifest=drifted_manifest,
+                row_target_only_slots={row.row_id: {slot.name: authority}},
+            )
+
+    without_row_assertion = {**manifest}
+    without_row_assertion.pop("metadata")
+    _validate_v6_fork_authority(
+        matrix,
+        materialized,
+        source_manifest=without_row_assertion,
+        row_target_only_slots={row.row_id: {slot.name: authority}},
+    )
+    _validate_v6_fork_authority(
+        matrix,
+        materialized,
+        source_manifest={**without_row_assertion, "row_id": "source-row"},
+        row_target_only_slots={row.row_id: {slot.name: authority}},
+    )
+    for row_manifest in (
+        {**without_row_assertion, "row_id": "wrong-row"},
+        {**manifest, "metadata": {"matrix_row_id": "wrong-row"}, "row_id": "source-row"},
+    ):
+        with pytest.raises(RunMatrixError, match="row authority drifts"):
+            _validate_v6_fork_authority(
+                matrix,
+                materialized,
+                source_manifest=row_manifest,
+                row_target_only_slots={row.row_id: {slot.name: authority}},
+            )
+
+    for drifted_manifest in (
+        {key: value for key, value in manifest.items() if key != "transaction_id"},
+        {**manifest, "transaction_id": "wrong-transaction"},
+        {
+            **manifest,
+            "content_integrity_digest": {},
+        },
+        {
+            **manifest,
+            "content_integrity_digest": {"transaction_root_sha256": "0" * 64},
+        },
+        {key: value for key, value in manifest.items() if key != "barrier"},
+        {**manifest, "barrier": "wrong"},
+    ):
+        with pytest.raises(RunMatrixError, match="transaction, root, or barrier"):
+            _validate_v6_fork_authority(
+                matrix,
+                materialized,
+                source_manifest=drifted_manifest,
+                row_target_only_slots={row.row_id: {slot.name: authority}},
+            )
+
     with pytest.raises(RunMatrixError, match="runtime declarations"):
         _validate_v6_fork_authority(
             matrix,

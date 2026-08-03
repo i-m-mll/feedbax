@@ -1140,6 +1140,7 @@ def _lower_root_training(
                 "kind": "fork_from_selected_checkpoint",
                 "source_authority": {
                     "kind": "resolved_output_root",
+                    "source_run_id": root.selected_checkpoint.source_run_id,
                     "resolved_root_hash": parent.resolved_root_hash,
                 },
                 "source_row_id": parent.row_id,

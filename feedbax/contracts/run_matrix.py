@@ -608,6 +608,7 @@ class ResolvedOutputRootForkSourceAuthority(StrictModel):
     """Exact resolved-output semantic root when no execution hash exists."""
 
     kind: Literal["resolved_output_root"] = "resolved_output_root"
+    source_run_id: str = Field(min_length=1)
     resolved_root_hash: str
 
     @field_validator("resolved_root_hash")
