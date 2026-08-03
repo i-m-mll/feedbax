@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 import jax.numpy as jnp
 import pytest
 
+from feedbax.analysis.analysis import SinglePort
 from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.execution import run_analyses_with_context
+from feedbax.analysis.func import ApplyFns
 from feedbax.analysis.materialization import (
     ContextMaterializer,
     MaterializationResult,
@@ -26,6 +29,24 @@ def _array_closing_materializer(value: float):
         return {"value": array[0]}
 
     return materialize
+
+
+def _mapping_closing_callable(mapping):
+    copy_value = deepcopy
+
+    def project(value):
+        return copy_value(mapping), value
+
+    return project
+
+
+def test_generic_analysis_identity_hashes_callable_with_heterogeneous_mapping_keys() -> None:
+    analysis = ApplyFns(
+        inputs=SinglePort(input="states"),
+        fns=_mapping_closing_callable({str: 1, int: 2}),
+    )
+
+    assert len(analysis.md5_str) == 32
 
 
 def test_context_materializer_identity_does_not_traverse_callable_array_closures() -> None:
