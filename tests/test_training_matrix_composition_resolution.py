@@ -5,26 +5,42 @@ import pytest
 
 from feedbax.contracts.run_composition import (
     AuthoredIntentParent,
+    CompiledTrainingRowParent,
     CompositionDelta,
     CompositionNode,
+    CompositionNodeV2,
     InlineIntentParent,
     ResolvedOutputParent,
     authored_envelope_hash,
+    composition_identity_projection,
+    parse_composition_node,
+)
+from feedbax.contracts.authored_canonical import canonical_sha256
+from feedbax.contracts.experiment_compile_lock import (
+    CompileLockInputs,
+    CompilerContract,
+    CompilerImplementation,
+    ContentPinReference,
+    build_compile_lock,
 )
 from feedbax.contracts.run_matrix import (
     TrainingRowParentProvenance,
     TrainingRunMatrixSpec,
+    apply_composition_deltas,
 )
 from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.training.run_matrix import (
     RunMatrixError,
     materialize_adapted_run_matrix,
+    _resolve_compiled_training_row_parent,
     resolve_base_payload_with_attribution,
+    _verify_compiled_training_row_parent,
 )
 from feedbax.training.row_lowering import (
     GovernedTrainingRowParent,
     TrainingRowLoweringContext,
 )
+from feedbax.envelope.compile import _composition_root_pins
 
 
 def _replace(
@@ -93,6 +109,89 @@ def _resolved_context(
                 payload=payload,
             ),
         )
+    )
+
+
+def _write_compiled_matrix(
+    root: Path,
+    *,
+    base: dict[str, object] | None = None,
+    references: list[ContentPinReference] | None = None,
+) -> CompiledTrainingRowParent:
+    matrix_base = (
+        {
+            "kind": "inline",
+            "inline": {
+                "schema_id": "example.intent",
+                "schema_version": "example.intent.v1",
+                "gain": 1,
+                "width": 8,
+            },
+        }
+        if base is None
+        else base
+    )
+    matrix = TrainingRunMatrixSpec.model_validate(
+        {
+            "name": "mapped-composition",
+            "base": matrix_base,
+            "deltas": [
+                {
+                    "layer_id": "mapped",
+                    "patches": [{"op": "replace", "path": "width", "value": 16}],
+                }
+            ],
+            "rows": [
+                {
+                    "row_id": "mapped-row",
+                    "overrides": [{"op": "replace", "path": "gain", "value": 4}],
+                }
+            ],
+        }
+    )
+    matrix_document = matrix.model_dump(mode="json", exclude_none=True)
+    lock = build_compile_lock(
+        CompileLockInputs(
+            envelope_ref="specs/mapped.envelope.json",
+            envelope_document={
+                "schema": "feedbax.experiment_envelope.v3",
+                "name": "mapped",
+            },
+            envelope_schema="feedbax.experiment_envelope.v3",
+            name="mapped",
+            family="training_run_matrix",
+            compiled_document=matrix_document,
+            contract=CompilerContract(
+                "feedbax.experiment_envelope.compiler",
+                "feedbax.experiment_envelope.compiler.v2",
+            ),
+            implementation=CompilerImplementation(
+                code_unit="tests.test_training_matrix_composition_resolution"
+            ),
+            references=references or [],
+            identity_contributions={
+                "training_root": {
+                    "kind": "composition",
+                    "rows": [{"id": "mapped-row"}],
+                }
+            },
+        )
+    )
+    (root / "mapped.training_run_matrix.json").write_text(
+        json.dumps(matrix_document), encoding="utf-8"
+    )
+    (root / "mapped.compile-lock.json").write_text(json.dumps(lock), encoding="utf-8")
+    return CompiledTrainingRowParent(
+        matrix={
+            "ref": "mapped.training_run_matrix.json",
+            "sha256": canonical_sha256(matrix_document),
+        },
+        compile_lock={
+            "ref": "mapped.compile-lock.json",
+            "sha256": canonical_sha256(lock),
+        },
+        row_id="mapped-row",
+        symbolic_name="mapped locator",
     )
 
 
@@ -318,3 +417,245 @@ def test_authored_composition_uses_governed_resolved_terminal_without_repo_loadi
         "gain": 4,
         "width": 32,
     }
+
+
+def test_v2_compiled_row_parent_materializes_exact_effective_payload(tmp_path: Path) -> None:
+    parent = _write_compiled_matrix(tmp_path)
+    direct = _resolve_compiled_training_row_parent(parent, repo_root=tmp_path)
+    node = CompositionNodeV2(
+        name="frozen-mapped-row",
+        parent=parent,
+        deltas=[_replace("child", "gain", 5, acknowledge=True)],
+    )
+    document = node.model_dump(mode="json", exclude_none=True)
+    (tmp_path / "child.json").write_text(json.dumps(document), encoding="utf-8")
+    outer = TrainingRunMatrixSpec.model_validate(
+        {
+            "name": "outer",
+            "base": {
+                "kind": "authored_intent",
+                "ref": "child.json",
+                "content_hash": training_spec_sha256(document),
+            },
+            "rows": [{"row_id": "outer-row"}],
+        }
+    )
+
+    materialized = materialize_adapted_run_matrix(
+        outer,
+        repo_root=tmp_path,
+        row_validator=lambda _payload, _row_id: None,
+    )
+
+    expected = {
+        "schema_id": "example.intent",
+        "schema_version": "example.intent.v1",
+        "gain": 5,
+        "width": 16,
+    }
+    assert direct == {**expected, "gain": 4}
+    assert materialized.rows[0].authored_payload == expected
+
+    normalized_direct = {**direct, "graph": {"metadata": {}, "schema_id": None}}
+    normalized_selected = {
+        **_resolve_compiled_training_row_parent(parent, repo_root=tmp_path),
+        "graph": {"metadata": {}, "schema_id": None},
+    }
+    assert normalized_selected == normalized_direct
+    unchanged_damage = _replace("applied-damage", "gain", 3)
+    assert apply_composition_deltas(normalized_selected, [unchanged_damage])[0] == (
+        apply_composition_deltas(normalized_direct, [unchanged_damage])[0]
+    )
+
+
+def test_v2_compile_verifies_matrix_and_lock_without_resolving_output_custody(
+    tmp_path: Path,
+) -> None:
+    terminal = {
+        "schema_id": "example.intent",
+        "schema_version": "example.intent.v1",
+        "gain": 1,
+        "width": 8,
+    }
+    parent = _write_compiled_matrix(
+        tmp_path,
+        base={
+            "kind": "resolved_output",
+            "ref": "artifact-blob:terminal",
+            "resolved_root_hash": training_spec_sha256(terminal),
+            "row_id": "source-row",
+            "checkpoint_transaction_id": "source-transaction",
+        },
+    )
+    node = CompositionNodeV2(name="compiled-row", parent=parent)
+    node_document = node.model_dump(mode="json", exclude_none=True)
+    (tmp_path / "compiled-row.json").write_text(json.dumps(node_document), encoding="utf-8")
+
+    pins = _composition_root_pins(
+        tmp_path,
+        AuthoredIntentParent(
+            ref="compiled-row.json",
+            content_hash=authored_envelope_hash(node),
+        ),
+        field="training.root.parent",
+    )
+
+    assert [pin.ref for pin in pins] == [
+        "compiled-row.json",
+        "mapped.training_run_matrix.json",
+        "mapped.compile-lock.json",
+    ]
+
+
+def test_v2_identity_projection_has_one_hash_domain_and_ignores_locators(tmp_path: Path) -> None:
+    parent = _write_compiled_matrix(tmp_path)
+    node = CompositionNodeV2(name="first", parent=parent)
+    relocated = node.model_copy(
+        update={
+            "name": "second",
+            "parent": parent.model_copy(
+                update={
+                    "symbolic_name": "other locator",
+                    "matrix": parent.matrix.model_copy(update={"ref": "elsewhere.json"}),
+                    "compile_lock": parent.compile_lock.model_copy(
+                        update={"ref": "elsewhere.lock.json"}
+                    ),
+                }
+            ),
+        }
+    )
+    changed_row = node.model_copy(update={"parent": parent.model_copy(update={"row_id": "b"})})
+    changed_pin = node.model_copy(
+        update={
+            "parent": parent.model_copy(
+                update={"matrix": parent.matrix.model_copy(update={"sha256": "a" * 64})}
+            )
+        }
+    )
+
+    assert authored_envelope_hash(node) == authored_envelope_hash(relocated)
+    assert authored_envelope_hash(node) != authored_envelope_hash(changed_row)
+    assert authored_envelope_hash(node) != authored_envelope_hash(changed_pin)
+    assert composition_identity_projection(node)["parent"] == {
+        "kind": "compiled_training_row",
+        "matrix": {
+            "sha256": parent.matrix.sha256,
+            "pin_algorithm": "canonical_json_v1",
+        },
+        "compile_lock": {
+            "sha256": parent.compile_lock.sha256,
+            "pin_algorithm": "canonical_json_v1",
+        },
+        "row_id": "mapped-row",
+    }
+
+
+def test_v1_parent_union_and_bytes_remain_closed_and_unchanged() -> None:
+    document = {
+        "schema_id": "feedbax.spec.training_run_composition",
+        "schema_version": "feedbax.spec.training_run_composition.v1",
+        "name": "v1-golden",
+        "parent": {
+            "kind": "inline",
+            "payload": {"schema_id": "example.intent", "schema_version": "example.intent.v1"},
+            "schema_id": "example.intent",
+            "schema_version": "example.intent.v1",
+        },
+        "deltas": [],
+        "sources": [],
+        "selectors": [],
+        "seeds": [],
+    }
+    parsed = parse_composition_node(document)
+    assert isinstance(parsed, CompositionNode)
+    assert parsed.model_dump(mode="json", exclude_none=True) == document
+    invalid = {**document, "parent": {"kind": "compiled_training_row"}}
+    with pytest.raises(ValueError, match="union_tag_invalid"):
+        CompositionNode.model_validate(invalid)
+    with pytest.raises(ValueError, match="unsupported.*schema_version"):
+        parse_composition_node({**document, "schema_version": "feedbax.spec.training_run_composition.v3"})
+
+
+def test_compiled_row_parent_refuses_pin_lock_row_and_reference_drift(tmp_path: Path) -> None:
+    source = {"schema_id": "example.source", "schema_version": "example.source.v1"}
+    (tmp_path / "source.json").write_text(json.dumps(source), encoding="utf-8")
+    reference = ContentPinReference(
+        ref="source.json",
+        content_hash=canonical_sha256(source),
+    )
+    parent = _write_compiled_matrix(tmp_path, references=[reference])
+    _verify_compiled_training_row_parent(parent, repo_root=tmp_path)
+
+    with pytest.raises(RunMatrixError, match="matrix.*pin mismatch"):
+        _verify_compiled_training_row_parent(
+            parent.model_copy(
+                update={"matrix": parent.matrix.model_copy(update={"sha256": "0" * 64})}
+            ),
+            repo_root=tmp_path,
+        )
+    with pytest.raises(RunMatrixError, match="row_id is absent"):
+        _resolve_compiled_training_row_parent(
+            parent.model_copy(update={"row_id": "absent"}),
+            repo_root=tmp_path,
+        )
+
+    lock_path = tmp_path / parent.compile_lock.ref
+    original_lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    mismatched_lock = json.loads(json.dumps(original_lock))
+    mismatched_lock["compiled_document"]["content_hash"] = "f" * 64
+    contribution = mismatched_lock["identity_contributions"]["training_root"]
+    mismatched_lock["execution_identity"]["sha256"] = canonical_sha256(
+        {
+            "compiled_document": "f" * 64,
+            "training_root": canonical_sha256(contribution),
+        }
+    )
+    lock_path.write_text(json.dumps(mismatched_lock), encoding="utf-8")
+    mismatched_parent = parent.model_copy(
+        update={
+            "compile_lock": parent.compile_lock.model_copy(
+                update={"sha256": canonical_sha256(mismatched_lock)}
+            )
+        }
+    )
+    with pytest.raises(RunMatrixError, match="content_hash does not match matrix"):
+        _verify_compiled_training_row_parent(mismatched_parent, repo_root=tmp_path)
+    lock_path.write_text(json.dumps(original_lock), encoding="utf-8")
+
+    source["changed"] = True
+    (tmp_path / "source.json").write_text(json.dumps(source), encoding="utf-8")
+    with pytest.raises(RunMatrixError, match="references/0.*pin mismatch"):
+        _verify_compiled_training_row_parent(parent, repo_root=tmp_path)
+
+
+def test_compiled_row_parent_requires_governed_resolved_output_custody(tmp_path: Path) -> None:
+    terminal = {
+        "schema_id": "example.intent",
+        "schema_version": "example.intent.v1",
+        "gain": 1,
+        "width": 8,
+    }
+    resolved = ResolvedOutputParent(
+        ref="artifact-blob:terminal",
+        resolved_root_hash=training_spec_sha256(terminal),
+        row_id="source-row",
+        checkpoint_transaction_id="source-transaction",
+    )
+    parent = _write_compiled_matrix(
+        tmp_path,
+        base={
+            "kind": "resolved_output",
+            "ref": resolved.ref,
+            "resolved_root_hash": resolved.resolved_root_hash,
+            "row_id": resolved.row_id,
+            "checkpoint_transaction_id": resolved.checkpoint_transaction_id,
+            "symbolic_name": "locator-only",
+        },
+    )
+    with pytest.raises(RunMatrixError, match="no governed lowering custody"):
+        _resolve_compiled_training_row_parent(parent, repo_root=tmp_path)
+    assert _resolve_compiled_training_row_parent(
+        parent,
+        repo_root=tmp_path,
+        row_lowering_context=_resolved_context(resolved, terminal),
+    )["gain"] == 4

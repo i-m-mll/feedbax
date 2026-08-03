@@ -17,6 +17,8 @@ from typing import Any, Callable, Protocol
 import equinox as eqx
 import jax.tree as jt
 from feedbax.contracts.expressions import ExpressionContext
+from feedbax.contracts.authored_canonical import canonical_sha256
+from feedbax.contracts.experiment_compile_lock import load_compile_lock
 from feedbax.contracts.extraction import load_expression_context
 from feedbax.contracts.matrix_core import apply_row_derivations, ordered_index_product
 from feedbax.contracts.manifest import (
@@ -60,9 +62,10 @@ from feedbax.contracts.run_matrix import (
 from feedbax.contracts.run_composition import (
     COMPOSITION_SCHEMA_ID,
     AuthoredIntentParent,
-    CompositionNode,
+    CompiledTrainingRowParent,
     ResolvedOutputParent,
     flatten_composition,
+    parse_composition_node,
 )
 from feedbax.contracts.migrations import default_spec_registry, migrate_graph_spec
 from feedbax.contracts.spec_storage import (
@@ -105,6 +108,153 @@ class RunMatrixError(ValueError):
 
 class ForkParityError(RunMatrixError):
     """Raised when forked checkpoint slot parity fails."""
+
+
+def _load_pinned_canonical_document(
+    repo_root: Path,
+    *,
+    ref: str,
+    expected_sha256: str,
+    field: str,
+) -> dict[str, Any]:
+    root = repo_root.resolve()
+    path = Path(ref)
+    if path.is_absolute():
+        raise RunMatrixError(f"{field} must be repository-relative: {ref}")
+    resolved = (root / path).resolve()
+    if not resolved.is_relative_to(root):
+        raise RunMatrixError(f"{field} escapes repo root: {ref}")
+    try:
+        document = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RunMatrixError(f"{field} cannot load pinned JSON document: {ref}") from exc
+    if not isinstance(document, dict):
+        raise RunMatrixError(f"{field} must resolve to a JSON object: {ref}")
+    observed = canonical_sha256(document)
+    if observed != expected_sha256:
+        raise RunMatrixError(
+            f"{field} canonical_json_v1 pin mismatch: "
+            f"declared={expected_sha256!r}, computed={observed!r}"
+        )
+    return document
+
+
+def _verify_compiled_training_row_parent(
+    parent: CompiledTrainingRowParent,
+    *,
+    repo_root: Path,
+) -> TrainingRunMatrixSpec:
+    """Verify a pinned matrix-v6 compile without resolving runtime custody."""
+    matrix_document = _load_pinned_canonical_document(
+        repo_root,
+        ref=parent.matrix.ref,
+        expected_sha256=parent.matrix.sha256,
+        field="/parent/matrix",
+    )
+    try:
+        matrix = TrainingRunMatrixSpec.model_validate(matrix_document)
+    except ValueError as exc:
+        raise RunMatrixError(
+            "/parent/matrix is not feedbax.spec.training_run_matrix.v6"
+        ) from exc
+
+    lock_document = _load_pinned_canonical_document(
+        repo_root,
+        ref=parent.compile_lock.ref,
+        expected_sha256=parent.compile_lock.sha256,
+        field="/parent/compile_lock",
+    )
+    try:
+        lock = load_compile_lock(lock_document, field=parent.compile_lock.ref)
+    except ValueError as exc:
+        raise RunMatrixError(f"/parent/compile_lock is invalid: {exc}") from exc
+    compiled = lock["compiled_document"]
+    if compiled["family"] != "training_run_matrix":
+        raise RunMatrixError(
+            "/parent/compile_lock is foreign to a training_run_matrix compiled document"
+        )
+    matrix_hash = canonical_sha256(matrix_document)
+    if compiled["content_hash"] != matrix_hash:
+        raise RunMatrixError(
+            "/parent/compile_lock compiled_document.content_hash does not match matrix"
+        )
+
+    contribution = lock.get("identity_contributions", {}).get("training_root")
+    if not isinstance(contribution, Mapping):
+        raise RunMatrixError(
+            "/parent/compile_lock has no typed training_root identity contribution"
+        )
+    contribution_rows = contribution.get("rows")
+    if not isinstance(contribution_rows, list) or [
+        row.get("id") if isinstance(row, Mapping) else None for row in contribution_rows
+    ] != [row.row_id for row in matrix.rows]:
+        raise RunMatrixError(
+            "/parent/compile_lock training_root row identity does not match matrix"
+        )
+
+    pinned_refs = [
+        reference["ref"]
+        for reference in lock["references"]
+        if reference["kind"] == "content_pin"
+    ]
+    required_refs = [source.uri for source in matrix.sources]
+    authority = contribution.get("authority")
+    if isinstance(authority, Mapping) and isinstance(authority.get("ref"), str):
+        required_refs.append(authority["ref"])
+    root_parent = contribution.get("parent")
+    if (
+        isinstance(root_parent, Mapping)
+        and root_parent.get("kind") == "authored_intent"
+        and isinstance(root_parent.get("ref"), str)
+    ):
+        required_refs.append(root_parent["ref"])
+    if contribution.get("kind") == "training_run" and isinstance(contribution.get("ref"), str):
+        required_refs.append(contribution["ref"])
+    missing_refs = sorted(set(required_refs) - set(pinned_refs))
+    if missing_refs:
+        raise RunMatrixError(
+            "/parent/compile_lock references do not match training_root authority/source "
+            f"contributions: missing={missing_refs!r}"
+        )
+
+    for index, reference in enumerate(lock["references"]):
+        if reference["kind"] != "content_pin":
+            continue
+        _load_pinned_canonical_document(
+            repo_root,
+            ref=reference["ref"],
+            expected_sha256=reference["content_hash"],
+            field=f"/parent/compile_lock/references/{index}",
+        )
+    return matrix
+
+
+def _resolve_compiled_training_row_parent(
+    parent: CompiledTrainingRowParent,
+    *,
+    repo_root: Path,
+    row_lowerer: TrainingRowLowerer | None = None,
+    row_lowering_context: Any | None = None,
+) -> dict[str, Any]:
+    """Materialize and select one governed effective matrix-v6 row payload."""
+    matrix = _verify_compiled_training_row_parent(parent, repo_root=repo_root)
+    materialized = materialize_adapted_run_matrix(
+        matrix,
+        repo_root=repo_root,
+        row_validator=lambda _payload, _row_id: None,
+        row_lowerer=row_lowerer,
+        row_lowering_context=row_lowering_context,
+    )
+    rows = [row for row in materialized.rows if row.row_id == parent.row_id]
+    if not rows:
+        raise RunMatrixError(
+            f"/parent/row_id is absent from the materialized matrix: {parent.row_id!r}"
+        )
+    if len(rows) != 1:
+        raise RunMatrixError(
+            f"/parent/row_id is duplicate in the materialized matrix: {parent.row_id!r}"
+        )
+    return copy.deepcopy(rows[0].authored_payload)
 
 
 MatrixSpec = TrainingRunMatrixSpecV5 | TrainingRunMatrixSpec
@@ -451,6 +601,7 @@ def _materialize_run_matrix(
     base_payload = _resolve_base_payload(
         matrix,
         repo_root=repo_root,
+        row_lowerer=row_lowerer,
         row_lowering_context=row_lowering_context,
     )
     source_context = (
@@ -1111,11 +1262,13 @@ def _resolve_base_payload(
     spec: TrainingRunMatrixSpec,
     *,
     repo_root: Path,
+    row_lowerer: TrainingRowLowerer | None = None,
     row_lowering_context: Any | None = None,
 ) -> dict[str, Any]:
     resolved, _ = resolve_base_payload_with_attribution(
         spec,
         repo_root=repo_root,
+        row_lowerer=row_lowerer,
         row_lowering_context=row_lowering_context,
     )
     return resolved
@@ -1125,6 +1278,7 @@ def resolve_base_payload_with_attribution(
     spec: TrainingRunMatrixSpec,
     *,
     repo_root: Path,
+    row_lowerer: TrainingRowLowerer | None = None,
     row_lowering_context: Any | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Resolve composed intent and retain the last-writing layer for each patched path."""
@@ -1132,6 +1286,7 @@ def resolve_base_payload_with_attribution(
         spec,
         repo_root=repo_root,
         resolving=set(),
+        row_lowerer=row_lowerer,
         row_lowering_context=row_lowering_context,
     )
     graph_source = resolved.get("graph")
@@ -1149,6 +1304,7 @@ def _resolve_composed_base(
     *,
     repo_root: Path,
     resolving: set[Path],
+    row_lowerer: TrainingRowLowerer | None = None,
     row_lowering_context: Any | None = None,
 ) -> tuple[dict[str, Any], dict[str, str], set[str]]:
     if isinstance(spec.base, InlineMatrixBaseSpec):
@@ -1178,6 +1334,7 @@ def _resolve_composed_base(
                     parent,
                     repo_root=repo_root,
                     resolving=resolving,
+                    row_lowerer=row_lowerer,
                     row_lowering_context=row_lowering_context,
                 )
             finally:
@@ -1199,8 +1356,19 @@ def _resolve_composed_base(
                 source_path = (root / spec.base.ref).resolve()
 
                 def resolve_parent(
-                    parent: AuthoredIntentParent | ResolvedOutputParent,
-                ) -> CompositionNode | dict[str, Any]:
+                    parent: (
+                        AuthoredIntentParent
+                        | ResolvedOutputParent
+                        | CompiledTrainingRowParent
+                    ),
+                ) -> Any:
+                    if isinstance(parent, CompiledTrainingRowParent):
+                        return _resolve_compiled_training_row_parent(
+                            parent,
+                            repo_root=root,
+                            row_lowerer=row_lowerer,
+                            row_lowering_context=row_lowering_context,
+                        )
                     if isinstance(parent, ResolvedOutputParent):
                         if row_lowering_context is None:
                             raise ValueError(
@@ -1221,10 +1389,10 @@ def _resolve_composed_base(
                         raise ValueError(
                             f"/parent/ref cannot load JSON document: {parent.ref}"
                         ) from exc
-                    return CompositionNode.model_validate(parent_document)
+                    return parse_composition_node(parent_document)
 
                 flattened = flatten_composition(
-                    CompositionNode.model_validate(document), resolve_parent
+                    parse_composition_node(document), resolve_parent
                 )
                 resolved, local_attribution, written = apply_composition_deltas(
                     flattened.payload,

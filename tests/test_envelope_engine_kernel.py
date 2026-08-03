@@ -1596,6 +1596,54 @@ def test_authored_composition_root_refuses_a_semantic_parent_hash_mismatch(
         )
 
 
+def test_generated_schema_boundary_delta_round_trips_the_compile_lock(repo: Path) -> None:
+    outcome = _compile_root(
+        repo,
+        {
+            "kind": "composition",
+            "parent": {
+                "kind": "resolved_output",
+                "ref": "artifact-blob:generic-source",
+                "resolved_root_hash": "3" * 64,
+                "row_id": "source-row",
+                "checkpoint_transaction_id": "source-transaction",
+            },
+            "deltas": [
+                {
+                    "layer_id": "schema-boundary",
+                    "schema_id": "quillon.training_intent",
+                    "schema_version": "quillon.training_intent.v2",
+                    "patches": [
+                        {
+                            "op": "replace",
+                            "path": "schema_version",
+                            "value": "quillon.training_intent.v2",
+                        }
+                    ],
+                }
+            ],
+            "rows": [{"id": "condition-a"}],
+        },
+    )
+
+    assert load_compile_lock(
+        outcome.compile_lock,
+        field="generated/schema-boundary.compile-lock.json",
+    ) == outcome.compile_lock
+
+    missing = json.loads(json.dumps(outcome.compile_lock))
+    del missing["resolved_deltas"]["schema-boundary"]["schema_version"]
+    with pytest.raises(ExperimentEnvelopeRejection) as missing_error:
+        load_compile_lock(missing, field="generated/schema-boundary.compile-lock.json")
+    assert missing_error.value.category is ExperimentEnvelopeRejectionCategory.MISSING_FIELD
+
+    blank = json.loads(json.dumps(outcome.compile_lock))
+    blank["resolved_deltas"]["schema-boundary"]["schema_id"] = " "
+    with pytest.raises(ExperimentEnvelopeRejection) as blank_error:
+        load_compile_lock(blank, field="generated/schema-boundary.compile-lock.json")
+    assert blank_error.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+
+
 def test_resolved_output_composition_root_is_not_materialized_at_compile_time(
     repo: Path,
 ) -> None:
@@ -1858,7 +1906,7 @@ def test_invalid_composition_document_is_a_closed_root_rejection(repo: Path) -> 
     ref = "intent/invalid.composition.json"
     invalid = {
         "schema_id": "feedbax.spec.training_run_composition",
-        "schema_version": "feedbax.spec.training_run_composition.v2",
+        "schema_version": "feedbax.spec.training_run_composition.v3",
         "name": "invalid",
         "parent": {
             "kind": "resolved_output",

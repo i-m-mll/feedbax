@@ -128,9 +128,10 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import load_content_pinned_json_document
 from feedbax.contracts.run_composition import (
     AuthoredIntentParent,
-    CompositionNode,
+    CompiledTrainingRowParent,
     ResolvedOutputParent,
     authored_envelope_hash,
+    parse_composition_node,
 )
 from feedbax.contracts.row_index import (
     ROW_INDEX_SCHEMA_ID,
@@ -954,12 +955,12 @@ def _composition_root_pins(
         seen.add(current.ref)
         pinned = _load_root_document(repo_root, current.ref, field=field)
         try:
-            node = CompositionNode.model_validate(pinned.document)
-        except ValidationError as exc:
+            node = parse_composition_node(pinned.document)
+        except ValueError as exc:
             _reject(
                 ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
                 field,
-                f"{current.ref!r} is not a feedbax.spec.training_run_composition.v1: {exc}",
+                f"{current.ref!r} is not a supported training-run composition: {exc}",
             )
         actual = authored_envelope_hash(node)
         if actual != current.content_hash:
@@ -970,6 +971,43 @@ def _composition_root_pins(
                 f"declared={current.content_hash!r}, computed={actual!r}",
             )
         pins.append(ContentPinReference(ref=current.ref, content_hash=pinned.content_hash))
+        if isinstance(node.parent, CompiledTrainingRowParent):
+            from feedbax.training.run_matrix import _verify_compiled_training_row_parent
+
+            try:
+                _verify_compiled_training_row_parent(node.parent, repo_root=repo_root)
+            except ValueError as exc:
+                _reject(
+                    ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
+                    field,
+                    f"compiled training row parent verification failed: {exc}",
+                )
+            pins.extend(
+                (
+                    ContentPinReference(
+                        ref=node.parent.matrix.ref,
+                        content_hash=node.parent.matrix.sha256,
+                    ),
+                    ContentPinReference(
+                        ref=node.parent.compile_lock.ref,
+                        content_hash=node.parent.compile_lock.sha256,
+                    ),
+                )
+            )
+            lock = _load_root_document(
+                repo_root,
+                node.parent.compile_lock.ref,
+                field=field,
+            ).document
+            pins.extend(
+                ContentPinReference(
+                    ref=reference["ref"],
+                    content_hash=reference["content_hash"],
+                )
+                for reference in lock["references"]
+                if reference["kind"] == "content_pin"
+            )
+            return pins
         if not isinstance(node.parent, AuthoredIntentParent):
             return pins
         current = node.parent
