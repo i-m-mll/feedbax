@@ -365,6 +365,55 @@ def test_a_figure_binds_its_runtime_input_authority_by_role(
     assert figure.runtime_inputs is not None
     assert [ref.role for ref in figure.runtime_inputs] == ["observed"]
     assert figure.spec["schema_id"] == "feedbax.spec.figure"
+    # No contract, no authority: the input is bound as provenance and read from
+    # no artifact, which is a statement an author is entitled to make.
+    assert figure.runtime_input_authorities is None
+
+
+def test_a_figure_authority_is_built_from_the_lock_contract_and_nothing_else(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """The artifact half of a figure input comes from the lock, addressed by role."""
+    source = outputs.probe("contracted-source")
+    outputs.plate(
+        "contracted-plate",
+        references=[
+            planned(
+                source,
+                role_path="runtime.states",
+                consumer=FigureRuntimeInputBinding(
+                    input_role="observed",
+                    contract={
+                        "input_role": "observed",
+                        "artifact_role": "result",
+                        "artifact_provider": "quillon.custody",
+                        "payload_name": "observed_summary",
+                        "payload_schema_id": "quillon.span_result",
+                        "payload_schema_version": "quillon.span_result.v1",
+                    },
+                ),
+            )
+        ],
+    )
+    fulfill_closure(
+        truncated_closure(_closure(outputs, "contracted-plate"), 1), environment=environment
+    )
+    requests = closure_requests(
+        _closure(outputs, "contracted-plate"),
+        environment=environment,
+        stop_at=LogicalKey("figure", "contracted-plate"),
+    )
+
+    figure = requests[-1]
+    (authority,) = figure.runtime_input_authorities
+    assert authority.input_role == "observed"
+    assert authority.resolve_parent(figure.runtime_inputs) == figure.runtime_inputs[0]
+    (payload,) = authority.artifact_payloads
+    assert payload.name == "observed_summary"
+    assert payload.manifest_role == "observed"
+    assert payload.artifact_role == "result"
+    assert payload.artifact_provider == "quillon.custody"
+    assert payload.payload_schema_version == "quillon.span_result.v1"
 
 
 def test_a_checkpoint_initialization_binding_never_binds_an_executable_node(

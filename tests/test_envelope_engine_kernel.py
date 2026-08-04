@@ -52,6 +52,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1,
     REPORT_OUTPUT,
     TRAINING_OUTPUT_V6,
@@ -186,6 +187,7 @@ def _compile_layer_root(
     layer_name: str | None = None,
     payload_path: list[str] | None = None,
     whole_document: dict[str, Any] | None = None,
+    schema: str = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
 ) -> Any:
     ref = f"authorities/{alias}.json"
     document = authority if whole_document is None else whole_document
@@ -198,7 +200,7 @@ def _compile_layer_root(
     if layer_name is None:
         layer_name = "analysis" if "target" in content else "figure"
     envelope = {
-        "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+        "schema": schema,
         "name": alias,
         layer_name: content,
     }
@@ -3145,6 +3147,70 @@ def test_v3_compilation_keeps_compiler_v2_bytes(repo: Path) -> None:
     assert outcome.compile_lock["compiler_contract"]["contract_version"] == (
         EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2
     )
+
+
+def test_v4_compilation_keeps_compiler_v3_bytes(repo: Path) -> None:
+    """A v4 root figure still compiles under the compiler its version owns."""
+    envelope = _read(repo, "widened")
+    envelope["schema"] = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4
+    _write(repo, "widened", envelope)
+
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+
+    assert outcome.compile_lock["compiler_contract"]["contract_version"] == (
+        EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3
+    )
+
+
+def test_a_current_root_figure_carries_its_input_contracts_into_the_lock(repo: Path) -> None:
+    """The contract is a plan fact, so it lands in the lock and nowhere else."""
+    outcome = _compile_layer_root(
+        repo,
+        "contracted-root-figure",
+        _layer_root_authority(
+            "figure",
+            assembler="quillon.span_assembler",
+            assembler_params={"height": 300},
+            panels=[{"name": "span", "title": "span", "row": 1, "col": 1}],
+        ),
+        {
+            "mode": "root",
+            "inputs": [
+                {
+                    "input_role": "summary",
+                    "ref": {
+                        "kind": "receipt",
+                        "manifest_kind": "AnalysisRunManifest",
+                        "manifest_id": "summary-1",
+                        "manifest_sha256": "7" * 64,
+                        "size_bytes": 4096,
+                    },
+                    "contract": {
+                        "artifact_role": "result",
+                        "artifact_provider": "quillon.custody",
+                        "payload_name": "summary",
+                        "payload_schema_id": "quillon.span_result",
+                        "payload_schema_version": "quillon.span_result.v1",
+                    },
+                }
+            ],
+        },
+        schema=EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+    )
+
+    assert outcome.compile_lock["compiler_contract"]["contract_version"] == (
+        EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION
+    )
+    assert outcome.document["inputs"] == []
+    assert outcome.document["input_authorities"] == []
+    (binding,) = [
+        reference["consumer"]
+        for reference in outcome.compile_lock["references"]
+        if reference.get("consumer", {}).get("consumer") == "figure_runtime_input"
+    ]
+    assert binding["contract"]["input_role"] == "summary"
+    assert binding["contract"]["payload_name"] == "summary"
+    assert binding["contract"]["payload_schema_id"] == "quillon.span_result"
 
 
 def test_comparison_root_selector_changes_semantic_identity_after_whole_file_pin(
