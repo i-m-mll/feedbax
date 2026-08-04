@@ -730,6 +730,7 @@ def _resolve_training_row_parents(
                     schema_id=declaration.artifact.schema_id,
                     schema_version=declaration.artifact.schema_version,
                 ),
+                parent=parent,
                 payload=payload,
             )
         )

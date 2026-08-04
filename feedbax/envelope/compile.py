@@ -2,7 +2,7 @@
 
 Feedbax owns the dialect (:mod:`feedbax.contracts.experiment_envelope_dialect`)
 and this is the compiler for it. There is one compiler, one compiler contract,
-and five layers, because there is one dialect. A project contributes a data
+and its closed layers, because there is one dialect. A project contributes a data
 declaration saying where its files live and nothing else; it supplies no
 callable, so there is no seam through which a project could change what a
 compiled document means.
@@ -53,7 +53,7 @@ from pathlib import Path, PurePosixPath
 from types import UnionType
 from typing import Annotated, Any, NoReturn, Union, get_args, get_origin
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from feedbax.contracts.authored_canonical import (
     CANONICAL_PIN_ALGORITHM,
@@ -89,27 +89,39 @@ from feedbax.contracts.experiment_envelope import (
 from feedbax.contracts.experiment_envelope_dialect import (
     ANALYSIS_BUNDLE_OUTPUT,
     ANALYSIS_RUN_OUTPUT,
+    COMPARISON_POLICY_OUTPUT,
     EVALUATION_OUTPUT,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID,
-    EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION,
     EXPERIMENT_ENVELOPE_SUFFIX,
     FIGURE_COMPOSITION_OUTPUT,
     FIGURE_OUTPUT,
     REPORT_OUTPUT,
     REPORT_PARAMS_MODELS,
-    TRAINING_OUTPUT,
+    TRAINING_OUTPUT_V6,
+    AnalysisBundleLayerRootAuthority,
     AnalysisLayerAuthoring,
+    AnalysisRunLayerRootAuthority,
+    ComparisonLayerAuthoring,
+    ComparisonPolicyLayerRootAuthority,
     EvaluationLayerAuthoring,
     ExperimentEnvelope,
     ExperimentEnvelopeLayer,
     FigureLayerAuthoring,
     FigureLayerMode,
+    FigureLayerRootAuthority,
     LayerOutputContract,
     NotApplicableAuthoring,
     ReceiptReference,
     ReportLayerAuthoring,
+    CompositionTrainingRootAuthoring,
+    ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
+    EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
+    ExperimentLayerRootAuthority,
+    RootTrainingAuthority,
+    TrainingRunRootAuthoring,
     TrainingLayerAuthoring,
     TrainingRowsMode,
+    compiler_contract_version_for_schema,
     output_contract_of_document,
     parse_experiment_envelope,
 )
@@ -121,6 +133,14 @@ from feedbax.contracts.figure_roles import (
     per_row_binding_keys,
 )
 from feedbax.contracts.manifest import OverridePatch
+from feedbax.contracts.matrix_core import load_content_pinned_json_document
+from feedbax.contracts.run_composition import (
+    AuthoredIntentParent,
+    CompiledTrainingRowParent,
+    ResolvedOutputParent,
+    authored_envelope_hash,
+    parse_composition_node,
+)
 from feedbax.contracts.row_index import (
     ROW_INDEX_SCHEMA_ID,
     AuthenticatedRowIndex,
@@ -138,6 +158,7 @@ from feedbax.contracts.run_matrix import (
     apply_composition_deltas,
     apply_override_patches,
 )
+from feedbax.contracts.training import TrainingRunSpec
 from feedbax.envelope.authoring import (
     enforce_assertion_budget,
     enforce_row_budget,
@@ -155,24 +176,16 @@ _DELTA_ONLY_HOME = "an envelope carries only what changes; delete the line"
 #: Row-selection failures, mapped onto the authoring rejection vocabulary. The
 #: selector machinery has its own stable codes because it is used outside
 #: authoring too; an envelope's author needs the answer in one vocabulary.
-_ROW_SELECTION_REJECTIONS: Mapping[
-    RowSelectionErrorCode, ExperimentEnvelopeRejectionCategory
-] = {
-    RowSelectionErrorCode.EMPTY_SELECTION: (
-        ExperimentEnvelopeRejectionCategory.EMPTY_SELECTION
-    ),
+_ROW_SELECTION_REJECTIONS: Mapping[RowSelectionErrorCode, ExperimentEnvelopeRejectionCategory] = {
+    RowSelectionErrorCode.EMPTY_SELECTION: (ExperimentEnvelopeRejectionCategory.EMPTY_SELECTION),
     RowSelectionErrorCode.UNRESOLVED_ROW_KEY: (
         ExperimentEnvelopeRejectionCategory.UNRESOLVED_ROW_KEY
     ),
-    RowSelectionErrorCode.DUPLICATE_ROW_ID: (
-        ExperimentEnvelopeRejectionCategory.DUPLICATE_KEY
-    ),
+    RowSelectionErrorCode.DUPLICATE_ROW_ID: (ExperimentEnvelopeRejectionCategory.DUPLICATE_KEY),
     RowSelectionErrorCode.AMBIGUOUS_ROW_BINDING: (
         ExperimentEnvelopeRejectionCategory.INVALID_VALUE
     ),
-    RowSelectionErrorCode.INDEX_MISMATCH: (
-        ExperimentEnvelopeRejectionCategory.INVALID_VALUE
-    ),
+    RowSelectionErrorCode.INDEX_MISMATCH: (ExperimentEnvelopeRejectionCategory.INVALID_VALUE),
 }
 
 
@@ -183,9 +196,7 @@ def _reject(
     *,
     correct_home: str | None = None,
 ) -> NoReturn:
-    raise ExperimentEnvelopeRejection(
-        category, message, field=field, correct_home=correct_home
-    )
+    raise ExperimentEnvelopeRejection(category, message, field=field, correct_home=correct_home)
 
 
 #: What an alias is, said once, for every refusal that has to explain itself.
@@ -502,7 +513,7 @@ class LayerCompileContext:
     envelope: ExperimentEnvelope
     envelope_ref: str
     layer: ExperimentEnvelopeLayer
-    parent: ResolvedParent
+    parent: ResolvedParent | None
     repo_root: Path
     layout: EnvelopeLayout
     declaration: ProjectExperimentDeclaration
@@ -511,23 +522,24 @@ class LayerCompileContext:
     @property
     def lineage(self) -> Lineage:
         """Return the parent's content-pinned lineage."""
-        return self.parent.lineage
+        return Lineage(()) if self.parent is None else self.parent.lineage
 
 
 @dataclass(frozen=True)
 class LoweredLayer:
     """What one layer lowered to, before the deltas are applied.
 
-    A layer either *patches* its parent, stating ordered ``deltas``, or
-    *constructs* its output from the pinned parent, stating ``document``. The two
-    are exclusive: a constructed document is already the whole answer, and a
-    delta applied afterwards would be a second, invisible authority over it.
+    A relative layer patches its parent with ordered ``deltas``. A root layer
+    states ``document`` as the compiler-owned output seed projected from a
+    content-pinned typed authority, then may apply the envelope's same small
+    ordered ``deltas`` to that seed. The authority remains the sole root source;
+    every local change stays visible in the compile lock as a normal delta.
 
     Attributes:
         contract: The output contract the compiled document must satisfy.
         deltas: Ordered composition layers to apply to the parent document.
-        document: The compiled document, when this layer constructs rather than
-            patches. ``None`` means the deltas decide.
+        document: The compiler-owned root seed, when this layer constructs from
+            a selected authority. ``None`` means deltas apply to the parent.
         references: Typed compile-lock references this layer resolved.
         row_provenance: One typed record per compiled row this layer derived from
             a row of the resolved parent.
@@ -541,13 +553,14 @@ class LoweredLayer:
     references: Sequence[Any] = ()
     row_provenance: Sequence[Any] = ()
     identity_contributions: Mapping[str, Any] = dataclass_field(default_factory=dict)
+    lock_deltas: Sequence[MatrixCompositionDelta] = ()
+    same_schema_structural_additions_by_layer: Mapping[str, Mapping[str, tuple[str, str]]] = (
+        dataclass_field(default_factory=dict)
+    )
 
     def __post_init__(self) -> None:
-        if self.document is not None and self.deltas:
-            raise ValueError(
-                "a lowered layer either patches its parent or constructs its document; "
-                "stating both would give the compiled document two authorities"
-            )
+        if self.document is None and self.same_schema_structural_additions_by_layer:
+            raise ValueError("same-schema root additions require a constructed root document")
 
     @property
     def authored_paths(self) -> dict[str, str]:
@@ -679,9 +692,7 @@ def _reference_for(
     an alias-role, an input authority, or a parent means.
     """
     if isinstance(authored, NotApplicableAuthoring):
-        return NotApplicableReference(
-            role_path=role_path, basis="authored", reason=authored.reason
-        )
+        return NotApplicableReference(role_path=role_path, basis="authored", reason=authored.reason)
     if isinstance(authored, ReceiptReference):
         consumer = consumer_of(authored.manifest_kind, authored.manifest_id)
         if authored.is_authenticated:
@@ -733,8 +744,7 @@ def _params_patches(params: Mapping[str, Any], prefix: str) -> list[OverridePatc
     change is visible as a ``replace``.
     """
     return [
-        OverridePatch(path=f"{prefix}.{key}", op="add", value=params[key])
-        for key in sorted(params)
+        OverridePatch(path=f"{prefix}.{key}", op="add", value=params[key]) for key in sorted(params)
     ]
 
 
@@ -878,7 +888,7 @@ def _prove_patches_apply(
         )
 
 
-# -- the five layers -------------------------------------------------------
+# -- the closed layers -----------------------------------------------------
 
 
 #: Top-level matrix fields a derived training document never inherits.
@@ -892,15 +902,534 @@ def _prove_patches_apply(
 TRAINING_UNINHERITED_TOP_LEVEL_FIELDS: tuple[str, ...] = ("issue", "metadata")
 
 
+def _root_json_ref(repo_root: Path, ref: str, *, field: str) -> Path:
+    """Resolve one canonical repository-relative JSON reference or refuse it."""
+    authored = PurePosixPath(ref)
+    if (
+        not ref
+        or authored.is_absolute()
+        or authored.as_posix() != ref
+        or any(part in ("", ".", "..") for part in authored.parts)
+        or authored.suffix != ".json"
+    ):
+        _reject(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            field,
+            f"{ref!r} is not a canonical repository-relative JSON reference",
+        )
+    root = repo_root.resolve()
+    resolved = (root / Path(*authored.parts)).resolve()
+    if not resolved.is_relative_to(root):
+        _reject(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            field,
+            f"{ref!r} escapes the repository root",
+        )
+    return resolved
+
+
+def _load_root_document(repo_root: Path, ref: str, *, field: str) -> PinnedDocument:
+    """Load one required root document after proving containment and JSON shape."""
+    path = _root_json_ref(repo_root, ref, field=field)
+    if not path.is_file():
+        _reject(
+            ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
+            field,
+            f"{ref!r} does not name an existing repository JSON document",
+        )
+    pinned = load_pinned(repo_root, ref)
+    if pinned is None:
+        _reject(
+            ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
+            field,
+            f"{ref!r} is not a readable JSON object",
+        )
+    return pinned
+
+
+def _composition_root_pins(
+    repo_root: Path, parent: AuthoredIntentParent, *, field: str
+) -> list[ContentPinReference]:
+    """Verify every authored composition parent pin without resolving output parents."""
+    pins: list[ContentPinReference] = []
+    seen: set[str] = set()
+    current = parent
+    while True:
+        if current.ref in seen:
+            _reject(
+                ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
+                field,
+                f"authored composition reference cycle at {current.ref!r}",
+            )
+        seen.add(current.ref)
+        pinned = _load_root_document(repo_root, current.ref, field=field)
+        try:
+            node = parse_composition_node(pinned.document)
+        except ValueError as exc:
+            _reject(
+                ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+                field,
+                f"{current.ref!r} is not a supported training-run composition: {exc}",
+            )
+        actual = authored_envelope_hash(node)
+        if actual != current.content_hash:
+            _reject(
+                ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
+                field,
+                f"{current.ref!r} authored composition hash mismatch: "
+                f"declared={current.content_hash!r}, computed={actual!r}",
+            )
+        pins.append(ContentPinReference(ref=current.ref, content_hash=pinned.content_hash))
+        if isinstance(node.parent, CompiledTrainingRowParent):
+            from feedbax.training.run_matrix import verify_compiled_training_row_parent
+
+            try:
+                verify_compiled_training_row_parent(node.parent, repo_root=repo_root)
+            except ValueError as exc:
+                _reject(
+                    ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
+                    field,
+                    f"compiled training row parent verification failed: {exc}",
+                )
+            pins.extend(
+                (
+                    ContentPinReference(
+                        ref=node.parent.matrix.ref,
+                        content_hash=node.parent.matrix.sha256,
+                    ),
+                    ContentPinReference(
+                        ref=node.parent.compile_lock.ref,
+                        content_hash=node.parent.compile_lock.sha256,
+                    ),
+                )
+            )
+            lock = _load_root_document(
+                repo_root,
+                node.parent.compile_lock.ref,
+                field=field,
+            ).document
+            pins.extend(
+                ContentPinReference(
+                    ref=reference["ref"],
+                    content_hash=reference["content_hash"],
+                )
+                for reference in lock["references"]
+                if reference["kind"] == "content_pin"
+            )
+            return pins
+        if not isinstance(node.parent, AuthoredIntentParent):
+            return pins
+        current = node.parent
+
+
+def _root_source_pins(
+    context: LayerCompileContext, sources: Sequence[Any]
+) -> list[ContentPinReference]:
+    """Pin every present source a root matrix declares, after containment checks."""
+    document = {
+        "sources": [source.model_dump(mode="json", exclude_none=True) for source in sources]
+    }
+    for index, source in enumerate(sources):
+        _root_json_ref(
+            context.repo_root,
+            source.uri,
+            field=f"training.root.sources[{index}].uri",
+        )
+    refs = source_refs_of(context.repo_root, context.envelope_ref)(document)
+    return [
+        ContentPinReference(
+            ref=ref,
+            content_hash=_load_root_document(
+                context.repo_root, ref, field="training.root.sources"
+            ).content_hash,
+        )
+        for ref in refs
+    ]
+
+
+def _load_content_pinned_authority(
+    context: LayerCompileContext,
+    authored: Any,
+    *,
+    field: str,
+    schema_version: str,
+    validate: Callable[[Mapping[str, Any]], BaseModel],
+) -> tuple[BaseModel, ContentPinReference, str]:
+    """Verify one whole authority document, then validate its selected object."""
+    _root_json_ref(context.repo_root, authored.ref, field=f"{field}.ref")
+    try:
+        _document, selected = load_content_pinned_json_document(
+            authored,
+            repo_root=context.repo_root,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if "payload_path" in message:
+            category = (
+                ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+                if "must select a JSON object" in message
+                else ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
+            )
+            rejection_field = f"{field}.payload_path"
+        else:
+            category = (
+                ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+                if "must contain a JSON object" in message
+                else ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
+            )
+            rejection_field = field
+        _reject(category, rejection_field, message)
+    try:
+        authority = validate(selected)
+    except ValidationError as exc:
+        errors = exc.errors()
+        kinds = {entry["type"] for entry in errors}
+        if "extra_forbidden" in kinds:
+            category = ExperimentEnvelopeRejectionCategory.UNKNOWN_FIELD
+        elif "union_tag_not_found" in kinds or (
+            kinds == {"missing"}
+            and all(
+                entry["loc"]
+                and entry["loc"][-1] in {"schema_id", "schema_version", "kind"}
+                and len(entry["loc"]) <= 2
+                for entry in errors
+            )
+        ):
+            category = ExperimentEnvelopeRejectionCategory.MISSING_FIELD
+        else:
+            category = ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+        _reject(
+            category,
+            field,
+            f"selected payload is not a {schema_version}: {exc}",
+        )
+    return (
+        authority,
+        ContentPinReference(ref=authored.ref, content_hash=authored.sha256),
+        canonical_sha256(selected),
+    )
+
+
+def _load_root_training_authority(
+    context: LayerCompileContext, root: Any
+) -> tuple[RootTrainingAuthority | None, ContentPinReference | None]:
+    """Load root training authority through the shared content-pinned seam."""
+    authored = root.authority
+    if authored is None:
+        return None, None
+    authority, pin, _selected_sha256 = _load_content_pinned_authority(
+        context,
+        authored,
+        field="training.root.authority",
+        schema_version=ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
+        validate=RootTrainingAuthority.model_validate,
+    )
+    assert isinstance(authority, RootTrainingAuthority)
+    return authority, pin
+
+
+_LAYER_ROOT_AUTHORITY_ADAPTER = TypeAdapter(ExperimentLayerRootAuthority)
+
+
+def _validate_layer_root_authority(selected: Mapping[str, Any], *, field: str) -> BaseModel:
+    declared = selected.get("schema_version")
+    if declared is not None and declared != EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION:
+        _reject(
+            ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+            f"{field}.schema_version",
+            f"unsupported layer root authority schema version {declared!r}; expected "
+            f"{EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION!r}",
+        )
+    return _LAYER_ROOT_AUTHORITY_ADAPTER.validate_python(selected)
+
+
+def _load_layer_root_authority(
+    context: LayerCompileContext,
+    authored: Any,
+    *,
+    field: str,
+) -> tuple[ExperimentLayerRootAuthority, ContentPinReference, str]:
+    """Load one root-layer member through the shared verified seam."""
+    authority, pin, selected_sha256 = _load_content_pinned_authority(
+        context,
+        authored,
+        field=field,
+        schema_version=EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
+        validate=lambda selected: _validate_layer_root_authority(selected, field=field),
+    )
+    assert isinstance(
+        authority,
+        (
+            AnalysisRunLayerRootAuthority,
+            AnalysisBundleLayerRootAuthority,
+            FigureLayerRootAuthority,
+            ComparisonPolicyLayerRootAuthority,
+        ),
+    )
+    return authority, pin, selected_sha256
+
+
+def _layer_root_identity(
+    authored: Any, authority: BaseModel, selected_sha256: str
+) -> dict[str, Any]:
+    """Return the selector-sensitive semantic identity of one selected authority."""
+    return {
+        "kind": str(authority.kind),
+        "ref": authored.ref,
+        "sha256": authored.sha256,
+        "payload_path": None if authored.payload_path is None else list(authored.payload_path),
+        "selected_authority_sha256": selected_sha256,
+    }
+
+
+def _combine_root_training_lists(
+    authority: RootTrainingAuthority | None,
+    root: Any,
+) -> tuple[list[Any], list[Any]]:
+    """Prepend authority entries and reject duplicates at their authored origin."""
+    authority_sources = [] if authority is None else authority.sources
+    authority_derivations = [] if authority is None else authority.derivations
+    sources = [*authority_sources, *root.sources]
+    derivations = [*authority_derivations, *root.derivations]
+
+    seen_aliases: set[str] = set()
+    for origin, entries in (
+        ("training.root.authority.sources", authority_sources),
+        ("training.root.sources", root.sources),
+    ):
+        for index, source in enumerate(entries):
+            if source.alias in seen_aliases:
+                _reject(
+                    ExperimentEnvelopeRejectionCategory.DUPLICATE_KEY,
+                    f"{origin}[{index}].alias",
+                    f"source alias {source.alias!r} is authored more than once",
+                )
+            seen_aliases.add(source.alias)
+
+    seen_outputs: set[str] = set()
+    for origin, entries in (
+        ("training.root.authority.derivations", authority_derivations),
+        ("training.root.derivations", root.derivations),
+    ):
+        for index, derivation in enumerate(entries):
+            if derivation.output_path in seen_outputs:
+                _reject(
+                    ExperimentEnvelopeRejectionCategory.DUPLICATE_KEY,
+                    f"{origin}[{index}].output_path",
+                    f"derivation output_path {derivation.output_path!r} is authored more than once",
+                )
+            seen_outputs.add(derivation.output_path)
+    return sources, derivations
+
+
+def _root_payload_path(document: Mapping[str, Any], path: str | None, *, field: str) -> Any:
+    """Resolve an optional explicit dotted payload path without fallback."""
+    payload: Any = document
+    if path is None:
+        return payload
+    if not path.strip() or any(not part for part in path.split(".")):
+        _reject(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            field,
+            f"payload_path {path!r} is not a dotted path",
+        )
+    for part in path.split("."):
+        if not part or not isinstance(payload, Mapping) or part not in payload:
+            _reject(
+                ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
+                field,
+                f"payload_path {path!r} is not present in the pinned training run",
+            )
+        payload = payload[part]
+    if not isinstance(payload, Mapping):
+        _reject(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            field,
+            f"payload_path {path!r} does not resolve to a JSON object",
+        )
+    return payload
+
+
+def _lower_root_training(
+    context: LayerCompileContext, authored: TrainingLayerAuthoring
+) -> LoweredLayer:
+    """Construct a matrix-v6 root from one of the two closed root kinds."""
+    root = authored.root
+    assert root is not None
+    references: list[Any] = []
+    authority, authority_pin = _load_root_training_authority(context, root)
+    sources, derivations = _combine_root_training_lists(authority, root)
+    if isinstance(root, CompositionTrainingRootAuthoring):
+        parent = root.parent
+        if isinstance(parent, AuthoredIntentParent):
+            _root_json_ref(context.repo_root, parent.ref, field="training.root.parent.ref")
+            composition_pins = _composition_root_pins(
+                context.repo_root, parent, field="training.root.parent"
+            )
+            references.extend(composition_pins)
+            base: dict[str, Any] = {
+                "kind": "authored_intent",
+                "ref": parent.ref,
+                "content_hash": composition_pins[0].content_hash,
+                "pin_algorithm": CANONICAL_PIN_ALGORITHM,
+            }
+            if parent.symbolic_name is not None:
+                base["symbolic_name"] = parent.symbolic_name
+        else:
+            assert isinstance(parent, ResolvedOutputParent)
+            if (parent.row_id is None) != (parent.checkpoint_transaction_id is None):
+                _reject(
+                    ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+                    "training.root.parent",
+                    "a resolved-output parent states row_id and checkpoint_transaction_id together",
+                )
+            base = {
+                "kind": "resolved_output",
+                "ref": parent.ref,
+                "resolved_root_hash": parent.resolved_root_hash,
+            }
+            if parent.row_id is not None:
+                base["row_id"] = parent.row_id
+                base["checkpoint_transaction_id"] = parent.checkpoint_transaction_id
+            if parent.symbolic_name is not None:
+                base["symbolic_name"] = parent.symbolic_name
+        matrix_deltas = list(root.deltas)
+    else:
+        assert isinstance(root, TrainingRunRootAuthoring)
+        pinned = _load_root_document(context.repo_root, root.ref, field="training.root.ref")
+        if pinned.content_hash != root.content_hash:
+            _reject(
+                ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
+                "training.root.content_hash",
+                f"{root.ref!r} content hash mismatch: declared={root.content_hash!r}, "
+                f"computed={pinned.content_hash!r}",
+            )
+        try:
+            TrainingRunSpec.model_validate(pinned.document)
+        except ValidationError as exc:
+            _reject(
+                ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+                "training.root.ref",
+                f"{root.ref!r} is not a feedbax.spec.training_run.v4: {exc}",
+            )
+        _root_payload_path(pinned.document, root.payload_path, field="training.root.payload_path")
+        references.append(ContentPinReference(ref=root.ref, content_hash=pinned.content_hash))
+        base = {
+            "kind": "authored_intent",
+            "ref": root.ref,
+            "content_hash": root.content_hash,
+            "pin_algorithm": CANONICAL_PIN_ALGORITHM,
+        }
+        if root.payload_path is not None:
+            base["payload_path"] = root.payload_path
+        if root.symbolic_name is not None:
+            base["symbolic_name"] = root.symbolic_name
+        matrix_deltas = []
+
+    if authority_pin is not None:
+        references.append(authority_pin)
+    references.extend(_root_source_pins(context, sources))
+    rows: list[dict[str, Any]] = []
+    for row in root.rows:
+        compiled_row: dict[str, Any] = {
+            "row_id": row.id,
+            "label": row.effective_label,
+            "overrides": [
+                patch.model_dump(mode="json", exclude_none=True)
+                for patch in (() if row.delta is None else row.delta.patches)
+            ],
+            "metadata": {},
+        }
+        if row.seed is not None:
+            compiled_row["seed"] = row.seed
+        rows.append(compiled_row)
+    for index, item in enumerate(root.checkpoint_initialization):
+        references.append(
+            _reference_for(
+                context,
+                item.source,
+                role_path=f"rows.{item.row}.checkpoint_initialization",
+                field=f"training.root.checkpoint_initialization[{index}].source",
+                consumer_of=lambda _kind, _id, item=item: CheckpointInitializationBinding(
+                    mode=item.mode, row_id=item.row
+                ),
+            )
+        )
+    dependencies = [
+        dependency.model_dump(mode="json", exclude_none=True)
+        for dependency in root.execution_dependencies
+    ]
+    if isinstance(root, CompositionTrainingRootAuthoring) and root.selected_checkpoint is not None:
+        parent = root.parent
+        assert isinstance(parent, ResolvedOutputParent)
+        assert parent.row_id is not None
+        assert parent.checkpoint_transaction_id is not None
+        dependencies.append(
+            {
+                "kind": "fork_from_selected_checkpoint",
+                "source_authority": {
+                    "kind": "resolved_output_root",
+                    "source_run_id": root.selected_checkpoint.source_run_id,
+                    "resolved_root_hash": parent.resolved_root_hash,
+                },
+                "source_row_id": parent.row_id,
+                "checkpoint_transaction_id": parent.checkpoint_transaction_id,
+                "checkpoint_root_hash": root.selected_checkpoint.checkpoint_root_hash,
+                "source_barrier": root.selected_checkpoint.source_barrier,
+                "slot_transforms": [
+                    transform.model_dump(mode="json", exclude_none=True)
+                    for transform in root.selected_checkpoint.slot_transforms
+                ],
+            }
+        )
+    document: dict[str, Any] = {
+        "schema_id": TRAINING_OUTPUT_V6.schema_id,
+        "schema_version": TRAINING_OUTPUT_V6.schema_version,
+        "name": context.envelope.name,
+        "base": base,
+        "deltas": [delta.model_dump(mode="json", exclude_none=True) for delta in matrix_deltas],
+        "execution_dependencies": dependencies,
+        "sources": [source.model_dump(mode="json", exclude_none=True) for source in sources],
+        "derivations": [
+            derivation.model_dump(mode="json", exclude_none=True) for derivation in derivations
+        ],
+        "rows": rows,
+        "axes": [],
+        "combination": {
+            "mode": "cross",
+            "groups": [],
+            "manual_coordinates": [],
+            "metadata": {},
+        },
+        "tags": list(root.tags),
+        "metadata": {},
+    }
+    if context.envelope.issue is not None:
+        document["issue"] = context.envelope.issue
+    if root.fork is not None:
+        document["fork"] = root.fork.model_dump(mode="json", exclude_none=True)
+    lock_deltas = [*matrix_deltas]
+    lock_deltas.extend(row.delta for row in root.rows if row.delta is not None)
+    return LoweredLayer(
+        contract=TRAINING_OUTPUT_V6,
+        deltas=(),
+        document=document,
+        references=references,
+        identity_contributions={"training_root": root.model_dump(mode="json", exclude_none=True)},
+        lock_deltas=lock_deltas,
+    )
+
+
 def _lower_training(context: LayerCompileContext) -> LoweredLayer:
     """Lower authored rows, tags, and checkpoint sources over a run matrix."""
     authored = context.envelope.content
     assert isinstance(authored, TrainingLayerAuthoring)
+    if authored.root is not None:
+        return _lower_root_training(context, authored)
+    assert context.parent is not None
     parent = dict(context.parent.pinned.document)
     inherited_rows = list(parent.get("rows") or [])
-    by_id = {
-        str(row.get("row_id")): row for row in inherited_rows if isinstance(row, Mapping)
-    }
+    by_id = {str(row.get("row_id")): row for row in inherited_rows if isinstance(row, Mapping)}
     # The row keys the *parent document* declares, fixed before any authored row
     # joins `by_id`. A row derived from one of these is derived from the pinned
     # parent, and says so in the lock; a row derived from a row this same envelope
@@ -916,9 +1445,7 @@ def _lower_training(context: LayerCompileContext) -> LoweredLayer:
     references: list[Any] = [] if base_pin is None else [base_pin]
     patches: list[OverridePatch] = []
     if context.envelope.name != parent.get("name"):
-        patches.append(
-            OverridePatch(path="name", op="replace", value=context.envelope.name)
-        )
+        patches.append(OverridePatch(path="name", op="replace", value=context.envelope.name))
     else:
         check_echo(context.lineage, "name", context.envelope.name, field="envelope.name")
 
@@ -936,8 +1463,7 @@ def _lower_training(context: LayerCompileContext) -> LoweredLayer:
             _reject(
                 ExperimentEnvelopeRejectionCategory.UNRESOLVED_ROW_KEY,
                 f"{field}.from",
-                f"{row.from_!r} names no row in {context.parent.ref}; "
-                f"rows: {sorted(by_id)}",
+                f"{row.from_!r} names no row in {context.parent.ref}; rows: {sorted(by_id)}",
             )
         if row.id in by_id:
             _reject(
@@ -1006,8 +1532,7 @@ def _lower_training(context: LayerCompileContext) -> LoweredLayer:
             _reject(
                 ExperimentEnvelopeRejectionCategory.UNRESOLVED_ROW_KEY,
                 f"training.checkpoint_initialization[{index}].row",
-                f"{item.row!r} is not a row this matrix runs; "
-                f"rows: {sorted(runnable)}",
+                f"{item.row!r} is not a row this matrix runs; rows: {sorted(runnable)}",
                 correct_home="checkpoint initialization applies to a row the compiled "
                 "matrix declares; under rows_mode 'authored_only' only the authored rows "
                 "survive",
@@ -1024,7 +1549,7 @@ def _lower_training(context: LayerCompileContext) -> LoweredLayer:
             )
         )
     return LoweredLayer(
-        contract=TRAINING_OUTPUT,
+        contract=context.parent.contract,
         deltas=_one_delta(context, patches, acknowledges=tag_acknowledgements),
         references=references,
         row_provenance=row_provenance,
@@ -1046,18 +1571,14 @@ def _lower_evaluation(context: LayerCompileContext) -> LoweredLayer:
         patches.append(
             OverridePatch(path="base.evaluation_type", op="replace", value=authored.recipe)
         )
-    patches.extend(
-        _params_patches(authored.params, "base.params")
-    )
+    patches.extend(_params_patches(authored.params, "base.params"))
     references = [
         _reference_for(
             context,
             authored.subject,
             role_path=f"subjects.{authored.subject_id}",
             field="evaluation.subject",
-            consumer_of=lambda _kind, _id: EvaluationSubjectBinding(
-                subject_id=authored.subject_id
-            ),
+            consumer_of=lambda _kind, _id: EvaluationSubjectBinding(subject_id=authored.subject_id),
         )
     ]
     # A further staged prerequisite is bound exactly as the subject is: by
@@ -1089,21 +1610,60 @@ def _lower_analysis(context: LayerCompileContext) -> LoweredLayer:
     authored = context.envelope.content
     assert isinstance(authored, AnalysisLayerAuthoring)
     contract = ANALYSIS_RUN_OUTPUT if authored.target == "run" else ANALYSIS_BUNDLE_OUTPUT
-    if context.parent.contract is not contract:
+    root_authority: ExperimentLayerRootAuthority | None = None
+    root_pin: ContentPinReference | None = None
+    selected_authority_sha256: str | None = None
+    document: dict[str, Any] | None = None
+    if authored.root is not None:
+        root_authority, root_pin, selected_authority_sha256 = _load_layer_root_authority(
+            context,
+            authored.root,
+            field="analysis.root",
+        )
+        expected_type = (
+            AnalysisRunLayerRootAuthority
+            if authored.target == "run"
+            else AnalysisBundleLayerRootAuthority
+        )
+        if not isinstance(root_authority, expected_type):
+            _reject(
+                ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+                "analysis.target",
+                f"analysis target {authored.target!r} requires authority kind "
+                f"{'analysis_run' if authored.target == 'run' else 'analysis_bundle'!r}, "
+                f"got {root_authority.kind!r}",
+            )
+        scientific = root_authority.model_dump(
+            mode="json",
+            exclude={"schema_id", "schema_version", "kind"},
+            exclude_none=True,
+        )
+        document = {
+            "schema_id": contract.schema_id,
+            "schema_version": contract.schema_version,
+            **scientific,
+        }
+        if authored.target == "run":
+            assert authored.recipe is not None
+            document["analysis_type"] = authored.recipe
+            document["inputs"] = []
+        else:
+            document["name"] = context.envelope.name
+    elif context.parent is None or context.parent.contract is not contract:
+        parent_description = (
+            "no parent"
+            if context.parent is None
+            else f"a {context.parent.contract.family!r} document"
+        )
         _reject(
             ExperimentEnvelopeRejectionCategory.CROSS_FAMILY_BASE,
             "analysis.target",
-            f"an analysis {authored.target!r} envelope resolves {context.parent.ref}, which "
-            f"is a {context.parent.contract.family!r} document",
+            f"an analysis {authored.target!r} envelope resolves {parent_description}",
         )
     patches: list[OverridePatch] = []
-    if authored.recipe is not None:
-        check_echo(
-            context.lineage, "analysis_type", authored.recipe, field="analysis.recipe"
-        )
-        patches.append(
-            OverridePatch(path="analysis_type", op="replace", value=authored.recipe)
-        )
+    if authored.recipe is not None and authored.root is None:
+        check_echo(context.lineage, "analysis_type", authored.recipe, field="analysis.recipe")
+        patches.append(OverridePatch(path="analysis_type", op="replace", value=authored.recipe))
     prefix = "params" if authored.target == "run" else "params_base"
     patches.extend(_params_patches(authored.params, prefix))
     references = [
@@ -1138,7 +1698,19 @@ def _lower_analysis(context: LayerCompileContext) -> LoweredLayer:
     return LoweredLayer(
         contract=contract,
         deltas=_one_delta(context, patches, authored.delta),
-        references=references,
+        document=document,
+        references=([root_pin] if root_pin is not None else []) + references,
+        identity_contributions=(
+            {}
+            if root_authority is None
+            else {
+                "layer_root": _layer_root_identity(
+                    authored.root,
+                    root_authority,
+                    str(selected_authority_sha256),
+                )
+            }
+        ),
     )
 
 
@@ -1156,12 +1728,19 @@ def _lower_figure(context: LayerCompileContext) -> LoweredLayer:
     """Lower one figure operation, dispatched on the mode the envelope states."""
     authored = context.envelope.content
     assert isinstance(authored, FigureLayerAuthoring)
-    if context.parent.contract is not FIGURE_OUTPUT:
+    if authored.mode is FigureLayerMode.ROOT:
+        return _lower_figure_root(context, authored)
+    if context.parent is None or context.parent.contract is not FIGURE_OUTPUT:
+        parent_description = (
+            "no parent"
+            if context.parent is None
+            else f"a {context.parent.contract.family!r} document"
+        )
         _reject(
             ExperimentEnvelopeRejectionCategory.CROSS_FAMILY_BASE,
             "figure.mode",
-            f"a {authored.mode.value!r} figure envelope resolves {context.parent.ref}, which "
-            f"is a {context.parent.contract.family!r} document; both figure modes take a "
+            f"a {authored.mode.value!r} figure envelope resolves {parent_description}; "
+            f"both relative figure modes take a "
             f"{FIGURE_OUTPUT.schema_id!r} parent",
             correct_home="the single-row scientific statement is the parent of both a "
             "row_expansion and a composition figure; a composition document is this "
@@ -1175,9 +1754,7 @@ def _lower_figure(context: LayerCompileContext) -> LoweredLayer:
             # only way a per-row role reaches the lock: the single-locator slot
             # is stated not-applicable, never filled with one row's locator.
             assert item.ref is None  # guaranteed by FigureInputAuthoring
-            references.append(
-                certify_not_applicable(role_path, PER_ROW_FIGURE_INPUT_RULE)
-            )
+            references.append(certify_not_applicable(role_path, PER_ROW_FIGURE_INPUT_RULE))
             continue
         references.append(
             _reference_for(
@@ -1193,6 +1770,72 @@ def _lower_figure(context: LayerCompileContext) -> LoweredLayer:
     if authored.mode is FigureLayerMode.ROW_EXPANSION:
         return _lower_figure_row_expansion(context, authored, references)
     return _lower_figure_composition(context, authored, references)
+
+
+def _lower_figure_root(
+    context: LayerCompileContext,
+    authored: FigureLayerAuthoring,
+) -> LoweredLayer:
+    """Construct one FigureSpec from a selected typed authority member."""
+    assert authored.root is not None
+    authority, root_pin, selected_authority_sha256 = _load_layer_root_authority(
+        context,
+        authored.root,
+        field="figure.root",
+    )
+    if not isinstance(authority, FigureLayerRootAuthority):
+        _reject(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "figure.mode",
+            f"figure mode 'root' requires authority kind 'figure', got {authority.kind!r}",
+        )
+    references: list[Any] = [root_pin]
+    for index, item in enumerate(authored.inputs):
+        references.append(
+            _reference_for(
+                context,
+                item.ref,
+                role_path=f"inputs.{item.input_role}",
+                field=f"figure.inputs[{index}].ref",
+                consumer_of=lambda _kind, _id, item=item: FigureRuntimeInputBinding(
+                    input_role=item.input_role
+                ),
+            )
+        )
+    document = {
+        "schema_id": FIGURE_OUTPUT.schema_id,
+        "schema_version": FIGURE_OUTPUT.schema_version,
+        "name": context.envelope.name,
+        "inputs": [],
+        "input_authorities": [],
+        **authority.model_dump(
+            mode="json",
+            exclude={"schema_id", "schema_version", "kind"},
+            exclude_none=True,
+        ),
+    }
+    deltas: list[MatrixCompositionDelta] = []
+    lock_deltas: Sequence[MatrixCompositionDelta] = ()
+    additions: dict[str, Mapping[str, tuple[str, str]]] = {}
+    if authored.delta is not None:
+        matrix_delta = authored.delta.matrix_delta()
+        deltas.append(matrix_delta)
+        lock_deltas = (authored.delta,)
+        additions[matrix_delta.layer_id] = {
+            addition.path: (addition.schema_id, addition.schema_version)
+            for addition in (authored.delta.same_schema_structural_additions or [])
+        }
+    return LoweredLayer(
+        contract=FIGURE_OUTPUT,
+        deltas=deltas,
+        document=document,
+        references=references,
+        identity_contributions={
+            "layer_root": _layer_root_identity(authored.root, authority, selected_authority_sha256)
+        },
+        lock_deltas=lock_deltas,
+        same_schema_structural_additions_by_layer=additions,
+    )
 
 
 def _lower_figure_row_expansion(
@@ -1221,8 +1864,7 @@ def _lower_figure_row_expansion(
                 exc.code, ExperimentEnvelopeRejectionCategory.INVALID_VALUE
             ),
             "figure.rows",
-            f"the authored row selector does not resolve against {authored.rows.index!r}: "
-            f"{exc}",
+            f"the authored row selector does not resolve against {authored.rows.index!r}: {exc}",
             correct_home="a row selector names rows the index declares; a slice the index "
             "does not carry belongs in the index",
         )
@@ -1391,10 +2033,51 @@ def _lower_figure_composition(
 #: same knowledge.
 REPORT_BINDING_STATE_REPORT_TYPES: frozenset[str] = frozenset(REPORT_PARAMS_MODELS)
 
+
 #: The fields an ordered-figure report node uses to *describe* the state of the
 #: role it stands for. The set is closed and enumerated rather than swept for:
 #: a heuristic over field names would reconcile authored science the moment a
 #: project chose a similar-looking word, and these four are Feedbax's own
+def _lower_comparison(context: LayerCompileContext) -> LoweredLayer:
+    """Construct one root-only ComparisonPolicySpec from typed authority."""
+    authored = context.envelope.content
+    assert isinstance(authored, ComparisonLayerAuthoring)
+    authority, root_pin, selected_authority_sha256 = _load_layer_root_authority(
+        context,
+        authored.root,
+        field="comparison.root",
+    )
+    if not isinstance(authority, ComparisonPolicyLayerRootAuthority):
+        _reject(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "comparison.root",
+            f"comparison layer requires authority kind 'comparison_policy', got {authority.kind!r}",
+        )
+    document = {
+        "schema_id": COMPARISON_POLICY_OUTPUT.schema_id,
+        "schema_version": COMPARISON_POLICY_OUTPUT.schema_version,
+        "name": context.envelope.name,
+        **authority.model_dump(
+            mode="json",
+            exclude={"schema_id", "schema_version", "kind"},
+            exclude_none=True,
+        ),
+    }
+    return LoweredLayer(
+        contract=COMPARISON_POLICY_OUTPUT,
+        deltas=(),
+        document=document,
+        references=(root_pin,),
+        identity_contributions={
+            "layer_root": _layer_root_identity(
+                authored.root,
+                authority,
+                selected_authority_sha256,
+            )
+        },
+    )
+
+
 #: (:mod:`feedbax.analysis.reports`).
 REPORT_APPLICABILITY_FIELD = "applicability"
 REPORT_FIGURE_DIGEST_FIELD = "figure_spec_sha256"
@@ -1433,9 +2116,7 @@ REPORT_SECTION_FIGURES_FIELD = "figures"
 #: no applicability to (a scalar table, a projection): the binding stands in the
 #: lock and the document says nothing, as before.
 REPORT_NOT_APPLICABLE_REMOVALS: Mapping[tuple[str, str], tuple[str, ...]] = {
-    ("feedbax.analysis.reports", "OrderedFigureReportSection"): (
-        REPORT_SECTION_FIGURES_FIELD,
-    ),
+    ("feedbax.analysis.reports", "OrderedFigureReportSection"): (REPORT_SECTION_FIGURES_FIELD,),
     ("feedbax.analysis.reports", "OrderedFigureReportFigure"): (
         REPORT_FIGURE_DIGEST_FIELD,
         REPORT_INPUT_ROLE_FIELD,
@@ -1662,13 +2343,9 @@ def _binding_state_patches(
             removals = _not_applicable_removals(node_model)
             if removals is None:
                 continue
-            derived = _not_applicable_state_patches(
-                binding.role_path, node, reference, removals
-            )
+            derived = _not_applicable_state_patches(binding.role_path, node, reference, removals)
         else:
-            derived = _bound_state_patches(
-                binding.role_path, node, reference, field=field
-            )
+            derived = _bound_state_patches(binding.role_path, node, reference, field=field)
         patches.extend(derived)
         owners.update({patch.path: binding.role_path for patch in derived})
     return patches, owners
@@ -1805,6 +2482,7 @@ _LAYER_LOWERERS: Mapping[ExperimentEnvelopeLayer, Callable[[LayerCompileContext]
     ExperimentEnvelopeLayer.EVALUATION: _lower_evaluation,
     ExperimentEnvelopeLayer.ANALYSIS: _lower_analysis,
     ExperimentEnvelopeLayer.FIGURE: _lower_figure,
+    ExperimentEnvelopeLayer.COMPARISON: _lower_comparison,
     ExperimentEnvelopeLayer.REPORT: _lower_report,
 }
 
@@ -1837,10 +2515,6 @@ class EnvelopeKernel:
         self.layout = EnvelopeLayout.of(declaration)
         self.budgets = budgets
         self.implementation = implementation
-        self.contract = CompilerContract(
-            contract_id=EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID,
-            contract_version=EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION,
-        )
 
     # -- envelope reading ------------------------------------------------
 
@@ -1969,9 +2643,7 @@ class EnvelopeKernel:
             "envelope_alias",
             alias_ref,
             pinned,
-            build_lineage(
-                repo_root, pinned, source_refs=source_refs_of(repo_root, alias_ref)
-            ),
+            build_lineage(repo_root, pinned, source_refs=source_refs_of(repo_root, alias_ref)),
             contract.layer,
             contract,
         )
@@ -1988,18 +2660,30 @@ class EnvelopeKernel:
     ) -> EnvelopeCompileOutcome:
         """Compile one authored envelope into a document and its compile lock."""
         envelope = self.read_envelope(raw, envelope_ref=envelope_ref)
+        compiler_contract = CompilerContract(
+            contract_id=EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID,
+            contract_version=compiler_contract_version_for_schema(envelope.schema_),
+        )
         layer = envelope.layer
         budget = self.budgets.for_layer(layer.value)
-        enforce_assertion_budget(
-            len(envelope.assert_), budget, field=f"{envelope_ref}#assert"
-        )
+        enforce_assertion_budget(len(envelope.assert_), budget, field=f"{envelope_ref}#assert")
         if envelope.training is not None:
             enforce_row_budget(
-                len(envelope.training.rows),
+                len(
+                    envelope.training.root.rows
+                    if envelope.training.root is not None
+                    else envelope.training.rows
+                ),
                 budget,
                 field=f"{envelope_ref}#training.rows",
             )
-        if envelope.base is None:
+        root_envelope = (
+            (envelope.training is not None and envelope.training.root is not None)
+            or (envelope.analysis is not None and envelope.analysis.root is not None)
+            or (envelope.figure is not None and envelope.figure.root is not None)
+            or envelope.comparison is not None
+        )
+        if envelope.base is None and not root_envelope:
             _reject(
                 ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
                 f"{envelope_ref}#base",
@@ -2008,7 +2692,11 @@ class EnvelopeKernel:
                 correct_home="state a frozen document by repo-relative path, or another "
                 f"envelope in {self.layout.envelope_directory!r} by alias",
             )
-        parent = self.resolve_parent(repo_root, envelope.base, _stack, expected_layer=layer)
+        parent = (
+            None
+            if envelope.base is None
+            else self.resolve_parent(repo_root, envelope.base, _stack, expected_layer=layer)
+        )
 
         def compile_upstream(alias: str, field: str) -> EnvelopeCompileOutcome:
             upstream_ref = self.layout.alias_ref(alias, field=field)
@@ -2057,13 +2745,13 @@ class EnvelopeKernel:
                 name=envelope.name,
                 family=lowered.contract.family,
                 compiled_document=document,
-                contract=self.contract,
+                contract=compiler_contract,
                 implementation=self.implementation,
-                base=parent.lock_record(),
-                lineage_pins=parent.lineage.pins(),
+                base=None if parent is None else parent.lock_record(),
+                lineage_pins=[] if parent is None else parent.lineage.pins(),
                 resolved_deltas={
                     delta.layer_id: delta.model_dump(mode="json", exclude_none=True)
-                    for delta in lowered.deltas
+                    for delta in (lowered.lock_deltas or lowered.deltas)
                 },
                 references=lowered.references,
                 row_provenance=lowered.row_provenance,
@@ -2085,7 +2773,25 @@ class EnvelopeKernel:
         """Apply or take the lowered document and prove the result is valid."""
         if lowered.document is not None:
             document = deepcopy(dict(lowered.document))
+            if lowered.deltas:
+                try:
+                    document, _attribution, _written = apply_composition_deltas(
+                        document,
+                        list(lowered.deltas),
+                        allowed_same_schema_structural_additions_by_layer=(
+                            lowered.same_schema_structural_additions_by_layer
+                        ),
+                    )
+                except ValueError as exc:
+                    _reject(
+                        ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+                        context.envelope_ref,
+                        f"the envelope's deltas do not apply to its layer root: {exc}",
+                        correct_home="a root delta states only the small changes relative "
+                        "to the selected content-pinned authority member",
+                    )
         else:
+            assert context.parent is not None
             try:
                 document, _attribution, _written = apply_composition_deltas(
                     deepcopy(dict(context.parent.pinned.document)), list(lowered.deltas)
@@ -2098,18 +2804,73 @@ class EnvelopeKernel:
                     correct_home="a delta states what changes relative to the base it "
                     "inherits, and acknowledges every ancestor-written path it overwrites",
                 )
+        self._precheck_root_output(context)
         try:
             lowered.contract.model().model_validate(document)
-        except Exception as exc:  # noqa: BLE001 - any model failure is one rejection
+        except ValidationError as exc:
             _reject(
                 ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
-                context.envelope_ref,
+                self._output_validation_field(context, exc),
                 f"the compiled document is not a valid {lowered.contract.schema_id}: {exc}",
                 correct_home="the compiled document must be a member of the Feedbax family "
                 "its layer produces; the envelope's delta is what makes it one",
             )
         self._validate_declared_params(context, lowered.contract, document)
         return document
+
+    @staticmethod
+    def _precheck_root_output(context: LayerCompileContext) -> None:
+        """Refuse root duplicates whose output-model validator has no field location."""
+        training = context.envelope.training
+        root = None if training is None else training.root
+        if root is None:
+            return
+        seen_sources: set[str] = set()
+        for index, source in enumerate(root.sources):
+            if source.alias in seen_sources:
+                _reject(
+                    ExperimentEnvelopeRejectionCategory.DUPLICATE_KEY,
+                    f"training.root.sources[{index}].alias",
+                    f"source alias {source.alias!r} is authored more than once",
+                )
+            seen_sources.add(source.alias)
+        seen_outputs: set[str] = set()
+        for index, derivation in enumerate(root.derivations):
+            if derivation.output_path in seen_outputs:
+                _reject(
+                    ExperimentEnvelopeRejectionCategory.DUPLICATE_KEY,
+                    f"training.root.derivations[{index}].output_path",
+                    f"derivation output_path {derivation.output_path!r} is authored more than once",
+                )
+            seen_outputs.add(derivation.output_path)
+
+    @staticmethod
+    def _output_validation_field(context: LayerCompileContext, error: ValidationError) -> str:
+        """Map structured output-model locations back onto root authoring fields."""
+        training = context.envelope.training
+        root = None if training is None else training.root
+        if root is None:
+            return context.envelope_ref
+        errors = error.errors()
+        location = tuple(errors[0].get("loc", ())) if errors else ()
+        if location and location[0] == "rows":
+            index = location[1] if len(location) > 1 else 0
+            return f"training.root.rows[{index}].id"
+        if location and location[0] == "sources":
+            index = location[1] if len(location) > 1 else 0
+            return f"training.root.sources[{index}]"
+        if location and location[0] == "derivations":
+            index = location[1] if len(location) > 1 else 0
+            return f"training.root.derivations[{index}]"
+        if location and location[0] == "base":
+            return (
+                "training.root.parent"
+                if isinstance(root, CompositionTrainingRootAuthoring)
+                else "training.root.ref"
+            )
+        if not location and root.derivations and not root.sources:
+            return "training.root.derivations"
+        return "training.root"
 
     def _validate_declared_params(
         self,
@@ -2129,7 +2890,7 @@ class EnvelopeKernel:
             return
         try:
             model.model_validate(document.get("params"))
-        except Exception as exc:  # noqa: BLE001 - any model failure is one rejection
+        except ValidationError as exc:
             discriminator = str(contract.params_discriminator)
             _reject(
                 ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
@@ -2205,7 +2966,8 @@ class EnvelopeKernel:
         if not directory.is_dir():
             return []
         return sorted(
-            directory.rglob(f"*{self.layout.envelope_suffix}"), key=lambda path: path.as_posix()
+            directory.rglob(f"*{self.layout.envelope_suffix}"),
+            key=lambda path: path.as_posix(),
         )
 
     def output_claims(self, repo_root: Path) -> dict[str, tuple[str, ...]]:

@@ -1,4 +1,4 @@
-"""The authored-envelope engine: one dialect, one compiler, five layers.
+"""The authored-envelope engine: one dialect, one compiler, closed layers.
 
 Feedbax owns the mechanism by which an authored envelope becomes a compiled
 document plus a compile lock, and it owns the dialect that mechanism reads. A
@@ -17,7 +17,7 @@ The kernel is four mechanisms:
   document schema owned here and the numbers owned by the project
   (:mod:`feedbax.contracts.authoring_budget`, :mod:`feedbax.envelope.authoring`);
 * **compilation** — parent resolution over a content-pinned lineage, assertion
-  verification, echo refusal, the five-layer lowering, and lock emission
+  verification, echo refusal, closed-layer lowering, and lock emission
   (:mod:`feedbax.contracts.experiment_envelope_dialect`,
   :mod:`feedbax.envelope.compile`, :mod:`feedbax.envelope.resolution`);
 * **the choke point** — proof that tracked compiled bytes are what the envelopes
@@ -74,12 +74,35 @@ from feedbax.envelope.choke import (
 from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION,
+    EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1,
+    EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2,
+    EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID,
+    EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
     EXPERIMENT_ENVELOPE_FAMILY,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
     EXPERIMENT_ENVELOPE_SUFFIX,
+    EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS,
+    ROOT_TRAINING_AUTHORITY_SCHEMA_ID,
+    ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
+    AnalysisBundleLayerRootAuthority,
+    AnalysisRunLayerRootAuthority,
+    ComparisonPolicyLayerRootAuthority,
+    CompositionTrainingRootAuthoring,
     ExperimentEnvelope,
     ExperimentEnvelopeLayer,
+    ExperimentLayerRootAuthority,
+    FigureLayerRootAuthority,
     LayerOutputContract,
+    RootTrainingRowAuthoring,
+    RootSelectedCheckpointAuthoring,
+    RootTrainingAuthority,
+    TrainingRootAuthoring,
+    TrainingRunRootAuthoring,
+    compiler_contract_version_for_schema,
     parse_experiment_envelope,
 )
 from feedbax.envelope.compile import (
@@ -121,16 +144,31 @@ __all__ = [
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION",
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID",
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION",
+    "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1",
+    "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2",
+    "EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID",
+    "EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION",
     "EXPERIMENT_ENVELOPE_FAMILY",
     "EXPERIMENT_ENVELOPE_IMPLEMENTATION",
     "EXPERIMENT_ENVELOPE_SCHEMA_VERSION",
+    "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1",
+    "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2",
+    "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3",
+    "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4",
     "EXPERIMENT_ENVELOPE_SUFFIX",
+    "EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS",
+    "ROOT_TRAINING_AUTHORITY_SCHEMA_ID",
+    "ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION",
     "RUN_RECEIPT_ONLY_FACTS",
     "AuthoringBudgets",
+    "AnalysisBundleLayerRootAuthority",
+    "AnalysisRunLayerRootAuthority",
+    "ComparisonPolicyLayerRootAuthority",
     "ChokeEntry",
     "ChokeFinding",
     "ChokeReport",
     "CompileLockInputs",
+    "CompositionTrainingRootAuthoring",
     "CompilerContract",
     "CompilerImplementation",
     "DuplicateOutputAddressError",
@@ -139,6 +177,8 @@ __all__ = [
     "EnvelopeLayout",
     "ExperimentEnvelope",
     "ExperimentEnvelopeLayer",
+    "ExperimentLayerRootAuthority",
+    "FigureLayerRootAuthority",
     "InheritedValue",
     "LayerBudget",
     "LayerCompileContext",
@@ -148,6 +188,11 @@ __all__ = [
     "PinnedDocument",
     "PlanReceiptBoundaryError",
     "ResolvedParent",
+    "RootTrainingRowAuthoring",
+    "RootSelectedCheckpointAuthoring",
+    "RootTrainingAuthority",
+    "TrainingRootAuthoring",
+    "TrainingRunRootAuthoring",
     "UncontainedEnvelopeAliasError",
     "authored_layer_of",
     "build_compile_lock",
@@ -160,6 +205,7 @@ __all__ = [
     "compare_tracked_outputs",
     "compile_experiment_envelope",
     "compiled_document_pin",
+    "compiler_contract_version_for_schema",
     "content_pin",
     "emit_text",
     "enforce_assertion_budget",

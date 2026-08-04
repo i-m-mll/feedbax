@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import replace
@@ -20,7 +21,7 @@ from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.run_matrix import (
     RowLowererIdentity,
     TrainingRowLoweringResult,
-    TrainingRunMatrixSpec,
+    TrainingRunMatrixSpecV5,
 )
 from feedbax.contracts.spec_storage import (
     canonicalize_immutable_input_identities,
@@ -187,7 +188,7 @@ def _assemble_lowered_bundle(
     continuation: CheckpointContinuationRequest | None = None,
     input_kind: str = "registered-artifact",
 ) -> RunBundle:
-    matrix = TrainingRunMatrixSpec.model_validate(
+    matrix = TrainingRunMatrixSpecV5.model_validate(
         {
             "schema_id": "feedbax.spec.training_run_matrix",
             "schema_version": "feedbax.spec.training_run_matrix.v5",
@@ -927,7 +928,14 @@ def test_shadow_runtime_binding_rejects_caller_owned_update_budget(tmp_path: Pat
         )
 
 
-def test_local_driver_executes_compiled_native_row_subprocess(tmp_path: Path) -> None:
+def test_local_driver_executes_compiled_native_row_subprocess(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join([str(Path(sys.executable).parent), os.environ.get("PATH", "")]),
+    )
     bundle = _without_resolved_inputs(_assemble_lowered_bundle(tmp_path / "subprocess", gain=2))
     row = bundle.rows[0]
     slots_path = tmp_path / "initial-slots.json"

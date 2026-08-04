@@ -13,8 +13,10 @@ from feedbax.contracts.run_matrix import (
     RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5,
     MatrixCompositionDelta,
     TrainingRunMatrixSpec,
+    TrainingRunMatrixSpecV5,
     apply_composition_deltas,
     apply_override_patches,
 )
@@ -25,6 +27,7 @@ from feedbax.contracts.training import (
     TrainingConfig,
     TrainingRunSpec,
     WorkerExecutionSpec,
+    default_training_method_registry,
     standard_supervised_effective_phase_spec,
     standard_supervised_method_contract,
     standard_supervised_method_payload,
@@ -105,6 +108,22 @@ def _matrix(base: dict[str, object]) -> TrainingRunMatrixSpec:
     )
 
 
+def test_matrix_v5_object_materializes_without_v6_reinterpretation(tmp_path: Path) -> None:
+    current = _matrix(_training_run_payload()).model_dump(mode="json", exclude_none=True)
+    current["schema_version"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5
+    legacy = TrainingRunMatrixSpecV5.model_validate(current)
+
+    materialized = materialize_run_matrix(
+        legacy,
+        repo_root=tmp_path,
+        method_registry=default_training_method_registry(),
+    )
+
+    assert materialized.run_set_manifest.metadata["matrix_schema_version"] == (
+        TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5
+    )
+
+
 def test_apply_override_patches_is_fail_closed() -> None:
     base = {"a": {"b": 1}, "items": [0, 1]}
 
@@ -144,6 +163,28 @@ def test_apply_override_patches_append_via_dash_token() -> None:
     )
 
     assert patched == {"items": [0, 1, 2]}
+
+
+@pytest.mark.parametrize(
+    ("index", "expected"),
+    [
+        (0, [9, 0, 1, 2]),
+        (1, [0, 9, 1, 2]),
+    ],
+)
+def test_apply_override_patches_inserts_at_in_range_list_index(
+    index: int,
+    expected: list[int],
+) -> None:
+    base = {"items": [0, 1, 2]}
+
+    patched = apply_override_patches(
+        base,
+        [{"path": f"items.{index}", "op": "add", "value": 9}],  # type: ignore[list-item]
+    )
+
+    assert patched == {"items": expected}
+    assert base == {"items": [0, 1, 2]}
 
 
 def test_apply_override_patches_nested_append_into_deltas_patches_list() -> None:

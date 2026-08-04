@@ -16,17 +16,22 @@ Additive changelog, 2026-07-05: v1 accepts optional value-query defaults,
 ``startswith``/``endswith`` comparisons. These additions preserve canonical
 JSON and hash bytes for pre-existing expressions because all new fields are
 None-default optional fields or new node types.
+
+Additive changelog, 2026-08-03: v1 accepts ``MapObjectList`` value expressions.
+The new arm has its own discriminator, so pre-existing canonical JSON and hash
+bytes remain unchanged.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from copy import deepcopy
 import hashlib
 import json
 import math
 from typing import Annotated, Any, Literal, Protocol, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import Field, JsonValue, model_validator
 
 from feedbax.contracts.manifest import StrictModel
 
@@ -260,7 +265,31 @@ class Coalesce(StrictModel):
         return self
 
 
-ValueExpr: TypeAlias = ValueQuery | Coalesce
+class MapObjectList(StrictModel):
+    """Project an ordered queried list into deep-copied JSON objects.
+
+    ``item_output_path`` must name a missing leaf beneath existing object-valued
+    parents in ``template``. This makes the one authored write explicit and
+    refuses both implicit object synthesis and replacement of template content.
+    """
+
+    kind: Literal["map_object_list"] = "map_object_list"
+    items: ValueQuery
+    template: JsonValue
+    item_output_path: PathRef
+
+    @model_validator(mode="after")
+    def _validate_projection(self) -> "MapObjectList":
+        try:
+            json.dumps(self.template, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("MapObjectList template must be a closed JSON value") from exc
+        _validate_map_output_path(self.template, self.item_output_path)
+        _check_depth(self)
+        return self
+
+
+ValueExpr: TypeAlias = ValueQuery | Coalesce | MapObjectList
 
 
 AllOf.model_rebuild()
@@ -270,6 +299,7 @@ Select.model_rebuild()
 Filter.model_rebuild()
 ValueQuery.model_rebuild()
 Coalesce.model_rebuild()
+MapObjectList.model_rebuild()
 
 
 def expression_hash(expr: Expr | ValueExpr | Select | Filter) -> str:
@@ -345,6 +375,8 @@ def evaluate_query(
         return _evaluate_value_query(query, ctx, named_predicates=named_predicates)
     if isinstance(query, Coalesce):
         return _evaluate_coalesce(query, ctx, named_predicates=named_predicates)
+    if isinstance(query, MapObjectList):
+        return _evaluate_map_object_list(query, ctx, named_predicates=named_predicates)
     raise ExpressionTypeError(f"unsupported value query type: {type(query).__name__}")
 
 
@@ -397,7 +429,32 @@ def _evaluate_coalesce(
     raise ExpressionPathMissing(f"Coalesce found no available query value; attempted {attempted}")
 
 
-def _check_depth(expr: Expr | Select | Filter | ValueQuery | Coalesce) -> None:
+def _evaluate_map_object_list(
+    query: MapObjectList,
+    ctx: ExpressionContext,
+    *,
+    named_predicates: NamedPredicateResolver | None,
+) -> list[JsonValue]:
+    items = _evaluate_value_query(query.items, ctx, named_predicates=named_predicates)
+    if not isinstance(items, list):
+        raise ExpressionTypeError(
+            "MapObjectList items query requires a list at the query terminus, "
+            f"got {type(items).__name__}"
+        )
+    try:
+        json.dumps(items, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ExpressionTypeError("MapObjectList items query must return a JSON list") from exc
+
+    projected: list[JsonValue] = []
+    for item in items:
+        record = deepcopy(query.template)
+        _write_map_item(record, query.item_output_path, deepcopy(item))
+        projected.append(record)
+    return projected
+
+
+def _check_depth(expr: Expr | Select | Filter | ValueQuery | Coalesce | MapObjectList) -> None:
     depth = _expr_depth(expr)
     if depth > MAX_EXPR_DEPTH:
         raise ValueError(
@@ -405,7 +462,7 @@ def _check_depth(expr: Expr | Select | Filter | ValueQuery | Coalesce) -> None:
         )
 
 
-def _expr_depth(expr: Expr | Select | Filter | ValueQuery | Coalesce) -> int:
+def _expr_depth(expr: Expr | Select | Filter | ValueQuery | Coalesce | MapObjectList) -> int:
     if isinstance(expr, (Compare, NamedPredicateRef)):
         return 1
     if isinstance(expr, Not):
@@ -423,11 +480,45 @@ def _expr_depth(expr: Expr | Select | Filter | ValueQuery | Coalesce) -> int:
         return 1 + (max(child_depths) if child_depths else 0)
     if isinstance(expr, Coalesce):
         return 1 + max(_expr_depth(query) for query in expr.queries)
+    if isinstance(expr, MapObjectList):
+        return 1 + _expr_depth(expr.items)
     return 1
 
 
 def _check_value_query_depth(query: ValueQuery) -> None:
     _check_depth(query)
+
+
+def _validate_map_output_path(template: JsonValue, path: PathRef) -> None:
+    if not path.strip() or any(not part for part in path.split(".")):
+        raise ValueError(f"MapObjectList item_output_path is not dotted-path-like: {path!r}")
+    current: JsonValue = template
+    parts = path.split(".")
+    for part in parts[:-1]:
+        if not isinstance(current, dict) or part not in current:
+            raise ValueError(
+                "MapObjectList item_output_path must traverse existing object fields: "
+                f"{path!r}; missing segment {part!r}"
+            )
+        current = current[part]
+    if not isinstance(current, dict):
+        raise ValueError(f"MapObjectList item_output_path must terminate in an object: {path!r}")
+    if parts[-1] in current:
+        raise ValueError(f"MapObjectList item_output_path collides with template content: {path!r}")
+
+
+def _write_map_item(template: JsonValue, path: PathRef, item: JsonValue) -> None:
+    current = template
+    parts = path.split(".")
+    for part in parts[:-1]:
+        if not isinstance(current, dict) or part not in current:
+            raise ExpressionTypeError(
+                f"MapObjectList cannot write invalid item_output_path {path!r}"
+            )
+        current = current[part]
+    if not isinstance(current, dict) or parts[-1] in current:
+        raise ExpressionTypeError(f"MapObjectList cannot write colliding item_output_path {path!r}")
+    current[parts[-1]] = item
 
 
 def _evaluate_compare(expr: Compare, ctx: ExpressionContext) -> bool:
@@ -658,6 +749,7 @@ __all__ = [
     "ExpressionPathMissing",
     "ExpressionSelectAmbiguous",
     "ExpressionTypeError",
+    "MapObjectList",
     "NamedPredicate",
     "NamedPredicateRef",
     "NamedPredicateResolver",

@@ -8,8 +8,10 @@ from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_re
 from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5,
     MatrixBaseSpec,
     TrainingRunMatrixSpec,
+    TrainingRunMatrixSpecV5,
 )
 
 
@@ -45,7 +47,7 @@ def test_run_matrix_spec_accepts_explicit_rows_and_axes_modes() -> None:
     ("mutator", "message"),
     [
         (lambda payload: payload.__setitem__("schema_id", "wrong"), "/schema_id"),
-        (lambda payload: payload.__setitem__("schema_version", "old"), "/schema_version"),
+        (lambda payload: payload.__setitem__("schema_version", "old"), "schema_version"),
         (lambda payload: payload.__setitem__("axes", [{"id": "x", "path": "a.b", "variation": {"kind": "explicit", "values": [1]}}]), "mutually exclusive"),
         (lambda payload: payload.__setitem__("rows", []), "mutually exclusive"),
         (lambda payload: payload["rows"].append({"row_id": "row_a", "overrides": []}), "unique"),
@@ -107,7 +109,8 @@ def test_run_matrix_spec_migrations_accept_current_and_reject_unsupported_versio
     assert migrated_v4.target_version == TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
     assert migrated_v4.payload["schema_version"] == TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
     assert [record.migration_id for record in migrated_v4.migration_records] == [
-        "training-run-matrix-v4-to-v5-per-row-derivations"
+        "training-run-matrix-v4-to-v5-per-row-derivations",
+        "training-run-matrix-v5-to-v6-closed-fork-authority",
     ]
 
     with pytest.raises(ValueError, match="base-only derivation semantics are ambiguous"):
@@ -193,3 +196,147 @@ def test_run_matrix_spec_migrations_accept_current_and_reject_unsupported_versio
             "TrainingRunMatrixSpec",
             {"schema_version": "feedbax.spec.training_run_matrix.v999"},
         )
+
+
+def test_matrix_v5_remains_exact_and_migrates_only_authentic_execution_hashes() -> None:
+    payload = {
+        "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+        "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5,
+        "name": "legacy-fork",
+        "base": {"kind": "inline", "inline": {"value": 1}},
+        "rows": [{"row_id": "target", "overrides": []}],
+        "execution_dependencies": [
+            {
+                "kind": "fork_from_selected_checkpoint",
+                "source_execution_hash": "a" * 64,
+                "source_row_id": "source",
+                "checkpoint_transaction_id": "transaction",
+                "checkpoint_root_hash": "b" * 64,
+            }
+        ],
+    }
+    legacy = TrainingRunMatrixSpecV5.model_validate(payload)
+    assert legacy.model_dump(mode="json", exclude_none=True) == {
+        **payload,
+        "deltas": [],
+        "sources": [],
+        "derivations": [],
+        "axes": [],
+        "combination": {"mode": "cross", "groups": [], "manual_coordinates": [], "metadata": {}},
+        "tags": [],
+        "metadata": {},
+        "rows": [{"row_id": "target", "overrides": [], "metadata": {}}],
+        "execution_dependencies": [{**payload["execution_dependencies"][0], "slot_transforms": []}],
+    }
+
+    migrated = default_spec_registry.migrate("TrainingRunMatrixSpec", payload)
+    dependency = migrated.payload["execution_dependencies"][0]
+    assert "source_execution_hash" not in dependency
+    assert dependency["source_authority"] == {
+        "kind": "execution_hash",
+        "execution_hash": "a" * 64,
+    }
+    TrainingRunMatrixSpec.model_validate(migrated.payload)
+
+    missing = {
+        **payload,
+        "execution_dependencies": [
+            {
+                key: value
+                for key, value in payload["execution_dependencies"][0].items()
+                if key != "source_execution_hash"
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="never synthesizes execution identity"):
+        default_spec_registry.migrate("TrainingRunMatrixSpec", missing)
+
+
+@pytest.mark.parametrize("tolerance", [-1.0, float("inf"), float("nan")])
+def test_matrix_v6_rejects_invalid_absolute_lr_tolerance(tolerance: float) -> None:
+    payload = _minimal_spec()
+    payload["fork"] = {
+        "lr_continuation": "continue",
+        "parity": "require",
+        "absolute_lr_tolerance": tolerance,
+    }
+    with pytest.raises(ValidationError, match="finite and nonnegative"):
+        TrainingRunMatrixSpec.model_validate(payload)
+
+
+def test_matrix_v6_binds_resolved_parent_and_target_only_authority() -> None:
+    payload = _minimal_spec()
+    payload["base"] = {
+        "kind": "resolved_output",
+        "ref": "artifact-blob:source",
+        "resolved_root_hash": "c" * 64,
+        "row_id": "source",
+        "checkpoint_transaction_id": "transaction",
+    }
+    payload["execution_dependencies"] = [
+        {
+            "kind": "fork_from_selected_checkpoint",
+            "source_authority": {
+                "kind": "resolved_output_root",
+                "source_run_id": "source-run",
+                "resolved_root_hash": "c" * 64,
+            },
+            "source_row_id": "source",
+            "checkpoint_transaction_id": "transaction",
+            "checkpoint_root_hash": "d" * 64,
+            "source_barrier": "after_segment",
+            "slot_transforms": [
+                {
+                    "transform_id": "generic.initialize_slot",
+                    "version": "v1",
+                    "implementation_sha256": "e" * 64,
+                    "stage": "target_post",
+                    "target_row_id": "row_a",
+                    "slot": "adaptive_state",
+                    "target_only": {
+                        "method_ref": "generic/method/v1",
+                        "slot_identity": "f" * 64,
+                    },
+                }
+            ],
+        }
+    ]
+    assert TrainingRunMatrixSpec.model_validate(payload).base.row_id == "source"
+
+    source_authority = payload["execution_dependencies"][0]["source_authority"]
+    source_run_id = source_authority.pop("source_run_id")
+    with pytest.raises(ValidationError, match="source_run_id"):
+        TrainingRunMatrixSpec.model_validate(payload)
+    source_authority["source_run_id"] = source_run_id
+
+    payload["execution_dependencies"][0]["source_row_id"] = "other"
+    with pytest.raises(ValidationError, match="selected checkpoint drift"):
+        TrainingRunMatrixSpec.model_validate(payload)
+
+
+def test_matrix_v6_accepts_equal_resolved_source_run_and_row_ids() -> None:
+    payload = _minimal_spec()
+    payload["base"] = {
+        "kind": "resolved_output",
+        "ref": "artifact-blob:source",
+        "resolved_root_hash": "c" * 64,
+        "row_id": "source",
+        "checkpoint_transaction_id": "transaction",
+    }
+    payload["execution_dependencies"] = [
+        {
+            "kind": "fork_from_selected_checkpoint",
+            "source_authority": {
+                "kind": "resolved_output_root",
+                "source_run_id": "source",
+                "resolved_root_hash": "c" * 64,
+            },
+            "source_row_id": "source",
+            "checkpoint_transaction_id": "transaction",
+            "checkpoint_root_hash": "d" * 64,
+            "source_barrier": "after_segment",
+        }
+    ]
+
+    dependency = TrainingRunMatrixSpec.model_validate(payload).execution_dependencies[0]
+    assert dependency.source_authority.source_run_id == dependency.source_row_id == "source"

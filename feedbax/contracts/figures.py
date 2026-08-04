@@ -77,6 +77,7 @@ import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
+from pathlib import PurePosixPath
 from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -108,6 +109,8 @@ FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID = "feedbax.spec.figure_input_role_authorit
 FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION = "feedbax.spec.figure_input_role_authority.v1"
 FIGURE_TEMPLATE_SCHEMA_ID = "feedbax.spec.figure_template"
 FIGURE_TEMPLATE_SCHEMA_VERSION = "feedbax.spec.figure_template.v1"
+COMPARISON_POLICY_SCHEMA_ID = "feedbax.spec.comparison_policy"
+COMPARISON_POLICY_SCHEMA_VERSION = "feedbax.spec.comparison_policy.v1"
 FIGURE_PIECE_SCHEMA_ID = "feedbax.spec.figure_piece"
 FIGURE_PIECE_SCHEMA_VERSION = "feedbax.spec.figure_piece.v1"
 FIGURE_TRACE_FAMILY_SCHEMA_ID = "feedbax.spec.figure_trace_family"
@@ -1199,6 +1202,114 @@ class FigureTemplate(StrictModel):
         if any(slot.multiplicity == "per_facet" for slot in self.slots) and not self.facet_by:
             raise ValueError(
                 "FigureTemplate per_facet slots require at least one facet_by dimension"
+            )
+        return self
+
+
+class ComparisonSourceRole(StrictModel):
+    """One typed source role admitted by a comparison policy."""
+
+    source_class: str
+    label: str
+    training_policy: str
+    trace_schema_id: str | None = None
+    trace_schema_version: str | None = None
+    retention_contract: str | None = None
+    figure_template: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_role(self) -> "ComparisonSourceRole":
+        for field_name in ("source_class", "label", "training_policy"):
+            if not getattr(self, field_name).strip():
+                raise ValueError(f"ComparisonSourceRole {field_name} must be nonempty")
+        trace_identity = (self.trace_schema_id, self.trace_schema_version)
+        if (trace_identity[0] is None) != (trace_identity[1] is None):
+            raise ValueError(
+                "ComparisonSourceRole trace_schema_id and trace_schema_version are an "
+                "all-or-none pair"
+            )
+        if any(value is not None and not value.strip() for value in trace_identity):
+            raise ValueError("ComparisonSourceRole trace schema identity must be nonempty")
+        if self.retention_contract is not None:
+            value = self.retention_contract
+            candidate = PurePosixPath(value)
+            if (
+                not value.strip()
+                or candidate.is_absolute()
+                or "\\" in value
+                or ".." in candidate.parts
+            ):
+                raise ValueError(
+                    "ComparisonSourceRole retention_contract must be a nonempty repo-relative path"
+                )
+        if self.figure_template is not None and not self.figure_template.strip():
+            raise ValueError("ComparisonSourceRole figure_template must be nonempty")
+        return self
+
+
+class ComparisonRequirement(StrictModel):
+    """Closed equality and cadence requirement for one comparison."""
+
+    supported_source_class: str
+    required_cadence: str
+    required_equal_authority: list[str] = Field(min_length=1)
+    mismatch_policy: Literal["fail_closed"]
+
+    @model_validator(mode="after")
+    def _validate_requirement(self) -> "ComparisonRequirement":
+        if not self.supported_source_class.strip():
+            raise ValueError("ComparisonRequirement supported_source_class must be nonempty")
+        if not self.required_cadence.strip():
+            raise ValueError("ComparisonRequirement required_cadence must be nonempty")
+        if any(not key.strip() for key in self.required_equal_authority):
+            raise ValueError("ComparisonRequirement equality keys must be nonempty")
+        if len(set(self.required_equal_authority)) != len(self.required_equal_authority):
+            raise ValueError("ComparisonRequirement equality keys must be unique")
+        return self
+
+
+class ComparisonPolicySpec(StrictModel):
+    """Typed root policy governing comparable source roles and figure shapes."""
+
+    schema_id: str = COMPARISON_POLICY_SCHEMA_ID
+    schema_version: str = COMPARISON_POLICY_SCHEMA_VERSION
+    name: str
+    roles: dict[str, ComparisonSourceRole]
+    figure_templates: dict[str, FigureTemplate]
+    comparison_policy: ComparisonRequirement
+
+    @model_validator(mode="after")
+    def _validate_policy(self) -> "ComparisonPolicySpec":
+        if self.schema_id != COMPARISON_POLICY_SCHEMA_ID:
+            raise ValueError(
+                f"unsupported ComparisonPolicySpec schema_id: {self.schema_id!r}, "
+                f"expected {COMPARISON_POLICY_SCHEMA_ID!r}"
+            )
+        if self.schema_version != COMPARISON_POLICY_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported ComparisonPolicySpec schema_version: "
+                f"{self.schema_version!r}, expected {COMPARISON_POLICY_SCHEMA_VERSION!r}"
+            )
+        if not self.name.strip():
+            raise ValueError("ComparisonPolicySpec name must be nonempty")
+        if len(self.roles) < 2:
+            raise ValueError("ComparisonPolicySpec requires at least two source roles")
+        if any(not key.strip() for key in self.roles):
+            raise ValueError("ComparisonPolicySpec role keys must be nonempty")
+        if any(not key.strip() for key in self.figure_templates):
+            raise ValueError("ComparisonPolicySpec figure template keys must be nonempty")
+        missing_templates = sorted(
+            {
+                role.figure_template
+                for role in self.roles.values()
+                if role.figure_template is not None
+            }
+            - set(self.figure_templates)
+        )
+        if missing_templates:
+            raise ValueError(
+                "ComparisonPolicySpec role figure_template keys must resolve exactly once; "
+                f"missing {missing_templates}"
             )
         return self
 
