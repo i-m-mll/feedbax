@@ -147,7 +147,7 @@ documentation = "https://docs.lprt.ca/feedbax"
 config-settings = { editable-mode = "compat" }
 
 [tool.uv.sources]
-jax-cookbook = { git = "https://github.com/i-m-mll/jax-cookbook.git", rev = "4db33dc7a1401f50335f96e18f8f5d704f26b919" }
+jax-cookbook = { git = "https://github.com/i-m-mll/jax-cookbook.git", rev = "95060b2448cafb0783ecdc7220818eab9a61c630" }
 
 [build-system]
 requires = ["hatchling"]
