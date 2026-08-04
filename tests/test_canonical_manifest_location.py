@@ -15,6 +15,7 @@ from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     FigureManifest,
     ReportManifest,
+    TrainingRunManifest,
     canonical_manifest_candidate_paths,
     canonical_manifest_path,
     canonical_manifest_relative_path,
@@ -28,6 +29,10 @@ from feedbax.persistence.manifest_index import (
     index_manifest,
     find_manifest_paths_by_id,
 )
+
+
+def _training_manifest(manifest_id: str = "feedbax-training-run:canonical") -> TrainingRunManifest:
+    return TrainingRunManifest(id=manifest_id, status="completed")
 
 
 def _evaluation_manifest(manifest_id: str = "feedbax-evaluation-run:canonical") -> (
@@ -87,12 +92,13 @@ def test_unknown_manifest_kind_fails_closed() -> None:
 @pytest.mark.parametrize(
     "manifest",
     [
+        _training_manifest(),
         _evaluation_manifest(),
         _analysis_manifest(),
         _report_manifest(),
         _figure_manifest(),
     ],
-    ids=["evaluation", "analysis", "report", "figure"],
+    ids=["training", "evaluation", "analysis", "report", "figure"],
 )
 def test_write_manifest_uses_the_canonical_location(tmp_path: Path, manifest) -> None:
     written = write_manifest(manifest, root=tmp_path)
@@ -108,12 +114,28 @@ def test_canonical_candidate_paths_are_deterministic_and_complete(tmp_path: Path
     assert len(first) == len(MANIFEST_KIND_DIRECTORIES)
 
 
-def test_authenticated_staged_locator_uses_the_canonical_layout(tmp_path: Path) -> None:
-    manifest = _evaluation_manifest()
+@pytest.mark.parametrize(
+    ("manifest", "role"),
+    [
+        (_training_manifest(), "training_run"),
+        (_evaluation_manifest(), "evaluation_run"),
+        (_analysis_manifest(), "analysis_run"),
+        (_report_manifest(), "report"),
+        (_figure_manifest(), "figure"),
+    ],
+    ids=["training", "evaluation", "analysis", "report", "figure"],
+)
+def test_authenticated_staged_locator_uses_the_canonical_layout(
+    tmp_path: Path, manifest, role: str
+) -> None:
     path = write_manifest(manifest, root=tmp_path)
-    ref = authenticated_manifest_ref(manifest, path, "evaluation_run")
+    ref = authenticated_manifest_ref(manifest, path, role)
     resolved = resolve_manifest_input(ref, tmp_path)
     assert resolved.path == canonical_manifest_path(manifest.kind, manifest.id, root=tmp_path)
+    assert resolved.path == tmp_path.joinpath(
+        *canonical_manifest_relative_path(manifest.kind, manifest.id).split("/")
+    )
+    assert resolved.manifest == manifest
 
 
 def test_absent_index_resolves_through_the_canonical_path(tmp_path: Path) -> None:

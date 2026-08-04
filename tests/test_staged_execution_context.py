@@ -480,6 +480,25 @@ def test_manifest_root_binding_rejects_missing_root(tmp_path: Path) -> None:
         _retained_manifest_context([tmp_path / "missing"])
 
 
+def test_manifest_root_lookup_resolves_an_authenticated_training_parent(tmp_path: Path) -> None:
+    root = tmp_path / "retained"
+    manifest, parent, path = _retained_manifest_root(root)
+
+    bound = with_staged_manifest_provider_inputs(_retained_manifest_context([root]), [parent])
+
+    location = bound.parent_execution_location(parent)
+    assert location.root == root
+    assert location.artifact_provider is None
+    assert location.execution_uri == str(path.relative_to(root))
+
+    resolved = bound.resolve_manifest_input(parent)
+    assert isinstance(resolved.manifest, TrainingRunManifest)
+    assert resolved.manifest.kind == "TrainingRunManifest"
+    assert resolved.manifest.id == manifest.id
+    assert resolved.path == path
+    assert resolved.raw_bytes == path.read_bytes()
+
+
 def test_manifest_root_lookup_rejects_unknown_id(tmp_path: Path) -> None:
     root = tmp_path / "retained"
     root.mkdir()

@@ -24,6 +24,7 @@ from feedbax.contracts.manifest import (
 #: locations come from the canonical layout, never from a local copy of it.
 _STAGED_MANIFEST_KINDS = frozenset(
     {
+        "TrainingRunManifest",
         "EvaluationRunManifest",
         "AnalysisRunManifest",
         "FigureManifest",
