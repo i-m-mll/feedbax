@@ -68,6 +68,7 @@ from feedbax.contracts.run_aliases import RunAliasCatalog
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.plugins.composition import compose_application
 from feedbax.bin._setup import setup_application_package
+from feedbax.bin.staged_inputs import binding_parts, load_json_object
 
 logger = logging.getLogger(os.path.basename(__file__))
 
@@ -77,25 +78,6 @@ REPORT_SUBCOMMAND = "report"
 BUNDLE_SUBCOMMAND = "bundle"
 
 
-def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    payload: dict[str, object] = {}
-    for key, value in pairs:
-        if key in payload:
-            raise ValueError(f"JSON document contains duplicate key {key!r}")
-        payload[key] = value
-    return payload
-
-
-def _load_json_object(path: Path, *, label: str) -> dict[str, object]:
-    payload = json.loads(
-        path.read_text(encoding="utf-8"),
-        object_pairs_hook=_reject_duplicate_json_keys,
-    )
-    if not isinstance(payload, dict):
-        raise ValueError(f"{label} document must be a JSON object")
-    return payload
-
-
 def _load_spec_document(path: Path, *, label: str) -> dict[str, object]:
     """Load a serialized spec document from a JSON or YAML file."""
     if path.suffix.lower() in {".yml", ".yaml"}:
@@ -103,14 +85,7 @@ def _load_spec_document(path: Path, *, label: str) -> dict[str, object]:
         if not isinstance(payload, dict):
             raise ValueError(f"{label} document must be a YAML mapping")
         return dict(payload)
-    return _load_json_object(path, label=label)
-
-
-def _binding_parts(value: str, *, option: str) -> tuple[str, str]:
-    name, separator, root = value.partition("=")
-    if not separator or not name or not root:
-        raise ValueError(f"{option} must use NAME=ROOT syntax")
-    return name, root
+    return load_json_object(path, label=label)
 
 
 def _apply_plotly_template_default(requested: str | None = None) -> None:
@@ -218,21 +193,21 @@ def run_analysis_run_spec_file(argv: list[str], state: BootstrapState) -> None:
     execution_descriptor = None
     if args.execution_descriptor is not None:
         execution_descriptor = StagedExecutionDescriptor.model_validate(
-            _load_json_object(
+            load_json_object(
                 args.execution_descriptor,
                 label="--execution-descriptor",
             )
         )
     artifact_provider_bindings = [
-        StagedArtifactProviderRootBinding(*_binding_parts(value, option="--artifact-provider"))
+        StagedArtifactProviderRootBinding(*binding_parts(value, option="--artifact-provider"))
         for value in args.artifact_provider
     ]
     manifest_root_bindings = [
-        StagedManifestRootBinding(*_binding_parts(value, option="--manifest-root"))
+        StagedManifestRootBinding(*binding_parts(value, option="--manifest-root"))
         for value in args.manifest_root
     ]
     checkpoint_custody_bindings = [
-        StagedCheckpointCustodyRootBinding(*_binding_parts(value, option="--checkpoint-custody"))
+        StagedCheckpointCustodyRootBinding(*binding_parts(value, option="--checkpoint-custody"))
         for value in args.checkpoint_custody
     ]
     with _bundle_human_output_to_stderr():
@@ -345,14 +320,14 @@ def run_evaluation_spec_file(argv: list[str], state: BootstrapState) -> None:
     execution_descriptor = None
     if args.execution_descriptor is not None:
         execution_descriptor = StagedExecutionDescriptor.model_validate(
-            _load_json_object(args.execution_descriptor, label="--execution-descriptor")
+            load_json_object(args.execution_descriptor, label="--execution-descriptor")
         )
     artifact_provider_bindings = [
-        StagedArtifactProviderRootBinding(*_binding_parts(value, option="--artifact-provider"))
+        StagedArtifactProviderRootBinding(*binding_parts(value, option="--artifact-provider"))
         for value in args.artifact_provider
     ]
     checkpoint_custody_bindings = [
-        StagedCheckpointCustodyRootBinding(*_binding_parts(value, option="--checkpoint-custody"))
+        StagedCheckpointCustodyRootBinding(*binding_parts(value, option="--checkpoint-custody"))
         for value in args.checkpoint_custody
     ]
     batch = None
@@ -455,7 +430,7 @@ def run_authored_report_spec_file(argv: list[str], state: BootstrapState) -> Non
     args = build_report_arg_parser().parse_args(argv)
     _apply_plotly_template_default()
     spec = _load_spec_document(args.spec, label="ReportSpec")
-    exact_payload = _load_json_object(args.exact_parents, label="--exact-parents")
+    exact_payload = load_json_object(args.exact_parents, label="--exact-parents")
     missing_schema = [
         field_name
         for field_name in ("schema_id", "schema_version")
@@ -474,17 +449,17 @@ def run_authored_report_spec_file(argv: list[str], state: BootstrapState) -> Non
     execution_descriptor = None
     if args.execution_descriptor is not None:
         execution_descriptor = StagedExecutionDescriptor.model_validate(
-            _load_json_object(
+            load_json_object(
                 args.execution_descriptor,
                 label="--execution-descriptor",
             )
         )
     artifact_provider_bindings = [
-        StagedArtifactProviderRootBinding(*_binding_parts(value, option="--artifact-provider"))
+        StagedArtifactProviderRootBinding(*binding_parts(value, option="--artifact-provider"))
         for value in args.artifact_provider
     ]
     checkpoint_custody_bindings = [
-        StagedCheckpointCustodyRootBinding(*_binding_parts(value, option="--checkpoint-custody"))
+        StagedCheckpointCustodyRootBinding(*binding_parts(value, option="--checkpoint-custody"))
         for value in args.checkpoint_custody
     ]
     try:
@@ -539,14 +514,14 @@ def _execute_authored_analysis_bundle(
     execution_descriptor = None
     if execution_descriptor_path is not None:
         execution_descriptor = StagedExecutionDescriptor.model_validate(
-            _load_json_object(execution_descriptor_path, label="--execution-descriptor")
+            load_json_object(execution_descriptor_path, label="--execution-descriptor")
         )
     artifact_provider_bindings = [
-        StagedArtifactProviderRootBinding(*_binding_parts(value, option="--artifact-provider"))
+        StagedArtifactProviderRootBinding(*binding_parts(value, option="--artifact-provider"))
         for value in artifact_provider
     ]
     checkpoint_custody_bindings = [
-        StagedCheckpointCustodyRootBinding(*_binding_parts(value, option="--checkpoint-custody"))
+        StagedCheckpointCustodyRootBinding(*binding_parts(value, option="--checkpoint-custody"))
         for value in checkpoint_custody
     ]
     execution_kwargs = {
@@ -588,7 +563,7 @@ def _execute_authored_analysis_bundle(
     if bundle.stages and not bundle.templates:
         exact_parents = None
         if exact_parents_path is not None:
-            exact_payload = _load_json_object(exact_parents_path, label="--exact-parents")
+            exact_payload = load_json_object(exact_parents_path, label="--exact-parents")
             missing_schema = [
                 field_name
                 for field_name in ("schema_id", "schema_version")

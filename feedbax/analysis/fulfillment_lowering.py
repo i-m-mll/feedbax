@@ -78,7 +78,7 @@ refuses per row when they do not.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
@@ -90,6 +90,10 @@ from feedbax.analysis.exact_parents import (
     StagedExactParents,
 )
 from feedbax.analysis.bundles import AnalysisBundleSpec
+from feedbax.analysis.execution_context import (
+    EMPTY_STAGED_EXECUTION_CONTEXT,
+    StagedExecutionContext,
+)
 from feedbax.analysis.fulfillment_adapters import (
     AnalysisBundleNodeRequest,
     AnalysisNodeRequest,
@@ -243,6 +247,57 @@ def _exact_parents(
     )
 
 
+def _node_execution_context(
+    node: "ClosureNode",
+    *,
+    binding: "NodeBinding",
+    extra_parents: Sequence[ParentRef] = (),
+) -> "StagedExecutionContext | None":
+    """Return the staged context this node executes under, or ``None``.
+
+    The unit is the node, not the run. A node binds the parents its lock states,
+    and those parents were located by the same resolution that bound them — an
+    in-closure producer's admitted receipt beneath the receipt root, or the one
+    declared authority an external reference resolved through. Handing execution
+    a context carrying exactly those locations is what lets a recipe read a
+    parent's bytes without re-deriving where they are, and re-deriving is the
+    step that could answer differently than the walk did.
+
+    It is built here, in the lowering, because the lowering is the one place the
+    same answer is reconstructed for every operation over a closure: ordinary
+    fulfillment, cached admission, rebuild-as-verification, and repair all lower
+    each node again. A context assembled during the walk and discarded after it
+    would leave every later operation resolving parents a different way.
+
+    ``extra_parents`` are complete authenticated parents no plan edge bound — a
+    row-expanded figure's per-row custody bindings — and they are located by the
+    same exactly-one authority search rather than assumed to sit beneath the
+    receipt root.
+
+    ``None`` means the run declared no staged bindings at all, which is the
+    cold-start case and is left exactly as it was.
+    """
+    compiled = node.compiled
+    ref = str(compiled.lock_path)
+    edges = {edge.role_path: edge for edge in binding.plan.input_edges(node.key)}
+    locations = []
+    for reference in compiled.plan_edge_references():
+        edge = edges.get(tuple(str(reference.role_path).split(".")))
+        if edge is None or edge.status != "required":
+            continue
+        locations.append(
+            binding.parent_location(edge, role=binding_role(reference.consumer, ref=ref))
+        )
+    if binding.environment.execution_context is EMPTY_STAGED_EXECUTION_CONTEXT:
+        # Locating the extra parents would search authorities that were never
+        # declared, so the cold-start answer is settled before that search.
+        return binding.node_execution_context(locations)
+    locations.extend(
+        binding.authenticated_parent_location(parent) for parent in extra_parents
+    )
+    return binding.node_execution_context(locations)
+
+
 def _document(node: "ClosureNode") -> dict[str, Any]:
     return dict(node.compiled.document)
 
@@ -254,19 +309,29 @@ def _lower_evaluation(node: "ClosureNode", *, binding: "NodeBinding") -> NodeReq
     spec = EvaluationRunSpec.model_validate({**document, "inputs": [
         parent.model_dump(mode="json", exclude_none=True) for parent in parents
     ]})
-    return EvaluationNodeRequest(node_key=node.key.text, spec=spec, order=node.order)
+    return EvaluationNodeRequest(
+        node_key=node.key.text,
+        spec=spec,
+        order=node.order,
+        execution_context=_node_execution_context(node, binding=binding),
+    )
 
 
 def _lower_evaluation_matrix(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
     document = _document(node)
+    context = _node_execution_context(node, binding=binding)
     if not binding.plan.required_edges(node.key):
         return EvaluationMatrixNodeRequest(
-            node_key=node.key.text, matrix=document, order=node.order
+            node_key=node.key.text,
+            matrix=document,
+            order=node.order,
+            execution_context=context,
         )
     return EvaluationMatrixNodeRequest(
         node_key=node.key.text,
         matrix=_matrix_with_staged_parents(node, document, binding=binding),
         order=node.order,
+        execution_context=context,
     )
 
 
@@ -440,7 +505,12 @@ def _lower_analysis(node: "ClosureNode", *, binding: "NodeBinding") -> NodeReque
     spec = AnalysisRunSpec.model_validate({**document, "inputs": [
         parent.model_dump(mode="json", exclude_none=True) for parent in parents
     ]})
-    return AnalysisNodeRequest(node_key=node.key.text, spec=spec, order=node.order)
+    return AnalysisNodeRequest(
+        node_key=node.key.text,
+        spec=spec,
+        order=node.order,
+        execution_context=_node_execution_context(node, binding=binding),
+    )
 
 
 def _validated_document(model: Any, document: Mapping[str, Any], *, ref: str) -> Any:
@@ -486,6 +556,14 @@ def _lower_analysis_bundle(node: "ClosureNode", *, binding: "NodeBinding") -> No
         bundle=bundle,
         root_inputs=parents if declares_roots else None,
         order=node.order,
+        # A bundle's context carries the run's declared authorities and *no*
+        # parent locations. Its roots are bound by manifest identity rather than
+        # by role, and the bundle re-roles every one of them before its stages
+        # consume it, so locating them here under the lock's roles would address
+        # the same bytes by a reference no stage ever uses — and, since a staged
+        # context permits one reference per location, would collide with the
+        # bundle's own. The bundle locates the refs it actually executes with.
+        execution_context=binding.node_execution_context(()),
     )
 
 
@@ -506,6 +584,11 @@ def _lower_figure(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest
         runtime_inputs=parents if parents else None,
         runtime_input_authorities=overlay.authorities if overlay is not None else None,
         order=node.order,
+        execution_context=_node_execution_context(
+            node,
+            binding=binding,
+            extra_parents=overlay.inputs if overlay is not None else (),
+        ),
     )
 
 
@@ -533,6 +616,7 @@ def _lower_figure_composition(node: "ClosureNode", *, binding: "NodeBinding") ->
         spec=document,
         runtime_inputs=parents if parents else None,
         order=node.order,
+        execution_context=_node_execution_context(node, binding=binding),
     )
 
 
@@ -545,7 +629,11 @@ def _lower_report(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest
         parent.model_dump(mode="json", exclude_none=True) for parent in parents
     ]})
     return ReportNodeRequest(
-        node_key=node.key.text, spec=spec, exact_parents=exact, order=node.order
+        node_key=node.key.text,
+        spec=spec,
+        exact_parents=exact,
+        order=node.order,
+        execution_context=_node_execution_context(node, binding=binding),
     )
 
 

@@ -21,7 +21,9 @@ from pydantic import BaseModel, ValidationError
 
 from feedbax.analysis.manifest_inputs import (
     ResolvedManifestInput,
+    canonical_staged_manifest_locator,
     is_authenticated_manifest_ref,
+    is_staged_manifest_kind,
 )
 from feedbax.contracts.evaluation_states import (
     EVALUATION_STATES_ARTIFACT_ROLE,
@@ -33,7 +35,6 @@ from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     ParentRef,
     load_manifest_bytes as parse_manifest_bytes,
-    safe_manifest_key,
 )
 from feedbax.contracts.staged_execution import (
     STAGED_CHECKPOINT_CUSTODY_BACKEND,
@@ -403,6 +404,29 @@ class StagedExecutionContext:
             kind="artifact provider",
         )
         return provider
+
+    def manifest_root(self, name: str) -> Path:
+        """Return one explicitly bound retained manifest-store root by name.
+
+        This is the manifest-store counterpart of :meth:`artifact_provider`: the
+        name is validated, an unbound name is a refusal rather than a miss, and
+        the directory identity bound at resolution is re-proved before the root
+        is handed out, so a root swapped underneath the process is caught here
+        rather than by whatever reads through it.
+        """
+        validate_staged_binding_name(name)
+        try:
+            root = self.manifest_roots[name]
+        except KeyError as exc:
+            raise StagedExecutionContextError(
+                f"staged manifest store binding is unavailable: {name!r}"
+            ) from exc
+        _require_directory_identity(
+            root,
+            self._manifest_root_identities[name],
+            kind="manifest store",
+        )
+        return root
 
     def artifact_provider_for_parent(
         self,
@@ -1006,14 +1030,14 @@ def with_staged_manifest_provider_inputs(
         size_bytes = int(parent.metadata["size_bytes"])
         artifact_id = f"artifact://sha256/{digest}"
         matches: list[tuple[str, Path, str, str | None]] = []
-        if parent.kind == "TrainingRunManifest":
-            relative = f"manifests/training_runs/{safe_manifest_key(parent.id)}.json"
-            for name, root in context.manifest_roots.items():
-                _require_directory_identity(
-                    root,
-                    context._manifest_root_identities[name],
-                    kind="manifest store",
-                )
+        if is_staged_manifest_kind(parent.kind):
+            # Every admitted staged kind is addressed through the one canonical
+            # layout helper. A per-kind path spelled out here would be a second
+            # copy of that layout, and a copy is authority only until the layout
+            # moves underneath it.
+            relative = canonical_staged_manifest_locator(parent.kind, parent.id)
+            for name in sorted(context.manifest_roots):
+                root = context.manifest_root(name)
                 if (root / relative).is_file():
                     matches.append((name, root, relative, None))
         for name, provider in context.opened_artifact_providers.items():
@@ -1074,6 +1098,102 @@ def with_staged_manifest_provider_inputs(
     for parent in parents:
         bound.resolve_manifest_input(parent)
     return bound
+
+
+def require_exclusive_staged_runtime(
+    execution_context: StagedExecutionContext | None,
+    *,
+    execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
+    artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
+    manifest_root_bindings: Sequence[StagedManifestRootBinding] = (),
+    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
+) -> None:
+    """Refuse an already-resolved context handed in beside the raw bindings.
+
+    An execution API that accepts both is accepting two statements of the same
+    thing, and they can disagree: a context has already decided which authority
+    every parent resolves through, while a descriptor plus roots is the input to
+    that decision. Resolving the raw bindings a second time and merging would
+    silently prefer one of the two answers, so the caller states exactly one.
+    """
+    if execution_context is None:
+        return
+    if (
+        execution_descriptor is not None
+        or artifact_provider_bindings
+        or manifest_root_bindings
+        or checkpoint_custody_bindings
+    ):
+        raise StagedExecutionContextError(
+            "execution_context cannot be combined with direct runtime bindings; an "
+            "already-resolved context has settled every authority the raw descriptor and "
+            "root bindings would decide"
+        )
+
+
+def with_staged_resolved_parents(
+    context: StagedExecutionContext,
+    locations: Sequence[StagedParentExecutionLocation],
+) -> StagedExecutionContext:
+    """Bind already-resolved parent locations and their same-name provider aliases.
+
+    This is the binder for a caller that has *already* decided, under its own
+    authority, where each parent's bytes are. It performs no discovery of its
+    own: unlike :func:`with_staged_manifest_provider_inputs`, which searches the
+    bound authorities for a parent it is given, this takes the search's answer.
+    A fulfillment closure is exactly that caller — the receipt of an in-closure
+    producer and the exactly-one authority an external reference resolved to are
+    both facts the walk settled, and re-deriving either here would be a second
+    resolution that could disagree with the one the plan was proved against.
+
+    The provider aliases are an identity mapping restricted to the descriptor's
+    own declarations: an authored provider name binds to the runtime provider of
+    *the same name*, and only when the explicit descriptor declares one. Nothing
+    is inferred from a role, a receipt path, or a manifest kind, because an
+    authored provider label and a role are different vocabularies and guessing
+    between them would silently collapse two custody domains into one.
+
+    A parent whose bytes were located *through* a provider binds only that
+    provider: its execution location already names the runtime authority, and a
+    second alias pointing elsewhere would contradict it.
+    """
+    merged = list(context.parent_execution_locations)
+    located = {
+        location.parent.model_dump_json(exclude_none=False) for location in merged
+    }
+    for location in locations:
+        key = location.parent.model_dump_json(exclude_none=False)
+        if key in located:
+            continue
+        merged.append(location)
+        located.add(key)
+    bound = with_staged_parent_execution_locations(context, merged)
+    bindings = list(context.parent_artifact_provider_bindings)
+    binding_keys = {
+        (binding.parent.model_dump_json(exclude_none=False), binding.authored_provider)
+        for binding in bindings
+    }
+    declared = tuple(sorted(bound.opened_artifact_providers))
+    for location in bound.parent_execution_locations:
+        names = (
+            (location.artifact_provider,)
+            if location.artifact_provider is not None
+            else declared
+        )
+        parent_key = location.parent.model_dump_json(exclude_none=False)
+        for name in names:
+            key = (parent_key, name)
+            if key in binding_keys:
+                continue
+            bindings.append(
+                StagedParentArtifactProviderBinding(
+                    parent=location.parent,
+                    authored_provider=name,
+                    runtime_provider=name,
+                )
+            )
+            binding_keys.add(key)
+    return with_staged_parent_artifact_provider_bindings(bound, bindings)
 
 
 def _coerce_descriptor(
@@ -1721,5 +1841,7 @@ __all__ = [
     "resolve_staged_execution_context",
     "with_staged_manifest_provider_inputs",
     "with_staged_parent_execution_locations",
+    "with_staged_resolved_parents",
+    "require_exclusive_staged_runtime",
     "with_staged_repo_root",
 ]

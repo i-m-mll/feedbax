@@ -196,10 +196,30 @@ def authenticated_manifest_ref_from_read(
     )
 
 
+def is_staged_manifest_kind(kind: str) -> bool:
+    """Return whether *kind* is admitted as an authenticated staged manifest input."""
+    return kind in _STAGED_MANIFEST_KINDS
+
+
+def staged_manifest_kinds() -> frozenset[str]:
+    """Return every manifest kind admitted as an authenticated staged input."""
+    return _STAGED_MANIFEST_KINDS
+
+
+def canonical_staged_manifest_locator(kind: str, manifest_id: str) -> str:
+    """Return where one admitted staged manifest's canonical bytes live, root-relative.
+
+    The location comes from the canonical layout helper rather than from a local
+    copy of it, so a kind admitted here is addressed exactly the way
+    :func:`~feedbax.contracts.manifest.write_manifest` writes it.
+    """
+    if not is_staged_manifest_kind(kind):
+        raise ValueError(f"Authenticated staged manifest kind {kind!r} is not supported")
+    return canonical_manifest_relative_path(kind, manifest_id)
+
+
 def _canonical_locator(ref: ParentRef) -> str:
-    if ref.kind not in _STAGED_MANIFEST_KINDS:
-        raise ValueError(f"Authenticated staged manifest kind {ref.kind!r} is not supported")
-    return canonical_manifest_relative_path(ref.kind, ref.id)
+    return canonical_staged_manifest_locator(ref.kind, ref.id)
 
 
 def _locator_parts(locator: Path | str) -> tuple[str, ...]:
