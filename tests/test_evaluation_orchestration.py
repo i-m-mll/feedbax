@@ -59,6 +59,7 @@ from feedbax.orchestration.staged_root_custody import (
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.orchestration.revision import resolve_feedbax_revision
 
 
 def _assembly_registry():
@@ -120,6 +121,7 @@ def _request(
     authored_path = tmp_path / "matrix.json"
     authored_bytes = _write_json(authored_path, authored)
     return RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
         authored=SchemaArtifactRef(
             schema_id=str(authored["schema_id"]),
             schema_version=str(authored["schema_version"]),

@@ -49,6 +49,7 @@ from feedbax.training.spec_storage import (
     emit_training_run_spec_storage,
     register_training_run_matrix_compiler,
 )
+from feedbax.orchestration.revision import resolve_feedbax_revision
 
 
 def _write(tmp_path: Path, name: str, payload: dict[str, Any]) -> str:
@@ -263,6 +264,7 @@ def test_assembly_dispatch_retains_delta_artifact_and_authored_identity(
     child_path = tmp_path / "child.json"
     child_path.write_bytes(child_bytes)
     request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
         authored=SchemaArtifactRef(
             schema_id=TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
             schema_version=TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,

@@ -299,7 +299,7 @@ def test_driver_policy_schema_heads_match_reviewed_690_contract() -> None:
     assert drivers.DRIVER_CAPABILITIES_SCHEMA_VERSION_V2 == "2"
     assert bundle.DEPLOYMENT_POLICY_SCHEMA_VERSION == "feedbax.spec.deployment_policy.v2"
     assert bundle.RUN_BUNDLE_SCHEMA_VERSION == "feedbax.orchestration.run_bundle.v12"
-    assert assembly.RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION == "feedbax.spec.run_assembly_request.v6"
+    assert assembly.RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION == "feedbax.spec.run_assembly_request.v7"
 
 
 def test_persistence_policy_schema_heads_match_reviewed_b85_contract() -> None:

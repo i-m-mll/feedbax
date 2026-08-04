@@ -83,6 +83,7 @@ from feedbax.training.spec_storage import (
     TRAINING_RUN_MATRIX_COMPILER_VERSION,
     register_training_run_matrix_compiler,
 )
+from feedbax.orchestration.revision import resolve_feedbax_revision
 
 
 _AUTHORED_SCHEMA_ID = "tests.spec.downstream_authored_row"
@@ -205,6 +206,7 @@ def _write_request(
     matrix_path = tmp_path / "matrix.json"
     matrix_path.write_bytes(matrix_bytes)
     request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
         authored=SchemaArtifactRef(
             schema_id=TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
             schema_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
@@ -286,6 +288,7 @@ def _write_parent_request(
             uri=str(path),
         )
     request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
         authored=refs["matrix"],
         compiler=CompilerIdentity(
             compiler_id=TRAINING_RUN_MATRIX_COMPILER_ID,
@@ -548,6 +551,7 @@ def test_assembly_supplies_exact_composition_parents_and_binds_provenance(
         )
 
     request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
         authored=artifact_ref("matrix", matrix),
         compiler=CompilerIdentity(
             compiler_id=TRAINING_RUN_MATRIX_COMPILER_ID,

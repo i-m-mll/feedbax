@@ -67,6 +67,7 @@ from feedbax.training.spec_storage import (
     TRAINING_RUN_MATRIX_COMPILER_ID,
     TRAINING_RUN_MATRIX_COMPILER_VERSION,
 )
+from feedbax.orchestration.revision import resolve_feedbax_revision
 
 
 METHOD_REF = "tests.golden/governed/v1"
@@ -376,6 +377,7 @@ def test_golden_governed_path_restores_one_authenticated_continuation_batch(tmp_
     matrix_bytes = json.dumps(matrix, sort_keys=True).encode()
     matrix_path.write_bytes(matrix_bytes)
     request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
         authored=SchemaArtifactRef(
             schema_id=TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
             schema_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3,

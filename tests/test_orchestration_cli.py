@@ -84,6 +84,7 @@ from feedbax.training.spec_storage import (
     TRAINING_RUN_MATRIX_COMPILER_VERSION,
     register_training_run_matrix_compiler,
 )
+from feedbax.orchestration.revision import resolve_feedbax_revision
 
 
 _PLUGIN_METHOD_REF = "tests/orchestration_plugin/v1"
@@ -145,6 +146,7 @@ def _assembly_request(
     authored_path.parent.mkdir(parents=True, exist_ok=True)
     authored_path.write_bytes(authored_bytes)
     request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
         authored=SchemaArtifactRef(
             schema_id=spec.schema_id,
             schema_version=spec.schema_version,
@@ -309,6 +311,7 @@ def _matrix_request(
     authored_path = tmp_path / "training-matrix.json"
     authored_path.write_bytes(authored_bytes)
     request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
         authored=SchemaArtifactRef(
             schema_id=TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
             schema_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
@@ -1001,7 +1004,7 @@ def test_load_assembly_request_rejects_v1_without_review_authorization(tmp_path:
     path = tmp_path / "request-v1.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="re-author a current request"):
+    with pytest.raises(ValueError, match="re-author a current v7 request"):
         orchestrate._load_assembly_request(path)
 
 
