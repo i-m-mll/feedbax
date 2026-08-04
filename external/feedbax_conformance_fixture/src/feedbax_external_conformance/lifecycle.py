@@ -118,6 +118,7 @@ def _request(
     authored_path = root / "authored.json"
     authored_path.write_bytes(authored_bytes)
     request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
         authored=SchemaArtifactRef(
             schema_id=STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
             schema_version=STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,
