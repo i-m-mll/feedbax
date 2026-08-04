@@ -1008,6 +1008,49 @@ def test_load_assembly_request_rejects_v1_without_review_authorization(tmp_path:
         orchestrate._load_assembly_request(path)
 
 
+@pytest.mark.parametrize("command", ["preflight", "launch"])
+def test_asserted_feedbax_checkout_mismatch_fails_before_engine_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    """``--feedbax-checkout`` is a runtime residence assertion, checked before any work."""
+    request, _ = _assembly_request(tmp_path)
+    path = _write_request(request, tmp_path / "assembly-request.json")
+    wrong_checkout = tmp_path / "not" / "the" / "installed" / "checkout"
+    wrong_checkout.mkdir(parents=True)
+    monkeypatch.setattr(
+        orchestrate,
+        "_request_engine",
+        lambda *_args, **_kwargs: pytest.fail("engine must not be constructed"),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "assemble_run_bundle",
+        lambda *_args, **_kwargs: pytest.fail("nothing must be assembled"),
+    )
+
+    exit_code = orchestrate.main(
+        [
+            command,
+            "--assembly-request",
+            str(path),
+            "--feedbax-checkout",
+            str(wrong_checkout),
+        ]
+    )
+
+    assert exit_code == orchestrate.EXIT_PREFLIGHT
+
+
+def test_asserted_feedbax_checkout_is_never_recorded_in_the_request(tmp_path: Path) -> None:
+    """The asserted checkout path is machine-local and must stay off the durable spec."""
+    request, _ = _assembly_request(tmp_path)
+
+    assert "feedbax_checkout" not in request.model_dump(mode="json")
+    assert "feedbax-checkout" not in _write_request(
+        request, tmp_path / "assembly-request.json"
+    ).read_text(encoding="utf-8")
+
+
 def test_launch_driver_override_conflict_fails_before_engine_creation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

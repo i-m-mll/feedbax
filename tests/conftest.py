@@ -182,6 +182,52 @@ def _tolerate_dirty_working_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_revision, "_feedbax_tree_is_dirty", _dirty)
 
 
+_SUBPROCESS_DIRTY_TOLERANCE = '''\
+"""Test-only startup hook: report the working checkout under test as clean.
+
+Tests that run the real orchestration CLI in a child process exercise the
+working checkout, which is routinely dirty while someone is editing it. The
+in-process fixture cannot reach a child, so the same narrow tolerance is applied
+here: only the real working package root is reported clean, and every other
+path still goes through genuine Git dirty detection.
+"""
+
+from pathlib import Path
+
+import feedbax
+from feedbax.orchestration import revision as _revision
+
+_WORKING_PACKAGE_ROOT = Path(feedbax.__file__).resolve().parent
+_original_tree_is_dirty = _revision._feedbax_tree_is_dirty
+
+
+def _tree_is_dirty(package_root):
+    if package_root == _WORKING_PACKAGE_ROOT:
+        return False
+    return _original_tree_is_dirty(package_root)
+
+
+_revision._feedbax_tree_is_dirty = _tree_is_dirty
+'''
+
+
+@pytest.fixture
+def subprocess_dirty_tolerance():
+    """Return an installer for the child-process counterpart of the tolerance fixture.
+
+    Call it with a directory that is first on the child's ``PYTHONPATH``; it
+    writes a ``sitecustomize`` module there, which Python imports at interpreter
+    startup before the CLI runs.
+    """
+
+    def install(directory: Path) -> None:
+        (directory / "sitecustomize.py").write_text(
+            _SUBPROCESS_DIRTY_TOLERANCE, encoding="utf-8"
+        )
+
+    return install
+
+
 @pytest.fixture
 def enable_jax_x64() -> Iterator[None]:
     """Enable JAX x64 only for one test, then restore the prior global state."""

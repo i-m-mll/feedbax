@@ -757,6 +757,7 @@ def test_matrix_staged_parents_require_and_bind_exact_governed_root_custody(
 
 def test_provider_free_cli_shadow_reaches_terminal_collection_in_fresh_process(
     tmp_path: Path,
+    subprocess_dirty_tolerance,
 ) -> None:
     plugin = tmp_path / "evaluation_plugin.py"
     plugin.write_text(
@@ -975,6 +976,7 @@ PLUGIN_REGISTRATION = PluginRegistration(
     request_path = tmp_path / "request.json"
     request_path.write_text(request.model_dump_json(), encoding="utf-8")
     feedbax_source_root = Path(__file__).resolve().parents[1]
+    subprocess_dirty_tolerance(tmp_path)
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join((str(tmp_path), str(feedbax_source_root)))
 

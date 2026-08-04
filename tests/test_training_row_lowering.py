@@ -649,7 +649,9 @@ def test_lowerer_reference_rejects_unsupported_versions() -> None:
 
 def test_installed_plugin_replays_identical_rows_across_fresh_processes(
     tmp_path: Path,
+    subprocess_dirty_tolerance,
 ) -> None:
+    subprocess_dirty_tolerance(tmp_path)
     plugin_path = tmp_path / "downstream_row_plugin.py"
     plugin_path.write_text(
         """

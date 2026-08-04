@@ -287,6 +287,33 @@ def test_unverifiable_provenance_fails_closed(
     assert fixture.output_paths() == []
 
 
+def test_stage_engine_refuses_before_reserving_the_run_set_root(
+    tmp_path: Path, clean_checkout: tuple[Path, str]
+) -> None:
+    """A stale install fails before the engine reserves any run-set output."""
+    from feedbax.orchestration.stages import StageEngine
+    from feedbax.plugins.application import new_application_registry_bundle
+
+    fixture = _assembly_fixture(tmp_path, feedbax_revision=FABRICATED_REVISION)
+    run_set_id = "2026-01-02-deadbeef"
+    output_root = fixture.orchestration_root / run_set_id
+    engine = StageEngine.from_request(
+        fixture.request,
+        context=fixture.context,
+        registry=fixture.registry,
+        driver_registry=new_application_registry_bundle(local_component_source=None).drivers,
+        driver_context=lambda _bundle: pytest.fail("driver constructed before the gate refused"),
+        run_set_id=run_set_id,
+    )
+
+    with pytest.raises(FeedbaxRevisionError, match="feedbax_revision"):
+        engine.run()
+
+    assert not output_root.exists()
+    assert fixture.compiled == []
+    assert fixture.output_paths() == []
+
+
 def test_malformed_authored_revision_is_rejected_by_the_schema(tmp_path: Path) -> None:
     """The authority is a full lowercase Git commit; the schema refuses anything else."""
     with pytest.raises(ValueError, match="feedbax_revision"):
