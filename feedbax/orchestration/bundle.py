@@ -479,7 +479,14 @@ class ResolvedAssemblyInput(StrictModel):
 
 
 class RunBundle(StrictModel):
-    """Schema-versioned orchestration request for a run set."""
+    """Schema-versioned orchestration request for a run set.
+
+    ``feedbax_revision`` is copied from the authored
+    ``RunAssemblyRequest.feedbax_revision`` after ASSEMBLE has verified it
+    against the imported package. It is never minted from whatever package
+    happens to be imported, because a stale install would then simply mint its
+    own revision and satisfy every later check against itself.
+    """
 
     schema_id: Literal["feedbax.orchestration.run_bundle"] = RUN_BUNDLE_SCHEMA_ID
     schema_version: Literal["feedbax.orchestration.run_bundle.v12"] = RUN_BUNDLE_SCHEMA_VERSION
