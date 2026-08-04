@@ -54,7 +54,7 @@ from feedbax.orchestration.bundle import (
     SchemaArtifactRef,
     default_orchestration_root,
 )
-from feedbax.orchestration.revision import resolve_feedbax_revision
+from feedbax.orchestration.revision import FeedbaxRevisionError, check_feedbax_provenance
 from feedbax.orchestration.staged_root_custody import StagedRootCustody
 from feedbax.training.row_lowering import (
     GovernedTrainingRowParent,
@@ -71,7 +71,8 @@ RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V2 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v2"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v3"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v4"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v5"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v6"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V6 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v6"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v7"
 
 
 class CompilerIdentity(StrictModel):
@@ -109,12 +110,22 @@ class GovernedTrainingRowParentDeclaration(StrictModel):
 
 
 class RunAssemblyRequest(StrictModel):
-    """Durable authored input consumed by the persisted ASSEMBLE stage."""
+    """Durable authored input consumed by the persisted ASSEMBLE stage.
+
+    ``feedbax_revision`` is the authored Feedbax revision authority. It is the
+    commit the author intends this request to be assembled and executed against,
+    and it is checked against the provenance of the package that actually
+    supplied ``import feedbax`` before anything is compiled or written. The
+    value is then copied verbatim into ``RunBundle.feedbax_revision`` rather
+    than minted from the imported package, so a stale editable install can no
+    longer produce a self-consistent bundle that passes its own preflight.
+    """
 
     schema_id: str = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
     schema_version: str = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION
     authored: SchemaArtifactRef
     compiler: CompilerIdentity
+    feedbax_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     inputs: list[AssemblyInputDeclaration] = Field(default_factory=list)
     training_row_parents: list[GovernedTrainingRowParentDeclaration] = Field(default_factory=list)
     staged_roots: list[StagedRootCustody] = Field(default_factory=list)
@@ -447,6 +458,35 @@ def persist_compiled_row(
     )
 
 
+def assert_authored_feedbax_revision(request: RunAssemblyRequest) -> str:
+    """Fail closed unless the imported package matches the request's revision authority.
+
+    This is the stale-install gate. ``RunBundle.feedbax_revision`` used to be
+    minted from whichever package happened to be imported, so preflight compared
+    a stale editable install against itself and passed. The authored request now
+    carries the authority, and it is verified here — before any compilation or
+    output — against the real provenance of the imported package, including the
+    cleanliness of the checkout that supplied it.
+
+    Returns:
+        The authored revision, which callers copy into the assembled bundle.
+
+    Raises:
+        FeedbaxRevisionError: If the imported package is a different revision, is
+            supplied by a dirty checkout, or cannot be verified at all.
+    """
+    try:
+        check_feedbax_provenance(request.feedbax_revision)
+    except FeedbaxRevisionError as exc:
+        raise FeedbaxRevisionError(
+            "the imported Feedbax package does not satisfy the assembly request's "
+            f"feedbax_revision authority {request.feedbax_revision}: {exc}; re-author "
+            "the request against the intended revision, or install that revision "
+            "(a stale editable install is the usual cause)"
+        ) from exc
+    return request.feedbax_revision
+
+
 def assemble_run_bundle(
     request: RunAssemblyRequest,
     *,
@@ -497,7 +537,7 @@ def _persist_prepared_run_bundle(
     execution_family = compiled.rows[0].execution_family
     return RunBundle(
         run_set_id=run_set_id,
-        feedbax_revision=resolve_feedbax_revision(),
+        feedbax_revision=request.feedbax_revision,
         deployment_policy=request.deployment_policy,
         execution_family=execution_family,
         migration_evidence=prepared.authored_result.migration_records,
@@ -532,6 +572,7 @@ def _prepare_run_assembly(
     registry: AssemblyCompilerRegistry,
 ) -> _PreparedRunAssembly:
     """Resolve and compile one request without persisting compiled row artifacts."""
+    assert_authored_feedbax_revision(request)
     authored_result = load_schema_artifact(request.authored, context=context)
     authored = dict(authored_result.payload)
     registration = registry.resolve(request)

@@ -489,7 +489,8 @@ RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V2 = "feedbax.spec.run_assembly_request.v2"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3 = "feedbax.spec.run_assembly_request.v3"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4 = "feedbax.spec.run_assembly_request.v4"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5 = "feedbax.spec.run_assembly_request.v5"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v6"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V6 = "feedbax.spec.run_assembly_request.v6"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v7"
 EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_ID = (
     "feedbax.manifest.evaluation_matrix_execution_capsule"
 )
@@ -2736,21 +2737,23 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.orchestration.assembly.RunAssemblyRequest",),
             consumed_by=("feedbax.orchestration.assembly.assemble_run_bundle",),
             description="Authored request resolved and compiled by persisted ASSEMBLE.",
-            stance="migrate",
-            supported_old_versions=(
-                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3,
-                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4,
-                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5,
-            ),
+            stance="reject",
             rejected_old_versions=(
                 f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v0",
                 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1,
                 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V2,
+                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3,
+                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4,
+                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5,
+                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V6,
             ),
             notes=(
                 "v2 omitted governed compile-time training-row parent declarations; "
                 "v3 omitted additive staged-root custody declarations; "
-                "v4 omitted the optional typed evaluation output preflight policy."
+                "v4 omitted the optional typed evaluation output preflight policy; "
+                "v5 nested an unmigrated deployment policy. No version below v7 "
+                "carries the required Feedbax revision authority, and a migrator "
+                "cannot invent one, so every earlier version now rejects."
             ),
         ),
         _family(
@@ -5343,8 +5346,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "from a current RunAssemblyRequest with a DeploymentPolicy."
                 if family.kind == "RunBundle"
                 else (
-                    "RunAssemblyRequest v1 lacks explicit deployment review authorization; "
-                    "re-author a current request with a DeploymentPolicy."
+                    "RunAssemblyRequest v1 lacks explicit deployment review authorization, "
+                    "and no version below v7 carries the required feedbax_revision "
+                    "authority; a migrator cannot invent the revision a request was "
+                    "authored against, so re-author a current v7 request that names it "
+                    "explicitly."
                     if family.kind == "RunAssemblyRequest"
                     else (
                         f"{family.kind} has no registered migration from {old_version!r}; "
@@ -5529,47 +5535,11 @@ def _migrate_run_bundle_v4_to_v5_payload(payload: dict[str, Any]) -> dict[str, A
     return migrated
 
 
-def _migrate_run_assembly_request_v3_to_v4_payload(
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    """Preserve v3 requests while adding the empty staged-root declaration."""
-    migrated = dict(payload)
-    migrated["schema_id"] = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
-    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4
-    migrated.setdefault("staged_roots", [])
-    migrated.setdefault("evaluation_batch_plan", None)
-    return migrated
-
-
-def _migrate_run_assembly_request_v4_to_v5_payload(
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    """Preserve v4 behavior with no evaluation output preflight policy."""
-    migrated = dict(payload)
-    migrated["schema_id"] = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
-    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5
-    migrated.setdefault("evaluation_output_preflight", None)
-    return migrated
-
-
 def _migrate_deployment_policy_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Preserve policy intent while moving driver semantics to registry validation."""
     migrated = dict(payload)
     migrated["schema_id"] = DEPLOYMENT_POLICY_SCHEMA_ID
     migrated["schema_version"] = DEPLOYMENT_POLICY_SCHEMA_VERSION
-    return migrated
-
-
-def _migrate_run_assembly_request_v5_to_v6_payload(
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    """Lift the nested deployment policy to the registry-resolved schema."""
-    migrated = dict(payload)
-    migrated["schema_id"] = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
-    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION
-    policy = migrated.get("deployment_policy")
-    if isinstance(policy, Mapping):
-        migrated["deployment_policy"] = _migrate_deployment_policy_v1_to_v2_payload(dict(policy))
     return migrated
 
 
@@ -5721,28 +5691,6 @@ default_spec_registry.register_migration(
     ),
 )
 default_spec_registry.register_migration(
-    "RunAssemblyRequest",
-    SchemaMigration(
-        source_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3,
-        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4,
-        migration_id="run-assembly-request-v3-to-v4-staged-roots",
-        migrate=_migrate_run_assembly_request_v3_to_v4_payload,
-        description=(
-            "Preserve existing training requests and add an empty governed staged-root list."
-        ),
-    ),
-)
-default_spec_registry.register_migration(
-    "RunAssemblyRequest",
-    SchemaMigration(
-        source_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4,
-        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5,
-        migration_id="run-assembly-request-v4-to-v5-evaluation-output-preflight",
-        migrate=_migrate_run_assembly_request_v4_to_v5_payload,
-        description=("Preserve existing requests with no evaluation output preflight policy."),
-    ),
-)
-default_spec_registry.register_migration(
     "DeploymentPolicy",
     SchemaMigration(
         source_version=DEPLOYMENT_POLICY_SCHEMA_VERSION_V1,
@@ -5750,16 +5698,6 @@ default_spec_registry.register_migration(
         migration_id="deployment-policy-v1-to-v2-registry-driver",
         migrate=_migrate_deployment_policy_v1_to_v2_payload,
         description="Preserve policy intent while delegating driver semantics to its registry.",
-    ),
-)
-default_spec_registry.register_migration(
-    "RunAssemblyRequest",
-    SchemaMigration(
-        source_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5,
-        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION,
-        migration_id="run-assembly-request-v5-to-v6-registry-driver",
-        migrate=_migrate_run_assembly_request_v5_to_v6_payload,
-        description="Lift the nested deployment policy to its registry-resolved schema.",
     ),
 )
 default_spec_registry.register_migration(
