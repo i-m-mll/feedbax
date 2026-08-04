@@ -411,3 +411,147 @@ def test_authored_report_cli_prints_failed_manifest_payload(
     failed = load_manifest(payload["manifest_path"])
     assert failed.status == "failed"
     assert failed.metadata["error"]["type"] == "ValueError"
+
+
+# --------------------------------------------------------------------------
+# An authored report may be handed the context its caller already resolved
+# --------------------------------------------------------------------------
+
+
+def test_an_authored_report_executes_against_an_already_resolved_context(
+    tmp_path: Path,
+) -> None:
+    """The parents live in a retained store, and the caller says so once.
+
+    Rebuilding the locations from ``StagedExactParents`` would place every
+    parent beneath the report's own root, because an exact-parent entry states a
+    location *within* a root and says nothing about which root. A caller that
+    already resolved its parents hands the resolution over instead.
+    """
+    from feedbax.analysis.execution_context import (
+        StagedManifestRootBinding,
+        resolve_staged_execution_context,
+        with_staged_resolved_parents,
+        StagedParentExecutionLocation,
+    )
+    from feedbax.contracts.manifest import canonical_manifest_relative_path
+    from feedbax.contracts.staged_execution import (
+        STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+        STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+        StagedExecutionDescriptor,
+    )
+
+    retained = tmp_path / "retained"
+    retained.mkdir()
+    output_root = tmp_path / "receipts"
+    output_root.mkdir()
+
+    manifest = AnalysisRunManifest(
+        id="feedbax-analysis-run:resolved-context",
+        status="completed",
+        analysis_spec=spec_payload(
+            "AnalysisRunSpec", {"analysis_type": "testpkg.source_analysis"}
+        ),
+    )
+    raw = manifest.model_dump_json(indent=2).encode("utf-8")
+    relative = canonical_manifest_relative_path(manifest.kind, manifest.id)
+    path = retained / relative
+    path.parent.mkdir(parents=True)
+    path.write_bytes(raw)
+    parent = ParentRef(
+        kind=manifest.kind,
+        id=manifest.id,
+        role="analysis_run",
+        metadata={
+            "ref_schema_id": "feedbax.ref.authenticated_manifest",
+            "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+            "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+            "size_bytes": len(raw),
+        },
+    )
+    exact = StagedExactParents(
+        schema_id=STAGED_EXACT_PARENTS_SCHEMA_ID,
+        schema_version=STAGED_EXACT_PARENTS_SCHEMA_VERSION,
+        parents=[StagedExactParentEntry(parent=parent, execution_uri=relative)],
+    )
+    context = with_staged_resolved_parents(
+        resolve_staged_execution_context(
+            StagedExecutionDescriptor(
+                schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+                schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+                artifact_providers={},
+                checkpoint_custody={},
+            ),
+            manifest_root_bindings=[StagedManifestRootBinding("retained", retained)],
+        ),
+        [
+            StagedParentExecutionLocation(
+                parent=parent, root=retained, execution_uri=relative
+            )
+        ],
+    )
+
+    def recipe(_spec: ReportSpec, root: Path, inputs: list[object]) -> ReportRecipeResult:
+        artifact = store_bytes_artifact(
+            b"# resolved\n",
+            root=root,
+            role=REPORT_RENDER_ROLE,
+            logical_name="report.md",
+            media_type="text/markdown",
+            suffix=".md",
+        )
+        return ReportRecipeResult(artifacts=[artifact], summary={"inputs": len(inputs)})
+
+    registry = ReportRecipeRegistry()
+    registry.register("testpkg.resolved_context_report", recipe)
+
+    report, report_path = execute_authored_report_spec(
+        ReportSpec(report_type="testpkg.resolved_context_report", inputs=[parent]),
+        registry=registry,
+        exact_parents=exact,
+        root=output_root,
+        execution_context=context,
+    )
+
+    assert report.status == "completed"
+    assert report_path.is_file()
+    assert [ref.id for ref in report.provenance.parents] == [manifest.id]
+    # Nothing was copied under the report's own root to make this work.
+    assert not (output_root / "manifests" / "analysis_runs").exists()
+
+
+def test_an_authored_report_refuses_a_resolved_context_beside_raw_bindings(
+    tmp_path: Path,
+) -> None:
+    from feedbax.analysis.execution_context import (
+        EMPTY_STAGED_EXECUTION_CONTEXT,
+        StagedArtifactProviderRootBinding,
+        StagedExecutionContextError,
+    )
+
+    exact = StagedExactParents(
+        schema_id=STAGED_EXACT_PARENTS_SCHEMA_ID,
+        schema_version=STAGED_EXACT_PARENTS_SCHEMA_VERSION,
+        parents=[
+            StagedExactParentEntry(
+                parent=ParentRef(
+                    kind="AnalysisRunManifest",
+                    id="feedbax-analysis-run:irrelevant",
+                    role="analysis_run",
+                ),
+                execution_uri="parents/analysis.json",
+            )
+        ],
+    )
+    with pytest.raises(StagedExecutionContextError, match="cannot be combined"):
+        execute_authored_report_spec(
+            ReportSpec(report_type="testpkg.never_runs"),
+            registry=ReportRecipeRegistry(),
+            exact_parents=exact,
+            root=tmp_path,
+            execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+            artifact_provider_bindings=[
+                StagedArtifactProviderRootBinding("results", tmp_path)
+            ],
+        )
+    assert not (tmp_path / "manifests" / "reports").exists()

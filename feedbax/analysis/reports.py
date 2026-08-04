@@ -21,6 +21,7 @@ from feedbax.analysis.execution_context import (
     StagedExecutionContext,
     StagedManifestRootBinding,
     StagedParentExecutionLocation,
+    require_exclusive_staged_runtime,
     resolve_staged_execution_context,
     with_staged_manifest_provider_inputs,
     with_staged_parent_execution_locations,
@@ -727,6 +728,7 @@ def execute_authored_report_spec(
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
     checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
+    execution_context: StagedExecutionContext | None = None,
 ) -> tuple[ReportManifest, Path]:
     """Execute one authored report against authoritative exact staged parents.
 
@@ -734,8 +736,23 @@ def execute_authored_report_spec(
     authored in ``spec`` must occur byte-for-byte in that membership. Additional
     terminal parents are allowed only when they do not replace an authored input
     by role or ID.
+
+    ``execution_context`` is for the caller that has already located every exact
+    parent under its own authority — a fulfillment closure, whose walk settled
+    which authority each parent resolves through. It is mutually exclusive with
+    the raw descriptor and root bindings, and it is used as given: the locations
+    it carries are *not* rebuilt from ``exact_parents``, because those entries
+    state a location within one root and say nothing about which root, so
+    rebuilding them would place every parent beneath ``root`` and lose a parent
+    held by a retained manifest store or an artifact provider.
     """
     report_spec = coerce_report_spec(spec)
+    require_exclusive_staged_runtime(
+        execution_context,
+        execution_descriptor=execution_descriptor,
+        artifact_provider_bindings=artifact_provider_bindings,
+        checkpoint_custody_bindings=checkpoint_custody_bindings,
+    )
     if isinstance(exact_parents, StagedExactParents):
         exact_payload = exact_parents.model_dump(mode="json")
     elif isinstance(exact_parents, Mapping):
@@ -758,22 +775,23 @@ def execute_authored_report_spec(
     exact_refs = tuple(entry.parent for entry in exact.parents)
     _validate_authored_report_exact_parent_membership(report_spec.inputs, exact_refs)
 
-    execution_context = resolve_staged_execution_context(
-        execution_descriptor,
-        artifact_provider_bindings=artifact_provider_bindings,
-        checkpoint_custody_bindings=checkpoint_custody_bindings,
-    )
-    execution_context = with_staged_parent_execution_locations(
-        execution_context,
-        [
-            StagedParentExecutionLocation(
-                parent=entry.parent,
-                root=root_path,
-                execution_uri=entry.execution_uri,
-            )
-            for entry in exact.parents
-        ],
-    )
+    if execution_context is None:
+        execution_context = resolve_staged_execution_context(
+            execution_descriptor,
+            artifact_provider_bindings=artifact_provider_bindings,
+            checkpoint_custody_bindings=checkpoint_custody_bindings,
+        )
+        execution_context = with_staged_parent_execution_locations(
+            execution_context,
+            [
+                StagedParentExecutionLocation(
+                    parent=entry.parent,
+                    root=root_path,
+                    execution_uri=entry.execution_uri,
+                )
+                for entry in exact.parents
+            ],
+        )
     for parent in exact_refs:
         if not is_authenticated_manifest_ref(parent):
             raise ValueError(

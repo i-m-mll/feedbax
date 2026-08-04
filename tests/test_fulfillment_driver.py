@@ -365,6 +365,55 @@ def test_a_figure_binds_its_runtime_input_authority_by_role(
     assert figure.runtime_inputs is not None
     assert [ref.role for ref in figure.runtime_inputs] == ["observed"]
     assert figure.spec["schema_id"] == "feedbax.spec.figure"
+    # No contract, no authority: the input is bound as provenance and read from
+    # no artifact, which is a statement an author is entitled to make.
+    assert figure.runtime_input_authorities is None
+
+
+def test_a_figure_authority_is_built_from_the_lock_contract_and_nothing_else(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """The artifact half of a figure input comes from the lock, addressed by role."""
+    source = outputs.probe("contracted-source")
+    outputs.plate(
+        "contracted-plate",
+        references=[
+            planned(
+                source,
+                role_path="runtime.states",
+                consumer=FigureRuntimeInputBinding(
+                    input_role="observed",
+                    contract={
+                        "input_role": "observed",
+                        "artifact_role": "result",
+                        "artifact_provider": "quillon.custody",
+                        "payload_name": "observed_summary",
+                        "payload_schema_id": "quillon.span_result",
+                        "payload_schema_version": "quillon.span_result.v1",
+                    },
+                ),
+            )
+        ],
+    )
+    fulfill_closure(
+        truncated_closure(_closure(outputs, "contracted-plate"), 1), environment=environment
+    )
+    requests = closure_requests(
+        _closure(outputs, "contracted-plate"),
+        environment=environment,
+        stop_at=LogicalKey("figure", "contracted-plate"),
+    )
+
+    figure = requests[-1]
+    (authority,) = figure.runtime_input_authorities
+    assert authority.input_role == "observed"
+    assert authority.resolve_parent(figure.runtime_inputs) == figure.runtime_inputs[0]
+    (payload,) = authority.artifact_payloads
+    assert payload.name == "observed_summary"
+    assert payload.manifest_role == "observed"
+    assert payload.artifact_role == "result"
+    assert payload.artifact_provider == "quillon.custody"
+    assert payload.payload_schema_version == "quillon.span_result.v1"
 
 
 def test_a_checkpoint_initialization_binding_never_binds_an_executable_node(
@@ -2202,3 +2251,385 @@ def test_restated_parent_differences_reports_an_unreadable_profile_on_either_sid
     # A document that states nothing about bytes still says nothing to refuse.
     silent = ParentRef(kind="EvaluationRunManifest", id="x", role="b", metadata={})
     assert restated_parent_differences(silent, good) == ()
+
+
+# --------------------------------------------------------------------------
+# The staged surface: several declared authorities, exactly one of them holding
+# --------------------------------------------------------------------------
+
+
+def _retained_context(*roots: Path):
+    """A staged context declaring nothing but the given retained manifest stores."""
+    from feedbax.analysis.execution_context import (
+        StagedManifestRootBinding,
+        resolve_staged_execution_context,
+    )
+    from feedbax.contracts.staged_execution import (
+        STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+        STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+        StagedExecutionDescriptor,
+    )
+
+    for root in roots:
+        root.mkdir(parents=True, exist_ok=True)
+    return resolve_staged_execution_context(
+        StagedExecutionDescriptor(
+            schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+            schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+            artifact_providers={},
+            checkpoint_custody={},
+        ),
+        manifest_root_bindings=[
+            StagedManifestRootBinding(f"retained-{index}", root)
+            for index, root in enumerate(roots)
+        ],
+    )
+
+
+def _retain(receipt, root: Path) -> Path:
+    """Copy one produced receipt to its canonical location under another root."""
+    path = canonical_manifest_path(receipt.manifest_kind, receipt.manifest_id, root=root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(receipt.path.read_bytes())
+    return path
+
+
+def _quoted_consumer(outputs: QuillonOutputs, name: str, receipt) -> str:
+    raw = receipt.path.read_bytes()
+    outputs.bulletin(
+        name,
+        references=[
+            AuthenticatedReceiptReference(
+                manifest_kind=receipt.manifest_kind,
+                manifest_id=receipt.manifest_id,
+                manifest_sha256=hashlib.sha256(raw).hexdigest(),
+                size_bytes=len(raw),
+                role_path="body.quoted",
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="quoted"),
+            )
+        ],
+    )
+    return name
+
+
+def test_a_parent_only_a_retained_store_holds_resolves_from_it(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, tmp_path: Path
+) -> None:
+    """The receipt root is one authority among the declared ones, not the only one.
+
+    The reference's bytes were produced elsewhere and retained in a manifest
+    store the caller bound by name. Nothing was copied under the receipt root,
+    and nothing needed to be: the store is where the reference resolves, and the
+    node executes with a context that says so.
+    """
+    from dataclasses import replace
+
+    outputs.probe("retained-source")
+    produced = _fulfill(outputs, "retained-source", environment=environment).results[0].receipt
+    retained = tmp_path / "retained"
+    retained_path = _retain(produced, retained)
+    produced.path.unlink()
+    target = _quoted_consumer(outputs, "retained-consumer", _Receipt(produced, retained_path))
+
+    staged = replace(environment, execution_context=_retained_context(retained))
+    run = _fulfill(outputs, target, environment=staged)
+
+    bound = load_manifest(run.results[0].receipt.path).provenance.parents
+    assert [ref.id for ref in bound] == [produced.manifest_id]
+    request = closure_requests(_closure(outputs, target), environment=staged)[0]
+    location = request.execution_context.parent_execution_location(bound[0])
+    assert location.root == retained
+    assert location.execution_uri == retained_path.relative_to(retained).as_posix()
+
+
+class _Receipt:
+    """A receipt-shaped view whose bytes live somewhere other than the receipt root."""
+
+    def __init__(self, receipt, path: Path) -> None:
+        self.manifest_kind = receipt.manifest_kind
+        self.manifest_id = receipt.manifest_id
+        self.path = path
+
+
+def test_a_parent_two_declared_authorities_hold_refuses_before_any_effect(
+    outputs: QuillonOutputs,
+    environment: FulfillmentEnvironment,
+    tmp_path: Path,
+    calls: _Calls,
+) -> None:
+    """No precedence: a reference held twice is a custody question, not a tie.
+
+    The receipt root and a retained store both hold a completed manifest of the
+    named kind and id. Preferring either would silently pick a custody domain
+    nobody chose, and the two can differ in exactly the bytes an authenticated
+    reference exists to pin. So the closure refuses, and the consumer never runs.
+    """
+    from dataclasses import replace
+
+    from feedbax.analysis.fulfillment_driver import AmbiguousExternalReceiptError
+
+    outputs.probe("doubled-source")
+    produced = _fulfill(outputs, "doubled-source", environment=environment).results[0].receipt
+    retained = tmp_path / "retained"
+    _retain(produced, retained)
+    target = _quoted_consumer(outputs, "doubled-consumer", produced)
+
+    staged = replace(environment, execution_context=_retained_context(retained))
+    before = calls.report
+    with pytest.raises(AmbiguousExternalReceiptError) as caught:
+        _fulfill(outputs, target, environment=staged)
+
+    detail = caught.value.record_detail()
+    assert detail["manifest_id"] == produced.manifest_id
+    assert detail["consumer"] == "report:doubled-consumer"
+    assert detail["authorities"] == ["receipt root", "manifest root 'retained-0'"]
+    assert "no precedence" in str(caught.value)
+    assert calls.report == before, "an ambiguous reference never reaches execution"
+    assert not _reports_directory(environment).exists()
+
+
+def test_a_missing_parent_names_every_authority_that_was_searched(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, tmp_path: Path
+) -> None:
+    """A refusal describes the search that happened, not one root of it."""
+    from dataclasses import replace
+
+    outputs.bulletin(
+        "searched-consumer",
+        references=[
+            ReceiptLocatorReference(
+                manifest_kind="EvaluationRunManifest",
+                manifest_id="feedbax-evaluation-run:nowhere",
+                role_path="body.prior",
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="prior"),
+            )
+        ],
+    )
+    staged = replace(environment, execution_context=_retained_context(tmp_path / "retained"))
+    with pytest.raises(MissingExternalReceiptError) as caught:
+        _fulfill(outputs, "searched-consumer", environment=staged)
+    assert caught.value.searched == ("receipt root", "manifest root 'retained-0'")
+    assert "manifest root 'retained-0'" in str(caught.value)
+
+
+# --------------------------------------------------------------------------
+# Per-node contexts are the request's, so every operation sees the same one
+# --------------------------------------------------------------------------
+
+
+def test_every_operation_over_a_closure_reconstructs_the_same_node_contexts(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, tmp_path: Path
+) -> None:
+    """Fulfillment, admission, rebuild, and repair all lower the node again.
+
+    A context assembled during the walk and thrown away after it would leave
+    rebuild-as-verification and repair resolving parents some other way. The
+    context lives on the request, so each of those operations gets the one the
+    lowering settled.
+    """
+    from dataclasses import replace
+
+    outputs.probe("persisted-source")
+    produced = _fulfill(outputs, "persisted-source", environment=environment).results[0].receipt
+    retained = tmp_path / "retained"
+    retained_path = _retain(produced, retained)
+    produced.path.unlink()
+    target = _quoted_consumer(outputs, "persisted-consumer", _Receipt(produced, retained_path))
+
+    staged = replace(environment, execution_context=_retained_context(retained))
+    closure = _closure(outputs, target)
+
+    fulfilled = fulfill_closure(closure, environment=staged)
+    assert fulfilled.executed == ("report:persisted-consumer",)
+
+    # Reuse: the second walk admits rather than executes, and the request it
+    # admits against carries the same context.
+    again = fulfill_closure(closure, environment=staged)
+    assert again.reused == ("report:persisted-consumer",)
+
+    requests = closure_requests(closure, environment=staged)
+    assert len(requests) == 1
+    context = requests[0].execution_context
+    assert context is not None
+    assert [location.root for location in context.parent_execution_locations] == [retained]
+
+    rebuild = rebuild_closure(closure, environment=staged)
+    assert rebuild.drifted == ()
+
+    # Repair executes the node again into shadow custody, which means resolving
+    # its parents again. A repair that lost the node's context would look for
+    # the parent beneath the receipt root, where it is not.
+    _mutate(fulfilled.results[0].receipt.path, status="failed")
+    repaired = repair_closure_node(
+        closure, LogicalKey("report", "persisted-consumer"), environment=staged
+    )
+    assert repaired.record.node_key == "report:persisted-consumer"
+    assert repaired.record.admission_after_repair.admitted
+
+
+def test_a_run_declaring_no_staged_bindings_lowers_no_context(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    """Cold start is left exactly as it was, not routed through an empty context."""
+    target = _chain(outputs)
+    closure = _closure(outputs, target)
+    fulfill_closure(closure, environment=environment)
+    assert [
+        request.execution_context for request in closure_requests(closure, environment=environment)
+    ] == [None, None, None]
+
+
+def test_declaring_a_staged_surface_changes_no_produced_receipt(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, tmp_path: Path
+) -> None:
+    """A declared authority nothing resolves through leaves identity untouched.
+
+    Manifest identity is derived from the spec, so an equal id across the two
+    runs is the statement that declaring a staged surface did not change what
+    was built — only where a parent may be looked for. The subject is a node
+    with no parents on purpose: a node that binds one binds the digest of a
+    *previous run's* bytes, which differ between two independent runs for
+    reasons that have nothing to do with staged inputs.
+    """
+    from dataclasses import replace
+
+    outputs.probe("surface-regression")
+    cold = _fulfill(outputs, "surface-regression", environment=environment)
+    staged = replace(
+        environment,
+        root=tmp_path / "staged-receipts",
+        execution_context=_retained_context(tmp_path / "unused-retained"),
+    )
+    declared = fulfill_closure(
+        _closure(outputs, "surface-regression"), environment=staged
+    )
+
+    assert declared.executed == cold.executed
+    assert (
+        declared.results[0].receipt.manifest_id == cold.results[0].receipt.manifest_id
+    )
+    assert (
+        load_manifest(declared.results[0].receipt.path).summary_metrics
+        == load_manifest(cold.results[0].receipt.path).summary_metrics
+    )
+
+
+def _provider_context(root: Path, name: str = "results"):
+    """A staged context declaring exactly one immutable artifact provider."""
+    from feedbax.analysis.execution_context import (
+        StagedArtifactProviderRootBinding,
+        resolve_staged_execution_context,
+    )
+    from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
+    from feedbax.contracts.staged_execution import (
+        STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+        STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+        StagedExecutionDescriptor,
+    )
+
+    root.mkdir(parents=True, exist_ok=True)
+    return resolve_staged_execution_context(
+        StagedExecutionDescriptor(
+            schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+            schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+            artifact_providers={name: ImmutableArtifactBlobProviderSpec()},
+            checkpoint_custody={},
+        ),
+        artifact_provider_bindings=[StagedArtifactProviderRootBinding(name, root)],
+    )
+
+
+def test_a_parent_only_an_artifact_provider_holds_resolves_and_binds_its_alias(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, tmp_path: Path
+) -> None:
+    """A provider is addressed by the digest the reference quotes, and by nothing else.
+
+    A locator states no digest and therefore reaches no provider — there is no
+    other way to address content-addressed bytes. This reference is an
+    authenticated one, so the provider is a candidate, it is the only authority
+    holding the manifest, and the node executes with the provider bound both as
+    the parent's location and as the authored alias of the same name.
+    """
+    from dataclasses import replace
+
+    from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
+    from feedbax.persistence.artifact_custody import open_immutable_artifact_blob_provider
+
+    outputs.probe("provider-source")
+    produced = _fulfill(outputs, "provider-source", environment=environment).results[0].receipt
+    raw = produced.path.read_bytes()
+
+    provider_root = tmp_path / "provider"
+    provider_root.mkdir()
+    provider = open_immutable_artifact_blob_provider(
+        ImmutableArtifactBlobProviderSpec(), explicit_root=provider_root
+    )
+    provider.store_bytes(raw, role="manifest", logical_name="receipt.json")
+    produced.path.unlink()
+
+    outputs.bulletin(
+        "provider-consumer",
+        references=[
+            AuthenticatedReceiptReference(
+                manifest_kind="EvaluationRunManifest",
+                manifest_id=produced.manifest_id,
+                manifest_sha256=hashlib.sha256(raw).hexdigest(),
+                size_bytes=len(raw),
+                role_path="body.quoted",
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="quoted"),
+            )
+        ],
+    )
+
+    staged = replace(environment, execution_context=_provider_context(provider_root))
+    run = _fulfill(outputs, "provider-consumer", environment=staged)
+
+    bound = load_manifest(run.results[0].receipt.path).provenance.parents
+    assert [ref.id for ref in bound] == [produced.manifest_id]
+    context = closure_requests(
+        _closure(outputs, "provider-consumer"), environment=staged
+    )[0].execution_context
+    location = context.parent_execution_location(bound[0])
+    assert location.artifact_provider == "results"
+    assert location.root == provider_root
+    assert [
+        binding.authored_provider for binding in context.parent_artifact_provider_bindings
+    ] == ["results"]
+
+
+def test_a_locator_reference_reaches_no_artifact_provider(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, tmp_path: Path
+) -> None:
+    """Without a quoted digest there is no content address, so no provider is searched."""
+    from dataclasses import replace
+
+    from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
+    from feedbax.persistence.artifact_custody import open_immutable_artifact_blob_provider
+
+    outputs.probe("locator-provider-source")
+    produced = (
+        _fulfill(outputs, "locator-provider-source", environment=environment).results[0].receipt
+    )
+    raw = produced.path.read_bytes()
+    provider_root = tmp_path / "provider"
+    provider_root.mkdir()
+    open_immutable_artifact_blob_provider(
+        ImmutableArtifactBlobProviderSpec(), explicit_root=provider_root
+    ).store_bytes(raw, role="manifest", logical_name="receipt.json")
+    produced.path.unlink()
+
+    outputs.bulletin(
+        "locator-provider-consumer",
+        references=[
+            ReceiptLocatorReference(
+                manifest_kind="EvaluationRunManifest",
+                manifest_id=produced.manifest_id,
+                role_path="body.prior",
+                consumer=ReportParentBinding(parent_kind="probe", parent_id="prior"),
+            )
+        ],
+    )
+    staged = replace(environment, execution_context=_provider_context(provider_root))
+    with pytest.raises(MissingExternalReceiptError) as caught:
+        _fulfill(outputs, "locator-provider-consumer", environment=staged)
+    assert caught.value.searched == ("receipt root",)

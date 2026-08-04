@@ -105,8 +105,12 @@ class FulfillmentEnvironment:
             run lives at its canonical location beneath this root.
         registries: The sealed application registries the executors dispatch on.
         repo_root: Trusted repository root for spec resolution, if any.
-        execution_context: The authoritative staged execution context. Adapters
-            never synthesize one; staged bindings are the caller's declaration.
+        execution_context: The run's *base* staged execution context: the
+            authorities the caller declared, with no parent located in it.
+            Adapters never synthesize one; staged bindings are the caller's
+            declaration. A node executed through a lowered plan carries its own
+            context, augmented with exactly that node's parents, and the base is
+            what a hand-assembled request falls back to.
         issues: Issue references recorded on produced manifests.
     """
 
@@ -126,6 +130,11 @@ class EvaluationNodeRequest:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     required_output_roles: tuple[str, ...] = ()
     order: int | None = None
+    #: The staged execution context this node executes under, resolved by the
+    #: lowering from the run's base context plus exactly this node's parents.
+    #: ``None`` means the run declared no staged bindings, and execution then
+    #: takes the environment's own context — which is the empty one.
+    execution_context: StagedExecutionContext | None = None
 
     node_kind: ClassVar[FulfillmentNodeKind] = "evaluation"
 
@@ -139,6 +148,11 @@ class EvaluationMatrixNodeRequest:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     required_output_roles: tuple[str, ...] = ()
     order: int | None = None
+    #: The staged execution context this node executes under, resolved by the
+    #: lowering from the run's base context plus exactly this node's parents.
+    #: ``None`` means the run declared no staged bindings, and execution then
+    #: takes the environment's own context — which is the empty one.
+    execution_context: StagedExecutionContext | None = None
 
     node_kind: ClassVar[FulfillmentNodeKind] = "evaluation"
 
@@ -152,6 +166,11 @@ class AnalysisNodeRequest:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     required_output_roles: tuple[str, ...] = ()
     order: int | None = None
+    #: The staged execution context this node executes under, resolved by the
+    #: lowering from the run's base context plus exactly this node's parents.
+    #: ``None`` means the run declared no staged bindings, and execution then
+    #: takes the environment's own context — which is the empty one.
+    execution_context: StagedExecutionContext | None = None
 
     node_kind: ClassVar[FulfillmentNodeKind] = "analysis"
 
@@ -185,6 +204,11 @@ class AnalysisBundleNodeRequest:
     root_inputs: tuple[ParentRef, ...] | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
     order: int | None = None
+    #: The staged execution context this node executes under, resolved by the
+    #: lowering from the run's base context plus exactly this node's parents.
+    #: ``None`` means the run declared no staged bindings, and execution then
+    #: takes the environment's own context — which is the empty one.
+    execution_context: StagedExecutionContext | None = None
 
     node_kind: ClassVar[FulfillmentNodeKind] = "analysis"
 
@@ -201,6 +225,11 @@ class FigureNodeRequest:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     required_output_roles: tuple[str, ...] = ()
     order: int | None = None
+    #: The staged execution context this node executes under, resolved by the
+    #: lowering from the run's base context plus exactly this node's parents.
+    #: ``None`` means the run declared no staged bindings, and execution then
+    #: takes the environment's own context — which is the empty one.
+    execution_context: StagedExecutionContext | None = None
 
     node_kind: ClassVar[FulfillmentNodeKind] = "figure"
 
@@ -215,6 +244,11 @@ class ReportNodeRequest:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     required_output_roles: tuple[str, ...] = ()
     order: int | None = None
+    #: The staged execution context this node executes under, resolved by the
+    #: lowering from the run's base context plus exactly this node's parents.
+    #: ``None`` means the run declared no staged bindings, and execution then
+    #: takes the environment's own context — which is the empty one.
+    execution_context: StagedExecutionContext | None = None
 
     node_kind: ClassVar[FulfillmentNodeKind] = "report"
 
@@ -267,6 +301,24 @@ class FulfillmentRun:
     @property
     def reused(self) -> tuple[str, ...]:
         return tuple(r.node_key for r in self.results if r.disposition == "reused")
+
+
+def node_execution_context(
+    request: NodeRequest, environment: FulfillmentEnvironment
+) -> StagedExecutionContext:
+    """Return the staged context one node request executes under.
+
+    A request that carries its own context carries it because the lowering
+    resolved *this node's* parents into it, and that resolution is the same one
+    admission, rebuild, and repair are reconstructed from — so it is used
+    wherever the node is reached, not only on the first walk. A request without
+    one falls back to the environment's, which is what a caller that assembled
+    node requests by hand supplies, and which is the empty context whenever the
+    run declared no staged bindings.
+    """
+    if request.execution_context is not None:
+        return request.execution_context
+    return environment.execution_context
 
 
 def canonical_fulfillment_order(requests: Sequence[NodeRequest]) -> tuple[NodeRequest, ...]:
@@ -527,7 +579,7 @@ def _execute_evaluation(
         repo_root=environment.repo_root,
         issues=list(environment.issues),
         metadata=dict(request.metadata),
-        execution_context=environment.execution_context,
+        execution_context=node_execution_context(request, environment),
         force=True,
     )
 
@@ -559,26 +611,28 @@ def _execute_analysis(
         provenance=provenance,
         issues=list(environment.issues),
         metadata=dict(request.metadata),
-        execution_context=environment.execution_context,
+        execution_context=node_execution_context(request, environment),
         use_cache=False,
     )
 
 
 def _figure_execution_context(
+    request: FigureNodeRequest,
     environment: FulfillmentEnvironment,
 ) -> StagedExecutionContext | None:
     """Return the context figure execution binds against, or ``None`` for root resolution.
 
     Figure input resolution takes one of two authorities: an explicit staged
-    execution context, or the receipt root itself. A fulfillment environment
-    that declares no staged bindings means the second — every parent lives at
-    its canonical location beneath the receipt root. Planning and execution must
-    agree on this choice, because the recorded runtime binding provenance
-    depends on it.
+    execution context, or the receipt root itself. A run that declares no staged
+    bindings means the second — every parent lives at its canonical location
+    beneath the receipt root. Planning and execution must agree on this choice,
+    because the recorded runtime binding provenance depends on it, and both
+    reach it through here.
     """
-    if environment.execution_context is EMPTY_STAGED_EXECUTION_CONTEXT:
+    context = node_execution_context(request, environment)
+    if context is EMPTY_STAGED_EXECUTION_CONTEXT:
         return None
-    return environment.execution_context
+    return context
 
 
 def figure_execution_plan(
@@ -601,7 +655,7 @@ def figure_execution_plan(
             dict(request.runtime_metadata) if request.runtime_metadata is not None else None
         ),
         repo_root=environment.repo_root,
-        execution_context=_figure_execution_context(environment),
+        execution_context=_figure_execution_context(request, environment),
         registry=environment.registries.figures,
     )
 
@@ -628,7 +682,7 @@ def _execute_figure(
         root=environment.root,
         issues=list(environment.issues),
         metadata=dict(request.metadata),
-        execution_context=_figure_execution_context(environment),
+        execution_context=_figure_execution_context(request, environment),
         registry=environment.registries.figures,
     )
 
@@ -650,12 +704,19 @@ def _execute_report(
     request: ReportNodeRequest,
     environment: FulfillmentEnvironment,
 ):
+    context = node_execution_context(request, environment)
     if request.exact_parents is not None:
         return execute_authored_report_spec(
             request.spec,
             registry=environment.registries.report_recipes,
             exact_parents=request.exact_parents,
             root=environment.root,
+            # The node's parents were located once, by the walk that proved this
+            # closure. Handing the resolved context over is what keeps the report
+            # executing against those locations instead of resolving its own,
+            # which for a parent held by a retained store or an artifact provider
+            # would look beneath the receipt root and find nothing.
+            execution_context=request.execution_context,
         )
     return execute_report_spec(
         request.spec,
@@ -664,7 +725,7 @@ def _execute_report(
         provenance=Provenance(parents=list(request.spec.inputs)),
         issues=list(environment.issues),
         metadata=dict(request.metadata),
-        execution_context=environment.execution_context,
+        execution_context=context,
     )
 
 
@@ -940,14 +1001,12 @@ def execute_analysis_bundle_node(
             "template set, so it states no work; a bundle defines exactly one non-empty "
             "execution shape"
         )
-    if environment.execution_context is not EMPTY_STAGED_EXECUTION_CONTEXT:
-        raise ValueError(
-            f"analysis bundle node {request.node_key!r} cannot run in an environment that "
-            "declares a staged execution context: bundle execution takes a portable "
-            "StagedExecutionDescriptor plus explicit root bindings, and a resolved context "
-            "cannot be turned back into them. Run the bundle in an environment whose parents "
-            "resolve beneath the receipt root."
-        )
+    # A resolved context is handed to bundle execution as itself. It is
+    # deliberately not turned back into a descriptor plus root bindings: those
+    # would be a second, reconstructed statement of bindings the caller already
+    # made, and the two could disagree about which authority a parent came from.
+    context = node_execution_context(request, environment)
+    staged_context = None if context is EMPTY_STAGED_EXECUTION_CONTEXT else context
     verified: tuple[VerifiedBundleRoot, ...] | None = None
     run_ids: tuple[str, ...] | None = None
     if identities is not None:
@@ -976,6 +1035,7 @@ def execute_analysis_bundle_node(
             repo_root=environment.repo_root,
             run_ids=None if verified is not None else run_ids,
             verified_roots=verified,
+            execution_context=staged_context,
             issues=list(environment.issues),
             registries=environment.registries,
         )
@@ -994,6 +1054,7 @@ def execute_analysis_bundle_node(
             repo_root=environment.repo_root,
             run_ids=None if verified is not None else run_ids,
             verified_roots=verified,
+            execution_context=staged_context,
             issues=list(environment.issues),
             registries=environment.registries,
         )
@@ -1077,7 +1138,8 @@ def expand_evaluation_matrix_node(
         declares_staged_parents = bool(request.matrix.get("staged_parents"))
     else:
         declares_staged_parents = bool(getattr(request.matrix, "staged_parents", None))
-    if declares_staged_parents and environment.execution_context is EMPTY_STAGED_EXECUTION_CONTEXT:
+    context = node_execution_context(request, environment)
+    if declares_staged_parents and context is EMPTY_STAGED_EXECUTION_CONTEXT:
         raise ValueError(
             f"evaluation matrix node {request.node_key!r} declares staged parents but the "
             "fulfillment environment supplies no staged execution context; staged bindings "
@@ -1090,6 +1152,11 @@ def expand_evaluation_matrix_node(
             metadata={**dict(request.metadata), "matrix_row_id": row.row_id},
             required_output_roles=request.required_output_roles,
             order=index,
+            # A matrix does not execute; its rows do. The context the matrix
+            # node resolved is therefore the rows' context, and it is carried
+            # rather than re-derived so an expanded row is admitted, executed,
+            # rebuilt, and repaired against the same authorities.
+            execution_context=request.execution_context,
         )
         for index, row in enumerate(materialized)
     )

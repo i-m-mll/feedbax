@@ -84,6 +84,7 @@ from feedbax.training.spec_storage import (
     TRAINING_RUN_MATRIX_COMPILER_VERSION,
     register_training_run_matrix_compiler,
 )
+from feedbax.orchestration.revision import resolve_feedbax_revision
 
 
 _PLUGIN_METHOD_REF = "tests/orchestration_plugin/v1"
@@ -145,6 +146,7 @@ def _assembly_request(
     authored_path.parent.mkdir(parents=True, exist_ok=True)
     authored_path.write_bytes(authored_bytes)
     request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
         authored=SchemaArtifactRef(
             schema_id=spec.schema_id,
             schema_version=spec.schema_version,
@@ -309,6 +311,7 @@ def _matrix_request(
     authored_path = tmp_path / "training-matrix.json"
     authored_path.write_bytes(authored_bytes)
     request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
         authored=SchemaArtifactRef(
             schema_id=TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
             schema_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
@@ -1001,8 +1004,51 @@ def test_load_assembly_request_rejects_v1_without_review_authorization(tmp_path:
     path = tmp_path / "request-v1.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="re-author a current request"):
+    with pytest.raises(ValueError, match="re-author a current v7 request"):
         orchestrate._load_assembly_request(path)
+
+
+@pytest.mark.parametrize("command", ["preflight", "launch"])
+def test_asserted_feedbax_checkout_mismatch_fails_before_engine_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    """``--feedbax-checkout`` is a runtime residence assertion, checked before any work."""
+    request, _ = _assembly_request(tmp_path)
+    path = _write_request(request, tmp_path / "assembly-request.json")
+    wrong_checkout = tmp_path / "not" / "the" / "installed" / "checkout"
+    wrong_checkout.mkdir(parents=True)
+    monkeypatch.setattr(
+        orchestrate,
+        "_request_engine",
+        lambda *_args, **_kwargs: pytest.fail("engine must not be constructed"),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "assemble_run_bundle",
+        lambda *_args, **_kwargs: pytest.fail("nothing must be assembled"),
+    )
+
+    exit_code = orchestrate.main(
+        [
+            command,
+            "--assembly-request",
+            str(path),
+            "--feedbax-checkout",
+            str(wrong_checkout),
+        ]
+    )
+
+    assert exit_code == orchestrate.EXIT_PREFLIGHT
+
+
+def test_asserted_feedbax_checkout_is_never_recorded_in_the_request(tmp_path: Path) -> None:
+    """The asserted checkout path is machine-local and must stay off the durable spec."""
+    request, _ = _assembly_request(tmp_path)
+
+    assert "feedbax_checkout" not in request.model_dump(mode="json")
+    assert "feedbax-checkout" not in _write_request(
+        request, tmp_path / "assembly-request.json"
+    ).read_text(encoding="utf-8")
 
 
 def test_launch_driver_override_conflict_fails_before_engine_creation(

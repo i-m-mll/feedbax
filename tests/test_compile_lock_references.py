@@ -19,6 +19,8 @@ import pytest
 from feedbax.contracts.authored_canonical import CANONICAL_PIN_ALGORITHM
 from feedbax.contracts.experiment_compile_lock import (
     COMPILE_LOCK_PLAN_EDGE_KINDS,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
     COMPILE_LOCK_REFERENCE_KINDS,
     AnalysisInputBinding,
     AuthenticatedReceiptReference,
@@ -472,3 +474,71 @@ def test_an_already_typed_row_provenance_record_passes_through_unchanged() -> No
     record = _row_provenance()
 
     assert parse_row_provenance_reference(record, field="row_provenance[0]") is record
+
+
+# -- the lock's own version boundary, at the figure input contract --------
+
+
+def _figure_contract() -> dict[str, Any]:
+    return {
+        "input_role": "observed",
+        "artifact_role": "result",
+        "artifact_provider": "quillon.custody",
+        "payload_name": "observed",
+        "payload_schema_id": "quillon.span_result",
+        "payload_schema_version": "quillon.span_result.v1",
+    }
+
+
+def _lock_with_figure_input(contract: dict[str, Any] | None) -> dict[str, Any]:
+    consumer = FigureRuntimeInputBinding(input_role="observed", contract=contract)
+    reference = _authenticated_receipt().model_copy(update={"consumer": consumer})
+    return build_compile_lock(_inputs([reference]))
+
+
+def test_a_current_lock_carries_the_typed_figure_input_contract() -> None:
+    lock = _lock_with_figure_input(_figure_contract())
+
+    assert lock["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2
+    loaded = load_compile_lock(lock, field="lock")
+    consumer = parse_compile_lock_reference(
+        loaded["references"][0], field="lock#references[0]"
+    ).consumer
+    assert isinstance(consumer, FigureRuntimeInputBinding)
+    assert consumer.contract is not None
+    assert consumer.contract.artifact_role == "result"
+    assert consumer.contract.payload_name == "observed"
+    assert consumer.contract.payload_schema_version == "quillon.span_result.v1"
+
+
+def test_a_prior_lock_remains_readable_as_the_grammar_it_names() -> None:
+    """v1 is read as v1: a lock without contracts still describes a real compile."""
+    lock = {
+        **_lock_with_figure_input(None),
+        "schema_version": EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
+    }
+
+    loaded = load_compile_lock(lock, field="lock")
+
+    assert loaded["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1
+
+
+def test_a_prior_lock_stating_a_contract_is_refused_by_version() -> None:
+    lock = {
+        **_lock_with_figure_input(_figure_contract()),
+        "schema_version": EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
+    }
+
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        load_compile_lock(lock, field="lock")
+
+    assert caught.value.category is (ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION)
+    assert EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2 in str(caught.value)
+
+
+def test_a_figure_input_contract_names_the_role_its_binding_addresses() -> None:
+    with pytest.raises(ValueError, match="one binding states one role"):
+        FigureRuntimeInputBinding(
+            input_role="observed",
+            contract={**_figure_contract(), "input_role": "elsewhere"},
+        )

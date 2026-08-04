@@ -212,3 +212,177 @@ def test_the_cli_exits_two_when_the_closure_still_needs_training(
     )
     assert code == 2
     assert "ExternalBoundaryError" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------
+# The staged-input surface: one descriptor, and roots bound by name
+# --------------------------------------------------------------------------
+
+
+def _descriptor_document(*provider_names: str) -> dict:
+    from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
+    from feedbax.contracts.staged_execution import (
+        STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+        STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+    )
+
+    provider = ImmutableArtifactBlobProviderSpec().model_dump(mode="json")
+    return {
+        "schema_id": STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+        "schema_version": STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+        "artifact_providers": {name: provider for name in provider_names},
+        "checkpoint_custody": {},
+    }
+
+
+def _write_descriptor(tmp_path: Path, *provider_names: str) -> Path:
+    path = tmp_path / "execution-descriptor.json"
+    path.write_text(json.dumps(_descriptor_document(*provider_names)), encoding="utf-8")
+    return path
+
+
+def _fulfill_cli(
+    outputs: QuillonOutputs, target: str, receipt_root: Path, *extra: str
+) -> int:
+    from feedbax.__main__ import main
+
+    return main(
+        [
+            "fulfill-experiment-envelope",
+            target,
+            "--out-dir",
+            str(outputs.output_directory),
+            "--repo-root",
+            str(outputs.root),
+            "--receipt-root",
+            str(receipt_root),
+            "--plugin",
+            "tests.fulfillment_cli_plugin",
+            *extra,
+        ]
+    )
+
+
+def test_the_staged_flags_parse_repeat_and_bind_by_name(
+    outputs: QuillonOutputs, tmp_path: Path
+) -> None:
+    """Four flags, three of them repeatable, all of them ``NAME=ROOT``.
+
+    The names are the descriptor's own, and the run is refused before anything
+    executes when a bound name is not one it declares — which is the check that
+    makes ``NAME=ROOT`` mean something rather than being free-form text.
+    """
+    target = _pair(outputs)
+    descriptor = _write_descriptor(tmp_path, "results", "evidence.backup")
+    providers = {
+        "results": tmp_path / "provider-results",
+        "evidence.backup": tmp_path / "provider-backup",
+    }
+    retained = {"primary": tmp_path / "retained-a", "secondary": tmp_path / "retained-b"}
+    for root in (*providers.values(), *retained.values()):
+        root.mkdir()
+
+    code = _fulfill_cli(
+        outputs,
+        target,
+        tmp_path / "receipts",
+        "--execution-descriptor",
+        str(descriptor),
+        *[f"--artifact-provider={name}={root}" for name, root in providers.items()],
+        *[f"--manifest-root={name}={root}" for name, root in retained.items()],
+    )
+    assert code == 0
+
+
+def test_a_bound_root_the_descriptor_never_declares_refuses(
+    outputs: QuillonOutputs, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = _pair(outputs)
+    descriptor = _write_descriptor(tmp_path, "results")
+    stray = tmp_path / "stray"
+    stray.mkdir()
+
+    code = _fulfill_cli(
+        outputs,
+        target,
+        tmp_path / "receipts",
+        "--execution-descriptor",
+        str(descriptor),
+        f"--artifact-provider=results={stray}",
+        f"--artifact-provider=unknown={stray}",
+    )
+    assert code == 2
+    assert "must exactly match the descriptor" in capsys.readouterr().err
+    assert not (tmp_path / "receipts").exists()
+
+
+@pytest.mark.parametrize(
+    "flag", ["--artifact-provider", "--manifest-root", "--checkpoint-custody"]
+)
+def test_a_binding_flag_without_a_descriptor_refuses_before_fulfillment(
+    outputs: QuillonOutputs, tmp_path: Path, capsys: pytest.CaptureFixture[str], flag: str
+) -> None:
+    """A root bound to a name no descriptor declares is a root nobody asked for."""
+    target = _pair(outputs)
+    code = _fulfill_cli(
+        outputs, target, tmp_path / "receipts", f"{flag}=named={tmp_path}"
+    )
+    assert code == 2
+    assert "require --execution-descriptor" in capsys.readouterr().err
+    assert not (tmp_path / "receipts").exists()
+
+
+@pytest.mark.parametrize("value", ["noequals", "=root", "name="])
+def test_a_binding_that_is_not_name_equals_root_refuses(
+    outputs: QuillonOutputs, tmp_path: Path, capsys: pytest.CaptureFixture[str], value: str
+) -> None:
+    target = _pair(outputs)
+    code = _fulfill_cli(
+        outputs,
+        target,
+        tmp_path / "receipts",
+        "--execution-descriptor",
+        str(_write_descriptor(tmp_path)),
+        f"--manifest-root={value}",
+    )
+    assert code == 2
+    assert "NAME=ROOT" in capsys.readouterr().err
+    assert not (tmp_path / "receipts").exists()
+
+
+def test_a_descriptor_alone_is_a_complete_declaration(
+    outputs: QuillonOutputs, tmp_path: Path
+) -> None:
+    """A descriptor declaring no authority binds no root, and that is valid."""
+    target = _pair(outputs)
+    code = _fulfill_cli(
+        outputs,
+        target,
+        tmp_path / "receipts",
+        "--execution-descriptor",
+        str(_write_descriptor(tmp_path)),
+    )
+    assert code == 0
+
+
+def test_the_receipt_root_is_never_read_as_a_provider_root(
+    outputs: QuillonOutputs, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A declared provider stays unbound unless a root is bound to its name.
+
+    The receipt root is output and admission custody. Letting it stand in for a
+    provider the descriptor declares would merge two custody domains the caller
+    deliberately kept apart, so the missing binding refuses instead.
+    """
+    target = _pair(outputs)
+    code = _fulfill_cli(
+        outputs,
+        target,
+        tmp_path / "receipts",
+        "--execution-descriptor",
+        str(_write_descriptor(tmp_path, "results")),
+    )
+    assert code == 2
+    error = capsys.readouterr().err
+    assert "must exactly match the descriptor" in error
+    assert "missing=['results']" in error

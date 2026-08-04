@@ -105,6 +105,7 @@ from feedbax.orchestration.stages import (
     _ScopedSignalSupervisor,
 )
 from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore, StageState
+from feedbax.orchestration.revision import resolve_feedbax_revision
 
 
 class FakeRunPodTransport:
@@ -378,6 +379,7 @@ def _bundle(
     authored_path.write_bytes(authored_bytes)
     authored_sha = hashlib.sha256(authored_bytes).hexdigest()
     request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
         authored=SchemaArtifactRef(
             schema_id=STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
             schema_version=STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,

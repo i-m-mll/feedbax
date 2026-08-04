@@ -473,3 +473,79 @@ def test_a_verified_token_cannot_be_paired_with_a_foreign_profile(
     receipt = fulfill_node(_evaluation_node("eval/token"), environment=environment).receipt
     with pytest.raises(ValueError, match="not the profile the verified read settled"):
         dataclass_replace(receipt, manifest_sha256="b" * 64)
+
+
+# --------------------------------------------------------------------------
+# The node's own context outranks the environment's, and rows inherit it
+# --------------------------------------------------------------------------
+
+
+def test_a_request_context_outranks_the_environment_and_absence_falls_back(
+    environment, tmp_path: Path
+) -> None:
+    """A hand-assembled request carries no context and takes the environment's.
+
+    A lowered one carries the context the closure resolved for exactly that
+    node, and it is that context — not the run-wide one — that execution,
+    admission, rebuild, and repair all see.
+    """
+    from dataclasses import replace
+
+    from feedbax.analysis.execution_context import (
+        EMPTY_STAGED_EXECUTION_CONTEXT,
+        with_staged_repo_root,
+    )
+    from feedbax.analysis.fulfillment_adapters import node_execution_context
+
+    request = EvaluationNodeRequest(
+        node_key="evaluation:x",
+        spec=EvaluationRunSpec(evaluation_type="testpkg.absent"),
+    )
+    assert node_execution_context(request, environment) is EMPTY_STAGED_EXECUTION_CONTEXT
+
+    per_node_repo = tmp_path / "per-node-repo"
+    per_node_repo.mkdir()
+    run_wide = with_staged_repo_root(EMPTY_STAGED_EXECUTION_CONTEXT, tmp_path)
+    per_node = with_staged_repo_root(EMPTY_STAGED_EXECUTION_CONTEXT, per_node_repo)
+    staged = replace(environment, execution_context=run_wide)
+    assert node_execution_context(request, staged) is run_wide
+    assert (
+        node_execution_context(replace(request, execution_context=per_node), staged)
+        is per_node
+    )
+
+
+def test_a_matrix_row_inherits_the_matrix_node_context(environment, tmp_path: Path) -> None:
+    """A matrix does not execute; its rows do, under the context it resolved."""
+    from feedbax.analysis.execution_context import (
+        EMPTY_STAGED_EXECUTION_CONTEXT,
+        with_staged_repo_root,
+    )
+
+    repo = tmp_path / "matrix-repo"
+    repo.mkdir()
+    context = with_staged_repo_root(EMPTY_STAGED_EXECUTION_CONTEXT, repo)
+    request = EvaluationMatrixNodeRequest(
+        node_key="eval/context-matrix",
+        matrix={
+            "schema_id": "feedbax.spec.evaluation_run_matrix",
+            "schema_version": "feedbax.spec.evaluation_run_matrix.v3",
+            "base": {
+                "schema_id": "feedbax.spec.evaluation_run",
+                "schema_version": "feedbax.spec.evaluation_run.v1",
+                "evaluation_type": "testpkg.fulfillment",
+                "params": {"rows": 0},
+            },
+            "rows": [
+                {"row_id": "r1", "deltas": [{"path": "params.rows", "value": 1}]},
+                {"row_id": "r2", "deltas": [{"path": "params.rows", "value": 2}]},
+            ],
+        },
+        execution_context=context,
+    )
+    rows = expand_evaluation_matrix_node(request, environment=environment)
+    assert [row.node_key for row in rows] == [
+        "eval/context-matrix#r1",
+        "eval/context-matrix#r2",
+    ]
+    assert all(row.execution_context is context for row in rows)

@@ -113,6 +113,7 @@ from feedbax.training.spec_storage import (
     TrainingRunIdentityAdapter,
     register_training_run_matrix_compiler,
 )
+from feedbax.orchestration.revision import resolve_feedbax_revision
 
 
 def _minimal_graph(gain: int) -> dict[str, Any]:
@@ -204,6 +205,7 @@ def _assemble_lowered_bundle(
     authored_path.write_bytes(authored_bytes)
 
     request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
         authored=SchemaArtifactRef(
             schema_id="feedbax.spec.training_run_matrix",
             schema_version="feedbax.spec.training_run_matrix.v5",

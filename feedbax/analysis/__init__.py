@@ -42,6 +42,8 @@ from .execution_context import (
     with_staged_manifest_provider_inputs,
     with_staged_parent_artifact_provider_bindings,
     with_staged_parent_execution_locations,
+    with_staged_resolved_parents,
+    require_exclusive_staged_runtime,
     with_staged_repo_root,
 )
 from feedbax.contracts.staged_execution import (
@@ -384,6 +386,8 @@ __all__ = [
     "validate_evaluation_recipe",
     "validate_report_recipe",
     "with_staged_parent_execution_locations",
+    "with_staged_resolved_parents",
+    "require_exclusive_staged_runtime",
     "BundleParamsBase",
     "BundleStageSpec",
 ]

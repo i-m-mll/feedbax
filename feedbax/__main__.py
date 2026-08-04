@@ -14,6 +14,7 @@ from typing import Any, Mapping, Sequence
 
 from pydantic import TypeAdapter
 
+from feedbax.bin.staged_inputs import add_staged_input_arguments
 from feedbax.contracts.checkpoints import CheckpointForkPlan
 from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeCompilerError,
@@ -284,15 +285,34 @@ def _fulfill_experiment_envelope(args: argparse.Namespace, registries: Any) -> i
         FulfillmentPlanError,
         UnsupportedFulfillmentPlanVersionError,
     )
+    from feedbax.analysis.execution_context import (
+        EMPTY_STAGED_EXECUTION_CONTEXT,
+        StagedExecutionContextError,
+    )
+    from feedbax.bin.staged_inputs import staged_execution_context
 
     repo_root = Path(args.repo_root).resolve()
     out_dir = Path(args.out_dir)
     if not out_dir.is_absolute():
         out_dir = repo_root / out_dir
+    # The staged surface is proved before the closure is even planned. A root
+    # bound to a name no descriptor declares, an unreadable descriptor, and a
+    # binding flag with no descriptor at all are each a declaration that cannot
+    # be honored, and none of them is a reason to run part of a closure first.
+    try:
+        declared_context = staged_execution_context(args)
+    except (StagedExecutionContextError, ValueError) as rejection:
+        print(f"{type(rejection).__name__}: {rejection}", file=sys.stderr)
+        return 2
     environment = FulfillmentEnvironment(
         root=Path(args.receipt_root).resolve(),
         registries=registries,
         repo_root=repo_root,
+        execution_context=(
+            EMPTY_STAGED_EXECUTION_CONTEXT
+            if declared_context is None
+            else declared_context
+        ),
         issues=tuple(args.issue or ()),
     )
     try:
@@ -306,6 +326,7 @@ def _fulfill_experiment_envelope(args: argparse.Namespace, registries: Any) -> i
         FulfillmentDriftError,
         FulfillmentDriverError,
         FulfillmentPlanError,
+        StagedExecutionContextError,
         UnsupportedFulfillmentPlanVersionError,
     ) as rejection:
         print(f"{type(rejection).__name__}: {rejection}", file=sys.stderr)
@@ -552,6 +573,10 @@ def build_parser() -> argparse.ArgumentParser:
             "implementations before the walk; may be repeated."
         ),
     )
+    # The same staged-input surface `feedbax-analysis run` exposes. A receipt
+    # root stays what it is — output and admission custody, and one candidate
+    # manifest authority — and is never read as an inferred provider root.
+    add_staged_input_arguments(fulfill_parser)
     adopt_root = subparsers.add_parser(
         "adopt-legacy-checkpoint",
         help="Dump or adopt legacy Equinox tree_serialise_leaves checkpoint streams.",
