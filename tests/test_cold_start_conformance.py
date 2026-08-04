@@ -45,8 +45,6 @@ from feedbax.contracts.experiment_compile_lock import (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_ID,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
 )
-from feedbax.contracts.experiment_envelope_dialect import (
-)
 from feedbax.contracts.project_experiment import (
     PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID,
     PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION,
