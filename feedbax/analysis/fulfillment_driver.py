@@ -56,11 +56,32 @@ hash sits happily beside an edge whose byte profile was removed.
 ## Missing receipts are refusals, and the lock says which bytes count
 
 An input the plan carries as an already-produced external receipt is resolved at
-its canonical ``(kind, id, root)`` location, never through the manifest index,
-which is derived acceleration. An external receipt that is absent is a
-structured refusal (:class:`MissingExternalReceiptError`), never an
-inapplicability: a missing receipt means not-yet-produced, wrong-root, or
-corrupt, and each of those is its own outcome.
+its canonical ``(kind, id)`` location within whichever authority holds it, never
+through the manifest index, which is derived acceleration. An external receipt
+that is absent from every declared authority is a structured refusal
+(:class:`MissingExternalReceiptError`), never an inapplicability: a missing
+receipt means not-yet-produced, wrong-root, or corrupt, and each of those is its
+own outcome.
+
+## One reference, one authority
+
+A run declares the authorities it may read from: the receipt root always, plus
+whatever retained manifest stores and immutable artifact providers the caller
+bound by name. They are searched together and they are not ranked. A reference
+held by two of them is :class:`AmbiguousExternalReceiptError` rather than a tie
+to be broken, because each authority is a separate custody domain the caller
+declared deliberately, and preferring one would silently pick a domain nobody
+chose. The refusal happens during resolution, before any node executes.
+
+## The staged context is per node, and it is on the request
+
+A node's parents are located exactly once, by the resolution that bound them,
+and the resulting :class:`~feedbax.analysis.execution_context.StagedExecutionContext`
+is carried on the node request rather than assembled during the walk. Ordinary
+fulfillment, cached admission, rebuild-as-verification, and repair all lower each
+node again, so the request is the only place a per-node context survives all four.
+A run that declared no staged bindings lowers no context at all, which leaves the
+cold-start path exactly as it was.
 
 Addressing a receipt is not authenticating it. When the compile lock quoted a
 byte profile — an ``authenticated_receipt`` reference — the bytes found at that

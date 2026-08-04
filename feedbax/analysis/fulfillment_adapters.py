@@ -105,8 +105,12 @@ class FulfillmentEnvironment:
             run lives at its canonical location beneath this root.
         registries: The sealed application registries the executors dispatch on.
         repo_root: Trusted repository root for spec resolution, if any.
-        execution_context: The authoritative staged execution context. Adapters
-            never synthesize one; staged bindings are the caller's declaration.
+        execution_context: The run's *base* staged execution context: the
+            authorities the caller declared, with no parent located in it.
+            Adapters never synthesize one; staged bindings are the caller's
+            declaration. A node executed through a lowered plan carries its own
+            context, augmented with exactly that node's parents, and the base is
+            what a hand-assembled request falls back to.
         issues: Issue references recorded on produced manifests.
     """
 
