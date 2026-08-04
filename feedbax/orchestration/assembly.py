@@ -20,9 +20,9 @@ from feedbax.contracts.evaluation_preflight import (
 )
 from feedbax.contracts.run_composition import (
     AuthoredIntentParent,
-    CompositionNode,
     ResolvedOutputParent,
     authored_envelope_hash,
+    parse_composition_node,
 )
 from feedbax.contracts.run_matrix import TrainingRowParentProvenance, TrainingRowProvenance
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
@@ -750,7 +750,7 @@ def _resolve_training_row_parents(
         )
         parent = declaration.parent
         if isinstance(parent, AuthoredIntentParent):
-            observed_hash = authored_envelope_hash(CompositionNode.model_validate(payload))
+            observed_hash = authored_envelope_hash(parse_composition_node(payload))
             semantic_hash = parent.content_hash
         else:
             observed_hash = training_spec_sha256(payload)
