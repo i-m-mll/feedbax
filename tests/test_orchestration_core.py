@@ -187,6 +187,7 @@ from feedbax.training.interruption import CancellationAction, CancellationDecisi
 from feedbax.training.manifest_preflight import preflight_training_run_manifest_payloads
 from feedbax.training.spec_storage import TrainingRunIdentityAdapter
 from feedbax.contracts.remote_smoke import RemoteSmokeEvidence
+from feedbax.orchestration.revision import resolve_feedbax_revision
 
 
 _FAKE_DRIVER_ENVELOPE = DriverCapabilityEnvelope.single(
@@ -607,6 +608,7 @@ def _assembly_parts(
     python_version: str | None = "3.12",
     driver: str = "local",
     expected_input_roles: tuple[str, ...] = (),
+    feedbax_revision: str | None = None,
 ) -> tuple[RunAssemblyRequest, AssemblyContext, AssemblyCompilerRegistry]:
     authored = {
         "schema_id": STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
@@ -620,6 +622,7 @@ def _assembly_parts(
     compiler_id = "feedbax.tests.orchestration-fixture"
     compiler_version = "feedbax.tests.orchestration-fixture.v1"
     request = RunAssemblyRequest(
+        feedbax_revision=feedbax_revision or resolve_feedbax_revision(),
         authored=SchemaArtifactRef(
             schema_id=STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
             schema_version=STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,
@@ -662,6 +665,7 @@ def _bundle(
     run_set_id: str = "2026-01-02-deadbeef",
     python_version: str | None = "3.12",
     driver: str = "local",
+    feedbax_revision: str | None = None,
 ) -> RunBundle:
     request, context, registry = _assembly_parts(
         tmp_path,
@@ -672,6 +676,7 @@ def _bundle(
         run_set_id=run_set_id,
         python_version=python_version,
         driver=driver,
+        feedbax_revision=feedbax_revision,
     )
     return assemble_run_bundle(
         request,
@@ -739,15 +744,23 @@ def test_execution_identity_projection_classifies_every_envelope_field(tmp_path:
     }
 
 
-def test_assembly_records_the_loaded_feedbax_revision(
+def test_assembly_copies_the_authored_feedbax_revision(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    pinned_revision = "a" * 40
+    """The bundle carries the request's authority, never a freshly minted import."""
+    authored_revision = "a" * 40
     monkeypatch.setattr(
-        "feedbax.orchestration.assembly.resolve_feedbax_revision", lambda: pinned_revision
+        "feedbax.orchestration.assembly.check_feedbax_provenance",
+        lambda locked, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "feedbax.orchestration.revision.resolve_feedbax_revision",
+        lambda: "b" * 40,
     )
 
-    assert _bundle(tmp_path).feedbax_revision == pinned_revision
+    bundle = _bundle(tmp_path, feedbax_revision=authored_revision)
+
+    assert bundle.feedbax_revision == authored_revision
 
 
 def test_resolve_feedbax_revision_uses_imported_package_source_and_disables_git_locks(
@@ -2316,6 +2329,7 @@ def test_request_assembly_certifies_all_core_checks_with_independent_identity(
         compiler_id = "feedbax.tests.identity-proof"
         compiler_version = "feedbax.tests.identity-proof.v1"
         request = RunAssemblyRequest(
+            feedbax_revision=resolve_feedbax_revision(),
             authored=SchemaArtifactRef(
                 schema_id=STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
                 schema_version=STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,

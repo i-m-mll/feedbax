@@ -41,6 +41,7 @@ from feedbax.orchestration.bundle import (
     RunBundle,
     SchemaArtifactRef,
 )
+from feedbax.orchestration.revision import resolve_feedbax_revision
 from feedbax.orchestration.conformance import CheckRegistry
 from feedbax.orchestration.drivers.capabilities import (
     DriverConstructionContext,
@@ -685,6 +686,9 @@ class TrainingService:
                 compiler_id=STUDIO_TRAINING_COMPILER_ID,
                 compiler_version=STUDIO_TRAINING_COMPILER_VERSION,
             ),
+            # Studio authors this request in the same process that will assemble it,
+            # so the running package is itself the authority the gate then verifies.
+            feedbax_revision=resolve_feedbax_revision(),
             deployment_policy=DeploymentPolicy(
                 driver="worker-http",
                 venue="remote",

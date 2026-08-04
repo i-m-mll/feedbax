@@ -21,7 +21,12 @@ fail merely because the dependency moved forward.
 never-default override, for callers that want the stricter guarantee described
 by that issue: fail closed on mismatch, a dirty supplying tree, or unverifiable
 provenance, and skip with a visible warning (never silently) when no pin is
-supplied at all.
+supplied at all. ``RunAssemblyRequest.feedbax_revision`` is the durable authority
+those checks are run against at assembly time (Mandible-Issue a09bad3).
+
+``assert_feedbax_source_residence`` is the runtime-only companion: an operator
+asserts on the invocation which checkout it believes supplies ``import feedbax``.
+An absolute checkout path is machine-local, so it is never recorded durably.
 """
 
 from __future__ import annotations
@@ -520,3 +525,28 @@ def check_feedbax_provenance(
             f"Feedbax revision pin mismatch: locked={locked_revision} loaded={provenance.revision}"
         )
     return provenance
+
+
+def assert_feedbax_source_residence(expected_checkout_root: str | os.PathLike[str]) -> Path:
+    """Fail closed unless ``import feedbax`` was supplied by ``expected_checkout_root``.
+
+    This is a runtime-only operator assertion: the caller states which checkout
+    it believes it is running from, and the process refuses to continue if the
+    interpreter actually resolved ``feedbax`` somewhere else. An absolute
+    checkout path is a property of one machine and is never recorded in a
+    durable spec, so this belongs on the invocation, not on the request.
+
+    Returns:
+        The resolved checkout root that supplied the imported package.
+
+    Raises:
+        FeedbaxRevisionError: If the imported package resides elsewhere.
+    """
+    expected = Path(expected_checkout_root).expanduser().resolve()
+    observed = _feedbax_package_root().parent
+    if observed != expected:
+        raise FeedbaxRevisionError(
+            "Feedbax source residence assertion failed: expected the imported package "
+            f"to come from {expected}, but it was supplied by {observed}"
+        )
+    return observed

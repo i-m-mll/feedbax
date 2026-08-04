@@ -31,12 +31,11 @@ DRIVER_POLICY_SCHEMAS = {
     "current": [
         "feedbax.orchestration.driver-capabilities version 3",
         "feedbax.spec.deployment_policy.v2",
-        "feedbax.spec.run_assembly_request.v6",
+        "feedbax.spec.run_assembly_request.v7",
         "feedbax.orchestration.run_bundle.v12",
     ],
     "migrated": [
         "feedbax.spec.deployment_policy.v1",
-        "feedbax.spec.run_assembly_request.v5",
         "feedbax.orchestration.run_bundle.v11",
     ],
     "rejected": [

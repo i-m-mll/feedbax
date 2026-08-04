@@ -51,6 +51,10 @@ from feedbax.orchestration.bundle import (
     default_orchestration_root,
     mint_run_set_id,
 )
+from feedbax.orchestration.revision import (
+    FeedbaxRevisionError,
+    assert_feedbax_source_residence,
+)
 from feedbax.orchestration.collection_recovery import CollectionRecoveryBinding
 from feedbax.orchestration.staged_root_custody import StagedRootSnapshotBinding
 from feedbax.orchestration.conformance import CheckRegistry
@@ -104,6 +108,11 @@ def main(argv: list[str] | None = None) -> int:
     except BudgetExceeded as exc:
         _print_error(exc)
         return EXIT_BUDGET
+    except FeedbaxRevisionError as exc:
+        # The imported package is not the one the invocation or the request says
+        # it is. That is a gate failure before any work, not an internal error.
+        _print_error(exc)
+        return EXIT_PREFLIGHT
     except Exception as exc:
         _print_error(exc)
         return EXIT_OTHER
@@ -171,6 +180,14 @@ def build_parser() -> argparse.ArgumentParser:
             default=[],
             metavar="KIND:NAME=ABSOLUTE_PATH",
         )
+        sub.add_argument(
+            "--feedbax-checkout",
+            metavar="PATH",
+            help=(
+                "Assert that the imported feedbax package is supplied by this checkout. "
+                "Runtime-only operator assertion; never recorded in any durable artifact."
+            ),
+        )
     launch.set_defaults(func=cmd_launch)
 
     shadow_launch = subparsers.add_parser(
@@ -237,7 +254,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _assert_declared_feedbax_checkout(args: argparse.Namespace) -> None:
+    """Honour the runtime-only ``--feedbax-checkout`` residence assertion."""
+    declared = getattr(args, "feedbax_checkout", None)
+    if declared:
+        assert_feedbax_source_residence(declared)
+
+
 def cmd_preflight(args: argparse.Namespace) -> int:
+    _assert_declared_feedbax_checkout(args)
     if not args.authority_only:
         if args.bundle:
             raise ValueError("--bundle is supported only with --authority-only")
@@ -303,6 +328,7 @@ def cmd_preflight(args: argparse.Namespace) -> int:
 
 
 def cmd_launch(args: argparse.Namespace) -> int:
+    _assert_declared_feedbax_checkout(args)
     request_path = Path(args.assembly_request)
     request = _load_assembly_request(request_path)
     if args.driver:

@@ -54,6 +54,7 @@ from feedbax.training.spec_storage import (
     TRAINING_RUN_MATRIX_COMPILER_VERSION,
     register_training_run_matrix_compiler,
 )
+from feedbax.orchestration.revision import resolve_feedbax_revision
 
 
 _ISOLATED_GIT_ENV = {
@@ -122,6 +123,7 @@ def _matrix_case(
     lockfile = root / "science" / "uv.lock"
     lockfile.write_text("version = 1\n", encoding="utf-8")
     request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
         authored=SchemaArtifactRef(
             schema_id=TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
             schema_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
