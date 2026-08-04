@@ -43,6 +43,25 @@ context the environment declares, which is the only thing that knows where the
 bound bytes actually live — so a matrix carrying staged parents refuses to run
 in an environment that declares no such context.
 
+## A figure input is bound and authorized from the same lock reference
+
+Binding a figure's parent says *which manifest*; it says nothing about which
+artifact of that manifest the figure reads, from which provider, at which media
+type, or under which decoded payload identity. That second half is the input's
+artifact contract, and it is carried by the same
+:class:`~feedbax.contracts.experiment_compile_lock.FigureRuntimeInputBinding`
+that names the role — so the runtime
+:class:`~feedbax.contracts.figures.FigureInputRoleAuthority` is built from the
+lock and from nothing else. Nothing is derived from a role name, from where a
+receipt was written, or from the compiled figure document.
+
+A row-expanded figure states the same contracts in its expansion request and
+binds its per-row roles from produced custody, so the two statements are read
+apart rather than merged: each is complete for the figures it covers, and reading
+both over one figure would authorize one role twice. A figure that is not an
+expansion whose lock binds an input with no contract is refused before any render
+effect — rendering it would produce a figure carrying none of the data it names.
+
 ## A bundle binds by identity, and a composition is still a figure
 
 Two layers compile into two products each, and the second member of each pair
@@ -108,20 +127,30 @@ from feedbax.analysis.fulfillment_derivation import (
     CompiledEnvelope,
     FulfillmentDerivationError,
 )
-from feedbax.analysis.fulfillment_row_custody import resolve_row_custody_overlay
+from feedbax.analysis.fulfillment_row_custody import (
+    read_row_expansion_record,
+    resolve_row_custody_overlay,
+)
 from feedbax.analysis.manifest_inputs import restated_parent_differences
 from feedbax.contracts.experiment_compile_lock import (
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
     AnalysisInputBinding,
     CheckpointInitializationBinding,
     EvaluationSubjectBinding,
     FigureRuntimeInputBinding,
     ReportParentBinding,
 )
+from feedbax.contracts.experiment_envelope_dialect import (
+    EXPERIMENT_ENVELOPE_FAMILY,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+)
 from feedbax.contracts.analysis_bundle_composition import ANALYSIS_BUNDLE_SPEC_SCHEMA_ID
 from feedbax.contracts.figures import (
     FIGURE_COMPOSITION_SPEC_SCHEMA_ID,
     FIGURE_SPEC_SCHEMA_ID,
     FigureCompositionSpec,
+    FigureInputAuthoritySpec,
+    FigureInputRoleAuthority,
 )
 from feedbax.contracts.manifest import (
     ANALYSIS_RUN_SPEC_SCHEMA_ID,
@@ -567,6 +596,106 @@ def _lower_analysis_bundle(node: "ClosureNode", *, binding: "NodeBinding") -> No
     )
 
 
+def _contract_unstatable_grammar(compiled: CompiledEnvelope) -> str | None:
+    """Return the grammar that could not state a figure input contract, or ``None``.
+
+    Two version facts decide it, and both are read from the lock rather than
+    inferred: the lock's own schema version, which decides whether a
+    ``figure_runtime_input`` binding *has* a contract field, and the envelope
+    schema the lock records, which decides whether the author had vocabulary to
+    fill one. A missing contract means "not decided" under either of those and
+    "decided against" under neither.
+    """
+    lock = compiled.lock
+    lock_version = lock.get("schema_version")
+    if lock_version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1:
+        return f"compile lock {EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1!r}"
+    envelope = lock.get("envelope")
+    envelope_schema = envelope.get("schema") if isinstance(envelope, Mapping) else None
+    if envelope_schema != EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5 and isinstance(
+        envelope_schema, str
+    ):
+        if envelope_schema.startswith(f"{EXPERIMENT_ENVELOPE_FAMILY}."):
+            return f"envelope grammar {envelope_schema!r}"
+    return None
+
+
+def _figure_input_authorities(
+    node: "ClosureNode",
+    parents: Sequence[ParentRef],
+    *,
+    binding: "NodeBinding",
+) -> tuple[FigureInputAuthoritySpec, ...]:
+    """Return the runtime authority each plan-bound figure input reads under.
+
+    A figure input that reads an artifact needs an authority saying *which*
+    artifact, from which provider, at which media type, and under which decoded
+    payload identity — otherwise the figure names a parent and reads nothing out
+    of it. The compile lock's ``figure_runtime_input`` binding is where that
+    contract is stated, so it is the only thing consulted here: nothing is
+    derived from a role name, from where a receipt happened to be written, or
+    from the figure document.
+
+    The authority addresses its parent by role rather than by value, because the
+    parent's own record already carries that role and a second copy of the same
+    reference is a second thing to keep in agreement. Resolution back to the
+    exact parent happens once, at
+    :meth:`~feedbax.contracts.figures.FigureInputRoleAuthority.resolve_parent`,
+    which refuses a role no declared input carries and a role two of them do.
+
+    A binding that states no contract is read against the grammars the lock and
+    its envelope declare. Where either of those grammars *could not* state a
+    contract — a ``feedbax.spec.experiment_compile_lock.v1`` lock, or an envelope
+    authored before ``feedbax.experiment_envelope.v5`` — the absence is not a
+    decision, it is the defect: the reference was recorded, the compiled figure
+    was emitted with no authority at all, and rendering it would produce a figure
+    carrying none of the data it names. That is refused, before effects, with the
+    re-authoring it needs. Where both grammars could have stated one and neither
+    did, the input is bound as provenance and read from no artifact, which is a
+    statement an author is entitled to make.
+    """
+    compiled = node.compiled
+    ref = str(compiled.lock_path)
+    unstatable = _contract_unstatable_grammar(compiled)
+    edges = {edge.role_path: edge for edge in binding.plan.input_edges(node.key)}
+    bound_roles = {parent.role for parent in parents}
+    authorities: list[FigureInputAuthoritySpec] = []
+    for reference in compiled.plan_edge_references():
+        # A not-applicable reference states a role nothing fills and carries no
+        # consumer at all; it authorizes nothing and is skipped by kind.
+        consumer = getattr(reference, "consumer", None)
+        if not isinstance(consumer, FigureRuntimeInputBinding):
+            continue
+        edge = edges.get(tuple(str(reference.role_path).split(".")))
+        if edge is None or edge.status != "required":
+            continue
+        if consumer.contract is None:
+            if unstatable is None:
+                continue
+            raise NodeLoweringError(
+                f"{ref} binds the figure input role {consumer.input_role!r} under "
+                f"{unstatable}, which has no way to state the artifact contract the bound "
+                "manifest must satisfy. The reference is recorded and the compiled figure "
+                "carries no input authority at all, so rendering it would produce a figure "
+                f"holding none of the data it names. Re-author the figure envelope at "
+                f"{EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5!r}, stating each input's artifact "
+                "role, provider, media type, and explicit payload name, and recompile"
+            )
+        if consumer.input_role not in bound_roles:
+            raise NodeLoweringError(
+                f"{ref} states an artifact contract for the figure input role "
+                f"{consumer.input_role!r}, which no bound parent fills; the plan and the "
+                "lock disagree about which inputs this figure has"
+            )
+        authorities.append(
+            FigureInputRoleAuthority(
+                input_role=consumer.input_role,
+                artifact_payloads=[consumer.contract.artifact_payload(consumer.input_role)],
+            )
+        )
+    return tuple(authorities)
+
+
 def _lower_figure(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
     document = _document(node)
     parents, _roles = bound_parents(node, binding=binding)
@@ -576,13 +705,23 @@ def _lower_figure(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest
     overlay = resolve_row_custody_overlay(
         node.compiled, repo_root=binding.environment.repo_root
     )
+    # A row expansion declares its roles in its own expansion request and binds
+    # them from custody. The plan-edge contract is how a figure that is not an
+    # expansion — a root figure — states the same thing, so the two are read
+    # apart: reading both over one figure would authorize a role twice, and each
+    # is the whole statement for the figures it applies to.
+    authorities: tuple[FigureInputAuthoritySpec, ...] = (
+        (overlay.authorities if overlay is not None else ())
+        if read_row_expansion_record(node.compiled) is not None
+        else _figure_input_authorities(node, parents, binding=binding)
+    )
     if overlay is not None:
         parents = (*parents, *overlay.inputs)
     return FigureNodeRequest(
         node_key=node.key.text,
         spec=document,
         runtime_inputs=parents if parents else None,
-        runtime_input_authorities=overlay.authorities if overlay is not None else None,
+        runtime_input_authorities=authorities if authorities else None,
         order=node.order,
         execution_context=_node_execution_context(
             node,

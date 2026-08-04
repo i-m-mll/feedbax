@@ -25,6 +25,8 @@ from feedbax.contracts.experiment_compile_lock import (
     EXPERIMENT_COMPILE_LOCK_MIGRATION_TABLE,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_ID,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
     RUN_RECEIPT_ONLY_FACTS,
     CompileLockInputs,
     CompilerContract,
@@ -42,6 +44,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2,
+    EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3,
     EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID,
     EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
@@ -1506,6 +1509,20 @@ def _regenerate(compiler: Any, repo: Path) -> None:
 # -- v3 root training --------------------------------------------------------
 
 
+def _lock_at_version_v1(lock: dict[str, Any]) -> dict[str, Any]:
+    """Return one lock with only its own schema version restated as v1.
+
+    The signed bases below were recorded when the compile lock family was at v1.
+    v2 adds the optional typed artifact contract a figure runtime input binding
+    carries, and nothing else: no other byte of any lock moved, and a prior
+    envelope grammar still compiles to exactly the bytes it always did. Restating
+    the one version field and comparing against the original base is what proves
+    that, where re-signing the bases would only record whatever the code now
+    emits.
+    """
+    return {**lock, "schema_version": EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1}
+
+
 def test_prior_and_authority_free_root_document_lock_bytes_match_signed_base(
     repo: Path,
 ) -> None:
@@ -1529,8 +1546,13 @@ def test_prior_and_authority_free_root_document_lock_bytes_match_signed_base(
         document["schema"] = schema
         write_envelope(path, document)
         outcome = kernel().compile_envelope_file(path, repo_root=repo)
+        assert outcome.compile_lock["schema_version"] == (
+            EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2
+        )
         assert (
-            canonical_sha256({"document": outcome.document, "lock": outcome.compile_lock})
+            canonical_sha256(
+                {"document": outcome.document, "lock": _lock_at_version_v1(outcome.compile_lock)}
+            )
             == expected[schema]
         )
 
@@ -1555,7 +1577,9 @@ def test_prior_and_authority_free_root_document_lock_bytes_match_signed_base(
     )
     outcome = kernel().compile_envelope_file(path, repo_root=repo)
     assert (
-        canonical_sha256({"document": outcome.document, "lock": outcome.compile_lock})
+        canonical_sha256(
+            {"document": outcome.document, "lock": _lock_at_version_v1(outcome.compile_lock)}
+        )
         == expected[EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3]
     )
 
@@ -3083,7 +3107,7 @@ def test_all_four_layer_root_kinds_compile_with_one_pin_and_no_parent(repo: Path
     assert canonical_sha256(comparison.document) == (
         "06f6eb8fb69efdbe29f089aecf4fde289b8fa14f31f3fc38b8f81a5943d35bf8"
     )
-    assert canonical_sha256(comparison.compile_lock) == (
+    assert canonical_sha256(_lock_at_version_v1(comparison.compile_lock)) == (
         "d5091f4194cb7c0030becce6ef7f7f9a016bbfe0d174311dfa373b62249d629e"
     )
 
@@ -3103,7 +3127,7 @@ def test_all_four_layer_root_kinds_compile_with_one_pin_and_no_parent(repo: Path
         assert identity["sha256"] == pins[0]["content_hash"]
         assert len(identity["selected_authority_sha256"]) == 64
         assert lock["compiler_contract"]["contract_version"] == (
-            EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION
+            EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3
         )
     assert any(
         reference["kind"] == "authenticated_receipt"

@@ -106,6 +106,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EvaluationLayerAuthoring,
     ExperimentEnvelope,
     ExperimentEnvelopeLayer,
+    FigureInputAuthoring,
     FigureLayerAuthoring,
     FigureLayerMode,
     FigureLayerRootAuthority,
@@ -1772,6 +1773,26 @@ def _lower_figure(context: LayerCompileContext) -> LoweredLayer:
     return _lower_figure_composition(context, authored, references)
 
 
+def _root_input_contract(item: FigureInputAuthoring) -> FigureRoleBindingContract | None:
+    """Return the typed artifact contract one root figure input binds under.
+
+    The authored contract and the runtime one are the same statement addressed
+    two ways: the authored form omits ``input_role`` because the enclosing input
+    already states it. Lowering is therefore the one place the two are joined,
+    and the lock carries the joined form so nothing downstream has to re-derive a
+    role from where a record happened to sit.
+
+    ``None`` is the pre-v5 root figure: it stated a locator and no contract, its
+    compiled figure carried no input authority, and executing it is refused by
+    name at lowering rather than rendered with the artifacts unread.
+    """
+    if item.contract is None:
+        return None
+    return FigureRoleBindingContract.model_validate(
+        item.contract.binding_contract(item.input_role)
+    )
+
+
 def _lower_figure_root(
     context: LayerCompileContext,
     authored: FigureLayerAuthoring,
@@ -1798,7 +1819,8 @@ def _lower_figure_root(
                 role_path=f"inputs.{item.input_role}",
                 field=f"figure.inputs[{index}].ref",
                 consumer_of=lambda _kind, _id, item=item: FigureRuntimeInputBinding(
-                    input_role=item.input_role
+                    input_role=item.input_role,
+                    contract=_root_input_contract(item),
                 ),
             )
         )
