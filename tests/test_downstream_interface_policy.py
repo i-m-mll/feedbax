@@ -82,6 +82,7 @@ GUARANTEED_IMPORTS = {
         "RUN_ASSEMBLY_REQUEST_SCHEMA_ID",
         "RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION",
         "RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5",
+        "RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V6",
         "RunAssemblyRequest",
     ),
     "feedbax.orchestration": (
