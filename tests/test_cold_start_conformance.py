@@ -46,7 +46,6 @@ from feedbax.contracts.experiment_compile_lock import (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
 )
 from feedbax.contracts.experiment_envelope_dialect import (
-    EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
 )
 from feedbax.contracts.project_experiment import (
     PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID,
@@ -652,7 +651,7 @@ def test_one_cycle_compiles_plans_and_fulfils_through_the_installed_cli(
     )
     assert compiled.returncode == 0
     result = json.loads(compiled.stdout)
-    assert result["envelope_schema"] == EXPERIMENT_ENVELOPE_SCHEMA_VERSION
+    assert result["envelope_schema"] == json.loads(ENVELOPE_SOURCE)["schema"]
     assert result["name"] == "wide-tally"
     assert result["family"] == "evaluation_run_matrix"
 
