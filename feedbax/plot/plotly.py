@@ -27,8 +27,15 @@ from plotly.subplots import make_subplots
 from plotly.colors import convert_colors_to_same_type
 
 from feedbax.objectives.loss import TermTree
+from feedbax.plot import apply_default_template
 from feedbax.plot.colors import DEFAULT_COLORS, color_add_alpha
 from feedbax.plot.misc import columns_mean_std, errorbars
+
+# Plotly copies the process-default template into each figure as it is constructed, so
+# the Feedbax default has to be in place before any function here runs. Importing a
+# figure-drawing module is itself use of the plotting surface, unlike importing the
+# package, which entry points that never draw anything do transitively.
+apply_default_template()
 
 logger = logging.getLogger(__name__)
 

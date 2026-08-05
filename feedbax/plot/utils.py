@@ -19,7 +19,15 @@ import pyperclip as clip
 from jax_cookbook import is_type
 
 from feedbax.config import STRINGS
+from feedbax.plot import apply_default_template
 from feedbax.plot.lifecycle import close_figure
+
+# Plotly copies the process-default template into each figure as it is constructed, so
+# the Feedbax default has to be in place before any function here runs. Importing a
+# figure-drawing module is itself use of the plotting surface, unlike importing the
+# package, which entry points that never draw anything do transitively.
+apply_default_template()
+
 pyexiv2.registerNs("http://example.com/ns/custom/", "custom")
 
 
