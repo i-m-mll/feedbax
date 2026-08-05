@@ -38,7 +38,11 @@ __all__ = [
 
 
 VersionlessDocumentPolicy: TypeAlias = Literal["reject", "accept_as_current"]
-"""How one family treats an authored document that declares no ``schema_version``.
+"""How one family treats an authored document that carries no ``schema_version`` key.
+
+This policy governs absence of the key only. A document that carries the key
+with a null or otherwise non-string value has made a malformed declaration and
+fails closed regardless of the policy.
 
 ``"reject"`` fails closed: every released document of the family carries a
 stamp, so an unstamped document is malformed rather than old.
@@ -64,6 +68,13 @@ def migrate_authored_document(
     string is malformed and fails closed here, because a malformed declaration
     must not fall through to a version-free code path.
 
+    Presence is decided by the key, not by its value: a document carrying
+    ``"schema_version": null`` has declared a version and declared it malformed,
+    so it fails closed here even under an ``"accept_as_current"`` policy. Only a
+    document with no ``schema_version`` key at all is versionless. Reading the
+    declaration with a value test instead would let an old document that stamps
+    an explicit null be assumed current and skip migration entirely.
+
     Args:
         kind: Registered structured spec family, e.g. ``"AnalysisRunSpec"``.
         document: The authored document payload.
@@ -80,8 +91,9 @@ def migrate_authored_document(
             version; or the document is versionless under a ``"reject"`` policy.
     """
     active_registry = registry or default_spec_registry
+    is_declared = "schema_version" in document
     declared = document.get("schema_version")
-    if declared is not None and not (isinstance(declared, str) and declared):
+    if is_declared and not (isinstance(declared, str) and declared):
         family = active_registry.resolve(kind)
         raise UnsupportedSpecVersion(
             "Authored Feedbax document declares a malformed schema_version: "
@@ -94,7 +106,7 @@ def migrate_authored_document(
         kind,
         document,
         source_version=declared,
-        assume_current=declared is None and versionless == "accept_as_current",
+        assume_current=not is_declared and versionless == "accept_as_current",
         path=path,
         registry=active_registry,
     )
