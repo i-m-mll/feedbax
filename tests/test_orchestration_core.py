@@ -130,11 +130,15 @@ from feedbax.orchestration.drivers.capabilities import (
     TeardownSemantics,
 )
 from feedbax.orchestration.drivers.local import (
+    FEEDBAX_DISABLE_JAX_COMPILATION_CACHE_ENV,
+    FEEDBAX_JAX_COMPILATION_CACHE_DIR_ENV,
+    JAX_COMPILATION_CACHE_DIR_ENV,
     LocalDriverError,
     LocalOrchestrationDriver,
     _canonicalize_dependency_inventory,
     _process_group_alive,
     compute_environment_fingerprint,
+    resolve_jax_compilation_cache_dir,
 )
 from feedbax.orchestration.drivers.runpod import (
     RunPodOrchestrationDriver,
@@ -4495,6 +4499,77 @@ def test_local_driver_adopts_live_started_pid_without_spawning(tmp_path: Path) -
     assert outputs["pid"] == process.pid
     assert outputs["adopted"] is True
     assert not marker.exists()
+
+
+def _launch_row_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Launch one local row against a fake process and return the child environment."""
+    captured: dict[str, Any] = {}
+
+    class FakeProcess:
+        pid = 4242
+
+        def __init__(self, command, **kwargs):
+            captured["kwargs"] = kwargs
+
+        def poll(self):
+            return None
+
+    bundle = _bundle(tmp_path)
+    row = bundle.row("row-a")
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+    state = RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()})
+    driver.provision(bundle, state)
+    monkeypatch.setattr(subprocess, "Popen", FakeProcess)
+    driver.launch_row(bundle, row, state)
+    return captured["kwargs"]["env"]
+
+
+def test_local_driver_exports_persistent_jax_compilation_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_dir = tmp_path / "explicit-jax-cache"
+    monkeypatch.delenv(FEEDBAX_DISABLE_JAX_COMPILATION_CACHE_ENV, raising=False)
+    monkeypatch.setenv(FEEDBAX_JAX_COMPILATION_CACHE_DIR_ENV, str(cache_dir))
+
+    env = _launch_row_env(tmp_path, monkeypatch)
+
+    assert env[JAX_COMPILATION_CACHE_DIR_ENV] == str(cache_dir)
+    assert cache_dir.is_dir()
+
+
+def test_local_driver_omits_jax_compilation_cache_when_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(FEEDBAX_DISABLE_JAX_COMPILATION_CACHE_ENV, "1")
+    monkeypatch.setenv(JAX_COMPILATION_CACHE_DIR_ENV, str(tmp_path / "inherited"))
+
+    env = _launch_row_env(tmp_path, monkeypatch)
+
+    assert JAX_COMPILATION_CACHE_DIR_ENV not in env
+
+
+def test_jax_compilation_cache_dir_prefers_explicit_overrides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(FEEDBAX_DISABLE_JAX_COMPILATION_CACHE_ENV, raising=False)
+    monkeypatch.delenv(FEEDBAX_JAX_COMPILATION_CACHE_DIR_ENV, raising=False)
+    monkeypatch.delenv(JAX_COMPILATION_CACHE_DIR_ENV, raising=False)
+
+    default_dir = resolve_jax_compilation_cache_dir()
+    assert default_dir is not None
+    assert default_dir.is_absolute()
+
+    monkeypatch.setenv(JAX_COMPILATION_CACHE_DIR_ENV, str(tmp_path / "jax-native"))
+    assert resolve_jax_compilation_cache_dir() == tmp_path / "jax-native"
+
+    monkeypatch.setenv(FEEDBAX_JAX_COMPILATION_CACHE_DIR_ENV, str(tmp_path / "feedbax-override"))
+    assert resolve_jax_compilation_cache_dir() == tmp_path / "feedbax-override"
+
+    monkeypatch.setenv(FEEDBAX_DISABLE_JAX_COMPILATION_CACHE_ENV, "1")
+    assert resolve_jax_compilation_cache_dir() is None
 
 
 def test_local_driver_injects_native_execution_context(

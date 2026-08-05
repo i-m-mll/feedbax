@@ -20,6 +20,7 @@ from feedbax.contracts.figures import (
     SceneCamera,
 )
 from feedbax.contracts.manifest import StrictModel
+from feedbax.plot import apply_default_template
 from feedbax.plot.colors import color_add_alpha, sample_colorscale_unique
 
 ConstructorTier = Literal["trace", "panel", "figure", "custom_figure"]
@@ -387,6 +388,11 @@ def get_figure_constructor(
     key: str, *, registry: FigureRegistry, tier: ConstructorTier | None = None
 ) -> FigureConstructorRegistration:
     """Return a registered constructor, optionally enforcing its tier."""
+    # Plotly snapshots the process-default template into every figure it constructs, so
+    # the Feedbax default has to be in place before a constructor runs. This module is
+    # imported by entry points that never draw anything, so the template is applied here,
+    # at figure-construction dispatch, rather than when the package is imported.
+    apply_default_template()
     try:
         registration = registry.constructor(key)
     except ValueError:

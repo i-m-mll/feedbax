@@ -14,6 +14,7 @@ from plotly.colors import convert_colors_to_same_type, sample_colorscale
 from plotly.subplots import make_subplots
 
 from feedbax.models.feedback import SimpleFeedbackState
+from feedbax.plot import apply_default_template
 from feedbax.plot._effector import resolve_effector_endpoints, resolve_effector_trajectory_vars
 from feedbax.plot.colors import _compute_colors, arr_to_rgb
 from feedbax.plot.misc import (
@@ -30,6 +31,12 @@ from jax_cookbook import MaskedArray
 
 if TYPE_CHECKING:
     from feedbax.tasks import TaskTrialSpec
+
+# Plotly copies the process-default template into each figure as it is constructed, so
+# the Feedbax default has to be in place before any function here runs. Importing a
+# figure-drawing module is itself use of the plotting surface, unlike importing the
+# package, which entry points that never draw anything do transitively.
+apply_default_template()
 
 type SeqOf[S] = list[S] | tuple[S, ...] | ValuesView[S]
 type SeqOfT[S, Tag] = Annotated[SeqOf[S], Tag]

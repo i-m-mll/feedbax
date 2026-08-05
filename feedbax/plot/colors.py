@@ -1,11 +1,33 @@
 from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 import plotly.colors as plc
 import plotly.io as pio
 from plotly.colors import convert_colors_to_same_type, sample_colorscale
 
-DEFAULT_COLORS = pio.templates[pio.templates.default].layout.colorway  # pyright: ignore
+from feedbax.plot import apply_default_template
+
+
+def default_colors() -> Any:
+    """Return the colorway of the active default Plotly template.
+
+    Reading the colorway forces Plotly to load the default template, so this is resolved
+    on demand rather than at import: this module is imported by the analysis and
+    orchestration entry points, which must not pay for a plotting global they may never
+    use. The Feedbax default template is applied first so the colorway is the one this
+    package has always returned, not Plotly's stock default.
+    """
+    apply_default_template()
+    return pio.templates[pio.templates.default].layout.colorway  # pyright: ignore
+
+
+def __getattr__(name: str):
+    if name == "DEFAULT_COLORS":
+        value = default_colors()
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def color_add_alpha(rgb_str: str, alpha: float):
