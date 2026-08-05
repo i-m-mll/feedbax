@@ -23,6 +23,7 @@ from feedbax.contracts.run_matrix import (
     apply_composition_deltas,
 )
 from feedbax.contracts.spec_storage import training_spec_sha256, validate_sha256
+from feedbax.contracts.strict_json import strict_json_loads
 
 COMPOSITION_SCHEMA_ID = "feedbax.spec.training_run_composition"
 COMPOSITION_SCHEMA_VERSION_V1 = f"{COMPOSITION_SCHEMA_ID}.v1"
@@ -326,7 +327,7 @@ def flatten_repo_composition(
             raise ValueError(f"/parent/ref authored composition cycle: {parent.ref}")
         resolved_refs.add(path)
         try:
-            document = json.loads(path.read_text(encoding="utf-8"))
+            document = strict_json_loads(path.read_text(encoding="utf-8"), ref=parent.ref)
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise ValueError(f"/parent/ref cannot load JSON document: {parent.ref}") from exc
         if not isinstance(document, dict):

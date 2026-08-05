@@ -17,6 +17,7 @@ import numpy as np
 from pydantic import Field, field_validator
 
 from feedbax.contracts.manifest import ArrayStoreRef, StrictModel, sha256_bytes, sha256_file
+from feedbax.contracts.strict_json import strict_json_loads
 
 
 ARRAY_STORE_SCHEMA_VERSION = "feedbax.manifest.array_store.v1"
@@ -197,7 +198,13 @@ def read_npz_array_store(path: Path | str) -> ArrayStore:
                 f"NPZ array store is missing metadata member {METADATA_KEY!r}."
             )
         raw_metadata = npz[METADATA_KEY].tobytes().decode("utf-8")
-        payload = ArrayStorePayload.model_validate_json(raw_metadata)
+        # ``model_validate_json`` parses the document with pydantic's own JSON
+        # reader, which keeps the last value for a repeated member exactly as
+        # ``json.loads`` does. The store bytes are read from disk, so the
+        # document is parsed at the authority boundary first and validated after.
+        payload = ArrayStorePayload.model_validate(
+            strict_json_loads(raw_metadata, ref=f"{source}#{METADATA_KEY}")
+        )
         arrays: dict[str, np.ndarray] = {}
         seen_storage_keys: set[str] = set()
         for record in payload.arrays:

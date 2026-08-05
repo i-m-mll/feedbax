@@ -704,6 +704,11 @@ class TrainingManifestMetadataProjectionCustody(StrictModel):
             )
         validate_sha256(self.source_payload_sha256, field_name="source_payload_sha256")
         validate_sha256(self.values_sha256, field_name="values_sha256")
+        # Trusted-internal, not an authority boundary: these bytes are the
+        # canonical serialization of ``self.values``, produced in this process
+        # one expression earlier. The document that carried ``self.values`` was
+        # already admitted by ``load_manifest_bytes``; this round-trip only
+        # compares the value against its own canonical form.
         canonical_values = json.loads(training_spec_canonical_bytes(self.values))
         if self.values != canonical_values:
             raise ValueError("training metadata projection values are not JSON-canonical")
