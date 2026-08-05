@@ -80,11 +80,11 @@ from feedbax.contracts.matrix_core import (
     load_content_pinned_json_base,
     materialize_matrix_rows,
 )
-from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.schema_namespace import (
     validate_schema_identity,
     validate_schema_version,
 )
+from feedbax.analysis.declared_versions import migrate_authored_document
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
     StagedArtifactProviderRootBinding,
@@ -421,6 +421,10 @@ def resolve_evaluation_matrix_authoring(
     Delta-authored documents are flattened against their content-pinned parents
     and then validated as the unchanged ``EvaluationRunMatrixSpec`` contract, so
     every downstream compiler, materializer, and executor path stays identical.
+
+    A direct document is resolved from its own declared ``schema_version``
+    through the shared authored-document path, so a supported older matrix
+    migrates and an unsupported or malformed declaration fails closed.
     """
     if isinstance(spec, EvaluationRunMatrixSpec):
         return spec, None
@@ -434,10 +438,14 @@ def resolve_evaluation_matrix_authoring(
         )
         flattened = flatten_evaluation_run_matrix_delta(delta, repo_root=repo_root)
         return EvaluationRunMatrixSpec.model_validate(flattened.payload), flattened
-    migrated = default_spec_registry.migrate(
+    # Matrix documents shipped before the family stamped a version, so a
+    # versionless document is admitted as current; every declared version still
+    # migrates or fails closed through the shared path.
+    migrated = migrate_authored_document(
         "EvaluationRunMatrixSpec",
         spec,
-        assume_current=True,
+        versionless="accept_as_current",
+        path="evaluation_matrix_spec",
     )
     return EvaluationRunMatrixSpec.model_validate(migrated.payload), None
 
