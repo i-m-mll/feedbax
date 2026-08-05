@@ -9,12 +9,17 @@ from pydantic import ValidationError
 
 from feedbax.bin.studio_pipeline import main as studio_pipeline_main
 from feedbax.studio.execution import (
+    STUDIO_TRAINING_CONTRACT_FILES,
     StudioPipelineMaterializationRequest,
     StudioExecutionPreparationError,
     StudioEvaluationCheckpointPolicy,
     StudioEvaluationMatrixRequest,
     StudioTrainingLocalRunRequest,
     StudioTrainingExecutionRequest,
+    _build_execution_spec,
+    _build_pending_training_manifest,
+    _write_pending_training_manifest,
+    _write_pending_training_manifest_for_matrix_row,
     materialize_studio_pipeline,
     prepare_studio_training_execution,
     preview_studio_evaluation_matrix,
@@ -34,12 +39,16 @@ from feedbax.contracts.manifest import (
     CheckpointSelectionManifest,
     EvaluationRunManifest,
     EvaluationRunSpec,
+    TrainingRunAxisCoordinate,
     TrainingRunManifest,
     TrainingRunSetManifest,
     load_manifest,
     store_json_artifact,
+    utc_now,
     write_manifest,
 )
+from feedbax.contracts.run_matrix import TrainingRowProvenance
+from feedbax.training.run_matrix import MaterializedMatrixRow
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 from feedbax.web.app import create_app
 from feedbax.contracts.graph import (
@@ -1318,3 +1327,213 @@ def test_materialize_studio_pipeline_endpoint_returns_updated_workspace(
     )
     assert report_stage["status"] == "completed"
     assert report_stage["manifest_refs"][0]["kind"] == "ReportManifest"
+
+
+def _matrix_row_for_scenario(
+    workspace,
+    *,
+    planned_run_id: str,
+    payload: dict | None = None,
+    coordinate=None,
+    overrides=(),
+) -> MaterializedMatrixRow:
+    """Build a materialized matrix row carrying the train scenario's spec envelope."""
+    stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    scenario = workspace.scenarios[stage.scenario_id]
+    envelope = {
+        "graph_spec": scenario.graph.model_dump(mode="json", exclude_none=True),
+        "training_spec": scenario.training_spec,
+        "task_spec": scenario.task_spec,
+        "task_binding_spec": scenario.task_binding_spec.model_dump(mode="json", exclude_none=True),
+    }
+    return MaterializedMatrixRow(
+        row_id=f"row-for-{planned_run_id}",
+        planned_run_id=planned_run_id,
+        spec=None,
+        authored_payload=dict(payload if payload is not None else envelope),
+        payload=dict(payload if payload is not None else envelope),
+        provenance=TrainingRowProvenance(
+            row_id=f"row-for-{planned_run_id}",
+            row_index=0,
+            planned_run_id=planned_run_id,
+            authored_payload_hash="0" * 64,
+            lowered_execution_payload_hash="1" * 64,
+            axis_coordinates={},
+        ),
+        coordinate=coordinate,
+        overrides=list(overrides),
+    )
+
+
+def _single_run_emitter_kwargs(workspace) -> dict:
+    stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    scenario = workspace.scenarios[stage.scenario_id]
+    return {
+        "workspace": workspace,
+        "stage": stage,
+        "scenario_id": stage.scenario_id,
+        "graph_spec": scenario.graph.model_dump(mode="json", exclude_none=True),
+        "training_spec": scenario.training_spec,
+        "task_spec": scenario.task_spec,
+        "task_binding_spec": scenario.task_binding_spec.model_dump(mode="json", exclude_none=True),
+        "request": StudioTrainingExecutionRequest(workspace=workspace, job_id="job-shared"),
+        "execution_target": "local",
+    }
+
+
+def test_studio_training_contract_files_are_declared_once(registry_bundle):
+    """The command contract and the artifact policy read one declared file list."""
+    workspace = _workspace()
+    stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    spec = _build_execution_spec(
+        request=StudioTrainingExecutionRequest(workspace=workspace, job_id="contract-files"),
+        workspace=workspace,
+        stage=stage,
+        job_id="contract-files",
+    )
+
+    declared = list(STUDIO_TRAINING_CONTRACT_FILES)
+    assert spec.metadata["command_contract"]["expected_files"] == declared
+    assert spec.artifact_policy.tracked_paths == declared
+    # Distinct list objects, so mutating one emitted spec cannot corrupt the other
+    # call site or the module constant.
+    assert (
+        spec.metadata["command_contract"]["expected_files"]
+        is not spec.artifact_policy.tracked_paths
+    )
+
+
+def test_pending_training_manifest_paths_emit_through_one_builder(tmp_path: Path, monkeypatch):
+    """Single-run and matrix-row staging both reach _build_pending_training_manifest."""
+    calls: list[str] = []
+    original = _build_pending_training_manifest
+
+    def spy(**kwargs):
+        calls.append(kwargs["manifest_id"])
+        return original(**kwargs)
+
+    monkeypatch.setattr("feedbax.studio.execution._build_pending_training_manifest", spy)
+
+    workspace = _workspace()
+    _write_pending_training_manifest(**_single_run_emitter_kwargs(workspace))
+    _write_pending_training_manifest_for_matrix_row(
+        _matrix_row_for_scenario(workspace, planned_run_id="planned-shared-builder"),
+        workspace=workspace,
+        stage=next(stage for stage in workspace.stages if stage.kind == "train"),
+        scenario_id="scenario:train",
+        run_set_id="run-set-shared",
+        request=StudioTrainingExecutionRequest(workspace=workspace, job_id="job-shared"),
+        root=tmp_path,
+        execution_target="local",
+    )
+
+    assert len(calls) == 2
+    assert calls[1] == "planned-shared-builder"
+
+
+def test_single_run_and_matrix_row_pending_manifests_agree_except_on_run_identity(
+    tmp_path: Path,
+):
+    """Both pending manifests carry one shared metadata contract.
+
+    The only permitted divergence is run identity: a matrix row additionally
+    carries its coordinate name/label, axis value indices, and run-set id, while
+    a single run carries its resolved seed. Everything else -- including the
+    Studio spec hashes -- must agree for equivalent inputs.
+    """
+    workspace = _workspace()
+    single, _ = _write_pending_training_manifest(**_single_run_emitter_kwargs(workspace))
+    matrix, _ = _write_pending_training_manifest_for_matrix_row(
+        _matrix_row_for_scenario(
+            workspace,
+            planned_run_id="planned-parity",
+            coordinate=TrainingRunAxisCoordinate(
+                run_id="planned-parity", index=0, value_indices={}, values={}, label="parity"
+            ),
+        ),
+        workspace=workspace,
+        stage=next(stage for stage in workspace.stages if stage.kind == "train"),
+        scenario_id="scenario:train",
+        run_set_id="run-set-parity",
+        request=StudioTrainingExecutionRequest(workspace=workspace, job_id="job-shared"),
+        root=tmp_path,
+        execution_target="local",
+    )
+
+    assert single.metadata["spec_hashes"] == matrix.metadata["spec_hashes"]
+    assert single.summary_metrics == matrix.summary_metrics == {"total_batches": 25}
+    assert set(matrix.metadata) - set(single.metadata) == {"name", "label"}
+    assert set(single.metadata) - set(matrix.metadata) == set()
+
+    single_studio = single.metadata["studio"]
+    matrix_studio = matrix.metadata["studio"]
+    assert set(single_studio) - set(matrix_studio) == {"seed"}
+    assert set(matrix_studio) - set(single_studio) == {"axis_value_indices", "run_set_id"}
+    shared = set(single_studio) & set(matrix_studio) - {"planned_training_run_id"}
+    assert {key: single_studio[key] for key in shared} == {
+        key: matrix_studio[key] for key in shared
+    }
+    assert single_studio["planned_training_run_id"] == single.id
+    assert matrix_studio["planned_training_run_id"] == matrix.id
+    for manifest in (single, matrix):
+        assert manifest.provenance.metadata["studio"] == manifest.metadata["studio"]
+
+
+def test_pending_matrix_manifest_reuses_existing_before_deriving_row_specs(tmp_path: Path):
+    """An already-staged manifest short-circuits before the row envelope is read."""
+    workspace = _workspace()
+    stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    existing = TrainingRunManifest(
+        id="planned-reuse-first",
+        status="completed",
+        job_id="prior-job",
+        metadata={"planned": True, "prior": True},
+    )
+    write_manifest(existing, root=tmp_path)
+
+    manifest, path = _write_pending_training_manifest_for_matrix_row(
+        # A payload with no spec envelope would raise if it were read first.
+        _matrix_row_for_scenario(
+            workspace, planned_run_id="planned-reuse-first", payload={"graph_spec": {}}
+        ),
+        workspace=workspace,
+        stage=stage,
+        scenario_id="scenario:train",
+        run_set_id="run-set-reuse",
+        request=StudioTrainingExecutionRequest(workspace=workspace, job_id="job-reuse"),
+        root=tmp_path,
+        execution_target="local",
+    )
+
+    assert manifest.status == "completed"
+    assert manifest.job_id == "prior-job"
+    assert path == write_manifest(existing, root=tmp_path)
+
+
+def test_pending_matrix_manifest_restages_cancelled_run(tmp_path: Path):
+    """The shared reuse helper restages a cancelled matrix row back to pending."""
+    workspace = _workspace()
+    stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    cancelled = TrainingRunManifest(
+        id="planned-restage-row",
+        status="cancelled",
+        completed_at=utc_now(),
+        metadata={"planned": True, "superseded_by": "planned-restage-row"},
+    )
+    write_manifest(cancelled, root=tmp_path)
+
+    manifest, _ = _write_pending_training_manifest_for_matrix_row(
+        _matrix_row_for_scenario(workspace, planned_run_id="planned-restage-row"),
+        workspace=workspace,
+        stage=stage,
+        scenario_id="scenario:train",
+        run_set_id="run-set-restage",
+        request=StudioTrainingExecutionRequest(workspace=workspace, job_id="job-restage"),
+        root=tmp_path,
+        execution_target="local",
+    )
+
+    assert manifest.status == "pending"
+    assert manifest.completed_at is None
+    assert manifest.metadata["restaged_from_status"] == "cancelled"
+    assert "superseded_by" not in manifest.metadata
