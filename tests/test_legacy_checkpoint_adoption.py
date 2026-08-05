@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
+import pickle
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import feedbax.__main__ as feedbax_cli
 import feedbax.training.legacy_checkpoint_adoption as adoption_module
 from feedbax.contracts.checkpoints import (
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID,
@@ -24,6 +27,8 @@ from feedbax.contracts.training import (
     TrainingConfig,
     TrainingRunSpec,
     WorkerExecutionSpec,
+    standard_supervised_effective_phase_spec,
+    standard_supervised_method_contract,
     standard_supervised_method_payload,
     standard_supervised_method_ref,
 )
@@ -863,3 +868,145 @@ def test_dump_manifest_batch_groups_worktrees_and_cleans_up(tmp_path: Path) -> N
     assert len(add_calls) == 2
     assert len(remove_calls) == 2
     assert len(run_calls) == 3
+
+
+def _standard_supervised_run_spec() -> TrainingRunSpec:
+    """A run spec the training-method registry accepts as-is.
+
+    The adopt CLI validates run-spec semantics against the registry before it
+    builds a coordinate, so the CLI regression needs a registry-consistent
+    contract rather than the hand-edited toy contract the library-level tests
+    use.
+    """
+    return TrainingRunSpec(
+        graph={"inline": _minimal_graph()},
+        task=TaskSpec(type="ReachingTask", params={"n_steps": 4}),
+        training_config=TrainingConfig(n_batches=4, batch_size=3),
+        objective=ObjectiveSlotSpec(
+            loss=LossTermSpec(type="target_state", label="target", selector="output")
+        ),
+        method_ref=standard_supervised_method_ref(),
+        method_payload=standard_supervised_method_payload(),
+        worker_execution=WorkerExecutionSpec(
+            method_contract=standard_supervised_method_contract(),
+            effective_phase=standard_supervised_effective_phase_spec(),
+        ),
+    )
+
+
+def test_adopt_cli_builds_the_coordinate_from_the_program_step_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``adopt`` parses its own flags and reaches adoption with a coordinate.
+
+    The flag naming the cumulative program coordinate is the one the dispatcher
+    reads, so the value handed on the command line arrives on the
+    ``ProgressCoordinate`` unchanged rather than raising an attribute error
+    before any work happens.
+    """
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(_manifest_payload()), encoding="utf-8")
+    run_spec_path = tmp_path / "run-spec.json"
+    run_spec_path.write_text(_standard_supervised_run_spec().model_dump_json(), encoding="utf-8")
+    slots_path = tmp_path / "slots.pkl"
+    slots_path.write_bytes(pickle.dumps({"model": 0, "optimizer": {"count": 0}}))
+    model_stream = tmp_path / "model.eqx"
+    _write_stream(model_stream, [np.array([5.0, 6.0], dtype=np.float32)])
+
+    captured: dict[str, object] = {}
+
+    def fake_adopt(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            write=SimpleNamespace(
+                manifest=SimpleNamespace(transaction_id="txn-1"),
+                manifest_path=tmp_path / "manifest-out.json",
+                latest_pointer_path=tmp_path / "latest.json",
+            ),
+            model_report=SimpleNamespace(assigned_paths=("/model",), static_paths=()),
+            optimizer_report=None,
+        )
+
+    monkeypatch.setattr(feedbax_cli, "adopt_legacy_checkpoint", fake_adopt)
+
+    exit_code = feedbax_cli.main(
+        [
+            "adopt-legacy-checkpoint",
+            "adopt",
+            "--manifest",
+            str(manifest_path),
+            "--model-stream",
+            str(model_stream),
+            "--fresh-optimizer",
+            "--current-slots",
+            str(slots_path),
+            "--run-spec",
+            str(run_spec_path),
+            "--checkpoint-root",
+            str(tmp_path / "checkpoints"),
+            "--barrier",
+            "after_train_batch",
+            "--run-id",
+            "legacy-adopt-cli",
+            "--phase",
+            "train_batch",
+            "--program-step",
+            "12",
+            "--completed-barrier",
+            "after_train_batch",
+        ]
+    )
+
+    assert exit_code == 0
+    coordinate = captured["coordinate"]
+    assert isinstance(coordinate, ProgressCoordinate)
+    assert coordinate.program_step == 12
+    assert coordinate.run_id == "legacy-adopt-cli"
+    assert coordinate.phase == "train_batch"
+    assert coordinate.completed_barrier == "after_train_batch"
+    assert captured["barrier_name"] == "after_train_batch"
+    assert json.loads(capsys.readouterr().out)["transaction_id"] == "txn-1"
+
+
+def test_adopt_cli_refuses_the_retired_global_step_spelling(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``global_step`` was renamed to ``program_step``; the flag follows it.
+
+    A stale spelling fails closed at the parser rather than being accepted and
+    silently dropped on the floor.
+    """
+    with pytest.raises(SystemExit):
+        feedbax_cli.main(
+            [
+                "adopt-legacy-checkpoint",
+                "adopt",
+                "--manifest",
+                "manifest.json",
+                "--model-stream",
+                "model.eqx",
+                "--fresh-optimizer",
+                "--current-slots",
+                "slots.pkl",
+                "--run-spec",
+                "run-spec.json",
+                "--checkpoint-root",
+                "checkpoints",
+                "--barrier",
+                "after_train_batch",
+                "--run-id",
+                "run",
+                "--phase",
+                "train_batch",
+                "--program-step",
+                "12",
+                "--global-step",
+                "12",
+                "--completed-barrier",
+                "after_train_batch",
+            ]
+        )
+
+    assert "unrecognized arguments: --global-step" in capsys.readouterr().err
