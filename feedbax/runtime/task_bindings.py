@@ -17,7 +17,7 @@ from feedbax.contracts.graph import (
     StudioTaskDataSpec,
 )
 from feedbax.runtime.graph import Graph
-from feedbax.studio.protocol import task_data_role
+from feedbax.runtime.task_data_roles import task_data_role
 
 
 COMPONENT_PARAMETER_ROLE = "component_parameter"
