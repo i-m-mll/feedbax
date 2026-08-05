@@ -1,107 +1,94 @@
-"""Public typed Feedbax plugin bootstrap interface."""
+"""Public typed Feedbax plugin bootstrap interface, resolved on first use."""
 
-from .application import (
-    APPLICATION_REGISTRY_KEYS,
-    ANALYSIS_RECIPES,
-    COMPONENTS,
-    CONFORMANCE_CHECKS,
-    DRIVERS,
-    EVALUATION_BATCH_CONSUMERS,
-    EVALUATION_PRODUCT_UNION_FINALIZERS,
-    EVALUATION_RECIPES,
-    EXECUTION_PREPARATIONS,
-    EXPERIMENT_PACKAGES,
-    FIGURES,
-    REPORT_RECIPES,
-    ROW_LOWERERS,
-    TRAINING_METHODS,
-    ApplicationRegistryBundle,
-    new_registration_context,
-)
-from .bootstrap import (
-    BootstrapError,
-    BootstrapErrorCode,
-    BootstrapState,
-    DOWNSTREAM_INTERFACE_POLICY_ID,
-    DOWNSTREAM_POLICY_EFFECTIVE_RELEASE,
-    DOWNSTREAM_PROTOCOL_CURRENT,
-    DOWNSTREAM_PROTOCOL_MINIMUM,
-    BOOTSTRAP_CONTEXT_VERSION,
-    FamilyRequirement,
-    PluginDeclaration,
-    PluginDependency,
-    PluginProvenance,
-    PluginRegistration,
-    PLUGIN_DECLARATION_SCHEMA_ID,
-    PLUGIN_DECLARATION_SCHEMA_VERSION,
-    PLUGIN_DECLARATION_SCHEMA_VERSION_V1,
-    PLUGIN_PROTOCOL_VERSION,
-    RegistrationContext,
-    RegistryFamilyRegistration,
-    RegistryKey,
-    UnsupportedDownstreamProtocolVersion,
-    bootstrap_application,
-    discover_plugin_registrations,
-    validate_downstream_protocol_version,
-)
-from .registry import ExperimentRegistry
-from feedbax.contracts.experiment_envelope import (
-    ExperimentEnvelopeCompileRequest,
-    ExperimentEnvelopeCompileResult,
-    ExperimentEnvelopeRejection,
-    ExperimentEnvelopeRejectionCategory,
-)
-from feedbax.analysis.evaluation import (
-    EvaluationAuthoringSchema,
-    EvaluationBatchRecipe,
-    EvaluationBatchItem,
-    EvaluationBatchRowError,
-    EvaluationRecipe,
-    EvaluationRecipeRegistry,
-    EvaluationRecipeResult,
-)
-from feedbax.analysis.evaluation_compaction import (
-    EvaluationBatchConsumer,
-    EvaluationBatchConsumerInput,
-    EvaluationBatchConsumerRegistry,
-    EvaluationBatchFinalizeInput,
-    EvaluationBatchFragment,
-    EvaluationBatchMergeInput,
-    EvaluationBatchMergeState,
-)
-from feedbax.analysis.evaluation_product_union import (
-    EvaluationCompactProductUnionFinalizerRegistry,
-    EvaluationCompactProductUnionInput,
-)
-from feedbax.analysis.specs import (
-    AnalysisRecipe,
-    AnalysisRecipeRegistry,
-    AnalysisRecipeResult,
-)
-from feedbax.analysis.execution_context import (
-    EMPTY_STAGED_EXECUTION_CONTEXT,
-    StagedExecutionContext,
-)
-from feedbax.analysis.validation import EvaluationStatesStructureProviderProtocol
-from feedbax.contracts.training import TrainingMethodDescriptor, TrainingMethodRegistry
-from feedbax.training.authoring import (
-    compile_training_method_authoring,
-    training_method_row_lowerer_registration,
-)
-from feedbax.training.preparation import (
-    ExecutionPreparationPlan,
-    ExecutionPreparationProvider,
-    ExecutionPreparationProviderRegistry,
-    ExecutionPreparationRegistration,
-    ExecutionPreparationRequest,
-    ExecutionPreparationResult,
-)
-from feedbax.training.row_lowering import (
-    TrainingRowLowererRegistration,
-    TrainingRowLowererRegistry,
-    TrainingRowLoweringContext,
-)
-from feedbax.contracts.run_matrix import TrainingRowLoweringResult
+from importlib import import_module
+
+
+_PUBLIC_ATTR_MODULES = {
+    "ANALYSIS_RECIPES": ".application",
+    "APPLICATION_REGISTRY_KEYS": ".application",
+    "ApplicationRegistryBundle": ".application",
+    "COMPONENTS": ".application",
+    "CONFORMANCE_CHECKS": ".application",
+    "DRIVERS": ".application",
+    "EVALUATION_BATCH_CONSUMERS": ".application",
+    "EVALUATION_PRODUCT_UNION_FINALIZERS": ".application",
+    "EVALUATION_RECIPES": ".application",
+    "EXECUTION_PREPARATIONS": ".application",
+    "EXPERIMENT_PACKAGES": ".application",
+    "FIGURES": ".application",
+    "REPORT_RECIPES": ".application",
+    "ROW_LOWERERS": ".application",
+    "TRAINING_METHODS": ".application",
+    "new_registration_context": ".application",
+    "BOOTSTRAP_CONTEXT_VERSION": ".bootstrap",
+    "BootstrapError": ".bootstrap",
+    "BootstrapErrorCode": ".bootstrap",
+    "BootstrapState": ".bootstrap",
+    "DOWNSTREAM_INTERFACE_POLICY_ID": ".bootstrap",
+    "DOWNSTREAM_POLICY_EFFECTIVE_RELEASE": ".bootstrap",
+    "DOWNSTREAM_PROTOCOL_CURRENT": ".bootstrap",
+    "DOWNSTREAM_PROTOCOL_MINIMUM": ".bootstrap",
+    "FamilyRequirement": ".bootstrap",
+    "PLUGIN_DECLARATION_SCHEMA_ID": ".bootstrap",
+    "PLUGIN_DECLARATION_SCHEMA_VERSION": ".bootstrap",
+    "PLUGIN_DECLARATION_SCHEMA_VERSION_V1": ".bootstrap",
+    "PLUGIN_PROTOCOL_VERSION": ".bootstrap",
+    "PluginDeclaration": ".bootstrap",
+    "PluginDependency": ".bootstrap",
+    "PluginProvenance": ".bootstrap",
+    "PluginRegistration": ".bootstrap",
+    "RegistrationContext": ".bootstrap",
+    "RegistryFamilyRegistration": ".bootstrap",
+    "RegistryKey": ".bootstrap",
+    "UnsupportedDownstreamProtocolVersion": ".bootstrap",
+    "bootstrap_application": ".bootstrap",
+    "discover_plugin_registrations": ".bootstrap",
+    "validate_downstream_protocol_version": ".bootstrap",
+    "ExperimentRegistry": ".registry",
+    "ExperimentEnvelopeCompileRequest": "feedbax.contracts.experiment_envelope",
+    "ExperimentEnvelopeCompileResult": "feedbax.contracts.experiment_envelope",
+    "ExperimentEnvelopeRejection": "feedbax.contracts.experiment_envelope",
+    "ExperimentEnvelopeRejectionCategory": "feedbax.contracts.experiment_envelope",
+    "EvaluationAuthoringSchema": "feedbax.analysis.evaluation",
+    "EvaluationBatchItem": "feedbax.analysis.evaluation",
+    "EvaluationBatchRecipe": "feedbax.analysis.evaluation",
+    "EvaluationBatchRowError": "feedbax.analysis.evaluation",
+    "EvaluationRecipe": "feedbax.analysis.evaluation",
+    "EvaluationRecipeRegistry": "feedbax.analysis.evaluation",
+    "EvaluationRecipeResult": "feedbax.analysis.evaluation",
+    "EvaluationBatchConsumer": "feedbax.analysis.evaluation_compaction",
+    "EvaluationBatchConsumerInput": "feedbax.analysis.evaluation_compaction",
+    "EvaluationBatchConsumerRegistry": "feedbax.analysis.evaluation_compaction",
+    "EvaluationBatchFinalizeInput": "feedbax.analysis.evaluation_compaction",
+    "EvaluationBatchFragment": "feedbax.analysis.evaluation_compaction",
+    "EvaluationBatchMergeInput": "feedbax.analysis.evaluation_compaction",
+    "EvaluationBatchMergeState": "feedbax.analysis.evaluation_compaction",
+    "EvaluationCompactProductUnionFinalizerRegistry": "feedbax.analysis.evaluation_product_union",
+    "EvaluationCompactProductUnionInput": "feedbax.analysis.evaluation_product_union",
+    "AnalysisRecipe": "feedbax.analysis.specs",
+    "AnalysisRecipeRegistry": "feedbax.analysis.specs",
+    "AnalysisRecipeResult": "feedbax.analysis.specs",
+    "EMPTY_STAGED_EXECUTION_CONTEXT": "feedbax.analysis.execution_context",
+    "StagedExecutionContext": "feedbax.analysis.execution_context",
+    "EvaluationStatesStructureProviderProtocol": "feedbax.analysis.validation",
+    "TrainingMethodDescriptor": "feedbax.contracts.training",
+    "TrainingMethodRegistry": "feedbax.contracts.training",
+    "compile_training_method_authoring": "feedbax.training.authoring",
+    "training_method_row_lowerer_registration": "feedbax.training.authoring",
+    "ExecutionPreparationPlan": "feedbax.training.preparation",
+    "ExecutionPreparationProvider": "feedbax.training.preparation",
+    "ExecutionPreparationProviderRegistry": "feedbax.training.preparation",
+    "ExecutionPreparationRegistration": "feedbax.training.preparation",
+    "ExecutionPreparationRequest": "feedbax.training.preparation",
+    "ExecutionPreparationResult": "feedbax.training.preparation",
+    "TrainingRowLowererRegistration": "feedbax.training.row_lowering",
+    "TrainingRowLowererRegistry": "feedbax.training.row_lowering",
+    "TrainingRowLoweringContext": "feedbax.training.row_lowering",
+    "TrainingRowLoweringResult": "feedbax.contracts.run_matrix",
+}
+
+# Submodules the eager facade used to bind as attributes of this package.
+_PUBLIC_SUBMODULES = ("application", "bootstrap", "registry")
 
 _NON_GUARANTEED_PLUGIN_EXPORTS = (
     "CONFORMANCE_CHECKS",
@@ -203,3 +190,20 @@ __all__ = [
     "ExperimentEnvelopeRejection",
     "ExperimentEnvelopeRejectionCategory",
 ]
+
+
+def __getattr__(name: str):
+    if name in _PUBLIC_SUBMODULES:
+        value = import_module(f".{name}", __name__)
+    else:
+        try:
+            module_name = _PUBLIC_ATTR_MODULES[name]
+        except KeyError as exc:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+        value = getattr(import_module(module_name, __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *__all__, *_PUBLIC_SUBMODULES})
