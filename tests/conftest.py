@@ -8,9 +8,11 @@ import subprocess
 import jax
 import pytest
 
+import feedbax
 from feedbax.analysis.evaluation import EvaluationRecipeRegistry
 from feedbax.analysis.reports import ReportRecipeRegistry
 from feedbax.analysis.specs import AnalysisRecipeRegistry
+from feedbax.orchestration import revision as _revision
 from feedbax.orchestration.repo_snapshot import REPO_SNAPSHOT_CACHE_DIR_ENV
 from feedbax.plugins.application import (
     ApplicationRegistryBundle,
@@ -153,6 +155,77 @@ def _isolated_repo_snapshot_cache(tmp_path_factory: pytest.TempPathFactory) -> I
     for directory, _subdirectories, _files in os.walk(cache_dir, topdown=True):
         os.chmod(directory, 0o700)
     shutil.rmtree(cache_dir, ignore_errors=True)
+
+
+_WORKING_PACKAGE_ROOT = Path(feedbax.__file__).resolve().parent
+
+
+@pytest.fixture(autouse=True)
+def _tolerate_dirty_working_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Report only the working checkout under test as clean to the provenance gate.
+
+    Assembly now fails closed when the checkout supplying ``import feedbax`` has
+    uncommitted changes, which is the normal state of a checkout someone is
+    editing and running tests in. Tests that assemble a request are not the place
+    that guarantee reproduces: they import the very source they are exercising.
+    Only the real working package root is reported clean, so the tmp-checkout
+    tests in ``tests/test_feedbax_revision_provenance.py`` and the assembly-gate
+    tests still exercise genuine dirty detection.
+    """
+    original = _revision._feedbax_tree_is_dirty
+
+    def _dirty(package_root: Path) -> bool:
+        if package_root == _WORKING_PACKAGE_ROOT:
+            return False
+        return original(package_root)
+
+    monkeypatch.setattr(_revision, "_feedbax_tree_is_dirty", _dirty)
+
+
+_SUBPROCESS_DIRTY_TOLERANCE = '''\
+"""Test-only startup hook: report the working checkout under test as clean.
+
+Tests that run the real orchestration CLI in a child process exercise the
+working checkout, which is routinely dirty while someone is editing it. The
+in-process fixture cannot reach a child, so the same narrow tolerance is applied
+here: only the real working package root is reported clean, and every other
+path still goes through genuine Git dirty detection.
+"""
+
+from pathlib import Path
+
+import feedbax
+from feedbax.orchestration import revision as _revision
+
+_WORKING_PACKAGE_ROOT = Path(feedbax.__file__).resolve().parent
+_original_tree_is_dirty = _revision._feedbax_tree_is_dirty
+
+
+def _tree_is_dirty(package_root):
+    if package_root == _WORKING_PACKAGE_ROOT:
+        return False
+    return _original_tree_is_dirty(package_root)
+
+
+_revision._feedbax_tree_is_dirty = _tree_is_dirty
+'''
+
+
+@pytest.fixture
+def subprocess_dirty_tolerance():
+    """Return an installer for the child-process counterpart of the tolerance fixture.
+
+    Call it with a directory that is first on the child's ``PYTHONPATH``; it
+    writes a ``sitecustomize`` module there, which Python imports at interpreter
+    startup before the CLI runs.
+    """
+
+    def install(directory: Path) -> None:
+        (directory / "sitecustomize.py").write_text(
+            _SUBPROCESS_DIRTY_TOLERANCE, encoding="utf-8"
+        )
+
+    return install
 
 
 @pytest.fixture

@@ -1656,6 +1656,37 @@ def check_figure_role_reference_public_contract() -> bool:
             artifact_provider="results",
         ),
     ]
+    # A contract may pin the identity of the payload the selected artifact
+    # decodes to, and does so whole or not at all: an id without a version admits
+    # every version of that schema, which is not a smaller claim but an empty one.
+    pinned = FigureRoleBindingContract(
+        input_role="measured",
+        artifact_role="external_result",
+        artifact_provider="results",
+        payload_name="measured",
+        payload_schema_id="external.fixture_result",
+        payload_schema_version="external.fixture_result.v1",
+    )
+    payload_selector = pinned.artifact_payload("row_1__measured")
+    if payload_selector["name"] != "measured":
+        raise AssertionError("an explicit payload name was not carried into the selector")
+    if (
+        payload_selector["payload_schema_id"] != "external.fixture_result"
+        or payload_selector["payload_schema_version"] != "external.fixture_result.v1"
+    ):
+        raise AssertionError("the pinned payload schema identity was not emitted")
+    for half in ("payload_schema_id", "payload_schema_version"):
+        try:
+            FigureRoleBindingContract(
+                input_role="measured",
+                artifact_role="external_result",
+                artifact_provider="results",
+                **{half: "external.fixture_result"},
+            )
+        except ValidationError:
+            continue
+        raise AssertionError(f"a contract accepted {half!r} without its counterpart")
+
     request = FigureRowExpansionRequest(
         figure_name="external-fixture-figure",
         rows={"mode": "all"},

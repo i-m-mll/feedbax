@@ -41,9 +41,13 @@ from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
 from feedbax.bin.analysis import main as analysis_main
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
+    AnalysisRunSpec,
     EvaluationRunSpec,
     ParentRef,
+    SpecPayload,
     TrainingRunManifest,
+    canonical_manifest_relative_path,
     sha256_bytes,
     write_manifest,
 )
@@ -478,6 +482,25 @@ def _retained_manifest_context(
 def test_manifest_root_binding_rejects_missing_root(tmp_path: Path) -> None:
     with pytest.raises(StagedExecutionContextError, match="root is unavailable"):
         _retained_manifest_context([tmp_path / "missing"])
+
+
+def test_manifest_root_lookup_resolves_an_authenticated_training_parent(tmp_path: Path) -> None:
+    root = tmp_path / "retained"
+    manifest, parent, path = _retained_manifest_root(root)
+
+    bound = with_staged_manifest_provider_inputs(_retained_manifest_context([root]), [parent])
+
+    location = bound.parent_execution_location(parent)
+    assert location.root == root
+    assert location.artifact_provider is None
+    assert location.execution_uri == str(path.relative_to(root))
+
+    resolved = bound.resolve_manifest_input(parent)
+    assert isinstance(resolved.manifest, TrainingRunManifest)
+    assert resolved.manifest.kind == "TrainingRunManifest"
+    assert resolved.manifest.id == manifest.id
+    assert resolved.path == path
+    assert resolved.raw_bytes == path.read_bytes()
 
 
 def test_manifest_root_lookup_rejects_unknown_id(tmp_path: Path) -> None:
@@ -1188,3 +1211,189 @@ def test_cli_dry_run_invalid_context_has_zero_effects(tmp_path: Path, monkeypatc
     }
     assert after == before
     assert not (manifest_root / "manifests" / "evaluation_runs").exists()
+
+
+# --------------------------------------------------------------------------
+# Every admitted staged kind resolves from a retained store, not just training
+# --------------------------------------------------------------------------
+
+
+def _retained_manifest_of_kind(root: Path, manifest) -> tuple[ParentRef, Path]:
+    """Write one manifest at its canonical location under *root* and pin its bytes."""
+    raw = manifest.model_dump_json(indent=2).encode()
+    path = root / canonical_manifest_relative_path(manifest.kind, manifest.id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    parent = ParentRef(
+        kind=manifest.kind,
+        id=manifest.id,
+        role="prior",
+        metadata={
+            "ref_schema_id": "feedbax.ref.authenticated_manifest",
+            "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+            "manifest_sha256": sha256_bytes(raw),
+            "size_bytes": len(raw),
+        },
+    )
+    return parent, path
+
+
+def _analysis_manifest(manifest_id: str = "feedbax-analysis-run:retained") -> AnalysisRunManifest:
+    return AnalysisRunManifest(
+        id=manifest_id,
+        status="completed",
+        analysis_spec=SpecPayload(
+            kind="AnalysisRunSpec",
+            inline=AnalysisRunSpec(analysis_type="feedbax.test.retained").model_dump(
+                mode="json"
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        TrainingRunManifest(id="feedbax-training-run:retained-kind", status="completed"),
+        _analysis_manifest("feedbax-analysis-run:retained-kind"),
+    ],
+    ids=["TrainingRunManifest", "AnalysisRunManifest"],
+)
+def test_a_retained_store_resolves_every_admitted_staged_kind(
+    tmp_path: Path, manifest
+) -> None:
+    """The lookup addresses a kind through the canonical layout, not a per-kind path.
+
+    Training was the only kind a hardcoded path admitted, so an analysis run
+    retained in exactly the same store resolved to nothing. The layout helper
+    knows every admitted kind, and it is the only thing consulted now.
+    """
+    root = tmp_path / "retained"
+    parent, path = _retained_manifest_of_kind(root, manifest)
+
+    bound = with_staged_manifest_provider_inputs(_retained_manifest_context([root]), [parent])
+
+    location = bound.parent_execution_location(parent)
+    assert location.root == root
+    assert location.artifact_provider is None
+    assert location.execution_uri == path.relative_to(root).as_posix()
+    assert bound.resolve_manifest_input(parent).manifest.id == manifest.id
+
+
+def test_an_unadmitted_manifest_kind_reaches_no_retained_store(tmp_path: Path) -> None:
+    """Generalizing across admitted kinds did not open the lookup to every kind."""
+    root = tmp_path / "retained"
+    root.mkdir()
+    unadmitted = ParentRef(
+        kind="RunMatrixManifest",
+        id="feedbax-run-matrix:unadmitted",
+        role="prior",
+        metadata={
+            "ref_schema_id": "feedbax.ref.authenticated_manifest",
+            "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
+            "manifest_sha256": "c" * 64,
+            "size_bytes": 3,
+        },
+    )
+    with pytest.raises(StagedExecutionContextError, match="unavailable"):
+        with_staged_manifest_provider_inputs(_retained_manifest_context([root]), [unadmitted])
+
+
+# --------------------------------------------------------------------------
+# Resolved parents: locations the caller settled, aliases the descriptor declares
+# --------------------------------------------------------------------------
+
+
+def test_a_resolved_parent_binds_only_provider_names_the_descriptor_declares(
+    tmp_path: Path,
+) -> None:
+    """An authored provider label binds to the runtime provider of the same name.
+
+    It never binds because a role, a receipt path, or a manifest kind looks like
+    it might mean the same thing: an authored label and a role are different
+    vocabularies, and a name the descriptor never declared has no runtime
+    authority to point at.
+    """
+    _roots, artifact_bindings, checkpoint_bindings = _bindings(tmp_path)
+    context = resolve_staged_execution_context(
+        _descriptor(),
+        artifact_provider_bindings=artifact_bindings,
+        checkpoint_custody_bindings=checkpoint_bindings,
+    )
+    retained = tmp_path / "retained"
+    parent, path = _retained_manifest_of_kind(
+        retained, TrainingRunManifest(id="feedbax-training-run:aliased", status="completed")
+    )
+
+    bound = execution_context_module.with_staged_resolved_parents(
+        context,
+        [
+            StagedParentExecutionLocation(
+                parent=parent,
+                root=retained,
+                execution_uri=path.relative_to(retained).as_posix(),
+            )
+        ],
+    )
+
+    assert sorted(
+        binding.authored_provider for binding in bound.parent_artifact_provider_bindings
+    ) == ["evidence.backup", "primary"]
+    assert all(
+        binding.authored_provider == binding.runtime_provider
+        for binding in bound.parent_artifact_provider_bindings
+    )
+    assert bound.artifact_provider_for_parent(parent, "primary") is bound.artifact_provider(
+        "primary"
+    )
+    with pytest.raises(StagedExecutionContextError, match="unavailable for the exact parent"):
+        bound.artifact_provider_for_parent(parent, "prior")
+
+
+def test_a_provider_located_parent_binds_only_the_provider_that_holds_it(
+    tmp_path: Path,
+) -> None:
+    """A parent staged through one provider does not acquire aliases to the others."""
+    roots, artifact_bindings, checkpoint_bindings = _bindings(tmp_path)
+    provider, _manifest, parent = _store_provider_manifest(roots["primary"])
+    context = resolve_staged_execution_context(
+        _descriptor(),
+        artifact_provider_bindings=artifact_bindings,
+        checkpoint_custody_bindings=checkpoint_bindings,
+    )
+    relative = provider.canonical_relative_path(
+        f"artifact://sha256/{parent.metadata['manifest_sha256']}",
+        size_bytes=int(parent.metadata["size_bytes"]),
+    )
+
+    bound = execution_context_module.with_staged_resolved_parents(
+        context,
+        [
+            StagedParentExecutionLocation(
+                parent=parent,
+                root=Path(provider.root),
+                execution_uri=relative.as_posix(),
+                artifact_provider="primary",
+            )
+        ],
+    )
+
+    assert [
+        binding.authored_provider for binding in bound.parent_artifact_provider_bindings
+    ] == ["primary"]
+
+
+def test_an_already_resolved_context_refuses_beside_raw_bindings(tmp_path: Path) -> None:
+    """One statement of the bindings, because two of them can disagree."""
+    with pytest.raises(StagedExecutionContextError, match="cannot be combined"):
+        execution_context_module.require_exclusive_staged_runtime(
+            EMPTY_STAGED_EXECUTION_CONTEXT,
+            artifact_provider_bindings=[
+                StagedArtifactProviderRootBinding("primary", tmp_path)
+            ],
+        )
+    execution_context_module.require_exclusive_staged_runtime(
+        None,
+        artifact_provider_bindings=[StagedArtifactProviderRootBinding("primary", tmp_path)],
+    )
+    execution_context_module.require_exclusive_staged_runtime(EMPTY_STAGED_EXECUTION_CONTEXT)

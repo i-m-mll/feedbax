@@ -678,3 +678,66 @@ def test_shared_reference_is_reused_across_rows_without_row_local_authority(
     }
     assert isinstance(request_model.inputs["comparators"], SharedInputReference)
     assert isinstance(request_model.inputs["trained"], PerRowInputReference)
+
+
+# -- the decoded payload identity a contract may pin ----------------------
+
+
+def test_a_pinned_payload_schema_reaches_the_derived_artifact_selector() -> None:
+    contract = FigureRoleBindingContract(
+        input_role="trained",
+        artifact_role="result",
+        artifact_provider="rlrmp.custody",
+        payload_name="trained_summary",
+        payload_schema_id="rlrmp.span_result",
+        payload_schema_version="rlrmp.span_result.v1",
+    )
+
+    payload = contract.artifact_payload("row_1__trained")
+
+    assert payload["name"] == "trained_summary"
+    assert payload["payload_schema_id"] == "rlrmp.span_result"
+    assert payload["payload_schema_version"] == "rlrmp.span_result.v1"
+
+
+def test_a_contract_that_pins_no_payload_schema_derives_no_selector_fields() -> None:
+    contract = FigureRoleBindingContract(
+        input_role="trained",
+        artifact_role="result",
+        artifact_provider="rlrmp.custody",
+    )
+
+    payload = contract.artifact_payload("row_1__trained")
+
+    assert "payload_schema_id" not in payload
+    assert "payload_schema_version" not in payload
+    # An unstated payload name still falls back to the role, which is what a
+    # row-expanded contract has always done; only a v5 root figure must state one.
+    assert payload["name"] == "trained"
+
+
+@pytest.mark.parametrize("half", ["payload_schema_id", "payload_schema_version"])
+def test_half_a_payload_schema_identity_is_refused(half: str) -> None:
+    with pytest.raises(ValidationError, match="together or states neither"):
+        FigureRoleBindingContract(
+            input_role="trained",
+            artifact_role="result",
+            artifact_provider="rlrmp.custody",
+            **{half: "rlrmp.span_result"},
+        )
+
+
+@pytest.mark.parametrize("field", ["payload_schema_id", "payload_schema_version"])
+def test_a_blank_payload_schema_identity_is_refused(field: str) -> None:
+    stated = {
+        "payload_schema_id": "rlrmp.span_result",
+        "payload_schema_version": "rlrmp.span_result.v1",
+        field: "  ",
+    }
+    with pytest.raises(ValidationError, match="blank payload schema identity"):
+        FigureRoleBindingContract(
+            input_role="trained",
+            artifact_role="result",
+            artifact_provider="rlrmp.custody",
+            **stated,
+        )

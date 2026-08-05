@@ -403,7 +403,7 @@ def test_shadow_launch_evidence_registry_explicitly_rejects_v0() -> None:
         (
             "RunAssemblyRequest",
             "feedbax.spec.run_assembly_request",
-            "feedbax.spec.run_assembly_request.v6",
+            "feedbax.spec.run_assembly_request.v7",
         ),
         (
             "DeploymentPolicy",
@@ -466,7 +466,6 @@ def test_default_registry_registers_assemble_contract_families(
         "migrate"
         if kind
         in {
-            "RunAssemblyRequest",
             "DeploymentPolicy",
             "EvaluationOutputPreflightEvidence",
         }
@@ -484,22 +483,17 @@ def test_default_registry_registers_assemble_contract_families(
             {"schema_id": schema_id, "schema_version": f"{schema_id}.v0"},
         )
     if kind == "RunAssemblyRequest":
-        migrated = default_spec_registry.migrate(
-            kind,
-            {
-                "schema_id": schema_id,
-                "schema_version": f"{schema_id}.v3",
-            },
-        )
-        assert migrated.payload["staged_roots"] == []
-        with pytest.raises(
-            UnsupportedSpecVersion,
-            match="migration_intentionally_absent=yes",
-        ):
-            default_spec_registry.migrate(
-                kind,
-                {"schema_id": schema_id, "schema_version": f"{schema_id}.v2"},
-            )
+        # No version below v7 carries the feedbax_revision authority, and a
+        # migrator cannot invent one, so every earlier version now rejects.
+        for rejected in ("v2", "v3", "v4", "v5", "v6"):
+            with pytest.raises(
+                UnsupportedSpecVersion,
+                match="migration_intentionally_absent=yes",
+            ):
+                default_spec_registry.migrate(
+                    kind,
+                    {"schema_id": schema_id, "schema_version": f"{schema_id}.{rejected}"},
+                )
     previous_terminal_identity_versions = {
         "EvaluationMatrixBatchPlan": f"{schema_id}.v3",
         "EvaluationBatchMergeCheckpoint": f"{schema_id}.v2",
@@ -827,24 +821,35 @@ def test_remote_smoke_evidence_registry_explicitly_rejects_v0() -> None:
 
 
 def test_legacy_assembly_request_requires_reauthorization() -> None:
-    with pytest.raises(UnsupportedSpecVersion, match="re-author a current request"):
+    with pytest.raises(UnsupportedSpecVersion, match="re-author a current v7 request"):
         default_spec_registry.migrate(
             "RunAssemblyRequest",
             {"schema_version": "feedbax.spec.run_assembly_request.v1"},
         )
 
 
-def test_run_assembly_request_v4_migrates_without_evaluation_output_policy() -> None:
-    migrated = default_spec_registry.migrate(
-        "RunAssemblyRequest",
-        {
-            "schema_id": "feedbax.spec.run_assembly_request",
-            "schema_version": "feedbax.spec.run_assembly_request.v4",
-        },
-    )
+def test_run_assembly_request_v6_rejects_for_missing_revision_authority() -> None:
+    """v6 has no Feedbax revision authority and a migrator cannot invent one."""
+    with pytest.raises(UnsupportedSpecVersion) as excinfo:
+        default_spec_registry.migrate(
+            "RunAssemblyRequest",
+            {
+                "schema_id": "feedbax.spec.run_assembly_request",
+                "schema_version": "feedbax.spec.run_assembly_request.v6",
+            },
+        )
 
-    assert migrated.payload["schema_version"] == "feedbax.spec.run_assembly_request.v6"
-    assert migrated.payload["evaluation_output_preflight"] is None
+    message = str(excinfo.value)
+    assert "feedbax.spec.run_assembly_request.v6" in message
+    assert "feedbax.spec.run_assembly_request.v7" in message
+    assert "migration_intentionally_absent=yes" in message
+    assert "feedbax_revision" in message
+    assert "re-author a current v7 request" in message
+
+
+def test_no_run_assembly_request_migration_edge_reaches_the_revision_authority() -> None:
+    """Every earlier version rejects rather than reaching v7 through a chain."""
+    assert default_spec_registry.available_migrations("RunAssemblyRequest") == ()
 
 
 def test_deployment_policy_v0_is_explicitly_rejected() -> None:
@@ -868,14 +873,6 @@ def test_driver_registry_schema_migrations_preserve_policy_intent() -> None:
     }
 
     migrated_policy = default_spec_registry.migrate("DeploymentPolicy", policy)
-    migrated_request = default_spec_registry.migrate(
-        "RunAssemblyRequest",
-        {
-            "schema_id": "feedbax.spec.run_assembly_request",
-            "schema_version": "feedbax.spec.run_assembly_request.v5",
-            "deployment_policy": policy,
-        },
-    )
     migrated_bundle = default_spec_registry.migrate(
         "RunBundle",
         {
@@ -887,11 +884,6 @@ def test_driver_registry_schema_migrations_preserve_policy_intent() -> None:
 
     assert migrated_policy.payload["schema_version"] == DEPLOYMENT_POLICY_SCHEMA_VERSION
     assert migrated_policy.payload["driver"] == "fixture:driver"
-    assert migrated_request.payload["schema_version"].endswith(".v6")
-    assert (
-        migrated_request.payload["deployment_policy"]["schema_version"]
-        == DEPLOYMENT_POLICY_SCHEMA_VERSION
-    )
     assert migrated_bundle.payload["schema_version"] == RUN_BUNDLE_SCHEMA_VERSION
     assert (
         migrated_bundle.payload["deployment_policy"]["schema_version"]

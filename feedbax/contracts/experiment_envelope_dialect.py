@@ -72,7 +72,7 @@ receipt does not exist yet.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Annotated, Any, Literal, TypeAlias
@@ -90,6 +90,7 @@ from feedbax.contracts.figure_roles import (
     FigureInputReference,
     PerRowInputReference,
     SharedInputReference,
+    validate_payload_schema_pair,
 )
 from feedbax.contracts.figures import (
     COMPARISON_POLICY_SCHEMA_ID,
@@ -126,9 +127,10 @@ EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v1"
 EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v2"
 EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v3"
 EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v4"
+EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v5"
 
 #: The current grammar. A new document is authored at this version.
-EXPERIMENT_ENVELOPE_SCHEMA_VERSION = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4
+EXPERIMENT_ENVELOPE_SCHEMA_VERSION = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5
 
 #: Enumerated, never inferred. Every member is compiled as authored: a v1 or v2
 #: document is held to its declared grammar and keeps that identity.
@@ -137,6 +139,7 @@ EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = (
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
 )
 
 #: One closed, content-pinned structure shared by root-authored training matrices.
@@ -153,6 +156,7 @@ EXPERIMENT_ENVELOPE_MIGRATION_TABLE: dict[str, str] = {
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
 }
 
 #: The compiler contract is global. There is no per-project contract indirection:
@@ -160,7 +164,8 @@ EXPERIMENT_ENVELOPE_MIGRATION_TABLE: dict[str, str] = {
 EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID = f"{EXPERIMENT_ENVELOPE_FAMILY}.compiler"
 EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1 = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v1"
 EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2 = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v2"
-EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v3"
+EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3 = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v3"
+EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v4"
 
 
 def compiler_contract_version_for_schema(schema: str) -> str:
@@ -173,6 +178,8 @@ def compiler_contract_version_for_schema(schema: str) -> str:
     if schema == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3:
         return EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2
     if schema == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4:
+        return EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3
+    if schema == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5:
         return EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION
     raise ExperimentEnvelopeRejection(
         ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
@@ -891,14 +898,25 @@ class FigureLayerMode(StrEnum):
     ROOT = "root"
 
 
-class FigureRoleContractAuthoring(DialectModel):
-    """The declared closed artifact contract for one row-expanded input role.
+class FigureInputContractAuthoring(DialectModel):
+    """The declared closed artifact contract one figure input's role binds under.
 
     These are the fields of
     :class:`~feedbax.contracts.figure_roles.FigureRoleBindingContract` an author
     decides; ``input_role`` is not among them because the enclosing input already
     states it, and ``manifest_status`` is not among them because only a completed
     manifest is ever bound.
+
+    The contract is not row-expansion vocabulary. What it states — which artifact
+    role, from which provider, at which media type, decoding to which payload
+    schema — is true of any figure input that reads an artifact, and a root
+    figure reads artifacts exactly the way an expanded row does. Row expansion
+    additionally decides *how* the role is filled, and that is the ``binding``
+    and ``binding_key`` pair on the input, not anything here.
+
+    ``payload_schema_id`` and ``payload_schema_version`` pin the decoded payload's
+    identity and are all-or-none; see
+    :func:`~feedbax.contracts.figure_roles.validate_payload_schema_pair`.
     """
 
     kind: str = "AnalysisRunManifest"
@@ -907,16 +925,25 @@ class FigureRoleContractAuthoring(DialectModel):
     artifact_provider: str
     media_type: str = "application/json"
     payload_name: str | None = None
+    payload_schema_id: str | None = None
+    payload_schema_version: str | None = None
     product_role: str | None = None
     product_schema_id: str | None = None
     product_schema_version: str | None = None
     analysis_type: str | None = None
 
     @model_validator(mode="after")
-    def _validate(self) -> "FigureRoleContractAuthoring":
+    def _validate(self) -> "FigureInputContractAuthoring":
         for name in ("kind", "artifact_role", "artifact_provider", "media_type"):
             if not str(getattr(self, name)).strip():
-                raise ValueError(f"a figure role contract states a nonempty {name}")
+                raise ValueError(f"a figure input contract states a nonempty {name}")
+        if self.payload_name is not None and not self.payload_name.strip():
+            raise ValueError("a figure input contract states a nonempty payload_name")
+        validate_payload_schema_pair(
+            self.payload_schema_id,
+            self.payload_schema_version,
+            input_role="<figure input contract>",
+        )
         return self
 
     def binding_contract(self, input_role: str) -> dict[str, Any]:
@@ -945,23 +972,32 @@ class FigureInputAuthoring(DialectModel):
     filled once for every row from one named manifest, so it states that manifest,
     and a figure input outside row expansion has nothing filling it at all unless
     it states one: both fail closed on an omitted ``ref``.
+
+    ``contract`` is the closed artifact contract the manifest bound here must
+    satisfy. It is not row-expansion vocabulary — an artifact role, a provider, a
+    media type, and a decoded payload identity are as true of a root figure's
+    input as of an expanded row's. Which fields a mode admits is therefore
+    decided by the enclosing :class:`FigureLayerAuthoring`, where the mode is
+    stated. What this model owns is what holds under every mode: a nonempty role
+    name, a ``binding``/``binding_key`` pair stated whole or not at all, and the
+    ``ref`` rule above.
     """
 
     input_role: str
     ref: AuthoredReference | None = None
     binding: Literal["per_row", "shared"] | None = None
     binding_key: str | None = None
-    contract: FigureRoleContractAuthoring | None = None
+    contract: FigureInputContractAuthoring | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> "FigureInputAuthoring":
         if not self.input_role.strip():
             raise ValueError("a figure input states a nonempty input role")
-        expanded = (self.binding, self.binding_key, self.contract)
-        if any(item is None for item in expanded) and any(item is not None for item in expanded):
+        if (self.binding is None) != (self.binding_key is None):
             raise ValueError(
-                "a row-expanded figure input states binding, binding_key, and contract "
-                "together; a partial profile is neither a per-row nor a shared role"
+                "a figure input states binding and binding_key together; a binding with no "
+                "key addresses nothing, and a key with no binding says nothing about how the "
+                "role is filled"
             )
         if self.binding_key is not None and not self.binding_key.strip():
             raise ValueError("a figure input states a nonempty binding key")
@@ -1072,6 +1108,13 @@ class FigureLayerAuthoring(DialectModel):
                 f"row_expansion figure inputs {sorted(unprofiled)} state no per-row or "
                 "shared binding profile; expansion cannot fill a role it cannot address"
             )
+        uncontracted = [item.input_role for item in self.inputs if item.contract is None]
+        if uncontracted:
+            raise ValueError(
+                f"row_expansion figure inputs {sorted(uncontracted)} state a binding profile "
+                "and no artifact contract; a profile says how the role is filled and the "
+                "contract says what the fill must satisfy, and expansion needs both"
+            )
         per_row = sorted(item.input_role for item in self.inputs if item.is_per_row)
         if per_row and self.row_custody is not None and not self.row_custody.strip():
             raise ValueError(
@@ -1106,6 +1149,21 @@ class FigureLayerAuthoring(DialectModel):
             )
         return self
 
+    def root_input_contracts(self) -> tuple[tuple[str, FigureInputContractAuthoring], ...]:
+        """Return each root input role and the artifact contract it states.
+
+        A root figure's inputs are addressed by role and filled from one named
+        manifest each, so the contract belongs to the input rather than to a
+        separate role table. An input that states none contributes nothing here;
+        whether that is admissible is a question about the declared grammar
+        version, which :func:`_require_declared_grammar` answers.
+        """
+        return tuple(
+            (item.input_role, item.contract)
+            for item in self.inputs
+            if item.contract is not None
+        )
+
     def _validate_composition(self) -> "FigureLayerAuthoring":
         if self.root is not None:
             raise ValueError("a composition figure does not also state a layer root")
@@ -1125,6 +1183,15 @@ class FigureLayerAuthoring(DialectModel):
             raise ValueError(
                 f"composition figure inputs {sorted(profiled)} state a per-row or shared "
                 "binding profile, which only row_expansion resolves"
+            )
+        contracted = [item.input_role for item in self.inputs if item.contract is not None]
+        if contracted:
+            raise ValueError(
+                f"composition figure inputs {sorted(contracted)} state an artifact contract. "
+                "A composition resolves to its parent's own figure identity and binds no "
+                "artifact payloads of its own, so a contract here would be a declaration "
+                "nothing enforces. State the contract on the root figure the composition "
+                "descends from"
             )
         return self
 
@@ -1188,6 +1255,7 @@ class ExperimentEnvelope(DialectModel):
         "feedbax.experiment_envelope.v2",
         "feedbax.experiment_envelope.v3",
         "feedbax.experiment_envelope.v4",
+        "feedbax.experiment_envelope.v5",
     ] = Field(alias="schema")
     name: str
     base: str | None = None
@@ -1495,6 +1563,100 @@ def _reject_unversioned_construct(
     )
 
 
+#: The version at which a root figure's inputs state their own artifact
+#: contracts, and at which any figure input contract may pin the decoded
+#: payload's schema identity. Before it, a root figure input carried a locator
+#: and nothing else, and the compiled figure named data it could not read.
+ROOT_FIGURE_INPUT_CONTRACT_VERSION = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5
+
+
+def _figure_input_items(document: Mapping[str, Any]) -> tuple[str | None, tuple[Any, ...]]:
+    """Return one document's authored figure mode and its raw input entries."""
+    figure = document.get("figure")
+    if not isinstance(figure, Mapping):
+        return None, ()
+    mode = figure.get("mode")
+    inputs = figure.get("inputs")
+    if not isinstance(inputs, Sequence) or isinstance(inputs, (str, bytes)):
+        return (mode if isinstance(mode, str) else None), ()
+    return (mode if isinstance(mode, str) else None), tuple(inputs)
+
+
+def _require_declared_figure_input_grammar(
+    document: Mapping[str, Any], *, declared: str, field: str
+) -> None:
+    """Hold a figure's authored inputs to the grammar its version names.
+
+    Two facts are v5 grammar. A *root* figure input's ``contract`` is one: before
+    v5 a root input stated a locator and nothing else, the compiled figure was
+    emitted with no input authority at all, and a figure that names artifacts it
+    cannot read is the defect this version exists to close. Pinning the decoded
+    payload's schema identity on any figure input contract is the other.
+
+    At v5 the root rule runs the other way as well: an input states its contract,
+    and that contract states ``payload_name`` explicitly. The fallback that reads
+    the payload name off the input role is a rule nothing writes down, and a role
+    renamed for clarity would silently address a different payload.
+    """
+    mode, inputs = _figure_input_items(document)
+    is_current = declared == ROOT_FIGURE_INPUT_CONTRACT_VERSION
+    for index, item in enumerate(inputs):
+        if not isinstance(item, Mapping):
+            continue
+        contract = item.get("contract")
+        path = f"figure.inputs[{index}].contract"
+        if isinstance(contract, Mapping) and not is_current:
+            pinned = sorted(
+                key
+                for key in ("payload_schema_id", "payload_schema_version")
+                if key in contract
+            )
+            if pinned:
+                _reject_unversioned_construct(
+                    field,
+                    f"{path}.{pinned[0]}",
+                    "the decoded payload schema identity one figure input contract pins",
+                    ROOT_FIGURE_INPUT_CONTRACT_VERSION,
+                    declared,
+                )
+            if mode == FigureLayerMode.ROOT.value:
+                _reject_unversioned_construct(
+                    field,
+                    path,
+                    "the closed artifact contract one root figure input binds under",
+                    ROOT_FIGURE_INPUT_CONTRACT_VERSION,
+                    declared,
+                )
+    if not is_current or mode != FigureLayerMode.ROOT.value:
+        return
+    for index, item in enumerate(inputs):
+        if not isinstance(item, Mapping):
+            continue
+        contract = item.get("contract")
+        role = item.get("input_role")
+        if not isinstance(contract, Mapping):
+            raise ExperimentEnvelopeRejection(
+                ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
+                f"{declared!r} root figure input {role!r} states no artifact contract. A "
+                "root figure input is bound to one manifest and read through an artifact "
+                "payload, and without a contract the compiled figure names data nothing "
+                "authorizes it to read",
+                field=f"{field}#figure.inputs[{index}].contract",
+                correct_home="state the artifact role, provider, media type, and explicit "
+                "payload_name the bound manifest must satisfy on the input itself",
+            )
+        payload_name = contract.get("payload_name")
+        if not isinstance(payload_name, str) or not payload_name.strip():
+            raise ExperimentEnvelopeRejection(
+                ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
+                f"{declared!r} root figure input {role!r} states an artifact contract with "
+                "no explicit 'payload_name'. The name the decoded payload is addressed by "
+                "is stated rather than read off the input role: a role renamed for clarity "
+                "would otherwise silently address a different payload",
+                field=f"{field}#figure.inputs[{index}].contract.payload_name",
+            )
+
+
 def _require_declared_grammar(document: Mapping[str, Any], *, declared: str, field: str) -> None:
     """Refuse a construct the document's own declared version does not have."""
     training = document.get("training")
@@ -1502,6 +1664,7 @@ def _require_declared_grammar(document: Mapping[str, Any], *, declared: str, fie
     if has_root and declared not in (
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
     ):
         _reject_unversioned_construct(
             field,
@@ -1515,7 +1678,11 @@ def _require_declared_grammar(document: Mapping[str, Any], *, declared: str, fie
         if (
             isinstance(layer, Mapping)
             and "root" in layer
-            and declared != EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4
+            and declared
+            not in (
+                EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+                EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+            )
         ):
             _reject_unversioned_construct(
                 field,
@@ -1524,7 +1691,10 @@ def _require_declared_grammar(document: Mapping[str, Any], *, declared: str, fie
                 EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
                 declared,
             )
-    if "comparison" in document and declared != EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4:
+    if "comparison" in document and declared not in (
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+    ):
         _reject_unversioned_construct(
             field,
             "comparison",
@@ -1532,6 +1702,7 @@ def _require_declared_grammar(document: Mapping[str, Any], *, declared: str, fie
             EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
             declared,
         )
+    _require_declared_figure_input_grammar(document, declared=declared, field=field)
     if isinstance(training, Mapping) and not has_root and "rows_mode" not in training:
         raise ExperimentEnvelopeRejection(
             ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
@@ -1539,6 +1710,7 @@ def _require_declared_grammar(document: Mapping[str, Any], *, declared: str, fie
             field=f"{field}#training.rows_mode",
         )
     if declared in (
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
     ):
@@ -1567,12 +1739,20 @@ def migrate_experiment_envelope_payload(
 ) -> dict[str, Any]:
     """Return one authored envelope payload at the current dialect version.
 
-    Each step is deterministic and semantics-preserving: every v1 construct
+    Most steps are deterministic and semantics-preserving: every v1 construct
     means the same thing at v2, and every v2 construct means the same thing at
-    v3, so each migration restates the version and changes nothing else. It is
+    v3, so those migrations restate the version and change nothing else. It is
     deliberately *not* applied by a compile — the authored bytes are the identity
     a compile lock pins, and silently rewriting them would move every downstream
     reference to a document nobody authored.
+
+    The v4 to v5 edge is the one exception, and only for a root figure. v5 makes
+    a root figure input state the artifact contract it binds under, including an
+    explicit payload name. That information is not a restatement of anything a v4
+    root envelope carries — it is a fact about the artifacts the root's pinned
+    authority reads — so there is nothing to derive it from, and deriving it
+    anyway would author a contract nobody wrote and then authenticate against it.
+    Such a document is re-authored at v5, and this refuses rather than guesses.
 
     A document already at the current version is returned unchanged. An
     unsupported version refuses here, by version, as it does at parse.
@@ -1582,9 +1762,34 @@ def migrate_experiment_envelope_payload(
         return dict(document)
     migrated = dict(document)
     while declared != EXPERIMENT_ENVELOPE_SCHEMA_VERSION:
-        declared = EXPERIMENT_ENVELOPE_MIGRATION_TABLE[declared]
+        target = EXPERIMENT_ENVELOPE_MIGRATION_TABLE[declared]
+        if target == ROOT_FIGURE_INPUT_CONTRACT_VERSION:
+            _require_root_figure_reauthoring(migrated, declared=declared, field=field)
+        declared = target
         migrated = {**migrated, "schema": declared}
     return migrated
+
+
+def _require_root_figure_reauthoring(
+    document: Mapping[str, Any], *, declared: str, field: str
+) -> None:
+    """Refuse to restate a root figure envelope's version into v5."""
+    mode, _inputs = _figure_input_items(document)
+    if mode != FigureLayerMode.ROOT.value:
+        return
+    raise ExperimentEnvelopeRejection(
+        ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+        f"a {declared!r} root figure envelope has no deterministic migration to "
+        f"{ROOT_FIGURE_INPUT_CONTRACT_VERSION!r}; "
+        "migration_intentionally_absent=yes. At v5 a root figure input states the closed "
+        "artifact contract its bound manifest must satisfy — artifact role, provider, media "
+        "type, decoded payload identity, and an explicit payload name — and none of that is "
+        "stated anywhere in a v4 root figure envelope. A migration would have to invent it, "
+        "and an invented contract is one execution would then authenticate against",
+        field=f"{field}#figure.mode",
+        correct_home="re-author the root figure envelope at "
+        f"{ROOT_FIGURE_INPUT_CONTRACT_VERSION!r}, stating each input's artifact contract",
+    )
 
 
 def _require_supported_schema(document: Mapping[str, Any], *, field: str) -> str:
@@ -1651,6 +1856,7 @@ __all__ = [
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION",
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1",
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2",
+    "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3",
     "EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID",
     "EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION",
     "EXPERIMENT_ENVELOPE_FAMILY",
@@ -1660,6 +1866,7 @@ __all__ = [
     "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2",
     "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3",
     "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4",
+    "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5",
     "EXPERIMENT_ENVELOPE_SUFFIX",
     "EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS",
     "FIGURE_COMPOSITION_OUTPUT",
@@ -1669,6 +1876,7 @@ __all__ = [
     "LAYER_RECIPE_PATH",
     "REPORT_OUTPUT",
     "REPORT_PARAMS_MODELS",
+    "ROOT_FIGURE_INPUT_CONTRACT_VERSION",
     "TRAINING_OUTPUT",
     "TRAINING_OUTPUT_V6",
     "V2_ONLY_CONSTRUCTS",
@@ -1689,10 +1897,10 @@ __all__ = [
     "ExperimentEnvelope",
     "ExperimentEnvelopeLayer",
     "FigureInputAuthoring",
+    "FigureInputContractAuthoring",
     "FigureLayerAuthoring",
     "FigureLayerMode",
     "FigureLayerRootAuthority",
-    "FigureRoleContractAuthoring",
     "LayerOutputContract",
     "ExperimentLayerRootAuthority",
     "NotApplicableAuthoring",

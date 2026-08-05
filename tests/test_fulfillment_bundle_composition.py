@@ -533,10 +533,18 @@ def test_a_template_bundle_runs_through_its_own_expansion(
     assert load_manifest(result.receipts[0].path).kind == "AnalysisRunManifest"
 
 
-def test_a_bundle_never_runs_in_an_environment_it_cannot_carry_bindings_into(
+def test_a_bundle_runs_under_an_already_resolved_staged_context(
     outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
 ) -> None:
-    """A resolved staged context cannot be turned back into bundle bindings."""
+    """A resolved context is handed to the bundle as itself, not turned back into bindings.
+
+    The bundle used to refuse any environment declaring a staged context, on the
+    grounds that a resolved context cannot be reconstructed into a descriptor
+    plus root bindings. That was true and the wrong conclusion: it does not need
+    to be reconstructed, it needs to be *passed*. What the bundle adds on top is
+    its own root locations, because a bundle re-roles the manifests it selects
+    and a staged context addresses a parent by its complete reference.
+    """
     from dataclasses import replace
 
     from feedbax.analysis.execution_context import (
@@ -551,9 +559,32 @@ def test_a_bundle_never_runs_in_an_environment_it_cannot_carry_bindings_into(
             EMPTY_STAGED_EXECUTION_CONTEXT, outputs.root
         ),
     )
-    with pytest.raises(ValueError, match="staged execution context"):
-        _fulfill(outputs, target, environment=staged)
-    assert calls.analysis == 0
+    run = _fulfill(outputs, target, environment=staged)
+    assert calls.analysis == 1
+    assert [receipt.node_kind for receipt in run.results[-1].receipts] == ["analysis"]
+
+
+def test_a_resolved_context_and_raw_bundle_bindings_are_mutually_exclusive(
+    application_registry_bundle, tmp_path
+) -> None:
+    """Two statements of the same bindings, one of which would silently lose."""
+    from feedbax.analysis.bundles import execute_staged_analysis_bundle
+    from feedbax.analysis.execution_context import (
+        EMPTY_STAGED_EXECUTION_CONTEXT,
+        StagedArtifactProviderRootBinding,
+        StagedExecutionContextError,
+    )
+
+    with pytest.raises(StagedExecutionContextError, match="cannot be combined"):
+        execute_staged_analysis_bundle(
+            {"name": "irrelevant", "stages": []},
+            root=tmp_path,
+            execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+            artifact_provider_bindings=[
+                StagedArtifactProviderRootBinding("results", tmp_path)
+            ],
+            registries=application_registry_bundle,
+        )
 
 
 def test_a_bundle_stating_no_work_refuses(

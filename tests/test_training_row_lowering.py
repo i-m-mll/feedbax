@@ -26,7 +26,10 @@ from feedbax.contracts.run_matrix import (
 )
 from feedbax.contracts.run_composition import (
     AuthoredIntentParent,
+    CanonicalJsonDocumentPin,
+    CompiledTrainingRowParent,
     CompositionNode,
+    CompositionNodeV2,
     ResolvedOutputParent,
     authored_envelope_hash,
     flatten_composition,
@@ -83,6 +86,7 @@ from feedbax.training.spec_storage import (
     TRAINING_RUN_MATRIX_COMPILER_VERSION,
     register_training_run_matrix_compiler,
 )
+from feedbax.orchestration.revision import resolve_feedbax_revision
 
 
 _AUTHORED_SCHEMA_ID = "tests.spec.downstream_authored_row"
@@ -205,6 +209,7 @@ def _write_request(
     matrix_path = tmp_path / "matrix.json"
     matrix_path.write_bytes(matrix_bytes)
     request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
         authored=SchemaArtifactRef(
             schema_id=TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
             schema_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
@@ -286,6 +291,7 @@ def _write_parent_request(
             uri=str(path),
         )
     request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
         authored=refs["matrix"],
         compiler=CompilerIdentity(
             compiler_id=TRAINING_RUN_MATRIX_COMPILER_ID,
@@ -548,6 +554,7 @@ def test_assembly_supplies_exact_composition_parents_and_binds_provenance(
         )
 
     request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
         authored=artifact_ref("matrix", matrix),
         compiler=CompilerIdentity(
             compiler_id=TRAINING_RUN_MATRIX_COMPILER_ID,
@@ -624,6 +631,191 @@ def test_assembly_supplies_exact_composition_parents_and_binds_provenance(
         assemble(request, "tampered")
 
 
+def _governed_compiled_row_parent() -> CompositionNodeV2:
+    """One composition-v2 parent whose own parent is a governed compiled row."""
+    pin = training_spec_sha256({"pin": "governed"})
+    return CompositionNodeV2(
+        name="parent",
+        parent=CompiledTrainingRowParent(
+            matrix=CanonicalJsonDocumentPin(ref="governed/matrix.json", sha256=pin),
+            compile_lock=CanonicalJsonDocumentPin(ref="governed/compile.lock.json", sha256=pin),
+            row_id="governed-row",
+        ),
+    )
+
+
+def _assemble_governed_parent(
+    tmp_path: Path,
+    *,
+    parent_document: dict[str, object],
+    content_hash: str,
+    run_set_id: str,
+):
+    """Assemble one row whose declared governed parent is ``parent_document``."""
+    terminal = _execution_payload()
+    child_parent = AuthoredIntentParent(ref="parent", content_hash=content_hash)
+    child = CompositionNode(name="child", parent=child_parent)
+
+    def lower(
+        row: AuthoredTrainingRow,
+        context: TrainingRowLoweringContext,
+    ) -> TrainingRowLoweringResult:
+        def resolve(parent):
+            if isinstance(parent, CompiledTrainingRowParent):
+                return dict(terminal)
+            return context.resolve_parent(parent)
+
+        resolved_parent = context.resolve_parent(child_parent)
+        assert isinstance(resolved_parent, CompositionNodeV2)
+        assert isinstance(resolved_parent.parent, CompiledTrainingRowParent)
+        flattened = flatten_composition(
+            CompositionNode.model_validate(row.payload["composition"]),
+            resolve,
+        )
+        return TrainingRowLoweringResult(
+            execution_payload=flattened.payload,
+            lowerer_identities=[
+                RowLowererIdentity(
+                    lowerer_id=_LOWERER_ID,
+                    lowerer_version=_LOWERER_VERSION,
+                )
+            ],
+        )
+
+    registration = TrainingRowLowererRegistration(
+        authored_schema_id=_AUTHORED_SCHEMA_ID,
+        authored_schema_version=_AUTHORED_SCHEMA_VERSION,
+        lowerer_id=_LOWERER_ID,
+        lowerer_version=_LOWERER_VERSION,
+        implementation_sha256=training_row_lowerer_implementation_sha256(lower),
+        lower=lower,
+        owner="tests",
+    )
+    lowerers = TrainingRowLowererRegistry()
+    lowerers.register(registration)
+    authored_row = {
+        **_authored_payload(registration.implementation_sha256),
+        "composition": child.model_dump(mode="json", exclude_none=True),
+    }
+    authored_row.pop("execution_payload")
+    authored_path = tmp_path / f"{run_set_id}-authored-row.json"
+    authored_path.write_bytes(training_spec_canonical_bytes(authored_row))
+    matrix = {
+        "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+        "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        "name": "governed compiled-row parent",
+        "base": {
+            "kind": "authored_intent",
+            "ref": authored_path.name,
+            "content_hash": training_spec_sha256(authored_row),
+        },
+        "rows": [{"row_id": "row", "seed": 7}],
+    }
+    payloads = {
+        "matrix": training_spec_canonical_bytes(matrix),
+        "parent": training_spec_canonical_bytes(parent_document),
+    }
+
+    def artifact_ref(name: str, payload: dict[str, object]) -> SchemaArtifactRef:
+        return SchemaArtifactRef(
+            schema_id=str(payload["schema_id"]),
+            schema_version=str(payload["schema_version"]),
+            artifact_id=name,
+            sha256=hashlib.sha256(payloads[name]).hexdigest(),
+        )
+
+    request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
+        authored=artifact_ref("matrix", matrix),
+        compiler=CompilerIdentity(
+            compiler_id=TRAINING_RUN_MATRIX_COMPILER_ID,
+            compiler_version=TRAINING_RUN_MATRIX_COMPILER_VERSION,
+        ),
+        training_row_parents=[
+            GovernedTrainingRowParentDeclaration(
+                role="parent",
+                parent=child_parent,
+                artifact=artifact_ref("parent", parent_document),
+            )
+        ],
+        deployment_policy=DeploymentPolicy(
+            driver="local",
+            venue="local",
+            cloud_authorized=False,
+            review_required=False,
+            review_authorized=False,
+        ),
+        environment=EnvironmentDeclaration(python_version="3.13"),
+        launch_policy=LaunchPolicy(max_parallel_rows=1),
+        budget=BudgetPolicy(max_wall_clock_seconds=30),
+    )
+    registry = AssemblyCompilerRegistry()
+    register_training_run_matrix_compiler(
+        registry,
+        method_registry=default_training_method_registry(),
+        row_lowerer=lowerers.lower,
+        row_validator=lambda payload, _row_id: TrainingRunSpec.model_validate(payload),
+    )
+    return assemble_run_bundle(
+        request,
+        run_set_id=run_set_id,
+        context=AssemblyContext(
+            custody_root=tmp_path / run_set_id,
+            repo_root=tmp_path,
+            artifact_resolver=lambda ref: bytes(payloads[ref.artifact_id]),
+        ),
+        registry=registry,
+    )
+
+
+def test_assembly_accepts_compiled_training_row_governed_parent(tmp_path: Path) -> None:
+    parent = _governed_compiled_row_parent()
+    bundle = _assemble_governed_parent(
+        tmp_path,
+        parent_document=parent.model_dump(mode="json", exclude_none=True),
+        content_hash=authored_envelope_hash(parent),
+        run_set_id="compiled-row",
+    )
+
+    provenance = bundle.rows[0].execution.row_provenance
+    assert provenance is not None
+    assert [(item.parent_kind, item.ref) for item in provenance.parent_inputs] == [
+        ("authored_intent", "parent")
+    ]
+
+
+def test_assembly_rejects_unsupported_governed_parent_composition_version(
+    tmp_path: Path,
+) -> None:
+    parent = _governed_compiled_row_parent()
+    document = {
+        **parent.model_dump(mode="json", exclude_none=True),
+        "schema_version": "feedbax.spec.training_run_composition.v3",
+    }
+
+    with pytest.raises(ValueError, match="unsupported feedbax.spec.training_run_composition"):
+        _assemble_governed_parent(
+            tmp_path,
+            parent_document=document,
+            content_hash=authored_envelope_hash(parent),
+            run_set_id="unsupported-version",
+        )
+
+
+def test_assembly_rejects_unknown_governed_parent_kind(tmp_path: Path) -> None:
+    parent = _governed_compiled_row_parent()
+    document = parent.model_dump(mode="json", exclude_none=True)
+    document["parent"] = {**document["parent"], "kind": "no_such_parent_kind"}
+
+    with pytest.raises(ValidationError, match="no_such_parent_kind"):
+        _assemble_governed_parent(
+            tmp_path,
+            parent_document=document,
+            content_hash=authored_envelope_hash(parent),
+            run_set_id="unknown-kind",
+        )
+
+
 def test_lowerer_reference_rejects_unsupported_versions() -> None:
     payload = _authored_payload()[TRAINING_ROW_LOWERER_REF_FIELD]
     assert isinstance(payload, dict)
@@ -645,7 +837,9 @@ def test_lowerer_reference_rejects_unsupported_versions() -> None:
 
 def test_installed_plugin_replays_identical_rows_across_fresh_processes(
     tmp_path: Path,
+    subprocess_dirty_tolerance,
 ) -> None:
+    subprocess_dirty_tolerance(tmp_path)
     plugin_path = tmp_path / "downstream_row_plugin.py"
     plugin_path.write_text(
         """

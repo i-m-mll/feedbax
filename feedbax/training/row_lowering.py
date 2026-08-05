@@ -22,9 +22,10 @@ from feedbax.contracts.run_matrix import (
 )
 from feedbax.contracts.run_composition import (
     AuthoredIntentParent,
-    CompositionNode,
+    CompositionDocument,
     ResolvedOutputParent,
     authored_envelope_hash,
+    parse_composition_node,
 )
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
 from feedbax.registry_errors import RegistryCollisionError
@@ -101,7 +102,7 @@ class TrainingRowLoweringContext:
 
     def resolve_parent(
         self, parent: AuthoredIntentParent | ResolvedOutputParent
-    ) -> CompositionNode | dict[str, Any]:
+    ) -> CompositionDocument | dict[str, Any]:
         """Resolve one exact declaration and recheck its semantic content pin."""
         matches = [
             item
@@ -131,9 +132,9 @@ class TrainingRowLoweringContext:
             )
         payload = governed.payload()
         if isinstance(parent, AuthoredIntentParent):
-            node = CompositionNode.model_validate(payload)
+            node = parse_composition_node(payload)
             observed_hash = authored_envelope_hash(node)
-            result: CompositionNode | dict[str, Any] = node
+            result: CompositionDocument | dict[str, Any] = node
         else:
             observed_hash = training_spec_sha256(payload)
             result = payload

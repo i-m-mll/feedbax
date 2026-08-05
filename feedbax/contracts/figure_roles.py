@@ -92,6 +92,39 @@ AUTHORED_AUTHORITY_FIELDS = frozenset(
 )
 
 
+def validate_payload_schema_pair(
+    payload_schema_id: str | None,
+    payload_schema_version: str | None,
+    *,
+    input_role: str,
+) -> None:
+    """Refuse a half-stated decoded-payload schema identity.
+
+    An artifact contract either pins the identity of the payload it decodes or
+    states nothing about it. Half of the pair is neither: an id alone admits
+    every version of that schema, and a version alone admits every schema that
+    happens to spell its version the same way. Both models that carry the pair —
+    the authored dialect contract and the runtime binding contract — refuse
+    through here, so one rule states it once.
+
+    Raises:
+        ValueError: Exactly one of the two is stated, or one of them is blank.
+    """
+    stated = (payload_schema_id, payload_schema_version)
+    if any(value is not None and not str(value).strip() for value in stated):
+        raise ValueError(
+            f"figure input role {input_role!r} states a blank payload schema identity; a "
+            "stated payload schema is a nonempty schema id and a nonempty schema version"
+        )
+    if (payload_schema_id is None) != (payload_schema_version is None):
+        raise ValueError(
+            f"figure input role {input_role!r} states payload_schema_id and "
+            "payload_schema_version together or states neither; half a payload schema "
+            "identity pins nothing, because an id without a version admits every version "
+            "of that schema"
+        )
+
+
 class FigureRoleReferenceError(ValueError):
     """One actionable rejection naming the offending role and field."""
 
@@ -117,7 +150,16 @@ FigureInputReference: TypeAlias = PerRowInputReference | SharedInputReference
 
 
 class FigureRoleBindingContract(StrictModel):
-    """The declared, closed artifact contract for one figure input role."""
+    """The declared, closed artifact contract for one figure input role.
+
+    ``payload_schema_id`` and ``payload_schema_version`` pin the identity of the
+    decoded JSON payload the selected artifact must carry. Figure execution
+    already verifies both against the bytes it reads
+    (:class:`~feedbax.contracts.figures.FigureArtifactPayload`), so stating them
+    here is what lets a declaration reach that check instead of leaving it
+    unstated. They are all-or-none: a schema id without a version pins half an
+    identity, and half an identity admits every version of that schema.
+    """
 
     input_role: str
     kind: str = "AnalysisRunManifest"
@@ -127,6 +169,8 @@ class FigureRoleBindingContract(StrictModel):
     manifest_status: Literal["completed"] = "completed"
     media_type: str = "application/json"
     payload_name: str | None = None
+    payload_schema_id: str | None = None
+    payload_schema_version: str | None = None
     product_role: str | None = None
     product_schema_id: str | None = None
     product_schema_version: str | None = None
@@ -136,6 +180,11 @@ class FigureRoleBindingContract(StrictModel):
     def _validate_contract(self) -> "FigureRoleBindingContract":
         if not self.input_role.strip():
             raise ValueError("FigureRoleBindingContract input_role must be nonempty")
+        validate_payload_schema_pair(
+            self.payload_schema_id,
+            self.payload_schema_version,
+            input_role=self.input_role,
+        )
         product_fields = (self.product_role, self.product_schema_id, self.product_schema_version)
         if self.authority == "analysis_data_product":
             if any(value is None for value in product_fields):
@@ -166,6 +215,9 @@ class FigureRoleBindingContract(StrictModel):
             "media_type": self.media_type,
             "manifest_status": self.manifest_status,
         }
+        if self.payload_schema_id is not None:
+            payload["payload_schema_id"] = self.payload_schema_id
+            payload["payload_schema_version"] = self.payload_schema_version
         if self.authority == "analysis_data_product":
             payload.update(
                 {
@@ -787,4 +839,5 @@ __all__ = [
     "per_row_binding_keys",
     "resolve_figure_input_roles",
     "row_namespace",
+    "validate_payload_schema_pair",
 ]

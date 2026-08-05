@@ -107,21 +107,31 @@ from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeRejection,
     ExperimentEnvelopeRejectionCategory,
 )
+from feedbax.contracts.figure_roles import FigureRoleBindingContract
 from feedbax.contracts.manifest import StrictModel
 
 EXPERIMENT_COMPILE_LOCK_SCHEMA_ID = "feedbax.spec.experiment_compile_lock"
 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v1"
-EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1
+EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v2"
+EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2
 
-#: The only lock versions read. Enumerated, never inferred.
+#: The only lock versions read. Enumerated, never inferred. v1 remains readable
+#: as exactly the grammar it names: a lock recorded before figure runtime input
+#: bindings could carry a typed artifact contract still describes a real compile,
+#: and the nodes it binds still execute — a root figure input bound by a v1
+#: reference is refused at lowering, by name, rather than by version here.
 EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
 )
 
-#: Versions this loader accepts, mapped to the version they migrate to. Empty at
-#: v1: no Feedbax-owned lock predates it. A project-owned lock family that
-#: migrates into this one registers its edge here and in ``default_spec_registry``
-#: in one change, which is the slot the downstream conversion lane fills.
+#: Versions this loader accepts, mapped to the version they migrate to. Empty:
+#: v1 is read as v1 rather than restated as v2, because the only thing v2 adds is
+#: a contract v1 does not carry, and stamping a v2 version onto a document that
+#: still lacks it would rename the absence instead of filling it. A project-owned
+#: lock family that migrates into this one registers its edge here and in
+#: ``default_spec_registry`` in one change, which is the slot the downstream
+#: conversion lane fills.
 EXPERIMENT_COMPILE_LOCK_MIGRATION_TABLE: dict[str, str] = {}
 
 #: Facts that only exist after a run is allocated. They belong to the run
@@ -234,14 +244,31 @@ class FigureRuntimeInputBinding(StrictModel):
     :class:`~feedbax.contracts.figures.FigureInputRoleAuthority` addresses its
     single exact parent by; this binding is the compile-time statement of the
     same role.
+
+    ``contract`` is the closed artifact contract the envelope authored for that
+    role: which artifact of the bound manifest is read, from which provider, at
+    which media type, and under which decoded payload identity and name. It is
+    the durable half of the fix for a root figure that recorded its inputs and
+    then rendered with no authority over them at all — the lowering builds the
+    runtime :class:`~feedbax.contracts.figures.FigureInputRoleAuthority` from
+    this and from nothing else. It is optional because a lock recorded at
+    ``feedbax.spec.experiment_compile_lock.v1`` predates it; a v1 lock stating one
+    is refused rather than read as a v2.
     """
 
     consumer: Literal["figure_runtime_input"] = "figure_runtime_input"
     input_role: str
+    contract: FigureRoleBindingContract | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> "FigureRuntimeInputBinding":
         _require_nonempty(self.input_role, "figure_runtime_input input_role")
+        if self.contract is not None and self.contract.input_role != self.input_role:
+            raise ValueError(
+                "figure_runtime_input contract names input_role "
+                f"{self.contract.input_role!r} while the binding addresses "
+                f"{self.input_role!r}; one binding states one role"
+            )
         return self
 
 
@@ -1047,8 +1074,8 @@ def _validate_lock_execution_identity(lock: Mapping[str, Any], field: str) -> No
         )
 
 
-def _validate_v1_compile_lock(lock: Mapping[str, Any], field: str) -> None:
-    """Validate the whole v1 document, not only the blocks a reader happens to use.
+def _validate_compile_lock_body(lock: Mapping[str, Any], field: str) -> None:
+    """Validate the whole document, not only the blocks a reader happens to use.
 
     A lock is the compile-side half of the custody boundary: every consumer that
     trusts it trusts all of it. Validating identity and references while leaving
@@ -1098,6 +1125,35 @@ def _validate_v1_compile_lock(lock: Mapping[str, Any], field: str) -> None:
     _validate_lock_assertions(lock, field)
     _validate_lock_provenance(lock, field)
     _validate_lock_execution_identity(lock, field)
+
+
+def _refuse_v1_figure_input_contract(references: Sequence[Any], *, field: str) -> None:
+    """Refuse a v1 lock that states a v2 figure runtime input contract.
+
+    A version names one grammar. The typed artifact contract on a figure runtime
+    input binding is v2 grammar, and a v1 document carrying one is a v2 document
+    wearing the wrong version — accepting it as a wider v1 would make "v1" the
+    name of two grammars, and a reader that then ignored the contract would
+    render the figure with no authority over the artifacts it names.
+    """
+    for index, reference in enumerate(references):
+        if not isinstance(reference, Mapping):
+            continue
+        consumer = reference.get("consumer")
+        if not isinstance(consumer, Mapping):
+            continue
+        if consumer.get("consumer") != "figure_runtime_input":
+            continue
+        if consumer.get("contract") is None:
+            continue
+        raise ExperimentEnvelopeRejection(
+            ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+            "a figure runtime input binding's typed artifact contract is "
+            f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2!r} grammar, and this lock declares "
+            f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1!r}. A version names exactly one "
+            "grammar, so it is refused here rather than accepted as a wider v1",
+            field=f"{field}#references[{index}]#consumer.contract",
+        )
 
 
 def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
@@ -1151,6 +1207,8 @@ def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
         )
     for index, reference in enumerate(references):
         parse_compile_lock_reference(reference, field=f"{field}#references[{index}]")
+    if version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1:
+        _refuse_v1_figure_input_contract(references, field=field)
     provenance = lock.get("row_provenance", [])
     if not isinstance(provenance, Sequence) or isinstance(provenance, (str, bytes)):
         raise ExperimentEnvelopeRejection(
@@ -1160,7 +1218,7 @@ def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
         )
     for index, record in enumerate(provenance):
         parse_row_provenance_reference(record, field=f"{field}#row_provenance[{index}]")
-    _validate_v1_compile_lock(lock, field)
+    _validate_compile_lock_body(lock, field)
     return lock
 
 
@@ -1188,6 +1246,7 @@ __all__ = [
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_ID",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1",
+    "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2",
     "EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS",
     "RUN_RECEIPT_ONLY_FACTS",
     "AnalysisInputBinding",

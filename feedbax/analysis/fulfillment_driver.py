@@ -56,11 +56,32 @@ hash sits happily beside an edge whose byte profile was removed.
 ## Missing receipts are refusals, and the lock says which bytes count
 
 An input the plan carries as an already-produced external receipt is resolved at
-its canonical ``(kind, id, root)`` location, never through the manifest index,
-which is derived acceleration. An external receipt that is absent is a
-structured refusal (:class:`MissingExternalReceiptError`), never an
-inapplicability: a missing receipt means not-yet-produced, wrong-root, or
-corrupt, and each of those is its own outcome.
+its canonical ``(kind, id)`` location within whichever authority holds it, never
+through the manifest index, which is derived acceleration. An external receipt
+that is absent from every declared authority is a structured refusal
+(:class:`MissingExternalReceiptError`), never an inapplicability: a missing
+receipt means not-yet-produced, wrong-root, or corrupt, and each of those is its
+own outcome.
+
+## One reference, one authority
+
+A run declares the authorities it may read from: the receipt root always, plus
+whatever retained manifest stores and immutable artifact providers the caller
+bound by name. They are searched together and they are not ranked. A reference
+held by two of them is :class:`AmbiguousExternalReceiptError` rather than a tie
+to be broken, because each authority is a separate custody domain the caller
+declared deliberately, and preferring one would silently pick a domain nobody
+chose. The refusal happens during resolution, before any node executes.
+
+## The staged context is per node, and it is on the request
+
+A node's parents are located exactly once, by the resolution that bound them,
+and the resulting :class:`~feedbax.analysis.execution_context.StagedExecutionContext`
+is carried on the node request rather than assembled during the walk. Ordinary
+fulfillment, cached admission, rebuild-as-verification, and repair all lower each
+node again, so the request is the only place a per-node context survives all four.
+A run that declared no staged bindings lowers no context at all, which leaves the
+cold-start path exactly as it was.
 
 Addressing a receipt is not authenticating it. When the compile lock quoted a
 byte profile — an ``authenticated_receipt`` reference — the bytes found at that
@@ -112,7 +133,18 @@ from feedbax.analysis.fulfillment_derivation import (
     lock_edge_declarations,
     require_external_record,
 )
+from feedbax.analysis.execution_context import (
+    EMPTY_STAGED_EXECUTION_CONTEXT,
+    StagedExecutionContext,
+    StagedParentExecutionLocation,
+    with_staged_repo_root,
+    with_staged_resolved_parents,
+)
 from feedbax.analysis.fulfillment_lowering import lower_compiled_node
+from feedbax.analysis.manifest_inputs import (
+    canonical_staged_manifest_locator,
+    is_staged_manifest_kind,
+)
 from feedbax.analysis.fulfillment_plan import (
     FulfillmentPlan,
     LogicalKey,
@@ -129,6 +161,7 @@ from feedbax.contracts.manifest import (
     AnyManifest,
     ParentRef,
     authenticated_manifest_ref_metadata,
+    authenticated_manifest_ref_profile,
     canonical_manifest_path,
     load_manifest_bytes,
 )
@@ -193,11 +226,11 @@ class ExternalBoundaryError(FulfillmentDriverError):
 
 
 class MissingExternalReceiptError(FulfillmentDriverError):
-    """An input the plan carries as an already-produced receipt is not in the root.
+    """An input the plan carries as an already-produced receipt is in no authority.
 
-    The plan states that some previous run produced this reference; the receipt
-    root does not hold it at its canonical location. That is not-yet-copied,
-    wrong-root, or deleted — never evidence that the input does not apply.
+    The plan states that some previous run produced this reference; none of the
+    authorities the run declared holds it. That is not-yet-copied, wrong-root, or
+    deleted — never evidence that the input does not apply.
     """
 
     def __init__(
@@ -208,10 +241,60 @@ class MissingExternalReceiptError(FulfillmentDriverError):
         *,
         consumer: LogicalKey | None = None,
         role_path: Sequence[str] = (),
+        searched: Sequence[str] = (),
     ) -> None:
         self.kind = kind
         self.manifest_id = manifest_id
         self.path = path
+        self.consumer = consumer
+        self.role_path = tuple(role_path)
+        self.searched = tuple(searched)
+        origin = (
+            f"{consumer.text} declares input {list(self.role_path)} as the already-produced "
+            if consumer is not None
+            else "the plan names the already-produced "
+        )
+        # One authority is the receipt root alone, and its canonical location is
+        # the whole answer. Several authorities means a declared staged surface,
+        # and naming only one of them would describe a search that did not happen.
+        where = (
+            f"canonical location {path}"
+            if len(self.searched) < 2
+            else f"canonical location under any declared authority ({', '.join(self.searched)})"
+        )
+        super().__init__(
+            f"{origin}{kind} {manifest_id!r}, but no completed receipt is stored at its "
+            f"{where}. A missing receipt is not-yet-produced, wrong-root, or "
+            "deleted; it never means the input does not apply."
+        )
+
+
+class AmbiguousExternalReceiptError(FulfillmentDriverError):
+    """One already-produced receipt is held by more than one declared authority.
+
+    A reference names one artifact, so it must resolve to one authority. Two
+    authorities holding a completed manifest of the same kind and id is not a
+    tie to be broken: there is no precedence among a receipt root, a retained
+    manifest store, and an immutable artifact provider, because each is a
+    separate custody domain the caller declared deliberately. Preferring one
+    would silently pick a custody domain nobody chose, and the two could differ
+    in exactly the bytes an authenticated reference exists to pin.
+
+    This refuses during resolution, before any node of the closure executes.
+    """
+
+    def __init__(
+        self,
+        kind: str,
+        manifest_id: str,
+        authorities: Sequence[str],
+        *,
+        consumer: LogicalKey | None = None,
+        role_path: Sequence[str] = (),
+    ) -> None:
+        self.kind = kind
+        self.manifest_id = manifest_id
+        self.authorities = tuple(authorities)
         self.consumer = consumer
         self.role_path = tuple(role_path)
         origin = (
@@ -220,10 +303,22 @@ class MissingExternalReceiptError(FulfillmentDriverError):
             else "the plan names the already-produced "
         )
         super().__init__(
-            f"{origin}{kind} {manifest_id!r}, but no completed receipt is stored at its "
-            f"canonical location {path}. A missing receipt is not-yet-produced, wrong-root, or "
-            "deleted; it never means the input does not apply."
+            f"{origin}{kind} {manifest_id!r}, which is held by "
+            f"{len(self.authorities)} declared authorities: {', '.join(self.authorities)}. "
+            "A reference names one artifact and must resolve through one authority; there is "
+            "no precedence among the receipt root, retained manifest stores, and artifact "
+            "providers, so bind exactly one of them for this reference."
         )
+
+    def record_detail(self) -> dict[str, Any]:
+        """Return the structured refusal, deterministic in every field."""
+        return {
+            "consumer": None if self.consumer is None else self.consumer.text,
+            "role_path": list(self.role_path),
+            "manifest_kind": self.kind,
+            "manifest_id": self.manifest_id,
+            "authorities": list(self.authorities),
+        }
 
 
 class AmbiguousNodeReceiptError(FulfillmentDriverError):
@@ -450,14 +545,113 @@ class NodeBinding:
         return self.resolved_external(edge).parent_ref(role)
 
     def exact_parent_entry(self, edge: PlanEdge, *, role: str) -> StagedExactParentEntry:
-        """Bind one required edge to the root-relative location it executes from."""
+        """Bind one required edge to the location within its authority it executes from.
+
+        The locator is relative to the authority that actually holds the bytes,
+        which for a receipt produced in this closure and for a reference resolved
+        beneath the receipt root is the receipt root, and for a reference
+        resolved through a retained store or an artifact provider is that root.
+        Making it relative to the receipt root regardless would describe a file
+        that is not there.
+        """
         receipt = self.producer_receipt(edge)
         if receipt is not None:
             return receipt_exact_parent_entry(receipt, role=role)
         resolved = self.resolved_external(edge)
         return StagedExactParentEntry(
             parent=resolved.parent_ref(role),
-            execution_uri=resolved.path.relative_to(Path(self.environment.root)).as_posix(),
+            execution_uri=resolved.execution_uri,
+        )
+
+    def parent_location(self, edge: PlanEdge, *, role: str) -> StagedParentExecutionLocation:
+        """Bind one required edge to the staged execution location it resolves at.
+
+        This is :meth:`exact_parent_entry` plus the authority the locator is
+        relative to, which is what a staged execution context needs and a
+        ``StagedExactParents`` document does not carry: the document travels with
+        a report and states locations within one root, while the context states
+        which root each parent's bytes live beneath.
+        """
+        receipt = self.producer_receipt(edge)
+        if receipt is not None:
+            entry = receipt_exact_parent_entry(receipt, role=role)
+            return StagedParentExecutionLocation(
+                parent=entry.parent,
+                root=Path(self.environment.root),
+                execution_uri=entry.execution_uri,
+            )
+        return self.resolved_external(edge).execution_location(role)
+
+    def authenticated_parent_location(
+        self, parent: ParentRef
+    ) -> StagedParentExecutionLocation:
+        """Locate one already-authenticated parent that no plan edge bound.
+
+        A row-expanded figure's per-row parents come from produced custody rather
+        than from a plan edge, and they are complete authenticated references, so
+        they are located by the same exactly-one authority search every external
+        edge takes. Nothing about that search is relaxed here: a parent held by
+        two declared authorities refuses, and a parent held by none refuses.
+        """
+        profile = authenticated_manifest_ref_profile(parent)
+        if profile is None:
+            raise MissingExternalReceiptError(
+                parent.kind,
+                parent.id,
+                canonical_manifest_path(
+                    parent.kind, parent.id, root=Path(self.environment.root)
+                ),
+            )
+        digest, size_bytes = profile
+        authorities = declared_manifest_authorities(
+            parent.kind,
+            parent.id,
+            root=Path(self.environment.root),
+            manifest_sha256=digest,
+            size_bytes=size_bytes,
+            execution_context=self.environment.execution_context,
+        )
+        authority, _raw, _manifest = require_single_manifest_authority(
+            parent.kind,
+            parent.id,
+            authorities,
+            missing_path=canonical_manifest_path(
+                parent.kind, parent.id, root=Path(self.environment.root)
+            ),
+        )
+        return StagedParentExecutionLocation(
+            parent=parent,
+            root=authority.root,
+            execution_uri=authority.execution_uri,
+            artifact_provider=authority.artifact_provider,
+        )
+
+    def node_execution_context(
+        self,
+        locations: Sequence[StagedParentExecutionLocation],
+    ) -> StagedExecutionContext | None:
+        """Return the staged context one node executes under, or ``None``.
+
+        ``None`` is the statement that this run declared no staged bindings at
+        all, and it is the whole of the cold-start case: every parent lives at
+        its canonical location beneath the receipt root, figure input resolution
+        takes the root authority, and nothing downstream sees a context. That
+        path is left byte-identical rather than routed through an empty one.
+
+        Otherwise the node's context is the run's base context — the opened
+        providers, retained manifest stores, and custody roots the caller
+        declared — augmented with *exactly this node's* parents: where each
+        one's bytes were found, and the provider aliases that follow from the
+        descriptor's own declarations. It is per node because that is the
+        smallest correct unit: a node binds the parents it binds, and a global
+        context would either be missing a node's parents or carrying another
+        node's.
+        """
+        base = self.environment.execution_context
+        if base is EMPTY_STAGED_EXECUTION_CONTEXT:
+            return None
+        return with_staged_resolved_parents(
+            with_staged_repo_root(base, self.environment.repo_root), locations
         )
 
     def resolved_external(self, edge: PlanEdge) -> "ResolvedExternalReceipt":
@@ -465,8 +659,9 @@ class NodeBinding:
 
         The first ask reads and authenticates the receipt; every later ask for
         the same edge is answered from that resolution rather than from the
-        filesystem, so a lowering that binds a parent and its execution location
-        binds two descriptions of one read.
+        filesystem, so a lowering that binds a parent, its execution location,
+        and the staged context it executes under binds three descriptions of one
+        read.
         """
         cache_key = (edge.consumer, edge.role_path)
         resolved = self._resolved.get(cache_key)
@@ -476,6 +671,7 @@ class NodeBinding:
                 root=self.environment.root,
                 consumer=edge.consumer,
                 role_path=edge.role_path,
+                execution_context=self.environment.execution_context,
             )
             self._resolved[cache_key] = resolved
         return resolved
@@ -543,6 +739,34 @@ class ExternalReceiptAuthenticationError(FulfillmentDriverError):
 
 
 @dataclass(frozen=True)
+class ManifestAuthority:
+    """One declared place a already-produced manifest could be held.
+
+    An authority is a *root plus a location within it*, never a bare root: the
+    receipt root and a retained manifest store address a manifest by the
+    canonical layout, while an immutable artifact provider addresses it by
+    content, and those are different locations for the same artifact.
+
+    Attributes:
+        name: How this authority is named in a refusal, so a diagnostic says
+            which declaration was searched rather than only which path was.
+        root: The runtime root the bytes are read beneath.
+        execution_uri: The root-relative POSIX location within it.
+        artifact_provider: The runtime provider name, when the authority *is* a
+            provider; ``None`` for a plain retained root.
+    """
+
+    name: str
+    root: Path
+    execution_uri: str
+    artifact_provider: str | None = None
+
+    @property
+    def path(self) -> Path:
+        return self.root.joinpath(*self.execution_uri.split("/"))
+
+
+@dataclass(frozen=True)
 class ResolvedExternalReceipt:
     """One external receipt resolved from exactly one read of its bytes.
 
@@ -562,6 +786,7 @@ class ResolvedExternalReceipt:
             :attr:`raw`; otherwise it is the digest of :attr:`raw`, because a
             locator quoted nothing to prefer over what was read.
         size_bytes: The size this reference binds, on the same rule.
+        authority: The single declared authority the bytes came from.
     """
 
     record: ExternalReceiptRecord
@@ -570,6 +795,31 @@ class ResolvedExternalReceipt:
     raw: bytes
     manifest_sha256: str
     size_bytes: int
+    authority: ManifestAuthority
+
+    @property
+    def root(self) -> Path:
+        """The runtime root this receipt's bytes were read beneath."""
+        return self.authority.root
+
+    @property
+    def execution_uri(self) -> str:
+        """Where within that root the bytes are, as an execution locator."""
+        return self.authority.execution_uri
+
+    @property
+    def artifact_provider(self) -> str | None:
+        """The runtime provider name, when a provider held these bytes."""
+        return self.authority.artifact_provider
+
+    def execution_location(self, role: str) -> "StagedParentExecutionLocation":
+        """Bind this resolution as the staged location its parent executes from."""
+        return StagedParentExecutionLocation(
+            parent=self.parent_ref(role),
+            root=self.authority.root,
+            execution_uri=self.authority.execution_uri,
+            artifact_provider=self.authority.artifact_provider,
+        )
 
     def parent_ref(self, role: str) -> ParentRef:
         """Return the authenticated parent this resolution binds, under *role*.
@@ -589,49 +839,184 @@ class ResolvedExternalReceipt:
         )
 
 
+def declared_manifest_authorities(
+    kind: str,
+    manifest_id: str,
+    *,
+    root: Path | str,
+    manifest_sha256: str | None = None,
+    size_bytes: int | None = None,
+    execution_context: StagedExecutionContext | None = None,
+) -> tuple[ManifestAuthority, ...]:
+    """Return every declared authority that could hold one already-produced manifest.
+
+    Three kinds of authority are searched, and they are not ranked. The receipt
+    root is one candidate and keeps its ordinary meaning — output and admission
+    custody — rather than becoming an inferred provider root. Each retained
+    manifest store is a candidate at the same canonical layout position, for
+    every manifest kind admitted as a staged input. Each immutable artifact
+    provider is a candidate at the content address the reference's own quoted
+    digest names, which is why an unauthenticated reference reaches no provider:
+    a locator states no digest, and a provider has no other way to be addressed.
+
+    The list is deterministic — receipt root, then manifest stores in name order,
+    then providers in name order — so a refusal names the same search twice.
+    """
+    root_path = Path(root)
+    canonical = canonical_manifest_path(kind, manifest_id, root=root_path)
+    authorities = [
+        ManifestAuthority(
+            name="receipt root",
+            root=root_path,
+            execution_uri=canonical.relative_to(root_path).as_posix(),
+        )
+    ]
+    if execution_context is None:
+        return tuple(authorities)
+    if is_staged_manifest_kind(kind):
+        relative = canonical_staged_manifest_locator(kind, manifest_id)
+        for name in sorted(execution_context.manifest_roots):
+            authorities.append(
+                ManifestAuthority(
+                    name=f"manifest root {name!r}",
+                    root=execution_context.manifest_root(name),
+                    execution_uri=relative,
+                )
+            )
+    if manifest_sha256 is not None:
+        artifact_id = f"artifact://sha256/{manifest_sha256}"
+        for name in sorted(execution_context.opened_artifact_providers):
+            provider = execution_context.artifact_provider(name)
+            try:
+                provider_relative = provider.canonical_relative_path(
+                    artifact_id, size_bytes=size_bytes
+                )
+            except FileNotFoundError:
+                continue
+            authorities.append(
+                ManifestAuthority(
+                    name=f"artifact provider {name!r}",
+                    root=Path(provider.root),
+                    execution_uri=provider_relative.as_posix(),
+                    artifact_provider=name,
+                )
+            )
+    return tuple(authorities)
+
+
+def _read_completed_manifest(
+    authority: ManifestAuthority, *, kind: str, manifest_id: str
+) -> tuple[bytes, AnyManifest] | None:
+    """Return one authority's completed manifest bytes, or ``None`` if it holds none.
+
+    Absent, unreadable, unparseable, mis-addressed, and incomplete are one answer
+    here — this authority does not hold the receipt — because each of them is a
+    reason the reference is not resolvable through it, and none of them is a
+    reason to prefer or refuse another authority that does hold it.
+    """
+    try:
+        raw = authority.path.read_bytes()
+    except OSError:
+        return None
+    try:
+        manifest = load_manifest_bytes(raw)
+    except (ValueError, TypeError):
+        return None
+    if manifest.kind != kind or manifest.id != manifest_id or manifest.status != "completed":
+        return None
+    return raw, manifest
+
+
+def require_single_manifest_authority(
+    kind: str,
+    manifest_id: str,
+    authorities: Sequence[ManifestAuthority],
+    *,
+    consumer: LogicalKey | None = None,
+    role_path: Sequence[str] = (),
+    missing_path: Path,
+) -> tuple[ManifestAuthority, bytes, AnyManifest]:
+    """Return the one declared authority holding a receipt, or refuse.
+
+    Zero is :class:`MissingExternalReceiptError` and more than one is
+    :class:`AmbiguousExternalReceiptError`. Both refuse before the resolution is
+    used for anything, so no node executes against a reference whose custody
+    domain was undecided.
+    """
+    found = [
+        (authority, *read)
+        for authority in authorities
+        if (read := _read_completed_manifest(authority, kind=kind, manifest_id=manifest_id))
+        is not None
+    ]
+    if not found:
+        raise MissingExternalReceiptError(
+            kind,
+            manifest_id,
+            missing_path,
+            consumer=consumer,
+            role_path=role_path,
+            searched=tuple(authority.name for authority in authorities),
+        )
+    if len(found) > 1:
+        raise AmbiguousExternalReceiptError(
+            kind,
+            manifest_id,
+            tuple(authority.name for authority, _raw, _manifest in found),
+            consumer=consumer,
+            role_path=role_path,
+        )
+    return found[0]
+
+
 def resolve_external_receipt(
     record: ExternalReceiptRecord,
     *,
     root: Path | str,
     consumer: LogicalKey | None = None,
     role_path: Sequence[str] = (),
+    execution_context: StagedExecutionContext | None = None,
 ) -> ResolvedExternalReceipt:
-    """Authenticate one already-produced receipt from its canonical location.
+    """Authenticate one already-produced receipt from the single authority holding it.
 
     The manifest index is derived acceleration and is never consulted: a receipt
-    lives where feedbax's ``(kind, id, root)`` derivation says it lives, so an
-    absent or stale index entry cannot change what this resolves.
+    lives where feedbax's ``(kind, id, root)`` derivation says it lives within
+    whichever authority holds it, so an absent or stale index entry cannot change
+    what this resolves.
 
-    Resolution proves two separate things. That a completed receipt of the named
-    kind and id is stored there is *addressing*, and its absence is
-    :class:`MissingExternalReceiptError`. That its bytes are the ones the lock
+    Resolution proves three separate things. That exactly one declared authority
+    holds a completed receipt of the named kind and id is *addressing*: none is
+    :class:`MissingExternalReceiptError` and several is
+    :class:`AmbiguousExternalReceiptError`. That its bytes are the ones the lock
     quoted is *authentication*, and only a lock that quoted a byte profile can
     assert it; when one did, disagreement refuses rather than binding whatever
     now occupies the address.
 
-    Both proofs are made against **one** read. Authenticating a file and then
-    reopening it to describe what was authenticated is two different files as far
-    as anything outside this process is concerned, and the second one is the one
-    that would be recorded.
+    Every proof is made against **one** read per authority, and the resolution
+    carries the read that decided. Authenticating a file and then reopening it to
+    describe what was authenticated is two different files as far as anything
+    outside this process is concerned, and the second one is the one that would
+    be recorded.
     """
     kind, manifest_id = record.locator
-    path = canonical_manifest_path(kind, manifest_id, root=Path(root))
-    try:
-        raw = path.read_bytes()
-    except OSError:
-        raise MissingExternalReceiptError(
-            kind, manifest_id, path, consumer=consumer, role_path=role_path
-        ) from None
-    try:
-        manifest = load_manifest_bytes(raw)
-    except (ValueError, TypeError):
-        raise MissingExternalReceiptError(
-            kind, manifest_id, path, consumer=consumer, role_path=role_path
-        ) from None
-    if manifest.kind != kind or manifest.id != manifest_id or manifest.status != "completed":
-        raise MissingExternalReceiptError(
-            kind, manifest_id, path, consumer=consumer, role_path=role_path
-        )
+    root_path = Path(root)
+    authorities = declared_manifest_authorities(
+        kind,
+        manifest_id,
+        root=root_path,
+        manifest_sha256=record.manifest_sha256,
+        size_bytes=record.size_bytes,
+        execution_context=execution_context,
+    )
+    authority, raw, manifest = require_single_manifest_authority(
+        kind,
+        manifest_id,
+        authorities,
+        consumer=consumer,
+        role_path=role_path,
+        missing_path=canonical_manifest_path(kind, manifest_id, root=root_path),
+    )
+    path = authority.path
     found_sha256 = hashlib.sha256(raw).hexdigest()
     found_size = len(raw)
     if record.is_authenticated:
@@ -658,6 +1043,7 @@ def resolve_external_receipt(
         raw=raw,
         manifest_sha256=bound_sha256,
         size_bytes=bound_size,
+        authority=authority,
     )
 
 
@@ -668,10 +1054,15 @@ def external_parent_ref(
     root: Path | str,
     consumer: LogicalKey | None = None,
     role_path: Sequence[str] = (),
+    execution_context: StagedExecutionContext | None = None,
 ) -> tuple[ParentRef, Path]:
     """Return the authenticated parent one external receipt record names."""
     resolved = resolve_external_receipt(
-        record, root=root, consumer=consumer, role_path=role_path
+        record,
+        root=root,
+        consumer=consumer,
+        role_path=role_path,
+        execution_context=execution_context,
     )
     return resolved.parent_ref(role), resolved.path
 

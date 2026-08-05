@@ -29,6 +29,8 @@ from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     ParentRef,
     ReportSpec,
+    TrainingRunManifest,
+    canonical_manifest_path,
     load_manifest,
     spec_payload,
     write_manifest,
@@ -46,6 +48,21 @@ def _manifest(root: Path, *, manifest_id: str = "feedbax-evaluation-run:test"):
     )
     path = write_manifest(manifest, root=root)
     return manifest, path, authenticated_manifest_ref(manifest, path, "evaluation_run")
+
+
+def _training_manifest(root: Path, *, manifest_id: str = "feedbax-training-run:test"):
+    manifest = TrainingRunManifest(id=manifest_id, status="completed")
+    path = write_manifest(manifest, root=root)
+    return manifest, path, authenticated_manifest_ref(manifest, path, "training_run")
+
+
+#: Staged-input authentication is kind-agnostic, so a training subject has to
+#: accept and refuse through exactly the same path as a post-training subject.
+staged_kinds = pytest.mark.parametrize(
+    "build_manifest",
+    [_manifest, _training_manifest],
+    ids=["evaluation", "training"],
+)
 
 
 def _analysis_manifest(root: Path):
@@ -67,15 +84,20 @@ def _file_snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
-def test_authenticated_manifest_ref_is_portable_and_relocation_invariant(tmp_path: Path) -> None:
+@staged_kinds
+def test_authenticated_manifest_ref_is_portable_and_relocation_invariant(
+    tmp_path: Path, build_manifest
+) -> None:
     source = tmp_path / "source"
-    manifest, path, ref = _manifest(source)
+    manifest, path, ref = build_manifest(source)
     assert ref.uri is None
     assert ref.metadata["ref_schema_id"] == AUTHENTICATED_MANIFEST_REF_SCHEMA_ID
     assert ref.metadata["ref_schema_version"] == AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION
     assert ref.metadata["size_bytes"] == path.stat().st_size
     assert is_authenticated_manifest_ref(ref)
-    assert resolve_manifest_input(ref, source).manifest == manifest
+    canonical = resolve_manifest_input(ref, source)
+    assert canonical.manifest == manifest
+    assert canonical.path == canonical_manifest_path(manifest.kind, manifest.id, root=source)
 
     relocated = tmp_path / "relocated"
     shutil.copytree(source, relocated)
@@ -84,6 +106,7 @@ def test_authenticated_manifest_ref_is_portable_and_relocation_invariant(tmp_pat
     assert resolved.raw_bytes == path.read_bytes()
 
 
+@staged_kinds
 @pytest.mark.parametrize(
     ("field", "value", "match"),
     [
@@ -95,9 +118,9 @@ def test_authenticated_manifest_ref_is_portable_and_relocation_invariant(tmp_pat
     ],
 )
 def test_authenticated_manifest_ref_rejects_bad_profile(
-    tmp_path: Path, field: str, value: object, match: str
+    tmp_path: Path, build_manifest, field: str, value: object, match: str
 ) -> None:
-    _manifest_obj, _path, ref = _manifest(tmp_path)
+    _manifest_obj, _path, ref = build_manifest(tmp_path)
     bad = ref.model_copy(update={"metadata": {**ref.metadata, field: value}})
     with pytest.raises(ValueError, match=match):
         resolve_manifest_input(bad, tmp_path)
@@ -169,17 +192,18 @@ def test_authenticated_manifest_ref_rejects_unsafe_locator(tmp_path: Path, locat
         resolve_manifest_input(ref, tmp_path, runtime_locator=locator)
 
 
-def test_authenticated_manifest_ref_rejects_tamper_kind_and_id(tmp_path: Path) -> None:
-    _manifest_obj, path, ref = _manifest(tmp_path)
+@staged_kinds
+def test_authenticated_manifest_ref_rejects_tamper_kind_and_id(
+    tmp_path: Path, build_manifest
+) -> None:
+    _manifest_obj, path, ref = build_manifest(tmp_path)
     original = path.read_text(encoding="utf-8")
     path.write_text(original.replace('"completed"', '"pending"'), encoding="utf-8")
     with pytest.raises(ValueError, match="size mismatch|SHA-256 mismatch"):
         resolve_manifest_input(ref, tmp_path)
 
-    other, other_path, _other_ref = _manifest(tmp_path / "other", manifest_id="other")
-    wrong_id_ref = authenticated_manifest_ref(other, other_path, "evaluation_run").model_copy(
-        update={"id": "declared-id"}
-    )
+    _other, other_path, other_ref = build_manifest(tmp_path / "other", manifest_id="other")
+    wrong_id_ref = other_ref.model_copy(update={"id": "declared-id"})
     with pytest.raises(ValueError, match="id mismatch"):
         resolve_manifest_input(
             wrong_id_ref,
@@ -187,9 +211,7 @@ def test_authenticated_manifest_ref_rejects_tamper_kind_and_id(tmp_path: Path) -
             runtime_locator=other_path.relative_to(tmp_path / "other"),
         )
 
-    wrong_kind_ref = authenticated_manifest_ref(other, other_path, "evaluation_run").model_copy(
-        update={"kind": "AnalysisRunManifest"}
-    )
+    wrong_kind_ref = other_ref.model_copy(update={"kind": "AnalysisRunManifest"})
     with pytest.raises(ValueError, match="kind mismatch"):
         resolve_manifest_input(
             wrong_kind_ref,
@@ -198,10 +220,11 @@ def test_authenticated_manifest_ref_rejects_tamper_kind_and_id(tmp_path: Path) -
         )
 
 
+@staged_kinds
 def test_authenticated_manifest_ref_rejects_missing_symlink_directory_and_fifo(
-    tmp_path: Path,
+    tmp_path: Path, build_manifest
 ) -> None:
-    _manifest_obj, path, ref = _manifest(tmp_path)
+    _manifest_obj, path, ref = build_manifest(tmp_path)
     relative = path.relative_to(tmp_path)
     path.unlink()
     with pytest.raises(FileNotFoundError):
@@ -220,7 +243,7 @@ def test_authenticated_manifest_ref_rejects_missing_symlink_directory_and_fifo(
         resolve_manifest_input(ref, tmp_path)
     path.unlink()
 
-    real_dir = tmp_path / "real-evaluation-runs"
+    real_dir = tmp_path / "real-manifest-directory"
     real_dir.mkdir()
     path.parent.rmdir()
     path.parent.symlink_to(real_dir, target_is_directory=True)
@@ -235,8 +258,9 @@ def test_authenticated_manifest_ref_rejects_missing_symlink_directory_and_fifo(
         resolve_manifest_input(ref, tmp_path, runtime_locator=fifo.relative_to(tmp_path))
 
 
-def test_authenticated_manifest_ref_rejects_hardlink(tmp_path: Path) -> None:
-    _manifest_obj, path, ref = _manifest(tmp_path)
+@staged_kinds
+def test_authenticated_manifest_ref_rejects_hardlink(tmp_path: Path, build_manifest) -> None:
+    _manifest_obj, path, ref = build_manifest(tmp_path)
     os.link(path, tmp_path / "second-link.json")
 
     with pytest.raises(ValueError, match="exactly one hard link"):

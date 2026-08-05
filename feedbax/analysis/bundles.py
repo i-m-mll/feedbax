@@ -18,15 +18,18 @@ from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.evaluation import execute_evaluation_run_spec
 from feedbax.analysis.evaluation_inputs import resolve_evaluation_inputs
 from feedbax.analysis.execution_context import (
+    EMPTY_STAGED_EXECUTION_CONTEXT,
     StagedArtifactProviderRootBinding,
     StagedCheckpointCustodyRootBinding,
     StagedExecutionContext,
     StagedParentArtifactProviderBinding,
     StagedParentExecutionLocation,
+    require_exclusive_staged_runtime,
     resolve_staged_execution_context,
     with_staged_parent_execution_locations,
     with_staged_parent_artifact_provider_bindings,
     with_staged_repo_root,
+    with_staged_resolved_parents,
 )
 from feedbax.analysis.exact_parents import StagedExactParents, migrate_staged_exact_parents
 from feedbax.analysis.figures import FIGURE_RENDER_ROLE, execute_figure_spec, resolve_figure_spec
@@ -34,7 +37,9 @@ from feedbax.analysis.fulfillment import admit_evaluation_receipt
 from feedbax.analysis.materialization import ContextMaterializer
 from feedbax.analysis.manifest_inputs import (
     authenticated_manifest_ref_from_read,
+    canonical_staged_manifest_locator,
     is_authenticated_manifest_ref,
+    is_staged_manifest_kind,
     resolve_manifest_input,
 )
 from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE, execute_report_spec
@@ -1839,7 +1844,44 @@ def _with_stage_output_execution_locations(
             )
         )
         known_parents.add(parent_key)
-    return with_staged_parent_execution_locations(context, locations)
+    # The resolved-parent binder rather than the bare location binder, because
+    # the bare one clears the exact-parent provider aliases a caller bound: a
+    # later stage would then lose an alias the earlier stages had.
+    return with_staged_resolved_parents(context, locations)
+
+
+def _with_bundle_root_locations(
+    context: StagedExecutionContext,
+    parent_refs: Sequence[ParentRef],
+    *,
+    root: Path,
+) -> StagedExecutionContext:
+    """Locate a bundle's own root refs beneath the manifest root it selected them from.
+
+    A bundle re-roles the manifests it selects — a selected ``EvaluationRunManifest``
+    becomes an ``evaluation_run`` parent of every stage that consumes it — so the
+    refs its stages execute against are the bundle's, not the ones any caller
+    bound. A staged execution context addresses a parent by its complete
+    reference, role included, so those refs must be located here or a stage
+    executing under a resolved context would resolve nothing.
+
+    Only the bundle's own selection is described: each ref is placed at its
+    canonical location beneath the root the selection read it from. A ref a
+    caller already located — an exact parent, a declared prerequisite — keeps
+    that location, because the caller's authority is the more specific one.
+    """
+    if context is EMPTY_STAGED_EXECUTION_CONTEXT:
+        return context
+    locations = [
+        StagedParentExecutionLocation(
+            parent=ref,
+            root=root.absolute(),
+            execution_uri=canonical_staged_manifest_locator(ref.kind, ref.id),
+        )
+        for ref in parent_refs
+        if is_authenticated_manifest_ref(ref) and is_staged_manifest_kind(ref.kind)
+    ]
+    return with_staged_resolved_parents(context, locations)
 
 
 def _default_outputs_for_stage(stage: BundleStageSpec) -> list[BundleStageOutputSpec]:
@@ -2534,6 +2576,7 @@ def execute_analysis_bundle(
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
     checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
+    execution_context: StagedExecutionContext | None = None,
     issues: list[str] | None = None,
     fig_dump_path: Path | str | None = None,
     fig_dump_formats: Sequence[str] = ("html",),
@@ -2554,6 +2597,12 @@ def execute_analysis_bundle(
             execution re-select them would be running over whatever now sits at
             those addresses, which is the substitution the pin exists to catch.
     """
+    require_exclusive_staged_runtime(
+        execution_context,
+        execution_descriptor=execution_descriptor,
+        artifact_provider_bindings=artifact_provider_bindings,
+        checkpoint_custody_bindings=checkpoint_custody_bindings,
+    )
     authored_bundle = bundle
     bundle, flattening = resolve_analysis_bundle_authoring(bundle, repo_root=repo_root)
     composition = (
@@ -2577,6 +2626,10 @@ def execute_analysis_bundle(
             manifest.id: _execution_parent_ref_for_manifest(manifest, root=root_path)
             for manifest in matched_manifests
         }
+    if execution_context is not None:
+        execution_context = _with_bundle_root_locations(
+            execution_context, list(execution_parent_refs.values()), root=root_path
+        )
     expansions = expand_analysis_bundle(
         authored_bundle,
         matched_manifests,
@@ -2606,6 +2659,11 @@ def execute_analysis_bundle(
             execution_descriptor=execution_descriptor,
             artifact_provider_bindings=artifact_provider_bindings,
             checkpoint_custody_bindings=checkpoint_custody_bindings,
+            execution_context=(
+                execution_context
+                if execution_context is not None
+                else EMPTY_STAGED_EXECUTION_CONTEXT
+            ),
             fig_dump_path=fig_dump_path,
             fig_dump_formats=fig_dump_formats,
         )
@@ -2962,6 +3020,7 @@ def execute_staged_analysis_bundle(
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
     checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
+    execution_context: StagedExecutionContext | None = None,
     issues: list[str] | None = None,
     fig_dump_path: Path | str | None = None,
     fig_dump_formats: Sequence[str] = ("html",),
@@ -2974,12 +3033,19 @@ def execute_staged_analysis_bundle(
     and materialization stages emit ``AnalysisRunManifest`` refs plus artifacts,
     and report stages emit ``ReportManifest`` refs plus report artifacts.
     """
-    bundle, flattening = resolve_analysis_bundle_authoring(bundle, repo_root=repo_root)
-    execution_context = resolve_staged_execution_context(
-        execution_descriptor,
+    require_exclusive_staged_runtime(
+        execution_context,
+        execution_descriptor=execution_descriptor,
         artifact_provider_bindings=artifact_provider_bindings,
         checkpoint_custody_bindings=checkpoint_custody_bindings,
     )
+    bundle, flattening = resolve_analysis_bundle_authoring(bundle, repo_root=repo_root)
+    if execution_context is None:
+        execution_context = resolve_staged_execution_context(
+            execution_descriptor,
+            artifact_provider_bindings=artifact_provider_bindings,
+            checkpoint_custody_bindings=checkpoint_custody_bindings,
+        )
     execution_context = with_staged_repo_root(execution_context, repo_root)
 
     if not bundle.stages:
@@ -3026,6 +3092,9 @@ def execute_staged_analysis_bundle(
             execution_context,
             parent_locations,
         )
+    execution_context = _with_bundle_root_locations(
+        execution_context, bundle_parent_refs, root=root_path
+    )
     prerequisite_resolution = _preflight_per_input_prerequisites(
         bundle,
         matched_manifests,

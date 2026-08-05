@@ -36,6 +36,7 @@ from feedbax.orchestration.assembly import (
     _persist_prepared_run_bundle,
     _prepare_run_assembly,
     assemble_run_bundle,
+    assert_authored_feedbax_revision,
     persist_assembly_request,
 )
 from feedbax.orchestration.bundle import (
@@ -452,6 +453,12 @@ class StageEngine:
         for SIGKILL before an acquired pod's SSH endpoint becomes available; a
         later local process or operator must reconcile it.
         """
+        if self.request is not None:
+            # The stale-install gate. ASSEMBLE runs it too, but running it here
+            # means a request whose revision authority the imported package
+            # cannot satisfy fails before the run-set root is reserved, and
+            # before stage retries can burn attempts on an unfixable error.
+            assert_authored_feedbax_revision(self.request)
         self._preflight_request_before_output()
         self.store.preflight_and_reserve()
         initial = self._initial_state()

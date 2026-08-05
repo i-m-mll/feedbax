@@ -43,6 +43,7 @@ from feedbax.training.spec_storage import (
     stamp_training_run_manifest_identities,
 )
 from feedbax.orchestration.bundle import DeploymentPolicy
+from feedbax.orchestration.revision import resolve_feedbax_revision
 
 _METHOD_REGISTRY = default_training_method_registry()
 
@@ -622,6 +623,7 @@ def test_assembled_bundle_carries_the_same_typed_row_provenance(tmp_path: Path) 
         )
 
     request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
         authored=SchemaArtifactRef(
             schema_id=TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
             schema_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,

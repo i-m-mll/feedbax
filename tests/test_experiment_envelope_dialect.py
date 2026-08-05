@@ -30,6 +30,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2,
+    EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3,
     EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID,
     EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
     EXPERIMENT_ENVELOPE_FAMILY,
@@ -39,6 +40,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
     EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS,
     LAYER_OUTPUT_CONTRACTS,
     ROOT_TRAINING_AUTHORITY_SCHEMA_ID,
@@ -113,26 +115,29 @@ _ROLE_CONTRACT: dict[str, Any] = {
 # -- the family and its version boundary ----------------------------------
 
 
-def test_the_dialect_is_one_family_at_four_enumerated_versions() -> None:
+def test_the_dialect_is_one_family_at_five_enumerated_versions() -> None:
     assert EXPERIMENT_ENVELOPE_FAMILY == "feedbax.experiment_envelope"
     assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1 == "feedbax.experiment_envelope.v1"
     assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2 == "feedbax.experiment_envelope.v2"
     assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3 == "feedbax.experiment_envelope.v3"
     assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4 == "feedbax.experiment_envelope.v4"
-    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4
+    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5 == "feedbax.experiment_envelope.v5"
+    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5
     assert EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS == (
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
     )
     assert EXPERIMENT_ENVELOPE_MIGRATION_TABLE == {
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
     }
     assert EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION == (
-        "feedbax.experiment_envelope.compiler.v3"
+        "feedbax.experiment_envelope.compiler.v4"
     )
     assert EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1 == (
         "feedbax.experiment_envelope.compiler.v1"
@@ -149,7 +154,13 @@ def test_the_dialect_is_one_family_at_four_enumerated_versions() -> None:
     assert compiler_contract_version_for_schema(EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3) == (
         EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2
     )
+    assert EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3 == (
+        "feedbax.experiment_envelope.compiler.v3"
+    )
     assert compiler_contract_version_for_schema(EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4) == (
+        EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3
+    )
+    assert compiler_contract_version_for_schema(EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5) == (
         EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION
     )
 
@@ -158,7 +169,7 @@ def test_the_dialect_is_one_family_at_four_enumerated_versions() -> None:
     "schema",
     [
         "feedbax.experiment_envelope.v0",
-        "feedbax.experiment_envelope.v5",
+        "feedbax.experiment_envelope.v6",
         "quillon.study.v1",
         None,
     ],
@@ -270,14 +281,14 @@ def test_the_v1_to_current_migration_is_explicit_and_semantics_preserving() -> N
 
     migrated = migrate_experiment_envelope_payload(document)
 
-    assert migrated["schema"] == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4
+    assert migrated["schema"] == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5
     assert {key: value for key, value in migrated.items() if key != "schema"} == {
         key: value for key, value in document.items() if key != "schema"
     }
     # The migration changes the authored bytes, which is exactly why a compile
     # never applies it: the original document still parses, as itself.
     assert _parse(document).schema_ == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1
-    assert _parse(migrated).schema_ == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4
+    assert _parse(migrated).schema_ == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5
 
 
 def test_the_v2_to_current_migration_only_restates_schema() -> None:
@@ -286,21 +297,21 @@ def test_the_v2_to_current_migration_only_restates_schema() -> None:
 
     migrated = migrate_experiment_envelope_payload(document)
 
-    assert migrated == {**document, "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4}
+    assert migrated == {**document, "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5}
 
 
-def test_the_v3_to_v4_migration_only_restates_schema() -> None:
+def test_the_v3_to_current_migration_only_restates_schema() -> None:
     document = _minimal(training={"rows_mode": "append", "tags": {"add": ["probe"]}})
     document["schema"] = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3
 
     migrated = migrate_experiment_envelope_payload(document)
 
-    assert migrated == {**document, "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4}
+    assert migrated == {**document, "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5}
 
 
 def test_migrating_an_unsupported_version_refuses_rather_than_guessing() -> None:
     document = _minimal(training={"rows_mode": "append", "tags": {"add": ["probe"]}})
-    document["schema"] = "feedbax.experiment_envelope.v5"
+    document["schema"] = "feedbax.experiment_envelope.v6"
 
     with pytest.raises(ExperimentEnvelopeRejection) as caught:
         migrate_experiment_envelope_payload(document)
@@ -1247,8 +1258,10 @@ class TestFigureMode:
                 )
             )
 
-    def test_a_row_expansion_input_states_a_whole_binding_profile_or_none(self) -> None:
-        with pytest.raises(ExperimentEnvelopeRejection, match="partial profile"):
+    def test_a_binding_without_its_key_addresses_nothing(self) -> None:
+        with pytest.raises(
+            ExperimentEnvelopeRejection, match="binding and binding_key together"
+        ):
             _parse(
                 _minimal(
                     figure={
@@ -1258,7 +1271,28 @@ class TestFigureMode:
                             {
                                 "input_role": "observed",
                                 "ref": {"kind": "envelope", "alias": "x"},
-                                "binding": "per_row",
+                                "binding": "shared",
+                            }
+                        ],
+                    }
+                )
+            )
+
+    def test_a_row_expansion_input_states_the_contract_its_fill_satisfies(self) -> None:
+        with pytest.raises(
+            ExperimentEnvelopeRejection, match="state a binding profile and no artifact contract"
+        ):
+            _parse(
+                _minimal(
+                    figure={
+                        "mode": "row_expansion",
+                        "rows": {"mode": "all", "index": "bases/rows.json"},
+                        "inputs": [
+                            {
+                                "input_role": "observed",
+                                "ref": {"kind": "envelope", "alias": "x"},
+                                "binding": "shared",
+                                "binding_key": "m-0",
                             }
                         ],
                     }
@@ -1608,3 +1642,217 @@ def test_the_list_spelling_of_prerequisites_is_gone_rather_than_also_accepted() 
         _parse(document)
 
     assert caught.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+
+
+# -- v5: a root figure input states the contract it is read under ----------
+
+
+_ROOT_AUTHORITY: dict[str, Any] = {"ref": "authority.json", "sha256": "3" * 64}
+_ROOT_REF: dict[str, Any] = {"kind": "envelope", "alias": "produced"}
+_ROOT_CONTRACT: dict[str, Any] = {
+    "artifact_role": "result",
+    "artifact_provider": "quillon.custody",
+    "payload_name": "summary",
+}
+
+
+def _root_figure(
+    *,
+    schema: str = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+    inputs: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    figure: dict[str, Any] = {"mode": "root", "root": _ROOT_AUTHORITY}
+    if inputs is not None:
+        figure["inputs"] = inputs
+    return {"schema": schema, "name": "root-figure", "figure": figure}
+
+
+def test_a_root_figure_input_states_a_ref_and_its_artifact_contract() -> None:
+    envelope = _parse(
+        _root_figure(
+            inputs=[
+                {"input_role": "summary", "ref": _ROOT_REF, "contract": _ROOT_CONTRACT}
+            ]
+        )
+    )
+
+    assert envelope.figure is not None
+    assert envelope.figure.root_input_contracts()[0][0] == "summary"
+    contract = envelope.figure.root_input_contracts()[0][1]
+    assert contract.binding_contract("summary")["input_role"] == "summary"
+    assert contract.payload_name == "summary"
+
+
+def test_a_root_figure_input_states_no_row_expansion_binding() -> None:
+    with pytest.raises(ExperimentEnvelopeRejection, match="only row_expansion resolves"):
+        _parse(
+            _root_figure(
+                inputs=[
+                    {
+                        "input_role": "summary",
+                        "ref": _ROOT_REF,
+                        "binding": "shared",
+                        "binding_key": "m-0",
+                        "contract": _ROOT_CONTRACT,
+                    }
+                ]
+            )
+        )
+
+
+def test_a_current_root_figure_input_without_a_contract_is_refused() -> None:
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        _parse(_root_figure(inputs=[{"input_role": "summary", "ref": _ROOT_REF}]))
+
+    assert caught.value.category is ExperimentEnvelopeRejectionCategory.MISSING_FIELD
+    assert "states no artifact contract" in str(caught.value)
+
+
+def test_a_current_root_figure_contract_states_its_payload_name_explicitly() -> None:
+    contract = {key: value for key, value in _ROOT_CONTRACT.items() if key != "payload_name"}
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        _parse(
+            _root_figure(
+                inputs=[{"input_role": "summary", "ref": _ROOT_REF, "contract": contract}]
+            )
+        )
+
+    assert caught.value.category is ExperimentEnvelopeRejectionCategory.MISSING_FIELD
+    assert "no explicit 'payload_name'" in str(caught.value)
+
+
+def test_an_artifact_free_root_figure_states_no_inputs_at_all() -> None:
+    envelope = _parse(_root_figure())
+
+    assert envelope.figure is not None
+    assert envelope.figure.inputs == []
+    assert envelope.figure.root_input_contracts() == ()
+
+
+def test_a_prior_grammar_stating_a_root_input_contract_is_refused_by_version() -> None:
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        _parse(
+            _root_figure(
+                schema=EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+                inputs=[
+                    {"input_role": "summary", "ref": _ROOT_REF, "contract": _ROOT_CONTRACT}
+                ],
+            )
+        )
+
+    assert caught.value.category is (ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION)
+    assert "figure.inputs[0].contract" in str(caught.value)
+    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5 in str(caught.value)
+
+
+def test_a_prior_grammar_pinning_a_payload_schema_is_refused_by_version() -> None:
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        _parse(
+            _minimal(
+                figure={
+                    "mode": "row_expansion",
+                    "rows": {"mode": "all", "index": "bases/rows.json"},
+                    "inputs": [
+                        {
+                            "input_role": "observed",
+                            "ref": {"kind": "envelope", "alias": "x"},
+                            "binding": "shared",
+                            "binding_key": "m-0",
+                            "contract": {
+                                **_ROLE_CONTRACT,
+                                "payload_schema_id": "quillon.span_result",
+                                "payload_schema_version": "quillon.span_result.v1",
+                            },
+                        }
+                    ],
+                }
+            )
+            | {"schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4}
+        )
+
+    assert "payload_schema_id" in str(caught.value)
+    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5 in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "half", ["payload_schema_id", "payload_schema_version"]
+)
+def test_a_figure_input_contract_pins_a_payload_schema_whole_or_not_at_all(half: str) -> None:
+    with pytest.raises(ExperimentEnvelopeRejection, match="together or states neither"):
+        _parse(
+            _root_figure(
+                inputs=[
+                    {
+                        "input_role": "summary",
+                        "ref": _ROOT_REF,
+                        "contract": {**_ROOT_CONTRACT, half: "quillon.span_result"},
+                    }
+                ]
+            )
+        )
+
+
+def test_a_composition_figure_input_states_no_artifact_contract() -> None:
+    with pytest.raises(ExperimentEnvelopeRejection, match="state an artifact contract"):
+        _parse(
+            _minimal(
+                figure={
+                    "mode": "composition",
+                    "delta": {"layer_id": "one", "patches": []},
+                    "inputs": [
+                        {
+                            "input_role": "summary",
+                            "ref": _ROOT_REF,
+                            "contract": _ROOT_CONTRACT,
+                        }
+                    ],
+                }
+            )
+        )
+
+
+def test_a_root_figure_envelope_has_no_migration_to_the_current_grammar() -> None:
+    """The contract v5 requires is not stated anywhere in a v4 root envelope."""
+    document = _root_figure(
+        schema=EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
+        inputs=[{"input_role": "summary", "ref": _ROOT_REF}],
+    )
+
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        migrate_experiment_envelope_payload(document)
+
+    assert caught.value.category is (ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION)
+    assert "migration_intentionally_absent=yes" in str(caught.value)
+    assert _parse(document).schema_ == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4
+
+
+def test_a_non_root_v4_envelope_migrates_by_restating_its_version() -> None:
+    document = _minimal(training={"rows_mode": "append", "tags": {"add": ["probe"]}})
+    document["schema"] = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4
+
+    migrated = migrate_experiment_envelope_payload(document)
+
+    assert migrated == {**document, "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5}
+
+
+def test_a_row_expansion_v4_envelope_migrates_by_restating_its_version() -> None:
+    """Only *root* figures need re-authoring; an expansion already states its contracts."""
+    document = _minimal(
+        figure={
+            "mode": "row_expansion",
+            "rows": {"mode": "all", "index": "bases/rows.json"},
+            "inputs": [
+                {
+                    "input_role": "observed",
+                    "binding": "per_row",
+                    "binding_key": "observations",
+                    "contract": _ROLE_CONTRACT,
+                }
+            ],
+        }
+    )
+    document["schema"] = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4
+
+    migrated = migrate_experiment_envelope_payload(document)
+
+    assert migrated == {**document, "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5}
