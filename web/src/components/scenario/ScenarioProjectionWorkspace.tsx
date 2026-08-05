@@ -26,6 +26,13 @@ import { sampleTaskTrials } from '@/api/client';
 import { Canvas } from '@/components/canvas/Canvas';
 import { PlaybackControls } from '@/components/viewer/PlaybackControls';
 import {
+  DataTable,
+  DataTableCell,
+  DataTableEmpty,
+  DataTableRow,
+  type DataTableColumn,
+} from '@/components/ui/DataTable';
+import {
   objectiveEntityId,
   retainedObservableEntityId,
   buildScenarioEntityRegistry,
@@ -130,6 +137,23 @@ import type {
   WorkspaceViewState,
 } from '@/types/workspace';
 import type { TimeAggregationSpec } from '@/types/training';
+
+const OBSERVABLE_TABLE_COLUMNS: DataTableColumn[] = [
+  { id: 'observable', label: 'Observable', width: '18rem' },
+  { id: 'kind', label: 'Kind', width: '9rem' },
+  { id: 'source', label: 'Source', width: '22rem' },
+  { id: 'actions', ariaLabel: 'Actions', width: '4rem' },
+];
+
+const OBJECTIVE_TABLE_COLUMNS: DataTableColumn[] = [
+  { id: 'term', label: 'Term', width: '12rem' },
+  { id: 'role', label: 'Role', width: '7rem' },
+  { id: 'weight', label: 'Weight', width: '6rem' },
+  { id: 'penalty', label: 'Penalty', width: '8rem' },
+  { id: 'time', label: 'Time', width: '9rem' },
+  { id: 'source', label: 'Source', width: '14rem' },
+  { id: 'actions', ariaLabel: 'Actions', width: '4rem' },
+];
 
 function poseValuesFromTracks(
   tracks: WorkspaceReplayTrack[] | null | undefined,
@@ -1672,26 +1696,23 @@ function ObservablesProjection({
           </div>
         </div>
 
-        <div className="overflow-hidden rounded-md border border-slate-200 bg-white">
-          <div className="grid grid-cols-[minmax(10rem,1fr)_8rem_minmax(12rem,1.2fr)_4rem] border-b border-slate-200 bg-slate-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
-            <div>Observable</div>
-            <div>Kind</div>
-            <div>Source</div>
-            <div />
-          </div>
+        <DataTable
+          aria-label="Retained observables"
+          columns={OBSERVABLE_TABLE_COLUMNS}
+          minWidth="53rem"
+        >
           {observables.map((observable) => {
             const active = selectedId === retainedObservableEntityId(observable.id);
             const source = observable.selector ?? observable.target?.selector ?? '';
             return (
-              <div
+              <DataTableRow
                 key={observable.id}
                 onClick={() => onSelect(retainedObservableEntityId(observable.id))}
                 className={clsx(
-                  'grid grid-cols-[minmax(10rem,1fr)_8rem_minmax(12rem,1.2fr)_4rem] items-center gap-2 border-b border-slate-100 px-4 py-3 text-xs last:border-b-0',
                   active ? 'bg-brand-50 text-slate-900' : 'bg-white text-slate-600 hover:bg-slate-50'
                 )}
               >
-                <div className="min-w-0">
+                <DataTableCell>
                   <input
                     value={observable.label ?? observable.id}
                     readOnly={readOnly}
@@ -1701,44 +1722,50 @@ function ObservablesProjection({
                     onClick={(event) => event.stopPropagation()}
                     className="h-8 w-full rounded border border-transparent bg-transparent px-2 font-medium text-slate-800 hover:border-slate-200 focus:border-brand-300 focus:bg-white focus:outline-none"
                   />
-                </div>
-                <div className="text-slate-500">
+                </DataTableCell>
+                <DataTableCell className="text-slate-500">
                   {retainedObservableTargetKindLabel(observable.target)}
-                </div>
-                <ObservableSelectorSelect
-                  value={source}
-                  options={captureOptions}
-                  onChange={(option) => {
-                    if (readOnly) return;
-                    if (!option) return;
-                    const patch = retainedObservableSelectorPatch(option.selector);
-                    if (patch) onUpdate(observable.id, patch);
-                  }}
-                  className="w-full"
-                />
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    if (readOnly) return;
-                    onRemove(observable.id);
-                    if (active) onSelect(null);
-                  }}
-                  disabled={readOnly}
-                  className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
-                  title="Delete retained observable"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </div>
+                </DataTableCell>
+                <DataTableCell>
+                  <ObservableSelectorSelect
+                    value={source}
+                    options={captureOptions}
+                    onChange={(option) => {
+                      if (readOnly) return;
+                      if (!option) return;
+                      const patch = retainedObservableSelectorPatch(option.selector);
+                      if (patch) onUpdate(observable.id, patch);
+                    }}
+                    className="w-full"
+                  />
+                </DataTableCell>
+                <DataTableCell>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (readOnly) return;
+                      onRemove(observable.id);
+                      if (active) onSelect(null);
+                    }}
+                    disabled={readOnly}
+                    className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+                    title="Delete retained observable"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </DataTableCell>
+              </DataTableRow>
             );
           })}
           {observables.length === 0 && (
-            <div className="px-4 py-8 text-center text-sm text-slate-400">
-              No explicit retained observables authored.
-            </div>
+            <DataTableRow>
+              <DataTableEmpty colSpan={OBSERVABLE_TABLE_COLUMNS.length}>
+                No explicit retained observables authored.
+              </DataTableEmpty>
+            </DataTableRow>
           )}
-        </div>
+        </DataTable>
       </div>
     </div>
   );
@@ -1773,152 +1800,161 @@ function ObjectivesProjection({
 
   return (
     <div className="h-full overflow-y-auto bg-slate-50 p-5">
-      <div className="mx-auto max-w-5xl overflow-hidden rounded-md border border-slate-200 bg-white">
-        <div className="grid grid-cols-[minmax(10rem,1.4fr)_6.5rem_5.5rem_7.25rem_8.5rem_minmax(8rem,1fr)_4rem] border-b border-slate-200 bg-slate-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
-          <div>Term</div>
-          <div>Role</div>
-          <div>Weight</div>
-          <div>Penalty</div>
-          <div>Time</div>
-          <div>Source</div>
-          <div />
-        </div>
-        {items.map((item) => {
-          const term = termByEntityId.get(item.entity_id);
-          const source = term?.source_selector;
-          const time = term ? temporalSelector(term) : { mode: 'all' as const };
-          const active = item.entity_id === selectedId;
-          const related = relatedIds.has(item.entity_id);
-          if (!term) return null;
-          return (
-            <div
-              key={item.entity_id}
-              onClick={() => onSelect(item.entity_id)}
-              className={clsx(
-                'grid w-full grid-cols-[minmax(10rem,1.4fr)_6.5rem_5.5rem_7.25rem_8.5rem_minmax(8rem,1fr)_4rem] items-center gap-2 border-b border-slate-100 px-4 py-3 text-left text-xs last:border-b-0',
+      <div className="mx-auto max-w-5xl">
+        <DataTable
+          aria-label="Objective terms"
+          columns={OBJECTIVE_TABLE_COLUMNS}
+          minWidth="60rem"
+        >
+          {items.map((item) => {
+            const term = termByEntityId.get(item.entity_id);
+            const source = term?.source_selector;
+            const time = term ? temporalSelector(term) : { mode: 'all' as const };
+            const active = item.entity_id === selectedId;
+            const related = relatedIds.has(item.entity_id);
+            if (!term) return null;
+            return (
+              <DataTableRow
+                key={item.entity_id}
+                onClick={() => onSelect(item.entity_id)}
+                className={clsx(
                   active
                     ? 'bg-brand-50 text-slate-900'
                     : related
                       ? clsx(semanticTokens.objective.softBackground, 'text-slate-800')
                       : 'bg-white text-slate-600 hover:bg-slate-50'
-              )}
-            >
-              <div className="min-w-0">
-                <input
-                  value={term.label}
-                  onChange={(event) => updateTerm(term.id, { label: event.target.value })}
-                  onClick={(event) => event.stopPropagation()}
-                  readOnly={readOnly}
-                  className="h-8 w-full rounded border border-transparent bg-transparent px-2 font-medium text-slate-800 hover:border-slate-200 focus:border-brand-300 focus:bg-white focus:outline-none"
-                />
-                {item.summary && <div className="mt-0.5 truncate text-slate-400">{item.summary}</div>}
-              </div>
-              <select
-                value={term.role}
-                onChange={(event) => updateTerm(term.id, { role: event.target.value })}
-                onClick={(event) => event.stopPropagation()}
-                disabled={readOnly}
-                className="h-8 rounded border border-slate-200 bg-white px-2 text-xs"
-              >
-                <option value="loss">Loss</option>
-                <option value="metric">Metric</option>
-                <option value="constraint">Constraint</option>
-                <option value="reward">Reward</option>
-                <option value="regularizer">Regularizer</option>
-              </select>
-              <input
-                type="number"
-                min={0}
-                step={0.01}
-                value={term.weight}
-                onChange={(event) => {
-                  const weight = Number.parseFloat(event.target.value);
-                  if (Number.isFinite(weight)) updateTerm(term.id, { weight });
-                }}
-                onClick={(event) => event.stopPropagation()}
-                readOnly={readOnly}
-                className="h-8 rounded border border-slate-200 bg-white px-2 text-xs"
-              />
-              <select
-                value={term.penalty ?? 'squared_l2'}
-                onChange={(event) => updateTerm(term.id, { penalty: event.target.value })}
-                onClick={(event) => event.stopPropagation()}
-                disabled={readOnly}
-                className="h-8 rounded border border-slate-200 bg-white px-2 text-xs"
-              >
-                {OBJECTIVE_PENALTY_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={time.mode}
-                onChange={(event) =>
-                  updateTerm(term.id, {
-                    temporal_selector: updateTemporalSelector(term, {
-                      mode: event.target.value as TimeAggregationSpec['mode'],
-                    }),
-                  })
-                }
-                onClick={(event) => event.stopPropagation()}
-                disabled={readOnly}
-                className="h-8 rounded border border-slate-200 bg-white px-2 text-xs"
-              >
-                {OBJECTIVE_TEMPORAL_MODE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <div className="min-w-0">
-                <div className="truncate text-slate-600" title={source?.compact}>
-                  {selectorDisplayLabel(source)}
-                </div>
-                {selectorDetail(source) && (
-                  <div className="mt-0.5 truncate text-[11px] text-slate-400">
-                    {selectorDetail(source)}
-                  </div>
                 )}
-              </div>
-              <div className="flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  checked={objectiveTermEnabled(term)}
-                  onChange={(event) =>
-                    !readOnly &&
-                    onObjectiveSpecChange(
-                      setObjectiveTermEnabled(objectiveSpec, term.id, event.target.checked)
-                    )
-                  }
-                  onClick={(event) => event.stopPropagation()}
-                  disabled={readOnly}
-                  className="h-4 w-4 rounded border-slate-300"
-                  title="Enabled"
-                />
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    if (readOnly) return;
-                    onObjectiveSpecChange(removeObjectiveTerm(objectiveSpec, term.id));
-                    if (selectedId === item.entity_id) onSelect(null);
-                  }}
-                  disabled={readOnly}
-                  className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
-                  title="Delete objective"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            </div>
-          );
-        })}
-        {items.length === 0 && (
-          <div className="px-4 py-8 text-center text-sm text-slate-400">
-            No objective terms recorded.
-          </div>
-        )}
+              >
+                <DataTableCell>
+                  <input
+                    value={term.label}
+                    onChange={(event) => updateTerm(term.id, { label: event.target.value })}
+                    onClick={(event) => event.stopPropagation()}
+                    readOnly={readOnly}
+                    className="h-8 w-full rounded border border-transparent bg-transparent px-2 font-medium text-slate-800 hover:border-slate-200 focus:border-brand-300 focus:bg-white focus:outline-none"
+                  />
+                </DataTableCell>
+                <DataTableCell>
+                  <select
+                    value={term.role}
+                    onChange={(event) => updateTerm(term.id, { role: event.target.value })}
+                    onClick={(event) => event.stopPropagation()}
+                    disabled={readOnly}
+                    className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs"
+                  >
+                    <option value="loss">Loss</option>
+                    <option value="metric">Metric</option>
+                    <option value="constraint">Constraint</option>
+                    <option value="reward">Reward</option>
+                    <option value="regularizer">Regularizer</option>
+                  </select>
+                </DataTableCell>
+                <DataTableCell>
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={term.weight}
+                    onChange={(event) => {
+                      const weight = Number.parseFloat(event.target.value);
+                      if (Number.isFinite(weight)) updateTerm(term.id, { weight });
+                    }}
+                    onClick={(event) => event.stopPropagation()}
+                    readOnly={readOnly}
+                    className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs"
+                  />
+                </DataTableCell>
+                <DataTableCell>
+                  <select
+                    value={term.penalty ?? 'squared_l2'}
+                    onChange={(event) => updateTerm(term.id, { penalty: event.target.value })}
+                    onClick={(event) => event.stopPropagation()}
+                    disabled={readOnly}
+                    className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs"
+                  >
+                    {OBJECTIVE_PENALTY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </DataTableCell>
+                <DataTableCell>
+                  <select
+                    value={time.mode}
+                    onChange={(event) =>
+                      updateTerm(term.id, {
+                        temporal_selector: updateTemporalSelector(term, {
+                          mode: event.target.value as TimeAggregationSpec['mode'],
+                        }),
+                      })
+                    }
+                    onClick={(event) => event.stopPropagation()}
+                    disabled={readOnly}
+                    className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs"
+                  >
+                    {OBJECTIVE_TEMPORAL_MODE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </DataTableCell>
+                <DataTableCell>
+                  <div className="min-w-0">
+                    <div className="truncate text-slate-600" title={source?.compact}>
+                      {selectorDisplayLabel(source)}
+                    </div>
+                    {selectorDetail(source) && (
+                      <div className="mt-0.5 truncate text-[11px] text-slate-400">
+                        {selectorDetail(source)}
+                      </div>
+                    )}
+                  </div>
+                </DataTableCell>
+                <DataTableCell>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="checkbox"
+                      checked={objectiveTermEnabled(term)}
+                      onChange={(event) =>
+                        !readOnly &&
+                        onObjectiveSpecChange(
+                          setObjectiveTermEnabled(objectiveSpec, term.id, event.target.checked)
+                        )
+                      }
+                      onClick={(event) => event.stopPropagation()}
+                      disabled={readOnly}
+                      className="h-4 w-4 rounded border-slate-300"
+                      title="Enabled"
+                    />
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (readOnly) return;
+                        onObjectiveSpecChange(removeObjectiveTerm(objectiveSpec, term.id));
+                        if (selectedId === item.entity_id) onSelect(null);
+                      }}
+                      disabled={readOnly}
+                      className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+                      title="Delete objective"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </DataTableCell>
+              </DataTableRow>
+            );
+          })}
+          {items.length === 0 && (
+            <DataTableRow>
+              <DataTableEmpty colSpan={OBJECTIVE_TABLE_COLUMNS.length}>
+                No objective terms recorded.
+              </DataTableEmpty>
+            </DataTableRow>
+          )}
+        </DataTable>
       </div>
     </div>
   );
