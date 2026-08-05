@@ -2990,13 +2990,17 @@ def write_checkpoint_transaction(
             )
             blob_bytes = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
             blob_sha256 = sha256_bytes(blob_bytes)
+            blob_size_bytes = len(blob_bytes)
             blob_path = blob_dir / f"{spec.slot}-{blob_sha256}.pkl"
             _write_bytes_atomic(blob_path, blob_bytes)
+            # The serialized payload is durable on disk now; release it before
+            # hashing leaves so the two payload-sized buffers never coexist.
+            del blob_bytes
             integrity = _slot_integrity_records(value)
             content_digest = SlotContentDigest(
                 slot=spec.slot,
                 blob_sha256=blob_sha256,
-                blob_size_bytes=len(blob_bytes),
+                blob_size_bytes=blob_size_bytes,
                 leaf_hashes=integrity.leaf_digests,
                 slot_root_sha256=_slot_root_sha256(
                     spec.slot,
@@ -3016,7 +3020,7 @@ def write_checkpoint_transaction(
                 required=spec.required,
                 relative_path=str(blob_path.relative_to(tmp_dir)),
                 sha256=blob_sha256,
-                size_bytes=len(blob_bytes),
+                size_bytes=blob_size_bytes,
                 coordinate=_checkpoint_coordinate(
                     (slot_coordinates or {}).get(spec.slot, coordinate),
                     resolved_axes,
@@ -5560,13 +5564,17 @@ def _write_fresh_slot_blob(
     )
     blob_bytes = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
     blob_sha256 = sha256_bytes(blob_bytes)
+    blob_size_bytes = len(blob_bytes)
     blob_path = blob_dir / f"{spec.slot}-{blob_sha256}.pkl"
     _write_bytes_atomic(blob_path, blob_bytes)
+    # The serialized payload is durable on disk now; release it before hashing
+    # leaves so the two payload-sized buffers never coexist.
+    del blob_bytes
     integrity = _slot_integrity_records(value)
     content_digest = SlotContentDigest(
         slot=spec.slot,
         blob_sha256=blob_sha256,
-        blob_size_bytes=len(blob_bytes),
+        blob_size_bytes=blob_size_bytes,
         leaf_hashes=integrity.leaf_digests,
         slot_root_sha256=_slot_root_sha256(
             spec.slot,
@@ -5580,7 +5588,7 @@ def _write_fresh_slot_blob(
         required=spec.required,
         relative_path=str(blob_path.relative_to(transaction_dir)),
         sha256=blob_sha256,
-        size_bytes=len(blob_bytes),
+        size_bytes=blob_size_bytes,
         coordinate=coordinate,
         structural_abi_fingerprint=integrity.structural_abi_fingerprint,
         content_digest=content_digest,
@@ -6613,22 +6621,46 @@ def _canonical_leaf_type(leaf_type: str) -> str:
     return leaf_type
 
 
+def _array_leaf_content_digest(leaf: Any) -> tuple[str, int]:
+    """Digest one array leaf's canonical C-order bytes without copying them.
+
+    Returns ``(sha256_hex, size_bytes)`` for exactly the bytes
+    ``np.asarray(leaf).tobytes()`` would produce, but hashes the array buffer in
+    place so no payload-sized ``bytes`` object is materialized per leaf.
+    """
+    host = np.asarray(leaf)
+    if not host.flags["C_CONTIGUOUS"]:
+        host = np.ascontiguousarray(host)
+    try:
+        # A flat uint8 view exposes the same buffer for every buffer-protocol
+        # dtype, including extension dtypes such as bfloat16 that have no
+        # native struct format.
+        buffer = memoryview(host.reshape(-1).view(np.uint8))
+    except (BufferError, TypeError, ValueError):
+        data = host.tobytes()
+        return sha256_bytes(data), len(data)
+    with buffer:
+        return hashlib.sha256(buffer).hexdigest(), buffer.nbytes
+
+
 def _slot_integrity_records(value: Any) -> _SlotIntegrityRecords:
     pairs, treedef = jt.flatten_with_path(value)
-    host_leaves = jt.leaves(jax.device_get(value))
     digests: list[SlotLeafContentDigest] = []
     fingerprints: list[SlotLeafFingerprint] = []
-    for (path, leaf), host_leaf in zip(pairs, host_leaves, strict=True):
+    for path, leaf in pairs:
         fingerprints.append(_leaf_fingerprint(path, leaf))
         if eqx.is_array(leaf):
-            data = np.asarray(host_leaf).tobytes()
+            # Transfer this leaf alone; the whole-tree host copy that used to be
+            # taken here duplicated the entire slot payload in RSS.
+            leaf_sha256, leaf_size = _array_leaf_content_digest(leaf)
         else:
             data = pickle.dumps(leaf, protocol=pickle.HIGHEST_PROTOCOL)
+            leaf_sha256, leaf_size = sha256_bytes(data), len(data)
         digests.append(
             SlotLeafContentDigest(
                 path=_key_path_to_text(path),
-                sha256=sha256_bytes(data),
-                size_bytes=len(data),
+                sha256=leaf_sha256,
+                size_bytes=leaf_size,
             )
         )
     return _SlotIntegrityRecords(
