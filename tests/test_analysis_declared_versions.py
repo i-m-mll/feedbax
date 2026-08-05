@@ -5,7 +5,12 @@ and analysis bundles — previously called the structured spec migration registr
 through three different entrypoints with three different argument sets. These
 tests pin the shared path's outcomes for every declaration case a durable
 document can present: current, supported-old (migrate), explicitly rejected,
-unknown, malformed, and versionless.
+unknown, malformed (including an explicit null), and versionless.
+
+A JSON null is a declaration, not an absence. It is pinned separately from the
+other malformed values because it is the one malformed value a value-based
+presence test cannot see, so an old document stamping it was assumed current
+and skipped migration.
 
 ``test_analysis_run_authoring_is_behaviourally_unchanged`` is the regression
 guard for the site that was already correct: it replays the pre-unification
@@ -251,11 +256,42 @@ def test_malformed_version_declaration_fails_closed(
 @pytest.mark.parametrize(
     "kind, factory, resolve, current, supported_old, rejected, versionless", AUTHORING_FAMILIES
 )
+def test_explicit_null_version_declaration_is_malformed_not_versionless(
+    kind, factory, resolve, current, supported_old, rejected, versionless
+) -> None:
+    """A document carrying ``"schema_version": null`` has declared a bad version.
+
+    Reading the declaration with ``document.get("schema_version") is not None``
+    collapses an explicit null onto absence, so an old document that stamps a
+    null version was assumed current under an ``"accept_as_current"`` policy and
+    skipped migration entirely. Presence is decided by the key.
+    """
+    document = with_version(factory(), None)
+
+    for raises in (
+        lambda: migrate_authored_document(kind, document, versionless=versionless),
+        lambda: resolve(document),
+    ):
+        with pytest.raises(UnsupportedSpecVersion) as excinfo:
+            raises()
+
+        message = str(excinfo.value)
+        assert "malformed schema_version" in message
+        assert "schema_version=None" in message
+        assert "NoneType" in message
+        assert kind in message
+        assert current in message
+
+
+@pytest.mark.parametrize(
+    "kind, factory, resolve, current, supported_old, rejected, versionless", AUTHORING_FAMILIES
+)
 def test_versionless_document_follows_the_declared_family_policy(
     kind, factory, resolve, current, supported_old, rejected, versionless
 ) -> None:
     """Each family states its versionless policy; it is never an accident."""
     document = without_version(factory())
+    assert "schema_version" not in document
 
     if versionless == "reject":
         with pytest.raises(UnsupportedSpecVersion) as excinfo:
@@ -263,8 +299,56 @@ def test_versionless_document_follows_the_declared_family_policy(
         message = str(excinfo.value)
         assert "missing schema_version" in message
         assert kind in message
+
+        with pytest.raises(UnsupportedSpecVersion, match="missing schema_version"):
+            migrate_authored_document(kind, document, versionless=versionless)
     else:
         assert resolve(document).schema_version == current
+
+        result = migrate_authored_document(kind, document, versionless=versionless)
+        assert result.source_version == current
+        assert result.target_version == current
+        assert not result.migration_records
+
+
+@pytest.mark.parametrize(
+    "kind, factory, resolve, current, supported_old, rejected, versionless", AUTHORING_FAMILIES
+)
+def test_absent_key_is_versionless_under_both_family_policies(
+    kind, factory, resolve, current, supported_old, rejected, versionless
+) -> None:
+    """Absence follows whichever policy the call site states, for every family.
+
+    The parametrized family policies exercise only one branch per family, so the
+    explicit-null fix is pinned against both branches here: distinguishing the
+    key from its value must not change what absence means under either policy.
+    """
+    document = without_version(factory())
+
+    accepted = migrate_authored_document(kind, document, versionless="accept_as_current")
+    assert accepted.target_version == current
+    assert not accepted.migration_records
+
+    with pytest.raises(UnsupportedSpecVersion, match="missing schema_version"):
+        migrate_authored_document(kind, document, versionless="reject")
+
+
+@pytest.mark.parametrize(
+    "kind, factory, resolve, current, supported_old, rejected, versionless", AUTHORING_FAMILIES
+)
+def test_declared_version_string_is_unaffected_by_either_family_policy(
+    kind, factory, resolve, current, supported_old, rejected, versionless
+) -> None:
+    """A real version string is read from the declaration, never from the policy."""
+    for version, expect_records in ((current, False), (supported_old, True)):
+        document = with_version(factory(), version)
+
+        for policy in ("accept_as_current", "reject"):
+            result = migrate_authored_document(kind, document, versionless=policy)
+
+            assert result.source_version == version
+            assert result.target_version == current
+            assert bool(result.migration_records) is expect_records
 
 
 def test_bundle_payload_loader_shares_the_declared_version_path() -> None:
@@ -304,6 +388,12 @@ def test_analysis_run_authoring_is_behaviourally_unchanged() -> None:
     Malformed declarations still fail closed with ``UnsupportedSpecVersion``;
     only the diagnostic text improved, from "missing schema_version" to a
     message that names the malformed value.
+
+    An explicit ``"schema_version": null`` is deliberately absent from this list
+    and must not be added to it: the legacy expression reads the declaration by
+    value and so assumes such a document is current, which is exactly the
+    unmigrated-old-document defect the shared path now rejects. See
+    ``test_explicit_null_version_declaration_is_malformed_not_versionless``.
     """
     documents = [
         analysis_run_document(),
