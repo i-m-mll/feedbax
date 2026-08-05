@@ -35,11 +35,12 @@ says nothing about.
 
 from __future__ import annotations
 
-import json
 import posixpath
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, runtime_checkable
+
+from feedbax.contracts.strict_json import strict_json_loads
 
 PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID = "feedbax.project_experiment"
 PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION = "feedbax.project_experiment.v1"
@@ -261,12 +262,18 @@ def parse_project_declaration(
         source: Where these bytes came from, recorded as the declaration source
             and used to qualify every diagnostic.
 
+    The bytes come from a project root Feedbax does not own, so they are read
+    through the authority-boundary strict loader: a declaration that states one
+    key twice states two layouts, and the refusal arrives as this module's
+    declaration error rather than as a silently chosen last value.
+
     Raises:
         ProjectExperimentDeclarationError: If the bytes are not one JSON object
-            stating exactly the admitted keys at a supported schema identity.
+            stating exactly the admitted keys at a supported schema identity, or
+            if any object in them states the same member name twice.
     """
     try:
-        document = json.loads(raw.decode("utf-8"))
+        document = strict_json_loads(raw.decode("utf-8"), ref=source)
     except (UnicodeDecodeError, ValueError) as exc:
         raise ProjectExperimentDeclarationError(
             f"{source} is not a readable JSON project declaration: {exc}"

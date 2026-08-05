@@ -21,6 +21,7 @@ from feedbax.contracts.manifest import (
     canonical_json_bytes,
     sha256_bytes,
 )
+from feedbax.contracts.strict_json import strict_json_loads
 
 
 PayloadT = TypeVar("PayloadT", bound=StrictModel)
@@ -274,7 +275,10 @@ def load_content_pinned_json_document(
     except ValueError as exc:
         raise ValueError(f"content-pinned JSON base escapes repo_root: {base.ref!r}") from exc
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        # The content pin is computed over the *parsed* document, so a base that
+        # stated one member twice could satisfy its pin with the last value while
+        # a reader of the bytes sees the first. The strict loader refuses it.
+        payload = strict_json_loads(path.read_text(encoding="utf-8"), ref=base.ref)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot load content-pinned JSON base {base.ref!r}: {exc}") from exc
     if not isinstance(payload, dict):

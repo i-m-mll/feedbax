@@ -40,6 +40,7 @@ from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeRejection,
     ExperimentEnvelopeRejectionCategory,
 )
+from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
 
 AUTHORING_BUDGET_SCHEMA_ID = "feedbax.spec.authoring_budget"
 AUTHORING_BUDGET_SCHEMA_VERSION_V1 = f"{AUTHORING_BUDGET_SCHEMA_ID}.v1"
@@ -279,13 +280,18 @@ def load_authoring_budget_document(raw: bytes, *, field: str) -> dict[str, Any]:
     set and the migration table has no path forward and is refused with both
     named; it is never coerced, guessed at, or read through a compatibility
     fallback.
+
+    The bytes arrive from an envelope author, so they are read through the
+    authority-boundary strict loader: a budget that states one cap twice states
+    two caps, and the refusal is reported in this module's envelope-rejection
+    vocabulary rather than escaping as a bare parse error.
     """
     try:
-        document = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        document = strict_json_loads(raw.decode("utf-8"), ref=field)
+    except (UnicodeDecodeError, json.JSONDecodeError, StrictJsonError) as exc:
         raise ExperimentEnvelopeRejection(
             ExperimentEnvelopeRejectionCategory.NONCANONICAL_FORMAT,
-            f"the authoring budget at {field} is not readable JSON: {exc}",
+            f"the authoring budget at {field} is not one readable JSON document: {exc}",
             field=field,
         ) from exc
     if not isinstance(document, dict):
