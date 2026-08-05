@@ -28,6 +28,7 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
+import { ValueCountBadge } from '@/components/ui/ValueCountBadge';
 import { getScenario, getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
 import { useGraphStore } from '@/stores/graphStore';
 import {
@@ -1791,7 +1792,7 @@ function MatrixBuilderStrip({
           >
             <span className="min-w-0">
               <span className="font-semibold text-slate-700">{axis.label}</span>
-              <span className="ml-1 text-slate-400">{axis.values.length}</span>
+              <ValueCountBadge count={axis.values.length} className="ml-1 align-middle" />
               <span className="ml-2 text-slate-500">{axis.path}</span>
             </span>
             <button
@@ -1844,13 +1845,16 @@ function MatrixBuilderStrip({
         </label>
         <label className="block text-xs font-medium text-slate-600">
           <span>Values</span>
-          <input
-            value={axisDraft.values}
-            onChange={(event) => onAxisDraftChange({ ...axisDraft, values: event.target.value })}
-            className="mt-1 h-9 w-full rounded-md border border-slate-200 px-2.5 text-sm text-slate-700 focus:border-brand-300 focus:outline-none focus:ring-2 focus:ring-brand-100"
-          />
-          <span className="mt-1 block text-[11px] text-slate-400">
-            {values.length} value{values.length === 1 ? '' : 's'}
+          <span className="relative mt-1 block">
+            <input
+              value={axisDraft.values}
+              onChange={(event) => onAxisDraftChange({ ...axisDraft, values: event.target.value })}
+              className="h-9 w-full rounded-md border border-slate-200 px-2.5 pr-10 text-sm text-slate-700 focus:border-brand-300 focus:outline-none focus:ring-2 focus:ring-brand-100"
+            />
+            <ValueCountBadge
+              count={values.length}
+              className="absolute right-2 top-1/2 -translate-y-1/2"
+            />
           </span>
         </label>
         <div className="flex gap-2">
