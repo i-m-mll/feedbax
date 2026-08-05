@@ -20,7 +20,7 @@ from feedbax.contracts.graph import (
     RetainedObservableTargetSpec,
     RetentionPolicySpec,
 )
-from feedbax.tasks.timeline_masks import (
+from feedbax.runtime.timeline_masks import (
     TaskTimelineMaskError,
     align_time_mask,
     build_task_timeline_mask,

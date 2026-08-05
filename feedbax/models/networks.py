@@ -23,6 +23,10 @@ from jax.flatten_util import ravel_pytree
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax.runtime.graph import Component
+from feedbax.runtime.parameter_constraints import (
+    recurrent_parameter_role,
+    register_parameter_role_resolver,
+)
 from feedbax.models.support import (
     identity_func,
     interleave_unequal,
@@ -1251,6 +1255,9 @@ class VanillaRNN(Component):
             VanillaRNNState(hidden=new_hidden, output=new_hidden),
         )
         return {"output": new_hidden, "hidden": new_hidden}, state
+
+
+register_parameter_role_resolver(VanillaRNN, recurrent_parameter_role)
 
 
 def n_layer_linear(
