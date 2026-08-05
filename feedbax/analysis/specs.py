@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.context import AnalysisRunContext
+from feedbax.analysis.declared_versions import migrate_authored_document
 from feedbax.analysis.evaluation import (
     EvaluationStatesArtifactNotFound,
     EVALUATION_STATES_CACHE_SCHEMA_VERSION,
@@ -87,7 +88,7 @@ from feedbax.contracts.analysis_composition import (
     flatten_analysis_run_delta,
     is_analysis_run_delta_payload,
 )
-from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
+from feedbax.contracts.migrations import UnsupportedSpecVersion
 from feedbax.contracts.run_aliases import RunAliasCatalog, resolve_run_aliases
 from feedbax.contracts.staged_execution import StagedExecutionDescriptor
 from feedbax.contracts.strict_json import strict_json_loads
@@ -336,12 +337,14 @@ def resolve_analysis_run_authoring(
         resolved_payload = resolve_run_aliases(flattened.payload, run_alias_catalogs)
         flattened = flattened.model_copy(update={"payload": resolved_payload})
         return AnalysisRunSpec.model_validate(resolved_payload), flattened
-    source_version = raw.get("schema_version")
-    result = default_spec_registry.migrate(
+    # AnalysisRunSpec documents shipped before the family stamped a version, so a
+    # versionless document is admitted as current; every declared version still
+    # migrates or fails closed through the shared path.
+    result = migrate_authored_document(
         "AnalysisRunSpec",
         raw,
-        source_version=source_version if isinstance(source_version, str) else None,
-        assume_current=source_version is None,
+        versionless="accept_as_current",
+        path="analysis_spec",
     )
     return AnalysisRunSpec.model_validate(
         resolve_run_aliases(result.payload, run_alias_catalogs)

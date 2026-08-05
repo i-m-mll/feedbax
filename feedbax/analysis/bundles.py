@@ -15,6 +15,7 @@ from urllib.parse import unquote, urlsplit
 from pydantic import Field, field_validator, model_validator
 
 from feedbax.analysis.analysis import AbstractAnalysis
+from feedbax.analysis.declared_versions import migrate_authored_document
 from feedbax.analysis.evaluation import execute_evaluation_run_spec
 from feedbax.analysis.evaluation_inputs import resolve_evaluation_inputs
 from feedbax.analysis.execution_context import (
@@ -420,9 +421,12 @@ def resolve_analysis_bundle_authoring(
         )
         flattened = flatten_analysis_bundle_delta(delta, repo_root=repo_root)
         return AnalysisBundleSpec.model_validate(flattened.payload), flattened
-    from feedbax.contracts.migrations import migrate_structured_spec_payload
-
-    migrated = migrate_structured_spec_payload("AnalysisBundleSpec", dict(bundle))
+    migrated = migrate_authored_document(
+        "AnalysisBundleSpec",
+        bundle,
+        versionless="reject",
+        path="analysis_bundle_spec",
+    )
     return AnalysisBundleSpec.model_validate(migrated.payload), None
 
 
@@ -598,9 +602,12 @@ def authored_analysis_bundle_from_payload(
     """
     if is_analysis_bundle_delta_payload(data):
         return AnalysisBundleDeltaSpec.model_validate(data)
-    from feedbax.contracts.migrations import migrate_structured_spec_payload
-
-    migrated = migrate_structured_spec_payload("AnalysisBundleSpec", dict(data))
+    migrated = migrate_authored_document(
+        "AnalysisBundleSpec",
+        data,
+        versionless="reject",
+        path="analysis_bundle_spec",
+    )
     return AnalysisBundleSpec.model_validate(migrated.payload)
 
 
