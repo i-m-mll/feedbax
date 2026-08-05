@@ -637,7 +637,12 @@ def build_parser() -> argparse.ArgumentParser:
     adopt_parser.add_argument("--barrier", required=True, help="Checkpoint barrier name")
     adopt_parser.add_argument("--run-id", required=True, help="Run id for checkpoint metadata")
     adopt_parser.add_argument("--phase", required=True, help="Completed phase name")
-    adopt_parser.add_argument("--global-step", required=True, type=int)
+    adopt_parser.add_argument(
+        "--program-step",
+        required=True,
+        type=int,
+        help="Cumulative phase-program step recorded on the adopted coordinate",
+    )
     adopt_parser.add_argument("--completed-barrier", required=True)
     adopt_parser.add_argument("--model-slot", default="model")
     adopt_parser.add_argument("--optimizer-slot", default="optimizer")
