@@ -31,6 +31,7 @@ from feedbax.contracts.migrations import (
     UnsupportedSpecVersion,
     default_spec_registry,
 )
+from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
 
@@ -296,7 +297,10 @@ def import_manifest_packet(
             )
             continue
         try:
-            raw_data = json.loads(raw_bytes.decode("utf-8"))
+            raw_data = strict_json_loads(
+                raw_bytes.decode("utf-8"),
+                ref=f"packet manifest {entry.path!r}",
+            )
             _validate_manifest_schema_families(
                 raw_data,
                 registry=active_registry,
@@ -386,7 +390,7 @@ def _scan_manifest_root(root: Path) -> dict[str, _ManifestRecord]:
     records: dict[str, _ManifestRecord] = {}
     for path in sorted(manifests_dir.glob("**/*.json")):
         raw_bytes = path.read_bytes()
-        data = json.loads(raw_bytes.decode("utf-8"))
+        data = strict_json_loads(raw_bytes.decode("utf-8"), ref=str(path))
         manifest = load_manifest(path)
         if manifest.id in records:
             raise ManifestPacketValidationError(
@@ -630,7 +634,7 @@ def _load_packet_index(
     if not index_path.is_file():
         raise ManifestPacketValidationError(f"Missing manifest packet index: {index_path}")
     raw_bytes = index_path.read_bytes()
-    payload = json.loads(raw_bytes.decode("utf-8"))
+    payload = strict_json_loads(raw_bytes.decode("utf-8"), ref=str(index_path))
     schema_id = payload.get("schema_id")
     if schema_id != MANIFEST_PACKET_SCHEMA_ID:
         raise UnsupportedSpecVersion(
@@ -743,6 +747,11 @@ def _manifest_data_for_import(
     artifact_entries: list[ManifestPacketArtifactEntry],
     root: Path,
 ) -> dict[str, Any]:
+    # Trusted-internal, not an authority boundary: this is a deep copy of a
+    # mapping this process already parsed and admitted through
+    # ``strict_json_loads`` in ``_validate_packet_manifests``. The bytes are
+    # produced by ``json.dumps`` one expression earlier, so no object in them
+    # can state a member twice and there is no external authority to refuse.
     imported = json.loads(json.dumps(data))
     metadata = dict(imported.get("metadata") or {})
     metadata["imported_from"] = {

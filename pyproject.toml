@@ -201,6 +201,7 @@ markers = [
     "migration_contract: durable structured-spec migration and rejection tests",
     "analysis_recipe_contract: analysis, evaluation, report, and regeneration contract tests",
     "no_silent_substitution_contract: structural gate for silent default/fallback patterns",
+    "strict_json_boundary_contract: structural gate for authority-boundary JSON parsing",
 ]
 
 [tool.ruff]

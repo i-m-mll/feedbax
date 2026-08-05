@@ -12,6 +12,7 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 import feedbax.training.checkpoint_custody as custody_module
@@ -530,6 +531,108 @@ def test_slot_integrity_records_preserve_leaf_digest_and_fingerprint_values() ->
 
     assert integrity.leaf_digests == legacy_leaf_digests
     assert integrity.structural_abi_fingerprint == custody_module.structural_abi_fingerprint(value)
+
+
+def _legacy_leaf_content_digests(value: object) -> list:
+    """Leaf digests recomputed with the original whole-tree host-copy formula.
+
+    Leaf hashing used to take one ``jax.device_get`` over the whole slot and then
+    a ``tobytes()`` copy per leaf. Those digests are content-addressed durable
+    checkpoint state, so hashing an array buffer in place must reproduce exactly
+    the same bytes, sizes, and hashes for every dtype and memory layout.
+    """
+    pairs, _ = custody_module.jt.flatten_with_path(value)
+    host_leaves = custody_module.jt.leaves(jax.device_get(value))
+    digests = []
+    for (path, leaf), host_leaf in zip(pairs, host_leaves, strict=True):
+        if custody_module.eqx.is_array(leaf):
+            data = np.asarray(host_leaf).tobytes()
+        else:
+            data = pickle.dumps(leaf, protocol=pickle.HIGHEST_PROTOCOL)
+        digests.append(
+            custody_module.SlotLeafContentDigest(
+                path=custody_module._key_path_to_text(path),
+                sha256=custody_module.sha256_bytes(data),
+                size_bytes=len(data),
+            )
+        )
+    return digests
+
+
+def _dtype_and_layout_rich_value() -> dict[str, object]:
+    """A slot value spanning the dtypes and buffer layouts leaf hashing must handle."""
+    return {
+        "f32": jnp.arange(12, dtype=jnp.float32).reshape(3, 4),
+        "f32_scalar": jnp.array(1.5, dtype=jnp.float32),
+        "bf16": jnp.arange(6, dtype=jnp.bfloat16),
+        "f16": jnp.arange(6, dtype=jnp.float16),
+        "i32": jnp.arange(5, dtype=jnp.int32),
+        "i8": jnp.arange(5, dtype=jnp.int8),
+        "u32": jnp.array([11, 22], dtype=jnp.uint32),
+        "bool": jnp.array([True, False, True]),
+        "c64": jnp.array([1 + 2j, 3 - 4j], dtype=jnp.complex64),
+        "empty": jnp.zeros((0, 3), dtype=jnp.float32),
+        "np_c_order": np.arange(9, dtype=np.float64).reshape(3, 3),
+        "np_f_order": np.asfortranarray(np.arange(9, dtype=np.float32).reshape(3, 3)),
+        "np_strided": np.arange(24, dtype=np.float32).reshape(4, 6)[:, ::2],
+        "np_0d": np.array(7.5, dtype=np.float32),
+        "np_bf16": np.arange(4, dtype=jnp.bfloat16.dtype),
+        "static_tuple": ("kept", 3),
+        "static_str": "hello",
+        "static_float": 0.125,
+        "static_none": None,
+    }
+
+
+def test_slot_leaf_digests_match_host_copy_bytes_for_every_dtype_and_layout() -> None:
+    value = _dtype_and_layout_rich_value()
+
+    integrity = custody_module._slot_integrity_records(value)
+
+    assert integrity.leaf_digests == _legacy_leaf_content_digests(value)
+    # Fortran-ordered and strided buffers must still hash their C-order bytes.
+    by_path = {digest.path: digest for digest in integrity.leaf_digests}
+    assert by_path["/np_f_order"].size_bytes == 36
+    assert by_path["/np_strided"].size_bytes == 48
+    assert by_path["/np_f_order"].sha256 == custody_module.sha256_bytes(
+        np.asarray(value["np_f_order"]).tobytes()
+    )
+    assert by_path["/np_strided"].sha256 == custody_module.sha256_bytes(
+        np.asarray(value["np_strided"]).tobytes()
+    )
+
+
+def test_checkpoint_write_records_host_copy_digests_and_real_blob_sizes(
+    tmp_path: Path,
+) -> None:
+    slots = _minimax_slots()
+    result = _write_resolver_checkpoint(tmp_path, slots=slots)
+
+    slot_digests = []
+    for slot in result.manifest.slots:
+        blob_path = _manifest_blob_path(result.manifest_path, slot.relative_path)
+        blob_bytes = blob_path.read_bytes()
+        expected_leaves = _legacy_leaf_content_digests(slots[slot.slot])
+
+        assert slot.content_digest.leaf_hashes == expected_leaves
+        assert slot.content_digest.blob_sha256 == _sha256_file(blob_path)
+        assert slot.sha256 == _sha256_file(blob_path)
+        assert slot.size_bytes == len(blob_bytes)
+        assert slot.content_digest.blob_size_bytes == len(blob_bytes)
+        assert slot.content_digest.slot_root_sha256 == custody_module._slot_root_sha256(
+            slot.slot, slot.sha256, expected_leaves
+        )
+        slot_digests.append(slot.content_digest)
+
+    assert result.manifest.content_integrity_digest.transaction_root_sha256 == (
+        custody_module._transaction_root_sha256(slot_digests)
+    )
+
+    # Resume revalidates every recorded leaf digest against the decoded value.
+    resolved = resolve_checkpoint_custody_ref(
+        _resolver_parent_ref(result), allowed_root=result.root
+    )
+    assert set(resolved.slots) == {slot.slot for slot in result.manifest.slots}
 
 
 def test_training_run_manifest_links_checkpoint_custody_ref() -> None:

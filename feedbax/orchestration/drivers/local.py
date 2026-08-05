@@ -14,6 +14,7 @@ import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,7 @@ from feedbax.orchestration.input_materialization import (
     preflight_bundle_input_bindings,
     reclaim_materialized_staged_roots,
 )
+from feedbax.orchestration.repo_snapshot import git_common_dir
 from feedbax.orchestration.staged_root_custody import StagedRootSnapshotBinding
 from feedbax.orchestration.state import PreflightCheckEntry, RunSetState
 from feedbax.training import publish_directory_no_replace
@@ -70,6 +72,56 @@ from feedbax.training import publish_directory_no_replace
 
 class LocalDriverError(RuntimeError):
     """Raised when the local driver cannot complete a requested action."""
+
+
+JAX_COMPILATION_CACHE_DIR_ENV = "JAX_COMPILATION_CACHE_DIR"
+FEEDBAX_JAX_COMPILATION_CACHE_DIR_ENV = "FEEDBAX_JAX_COMPILATION_CACHE_DIR"
+FEEDBAX_DISABLE_JAX_COMPILATION_CACHE_ENV = "FEEDBAX_DISABLE_JAX_COMPILATION_CACHE"
+
+
+def resolve_jax_compilation_cache_dir() -> Path | None:
+    """Resolve the persistent JAX compilation cache directory for local rows.
+
+    The RunPod driver exports `JAX_COMPILATION_CACHE_DIR` to a persistent volume and the
+    test suite configures the same cache, so only locally launched rows were paying full
+    XLA compilation on every invocation. The locally run end-to-end smoke that precedes
+    remote resource acquisition is exactly that path, so it paid the compile every time.
+
+    Resolution follows the precedent already established for the test cache and the
+    sealed repo-snapshot cache: an explicit override first, then the Git common directory
+    of the running Feedbax checkout, which keeps sibling checkouts apart while letting
+    worktrees of one checkout share compiled artifacts. When Feedbax is not installed
+    from a Git checkout there is no common directory, so the fall-back is a
+    per-installation namespace under the user cache directory.
+
+    Returns:
+        The directory to export as `JAX_COMPILATION_CACHE_DIR`, or `None` when
+        `FEEDBAX_DISABLE_JAX_COMPILATION_CACHE=1` disables the persistent cache.
+    """
+    if os.environ.get(FEEDBAX_DISABLE_JAX_COMPILATION_CACHE_ENV) == "1":
+        return None
+    override = os.environ.get(FEEDBAX_JAX_COMPILATION_CACHE_DIR_ENV) or os.environ.get(
+        JAX_COMPILATION_CACHE_DIR_ENV
+    )
+    if override:
+        return Path(override).expanduser()
+    return _default_jax_compilation_cache_dir()
+
+
+@cache
+def _default_jax_compilation_cache_dir() -> Path:
+    """Return the checkout-scoped default cache directory, resolved once per process.
+
+    Locating the Git common directory costs a subprocess, and a run set launches many
+    rows, so the answer is memoized: it cannot change while the process is alive.
+    """
+    package_root = Path(__file__).resolve().parents[3]
+    common_dir = git_common_dir(package_root)
+    if common_dir is not None:
+        return common_dir / "feedbax_jax_compilation_cache"
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME") or "~/.cache").expanduser()
+    namespace = hashlib.sha256(os.fsencode(package_root)).hexdigest()[:16]
+    return cache_home / "feedbax" / "jax-compilation" / namespace
 
 
 _DEPENDENCY_INVENTORY_SCRIPT = """
@@ -342,6 +394,12 @@ class LocalOrchestrationDriver:
             }
         )
         env["PYTHONPATH"] = _prepend_feedbax_source_root(env.get("PYTHONPATH"))
+        jax_cache_dir = resolve_jax_compilation_cache_dir()
+        if jax_cache_dir is None:
+            env.pop(JAX_COMPILATION_CACHE_DIR_ENV, None)
+        else:
+            jax_cache_dir.mkdir(parents=True, exist_ok=True)
+            env[JAX_COMPILATION_CACHE_DIR_ENV] = str(jax_cache_dir)
         command, bound_row = executor_family_adapter(row.execution_family).bind_command(
             _row_command(row, self.python_executable),
             bundle=bundle,

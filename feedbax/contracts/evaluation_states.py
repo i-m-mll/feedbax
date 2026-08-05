@@ -28,6 +28,7 @@ from feedbax.contracts.manifest import (
     store_bytes_artifact,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion
+from feedbax.contracts.strict_json import strict_json_loads
 
 
 EVALUATION_STATES_ARTIFACT_ROLE = "evaluation_states"
@@ -410,7 +411,10 @@ def load_evaluation_states_container_bytes(
                 f"{EVALUATION_STATES_METADATA_KEY!r}."
             )
         raw_payload = archive.read(EVALUATION_STATES_METADATA_KEY)
-        payload_data = json.loads(raw_payload.decode("utf-8"))
+        payload_data = strict_json_loads(
+            raw_payload.decode("utf-8"),
+            ref=f"evaluation states container member {EVALUATION_STATES_METADATA_KEY!r}",
+        )
         _validate_payload_version(payload_data)
         schema_version = payload_data.get("schema_version")
         if schema_version == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1:
@@ -508,7 +512,10 @@ def _load_v2_leaves(
             raise EvaluationStatesContainerError(
                 f"Evaluation states container {version_label} metadata section digest mismatch."
             )
-        metadata_records = json.loads(metadata_bytes.decode("utf-8"))
+        metadata_records = strict_json_loads(
+            metadata_bytes.decode("utf-8"),
+            ref=f"evaluation states container member {EVALUATION_STATES_METADATA_VALUES_KEY!r}",
+        )
         if not isinstance(metadata_records, list):
             raise EvaluationStatesContainerError(
                 f"Evaluation states container {version_label} metadata section must be a list."
@@ -671,6 +678,10 @@ def _encode_mixed_leaves(
             )
             continue
         value_bytes = _canonical_metadata_leaf_bytes(leaf, leaf_path)
+        # Trusted-internal, not an authority boundary: ``value_bytes`` was
+        # canonically serialized by the line above, in this process, from an
+        # in-memory leaf. Canonical serialization emits each member once, so
+        # there is nothing here for a strict loader to refuse.
         metadata_values.append(
             {"index": index, "path": leaf_path, "value": json.loads(value_bytes)}
         )

@@ -14,7 +14,6 @@ same v1 schema family.
 from __future__ import annotations
 
 from copy import deepcopy
-import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -34,6 +33,7 @@ from feedbax.contracts.expressions import (
     evaluate_query,
 )
 from feedbax.contracts.manifest import AnalysisDataProduct, StrictModel
+from feedbax.contracts.strict_json import strict_json_loads
 
 
 EXTRACTION_PRODUCT_SPEC_SCHEMA_ID = "feedbax.spec.extraction_product"
@@ -278,7 +278,7 @@ def _read_source_payload(repo_root: Path, uri: str) -> Any:
     path = repo_root / uri
     if not path.is_file():
         raise FileNotFoundError(f"Extraction source is missing: {uri}")
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = strict_json_loads(path.read_text(encoding="utf-8"), ref=uri)
     # Resolve declared content-pinned sub-document inheritance into the effective
     # document before any dotted-path query evaluation. Imported locally because
     # matrix_core imports this module at top level; a top-level import here would

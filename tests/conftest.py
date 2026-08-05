@@ -124,6 +124,12 @@ def _configure_jax_persistent_cache() -> None:
         )
     ).expanduser()
     cache_dir.mkdir(parents=True, exist_ok=True)
+    # Subprocesses that tests launch — orchestration rows in particular — resolve their
+    # own persistent cache from the environment. Pin them to this invocation's test cache
+    # so they neither write into the production checkout cache nor pay for a Git lookup.
+    # Only the Feedbax-level override is set: `JAX_COMPILATION_CACHE_DIR` is also read as
+    # cache telemetry by the training executor, and this process configures JAX directly.
+    os.environ.setdefault("FEEDBAX_JAX_COMPILATION_CACHE_DIR", str(cache_dir))
 
     min_compile_secs = float(
         os.environ.get("FEEDBAX_JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")

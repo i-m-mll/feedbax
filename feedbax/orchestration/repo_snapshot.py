@@ -110,7 +110,7 @@ def default_repo_snapshot_cache_dir() -> Path:
     if override:
         return Path(override).expanduser()
     package_root = Path(__file__).resolve().parents[2]
-    common_dir = _git_common_dir(package_root)
+    common_dir = git_common_dir(package_root)
     if common_dir is not None:
         return common_dir / "feedbax_repo_snapshots"
     cache_home = Path(os.environ.get("XDG_CACHE_HOME") or "~/.cache").expanduser()
@@ -261,7 +261,7 @@ def verify_repo_snapshot(
         raise RepoSnapshotError(f"sealed repo snapshot digest mismatch: {root}")
 
 
-def _git_common_dir(root: Path) -> Path | None:
+def git_common_dir(root: Path) -> Path | None:
     """Return the Git common directory of a checkout, or None when there is no checkout."""
     try:
         result = subprocess_run(

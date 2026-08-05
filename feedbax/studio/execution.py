@@ -100,6 +100,25 @@ if TYPE_CHECKING:
 
 ExecutionTarget = Literal["local", "gcp", "runpod", "manual"]
 
+#: Files the Studio training command contracts to produce, in emission order.
+#: Declared once so the command contract and the artifact policy cannot drift.
+STUDIO_TRAINING_CONTRACT_FILES: tuple[str, ...] = (
+    "execution-spec.json",
+    "workspace-snapshot.json",
+    "graph-spec.json",
+    "training-spec.json",
+    "task-spec.json",
+    "task-binding-spec.json",
+    "artifacts/training-summary.json",
+)
+
+
+class _Unset:
+    """Sentinel distinguishing an omitted argument from an explicit `None`."""
+
+
+_UNSET = _Unset()
+
 
 class StudioExecutionModel(BaseModel):
     """Base model for Studio execution preparation records."""
@@ -1095,15 +1114,7 @@ def _build_execution_spec(
             "temporal_spec": scenario.temporal_spec,
         },
         "command_contract": {
-            "expected_files": [
-                "execution-spec.json",
-                "workspace-snapshot.json",
-                "graph-spec.json",
-                "training-spec.json",
-                "task-spec.json",
-                "task-binding-spec.json",
-                "artifacts/training-summary.json",
-            ],
+            "expected_files": list(STUDIO_TRAINING_CONTRACT_FILES),
             "current_command_role": "materialize_mvp_training_result",
             "future_command_role": "launch_training_runner",
         },
@@ -1124,15 +1135,7 @@ def _build_execution_spec(
         primary_repo=request.primary_repo,
         local=LocalBackendConfig(cwd=request.local_cwd),
         artifact_policy=ArtifactPolicy(
-            tracked_paths=[
-                "execution-spec.json",
-                "workspace-snapshot.json",
-                "graph-spec.json",
-                "training-spec.json",
-                "task-spec.json",
-                "task-binding-spec.json",
-                "artifacts/training-summary.json",
-            ],
+            tracked_paths=list(STUDIO_TRAINING_CONTRACT_FILES),
             bulk_paths=["artifacts"],
             metadata={"studio_stage_id": stage.id, "studio_scenario_id": scenario.id},
         ),
@@ -1191,6 +1194,132 @@ def _restaged_metadata(
     return metadata
 
 
+def _reuse_pending_training_manifest(
+    manifest_id: str,
+    root: Path,
+) -> tuple[TrainingRunManifest, Path] | None:
+    """Return an already-staged manifest for `manifest_id`, restaging cancelled runs.
+
+    Returns `None` when nothing indexed under `manifest_id` can stand in for a
+    freshly built pending manifest, in which case the caller builds one.
+    """
+    from feedbax.contracts.manifest import load_manifest
+    from feedbax.persistence.manifest_index import find_manifest_paths_by_id
+
+    existing_paths = find_manifest_paths_by_id(manifest_id, root=root)
+    if not existing_paths:
+        return None
+    existing = load_manifest(existing_paths[0])
+    if not isinstance(existing, TrainingRunManifest):
+        return None
+    if existing.status != "cancelled":
+        return existing, existing_paths[0]
+    restaged = existing.model_copy(
+        update={
+            "status": "pending",
+            "completed_at": None,
+            "metadata": _restaged_metadata(
+                existing.metadata,
+                manifest_id=manifest_id,
+                restaged_from_status="cancelled",
+            ),
+        }
+    )
+    return restaged, write_manifest(restaged, root=root)
+
+
+def _build_pending_training_manifest(
+    *,
+    manifest_id: str,
+    root: Path,
+    workspace: StudioWorkspaceSpec,
+    stage: StudioStageSpec,
+    scenario_id: str | None,
+    graph_spec: dict[str, Any],
+    training_spec: dict[str, Any],
+    task_spec: dict[str, Any],
+    task_binding_spec: dict[str, Any] | None,
+    training_spec_kind: str,
+    request: StudioTrainingExecutionRequest,
+    execution_target: str,
+    axis_coordinates: dict[str, Any],
+    studio_run_identity: dict[str, Any],
+    entrypoint_metadata: dict[str, Any],
+    label: str | None | _Unset = _UNSET,
+    run_set_id: str | None = None,
+    overrides: list[Any] | None = None,
+    total_batches: Any | None = None,
+) -> tuple[TrainingRunManifest, Path]:
+    """Write the single durable pending `TrainingRunManifest` document.
+
+    Both the single-run and the matrix-row staging paths emit through here.
+    `studio_run_identity` carries the identity fields that distinguish those
+    paths inside `metadata["studio"]` (the single-run `seed`, or the matrix
+    row's `axis_value_indices` and `run_set_id`); it is spliced in immediately
+    after `axis_coordinates` so the emitted key order is stable per path.
+    """
+    now = utc_now()
+    studio_metadata = {
+        "workspace_id": workspace.id,
+        "workspace_schema_version": workspace.schema_version,
+        "stage_id": stage.id,
+        "stage_kind": stage.kind,
+        "scenario_id": scenario_id,
+        "selection_spec": stage.selection_spec,
+        "axis_coordinates": axis_coordinates,
+        **studio_run_identity,
+        "planned_training_run_id": manifest_id,
+        "execution_target": execution_target,
+        "execution_backend": request.backend,
+    }
+    metadata: dict[str, Any] = {}
+    if not isinstance(label, _Unset):
+        metadata["name"] = label
+        metadata["label"] = label
+    metadata["studio"] = studio_metadata
+    metadata["planned"] = True
+    metadata["staged_at"] = now.isoformat()
+    metadata["execution_target"] = execution_target
+    metadata["execution_backend"] = request.backend
+    metadata["spec_hashes"] = _ui_spec_hashes(
+        {
+            "graph_spec": graph_spec,
+            "training_spec": training_spec,
+            "task_spec": task_spec,
+            "task_binding_spec": task_binding_spec,
+        }
+    )
+    manifest = TrainingRunManifest(
+        id=manifest_id,
+        run_set_id=run_set_id,
+        job_id=request.job_id,
+        status="pending",
+        graph_spec=spec_payload("GraphSpec", graph_spec),
+        training_spec=spec_payload(training_spec_kind, training_spec),
+        task_spec=spec_payload("TaskSpec", task_spec),
+        task_binding_spec=spec_payload("StudioTaskBindingSpec", task_binding_spec)
+        if task_binding_spec is not None
+        else None,
+        overrides=overrides if overrides is not None else [],
+        summary_metrics={
+            key: value
+            for key, value in {"total_batches": total_batches}.items()
+            if value is not None
+        },
+        provenance=Provenance(
+            entrypoint=EntrypointRef(
+                kind="feedbax-studio-pipeline",
+                name="stage_training_run",
+                metadata=entrypoint_metadata,
+            ),
+            issues=list(request.issues),
+            metadata={**request.metadata, "studio": studio_metadata},
+        ),
+        metadata=metadata,
+    )
+    return manifest, write_manifest(manifest, root=root)
+
+
 def _write_pending_training_manifest(
     *,
     workspace: StudioWorkspaceSpec,
@@ -1215,83 +1344,28 @@ def _write_pending_training_manifest(
     )
 
     root_path = default_manifest_root()
-    from feedbax.contracts.manifest import load_manifest
-    from feedbax.persistence.manifest_index import find_manifest_paths_by_id
+    reused = _reuse_pending_training_manifest(manifest_id, root_path)
+    if reused is not None:
+        return reused
 
-    existing_paths = find_manifest_paths_by_id(manifest_id, root=root_path)
-    if existing_paths:
-        existing = load_manifest(existing_paths[0])
-        if isinstance(existing, TrainingRunManifest):
-            if existing.status == "cancelled":
-                restaged = existing.model_copy(
-                    update={
-                        "status": "pending",
-                        "completed_at": None,
-                        "metadata": _restaged_metadata(
-                            existing.metadata,
-                            manifest_id=manifest_id,
-                            restaged_from_status="cancelled",
-                        ),
-                    }
-                )
-                return restaged, write_manifest(restaged, root=root_path)
-            return existing, existing_paths[0]
-
-    now = utc_now()
-    metadata = {
-        "studio": {
-            "workspace_id": workspace.id,
-            "workspace_schema_version": workspace.schema_version,
-            "stage_id": stage.id,
-            "stage_kind": stage.kind,
-            "scenario_id": scenario_id,
-            "selection_spec": stage.selection_spec,
-            "axis_coordinates": axis_coordinates,
-            "seed": seed,
-            "planned_training_run_id": manifest_id,
-            "execution_target": execution_target,
-            "execution_backend": request.backend,
-        },
-        "planned": True,
-        "staged_at": now.isoformat(),
-        "execution_target": execution_target,
-        "execution_backend": request.backend,
-    }
-    metadata["spec_hashes"] = _ui_spec_hashes(
-        {
-            "graph_spec": graph_spec,
-            "training_spec": training_spec,
-            "task_spec": task_spec,
-            "task_binding_spec": task_binding_spec,
-        }
+    return _build_pending_training_manifest(
+        manifest_id=manifest_id,
+        root=root_path,
+        workspace=workspace,
+        stage=stage,
+        scenario_id=scenario_id,
+        graph_spec=graph_spec,
+        training_spec=training_spec,
+        task_spec=task_spec,
+        task_binding_spec=task_binding_spec,
+        training_spec_kind="TrainingSpec",
+        request=request,
+        execution_target=execution_target,
+        axis_coordinates=axis_coordinates,
+        studio_run_identity={"seed": seed},
+        entrypoint_metadata={"job_id": request.job_id},
+        total_batches=training_spec.get("n_batches"),
     )
-    manifest = TrainingRunManifest(
-        id=manifest_id,
-        job_id=request.job_id,
-        status="pending",
-        graph_spec=spec_payload("GraphSpec", graph_spec),
-        training_spec=spec_payload("TrainingSpec", training_spec),
-        task_spec=spec_payload("TaskSpec", task_spec),
-        task_binding_spec=spec_payload("StudioTaskBindingSpec", task_binding_spec)
-        if task_binding_spec is not None
-        else None,
-        summary_metrics={
-            key: value
-            for key, value in {"total_batches": training_spec.get("n_batches")}.items()
-            if value is not None
-        },
-        provenance=Provenance(
-            entrypoint=EntrypointRef(
-                kind="feedbax-studio-pipeline",
-                name="stage_training_run",
-                metadata={"job_id": request.job_id},
-            ),
-            issues=list(request.issues),
-            metadata={**request.metadata, "studio": metadata["studio"]},
-        ),
-        metadata=metadata,
-    )
-    return manifest, write_manifest(manifest, root=root_path)
 
 
 def _stage_pending_training_manifests(
@@ -1475,29 +1549,10 @@ def _write_pending_training_manifest_for_matrix_row(
     root: Path,
     execution_target: str,
 ) -> tuple[TrainingRunManifest, Path]:
-    from feedbax.contracts.manifest import load_manifest
-    from feedbax.persistence.manifest_index import find_manifest_paths_by_id
+    reused = _reuse_pending_training_manifest(row.planned_run_id, root)
+    if reused is not None:
+        return reused
 
-    existing_paths = find_manifest_paths_by_id(row.planned_run_id, root=root)
-    if existing_paths:
-        existing = load_manifest(existing_paths[0])
-        if isinstance(existing, TrainingRunManifest):
-            if existing.status == "cancelled":
-                restaged = existing.model_copy(
-                    update={
-                        "status": "pending",
-                        "completed_at": None,
-                        "metadata": _restaged_metadata(
-                            existing.metadata,
-                            manifest_id=row.planned_run_id,
-                            restaged_from_status="cancelled",
-                        ),
-                    }
-                )
-                return restaged, write_manifest(restaged, root=root)
-            return existing, existing_paths[0]
-
-    now = utc_now()
     graph_spec, training_spec, task_spec, task_binding_spec, training_kind = (
         _materialized_row_specs(row)
     )
@@ -1514,65 +1569,27 @@ def _write_pending_training_manifest_for_matrix_row(
     )
     coordinate_label = coordinate.label if coordinate is not None else row.row_id
     value_indices = coordinate.value_indices if coordinate is not None else {}
-    metadata = {
-        "name": coordinate_label,
-        "label": coordinate_label,
-        "studio": {
-            "workspace_id": workspace.id,
-            "workspace_schema_version": workspace.schema_version,
-            "stage_id": stage.id,
-            "stage_kind": stage.kind,
-            "scenario_id": scenario_id,
-            "selection_spec": stage.selection_spec,
-            "axis_coordinates": axis_coordinates,
-            "axis_value_indices": value_indices,
-            "run_set_id": run_set_id,
-            "planned_training_run_id": row.planned_run_id,
-            "execution_target": execution_target,
-            "execution_backend": request.backend,
-        },
-        "planned": True,
-        "staged_at": now.isoformat(),
-        "execution_target": execution_target,
-        "execution_backend": request.backend,
-    }
-    metadata["spec_hashes"] = _ui_spec_hashes(
-        {
-            "graph_spec": graph_spec,
-            "training_spec": training_spec,
-            "task_spec": task_spec,
-            "task_binding_spec": task_binding_spec,
-        }
-    )
-    manifest = TrainingRunManifest(
-        id=row.planned_run_id,
+    return _build_pending_training_manifest(
+        manifest_id=row.planned_run_id,
+        root=root,
+        workspace=workspace,
+        stage=stage,
+        scenario_id=scenario_id,
+        graph_spec=graph_spec,
+        training_spec=training_spec,
+        task_spec=task_spec,
+        task_binding_spec=task_binding_spec,
+        training_spec_kind=training_kind,
+        request=request,
+        execution_target=execution_target,
+        axis_coordinates=axis_coordinates,
+        studio_run_identity={"axis_value_indices": value_indices, "run_set_id": run_set_id},
+        entrypoint_metadata={"job_id": request.job_id, "run_set_id": run_set_id},
+        label=coordinate_label,
         run_set_id=run_set_id,
-        job_id=request.job_id,
-        status="pending",
-        graph_spec=spec_payload("GraphSpec", graph_spec),
-        training_spec=spec_payload(training_kind, training_spec),
-        task_spec=spec_payload("TaskSpec", task_spec),
-        task_binding_spec=spec_payload("StudioTaskBindingSpec", task_binding_spec)
-        if task_binding_spec is not None
-        else None,
         overrides=row.overrides,
-        summary_metrics={
-            key: value
-            for key, value in {"total_batches": _matrix_row_n_batches(row)}.items()
-            if value is not None
-        },
-        provenance=Provenance(
-            entrypoint=EntrypointRef(
-                kind="feedbax-studio-pipeline",
-                name="stage_training_run",
-                metadata={"job_id": request.job_id, "run_set_id": run_set_id},
-            ),
-            issues=list(request.issues),
-            metadata={**request.metadata, "studio": metadata["studio"]},
-        ),
-        metadata=metadata,
+        total_batches=_matrix_row_n_batches(row),
     )
-    return manifest, write_manifest(manifest, root=root)
 
 
 def _validate_materialized_training_row(

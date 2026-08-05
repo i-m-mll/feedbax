@@ -10,11 +10,30 @@ import jax.numpy as jnp
 
 from feedbax.runtime.components import GRU, LSTM, Linear
 from feedbax.contracts.graph import ParameterConstraintSpec
-from feedbax.models.networks import VanillaRNN
 from feedbax.runtime.graph import Component, Graph
 
 
 ConstraintLike = ParameterConstraintSpec | Mapping[str, Any]
+
+#: Resolve ``(array, getter)`` for one constrained parameter role of a component.
+ParameterRoleResolver = Callable[[Component, str], tuple[Any, Callable[[Any], Any]]]
+
+_PARAMETER_ROLE_RESOLVERS: dict[type, ParameterRoleResolver] = {}
+
+
+def register_parameter_role_resolver(
+    component_type: type,
+    resolver: ParameterRoleResolver,
+) -> None:
+    """Declare how a component type resolves constrained parameter roles.
+
+    Component types declare their own constrainable parameters next to their
+    definition, so the runtime never needs to name a concrete component class.
+    Resolution walks the component MRO, so a subclass inherits its base type's
+    resolver unless it registers its own.
+    """
+
+    _PARAMETER_ROLE_RESOLVERS[component_type] = resolver
 
 
 def _normalize_constraint(constraint: ConstraintLike) -> ParameterConstraintSpec:
@@ -37,7 +56,9 @@ def normalize_parameter_constraints(
     return _as_constraint_tuple(constraints)
 
 
-def _linear_role(component: Linear, role: str) -> tuple[Any, Callable[[Any], Any]]:
+def linear_parameter_role(component: Component, role: str) -> tuple[Any, Callable[[Any], Any]]:
+    """Resolve a constrained parameter role on a ``Linear``-shaped component."""
+
     if role in {"weight", "linear.weight", "readout.weight"}:
         return component.layer.weight, lambda node: node.layer.weight
     if role in {"bias", "linear.bias", "readout.bias"}:
@@ -49,10 +70,9 @@ def _linear_role(component: Linear, role: str) -> tuple[Any, Callable[[Any], Any
     )
 
 
-def _recurrent_role(
-    component: GRU | LSTM | VanillaRNN,
-    role: str,
-) -> tuple[Any, Callable[[Any], Any]]:
+def recurrent_parameter_role(component: Component, role: str) -> tuple[Any, Callable[[Any], Any]]:
+    """Resolve a constrained parameter role on a cell-carrying recurrent component."""
+
     if role in {"input_kernel", "weight_ih"}:
         return component.cell.weight_ih, lambda node: node.cell.weight_ih
     if role in {"hidden_kernel", "weight_hh"}:
@@ -66,11 +86,16 @@ def _recurrent_role(
     raise ValueError(f"Unsupported {type(component).__name__} parameter role {role!r}; expected {expected}")
 
 
+register_parameter_role_resolver(Linear, linear_parameter_role)
+register_parameter_role_resolver(GRU, recurrent_parameter_role)
+register_parameter_role_resolver(LSTM, recurrent_parameter_role)
+
+
 def _resolve_role(component: Component, role: str) -> tuple[Any, Callable[[Any], Any]]:
-    if isinstance(component, Linear):
-        return _linear_role(component, role)
-    if isinstance(component, (GRU, LSTM, VanillaRNN)):
-        return _recurrent_role(component, role)
+    for component_type in type(component).__mro__:
+        resolver = _PARAMETER_ROLE_RESOLVERS.get(component_type)
+        if resolver is not None:
+            return resolver(component, role)
     raise ValueError(
         f"Parameter constraints are not supported for {type(component).__name__} components"
     )

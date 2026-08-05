@@ -10,6 +10,13 @@ import plotly.graph_objects as go
 from jax_cookbook import is_type
 from jaxtyping import Array, Float, PyTree
 
+from feedbax.plot import apply_default_template
+
+# Plotly copies the process-default template into each figure as it is constructed, so
+# the Feedbax default has to be in place before any function here runs. Importing a
+# figure-drawing module is itself use of the plotting surface, unlike importing the
+# package, which entry points that never draw anything do transitively.
+apply_default_template()
 
 
 def add_endpoint_traces(

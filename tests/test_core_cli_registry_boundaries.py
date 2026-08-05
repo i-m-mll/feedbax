@@ -109,7 +109,7 @@ def test_adopt_legacy_rejects_unknown_method_before_checkpoint_io(
                 "run",
                 "--phase",
                 "phase",
-                "--global-step",
+                "--program-step",
                 "0",
                 "--completed-barrier",
                 "barrier",

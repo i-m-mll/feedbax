@@ -260,6 +260,14 @@ Both must be running for full functionality.
   driver enforces this discipline by completing preflight checks before pod
   creation, then proving endpoint and GPU readiness before deployment and
   training launch.
+- Both drivers export a persistent JAX compilation cache to the rows they
+  launch, so the locally run end-to-end smoke that precedes remote acquisition
+  does not recompile from scratch every time. The RunPod driver uses
+  `<volume-mount>/jax_cache`; the local driver defaults to
+  `<git-common-dir>/feedbax_jax_compilation_cache`, so worktrees of one checkout
+  share compiled artifacts while sibling checkouts stay separate. Override with
+  `FEEDBAX_JAX_COMPILATION_CACHE_DIR` or disable with
+  `FEEDBAX_DISABLE_JAX_COMPILATION_CACHE=1`, matching the test cache.
 - Keep `scripts/deploy/runpod_deploy.sh` and `scripts/deploy/poll_run.sh` as
   legacy/parity references for debugging and script-refactor work; they are no
   longer the primary launch or monitoring interface.

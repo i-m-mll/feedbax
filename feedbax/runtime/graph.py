@@ -18,17 +18,13 @@ import equinox as eqx
 from equinox import Module, field
 from equinox.nn import State, StateIndex
 import jax
-import jax.lax as lax
 import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax.runtime._graph import detect_cycles_and_sort
+from feedbax.runtime._rollout import scan_rollout, select_step_inputs
 from feedbax.runtime.selectors import Selection, select
-from feedbax.runtime.streaming import (
-    init_streaming_state_window,
-    update_streaming_state_window,
-)
 
 _NESTED_CYCLE_NODE = "__nested__"
 _INITIALIZER_KEY_SALT = 0xFFFF_FFFF
@@ -1416,102 +1412,36 @@ class Graph(Component):
                 return jnp.broadcast_to(x, (n_steps,))
             return x
 
-        step_inputs_seq = jt.map(_broadcast_scalar, scan_inputs)
-
-        def _step_inputs_at(i):
-            return jt.map(lambda x: x[i], step_inputs_seq)
-
-        step_inputs_seq = jax.vmap(_step_inputs_at)(jnp.arange(n_steps))
+        step_inputs_seq = select_step_inputs(jt.map(_broadcast_scalar, scan_inputs), n_steps)
 
         save_history = return_state_history and state_filter is not False
 
-        # --- streaming-loss path: accumulate scalar, skip history ---
-        if streaming_loss_fn is not None:
-            streaming_order = getattr(streaming_loss_fn, "streaming_order", 0)
-            init_state_view = self.state_view(state)
-            state_window = init_streaming_state_window(init_state_view, streaming_order)
-
-            def step_streaming(carry, args):
-                state, prev_cycle_values, state_window, loss_accum = carry
-                (step_inputs, step_key), t = args
-
-                outputs, state, new_cycle_values = self.step(
-                    step_inputs,
-                    state,
-                    prev_cycle_values,
-                    key=step_key,
-                    t=t,
-                    rollout_step_hook=rollout_step_hook,
-                )
-
-                state_view = self.state_view(state)
-                loss_input = state_view
-                if streaming_order > 0:
-                    state_window = update_streaming_state_window(state_window, state_view)
-                    loss_input = state_window
-                step_loss = streaming_loss_fn(loss_input, t)
-                return (state, new_cycle_values, state_window, loss_accum + step_loss), outputs
-
-            if self.checkpoint:
-                step_streaming = jax.checkpoint(step_streaming)
-
-            (final_state, _, _, total_loss), outputs_seq = lax.scan(
-                step_streaming,
-                (state, init_cycle_values, state_window, jnp.float32(0.0)),
-                ((step_inputs_seq, keys), jnp.arange(n_steps)),
-            )
-            return outputs_seq, final_state, total_loss
-
-        # --- standard paths ---
-        def step_body(carry, args):
-            state, prev_cycle_values = carry
-            (step_inputs, step_key), t = args
-
-            outputs, state, new_cycle_values = self.step(
+        def step_fn(step_inputs, step_state, prev_cycle_values, step_key, t):
+            return self.step(
                 step_inputs,
-                state,
+                step_state,
                 prev_cycle_values,
                 key=step_key,
                 t=t,
                 rollout_step_hook=rollout_step_hook,
             )
 
-            if save_history:
-                state_view = self.state_view(state)
-                state_view = eqx.filter(state_view, state_filter)
-                return (state, new_cycle_values), (outputs, state_view)
-
-            return (state, new_cycle_values), outputs
-
-        if self.checkpoint:
-            step_body = jax.checkpoint(step_body)
-
-        if save_history:
-            (final_state, _), (outputs_seq, state_history) = lax.scan(
-                step_body,
-                (state, init_cycle_values),
-                ((step_inputs_seq, keys), jnp.arange(n_steps)),
-            )
-
-            # Prepend initial state to history
-            init_state_view = self.state_view(state)
-            init_state_view = eqx.filter(init_state_view, state_filter)
-
-            def _prepend(x0, x):
-                if x0 is None or x is None:
-                    return None
-                return jnp.concatenate([x0[None], x], axis=0)
-
-            state_history = jt.map(_prepend, init_state_view, state_history)
-
-            return outputs_seq, final_state, state_history
-
-        (final_state, _), outputs_seq = lax.scan(
-            step_body,
-            (state, init_cycle_values),
-            ((step_inputs_seq, keys), jnp.arange(n_steps)),
+        outputs_seq, final_state, aux = scan_rollout(
+            step_fn,
+            state,
+            step_inputs_seq,
+            keys,
+            n_steps,
+            state_view_fn=self.state_view,
+            init_step_carry=init_cycle_values,
+            checkpoint=self.checkpoint,
+            save_history=save_history,
+            state_filter=state_filter,
+            streaming_loss_fn=streaming_loss_fn,
         )
 
+        if streaming_loss_fn is not None or save_history:
+            return outputs_seq, final_state, aux
         return outputs_seq, final_state
 
     # ========== Graph Surgery API ==========
