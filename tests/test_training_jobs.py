@@ -8,9 +8,11 @@ import sys
 import threading
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -18,6 +20,8 @@ import feedbax.web.api.training as training_api
 import feedbax.web.services.training_service as training_service_module
 import feedbax.web.worker.client as worker_client
 import feedbax.web.worker.app as worker_app
+import feedbax.web.worker.checkpoint as worker_checkpoint
+import feedbax.web.worker.execution as worker_execution
 from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
@@ -28,6 +32,7 @@ from feedbax.contracts.studio_training import (
 )
 from feedbax.orchestration.events import RUN_EVENT_SCHEMA_ID, RunEvent
 from feedbax.orchestration.assembly import assemble_run_bundle
+from feedbax.orchestration.bundle import ROW_ID_RE
 from feedbax.orchestration.drivers.base import DriverRowProbe
 from feedbax.orchestration.drivers.capabilities import DriverRegistration, DriverRegistry
 from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore
@@ -38,6 +43,8 @@ from feedbax.web.services.worker_driver import (
     load_worker_execution_payload,
 )
 from feedbax.web.worker.app import WorkerStatus
+from feedbax.web.worker.checkpoint import CheckpointCleanupError
+from feedbax.web.worker.identity import require_worker_job_id
 
 
 def test_studio_training_assembly_spec_governs_worker_payload() -> None:
@@ -193,6 +200,379 @@ def test_worker_start_requires_external_identity() -> None:
     missing_job = client.post("/start", json={"run_set_id": "set-a", "total_batches": 1})
     assert missing_job.status_code == 400
     assert client.post("/start", json={"job_id": "job-a", "total_batches": 1}).status_code == 400
+
+
+def test_worker_start_accepts_path_safe_job_id(monkeypatch) -> None:
+    completed = threading.Event()
+
+    def fake_run_training(job: worker_app._Job, _bootstrap_state) -> None:
+        worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
+        completed.set()
+
+    monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
+
+    with TestClient(worker_app.create_app()) as client:
+        response = client.post(
+            "/start",
+            json={"job_id": "job-A_2.3", "run_set_id": "set-a", "total_batches": 1},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"job_id": "job-A_2.3"}
+    assert completed.wait(timeout=2)
+
+
+@pytest.mark.parametrize("job_id", ["job-a", "job_A.2", "A0-._z"])
+def test_worker_transport_accepts_canonical_path_safe_ids(job_id: str) -> None:
+    assert ROW_ID_RE.fullmatch(job_id)
+    assert require_worker_job_id(job_id) == job_id
+
+
+@pytest.mark.parametrize("job_id", [".", ".."])
+def test_worker_transport_is_narrower_than_canonical_row_id(job_id: str) -> None:
+    assert ROW_ID_RE.fullmatch(job_id)
+    with pytest.raises(ValueError, match="path-safe transport identifier"):
+        require_worker_job_id(job_id)
+
+
+@pytest.mark.parametrize(
+    "job_id",
+    [
+        "/tmp/outside",
+        "../outside",
+        "nested/job",
+        r"nested\job",
+        " job",
+        "job ",
+        "job\n",
+        "jób",
+        ".",
+        "..",
+    ],
+)
+def test_worker_start_rejects_unsafe_job_id_before_execution(monkeypatch, job_id: str) -> None:
+    executed = False
+
+    def fake_run_training(job: worker_app._Job, _bootstrap_state) -> None:
+        nonlocal executed
+        executed = True
+
+    monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
+
+    with TestClient(worker_app.create_app()) as client:
+        response = client.post(
+            "/start",
+            json={"job_id": job_id, "run_set_id": "set-a", "total_batches": 1},
+        )
+
+    assert response.status_code == 400
+    assert "job_id" in response.json()["detail"]
+    assert not executed
+
+
+def test_worker_start_preserves_outside_sentinel_for_absolute_job_id(
+    monkeypatch, tmp_path: Path
+) -> None:
+    sentinel = tmp_path / "outside.eqx"
+    sentinel.write_bytes(b"outside-sentinel")
+
+    def fail_if_executed(job: worker_app._Job, _bootstrap_state) -> None:
+        raise AssertionError(f"unsafe job {job.job_id!r} reached execution")
+
+    monkeypatch.setattr(worker_app, "_run_training", fail_if_executed)
+
+    with TestClient(worker_app.create_app()) as client:
+        response = client.post(
+            "/start",
+            json={
+                "job_id": str(sentinel.with_suffix("")),
+                "run_set_id": "set-a",
+                "total_batches": 1,
+            },
+        )
+
+    assert response.status_code == 400
+    assert sentinel.read_bytes() == b"outside-sentinel"
+
+
+def test_worker_http_driver_rejects_transport_id_before_started_sentinel(tmp_path: Path) -> None:
+    bundle = SimpleNamespace(run_set_id="set-a", run_set_dir=tmp_path / "run-set")
+    row = SimpleNamespace(row_id="..")
+    driver = WorkerHttpDriver(base_url="http://worker")
+
+    with pytest.raises(ValueError, match="path-safe transport identifier"):
+        driver.launch_row(bundle, row, RunSetState(run_set_id="set-a"))
+
+    assert not bundle.run_set_dir.exists()
+
+
+@pytest.mark.parametrize("job_id", [".", ".."])
+@pytest.mark.parametrize(
+    "operation",
+    ["launch", "probe", "stop", "collect", "ensure_stream", "stream", "orphan_probe"],
+)
+def test_worker_http_driver_rejects_unsafe_resumed_paths_without_mutation(
+    job_id: str, operation: str, tmp_path: Path
+) -> None:
+    bundle = SimpleNamespace(run_set_id="set-a", run_set_dir=tmp_path / "run-set")
+    row = SimpleNamespace(row_id=job_id)
+    state = RunSetState(run_set_id="set-a")
+    driver = WorkerHttpDriver(base_url="http://worker")
+
+    with pytest.raises(ValueError, match="path-safe transport identifier"):
+        if operation == "launch":
+            driver.launch_row(bundle, row, state)
+        elif operation == "probe":
+            driver.probe(bundle, row, state)
+        elif operation == "stop":
+            driver.stop_row(bundle, row, state)
+        elif operation == "collect":
+            driver.collect(bundle, row, state)
+        elif operation == "ensure_stream":
+            driver._ensure_stream_thread(bundle, row)
+        elif operation == "stream":
+            driver._stream_row_events(bundle, row)
+        else:
+            driver._orphan_probe(job_id)
+
+    assert not bundle.run_set_dir.exists()
+    assert driver._streams == {}
+    assert driver._stream_errors == {}
+
+
+def test_worker_thread_start_failure_removes_only_new_registration(
+    monkeypatch,
+) -> None:
+    def fake_run_training(job: worker_app._Job, _bootstrap_state) -> None:
+        worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
+        job.event_queue.put(None)
+
+    monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
+
+    with TestClient(worker_app.create_app()) as client:
+        original_start = threading.Thread.start
+
+        def fail_start(_thread: threading.Thread) -> None:
+            raise RuntimeError("thread start failed")
+
+        monkeypatch.setattr(worker_app.threading.Thread, "start", fail_start)
+        with pytest.raises(RuntimeError, match="thread start failed"):
+            client.post(
+                "/start",
+                json={"job_id": "job-start", "run_set_id": "set-a", "total_batches": 1},
+            )
+        monkeypatch.setattr(worker_app.threading.Thread, "start", original_start)
+        assert client.get("/jobs/job-start/status").status_code == 404
+
+        same_id = client.post(
+            "/start",
+            json={"job_id": "job-start", "run_set_id": "set-a", "total_batches": 1},
+        )
+        assert same_id.status_code == 200
+        assert _wait_for_worker_status(
+            client, "job-start", WorkerStatus.COMPLETED
+        ).status_code == 200
+
+        other_id = client.post(
+            "/start",
+            json={"job_id": "job-other", "run_set_id": "set-a", "total_batches": 1},
+        )
+        assert other_id.status_code == 200
+
+
+def test_worker_rejects_repeated_terminal_job_id_without_checkpoint_residue(
+    monkeypatch, tmp_path: Path
+) -> None:
+    checkpoint_dirs: list[Path] = []
+
+    def fake_run_training(job: worker_app._Job, _bootstrap_state) -> None:
+        checkpoint_dir = tmp_path / f"feedbax_ckpt_{len(checkpoint_dirs)}"
+        checkpoint_dir.mkdir()
+        checkpoint_path = checkpoint_dir / "checkpoint.eqx"
+        checkpoint_path.write_bytes(b"first-checkpoint")
+        checkpoint_dirs.append(checkpoint_dir)
+        with job._state_lock:
+            job.checkpoint_path = str(checkpoint_path)
+        worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
+        job.event_queue.put(None)
+
+    monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
+
+    with TestClient(worker_app.create_app()) as client:
+        first = client.post(
+            "/start",
+            json={"job_id": "job-repeat", "run_set_id": "set-a", "total_batches": 1},
+        )
+        assert first.status_code == 200
+        assert _wait_for_worker_status(
+            client, "job-repeat", WorkerStatus.COMPLETED
+        ).status_code == 200
+
+        repeated = client.post(
+            "/start",
+            json={"job_id": "job-repeat", "run_set_id": "set-b", "total_batches": 1},
+        )
+
+    assert repeated.status_code == 409
+    assert repeated.json()["detail"] == "Job job-repeat already exists"
+    assert checkpoint_dirs == [tmp_path / "feedbax_ckpt_0"]
+    assert (checkpoint_dirs[0] / "checkpoint.eqx").read_bytes() == b"first-checkpoint"
+
+
+def test_worker_cleans_checkpoint_when_job_ownership_handoff_fails(
+    monkeypatch, tmp_path: Path
+) -> None:
+    checkpoint_dir = tmp_path / "feedbax_ckpt_handoff"
+    checkpoint_dir.mkdir()
+    checkpoint_path = checkpoint_dir / "checkpoint.eqx"
+    checkpoint_path.write_bytes(b"checkpoint")
+    result = SimpleNamespace(
+        checkpoint_path=str(checkpoint_path),
+        final_loss=0.5,
+        final_batch=1,
+        retention_plan={},
+        retained_observables={},
+        manifest_path=None,
+        manifest_payload=None,
+    )
+
+    class FailingStopEvent:
+        def is_set(self) -> bool:
+            raise RuntimeError("handoff failed")
+
+    job = worker_app._Job(
+        job_id="job-handoff",
+        run_set_id="set-a",
+        total_batches=1,
+        event_queue=worker_app.queue.Queue(),
+        stop_event=FailingStopEvent(),
+        graph_spec={},
+        training_spec={},
+        task_spec={},
+        task_binding_spec={},
+    )
+    monkeypatch.setattr(worker_execution, "compile_training_run", lambda **_kwargs: object())
+    monkeypatch.setattr(worker_execution, "run_training_graph", lambda *_args, **_kwargs: result)
+
+    with pytest.raises(RuntimeError, match="handoff failed"):
+        worker_app._run_training_real(
+            job,
+            SimpleNamespace(),
+            SimpleNamespace(bundle=SimpleNamespace(components={})),
+        )
+
+    assert job.checkpoint_path is None
+    assert not checkpoint_dir.exists()
+
+
+def test_worker_ownership_handoff_cleanup_failure_retains_job_pointer(
+    monkeypatch, tmp_path: Path
+) -> None:
+    checkpoint_dir = tmp_path / "feedbax_ckpt_handoff_failure"
+    checkpoint_dir.mkdir()
+    checkpoint_path = checkpoint_dir / "checkpoint.eqx"
+    checkpoint_path.write_bytes(b"checkpoint")
+    result = SimpleNamespace(
+        checkpoint_path=str(checkpoint_path),
+        final_loss=0.5,
+        final_batch=1,
+        retention_plan={},
+        retained_observables={},
+        manifest_path=None,
+        manifest_payload=None,
+    )
+
+    class FailingStopEvent:
+        def is_set(self) -> bool:
+            raise RuntimeError("handoff failed")
+
+    job = worker_app._Job(
+        job_id="job-handoff",
+        run_set_id="set-a",
+        total_batches=1,
+        event_queue=worker_app.queue.Queue(),
+        stop_event=FailingStopEvent(),
+        graph_spec={},
+        training_spec={},
+        task_spec={},
+        task_binding_spec={},
+    )
+    monkeypatch.setattr(worker_execution, "compile_training_run", lambda **_kwargs: object())
+    monkeypatch.setattr(worker_execution, "run_training_graph", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(
+        worker_checkpoint.shutil,
+        "rmtree",
+        lambda _path: (_ for _ in ()).throw(PermissionError("cleanup denied")),
+    )
+
+    with pytest.raises(CheckpointCleanupError, match="residual checkpoint path") as caught:
+        worker_app._run_training_real(
+            job,
+            SimpleNamespace(),
+            SimpleNamespace(bundle=SimpleNamespace(components={})),
+        )
+
+    assert caught.value.checkpoint_path == str(checkpoint_path)
+    assert job.checkpoint_path == str(checkpoint_path)
+    assert job.checkpoint_cleanup_error == str(caught.value)
+    assert checkpoint_dir.exists()
+
+
+def test_worker_eviction_cleanup_failure_retains_registry_pointer_for_retry(
+    monkeypatch, tmp_path: Path
+) -> None:
+    checkpoint_dir = tmp_path / "feedbax_ckpt_job-old"
+    checkpoint_path = checkpoint_dir / "checkpoint.eqx"
+
+    def fake_run_training(job: worker_app._Job, _bootstrap_state) -> None:
+        job_checkpoint_dir = tmp_path / f"feedbax_ckpt_{job.job_id}"
+        job_checkpoint_dir.mkdir()
+        job_checkpoint_path = job_checkpoint_dir / "checkpoint.eqx"
+        job_checkpoint_path.write_bytes(b"checkpoint")
+        with job._state_lock:
+            job.checkpoint_path = str(job_checkpoint_path)
+        worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
+        job.event_queue.put(None)
+
+    monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
+    monkeypatch.setattr(worker_app, "_TERMINAL_JOB_RETENTION_MAX", 1)
+
+    with TestClient(worker_app.create_app()) as client:
+        first = client.post(
+            "/start",
+            json={"job_id": "job-old", "run_set_id": "set-a", "total_batches": 1},
+        )
+        assert first.status_code == 200
+        assert _wait_for_worker_status(
+            client, "job-old", WorkerStatus.COMPLETED
+        ).status_code == 200
+
+        monkeypatch.setattr(worker_app, "_TERMINAL_JOB_RETENTION_MAX", 0)
+        original_rmtree = worker_checkpoint.shutil.rmtree
+        monkeypatch.setattr(
+            worker_checkpoint.shutil,
+            "rmtree",
+            lambda _path: (_ for _ in ()).throw(PermissionError("cleanup denied")),
+        )
+        with pytest.raises(CheckpointCleanupError, match="cleanup denied") as caught:
+            client.post(
+                "/start",
+                json={"job_id": "job-new", "run_set_id": "set-a", "total_batches": 1},
+            )
+
+        assert caught.value.checkpoint_path == str(checkpoint_path)
+        assert client.get("/jobs/job-old/status").status_code == 200
+        assert client.get("/jobs/job-old/checkpoint").json()["weights_available"] is False
+        assert client.get("/jobs/job-old/checkpoint/download").status_code == 409
+        assert checkpoint_path.exists()
+
+        monkeypatch.setattr(worker_checkpoint.shutil, "rmtree", original_rmtree)
+        retry = client.post(
+            "/start",
+            json={"job_id": "job-new", "run_set_id": "set-a", "total_batches": 1},
+        )
+        assert retry.status_code == 200
+        assert not checkpoint_dir.exists()
 
 
 def test_worker_lifespan_publishes_bootstrap_state_before_routes() -> None:

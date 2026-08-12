@@ -62,6 +62,7 @@ from feedbax.web.worker.diagnostics import (
     exception_diagnostic,
     graph_compilation_error,
 )
+from feedbax.web.worker.checkpoint import cleanup_worker_checkpoint
 
 
 def _build_optimizer(
@@ -360,20 +361,32 @@ def run_training_graph(
             result.final_coordinate.metrics.get("train_loss", 0.0),
         )
     )
-    checkpoint_path = _write_checkpoint(job_id, graph)
-    final_rollout = rollout_graph(graph, compiled, key=result.final_slots["prng"])
-    return TrainingGraphResult(
-        graph=graph,
-        checkpoint_path=checkpoint_path,
-        final_loss=final_loss,
-        final_loss_terms=final_terms,
-        final_batch=result.final_coordinate.program_step,
-        manifest_path=str(result.manifest_path),
-        manifest_payload=result.manifest.model_dump(mode="json", exclude_none=True),
-        execution_metadata=dict(compiled.metadata),
-        retention_plan=retention_plan_to_json(compiled.retention_plan),
-        retained_observables=_retained_observables_payload(final_rollout),
-    )
+    checkpoint_path: str | None = None
+    try:
+        checkpoint_path = _write_checkpoint(graph)
+        final_rollout = rollout_graph(graph, compiled, key=result.final_slots["prng"])
+        return TrainingGraphResult(
+            graph=graph,
+            checkpoint_path=checkpoint_path,
+            final_loss=final_loss,
+            final_loss_terms=final_terms,
+            final_batch=result.final_coordinate.program_step,
+            manifest_path=str(result.manifest_path),
+            manifest_payload=result.manifest.model_dump(mode="json", exclude_none=True),
+            execution_metadata=dict(compiled.metadata),
+            retention_plan=retention_plan_to_json(compiled.retention_plan),
+            retained_observables=_retained_observables_payload(final_rollout),
+        )
+    except BaseException as exc:
+        if checkpoint_path is not None:
+            try:
+                cleanup_worker_checkpoint(
+                    checkpoint_path,
+                    context="worker result finalization failed",
+                )
+            except BaseException as cleanup_exc:
+                raise cleanup_exc from exc
+        raise
 
 
 class _StudioWorkerLossService(LossService):
@@ -952,9 +965,19 @@ def _live_xy_samples(value: Any, *, length: int) -> list[list[float]] | None:
     return samples
 
 
-def _write_checkpoint(job_id: str, graph: Graph) -> str | None:
+def _write_checkpoint(graph: Graph) -> str:
     ckpt_dir = tempfile.mkdtemp(prefix="feedbax_ckpt_")
-    ckpt_path = os.path.join(ckpt_dir, f"{job_id}.eqx")
-    ready_graph = jax.block_until_ready(graph)
-    eqx.tree_serialise_leaves(ckpt_path, ready_graph)
+    ckpt_path = os.path.join(ckpt_dir, "checkpoint.eqx")
+    try:
+        ready_graph = jax.block_until_ready(graph)
+        eqx.tree_serialise_leaves(ckpt_path, ready_graph)
+    except BaseException as exc:
+        try:
+            cleanup_worker_checkpoint(
+                ckpt_path,
+                context="worker checkpoint serialization failed",
+            )
+        except BaseException as cleanup_exc:
+            raise cleanup_exc from exc
+        raise
     return ckpt_path

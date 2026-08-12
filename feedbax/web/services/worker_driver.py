@@ -33,6 +33,7 @@ from feedbax.orchestration.drivers.capabilities import (
 )
 from feedbax.orchestration.events import RUN_EVENT_TERMINAL_TYPES, RunEvent
 from feedbax.orchestration.state import RunSetState
+from feedbax.web.worker.identity import require_worker_job_id
 
 
 class WorkerHttpDriver:
@@ -101,7 +102,8 @@ class WorkerHttpDriver:
         import httpx
 
         del state
-        paths = _row_paths(bundle, row.row_id)
+        row_id = require_worker_job_id(row.row_id)
+        paths = _row_paths(bundle, row_id)
         if paths["done"].exists():
             return {"row_id": row.row_id, "status": "completed"}
         if paths["failed"].exists():
@@ -132,7 +134,8 @@ class WorkerHttpDriver:
         import httpx
 
         del state
-        paths = _row_paths(bundle, row.row_id)
+        row_id = require_worker_job_id(row.row_id)
+        paths = _row_paths(bundle, row_id)
         if paths["done"].exists():
             return DriverRowProbe(status="completed")
         if paths["failed"].exists():
@@ -173,14 +176,15 @@ class WorkerHttpDriver:
         import httpx
 
         del state
+        row_id = require_worker_job_id(row.row_id)
         try:
             httpx.post(
-                f"{self.base_url}/jobs/{row.row_id}/stop",
+                f"{self.base_url}/jobs/{row_id}/stop",
                 headers=self._headers(),
                 timeout=5.0,
             ).raise_for_status()
         finally:
-            failed = _row_paths(bundle, row.row_id)["failed"]
+            failed = _row_paths(bundle, row_id)["failed"]
             failed.write_text("stopped\n", encoding="utf-8")
         return {"row_id": row.row_id, "status": "stopped"}
 
@@ -191,8 +195,9 @@ class WorkerHttpDriver:
         state: RunSetState,
     ) -> Mapping[str, str]:
         del state
-        paths = _row_paths(bundle, row.row_id)
-        dest_dir = bundle.run_set_dir / "collected" / row.row_id
+        row_id = require_worker_job_id(row.row_id)
+        paths = _row_paths(bundle, row_id)
+        dest_dir = bundle.run_set_dir / "collected" / row_id
         dest_dir.mkdir(parents=True, exist_ok=True)
         if not paths["event_log"].exists():
             return {}
@@ -210,7 +215,8 @@ class WorkerHttpDriver:
         return {"Authorization": f"Bearer {self.auth_token}"}
 
     def _ensure_stream_thread(self, bundle: RunBundle, row: RunRowSpec) -> None:
-        thread = self._streams.get(row.row_id)
+        row_id = require_worker_job_id(row.row_id)
+        thread = self._streams.get(row_id)
         if thread is not None and thread.is_alive():
             return
         thread = threading.Thread(
@@ -219,17 +225,23 @@ class WorkerHttpDriver:
             name=f"feedbax-worker-http-events-{row.row_id}",
             daemon=True,
         )
-        self._streams[row.row_id] = thread
-        thread.start()
+        self._streams[row_id] = thread
+        try:
+            thread.start()
+        except BaseException:
+            if self._streams.get(row_id) is thread:
+                del self._streams[row_id]
+            raise
 
     def _stream_row_events(self, bundle: RunBundle, row: RunRowSpec) -> None:
         import httpx
 
-        paths = _row_paths(bundle, row.row_id)
+        row_id = require_worker_job_id(row.row_id)
+        paths = _row_paths(bundle, row_id)
         try:
             with httpx.stream(
                 "GET",
-                f"{self.base_url}/jobs/{row.row_id}/stream",
+                f"{self.base_url}/jobs/{row_id}/stream",
                 headers=self._headers(),
                 timeout=None,
             ) as response:
@@ -250,9 +262,10 @@ class WorkerHttpDriver:
                     if event.type in RUN_EVENT_TERMINAL_TYPES:
                         return
         except Exception as exc:
-            self._stream_errors[row.row_id] = str(exc)
+            self._stream_errors[row_id] = str(exc)
 
     def _orphan_probe(self, row_id: str, detail: str | None = None) -> DriverRowProbe:
+        row_id = require_worker_job_id(row_id)
         thread = self._streams.get(row_id)
         if thread is not None and thread.is_alive():
             return DriverRowProbe(status="running")
@@ -295,6 +308,7 @@ def worker_http_driver_registration() -> DriverRegistration:
 
 
 def _worker_start_body(bundle: RunBundle, row: RunRowSpec) -> dict[str, Any]:
+    require_worker_job_id(row.row_id)
     body = load_worker_execution_payload(row)
     body["job_id"] = row.row_id
     body["run_set_id"] = bundle.run_set_id
@@ -328,6 +342,7 @@ def load_worker_execution_payload(row: RunRowSpec) -> dict[str, Any]:
 
 
 def _row_paths(bundle: RunBundle, row_id: str) -> dict[str, Path]:
+    row_id = require_worker_job_id(row_id)
     run_set_dir = bundle.run_set_dir
     sentinels = run_set_dir / "sentinels"
     events = run_set_dir / "events"
