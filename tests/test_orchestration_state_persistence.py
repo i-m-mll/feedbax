@@ -26,6 +26,7 @@ from feedbax.orchestration.state import (
     EmergencyRunSetRecord,
     RunSetState,
     RunSetStateStore,
+    StateLockError,
 )
 
 
@@ -367,3 +368,131 @@ def test_concurrent_publish_and_replenish_rename_the_json_bearing_inode(
     assert store.load_emergency().next_recovery_action == (
         "collect remote outputs before authorizing teardown"
     )
+
+
+@pytest.mark.parametrize("substitution", ["symlink", "hardlink"])
+def test_emergency_reserve_substitution_preserves_target(
+    tmp_path: Path,
+    substitution: str,
+) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    store.preflight_and_reserve(
+        control_reserve_bytes=0,
+        emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
+        state_update_bytes=4096,
+    )
+    target = tmp_path / "do-not-modify"
+    original = b"owner-controlled bytes"
+    target.write_bytes(original)
+    store.emergency_reserve_path.unlink()
+    if substitution == "symlink":
+        store.emergency_reserve_path.symlink_to(target)
+    else:
+        os.link(target, store.emergency_reserve_path)
+
+    with pytest.raises(ControlFilesystemPreflightError):
+        store.save_emergency(_emergency_record())
+
+    assert target.read_bytes() == original
+
+
+@pytest.mark.parametrize("substitution", ["symlink", "hardlink"])
+def test_preflight_replaces_substituted_reserve_without_modifying_target(
+    tmp_path: Path,
+    substitution: str,
+) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    store.preflight_and_reserve(
+        control_reserve_bytes=0,
+        emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
+        state_update_bytes=4096,
+    )
+    target = tmp_path / "do-not-modify"
+    original = b"owner-controlled bytes"
+    target.write_bytes(original)
+    store.emergency_reserve_path.unlink()
+    if substitution == "symlink":
+        store.emergency_reserve_path.symlink_to(target)
+    else:
+        os.link(target, store.emergency_reserve_path)
+
+    store.preflight_and_reserve(
+        control_reserve_bytes=0,
+        emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
+        state_update_bytes=4096,
+    )
+
+    assert target.read_bytes() == original
+    reserve_stat = store.emergency_reserve_path.stat()
+    assert reserve_stat.st_nlink == 1
+    assert reserve_stat.st_size == MAX_EMERGENCY_RECORD_BYTES
+
+
+def test_empty_crash_lock_is_recovered_without_pathname_replacement(tmp_path: Path) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    store.lock_path.touch()
+    original_inode = store.lock_path.stat().st_ino
+
+    with store.lock():
+        payload = json.loads(store.lock_path.read_text(encoding="utf-8"))
+        assert payload["pid"] == os.getpid()
+
+    assert store.lock_path.stat().st_ino == original_inode
+
+
+@pytest.mark.parametrize("substitution", ["symlink", "hardlink"])
+def test_state_lock_substitution_preserves_target(
+    tmp_path: Path,
+    substitution: str,
+) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    target = tmp_path / "do-not-modify"
+    original = b"owner-controlled bytes"
+    target.write_bytes(original)
+    if substitution == "symlink":
+        store.lock_path.symlink_to(target)
+    else:
+        os.link(target, store.lock_path)
+
+    with pytest.raises(StateLockError):
+        with store.lock(break_stale=True):
+            pass
+
+    assert target.read_bytes() == original
+
+
+def test_simultaneous_stale_lock_breakers_have_one_owner(tmp_path: Path) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    store.lock_path.write_text(json.dumps({"pid": 999999999}), encoding="utf-8")
+    start = Event()
+    acquired = Event()
+    contender_rejected = Event()
+    allow_release = Event()
+    outcomes: list[str] = []
+
+    def contend() -> None:
+        assert start.wait(timeout=5)
+        try:
+            with store.lock(break_stale=True):
+                outcomes.append("acquired")
+                acquired.set()
+                assert allow_release.wait(timeout=5)
+        except StateLockError:
+            outcomes.append("rejected")
+            contender_rejected.set()
+
+    contenders = [Thread(target=contend) for _ in range(2)]
+    for contender in contenders:
+        contender.start()
+    start.set()
+    assert acquired.wait(timeout=5)
+    assert contender_rejected.wait(timeout=5)
+    allow_release.set()
+    for contender in contenders:
+        contender.join(timeout=5)
+
+    assert outcomes.count("acquired") == 1
+    assert outcomes.count("rejected") == 1
+    assert all(not contender.is_alive() for contender in contenders)
+    with store.lock(break_stale=True):
+        pass
