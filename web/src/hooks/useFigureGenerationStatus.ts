@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { toast } from 'sonner';
 import { getFigureStatus } from '@/api/figureAPI';
 import { useDemandStore } from '@/stores/demandStore';
@@ -10,43 +10,51 @@ export function useFigureGenerationStatus(
   nodeId: string | null | undefined,
   status: FigureRequestStatus
 ) {
-  const setResult = useDemandStore((state) => state.setResult);
-  const setError = useDemandStore((state) => state.setError);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const requestId = useDemandStore((state) =>
+    nodeId ? state.requests[nodeId]?.figureHash : undefined
+  );
+  const setResultForRequest = useDemandStore((state) => state.setResultForRequest);
+  const setErrorForRequest = useDemandStore((state) => state.setErrorForRequest);
 
   useEffect(() => {
-    if (status !== 'running' || !nodeId) {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-      return undefined;
-    }
+    if (status !== 'running' || !nodeId || !requestId) return undefined;
 
-    const requestId = useDemandStore.getState().requests[nodeId]?.figureHash;
-    if (!requestId) return undefined;
-
-    pollRef.current = setInterval(async () => {
+    let active = true;
+    let requestInFlight = false;
+    const intervalId = setInterval(async () => {
+      if (requestInFlight) return;
+      requestInFlight = true;
       try {
         const result = await getFigureStatus(requestId);
-        if (result.status === 'complete' && result.figure_hashes?.length) {
-          setResult(nodeId, result.figure_hashes[0]);
-          toast.success('Figure generated.', { id: `figure-generated-${nodeId}` });
+        if (!active) return;
+        if (result.status === 'complete') {
+          clearInterval(intervalId);
+          const figureHash = result.figure_hashes?.[0];
+          if (figureHash && setResultForRequest(nodeId, requestId, figureHash)) {
+            toast.success('Figure generated.', { id: `figure-generated-${nodeId}` });
+          } else if (!figureHash) {
+            const message = 'Figure generation completed without a result hash. Retry generation.';
+            if (setErrorForRequest(nodeId, requestId, message)) {
+              toast.error(message, { id: `figure-generation-error-${nodeId}` });
+            }
+          }
         } else if (result.status === 'error') {
+          clearInterval(intervalId);
           const message = result.error ?? 'Generation failed';
-          setError(nodeId, message);
-          toast.error(message, { id: `figure-generation-error-${nodeId}` });
+          if (setErrorForRequest(nodeId, requestId, message)) {
+            toast.error(message, { id: `figure-generation-error-${nodeId}` });
+          }
         }
       } catch {
         // Keep polling on transient errors.
+      } finally {
+        requestInFlight = false;
       }
     }, FIGURE_STATUS_POLL_MS);
 
     return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
+      active = false;
+      clearInterval(intervalId);
     };
-  }, [nodeId, setError, setResult, status]);
+  }, [nodeId, requestId, setErrorForRequest, setResultForRequest, status]);
 }
