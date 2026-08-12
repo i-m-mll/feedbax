@@ -435,6 +435,12 @@ class RunSetStateStore:
         rollback therefore requires removing the persistent lock while no process is
         using the state directory; doing so during execution would reintroduce the
         pathname-unlink race this protocol eliminates.
+
+        The lock guarantees one owner only while the parent directory is outside an
+        adversary's mutation authority. A malicious same-UID writer that can replace
+        entries there can install and lock a second inode. The post-critical-section
+        identity check detects that displacement and prevents the original owner from
+        reporting false success, but inode locking alone cannot prevent the overlap.
         """
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -499,6 +505,10 @@ class RunSetStateStore:
             except ControlFilesystemPreflightError as exc:
                 raise StateLockError(str(exc)) from exc
             yield
+            try:
+                _require_owned_path_inode(descriptor, self.lock_path, kind="run-set state lock")
+            except ControlFilesystemPreflightError as exc:
+                raise StateLockError(str(exc), error_number=exc.errno) from exc
         finally:
             os.close(descriptor)
 

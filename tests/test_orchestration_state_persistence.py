@@ -892,3 +892,23 @@ def test_stable_lock_protocol_migration_is_explicitly_one_way(tmp_path: Path) ->
     assert payload["protocol"] == STATE_LOCK_PROTOCOL
     assert payload["pid"] == os.getpid()
     assert store.lock_path.exists()
+
+
+def test_displaced_state_lock_owner_fails_after_replacement_owner_enters(
+    tmp_path: Path,
+) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    displaced_lock = tmp_path / "displaced-state-lock"
+    replacement_owner_entered = False
+
+    with pytest.raises(StateLockError, match="pathname changed"):
+        with store.lock():
+            original_inode = store.lock_path.stat().st_ino
+            os.replace(store.lock_path, displaced_lock)
+            store.lock_path.touch()
+            with store.lock():
+                replacement_owner_entered = True
+
+    assert replacement_owner_entered is True
+    assert displaced_lock.stat().st_ino == original_inode
+    assert store.lock_path.stat().st_ino != original_inode
