@@ -412,6 +412,8 @@ interface RunStoreState {
   hydrateFromWorkspace: (workspace: StudioWorkspaceSpec | null | undefined) => void;
 }
 
+let evaluationLoadEpoch = 0;
+
 export const useRunStore = create<RunStoreState>((set, get) => ({
   trainingRuns: [],
   evalRuns: [],
@@ -449,20 +451,28 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
   },
 
   selectTrainingRun: async (id) => {
+    const requestEpoch = ++evaluationLoadEpoch;
     set({ selectedTrainingRunId: id, selectedEvalRunId: null, evalRuns: [], evalError: null });
     const selected = get().trainingRuns.find((run) => run.id === id) ?? null;
+    writeEvalRunsToWorkspace([]);
+    writeSelectedEvalRunToWorkspace(null);
     writeSelectedTrainingRunToWorkspace(selected);
     if (id === null) return;
+    const isCurrentEvaluationLoad = () =>
+      evaluationLoadEpoch === requestEpoch && get().selectedTrainingRunId === id;
     const evals = await withStoreActionFeedback(
       () => fetchEvalRuns(id),
       {
         errorToast: (error) => apiErrorMessage(error, 'Could not load evaluation runs'),
         toastId: 'eval-runs-load-error',
-        onError: (error) =>
-          set({ evalError: apiErrorMessage(error, 'Could not load evaluation runs') }),
+        onError: (error) => {
+          if (!isCurrentEvaluationLoad()) return false;
+          set({ evalError: apiErrorMessage(error, 'Could not load evaluation runs') });
+          return true;
+        },
       },
     );
-    if (!evals) return;
+    if (!evals || !isCurrentEvaluationLoad()) return;
     set({ evalRuns: evals, evalError: null });
     writeEvalRunsToWorkspace(evals);
     const workspaceSelected = selectedEvalRunIdFromWorkspace();
