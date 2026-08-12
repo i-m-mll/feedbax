@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 from typing import get_args, get_origin
 
 import pytest
@@ -34,7 +36,6 @@ from feedbax.contracts.studio_api import (
     TrainingStartPayload,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
-from feedbax.contracts.manifest import media_type_for_extension
 from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION
 from feedbax.web.app import create_app
 from feedbax.web.api import components as components_api
@@ -97,11 +98,61 @@ def test_figure_registry_api_lists_bootstrapped_constructors() -> None:
 
 
 def test_figure_file_formats_use_shared_media_types() -> None:
-    expected_formats = ("json", "html", "png", "svg", "webp", "pdf")
-
-    assert figures_api._SERVED_FORMATS == expected_formats
+    assert figures_api._SERVED_FORMATS == ("json", "html", "png", "svg", "webp", "pdf")
     assert figures_api._CONTENT_TYPES == {
-        extension: media_type_for_extension(extension) for extension in expected_formats
+        "json": "application/json",
+        "html": "text/html",
+        "png": "image/png",
+        "svg": "image/svg+xml",
+        "webp": "image/webp",
+        "pdf": "application/pdf",
+    }
+
+
+@pytest.mark.parametrize(
+    ("extension", "content_type"),
+    [
+        ("json", "application/json"),
+        ("html", "text/html; charset=utf-8"),
+        ("png", "image/png"),
+        ("svg", "image/svg+xml"),
+        ("webp", "image/webp"),
+        ("pdf", "application/pdf"),
+    ],
+)
+def test_figure_file_endpoint_returns_literal_content_type(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    extension: str,
+    content_type: str,
+) -> None:
+    artifact_path = tmp_path / f"figure.{extension}"
+    if extension in {"json", "html", "svg"}:
+        artifact_path.write_text("rendered", encoding="utf-8")
+    else:
+        artifact_path.write_bytes(b"rendered")
+    manifest = SimpleNamespace(id="figure-1")
+    artifact = SimpleNamespace(uri=str(artifact_path))
+    monkeypatch.setattr(figures_api, "_figure_manifests", lambda: [manifest])
+    monkeypatch.setattr(figures_api, "_render_artifact", lambda _manifest, _fmt: artifact)
+
+    with TestClient(create_app()) as client:
+        response = client.get(f"/api/figures/figure-1/file?format={extension}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == content_type
+
+
+def test_figure_file_endpoint_rejects_unsupported_format() -> None:
+    with TestClient(create_app()) as client:
+        response = client.get("/api/figures/figure-1/file?format=tiff")
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": (
+            "Unsupported format 'tiff'. Allowed formats: "
+            "['html', 'json', 'pdf', 'png', 'svg', 'webp']"
+        )
     }
 
 
