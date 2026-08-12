@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import queue
+import re
 import shutil
 import threading
 import time
@@ -62,6 +63,23 @@ _EVENT_BUFFER_MAX = 1000
 
 # Maximum number of terminal jobs retained for status/manifest lookup.
 _TERMINAL_JOB_RETENTION_MAX = 32
+
+# Worker job IDs are orchestration row IDs and must remain safe as one path segment.
+_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def _validate_job_id(value: str) -> str:
+    """Return a normalized, path-safe externally supplied worker job ID."""
+    job_id = value.strip()
+    if not _JOB_ID_RE.fullmatch(job_id) or job_id in {".", ".."}:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "job_id must be a path-safe identifier containing only letters, "
+                "digits, '.', '_', or '-'"
+            ),
+        )
+    return job_id
 
 
 @dataclass
@@ -656,7 +674,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="start request requires job_id")
         if not isinstance(run_set_id_raw, str) or not run_set_id_raw.strip():
             raise HTTPException(status_code=400, detail="start request requires run_set_id")
-        job_id = job_id_raw.strip()
+        job_id = _validate_job_id(job_id_raw)
         run_set_id = run_set_id_raw.strip()
         stop_event = threading.Event()
         event_queue: queue.Queue = queue.Queue()

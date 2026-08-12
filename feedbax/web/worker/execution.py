@@ -360,7 +360,7 @@ def run_training_graph(
             result.final_coordinate.metrics.get("train_loss", 0.0),
         )
     )
-    checkpoint_path = _write_checkpoint(job_id, graph)
+    checkpoint_path = _write_checkpoint(graph)
     final_rollout = rollout_graph(graph, compiled, key=result.final_slots["prng"])
     return TrainingGraphResult(
         graph=graph,
@@ -952,9 +952,9 @@ def _live_xy_samples(value: Any, *, length: int) -> list[list[float]] | None:
     return samples
 
 
-def _write_checkpoint(job_id: str, graph: Graph) -> str | None:
+def _write_checkpoint(graph: Graph) -> str | None:
     ckpt_dir = tempfile.mkdtemp(prefix="feedbax_ckpt_")
-    ckpt_path = os.path.join(ckpt_dir, f"{job_id}.eqx")
+    ckpt_path = os.path.join(ckpt_dir, "checkpoint.eqx")
     ready_graph = jax.block_until_ready(graph)
     eqx.tree_serialise_leaves(ckpt_path, ready_graph)
     return ckpt_path

@@ -8,9 +8,11 @@ import sys
 import threading
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -193,6 +195,82 @@ def test_worker_start_requires_external_identity() -> None:
     missing_job = client.post("/start", json={"run_set_id": "set-a", "total_batches": 1})
     assert missing_job.status_code == 400
     assert client.post("/start", json={"job_id": "job-a", "total_batches": 1}).status_code == 400
+
+
+def test_worker_start_accepts_path_safe_job_id(monkeypatch) -> None:
+    completed = threading.Event()
+
+    def fake_run_training(job: worker_app._Job, _bootstrap_state) -> None:
+        worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
+        completed.set()
+
+    monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
+
+    with TestClient(worker_app.create_app()) as client:
+        response = client.post(
+            "/start",
+            json={"job_id": "job-A_2.3", "run_set_id": "set-a", "total_batches": 1},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"job_id": "job-A_2.3"}
+    assert completed.wait(timeout=2)
+
+
+@pytest.mark.parametrize(
+    "job_id",
+    [
+        "/tmp/outside",
+        "../outside",
+        "nested/job",
+        r"nested\job",
+        ".",
+        "..",
+    ],
+)
+def test_worker_start_rejects_unsafe_job_id_before_execution(monkeypatch, job_id: str) -> None:
+    executed = False
+
+    def fake_run_training(job: worker_app._Job, _bootstrap_state) -> None:
+        nonlocal executed
+        executed = True
+
+    monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
+
+    with TestClient(worker_app.create_app()) as client:
+        response = client.post(
+            "/start",
+            json={"job_id": job_id, "run_set_id": "set-a", "total_batches": 1},
+        )
+
+    assert response.status_code == 400
+    assert "job_id" in response.json()["detail"]
+    assert not executed
+
+
+def test_worker_start_preserves_outside_sentinel_for_absolute_job_id(
+    monkeypatch, tmp_path: Path
+) -> None:
+    sentinel = tmp_path / "outside.eqx"
+    sentinel.write_bytes(b"outside-sentinel")
+
+    def fail_if_executed(job: worker_app._Job, _bootstrap_state) -> None:
+        raise AssertionError(f"unsafe job {job.job_id!r} reached execution")
+
+    monkeypatch.setattr(worker_app, "_run_training", fail_if_executed)
+
+    with TestClient(worker_app.create_app()) as client:
+        response = client.post(
+            "/start",
+            json={
+                "job_id": str(sentinel.with_suffix("")),
+                "run_set_id": "set-a",
+                "total_batches": 1,
+            },
+        )
+
+    assert response.status_code == 400
+    assert sentinel.read_bytes() == b"outside-sentinel"
 
 
 def test_worker_lifespan_publishes_bootstrap_state_before_routes() -> None:

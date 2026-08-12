@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+import feedbax.web.worker.execution as worker_execution
 from feedbax.component_registry import ComponentRegistry, register_cde_templates
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.graphs.templates import network_template_graph
@@ -584,6 +585,29 @@ def test_worker_checkpoint_cleanup_removes_managed_tempdir(tmp_path: Path) -> No
     _cleanup_checkpoint_path(str(checkpoint_path))
 
     assert not checkpoint_dir.exists()
+
+
+def test_worker_checkpoint_uses_provider_owned_filename(tmp_path: Path, monkeypatch) -> None:
+    checkpoint_dir = tmp_path / "feedbax_ckpt_test"
+    checkpoint_dir.mkdir()
+    written_paths: list[str] = []
+
+    monkeypatch.setattr(
+        worker_execution.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: str(checkpoint_dir),
+    )
+    monkeypatch.setattr(worker_execution.jax, "block_until_ready", lambda graph: graph)
+    monkeypatch.setattr(
+        worker_execution.eqx,
+        "tree_serialise_leaves",
+        lambda path, _graph: written_paths.append(path),
+    )
+
+    checkpoint_path = worker_execution._write_checkpoint(object())
+
+    assert checkpoint_path == str(checkpoint_dir / "checkpoint.eqx")
+    assert written_paths == [checkpoint_path]
 
 
 def test_run_training_graph_emits_executor_progress_each_batch(tmp_path: Path, monkeypatch) -> None:
