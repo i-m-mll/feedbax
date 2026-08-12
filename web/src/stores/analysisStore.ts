@@ -505,6 +505,28 @@ function mergeActivePageIntoPages(
   return [...pages, activePage];
 }
 
+function removeNodesFromGraphSpec(
+  graphSpec: AnalysisGraphSpec | null,
+  nodeIds: ReadonlySet<string>,
+): AnalysisGraphSpec | null {
+  if (!graphSpec || ![...nodeIds].some((id) => graphSpec.nodes[id])) {
+    return graphSpec;
+  }
+
+  const nodes = { ...graphSpec.nodes };
+  for (const id of nodeIds) {
+    delete nodes[id];
+  }
+
+  return {
+    ...graphSpec,
+    nodes,
+    wires: graphSpec.wires.filter(
+      (wire) => !nodeIds.has(wire.sourceId) && !nodeIds.has(wire.targetId),
+    ),
+  };
+}
+
 export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   graphSpec: null,
   nodes: [],
@@ -522,7 +544,42 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   expandedFieldPaths: [],
 
   onNodesChange: (changes) => {
-    set((state) => ({ nodes: applyNodeChanges(changes, state.nodes) }));
+    const removedNodeIds = new Set(
+      changes.filter((change) => change.type === 'remove').map((change) => change.id),
+    );
+    const removesAnalysisNode = [...removedNodeIds].some(
+      (id) => get().graphSpec?.nodes[id],
+    );
+
+    set((state) => ({
+      nodes: applyNodeChanges(changes, state.nodes),
+      ...(removesAnalysisNode
+        ? {
+            edges: state.edges.filter(
+              (edge) => !removedNodeIds.has(edge.source) && !removedNodeIds.has(edge.target),
+            ),
+            graphSpec: removeNodesFromGraphSpec(state.graphSpec, removedNodeIds),
+            selectedNodeId:
+              state.selectedNodeId && removedNodeIds.has(state.selectedNodeId)
+                ? null
+                : state.selectedNodeId,
+            selectedEdgeId:
+              state.selectedEdgeId &&
+              state.edges.some(
+                (edge) =>
+                  edge.id === state.selectedEdgeId &&
+                  (removedNodeIds.has(edge.source) || removedNodeIds.has(edge.target)),
+              )
+                ? null
+                : state.selectedEdgeId,
+          }
+        : {}),
+    }));
+
+    if (removesAnalysisNode) {
+      markProjectDirty();
+      syncAnalysisStageDraft(get(), 'analysis_graph_node_removed');
+    }
   },
 
   onEdgesChange: (changes) => {
@@ -646,9 +703,11 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   },
 
   removeNode: (id) => {
+    const removedNodeIds = new Set([id]);
     set((state) => ({
       nodes: state.nodes.filter((n) => n.id !== id),
       edges: state.edges.filter((e) => e.source !== id && e.target !== id),
+      graphSpec: removeNodesFromGraphSpec(state.graphSpec, removedNodeIds),
       selectedNodeId: state.selectedNodeId === id ? null : state.selectedNodeId,
       selectedTransformId: state.selectedTransformId === id ? null : state.selectedTransformId,
       selectedEdgeId:
