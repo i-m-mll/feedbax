@@ -948,7 +948,6 @@ def test_displaced_state_lock_owner_fails_after_replacement_owner_enters(
         with store.lock():
             original_inode = store.lock_path.stat().st_ino
             os.replace(store.lock_path, displaced_lock)
-            store.lock_path.touch()
             with store.lock():
                 replacement_owner_entered = True
 
