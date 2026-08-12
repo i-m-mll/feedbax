@@ -3,8 +3,8 @@
 ``Graph._call_with_iteration`` and ``iterate_component`` both drive this
 harness; these tests lock in the two properties that let one implementation
 serve both call sites — the step-carry variant is inert when unused, and the
-step-input selection is an identity for time-major inputs while keeping the
-gather's truncate/clamp semantics otherwise.
+step-input selection is an identity for time-major inputs while truncating
+longer inputs and rejecting shorter inputs before the scan.
 """
 
 import equinox as eqx
@@ -16,7 +16,8 @@ import jax.tree as jt
 import pytest
 
 from feedbax.runtime._rollout import scan_rollout, select_step_inputs
-from feedbax.runtime.graph import Component, init_state_from_component
+from feedbax.runtime.graph import Component, Graph, Wire, init_state_from_component
+from feedbax.runtime.iteration import iterate_component
 
 
 class _Accumulate(Component):
@@ -38,9 +39,9 @@ def _legacy_gather(inputs, n_steps):
     return jax.vmap(lambda i: jt.map(lambda x: x[i], inputs))(jnp.arange(n_steps))
 
 
-@pytest.mark.parametrize("n_steps", [3, 5, 7])
+@pytest.mark.parametrize("n_steps", [3, 5])
 def test_select_step_inputs_matches_gather(n_steps):
-    """Selection matches the gather it replaces, for every leading-dim regime."""
+    """Selection matches the gather it replaces for exact and longer inputs."""
     inputs = {
         "u": jr.normal(jr.PRNGKey(0), (5, 3)),
         "v": jnp.arange(5, dtype=jnp.float32),
@@ -54,6 +55,19 @@ def test_select_step_inputs_matches_gather(n_steps):
         assert jnp.array_equal(selected[key], gathered[key])
 
 
+def test_select_step_inputs_rejects_short_leaf_in_mixed_pytree():
+    inputs = {
+        "exact": jnp.zeros((4, 2)),
+        "nested": {"long": jnp.ones((6,)), "short": jnp.arange(3)},
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=r"at least n_steps=4 leading entries; found leading dimension\(s\) \[3\]",
+    ):
+        select_step_inputs(inputs, 4)
+
+
 def test_select_step_inputs_is_identity_for_time_major_inputs():
     """Time-major inputs of the right length are passed through untouched."""
     inputs = {"u": jnp.zeros((4, 3)), "v": jnp.ones((4,))}
@@ -63,6 +77,65 @@ def test_select_step_inputs_is_identity_for_time_major_inputs():
 
     jaxpr = jax.make_jaxpr(lambda x: select_step_inputs(x, 4))(inputs)
     assert "gather" not in jaxpr.pretty_print(use_color=False)
+
+
+class _AddInputs(Component):
+    input_ports = ("x", "bias")
+    output_ports = ("y",)
+
+    def __call__(self, inputs, state, *, key):
+        return {"y": inputs["x"] + inputs["bias"]}, state
+
+
+def _make_iterating_graph():
+    return Graph(
+        nodes={"add": _AddInputs()},
+        wires=(Wire("add", "y", "add", "x", temporality="recurrent"),),
+        input_ports=("x", "bias"),
+        output_ports=("y",),
+        input_bindings={"x": ("add", "x"), "bias": ("add", "bias")},
+        output_bindings={"y": ("add", "y")},
+    )
+
+
+def test_graph_rollout_preserves_scalar_broadcast_and_longer_input():
+    graph = _make_iterating_graph()
+
+    outputs, _ = graph(
+        {"x": jnp.arange(5, dtype=jnp.float32), "bias": jnp.float32(2.0)},
+        init_state_from_component(graph),
+        key=jr.PRNGKey(0),
+        n_steps=3,
+        cycle_init={("add", "x"): jnp.float32(0.0)},
+    )
+
+    assert jnp.array_equal(outputs["y"], jnp.array([2.0, 3.0, 4.0]))
+
+
+def test_graph_rollout_rejects_short_input_before_scan():
+    graph = _make_iterating_graph()
+
+    with pytest.raises(ValueError, match=r"at least n_steps=3 leading entries"):
+        graph(
+            {"x": jnp.arange(2, dtype=jnp.float32), "bias": jnp.float32(2.0)},
+            init_state_from_component(graph),
+            key=jr.PRNGKey(0),
+            n_steps=3,
+            cycle_init={("add", "x"): jnp.float32(0.0)},
+        )
+
+
+def test_iterate_component_rejects_short_input_before_scan():
+    component = _Accumulate()
+
+    with pytest.raises(ValueError, match=r"at least n_steps=3 leading entries"):
+        iterate_component(
+            component,
+            {"x": jnp.zeros((2, 2))},
+            init_state_from_component(component),
+            n_steps=3,
+            key=jr.PRNGKey(0),
+        )
 
 
 def _run(init_step_carry, step_fn, component, init_state, n_steps, **kwargs):
