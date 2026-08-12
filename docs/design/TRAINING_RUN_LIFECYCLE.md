@@ -1,8 +1,9 @@
 # Training-Run Lifecycle Contract
 
-Status: accepted design contract for feedbax issue `590d24b`. This document is the authority
-for the orchestration migration (umbrella `1c6293a`); the bash deploy scripts and Studio
-training service remain the operative surfaces until the migration waves replace them.
+Status: accepted historical design survey for feedbax issue `590d24b`, retained as context for
+the orchestration migration (umbrella `1c6293a`). `feedbax-orchestrate` is the current RunPod
+paved road; the bash deploy and poll scripts are legacy/parity surfaces. The Studio backend and
+worker path remains operative.
 
 Repository-state citations refer to feedbax and rlrmp as read on 2026-07-09 (feedbax `develop`
 at `1137e0f`). A detailed survey of the current surfaces is archived in Mandible custody with
@@ -337,11 +338,11 @@ completed|failed|stopped`, with seq high-water mark and last-event timestamp); p
 reference. The state document is operational state — the ledger still receives exactly one
 terminal run-status checkpoint per run (existing convention), emitted by REGISTER.
 
-Resume semantics: `feedbax-orchestrate resume <run_set_id>` reloads the document, verifies the
-provision record against the driver (endpoint probe), reconciles per-row status from sentinels
-+ event logs (§3.4), and continues from the first non-completed stage. Any process holding the
-document uses an advisory lockfile; a stale lock (dead pid) is breakable with an explicit flag.
-Two MONITOR processes on one run set are refused.
+Resume semantics: `feedbax-orchestrate resume --run-set <run_set_id>` reloads the document,
+verifies the provision record against the driver (endpoint probe), reconciles per-row status
+from sentinels + event logs (§3.4), and continues from the first non-completed stage. Any process
+holding the document uses an advisory lockfile; a stale lock (dead pid) is breakable with an
+explicit flag. Two MONITOR processes on one run set are refused.
 
 Relationship to manifests (kept two-writer): a "planned" manifest (Studio staging) may exist
 before ASSEMBLE completes; the executor's "completed" manifest is written per row at run end.
@@ -402,11 +403,12 @@ feedbax/orchestration/
 feedbax/bin/orchestrate.py   # CLI: preflight | launch | status | watch | resume | collect | certify | teardown
 ```
 
-CLI: `feedbax-orchestrate <subcommand> --bundle <path> | --run-set <id>`; a fifth
-`[project.scripts]` entry. `status` prints one machine-readable line per row (stable field
-order) plus the stage map; `watch` follows events. rlrmp keeps no orchestration logic of its
-own: `post_run.sh`'s registration semantics become the rlrmp REGISTER plugin, and its
-sync/verify mechanics are absorbed by COLLECT.
+CLI: `feedbax-orchestrate launch --assembly-request <path> --driver <driver>` starts a run;
+`status --run-set <id>`, `watch --run-set <id>`, and `resume --run-set <id>` operate on an
+existing run set. The CLI is a fifth `[project.scripts]` entry. `status` prints one
+machine-readable line per row (stable field order) plus the stage map; `watch` follows events.
+rlrmp keeps no orchestration logic of its own: `post_run.sh`'s registration semantics become
+the rlrmp REGISTER plugin, and its sync/verify mechanics are absorbed by COLLECT.
 
 Studio adoption: `TrainingService` delegates run lifecycle to `feedbax.orchestration` with the
 `local` driver (or a remote worker driver wrapping the existing HTTP surface): job identity
