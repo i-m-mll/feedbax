@@ -10,6 +10,7 @@ import os
 import queue
 import threading
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import Enum
@@ -67,6 +68,7 @@ _EVENT_BUFFER_MAX = 1000
 # Maximum number of terminal jobs retained for status/manifest lookup.
 _TERMINAL_JOB_RETENTION_MAX = 32
 
+
 @dataclass
 class _Job:
     job_id: str
@@ -92,6 +94,8 @@ class _Job:
     checkpoint_path: Optional[str] = None
     # Cleanup failure retained with the path so eviction can retry safely.
     checkpoint_cleanup_error: Optional[str] = None
+    # Active ASGI responses that still require the checkpoint bytes.
+    checkpoint_download_leases: int = 0
     # Path/payload for the durable manifest emitted after training completes.
     manifest_path: Optional[str] = None
     manifest_payload: Optional[Dict[str, Any]] = None
@@ -637,6 +641,8 @@ def create_app(
             job = _jobs[job_id]
             with job._state_lock:
                 checkpoint_path = job.checkpoint_path
+                if job.checkpoint_download_leases > 0:
+                    continue
             try:
                 _cleanup_checkpoint_path(checkpoint_path)
             except CheckpointCleanupError as exc:
@@ -659,6 +665,35 @@ def create_app(
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
         return job
+
+    async def _checkpoint_download_lease(
+        job_id: str,
+    ) -> AsyncIterator[tuple[str, str]]:
+        """Hold checkpoint eviction custody through the request response lifecycle."""
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is None:
+                raise HTTPException(status_code=404, detail="Job not found")
+            with job._state_lock:
+                checkpoint_path = job.checkpoint_path
+                if job.checkpoint_cleanup_error is not None:
+                    raise HTTPException(status_code=409, detail="Checkpoint cleanup pending")
+                if checkpoint_path is None:
+                    raise HTTPException(status_code=404, detail="No checkpoint available")
+                if not os.path.exists(checkpoint_path):
+                    raise HTTPException(status_code=410, detail="Checkpoint file gone")
+                job.checkpoint_download_leases += 1
+
+        try:
+            yield checkpoint_path, job.job_id
+        finally:
+            with _jobs_lock:
+                with job._state_lock:
+                    job.checkpoint_download_leases -= 1
+                try:
+                    _evict_terminal_jobs_locked()
+                except CheckpointCleanupError:
+                    logger.exception("worker job eviction cleanup failed after checkpoint download")
 
     # ------------------------------------------------------------------
     # Routes
@@ -821,22 +856,15 @@ def create_app(
         return _job_checkpoint_payload(job)
 
     @app.get("/jobs/{job_id}/checkpoint/download", dependencies=[_auth_dep])
-    def checkpoint_download(job_id: str):
+    async def checkpoint_download(
+        lease: tuple[str, str] = Depends(_checkpoint_download_lease),
+    ):
         """Download the serialized checkpoint file for a job."""
-        job = _get_job(job_id)
-        with job._state_lock:
-            checkpoint_path = job.checkpoint_path
-            checkpoint_cleanup_error = job.checkpoint_cleanup_error
-        if checkpoint_cleanup_error is not None:
-            raise HTTPException(status_code=409, detail="Checkpoint cleanup pending")
-        if checkpoint_path is None:
-            raise HTTPException(status_code=404, detail="No checkpoint available")
-        if not os.path.exists(checkpoint_path):
-            raise HTTPException(status_code=410, detail="Checkpoint file gone")
+        checkpoint_path, job_id = lease
         return FileResponse(
             checkpoint_path,
             media_type="application/octet-stream",
-            filename=f"feedbax_checkpoint_{job.job_id}.eqx",
+            filename=f"feedbax_checkpoint_{job_id}.eqx",
         )
 
     @app.get("/jobs/{job_id}/manifest", dependencies=[_auth_dep])
