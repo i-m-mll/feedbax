@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -336,6 +337,130 @@ def test_worker_http_driver_rejects_unsafe_resumed_paths_without_mutation(
             driver._orphan_probe(job_id)
 
     assert not bundle.run_set_dir.exists()
+    assert driver._streams == {}
+    assert driver._stream_errors == {}
+
+
+class _FakeWorkerStreamResponse:
+    def __init__(
+        self,
+        *,
+        lines: tuple[str, ...] = (),
+        failure: Exception | None = None,
+        blocked: bool = False,
+        paused: bool = False,
+    ) -> None:
+        self.lines = lines
+        self.failure = failure
+        self.blocked = blocked
+        self.paused = paused
+        self.iterating = threading.Event()
+        self.closed = threading.Event()
+        self.released = threading.Event()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        self.close()
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def iter_lines(self):
+        self.iterating.set()
+        if self.blocked:
+            self.closed.wait(timeout=2.0)
+            return
+        if self.paused:
+            self.released.wait(timeout=2.0)
+        if self.failure is not None:
+            raise self.failure
+        yield from self.lines
+
+    def close(self) -> None:
+        self.closed.set()
+
+
+def _worker_stream_test_inputs(tmp_path: Path, row_id: str):
+    bundle = SimpleNamespace(run_set_id="set-a", run_set_dir=tmp_path / "run-set")
+    (bundle.run_set_dir / "events").mkdir(parents=True)
+    (bundle.run_set_dir / "sentinels").mkdir()
+    return bundle, SimpleNamespace(row_id=row_id), RunSetState(run_set_id="set-a")
+
+
+def test_worker_http_driver_teardown_closes_blocked_stream_and_is_idempotent(
+    monkeypatch, tmp_path: Path
+) -> None:
+    response = _FakeWorkerStreamResponse(blocked=True)
+    monkeypatch.setattr(httpx, "stream", lambda *_args, **_kwargs: response)
+    bundle, row, state = _worker_stream_test_inputs(tmp_path, "job-blocked")
+    driver = WorkerHttpDriver(base_url="http://worker")
+
+    driver._ensure_stream_thread(bundle, row)
+    assert response.iterating.wait(timeout=1.0)
+    thread = driver._streams[row.row_id].thread
+
+    assert driver.teardown(bundle, state) == {"driver": "worker-http"}
+    assert response.closed.is_set()
+    assert thread is not None and not thread.is_alive()
+    assert driver._streams == {}
+    assert driver._stream_errors == {}
+
+    assert driver.teardown(bundle, state) == {"driver": "worker-http"}
+    assert driver._streams == {}
+    assert driver._stream_errors == {}
+
+
+def test_worker_http_driver_terminal_stream_unregisters_itself(monkeypatch, tmp_path: Path) -> None:
+    event = RunEvent(
+        run_set_id="set-a",
+        row_id="job-terminal-stream",
+        seq=0,
+        emitted_at_ms=1783430000000,
+        type="complete",
+    )
+    response = _FakeWorkerStreamResponse(
+        lines=(f"data: {event.model_dump_json(exclude_none=True)}",),
+        paused=True,
+    )
+    monkeypatch.setattr(httpx, "stream", lambda *_args, **_kwargs: response)
+    bundle, row, _state = _worker_stream_test_inputs(tmp_path, event.row_id)
+    driver = WorkerHttpDriver(base_url="http://worker")
+
+    driver._ensure_stream_thread(bundle, row)
+    assert response.iterating.wait(timeout=1.0)
+    thread = driver._streams[row.row_id].thread
+    assert thread is not None
+    response.released.set()
+    thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert driver._streams == {}
+    assert driver._stream_errors == {}
+    assert (bundle.run_set_dir / "sentinels" / f"{row.row_id}.done").exists()
+
+
+def test_worker_http_driver_failed_stream_unregisters_and_teardown_clears_error(
+    monkeypatch, tmp_path: Path
+) -> None:
+    response = _FakeWorkerStreamResponse(failure=RuntimeError("stream failed"), paused=True)
+    monkeypatch.setattr(httpx, "stream", lambda *_args, **_kwargs: response)
+    bundle, row, state = _worker_stream_test_inputs(tmp_path, "job-stream-failure")
+    driver = WorkerHttpDriver(base_url="http://worker")
+
+    driver._ensure_stream_thread(bundle, row)
+    assert response.iterating.wait(timeout=1.0)
+    thread = driver._streams[row.row_id].thread
+    assert thread is not None
+    response.released.set()
+    thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert driver._streams == {}
+    assert driver._stream_errors == {row.row_id: "stream failed"}
+
+    driver.teardown(bundle, state)
     assert driver._streams == {}
     assert driver._stream_errors == {}
 
