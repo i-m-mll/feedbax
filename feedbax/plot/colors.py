@@ -39,30 +39,38 @@ def color_add_alpha(rgb_str: str, alpha: float) -> str:
     if not np.isfinite(alpha) or not 0 <= alpha <= 1:
         raise ValueError("alpha must be a finite number between 0 and 1")
 
-    rgb_match = re.fullmatch(r"rgb\(([^()]*)\)", rgb_str)
+    rgb_match = re.fullmatch(r"rgb\(([^()]*)\)", rgb_str, flags=re.IGNORECASE)
     if rgb_match is not None:
         components = rgb_match.group(1).split(",")
-        numeric_matches = [
-            re.fullmatch(r"([+]?(?:\d+|\d*\.\d+)(?:[eE][+-]?\d+)?)", component.strip())
-            for component in components
-        ]
-        percentage_matches = [
-            re.fullmatch(
-                r"([+]?(?:\d+|\d*\.\d+)(?:[eE][+-]?\d+)?)%", component.strip()
-            )
-            for component in components
-        ]
-        if len(components) == 3 and all(numeric_matches):
-            values = [float(match.group(1)) for match in numeric_matches if match]
-            maximum = 255.0
-        elif len(components) == 3 and all(percentage_matches):
-            values = [float(match.group(1)) for match in percentage_matches if match]
-            maximum = 100.0
-        else:
-            values = []
-            maximum = 0.0
-        if values and all(np.isfinite(value) and 0 <= value <= maximum for value in values):
-            return f"rgba{rgb_str[3:-1]}, {alpha})"
+        if len(components) == 3:
+            normalized_components = []
+            for component in components:
+                stripped = component.strip()
+                percentage = stripped.endswith("%")
+                number_text = stripped[:-1] if percentage else stripped
+                decimal_pattern = r"(?:\d+(?:\.\d*)?|\.\d+)"
+                if not re.fullmatch(
+                    rf"[+]?{decimal_pattern}(?:[eE][+-]?\d+)?", number_text
+                ):
+                    break
+                plotly_safe = re.fullmatch(decimal_pattern, number_text) and all(
+                    character == " " or not character.isspace() for character in component
+                )
+                if plotly_safe:
+                    normalized_components.append(component)
+                else:
+                    value = float(number_text)
+                    if not np.isfinite(value):
+                        break
+                    maximum = 100.0 if percentage else 255.0
+                    normalized_number = np.format_float_positional(
+                        min(value, maximum), trim="-"
+                    )
+                    normalized_components.append(
+                        f"{normalized_number}{'%' if percentage else ''}"
+                    )
+            else:
+                return f"rgba({','.join(normalized_components)}, {alpha})"
 
     if re.fullmatch(r"#[0-9a-fA-F]{6}", rgb_str):
         red, green, blue = (int(rgb_str[index : index + 2], 16) for index in (1, 3, 5))
