@@ -34,9 +34,11 @@ from feedbax.contracts.studio_api import (
     TrainingStartPayload,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
+from feedbax.contracts.manifest import media_type_for_extension
 from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION
 from feedbax.web.app import create_app
 from feedbax.web.api import components as components_api
+from feedbax.web.api import figures as figures_api
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.contracts.training import LrScheduleSpec, OptimizerSpec
 from scripts.generate_studio_contracts import (
@@ -92,6 +94,15 @@ def test_figure_registry_api_lists_bootstrapped_constructors() -> None:
 
     assert response.status_code == 200
     assert any(item["key"] == "feedbax.grid_figure" for item in response.json())
+
+
+def test_figure_file_formats_use_shared_media_types() -> None:
+    expected_formats = ("json", "html", "png", "svg", "webp", "pdf")
+
+    assert figures_api._SERVED_FORMATS == expected_formats
+    assert figures_api._CONTENT_TYPES == {
+        extension: media_type_for_extension(extension) for extension in expected_formats
+    }
 
 
 def test_generate_analysis_request_defaults_and_preserves_states_policy() -> None:
