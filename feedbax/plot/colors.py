@@ -1,4 +1,6 @@
 from collections.abc import Sequence
+from numbers import Real
+import re
 from typing import Any
 
 import numpy as np
@@ -30,8 +32,28 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def color_add_alpha(rgb_str: str, alpha: float):
-    return f"rgba{rgb_str[3:-1]}, {alpha})"
+def color_add_alpha(rgb_str: str, alpha: float) -> str:
+    """Add an alpha channel to an RGB or six-digit hex color."""
+    if isinstance(alpha, (bool, np.bool_)) or not isinstance(alpha, Real):
+        raise ValueError("alpha must be a finite number between 0 and 1")
+    if not np.isfinite(alpha) or not 0 <= alpha <= 1:
+        raise ValueError("alpha must be a finite number between 0 and 1")
+
+    rgb_match = re.fullmatch(r"rgb\(([^()]*)\)", rgb_str)
+    if rgb_match is not None:
+        components = rgb_match.group(1).split(",")
+        try:
+            values = [int(component.strip()) for component in components]
+        except ValueError:
+            values = []
+        if len(values) == 3 and all(0 <= value <= 255 for value in values):
+            return f"rgba{rgb_str[3:-1]}, {alpha})"
+
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", rgb_str):
+        red, green, blue = (int(rgb_str[index : index + 2], 16) for index in (1, 3, 5))
+        return f"rgba({red}, {green}, {blue}, {alpha})"
+
+    raise ValueError("color must use rgb(r,g,b) or #rrggbb format")
 
 
 def arr_to_rgb(arr):

@@ -360,6 +360,18 @@ def test_profile_band_uses_supplied_statistics_without_touching_raw_samples(
         assert traces[2].fillcolor == "rgba(31,119,180, 0.6)"
 
 
+def test_profile_band_converts_six_digit_hex_color_for_fill(figure_registry) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.profile_band", tier="trace", registry=figure_registry
+    )
+    params = constructor.params({"color": "#2563eb", "error_bars_alpha": 0.2})
+
+    traces = constructor.callable({"mean": [1.0, 2.0], "std": [0.1, 0.2]}, params)
+
+    assert traces[0].line.color == "#2563eb"
+    assert traces[2].fillcolor == "rgba(37, 99, 235, 0.2)"
+
+
 def test_profile_band_raw_samples_preserve_statistics_and_alpha_scaling(figure_registry) -> None:
     constructor = get_figure_constructor(
         "feedbax.profile_band", tier="trace", registry=figure_registry
