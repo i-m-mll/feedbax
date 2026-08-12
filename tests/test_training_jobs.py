@@ -840,7 +840,7 @@ def test_worker_checkpoint_download_lease_defers_eviction_until_response_finishe
         worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
         job.event_queue.put(None)
 
-    original_handle_simple = worker_app._CheckpointFileResponse._handle_simple
+    original_handle_simple = worker_app.FileResponse._handle_simple
 
     async def blocked_handle_simple(self, send, send_header_only, send_pathsend):
         download_entered.set()
@@ -851,7 +851,7 @@ def test_worker_checkpoint_download_lease_defers_eviction_until_response_finishe
     monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
     monkeypatch.setattr(worker_app, "_TERMINAL_JOB_RETENTION_MAX", 1)
     monkeypatch.setattr(
-        worker_app._CheckpointFileResponse,
+        worker_app.FileResponse,
         "_handle_simple",
         blocked_handle_simple,
     )
@@ -889,32 +889,133 @@ def test_worker_checkpoint_download_lease_defers_eviction_until_response_finishe
         assert client.get("/jobs/job-old/status").status_code == 404
 
 
-def test_worker_checkpoint_response_releases_lease_when_send_fails(tmp_path: Path) -> None:
-    checkpoint_path = tmp_path / "checkpoint.eqx"
-    checkpoint_path.write_bytes(b"checkpoint")
-    released = threading.Event()
-    response = worker_app._CheckpointFileResponse(
-        checkpoint_path,
-        release=released.set,
-    )
+def _checkpoint_download_scope(app: FastAPI, job_id: str) -> dict[str, Any]:
+    path = f"/jobs/{job_id}/checkpoint/download"
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "headers": [],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+        "root_path": "",
+        "app": app,
+    }
 
-    async def receive():
-        return {"type": "http.disconnect"}
 
-    async def send(message):
-        if message["type"] == "http.response.body":
-            raise RuntimeError("client disconnected")
+def test_worker_checkpoint_request_releases_lease_when_send_fails(
+    monkeypatch, tmp_path: Path
+) -> None:
+    checkpoint_dir = tmp_path / "feedbax_ckpt_job-send-failure"
+    checkpoint_path = checkpoint_dir / "checkpoint.eqx"
 
-    with pytest.raises(RuntimeError, match="client disconnected"):
-        asyncio.run(
-            response(
-                {"type": "http", "method": "GET", "headers": [], "extensions": {}},
-                receive,
-                send,
-            )
-        )
+    def fake_run_training(job: worker_app._Job, _bootstrap_state) -> None:
+        checkpoint_dir.mkdir()
+        checkpoint_path.write_bytes(b"checkpoint")
+        with job._state_lock:
+            job.checkpoint_path = str(checkpoint_path)
+        worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
+        job.event_queue.put(None)
 
-    assert released.is_set()
+    monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
+    monkeypatch.setattr(worker_app, "_TERMINAL_JOB_RETENTION_MAX", 1)
+    app = worker_app.create_app()
+
+    with TestClient(app) as client:
+        assert client.post(
+            "/start",
+            json={
+                "job_id": "job-send-failure",
+                "run_set_id": "set-a",
+                "total_batches": 1,
+            },
+        ).status_code == 200
+        assert _wait_for_worker_status(
+            client, "job-send-failure", WorkerStatus.COMPLETED
+        ).status_code == 200
+        monkeypatch.setattr(worker_app, "_TERMINAL_JOB_RETENTION_MAX", 0)
+
+        async def request() -> None:
+            async def receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            async def send(message):
+                if message["type"] == "http.response.body":
+                    raise RuntimeError("client disconnected")
+
+            with pytest.raises(RuntimeError, match="client disconnected"):
+                await app(
+                    _checkpoint_download_scope(app, "job-send-failure"), receive, send
+                )
+
+        asyncio.run(request())
+        assert not checkpoint_dir.exists()
+        assert client.get("/jobs/job-send-failure/status").status_code == 404
+
+
+def test_worker_checkpoint_request_cancellation_before_response_call_releases_lease(
+    monkeypatch, tmp_path: Path
+) -> None:
+    checkpoint_dir = tmp_path / "feedbax_ckpt_job-cancelled"
+    checkpoint_path = checkpoint_dir / "checkpoint.eqx"
+    response_initialized = threading.Event()
+    response_called = threading.Event()
+
+    def fake_run_training(job: worker_app._Job, _bootstrap_state) -> None:
+        checkpoint_dir.mkdir()
+        checkpoint_path.write_bytes(b"checkpoint")
+        with job._state_lock:
+            job.checkpoint_path = str(checkpoint_path)
+        worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
+        job.event_queue.put(None)
+
+    original_response = worker_app.FileResponse
+
+    class CancelBeforeCallResponse(original_response):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            response_initialized.set()
+            raise asyncio.CancelledError
+
+        async def __call__(self, scope, receive, send):
+            response_called.set()
+            await super().__call__(scope, receive, send)
+
+    monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
+    monkeypatch.setattr(worker_app, "_TERMINAL_JOB_RETENTION_MAX", 1)
+    app = worker_app.create_app()
+
+    with TestClient(app) as client:
+        assert client.post(
+            "/start",
+            json={"job_id": "job-cancelled", "run_set_id": "set-a", "total_batches": 1},
+        ).status_code == 200
+        assert _wait_for_worker_status(
+            client, "job-cancelled", WorkerStatus.COMPLETED
+        ).status_code == 200
+        monkeypatch.setattr(worker_app, "_TERMINAL_JOB_RETENTION_MAX", 0)
+        monkeypatch.setattr(worker_app, "FileResponse", CancelBeforeCallResponse)
+
+        async def request() -> None:
+            async def receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            async def send(_message):
+                raise AssertionError("cancelled response must not send")
+
+            with pytest.raises(asyncio.CancelledError):
+                await app(_checkpoint_download_scope(app, "job-cancelled"), receive, send)
+
+        asyncio.run(request())
+        assert response_initialized.is_set()
+        assert not response_called.is_set()
+        assert not checkpoint_dir.exists()
+        assert client.get("/jobs/job-cancelled/status").status_code == 404
 
 
 def test_worker_lifespan_publishes_bootstrap_state_before_routes() -> None:

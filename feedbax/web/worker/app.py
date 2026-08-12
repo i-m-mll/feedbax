@@ -10,16 +10,16 @@ import os
 import queue
 import threading
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Deque, Dict, Optional, Tuple
+from typing import Any, Deque, Dict, Optional, Tuple
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import ValidationError as PydanticValidationError
-from starlette.types import Receive, Scope, Send
 
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.plugins.composition import compose_application
@@ -67,26 +67,6 @@ _EVENT_BUFFER_MAX = 1000
 
 # Maximum number of terminal jobs retained for status/manifest lookup.
 _TERMINAL_JOB_RETENTION_MAX = 32
-
-
-class _CheckpointFileResponse(FileResponse):
-    """Release checkpoint eviction custody after the ASGI response finishes."""
-
-    def __init__(self, *args: Any, release: Callable[[], None], **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self._release = release
-        self._released = False
-        self._release_lock = threading.Lock()
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        try:
-            await super().__call__(scope, receive, send)
-        finally:
-            with self._release_lock:
-                should_release = not self._released
-                self._released = True
-            if should_release:
-                self._release()
 
 
 @dataclass
@@ -686,6 +666,35 @@ def create_app(
             raise HTTPException(status_code=404, detail="Job not found")
         return job
 
+    async def _checkpoint_download_lease(
+        job_id: str,
+    ) -> AsyncIterator[tuple[str, str]]:
+        """Hold checkpoint eviction custody through the request response lifecycle."""
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is None:
+                raise HTTPException(status_code=404, detail="Job not found")
+            with job._state_lock:
+                checkpoint_path = job.checkpoint_path
+                if job.checkpoint_cleanup_error is not None:
+                    raise HTTPException(status_code=409, detail="Checkpoint cleanup pending")
+                if checkpoint_path is None:
+                    raise HTTPException(status_code=404, detail="No checkpoint available")
+                if not os.path.exists(checkpoint_path):
+                    raise HTTPException(status_code=410, detail="Checkpoint file gone")
+                job.checkpoint_download_leases += 1
+
+        try:
+            yield checkpoint_path, job.job_id
+        finally:
+            with _jobs_lock:
+                with job._state_lock:
+                    job.checkpoint_download_leases -= 1
+                try:
+                    _evict_terminal_jobs_locked()
+                except CheckpointCleanupError:
+                    logger.exception("worker job eviction cleanup failed after checkpoint download")
+
     # ------------------------------------------------------------------
     # Routes
     # ------------------------------------------------------------------
@@ -847,41 +856,16 @@ def create_app(
         return _job_checkpoint_payload(job)
 
     @app.get("/jobs/{job_id}/checkpoint/download", dependencies=[_auth_dep])
-    def checkpoint_download(job_id: str):
+    async def checkpoint_download(
+        lease: tuple[str, str] = Depends(_checkpoint_download_lease),
+    ):
         """Download the serialized checkpoint file for a job."""
-        with _jobs_lock:
-            job = _jobs.get(job_id)
-            if job is None:
-                raise HTTPException(status_code=404, detail="Job not found")
-            with job._state_lock:
-                checkpoint_path = job.checkpoint_path
-                if job.checkpoint_cleanup_error is not None:
-                    raise HTTPException(status_code=409, detail="Checkpoint cleanup pending")
-                if checkpoint_path is None:
-                    raise HTTPException(status_code=404, detail="No checkpoint available")
-                if not os.path.exists(checkpoint_path):
-                    raise HTTPException(status_code=410, detail="Checkpoint file gone")
-                job.checkpoint_download_leases += 1
-
-        def _release_download() -> None:
-            with _jobs_lock:
-                with job._state_lock:
-                    job.checkpoint_download_leases -= 1
-                try:
-                    _evict_terminal_jobs_locked()
-                except CheckpointCleanupError:
-                    logger.exception("worker job eviction cleanup failed after checkpoint download")
-
-        try:
-            return _CheckpointFileResponse(
-                checkpoint_path,
-                media_type="application/octet-stream",
-                filename=f"feedbax_checkpoint_{job.job_id}.eqx",
-                release=_release_download,
-            )
-        except BaseException:
-            _release_download()
-            raise
+        checkpoint_path, job_id = lease
+        return FileResponse(
+            checkpoint_path,
+            media_type="application/octet-stream",
+            filename=f"feedbax_checkpoint_{job_id}.eqx",
+        )
 
     @app.get("/jobs/{job_id}/manifest", dependencies=[_auth_dep])
     def manifest(job_id: str):
