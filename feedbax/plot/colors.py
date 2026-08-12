@@ -6,9 +6,13 @@ from typing import Any
 import numpy as np
 import plotly.colors as plc
 import plotly.io as pio
+from _plotly_utils.basevalidators import ColorValidator
 from plotly.colors import convert_colors_to_same_type, sample_colorscale
 
 from feedbax.plot import apply_default_template
+
+
+_COLOR_VALIDATOR = ColorValidator("color", "scatter")
 
 
 def default_colors() -> Any:
@@ -36,13 +40,23 @@ def color_add_alpha(rgb_str: str, alpha: float) -> str:
     """Add an alpha channel to an RGB or six-digit hex color."""
     if isinstance(alpha, (bool, np.bool_)) or not isinstance(alpha, Real):
         raise ValueError("alpha must be a finite number between 0 and 1")
-    if not np.isfinite(alpha) or not 0 <= alpha <= 1:
+    alpha_value = float(alpha)
+    if not np.isfinite(alpha_value) or not 0 <= alpha_value <= 1:
         raise ValueError("alpha must be a finite number between 0 and 1")
+    if alpha_value == 0:
+        alpha_value = 0.0
+    alpha_str = np.format_float_positional(alpha_value, trim="0")
 
     rgb_match = re.fullmatch(r"rgb\(([^()]*)\)", rgb_str, flags=re.IGNORECASE)
     if rgb_match is not None:
         components = rgb_match.group(1).split(",")
         if len(components) == 3:
+            literal = f"rgba({rgb_match.group(1)}, {alpha_str})"
+            try:
+                return _COLOR_VALIDATOR.validate_coerce(literal)
+            except ValueError:
+                pass
+
             normalized_components = []
             for component in components:
                 stripped = component.strip()
@@ -70,11 +84,15 @@ def color_add_alpha(rgb_str: str, alpha: float) -> str:
                         f"{normalized_number}{'%' if percentage else ''}"
                     )
             else:
-                return f"rgba({','.join(normalized_components)}, {alpha})"
+                normalized = f"rgba({','.join(normalized_components)}, {alpha_str})"
+                try:
+                    return _COLOR_VALIDATOR.validate_coerce(normalized)
+                except ValueError:
+                    pass
 
     if re.fullmatch(r"#[0-9a-fA-F]{6}", rgb_str):
         red, green, blue = (int(rgb_str[index : index + 2], 16) for index in (1, 3, 5))
-        return f"rgba({red}, {green}, {blue}, {alpha})"
+        return f"rgba({red}, {green}, {blue}, {alpha_str})"
 
     raise ValueError("color must use rgb(r,g,b) or #rrggbb format")
 
