@@ -6,6 +6,10 @@ import errno
 import fcntl
 import json
 import os
+import stat
+import subprocess
+import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event, Thread, current_thread
@@ -21,6 +25,7 @@ from feedbax.orchestration.state import (
     EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION,
     MAX_CONTROL_RESERVE_BYTES,
     MAX_EMERGENCY_RECORD_BYTES,
+    STATE_LOCK_PROTOCOL,
     ControlFilesystemPreflightError,
     EmergencyProviderIdentity,
     EmergencyRunSetRecord,
@@ -45,6 +50,51 @@ def _emergency_record() -> EmergencyRunSetRecord:
         primary_failure="OSError: [Errno 28] No space left on device",
         next_recovery_action="collect remote outputs before authorizing teardown",
     )
+
+
+def _spawn_lock_process(
+    state_path: Path,
+    ready_path: Path,
+    action: str,
+) -> subprocess.Popen[str]:
+    script = """
+import sys
+from pathlib import Path
+
+from feedbax.orchestration.state import RunSetStateStore
+
+store = RunSetStateStore(Path(sys.argv[1]))
+try:
+    with store.lock(break_stale=True):
+        Path(sys.argv[2]).write_text("ready", encoding="utf-8")
+        if sys.argv[3] == "wait":
+            sys.stdin.readline()
+        elif sys.argv[3] == "exception":
+            raise RuntimeError("release lock through context-manager exception")
+except RuntimeError:
+    pass
+"""
+    return subprocess.Popen(
+        [sys.executable, "-c", script, str(state_path), str(ready_path), action],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _wait_for_path(path: Path, process: subprocess.Popen[str]) -> None:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        if process.poll() is not None:
+            _stdout, stderr = process.communicate()
+            pytest.fail(f"lock subprocess exited before readiness: {stderr}")
+        time.sleep(0.01)
+    process.kill()
+    process.wait(timeout=5)
+    pytest.fail("lock subprocess did not become ready before the deadline")
 
 
 def test_control_filesystem_preflight_reserves_bounded_capacity(tmp_path: Path) -> None:
@@ -396,36 +446,40 @@ def test_emergency_reserve_substitution_preserves_target(
     assert target.read_bytes() == original
 
 
+@pytest.mark.parametrize("reserve_name", ["control_reserve_path", "emergency_reserve_path"])
 @pytest.mark.parametrize("substitution", ["symlink", "hardlink"])
 def test_preflight_replaces_substituted_reserve_without_modifying_target(
     tmp_path: Path,
+    reserve_name: str,
     substitution: str,
 ) -> None:
     store = RunSetStateStore(tmp_path / "state.json")
     store.preflight_and_reserve(
-        control_reserve_bytes=0,
+        control_reserve_bytes=4096,
         emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
         state_update_bytes=4096,
     )
+    reserve_path = getattr(store, reserve_name)
     target = tmp_path / "do-not-modify"
     original = b"owner-controlled bytes"
     target.write_bytes(original)
-    store.emergency_reserve_path.unlink()
+    reserve_path.unlink()
     if substitution == "symlink":
-        store.emergency_reserve_path.symlink_to(target)
+        reserve_path.symlink_to(target)
     else:
-        os.link(target, store.emergency_reserve_path)
+        os.link(target, reserve_path)
 
     store.preflight_and_reserve(
-        control_reserve_bytes=0,
+        control_reserve_bytes=4096,
         emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
         state_update_bytes=4096,
     )
 
     assert target.read_bytes() == original
-    reserve_stat = store.emergency_reserve_path.stat()
+    reserve_stat = reserve_path.stat()
     assert reserve_stat.st_nlink == 1
-    assert reserve_stat.st_size == MAX_EMERGENCY_RECORD_BYTES
+    expected_size = 4096 if reserve_name == "control_reserve_path" else MAX_EMERGENCY_RECORD_BYTES
+    assert reserve_stat.st_size == expected_size
 
 
 def test_empty_crash_lock_is_recovered_without_pathname_replacement(tmp_path: Path) -> None:
@@ -496,3 +550,345 @@ def test_simultaneous_stale_lock_breakers_have_one_owner(tmp_path: Path) -> None
     assert all(not contender.is_alive() for contender in contenders)
     with store.lock(break_stale=True):
         pass
+
+
+@pytest.mark.parametrize("reserve_name", ["control_reserve_path", "emergency_reserve_path"])
+def test_fifo_reserve_substitution_is_bounded_and_replaced(
+    tmp_path: Path,
+    reserve_name: str,
+) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    store.preflight_and_reserve(
+        control_reserve_bytes=4096,
+        emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
+        state_update_bytes=4096,
+    )
+    reserve_path = getattr(store, reserve_name)
+    reserve_path.unlink()
+    os.mkfifo(reserve_path)
+    script = """
+import sys
+from pathlib import Path
+
+from feedbax.orchestration.state import MAX_EMERGENCY_RECORD_BYTES, RunSetStateStore
+
+RunSetStateStore(Path(sys.argv[1])).preflight_and_reserve(
+    control_reserve_bytes=4096,
+    emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
+    state_update_bytes=4096,
+)
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(store.path)],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert stat.S_ISREG(reserve_path.stat().st_mode)
+
+
+@pytest.mark.parametrize("substitution", ["symlink", "hardlink"])
+def test_emergency_lock_link_substitution_preserves_target(
+    tmp_path: Path,
+    substitution: str,
+) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    store.preflight_and_reserve(
+        control_reserve_bytes=0,
+        emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
+        state_update_bytes=4096,
+    )
+    store.emergency_lock_path.unlink()
+    target = tmp_path / "do-not-modify"
+    original = b"owner-controlled bytes"
+    target.write_bytes(original)
+    if substitution == "symlink":
+        store.emergency_lock_path.symlink_to(target)
+    else:
+        os.link(target, store.emergency_lock_path)
+
+    with pytest.raises(ControlFilesystemPreflightError):
+        store.preflight_and_reserve(
+            control_reserve_bytes=0,
+            emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
+            state_update_bytes=4096,
+        )
+
+    assert target.read_bytes() == original
+
+
+def test_emergency_lock_fifo_substitution_fails_within_subprocess_deadline(
+    tmp_path: Path,
+) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    store.preflight_and_reserve(
+        control_reserve_bytes=0,
+        emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
+        state_update_bytes=4096,
+    )
+    store.emergency_lock_path.unlink()
+    os.mkfifo(store.emergency_lock_path)
+    script = """
+import sys
+from pathlib import Path
+
+from feedbax.orchestration.state import (
+    MAX_EMERGENCY_RECORD_BYTES,
+    ControlFilesystemPreflightError,
+    RunSetStateStore,
+)
+
+try:
+    RunSetStateStore(Path(sys.argv[1])).preflight_and_reserve(
+        control_reserve_bytes=0,
+        emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
+        state_update_bytes=4096,
+    )
+except ControlFilesystemPreflightError:
+    pass
+else:
+    raise AssertionError("FIFO emergency lock was accepted")
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(store.path)],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert stat.S_ISFIFO(store.emergency_lock_path.stat().st_mode)
+
+
+def test_final_rename_substitution_cannot_report_false_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    store.preflight_and_reserve(
+        control_reserve_bytes=0,
+        emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
+        state_update_bytes=4096,
+    )
+    diverted = tmp_path / "verified-json-inode"
+    attacker_payload = b"attacker replacement bytes"
+    original_replace = os.replace
+
+    def substitute_at_publication(source: object, destination: object) -> None:
+        if Path(source) == store.emergency_reserve_path:
+            original_replace(source, diverted)
+            store.emergency_reserve_path.write_bytes(attacker_payload)
+        original_replace(source, destination)
+
+    monkeypatch.setattr("feedbax.orchestration.state.os.replace", substitute_at_publication)
+
+    with pytest.raises(ControlFilesystemPreflightError, match="published emergency record"):
+        store.save_emergency(_emergency_record())
+
+    assert store.emergency_path.read_bytes() == attacker_payload
+    EmergencyRunSetRecord.model_validate_json(diverted.read_text(encoding="utf-8"))
+
+
+def test_reserve_allocation_rename_substitution_cannot_report_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    diverted = tmp_path / "verified-reserve-inode"
+    attacker_payload = b"attacker replacement bytes"
+    original_replace = os.replace
+
+    def substitute_at_publication(source: object, destination: object) -> None:
+        if Path(destination) == store.control_reserve_path:
+            original_replace(source, diverted)
+            Path(source).write_bytes(attacker_payload)
+        original_replace(source, destination)
+
+    monkeypatch.setattr("feedbax.orchestration.state.os.replace", substitute_at_publication)
+
+    with pytest.raises(ControlFilesystemPreflightError, match="published reserve file"):
+        store.preflight_and_reserve(
+            control_reserve_bytes=4096,
+            emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
+            state_update_bytes=4096,
+        )
+
+    assert store.control_reserve_path.read_bytes() == attacker_payload
+    assert diverted.stat().st_size == 4096
+
+
+def test_emergency_lock_substitution_before_return_cannot_report_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    store.preflight_and_reserve(
+        control_reserve_bytes=0,
+        emergency_reserve_bytes=MAX_EMERGENCY_RECORD_BYTES,
+        state_update_bytes=4096,
+    )
+    displaced_lock = tmp_path / "displaced-emergency-lock"
+    original_publish = orchestration_state._publish_reserved_emergency
+
+    def publish_then_substitute_lock(**kwargs: object) -> None:
+        original_publish(**kwargs)
+        os.replace(store.emergency_lock_path, displaced_lock)
+        store.emergency_lock_path.write_bytes(b"replacement lock")
+
+    monkeypatch.setattr(
+        "feedbax.orchestration.state._publish_reserved_emergency",
+        publish_then_substitute_lock,
+    )
+
+    with pytest.raises(ControlFilesystemPreflightError, match="emergency channel lock"):
+        store.save_emergency(_emergency_record())
+
+    assert store.load_emergency().run_set_id == "run-set"
+
+
+@pytest.mark.parametrize("error_number", [errno.ENOTSUP, errno.ENOLCK])
+def test_state_lock_translates_unsupported_flock_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_number: int,
+) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+
+    def fail_flock(_descriptor: int, _operation: int) -> None:
+        raise OSError(error_number, os.strerror(error_number))
+
+    monkeypatch.setattr("feedbax.orchestration.state.fcntl.flock", fail_flock)
+    with pytest.raises(StateLockError, match="unable to acquire") as exc_info:
+        with store.lock():
+            pass
+
+    assert exc_info.value.errno == error_number
+
+
+@pytest.mark.parametrize("error_number", [errno.ENOTSUP, errno.ENOLCK])
+def test_emergency_lock_translates_unsupported_flock_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_number: int,
+) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+
+    def fail_flock(_descriptor: int, _operation: int) -> None:
+        raise OSError(error_number, os.strerror(error_number))
+
+    monkeypatch.setattr("feedbax.orchestration.state.fcntl.flock", fail_flock)
+    with pytest.raises(ControlFilesystemPreflightError, match="unable to acquire") as exc_info:
+        store.preflight_and_reserve()
+
+    assert exc_info.value.errno == error_number
+
+
+@pytest.mark.parametrize("operation", ["state-lock", "emergency-preflight"])
+def test_missing_secure_open_capability_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    monkeypatch.delattr(os, "O_NONBLOCK")
+
+    expected_error = StateLockError if operation == "state-lock" else ControlFilesystemPreflightError
+    with pytest.raises(expected_error) as exc_info:
+        if operation == "state-lock":
+            with store.lock():
+                pass
+        else:
+            store.preflight_and_reserve()
+
+    assert exc_info.value.errno == errno.ENOTSUP
+
+
+def test_real_subprocess_lock_contention(tmp_path: Path) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    ready = tmp_path / "holder-ready"
+    process = _spawn_lock_process(store.path, ready, "wait")
+    try:
+        _wait_for_path(ready, process)
+        with pytest.raises(StateLockError, match="active"):
+            with store.lock(break_stale=True):
+                pass
+        assert process.stdin is not None
+        process.stdin.write("release\n")
+        process.stdin.flush()
+        assert process.wait(timeout=5) == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    with store.lock(break_stale=True):
+        pass
+
+
+@pytest.mark.parametrize("release_mode", ["crash", "exception"])
+def test_real_subprocess_owner_release(
+    tmp_path: Path,
+    release_mode: str,
+) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    ready = tmp_path / f"{release_mode}-ready"
+    action = "wait" if release_mode == "crash" else "exception"
+    process = _spawn_lock_process(store.path, ready, action)
+    _wait_for_path(ready, process)
+    if release_mode == "crash":
+        process.kill()
+    assert process.wait(timeout=5) == (0 if release_mode == "exception" else -9)
+
+    with store.lock(break_stale=True):
+        pass
+
+
+@pytest.mark.parametrize("legacy_bytes", [b"", b"not-json"])
+def test_empty_and_malformed_legacy_locks_are_recoverable(
+    tmp_path: Path,
+    legacy_bytes: bytes,
+) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    store.lock_path.write_bytes(legacy_bytes)
+
+    with store.lock():
+        assert json.loads(store.lock_path.read_text(encoding="utf-8"))["protocol"] == (
+            STATE_LOCK_PROTOCOL
+        )
+
+
+def test_legacy_lock_payloads_preserve_active_and_stale_semantics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    store.lock_path.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+    with pytest.raises(StateLockError, match="active"):
+        with store.lock(break_stale=True):
+            pass
+
+    store.lock_path.write_text(json.dumps({"pid": 424242}), encoding="utf-8")
+    monkeypatch.setattr("feedbax.orchestration.state._pid_alive", lambda _pid: False)
+    with pytest.raises(StateLockError, match="stale"):
+        with store.lock():
+            pass
+    with store.lock(break_stale=True):
+        pass
+
+
+def test_stable_lock_protocol_migration_is_explicitly_one_way(tmp_path: Path) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+
+    with store.lock():
+        pass
+
+    payload = json.loads(store.lock_path.read_text(encoding="utf-8"))
+    assert payload["protocol"] == STATE_LOCK_PROTOCOL
+    assert payload["pid"] == os.getpid()
+    assert store.lock_path.exists()

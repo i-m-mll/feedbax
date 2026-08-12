@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -68,9 +69,17 @@ def utc_now() -> datetime:
 class StateLockError(RuntimeError):
     """Raised when a run-set state lock cannot be acquired."""
 
+    def __init__(self, message: str, *, error_number: int | None = None) -> None:
+        self.errno = error_number
+        super().__init__(message)
+
 
 class ControlFilesystemPreflightError(RuntimeError):
     """Raised when the control filesystem cannot support durable state updates."""
+
+    def __init__(self, message: str, *, error_number: int | None = None) -> None:
+        self.errno = error_number
+        super().__init__(message)
 
 
 class PrimaryStatePersistenceError(OSError):
@@ -418,7 +427,15 @@ class RunSetStateStore:
 
     @contextmanager
     def lock(self, *, break_stale: bool = False) -> Iterator[None]:
-        """Acquire a stable, kernel-owned advisory lock around state mutation."""
+        """Acquire a stable, kernel-owned advisory lock around state mutation.
+
+        The transition from the legacy unlink-on-release protocol is intentionally
+        one-way. New code can consume legacy PID-only files, but old code cannot
+        interpret a released ``stable-flock-v1`` inode. Mixed-version execution or
+        rollback therefore requires removing the persistent lock while no process is
+        using the state directory; doing so during execution would reintroduce the
+        pathname-unlink race this protocol eliminates.
+        """
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "protocol": STATE_LOCK_PROTOCOL,
@@ -429,12 +446,13 @@ class RunSetStateStore:
         try:
             descriptor = os.open(
                 self.lock_path,
-                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+                _untrusted_open_flags(os.O_RDWR | os.O_CREAT),
                 0o600,
             )
         except OSError as exc:
             raise StateLockError(
-                f"unable to open run-set state lock safely: {self.lock_path}: {exc}"
+                f"unable to open run-set state lock safely: {self.lock_path}: {exc}",
+                error_number=exc.errno,
             ) from exc
         try:
             try:
@@ -443,11 +461,17 @@ class RunSetStateStore:
                 raise StateLockError(str(exc)) from exc
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                existing = _read_lock_descriptor(descriptor)
+            except OSError as exc:
+                if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                    existing = _read_lock_descriptor(descriptor)
+                    raise StateLockError(
+                        f"run-set state lock is active: {self.lock_path} "
+                        f"pid={existing.get('pid')!r}",
+                        error_number=exc.errno,
+                    ) from exc
                 raise StateLockError(
-                    f"run-set state lock is active: {self.lock_path} "
-                    f"pid={existing.get('pid')!r}"
+                    f"unable to acquire run-set state lock at {self.lock_path}: {exc}",
+                    error_number=exc.errno,
                 ) from exc
 
             try:
@@ -490,7 +514,7 @@ def _read_lock_descriptor(descriptor: int) -> dict[str, Any]:
 def _owned_regular_file_size(path: Path) -> int | None:
     """Return the size only when ``path`` safely names one unique regular inode."""
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        descriptor = os.open(path, _untrusted_open_flags(os.O_RDONLY))
     except OSError:
         return None
     try:
@@ -499,6 +523,20 @@ def _owned_regular_file_size(path: Path) -> int | None:
         return None
     finally:
         os.close(descriptor)
+
+
+def _untrusted_open_flags(access_flags: int) -> int:
+    """Add the required non-following, nonblocking descriptor capabilities."""
+    flags = access_flags
+    for name in ("O_NOFOLLOW", "O_NONBLOCK", "O_CLOEXEC"):
+        value = getattr(os, name, None)
+        if not isinstance(value, int):
+            raise OSError(
+                errno.ENOTSUP,
+                f"secure final-component opens require os.{name}",
+            )
+        flags |= value
+    return flags
 
 
 def _require_owned_path_inode(
@@ -582,10 +620,12 @@ def _reserve_file(path: Path, size: int) -> None:
             _require_owned_path_inode(fd, tmp_path, kind="new reserve file"),
             size,
         )
-        os.close(fd)
-        fd = -1
         os.replace(tmp_path, path)
         _fsync_directory(path.parent)
+        _require_reserved_capacity(
+            _require_owned_path_inode(fd, path, kind="published reserve file"),
+            size,
+        )
     finally:
         if fd >= 0:
             os.close(fd)
@@ -595,8 +635,8 @@ def _reserve_file(path: Path, size: int) -> None:
 @contextmanager
 def _emergency_channel_lock(path: Path, *, create: bool) -> Iterator[None]:
     """Serialize reserve replenishment and publication through one stable inode."""
-    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC | (os.O_CREAT if create else 0)
     try:
+        flags = _untrusted_open_flags(os.O_RDWR | (os.O_CREAT if create else 0))
         descriptor = os.open(path, flags, 0o600)
     except FileNotFoundError as exc:
         raise ControlFilesystemPreflightError(
@@ -604,15 +644,23 @@ def _emergency_channel_lock(path: Path, *, create: bool) -> Iterator[None]:
         ) from exc
     except OSError as exc:
         raise ControlFilesystemPreflightError(
-            f"unable to establish emergency channel lock at {path}: {exc}"
+            f"unable to establish emergency channel lock at {path}: {exc}",
+            error_number=exc.errno,
         ) from exc
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        except OSError as exc:
+            raise ControlFilesystemPreflightError(
+                f"unable to acquire emergency channel lock at {path}: {exc}",
+                error_number=exc.errno,
+            ) from exc
         _require_owned_path_inode(descriptor, path, kind="emergency channel lock")
         if create:
             os.fsync(descriptor)
             _fsync_directory(path.parent)
         yield
+        _require_owned_path_inode(descriptor, path, kind="emergency channel lock")
     finally:
         os.close(descriptor)
 
@@ -627,7 +675,7 @@ def _publish_reserved_emergency(
     try:
         descriptor = os.open(
             reserve_path,
-            os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
+            _untrusted_open_flags(os.O_RDWR),
         )
     except FileNotFoundError as exc:
         raise ControlFilesystemPreflightError(
@@ -656,6 +704,11 @@ def _publish_reserved_emergency(
         )
         os.replace(reserve_path, destination_path)
         _fsync_directory(destination_path.parent)
+        _require_owned_path_inode(
+            descriptor,
+            destination_path,
+            kind="published emergency record",
+        )
     finally:
         os.close(descriptor)
 
