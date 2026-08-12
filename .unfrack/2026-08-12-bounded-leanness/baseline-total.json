@@ -1,0 +1,54 @@
+{"header" : {
+  "cloc_url"           : "github.com/AlDanial/cloc",
+  "cloc_version"       : "2.04",
+  "elapsed_seconds"    : 0.864724159240723,
+  "n_files"            : 647,
+  "n_lines"            : 282253,
+  "files_per_second"   : 748.215477832958,
+  "lines_per_second"   : 326408.134876021,
+  "report_file"        : ".unfrack/2026-08-12-bounded-leanness/baseline-total.json"},
+"Python" :{
+  "nFiles": 428,
+  "blank": 25322,
+  "comment": 21865,
+  "code": 160536},
+"TypeScript" :{
+  "nFiles": 206,
+  "blank": 4660,
+  "comment": 1170,
+  "code": 68264},
+"Markdown" :{
+  "nFiles": 1,
+  "blank": 36,
+  "comment": 0,
+  "code": 137},
+"CSS" :{
+  "nFiles": 1,
+  "blank": 15,
+  "comment": 0,
+  "code": 76},
+"JSON" :{
+  "nFiles": 3,
+  "blank": 0,
+  "comment": 0,
+  "code": 75},
+"YAML" :{
+  "nFiles": 6,
+  "blank": 14,
+  "comment": 6,
+  "code": 46},
+"Bourne Shell" :{
+  "nFiles": 1,
+  "blank": 4,
+  "comment": 1,
+  "code": 13},
+"SVG" :{
+  "nFiles": 1,
+  "blank": 0,
+  "comment": 0,
+  "code": 13},
+"SUM": {
+  "blank": 30051,
+  "comment": 23042,
+  "code": 229160,
+  "nFiles": 647} }

@@ -1,0 +1,29 @@
+{"header" : {
+  "cloc_url"           : "github.com/AlDanial/cloc",
+  "cloc_version"       : "2.04",
+  "elapsed_seconds"    : 0.123645067214966,
+  "n_files"            : 214,
+  "n_lines"            : 75315,
+  "files_per_second"   : 1730.7605133001,
+  "lines_per_second"   : 609122.561024286,
+  "report_file"        : "/Users/mll/Main/10 Projects/10 PhD/20 Feedbax/feedbax/worktrees/feature__f4237a7-audit-synthesis-final/.unfrack/2026-08-12-bounded-leanness/final-web.json"},
+"TypeScript" :{
+  "nFiles": 210,
+  "blank": 4790,
+  "comment": 1155,
+  "code": 69204},
+"CSS" :{
+  "nFiles": 1,
+  "blank": 15,
+  "comment": 0,
+  "code": 76},
+"JSON" :{
+  "nFiles": 3,
+  "blank": 0,
+  "comment": 0,
+  "code": 75},
+"SUM": {
+  "blank": 4805,
+  "comment": 1155,
+  "code": 69355,
+  "nFiles": 214} }

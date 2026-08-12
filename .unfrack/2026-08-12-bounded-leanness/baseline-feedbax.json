@@ -1,0 +1,34 @@
+{"header" : {
+  "cloc_url"           : "github.com/AlDanial/cloc",
+  "cloc_version"       : "2.04",
+  "elapsed_seconds"    : 0.732216119766235,
+  "n_files"            : 436,
+  "n_lines"            : 207980,
+  "files_per_second"   : 595.45261054782,
+  "lines_per_second"   : 284041.820967283,
+  "report_file"        : ".unfrack/2026-08-12-bounded-leanness/baseline-feedbax.json"},
+"Python" :{
+  "nFiles": 428,
+  "blank": 25322,
+  "comment": 21865,
+  "code": 160536},
+"Markdown" :{
+  "nFiles": 1,
+  "blank": 36,
+  "comment": 0,
+  "code": 137},
+"YAML" :{
+  "nFiles": 6,
+  "blank": 14,
+  "comment": 6,
+  "code": 46},
+"Bourne Shell" :{
+  "nFiles": 1,
+  "blank": 4,
+  "comment": 1,
+  "code": 13},
+"SUM": {
+  "blank": 25376,
+  "comment": 21872,
+  "code": 160732,
+  "nFiles": 436} }
