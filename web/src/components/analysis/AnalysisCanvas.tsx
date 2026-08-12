@@ -55,8 +55,6 @@ export const ANALYSIS_CANVAS_INTERACTION_PROPS = {
   nodesDraggable: false,
 } as const;
 
-export const ANALYSIS_INTERACTION_OWNER = 'analysis';
-
 export function consumeAnalysisDeleteKey(event: KeyboardEvent<HTMLElement>) {
   if (event.key !== 'Delete' && event.key !== 'Backspace') return;
   event.preventDefault();
@@ -156,7 +154,6 @@ export function AnalysisCanvas() {
   return (
     <div
       ref={containerRef}
-      data-studio-interaction-owner={ANALYSIS_INTERACTION_OWNER}
       tabIndex={-1}
       onPointerDownCapture={() => containerRef.current?.focus({ preventScroll: true })}
       onKeyDownCapture={consumeAnalysisDeleteKey}

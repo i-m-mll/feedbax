@@ -243,7 +243,10 @@ export function AnalysisPanel() {
   const selectedEdgeData = selectedEdge?.data as AnalysisEdgeData | null;
 
   return (
-    <div className="flex flex-col h-full">
+    <div
+      className="flex flex-col h-full"
+      data-studio-interaction-owner="analysis"
+    >
       {/* Sub-tab bar for analysis pages */}
       <AnalysisPageTabBar
         pages={pages}
