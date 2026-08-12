@@ -43,6 +43,11 @@ const edgeTypes = {
   analysisImplicit: AnalysisImplicitEdge,
 };
 
+export const ANALYSIS_CANVAS_INTERACTION_PROPS = {
+  deleteKeyCode: null,
+  nodesDraggable: false,
+} as const;
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -159,6 +164,7 @@ export function AnalysisCanvas() {
         }}
         onDrop={onDrop}
         onDragOver={onDragOver}
+        {...ANALYSIS_CANVAS_INTERACTION_PROPS}
         fitView
         snapToGrid
         snapGrid={[16, 16]}

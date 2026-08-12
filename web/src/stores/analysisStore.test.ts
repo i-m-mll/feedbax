@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { deleteAnalysisNodeWithConfirmation } from '@/components/analysis/analysisDeletion';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { buildWorkspaceSnapshot, getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
 import type { AnalysisClassDef } from '@/types/analysis';
@@ -232,7 +233,45 @@ describe('useAnalysisStore stage ownership', () => {
     ]);
   });
 
-  it('keeps the explicit remove action semantically persistent', () => {
+  it('disables render-only deletion for the data source, transforms, and edges', () => {
+    const analysisClass: AnalysisClassDef = {
+      name: 'ActivityPlot',
+      description: 'Plot activity',
+      category: 'Figures',
+      inputPorts: ['series'],
+      outputPorts: ['figure'],
+      defaultParams: {},
+      icon: 'LineChart',
+    };
+
+    useAnalysisStore.getState().addPage('Protected elements');
+    useAnalysisStore.getState().addAnalysisNode(analysisClass, { x: 240, y: 0 });
+    const node = useAnalysisStore.getState().nodes.find((item) => item.type === 'analysis')!;
+    useAnalysisStore.getState().connectNodes({
+      source: '__data_source__',
+      sourceHandle: 'path:states.net.hidden',
+      target: node.id,
+      targetHandle: 'series',
+    });
+    const wireId = useAnalysisStore.getState().graphSpec!.wires[0].id;
+    useAnalysisStore.getState().addTransformToEdge(wireId, 'Standardize');
+    const transformId = `transform_${wireId}`;
+    const edgeId = `${wireId}__to_transform`;
+
+    useAnalysisStore.getState().onNodesChange([
+      { id: '__data_source__', type: 'remove' },
+      { id: transformId, type: 'remove' },
+    ]);
+    useAnalysisStore.getState().onEdgesChange([{ id: edgeId, type: 'remove' }]);
+
+    const state = useAnalysisStore.getState();
+    expect(state.nodes.some((item) => item.id === '__data_source__')).toBe(true);
+    expect(state.nodes.some((item) => item.id === transformId)).toBe(true);
+    expect(state.edges.some((edge) => edge.id === edgeId)).toBe(true);
+    expect(state.graphSpec?.wires[0].transform?.id).toBe(transformId);
+  });
+
+  it('requires confirmation and honors cancellation for durable deletion', () => {
     const analysisClass: AnalysisClassDef = {
       name: 'ActivityPlot',
       description: 'Plot activity',
@@ -243,14 +282,44 @@ describe('useAnalysisStore stage ownership', () => {
       icon: 'LineChart',
     };
 
-    useAnalysisStore.getState().addPage('Explicit deletion');
+    useAnalysisStore.getState().addPage('Confirmed deletion');
     useAnalysisStore.getState().addAnalysisNode(analysisClass, { x: 240, y: 0 });
     const node = useAnalysisStore.getState().nodes.find((item) => item.type === 'analysis')!;
+    const cancel = vi.fn(() => false);
+    const confirm = vi.fn(() => true);
 
-    useAnalysisStore.getState().removeNode(node.id);
+    expect(deleteAnalysisNodeWithConfirmation(node.id, cancel)).toBe(false);
+    expect(useAnalysisStore.getState().graphSpec?.nodes[node.id]).toBeDefined();
+
+    expect(deleteAnalysisNodeWithConfirmation(node.id, confirm)).toBe(true);
 
     expect(useAnalysisStore.getState().graphSpec?.nodes[node.id]).toBeUndefined();
     expect(useAnalysisStore.getState().captureSnapshot().pages[0].graphSpec.nodes[node.id])
       .toBeUndefined();
+    expect(cancel).toHaveBeenCalledWith(expect.stringMatching(/saved immediately/i));
+    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/connected wires/i));
+  });
+
+  it('ignores volatile node position changes', () => {
+    const analysisClass: AnalysisClassDef = {
+      name: 'ActivityPlot',
+      description: 'Plot activity',
+      category: 'Figures',
+      inputPorts: [],
+      outputPorts: [],
+      defaultParams: {},
+      icon: 'LineChart',
+    };
+
+    useAnalysisStore.getState().addPage('Fixed layout');
+    useAnalysisStore.getState().addAnalysisNode(analysisClass, { x: 240, y: 80 });
+    const node = useAnalysisStore.getState().nodes.find((item) => item.type === 'analysis')!;
+
+    useAnalysisStore.getState().onNodesChange([
+      { id: node.id, type: 'position', position: { x: 900, y: 700 }, dragging: true },
+    ]);
+
+    expect(useAnalysisStore.getState().nodes.find((item) => item.id === node.id)?.position)
+      .toEqual({ x: 240, y: 80 });
   });
 });

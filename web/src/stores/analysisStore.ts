@@ -544,15 +544,21 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   expandedFieldPaths: [],
 
   onNodesChange: (changes) => {
+    const graphNodeIds = new Set(Object.keys(get().graphSpec?.nodes ?? {}));
+    const supportedChanges = changes.filter(
+      (change) =>
+        change.type !== 'position' &&
+        (change.type !== 'remove' || graphNodeIds.has(change.id)),
+    );
     const removedNodeIds = new Set(
-      changes.filter((change) => change.type === 'remove').map((change) => change.id),
+      supportedChanges
+        .filter((change) => change.type === 'remove')
+        .map((change) => change.id),
     );
-    const removesAnalysisNode = [...removedNodeIds].some(
-      (id) => get().graphSpec?.nodes[id],
-    );
+    const removesAnalysisNode = removedNodeIds.size > 0;
 
     set((state) => ({
-      nodes: applyNodeChanges(changes, state.nodes),
+      nodes: applyNodeChanges(supportedChanges, state.nodes),
       ...(removesAnalysisNode
         ? {
             edges: state.edges.filter(
@@ -583,7 +589,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   },
 
   onEdgesChange: (changes) => {
-    set((state) => ({ edges: applyEdgeChanges(changes, state.edges) }));
+    const supportedChanges = changes.filter((change) => change.type !== 'remove');
+    set((state) => ({ edges: applyEdgeChanges(supportedChanges, state.edges) }));
   },
 
   setAnalysisClasses: (classes) => {
