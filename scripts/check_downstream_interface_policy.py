@@ -17,10 +17,15 @@ POLICY_ID = "feedbax.downstream-interface-stability.v1"
 POLICY_SCHEMA = "feedbax.external_conformance.policy_manifest.v1"
 RATIFIED_STATUS = "Owner-ratified"
 RATIFICATION_EVIDENCE = (
-    "Protected `develop` merge `bc254ce60f8ce26640794788f8df9a236423052f`; "
-    "external conformance result `feedbax.external_conformance.result.v14`"
+    "Base policy: protected `develop` merge "
+    "`b6697280324b3a675cf1de5fbca25b42a0f56795`; envelope-layer prerequisite rows: "
+    "protected `develop` merge `798c085268119074f0522e3a2313a1722dfaedc8`"
 )
+POLICY_SOURCE_HEAD = "Protected `develop` merge `bc254ce60f8ce26640794788f8df9a236423052f`"
 RESULT_SCHEMA_VERSION = "feedbax.external_conformance.result.v14"
+RUNTIME_RESULT_EVIDENCE = (
+    "No concrete conformance result artifact or execution receipt is pinned in this policy"
+)
 START = "<!-- feedbax-downstream-stability:start -->"
 END = "<!-- feedbax-downstream-stability:end -->"
 GUARANTEE_START = "<!-- policy-guarantees:start -->"
@@ -347,7 +352,10 @@ def check_policy() -> None:
         "Extension protocol": (
             f"current `{expected['current']}`, minimum supported `{expected['minimum']}`"
         ),
-        "Evidence head": RATIFICATION_EVIDENCE,
+        "Ratification evidence": RATIFICATION_EVIDENCE,
+        "Policy source head": POLICY_SOURCE_HEAD,
+        "Result schema identity": f"`{RESULT_SCHEMA_VERSION}`",
+        "Runtime result evidence": RUNTIME_RESULT_EVIDENCE,
     }
     for name, value in required_fields.items():
         if fields.get(name) != value:
@@ -475,6 +483,12 @@ def check_policy() -> None:
     for claim in stale_policy_claims:
         if claim in document:
             raise ValueError(f"ratified policy retains stale status claim {claim!r}")
+    evidence_boundary = (
+        "The result schema identity names the required shape of a conformance result; "
+        "it is not evidence that the fixture ran."
+    )
+    if evidence_boundary not in " ".join(document.split()):
+        raise ValueError("policy conflates result schema identity with runtime evidence")
     result_label = RESULT_SCHEMA_VERSION.rsplit(".", 1)[-1]
     if f"that validated {result_label} result as an artifact" not in document:
         raise ValueError(f"policy CI evidence does not name the current {result_label} result")

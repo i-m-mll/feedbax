@@ -502,9 +502,25 @@ def test_ratified_policy_checker_rejects_residual_pending_rows(
     [
         ("| Status | Owner-ratified |", "| Status | Ratification-ready |", "field 'Status'"),
         (
-            "| Evidence head | Protected `develop` merge ",
-            "| Evidence head | Unverified merge ",
-            "field 'Evidence head'",
+            "| Ratification evidence | Base policy: protected `develop` merge ",
+            "| Ratification evidence | Unverified merge ",
+            "field 'Ratification evidence'",
+        ),
+        (
+            "| Policy source head | Protected `develop` merge ",
+            "| Policy source head | Unverified merge ",
+            "field 'Policy source head'",
+        ),
+        (
+            "| Result schema identity | `feedbax.external_conformance.result.v14` |",
+            "| Result schema identity | `feedbax.external_conformance.result.v13` |",
+            "field 'Result schema identity'",
+        ),
+        (
+            "| Runtime result evidence | No concrete conformance result artifact or execution "
+            "receipt is pinned in this policy |",
+            "| Runtime result evidence | `feedbax.external_conformance.result.v14` |",
+            "field 'Runtime result evidence'",
         ),
         (
             "that validated v14 result as an artifact",
@@ -535,6 +551,33 @@ def test_policy_checker_rejects_ratification_metadata_staleness(
     monkeypatch.setattr(module, "POLICY_DOCUMENT", stale_document)
 
     with pytest.raises(ValueError, match=match):
+        module.check_policy()
+
+
+def test_policy_checker_requires_schema_and_runtime_evidence_domains_to_be_distinct(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = ROOT / "scripts" / "check_downstream_interface_policy.py"
+    spec = importlib.util.spec_from_file_location(
+        "check_downstream_interface_policy_evidence_domains", script
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    document = module.POLICY_DOCUMENT.read_text(encoding="utf-8")
+    boundary = (
+        "The result schema\nidentity names the required shape of a conformance result; "
+        "it is not evidence\nthat the fixture ran."
+    )
+    assert boundary in document
+    stale_document = tmp_path / "downstream_interface_stability.md"
+    stale_document.write_text(
+        document.replace(boundary, "The result schema is runtime evidence."), encoding="utf-8"
+    )
+    monkeypatch.setattr(module, "POLICY_DOCUMENT", stale_document)
+
+    with pytest.raises(ValueError, match="conflates result schema identity with runtime evidence"):
         module.check_policy()
 
 

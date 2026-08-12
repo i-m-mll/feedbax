@@ -6,14 +6,20 @@
 | Status | Owner-ratified |
 | Effective release | Feedbax `0.2.0` |
 | Extension protocol | current `1`, minimum supported `1` |
-| Evidence head | Protected `develop` merge `bc254ce60f8ce26640794788f8df9a236423052f`; external conformance result `feedbax.external_conformance.result.v14` |
+| Ratification evidence | Base policy: protected `develop` merge `b6697280324b3a675cf1de5fbca25b42a0f56795`; envelope-layer prerequisite rows: protected `develop` merge `798c085268119074f0522e3a2313a1722dfaedc8` |
+| Policy source head | Protected `develop` merge `bc254ce60f8ce26640794788f8df9a236423052f` |
+| Result schema identity | `feedbax.external_conformance.result.v14` |
+| Runtime result evidence | No concrete conformance result artifact or execution receipt is pinned in this policy |
 | Decision owner | Feedbax owner |
 
 The Feedbax owner ratified this policy through protected `develop` delivery.
 Protected merge `b6697280324b3a675cf1de5fbca25b42a0f56795` ratified the base
 policy, and protected merge `798c085268119074f0522e3a2313a1722dfaedc8`
 ratified the envelope-layer prerequisite rows below. Later protected amendments
-through the evidence head preserve that ratified status.
+through the policy source head preserve that ratified status. The result schema
+identity names the required shape of a conformance result; it is not evidence
+that the fixture ran. CI is configured to create and upload a result, but this
+policy does not currently pin a concrete uploaded artifact or execution receipt.
 
 ## Compatibility window
 
