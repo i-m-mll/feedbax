@@ -15,6 +15,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 POLICY_ID = "feedbax.downstream-interface-stability.v1"
 POLICY_SCHEMA = "feedbax.external_conformance.policy_manifest.v1"
+RATIFIED_STATUS = "Owner-ratified"
+RATIFICATION_EVIDENCE = (
+    "Base policy: protected `develop` merge "
+    "`b6697280324b3a675cf1de5fbca25b42a0f56795`; envelope-layer prerequisite rows: "
+    "protected `develop` merge `798c085268119074f0522e3a2313a1722dfaedc8`"
+)
+POLICY_SOURCE_HEAD = "Protected `develop` merge `bc254ce60f8ce26640794788f8df9a236423052f`"
+RESULT_SCHEMA_VERSION = "feedbax.external_conformance.result.v14"
+RUNTIME_RESULT_EVIDENCE = (
+    "No concrete conformance result artifact or execution receipt is pinned in this policy"
+)
 START = "<!-- feedbax-downstream-stability:start -->"
 END = "<!-- feedbax-downstream-stability:end -->"
 GUARANTEE_START = "<!-- policy-guarantees:start -->"
@@ -50,14 +61,12 @@ DRIVER_POLICY_SCHEMAS = {
 # external case covers it, never a way to skip evidence.
 RATIFIED_NON_EXTERNAL_ROWS = {
     "terminal-certification",
-    # Draft rows raised by Feedbax issue 88d021d; ratified only by the owner's
-    # approval and merge of the protected delivery that carries them.
     "report-surface",
     "evaluation-surface",
     "analysis-authoring",
 }
-DRAFT_POLICY_ROWS = {"report-surface", "evaluation-surface", "analysis-authoring"}
-DRAFT_POLICY_MARKER = "## Pending owner ratification: envelope-layer prerequisite rows"
+RATIFIED_ENVELOPE_ROWS = {"report-surface", "evaluation-surface", "analysis-authoring"}
+RATIFIED_ENVELOPE_MARKER = "## Owner-ratified envelope-layer prerequisite rows"
 
 
 def _marked_block(path: Path, start_marker: str, end_marker: str) -> str:
@@ -338,10 +347,15 @@ def check_policy() -> None:
     fields = _document_fields(document)
     required_fields = {
         "Policy identity": f"`{expected['policy_id']}`",
+        "Status": RATIFIED_STATUS,
         "Effective release": f"Feedbax `{expected['effective_release']}`",
         "Extension protocol": (
             f"current `{expected['current']}`, minimum supported `{expected['minimum']}`"
         ),
+        "Ratification evidence": RATIFICATION_EVIDENCE,
+        "Policy source head": POLICY_SOURCE_HEAD,
+        "Result schema identity": f"`{RESULT_SCHEMA_VERSION}`",
+        "Runtime result evidence": RUNTIME_RESULT_EVIDENCE,
     }
     for name, value in required_fields.items():
         if fields.get(name) != value:
@@ -391,7 +405,7 @@ def check_policy() -> None:
     result_source = (FIXTURE_ROOT / "src" / "feedbax_external_conformance" / "result.py").read_text(
         encoding="utf-8"
     )
-    if 'Literal["feedbax.external_conformance.result.v14"]' not in result_source:
+    if f'Literal["{RESULT_SCHEMA_VERSION}"]' not in result_source:
         raise ValueError("ratified policy requires the authoritative v14 result")
     if "v12 cannot migrate to v14" not in result_source:
         raise ValueError("v12 must reject rather than synthesize figure evidence")
@@ -429,7 +443,7 @@ def check_policy() -> None:
     ]:
         raise ValueError("emergency persistence schema mapping drifted")
     if manifest_rows["result-role-binding"].get("schemas", {}).get("current") != [
-        "feedbax.external_conformance.result.v14"
+        RESULT_SCHEMA_VERSION
     ]:
         raise ValueError("result-role schema mapping drifted")
     for row_id, row in manifest_rows.items():
@@ -455,10 +469,29 @@ def check_policy() -> None:
     }
     if observed_non_external != RATIFIED_NON_EXTERNAL_ROWS:
         raise ValueError("ratified non-external coverage rows drifted")
-    if not DRAFT_POLICY_ROWS <= set(manifest_rows):
-        raise ValueError("draft policy rows are missing from the fixture manifest")
-    if DRAFT_POLICY_MARKER not in document:
-        raise ValueError("draft policy rows are not marked pending owner ratification")
+    if not RATIFIED_ENVELOPE_ROWS <= set(manifest_rows):
+        raise ValueError("ratified envelope policy rows are missing from the fixture manifest")
+    if RATIFIED_ENVELOPE_MARKER not in document:
+        raise ValueError("ratified envelope policy rows are not marked owner-ratified")
+    stale_policy_claims = (
+        "Ratification-ready",
+        "This policy becomes effective only when",
+        "## Pending owner ratification: envelope-layer prerequisite rows",
+        "**draft addition**",
+        "become ratified only when",
+    )
+    for claim in stale_policy_claims:
+        if claim in document:
+            raise ValueError(f"ratified policy retains stale status claim {claim!r}")
+    evidence_boundary = (
+        "The result schema identity names the required shape of a conformance result; "
+        "it is not evidence that the fixture ran."
+    )
+    if evidence_boundary not in " ".join(document.split()):
+        raise ValueError("policy conflates result schema identity with runtime evidence")
+    result_label = RESULT_SCHEMA_VERSION.rsplit(".", 1)[-1]
+    if f"that validated {result_label} result as an artifact" not in document:
+        raise ValueError(f"policy CI evidence does not name the current {result_label} result")
     facade_non_guaranteed = tuple(
         _literal_assignments(ROOT / "feedbax" / "plugins" / "__init__.py")[
             "_NON_GUARANTEED_PLUGIN_EXPORTS"

@@ -23,6 +23,13 @@ function isEditableTarget(target: EventTarget | null) {
   return tag === 'input' || tag === 'textarea' || target.isContentEditable;
 }
 
+function hasOwnedInteractionPath(event: KeyboardEvent) {
+  return event.composedPath().some(
+    (target) =>
+      target instanceof Element && target.closest('[data-studio-interaction-owner]') !== null,
+  );
+}
+
 export function useAppShortcuts() {
   const {
     undo,
@@ -222,6 +229,7 @@ export function useAppShortcuts() {
 
       if (event.key === 'Delete' || event.key === 'Backspace') {
         event.preventDefault();
+        if (hasOwnedInteractionPath(event)) return;
         deleteSelection();
       }
     };

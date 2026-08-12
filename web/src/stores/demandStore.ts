@@ -17,8 +17,14 @@ interface DemandState {
   /** Mark a request as complete with multiple figure hashes. */
   setResults: (nodeId: string, figureHashes: string[]) => void;
 
+  /** Complete a request only while its request ID is still active. */
+  setResultForRequest: (nodeId: string, requestId: string, figureHash: string) => boolean;
+
   /** Mark a request as failed. */
   setError: (nodeId: string, error: string) => void;
+
+  /** Fail a request only while its request ID is still active. */
+  setErrorForRequest: (nodeId: string, requestId: string, error: string) => boolean;
 
   /** Clear a request (reset to idle). */
   clearRequest: (nodeId: string) => void;
@@ -88,6 +94,30 @@ export const useDemandStore = create<DemandState>((set, get) => ({
       },
     })),
 
+  setResultForRequest: (nodeId, requestId, figureHash) => {
+    let updated = false;
+    set((state) => {
+      const request = state.requests[nodeId];
+      if (request?.status !== 'running' || request.figureHash !== requestId) {
+        return state;
+      }
+      updated = true;
+      return {
+        requests: {
+          ...state.requests,
+          [nodeId]: {
+            ...request,
+            status: 'ready',
+            figureHash,
+            completedAt: Date.now(),
+            error: undefined,
+          },
+        },
+      };
+    });
+    return updated;
+  },
+
   setError: (nodeId, error) =>
     set((state) => ({
       requests: {
@@ -101,6 +131,29 @@ export const useDemandStore = create<DemandState>((set, get) => ({
         },
       },
     })),
+
+  setErrorForRequest: (nodeId, requestId, error) => {
+    let updated = false;
+    set((state) => {
+      const request = state.requests[nodeId];
+      if (request?.status !== 'running' || request.figureHash !== requestId) {
+        return state;
+      }
+      updated = true;
+      return {
+        requests: {
+          ...state.requests,
+          [nodeId]: {
+            ...request,
+            status: 'error',
+            error,
+            completedAt: Date.now(),
+          },
+        },
+      };
+    });
+    return updated;
+  },
 
   clearRequest: (nodeId) =>
     set((state) => ({

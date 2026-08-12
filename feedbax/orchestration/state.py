@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -57,6 +58,7 @@ DEFAULT_EMERGENCY_RESERVE_BYTES = 64 * 1024
 DEFAULT_STATE_UPDATE_BYTES = 1024 * 1024
 MAX_CONTROL_RESERVE_BYTES = 64 * 1024 * 1024
 MAX_EMERGENCY_RECORD_BYTES = 32 * 1024
+STATE_LOCK_PROTOCOL = "stable-flock-v1"
 
 
 def utc_now() -> datetime:
@@ -67,9 +69,17 @@ def utc_now() -> datetime:
 class StateLockError(RuntimeError):
     """Raised when a run-set state lock cannot be acquired."""
 
+    def __init__(self, message: str, *, error_number: int | None = None) -> None:
+        self.errno = error_number
+        super().__init__(message)
+
 
 class ControlFilesystemPreflightError(RuntimeError):
     """Raised when the control filesystem cannot support durable state updates."""
+
+    def __init__(self, message: str, *, error_number: int | None = None) -> None:
+        self.errno = error_number
+        super().__init__(message)
 
 
 class PrimaryStatePersistenceError(OSError):
@@ -334,14 +344,17 @@ class RunSetStateStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         _probe_directory_writable(self.path.parent, self.path.name)
         with _emergency_channel_lock(self.emergency_lock_path, create=True):
-            requested_reserves = (
-                (self.control_reserve_path, control_reserve_bytes),
-                (self.emergency_reserve_path, emergency_reserve_bytes),
+            requested_reserves = tuple(
+                (path, size, _owned_regular_file_size(path) != size)
+                for path, size in (
+                    (self.control_reserve_path, control_reserve_bytes),
+                    (self.emergency_reserve_path, emergency_reserve_bytes),
+                )
             )
             reserve_allocation_bytes = sum(
                 size
-                for path, size in requested_reserves
-                if not path.exists() or path.stat().st_size != size
+                for _path, size, needs_replacement in requested_reserves
+                if needs_replacement
             )
             required_free_bytes = reserve_allocation_bytes + state_update_bytes
             observed_free_bytes = shutil.disk_usage(self.path.parent).free
@@ -352,8 +365,8 @@ class RunSetStateStore:
                     f"observed_free_bytes={observed_free_bytes} path={self.path.parent}"
                 )
 
-            for reserve_path, reserve_size in requested_reserves:
-                if not reserve_path.exists() or reserve_path.stat().st_size != reserve_size:
+            for reserve_path, reserve_size, needs_replacement in requested_reserves:
+                if needs_replacement:
                     _reserve_file(reserve_path, reserve_size)
         return ControlFilesystemPreflight(
             filesystem_path=str(self.path.parent),
@@ -414,47 +427,176 @@ class RunSetStateStore:
 
     @contextmanager
     def lock(self, *, break_stale: bool = False) -> Iterator[None]:
-        """Acquire an advisory PID lock around state mutation."""
+        """Acquire a stable, kernel-owned advisory lock around state mutation.
+
+        The transition from the legacy unlink-on-release protocol is intentionally
+        one-way. New code can consume legacy PID-only files, but old code cannot
+        interpret a released ``stable-flock-v1`` inode. Mixed-version execution or
+        rollback therefore requires removing the persistent lock while no process is
+        using the state directory; doing so during execution would reintroduce the
+        pathname-unlink race this protocol eliminates. An empty, malformed, or PID-less
+        legacy inode also requires that offline cleanup: it may belong to a legacy writer
+        in the interval between inode creation and PID publication.
+
+        The lock guarantees one owner only while the parent directory is outside an
+        adversary's mutation authority. A malicious same-UID writer that can replace
+        entries there can install and lock a second inode. The post-critical-section
+        identity check detects that displacement and prevents the original owner from
+        reporting false success, but inode locking alone cannot prevent the overlap.
+        """
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
+            "protocol": STATE_LOCK_PROTOCOL,
             "pid": os.getpid(),
             "acquired_at": time.time(),
             "state_path": str(self.path),
         }
-        while True:
-            try:
-                fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            except FileExistsError as exc:
-                existing = _read_lock(self.lock_path)
-                pid = existing.get("pid")
-                if isinstance(pid, int) and not _pid_alive(pid) and break_stale:
-                    self.lock_path.unlink(missing_ok=True)
-                    continue
-                state = "stale" if isinstance(pid, int) and not _pid_alive(pid) else "active"
-                raise StateLockError(
-                    f"run-set state lock is {state}: {self.lock_path} pid={pid!r}"
-                ) from exc
-            else:
-                with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                    json.dump(payload, handle, sort_keys=True)
-                    handle.write("\n")
-                break
+        created_lock = False
         try:
-            yield
-        finally:
+            descriptor = os.open(
+                self.lock_path,
+                _untrusted_open_flags(os.O_RDWR | os.O_CREAT | os.O_EXCL),
+                0o600,
+            )
+            created_lock = True
+        except FileExistsError:
             try:
-                current = _read_lock(self.lock_path)
-                if current.get("pid") == os.getpid():
-                    self.lock_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+                descriptor = os.open(
+                    self.lock_path,
+                    _untrusted_open_flags(os.O_RDWR),
+                )
+            except OSError as exc:
+                raise StateLockError(
+                    f"unable to open run-set state lock safely: {self.lock_path}: {exc}",
+                    error_number=exc.errno,
+                ) from exc
+        except OSError as exc:
+            raise StateLockError(
+                f"unable to open run-set state lock safely: {self.lock_path}: {exc}",
+                error_number=exc.errno,
+            ) from exc
+        try:
+            try:
+                _require_owned_path_inode(descriptor, self.lock_path, kind="run-set state lock")
+            except ControlFilesystemPreflightError as exc:
+                raise StateLockError(str(exc)) from exc
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                    existing = _read_lock_descriptor(descriptor)
+                    raise StateLockError(
+                        f"run-set state lock is active: {self.lock_path} "
+                        f"pid={existing.get('pid')!r}",
+                        error_number=exc.errno,
+                    ) from exc
+                raise StateLockError(
+                    f"unable to acquire run-set state lock at {self.lock_path}: {exc}",
+                    error_number=exc.errno,
+                ) from exc
+
+            try:
+                _require_owned_path_inode(descriptor, self.lock_path, kind="run-set state lock")
+            except ControlFilesystemPreflightError as exc:
+                raise StateLockError(str(exc)) from exc
+            existing = _read_lock_descriptor(descriptor)
+            if not created_lock and existing.get("protocol") != STATE_LOCK_PROTOCOL:
+                legacy_pid = existing.get("pid")
+                if type(legacy_pid) is not int or legacy_pid <= 0:
+                    raise StateLockError(
+                        "run-set state lock has no verifiable legacy owner; "
+                        "stop all writers and remove or migrate the lock offline: "
+                        f"{self.lock_path}"
+                    )
+                if _pid_alive(legacy_pid):
+                    raise StateLockError(
+                        f"run-set state lock is active: {self.lock_path} pid={legacy_pid!r}"
+                    )
+                if not break_stale:
+                    raise StateLockError(
+                        f"run-set state lock is stale: {self.lock_path} pid={legacy_pid!r}"
+                    )
+
+            encoded = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+            os.ftruncate(descriptor, 0)
+            _pwrite_all(descriptor, encoded)
+            os.fsync(descriptor)
+            try:
+                _require_owned_path_inode(descriptor, self.lock_path, kind="run-set state lock")
+            except ControlFilesystemPreflightError as exc:
+                raise StateLockError(str(exc)) from exc
+            yield
+            try:
+                _require_owned_path_inode(descriptor, self.lock_path, kind="run-set state lock")
+            except ControlFilesystemPreflightError as exc:
+                raise StateLockError(str(exc), error_number=exc.errno) from exc
+        finally:
+            os.close(descriptor)
 
 
-def _read_lock(path: Path) -> dict[str, Any]:
+def _read_lock_descriptor(descriptor: int) -> dict[str, Any]:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        size = os.fstat(descriptor).st_size
+        payload = json.loads(os.pread(descriptor, size, 0).decode("utf-8"))
+        return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
+
+
+def _owned_regular_file_size(path: Path) -> int | None:
+    """Return the size only when ``path`` safely names one unique regular inode."""
+    try:
+        descriptor = os.open(path, _untrusted_open_flags(os.O_RDONLY))
+    except OSError:
+        return None
+    try:
+        return _require_owned_path_inode(descriptor, path, kind="reserve file").st_size
+    except ControlFilesystemPreflightError:
+        return None
+    finally:
+        os.close(descriptor)
+
+
+def _untrusted_open_flags(access_flags: int) -> int:
+    """Add the required non-following, nonblocking descriptor capabilities."""
+    flags = access_flags
+    for name in ("O_NOFOLLOW", "O_NONBLOCK", "O_CLOEXEC"):
+        value = getattr(os, name, None)
+        if not isinstance(value, int):
+            raise OSError(
+                errno.ENOTSUP,
+                f"secure final-component opens require os.{name}",
+            )
+        flags |= value
+    return flags
+
+
+def _require_owned_path_inode(
+    descriptor: int,
+    path: Path,
+    *,
+    kind: str,
+) -> os.stat_result:
+    """Require a no-follow-opened descriptor to be the path's unique regular inode."""
+    descriptor_stat = os.fstat(descriptor)
+    if not stat.S_ISREG(descriptor_stat.st_mode):
+        raise ControlFilesystemPreflightError(f"{kind} is not a regular file: {path}")
+    if descriptor_stat.st_nlink != 1:
+        raise ControlFilesystemPreflightError(
+            f"{kind} has unexpected hard links: {path} links={descriptor_stat.st_nlink}"
+        )
+    try:
+        path_stat = path.lstat()
+    except FileNotFoundError as exc:
+        raise ControlFilesystemPreflightError(f"{kind} pathname disappeared: {path}") from exc
+    if stat.S_ISLNK(path_stat.st_mode) or (
+        descriptor_stat.st_dev,
+        descriptor_stat.st_ino,
+    ) != (path_stat.st_dev, path_stat.st_ino):
+        raise ControlFilesystemPreflightError(
+            f"{kind} pathname changed while establishing inode ownership: {path}"
+        )
+    return descriptor_stat
 
 
 def _validate_reserve_sizes(
@@ -506,11 +648,16 @@ def _reserve_file(path: Path, size: int) -> None:
                     written = os.write(fd, chunk[:remaining])
                     remaining -= written
         os.fsync(fd)
-        _require_reserved_capacity(os.fstat(fd), size)
-        os.close(fd)
-        fd = -1
+        _require_reserved_capacity(
+            _require_owned_path_inode(fd, tmp_path, kind="new reserve file"),
+            size,
+        )
         os.replace(tmp_path, path)
         _fsync_directory(path.parent)
+        _require_reserved_capacity(
+            _require_owned_path_inode(fd, path, kind="published reserve file"),
+            size,
+        )
     finally:
         if fd >= 0:
             os.close(fd)
@@ -520,8 +667,8 @@ def _reserve_file(path: Path, size: int) -> None:
 @contextmanager
 def _emergency_channel_lock(path: Path, *, create: bool) -> Iterator[None]:
     """Serialize reserve replenishment and publication through one stable inode."""
-    flags = os.O_RDWR | (os.O_CREAT if create else 0)
     try:
+        flags = _untrusted_open_flags(os.O_RDWR | (os.O_CREAT if create else 0))
         descriptor = os.open(path, flags, 0o600)
     except FileNotFoundError as exc:
         raise ControlFilesystemPreflightError(
@@ -529,32 +676,23 @@ def _emergency_channel_lock(path: Path, *, create: bool) -> Iterator[None]:
         ) from exc
     except OSError as exc:
         raise ControlFilesystemPreflightError(
-            f"unable to establish emergency channel lock at {path}: {exc}"
+            f"unable to establish emergency channel lock at {path}: {exc}",
+            error_number=exc.errno,
         ) from exc
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
-        descriptor_stat = os.fstat(descriptor)
-        if not stat.S_ISREG(descriptor_stat.st_mode):
-            raise ControlFilesystemPreflightError(
-                f"emergency channel lock is not a regular file: {path}"
-            )
         try:
-            path_stat = path.stat()
-        except FileNotFoundError as exc:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        except OSError as exc:
             raise ControlFilesystemPreflightError(
-                "emergency channel lock changed while acquiring ownership"
+                f"unable to acquire emergency channel lock at {path}: {exc}",
+                error_number=exc.errno,
             ) from exc
-        if (descriptor_stat.st_dev, descriptor_stat.st_ino) != (
-            path_stat.st_dev,
-            path_stat.st_ino,
-        ):
-            raise ControlFilesystemPreflightError(
-                "emergency channel lock pathname changed while acquiring ownership"
-            )
+        _require_owned_path_inode(descriptor, path, kind="emergency channel lock")
         if create:
             os.fsync(descriptor)
             _fsync_directory(path.parent)
         yield
+        _require_owned_path_inode(descriptor, path, kind="emergency channel lock")
     finally:
         os.close(descriptor)
 
@@ -567,49 +705,42 @@ def _publish_reserved_emergency(
 ) -> None:
     """Write a preallocated inode and atomically expose it without fresh allocation."""
     try:
-        descriptor = os.open(reserve_path, os.O_RDWR)
+        descriptor = os.open(
+            reserve_path,
+            _untrusted_open_flags(os.O_RDWR),
+        )
     except FileNotFoundError as exc:
         raise ControlFilesystemPreflightError(
             "emergency reserve was consumed concurrently; an existing emergency record, "
             "if any, remains authoritative"
         ) from exc
+    except OSError as exc:
+        raise ControlFilesystemPreflightError(
+            f"unable to open emergency reserve safely at {reserve_path}: {exc}"
+        ) from exc
     try:
-        descriptor_stat = os.fstat(descriptor)
-        try:
-            reserve_stat = reserve_path.stat()
-        except FileNotFoundError as exc:
-            raise ControlFilesystemPreflightError(
-                "emergency reserve was consumed concurrently; the published emergency "
-                "record remains authoritative"
-            ) from exc
-        if (descriptor_stat.st_dev, descriptor_stat.st_ino) != (
-            reserve_stat.st_dev,
-            reserve_stat.st_ino,
-        ):
-            raise ControlFilesystemPreflightError(
-                "emergency reserve changed concurrently; refusing to overwrite an unverified inode"
-            )
+        descriptor_stat = _require_owned_path_inode(
+            descriptor,
+            reserve_path,
+            kind="emergency reserve",
+        )
         _require_reserved_capacity(descriptor_stat, MAX_EMERGENCY_RECORD_BYTES)
 
         _pwrite_all(descriptor, payload)
         os.ftruncate(descriptor, len(payload))
         os.fsync(descriptor)
-        try:
-            reserve_stat = reserve_path.stat()
-        except FileNotFoundError as exc:
-            raise ControlFilesystemPreflightError(
-                "emergency reserve changed before publication; refusing false success"
-            ) from exc
-        if (descriptor_stat.st_dev, descriptor_stat.st_ino) != (
-            reserve_stat.st_dev,
-            reserve_stat.st_ino,
-        ):
-            raise ControlFilesystemPreflightError(
-                "emergency reserve pathname no longer names the JSON-bearing inode; "
-                "refusing false success"
-            )
+        _require_owned_path_inode(
+            descriptor,
+            reserve_path,
+            kind="JSON-bearing emergency reserve",
+        )
         os.replace(reserve_path, destination_path)
         _fsync_directory(destination_path.parent)
+        _require_owned_path_inode(
+            descriptor,
+            destination_path,
+            kind="published emergency record",
+        )
     finally:
         os.close(descriptor)
 

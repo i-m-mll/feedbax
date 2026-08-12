@@ -7,6 +7,7 @@ import json
 import threading
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -33,12 +34,27 @@ from feedbax.orchestration.drivers.capabilities import (
 )
 from feedbax.orchestration.events import RUN_EVENT_TERMINAL_TYPES, RunEvent
 from feedbax.orchestration.state import RunSetState
+from feedbax.web.worker.identity import require_worker_job_id
+
+
+@dataclass
+class _OwnedStream:
+    """Locally owned state for one worker SSE stream."""
+
+    cancel: threading.Event = field(default_factory=threading.Event)
+    thread: threading.Thread | None = None
+    response: Any | None = None
+
+
+class WorkerStreamTeardownError(RuntimeError):
+    """Raised after best-effort cleanup leaves stream failures or survivors."""
 
 
 class WorkerHttpDriver:
     """Drive one Studio training worker through the orchestration interface."""
 
     poll_interval_seconds = 0.05
+    stream_join_timeout_seconds = 1.0
 
     capability_envelope = DriverCapabilityEnvelope.single(
         "worker-http",
@@ -69,7 +85,9 @@ class WorkerHttpDriver:
         self.base_url = base_url.rstrip("/")
         self.auth_token = auth_token
         self.request_timeout = request_timeout
-        self._streams: dict[str, threading.Thread] = {}
+        self._stream_lock = threading.Lock()
+        self._teardown_started = False
+        self._streams: dict[str, _OwnedStream] = {}
         self._stream_errors: dict[str, str] = {}
 
     def provision(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
@@ -101,7 +119,8 @@ class WorkerHttpDriver:
         import httpx
 
         del state
-        paths = _row_paths(bundle, row.row_id)
+        row_id = require_worker_job_id(row.row_id)
+        paths = _row_paths(bundle, row_id)
         if paths["done"].exists():
             return {"row_id": row.row_id, "status": "completed"}
         if paths["failed"].exists():
@@ -132,7 +151,8 @@ class WorkerHttpDriver:
         import httpx
 
         del state
-        paths = _row_paths(bundle, row.row_id)
+        row_id = require_worker_job_id(row.row_id)
+        paths = _row_paths(bundle, row_id)
         if paths["done"].exists():
             return DriverRowProbe(status="completed")
         if paths["failed"].exists():
@@ -173,14 +193,15 @@ class WorkerHttpDriver:
         import httpx
 
         del state
+        row_id = require_worker_job_id(row.row_id)
         try:
             httpx.post(
-                f"{self.base_url}/jobs/{row.row_id}/stop",
+                f"{self.base_url}/jobs/{row_id}/stop",
                 headers=self._headers(),
                 timeout=5.0,
             ).raise_for_status()
         finally:
-            failed = _row_paths(bundle, row.row_id)["failed"]
+            failed = _row_paths(bundle, row_id)["failed"]
             failed.write_text("stopped\n", encoding="utf-8")
         return {"row_id": row.row_id, "status": "stopped"}
 
@@ -191,8 +212,9 @@ class WorkerHttpDriver:
         state: RunSetState,
     ) -> Mapping[str, str]:
         del state
-        paths = _row_paths(bundle, row.row_id)
-        dest_dir = bundle.run_set_dir / "collected" / row.row_id
+        row_id = require_worker_job_id(row.row_id)
+        paths = _row_paths(bundle, row_id)
+        dest_dir = bundle.run_set_dir / "collected" / row_id
         dest_dir.mkdir(parents=True, exist_ok=True)
         if not paths["event_log"].exists():
             return {}
@@ -202,6 +224,42 @@ class WorkerHttpDriver:
 
     def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         del bundle, state
+        with self._stream_lock:
+            self._teardown_started = True
+            streams = tuple(self._streams.items())
+            for _, stream in streams:
+                stream.cancel.set()
+            self._stream_errors.clear()
+
+        failures: list[str] = []
+        for row_id, stream in streams:
+            response = stream.response
+            if response is not None:
+                try:
+                    response.close()
+                except Exception as exc:
+                    failures.append(f"{row_id}: response close failed: {exc}")
+        for row_id, stream in streams:
+            thread = stream.thread
+            if thread is None:
+                continue
+            if thread is not threading.current_thread():
+                thread.join(timeout=self.stream_join_timeout_seconds)
+            if thread.is_alive():
+                failures.append(f"{row_id}: stream thread did not terminate")
+
+        with self._stream_lock:
+            for row_id, stream in streams:
+                thread = stream.thread
+                if (
+                    self._streams.get(row_id) is stream
+                    and thread is not None
+                    and not thread.is_alive()
+                ):
+                    del self._streams[row_id]
+
+        if failures:
+            raise WorkerStreamTeardownError("; ".join(failures))
         return {"driver": "worker-http"}
 
     def _headers(self) -> dict[str, str]:
@@ -210,30 +268,54 @@ class WorkerHttpDriver:
         return {"Authorization": f"Bearer {self.auth_token}"}
 
     def _ensure_stream_thread(self, bundle: RunBundle, row: RunRowSpec) -> None:
-        thread = self._streams.get(row.row_id)
-        if thread is not None and thread.is_alive():
-            return
-        thread = threading.Thread(
-            target=self._stream_row_events,
-            args=(bundle, row),
-            name=f"feedbax-worker-http-events-{row.row_id}",
-            daemon=True,
-        )
-        self._streams[row.row_id] = thread
-        thread.start()
+        row_id = require_worker_job_id(row.row_id)
+        with self._stream_lock:
+            if self._teardown_started:
+                raise RuntimeError("worker HTTP driver teardown has started")
+            if row_id in self._streams:
+                return
+            stream = _OwnedStream()
+            thread = threading.Thread(
+                target=self._stream_row_events,
+                args=(bundle, row, stream),
+                name=f"feedbax-worker-http-events-{row.row_id}",
+                daemon=True,
+            )
+            stream.thread = thread
+            self._streams[row_id] = stream
+            try:
+                thread.start()
+            except BaseException:
+                if self._streams.get(row_id) is stream:
+                    del self._streams[row_id]
+                raise
 
-    def _stream_row_events(self, bundle: RunBundle, row: RunRowSpec) -> None:
+    def _stream_row_events(
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        stream: _OwnedStream | None = None,
+    ) -> None:
         import httpx
 
-        paths = _row_paths(bundle, row.row_id)
+        row_id = require_worker_job_id(row.row_id)
+        paths = _row_paths(bundle, row_id)
+        if stream is None:
+            stream = _OwnedStream()
         try:
             with httpx.stream(
                 "GET",
-                f"{self.base_url}/jobs/{row.row_id}/stream",
+                f"{self.base_url}/jobs/{row_id}/stream",
                 headers=self._headers(),
-                timeout=None,
+                timeout=self.request_timeout,
             ) as response:
+                with self._stream_lock:
+                    stream.response = response
+                if stream.cancel.is_set():
+                    response.close()
+                    return
                 response.raise_for_status()
+                response.request.extensions["timeout"]["read"] = None
                 for line in response.iter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -250,13 +332,24 @@ class WorkerHttpDriver:
                     if event.type in RUN_EVENT_TERMINAL_TYPES:
                         return
         except Exception as exc:
-            self._stream_errors[row.row_id] = str(exc)
+            if not stream.cancel.is_set():
+                with self._stream_lock:
+                    self._stream_errors[row_id] = str(exc)
+        finally:
+            with self._stream_lock:
+                stream.response = None
+                if self._streams.get(row_id) is stream:
+                    del self._streams[row_id]
 
     def _orphan_probe(self, row_id: str, detail: str | None = None) -> DriverRowProbe:
-        thread = self._streams.get(row_id)
+        row_id = require_worker_job_id(row_id)
+        with self._stream_lock:
+            stream = self._streams.get(row_id)
+            thread = stream.thread if stream is not None else None
+            error = self._stream_errors.get(row_id)
         if thread is not None and thread.is_alive():
             return DriverRowProbe(status="running")
-        error = self._stream_errors.get(row_id) or detail or "worker row is no longer reachable"
+        error = error or detail or "worker row is no longer reachable"
         return DriverRowProbe(status="failed", detail=f"orphaned: {error}")
 
 
@@ -295,6 +388,7 @@ def worker_http_driver_registration() -> DriverRegistration:
 
 
 def _worker_start_body(bundle: RunBundle, row: RunRowSpec) -> dict[str, Any]:
+    require_worker_job_id(row.row_id)
     body = load_worker_execution_payload(row)
     body["job_id"] = row.row_id
     body["run_set_id"] = bundle.run_set_id
@@ -328,6 +422,7 @@ def load_worker_execution_payload(row: RunRowSpec) -> dict[str, Any]:
 
 
 def _row_paths(bundle: RunBundle, row_id: str) -> dict[str, Path]:
+    row_id = require_worker_job_id(row_id)
     run_set_dir = bundle.run_set_dir
     sentinels = run_set_dir / "sentinels"
     events = run_set_dir / "events"

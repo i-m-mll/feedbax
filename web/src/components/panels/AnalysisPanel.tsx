@@ -14,6 +14,7 @@ import { toast } from 'sonner';
 import { useShallow } from 'zustand/react/shallow';
 import { AnalysisBundlePanel } from '@/components/panels/AnalysisBundlePanel';
 import { AnalysisCanvas } from '@/components/analysis/AnalysisCanvas';
+import { deleteAnalysisNodeWithConfirmation } from '@/components/analysis/analysisDeletion';
 import { AnalysisPageSettings } from '@/components/panels/AnalysisPageSettings';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { useLayoutStore } from '@/stores/layoutStore';
@@ -242,7 +243,10 @@ export function AnalysisPanel() {
   const selectedEdgeData = selectedEdge?.data as AnalysisEdgeData | null;
 
   return (
-    <div className="flex flex-col h-full">
+    <div
+      className="flex flex-col h-full"
+      data-studio-interaction-owner="analysis"
+    >
       {/* Sub-tab bar for analysis pages */}
       <AnalysisPageTabBar
         pages={pages}
@@ -850,9 +854,8 @@ function NodeDetailPanel({
       <button
         className="mt-6 w-full rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-600 hover:bg-red-100 transition-colors"
         onClick={() => {
-          if (selectedNodeId) {
-            useAnalysisStore.getState().removeNode(selectedNodeId);
-            toast.success('Analysis node deleted - Cmd+Z to undo.', {
+          if (selectedNodeId && deleteAnalysisNodeWithConfirmation(selectedNodeId)) {
+            toast.success('Analysis node deleted.', {
               id: 'analysis-node-delete-success',
             });
           }

@@ -8,9 +8,9 @@ import json
 import logging
 import os
 import queue
-import shutil
 import threading
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import Enum
@@ -45,6 +45,11 @@ from feedbax.web.worker.diagnostics import (
     object_required_diagnostic,
     graph_compilation_error,
 )
+from feedbax.web.worker.checkpoint import (
+    CheckpointCleanupError,
+    cleanup_worker_checkpoint,
+)
+from feedbax.web.worker.identity import require_worker_job_id
 
 
 logger = logging.getLogger(__name__)
@@ -87,6 +92,10 @@ class _Job:
     graph_spec: Optional[Dict[str, Any]] = None
     # Path to the serialized checkpoint file after training completes.
     checkpoint_path: Optional[str] = None
+    # Cleanup failure retained with the path so eviction can retry safely.
+    checkpoint_cleanup_error: Optional[str] = None
+    # Active ASGI responses that still require the checkpoint bytes.
+    checkpoint_download_leases: int = 0
     # Path/payload for the durable manifest emitted after training completes.
     manifest_path: Optional[str] = None
     manifest_payload: Optional[Dict[str, Any]] = None
@@ -148,19 +157,16 @@ def _job_checkpoint_payload(job: _Job) -> dict[str, Any]:
         return {
             "batch": job.batch,
             "loss": job.last_loss,
-            "weights_available": job.checkpoint_path is not None,
+            "weights_available": (
+                job.checkpoint_path is not None and job.checkpoint_cleanup_error is None
+            ),
             "job_id": job.job_id,
         }
 
 
 def _cleanup_checkpoint_path(path: str | None) -> None:
     """Remove a managed worker checkpoint tempdir when a job is evicted."""
-    if path is None:
-        return
-    checkpoint_dir = os.path.dirname(path)
-    if not os.path.basename(checkpoint_dir).startswith("feedbax_ckpt_"):
-        return
-    shutil.rmtree(checkpoint_dir, ignore_errors=True)
+    cleanup_worker_checkpoint(path, context="worker job eviction cleanup failed")
 
 
 def _manifest_history_events(job: _Job) -> list[dict[str, Any]]:
@@ -418,19 +424,35 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg", bootstrap_state: Bootstra
         stop_event=job.stop_event,
         emit=lambda event: _emit(job, event),
     )
-    terminal_status = WorkerStatus.IDLE if job.stop_event.is_set() else WorkerStatus.COMPLETED
-    with job._state_lock:
-        job.last_loss = result.final_loss
-        job.batch = result.final_batch
-        job.checkpoint_path = result.checkpoint_path
-        job.retention_plan_payload = result.retention_plan
-        job.retained_observables_payload = result.retained_observables
-        job.manifest_path = result.manifest_path
-        job.manifest_payload = result.manifest_payload
-        job.status = terminal_status
-        job.terminal_at = time.monotonic()
-        batch = job.batch
-        last_loss = job.last_loss
+    try:
+        terminal_status = (
+            WorkerStatus.IDLE if job.stop_event.is_set() else WorkerStatus.COMPLETED
+        )
+        with job._state_lock:
+            job.last_loss = result.final_loss
+            job.batch = result.final_batch
+            job.retention_plan_payload = result.retention_plan
+            job.retained_observables_payload = result.retained_observables
+            job.manifest_path = result.manifest_path
+            job.manifest_payload = result.manifest_payload
+            job.status = terminal_status
+            job.terminal_at = time.monotonic()
+            job.checkpoint_path = result.checkpoint_path
+            job.checkpoint_cleanup_error = None
+            batch = job.batch
+            last_loss = job.last_loss
+    except BaseException as exc:
+        try:
+            cleanup_worker_checkpoint(
+                result.checkpoint_path,
+                context="worker checkpoint ownership handoff failed",
+            )
+        except CheckpointCleanupError as cleanup_exc:
+            with job._state_lock:
+                job.checkpoint_path = cleanup_exc.checkpoint_path
+                job.checkpoint_cleanup_error = str(cleanup_exc)
+            raise cleanup_exc from exc
+        raise
     if result.checkpoint_path is not None:
         _emit(
             job,
@@ -507,6 +529,9 @@ def _run_training(job: _Job, bootstrap_state: BootstrapState) -> None:
     except Exception as exc:
         logger.exception("Unhandled worker exception while running training job %s", job.job_id)
         with job._state_lock:
+            if isinstance(exc, CheckpointCleanupError):
+                job.checkpoint_path = exc.checkpoint_path
+                job.checkpoint_cleanup_error = str(exc)
             should_emit = job.status == WorkerStatus.RUNNING
             if should_emit:
                 job.status = WorkerStatus.ERROR
@@ -613,10 +638,19 @@ def create_app(
         if overflow <= 0:
             return
         for _, job_id in sorted(terminal_jobs)[:overflow]:
-            job = _jobs.pop(job_id)
+            job = _jobs[job_id]
             with job._state_lock:
                 checkpoint_path = job.checkpoint_path
-            _cleanup_checkpoint_path(checkpoint_path)
+                if job.checkpoint_download_leases > 0:
+                    continue
+            try:
+                _cleanup_checkpoint_path(checkpoint_path)
+            except CheckpointCleanupError as exc:
+                with job._state_lock:
+                    job.checkpoint_cleanup_error = str(exc)
+                raise
+            if _jobs.get(job_id) is job:
+                del _jobs[job_id]
 
     def _running_job_id_locked() -> Optional[str]:
         """Return the active job id if the single-worker slot is occupied."""
@@ -631,6 +665,35 @@ def create_app(
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
         return job
+
+    async def _checkpoint_download_lease(
+        job_id: str,
+    ) -> AsyncIterator[tuple[str, str]]:
+        """Hold checkpoint eviction custody through the request response lifecycle."""
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is None:
+                raise HTTPException(status_code=404, detail="Job not found")
+            with job._state_lock:
+                checkpoint_path = job.checkpoint_path
+                if job.checkpoint_cleanup_error is not None:
+                    raise HTTPException(status_code=409, detail="Checkpoint cleanup pending")
+                if checkpoint_path is None:
+                    raise HTTPException(status_code=404, detail="No checkpoint available")
+                if not os.path.exists(checkpoint_path):
+                    raise HTTPException(status_code=410, detail="Checkpoint file gone")
+                job.checkpoint_download_leases += 1
+
+        try:
+            yield checkpoint_path, job.job_id
+        finally:
+            with _jobs_lock:
+                with job._state_lock:
+                    job.checkpoint_download_leases -= 1
+                try:
+                    _evict_terminal_jobs_locked()
+                except CheckpointCleanupError:
+                    logger.exception("worker job eviction cleanup failed after checkpoint download")
 
     # ------------------------------------------------------------------
     # Routes
@@ -652,11 +715,12 @@ def create_app(
 
         job_id_raw = body.get("job_id")
         run_set_id_raw = body.get("run_set_id")
-        if not isinstance(job_id_raw, str) or not job_id_raw.strip():
-            raise HTTPException(status_code=400, detail="start request requires job_id")
+        try:
+            job_id = require_worker_job_id(job_id_raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not isinstance(run_set_id_raw, str) or not run_set_id_raw.strip():
             raise HTTPException(status_code=400, detail="start request requires run_set_id")
-        job_id = job_id_raw.strip()
         run_set_id = run_set_id_raw.strip()
         stop_event = threading.Event()
         event_queue: queue.Queue = queue.Queue()
@@ -690,6 +754,8 @@ def create_app(
         job.thread = thread
         with _jobs_lock:
             _evict_terminal_jobs_locked()
+            if job_id in _jobs:
+                raise HTTPException(status_code=409, detail=f"Job {job_id} already exists")
             running_job_id = _running_job_id_locked()
             if running_job_id is not None:
                 raise HTTPException(
@@ -697,7 +763,13 @@ def create_app(
                     detail=f"Worker is already running job {running_job_id}",
                 )
             _jobs[job_id] = job
-        thread.start()
+        try:
+            thread.start()
+        except BaseException:
+            with _jobs_lock:
+                if _jobs.get(job_id) is job:
+                    del _jobs[job_id]
+            raise
         return {"job_id": job_id}
 
     @app.post("/jobs/{job_id}/stop", dependencies=[_auth_dep])
@@ -784,19 +856,15 @@ def create_app(
         return _job_checkpoint_payload(job)
 
     @app.get("/jobs/{job_id}/checkpoint/download", dependencies=[_auth_dep])
-    def checkpoint_download(job_id: str):
+    async def checkpoint_download(
+        lease: tuple[str, str] = Depends(_checkpoint_download_lease),
+    ):
         """Download the serialized checkpoint file for a job."""
-        job = _get_job(job_id)
-        with job._state_lock:
-            checkpoint_path = job.checkpoint_path
-        if checkpoint_path is None:
-            raise HTTPException(status_code=404, detail="No checkpoint available")
-        if not os.path.exists(checkpoint_path):
-            raise HTTPException(status_code=410, detail="Checkpoint file gone")
+        checkpoint_path, job_id = lease
         return FileResponse(
             checkpoint_path,
             media_type="application/octet-stream",
-            filename=f"feedbax_checkpoint_{job.job_id}.eqx",
+            filename=f"feedbax_checkpoint_{job_id}.eqx",
         )
 
     @app.get("/jobs/{job_id}/manifest", dependencies=[_auth_dep])

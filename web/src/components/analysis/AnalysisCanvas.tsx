@@ -10,7 +10,14 @@
  * visual scheme (emerald accent vs brand blue).
  */
 
-import { useCallback, useEffect, useMemo, useRef, type DragEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  type DragEvent,
+  type KeyboardEvent,
+} from 'react';
 import {
   Background,
   Controls,
@@ -42,6 +49,17 @@ const edgeTypes = {
   analysisExplicit: AnalysisExplicitEdge,
   analysisImplicit: AnalysisImplicitEdge,
 };
+
+export const ANALYSIS_CANVAS_INTERACTION_PROPS = {
+  deleteKeyCode: null,
+  nodesDraggable: false,
+} as const;
+
+export function consumeAnalysisDeleteKey(event: KeyboardEvent<HTMLElement>) {
+  if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+  event.preventDefault();
+  event.stopPropagation();
+}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -136,6 +154,9 @@ export function AnalysisCanvas() {
   return (
     <div
       ref={containerRef}
+      tabIndex={-1}
+      onPointerDownCapture={() => containerRef.current?.focus({ preventScroll: true })}
+      onKeyDownCapture={consumeAnalysisDeleteKey}
       className="w-full h-full bg-[radial-gradient(circle_at_top,_#f0fdf4_0%,_#f7f7f8_45%,_#f0f1f3_100%)]"
     >
       <ReactFlow
@@ -159,6 +180,7 @@ export function AnalysisCanvas() {
         }}
         onDrop={onDrop}
         onDragOver={onDragOver}
+        {...ANALYSIS_CANVAS_INTERACTION_PROPS}
         fitView
         snapToGrid
         snapGrid={[16, 16]}
