@@ -1,0 +1,34 @@
+{"header" : {
+  "cloc_url"           : "github.com/AlDanial/cloc",
+  "cloc_version"       : "2.04",
+  "elapsed_seconds"    : 0.139930963516235,
+  "n_files"            : 211,
+  "n_lines"            : 74273,
+  "files_per_second"   : 1507.88642268956,
+  "lines_per_second"   : 530783.167167877,
+  "report_file"        : ".unfrack/2026-08-12-bounded-leanness/baseline-web.json"},
+"TypeScript" :{
+  "nFiles": 206,
+  "blank": 4660,
+  "comment": 1170,
+  "code": 68264},
+"CSS" :{
+  "nFiles": 1,
+  "blank": 15,
+  "comment": 0,
+  "code": 76},
+"JSON" :{
+  "nFiles": 3,
+  "blank": 0,
+  "comment": 0,
+  "code": 75},
+"SVG" :{
+  "nFiles": 1,
+  "blank": 0,
+  "comment": 0,
+  "code": 13},
+"SUM": {
+  "blank": 4675,
+  "comment": 1170,
+  "code": 68428,
+  "nFiles": 211} }
