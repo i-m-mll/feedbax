@@ -42,14 +42,25 @@ def select_step_inputs(inputs: PyTree, n_steps: int) -> PyTree:
 
     Leaves are expected to be JAX arrays of shape ``(n_steps, ...)``. When they
     all are, selecting every entry is an identity and ``inputs`` is returned
-    unchanged. Otherwise the whole tree is gathered step-by-step, which keeps
-    the truncating (leading dimension too long), clamping (too short), and
-    unsupported-leaf-type behaviour this harness has always had.
+    unchanged. Longer leaves are truncated by gathering the requested leading
+    entries. Non-scalar leaves shorter than ``n_steps`` are rejected before
+    gathering so indexed JAX access cannot silently clamp the timestep.
 
     Args:
         inputs: PyTree whose array leaves carry a leading time dimension.
         n_steps: Number of timesteps the scan will run; a static Python int.
     """
+    short_lengths = [
+        x.shape[0]
+        for x in jt.leaves(inputs)
+        if hasattr(x, "ndim") and x.ndim >= 1 and x.shape[0] < n_steps
+    ]
+    if short_lengths:
+        raise ValueError(
+            f"Rollout input leaves must have at least n_steps={n_steps} leading entries; "
+            f"found leading dimension(s) {short_lengths}"
+        )
+
     if all(
         isinstance(x, jax.Array) and x.ndim >= 1 and x.shape[0] == n_steps
         for x in jt.leaves(inputs)
