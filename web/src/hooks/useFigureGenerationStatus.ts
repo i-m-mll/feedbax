@@ -27,10 +27,16 @@ export function useFigureGenerationStatus(
       try {
         const result = await getFigureStatus(requestId);
         if (!active) return;
-        if (result.status === 'complete' && result.figure_hashes?.length) {
+        if (result.status === 'complete') {
           clearInterval(intervalId);
-          if (setResultForRequest(nodeId, requestId, result.figure_hashes[0])) {
+          const figureHash = result.figure_hashes?.[0];
+          if (figureHash && setResultForRequest(nodeId, requestId, figureHash)) {
             toast.success('Figure generated.', { id: `figure-generated-${nodeId}` });
+          } else if (!figureHash) {
+            const message = 'Figure generation completed without a result hash. Retry generation.';
+            if (setErrorForRequest(nodeId, requestId, message)) {
+              toast.error(message, { id: `figure-generation-error-${nodeId}` });
+            }
           }
         } else if (result.status === 'error') {
           clearInterval(intervalId);

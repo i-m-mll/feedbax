@@ -170,6 +170,65 @@ describe('useFigureGenerationStatus', () => {
     expect(getFigureStatus).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ['omitted', undefined],
+    ['null', null],
+    ['empty', []],
+  ])('fails terminally when completed figure hashes are %s', async (_label, figureHashes) => {
+    vi.mocked(getFigureStatus).mockResolvedValue({
+      request_id: 'request-a',
+      status: 'complete',
+      figure_hashes: figureHashes,
+    } as unknown as FigureStatusResponse);
+    useDemandStore.getState().requestGeneration(NODE_ID);
+    setRequestId('request-a');
+    render(<FigureStatusHarness />);
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_MS);
+    });
+    expect(useDemandStore.getState().requests[NODE_ID]).toMatchObject({
+      status: 'error',
+      figureHash: 'request-a',
+      error: 'Figure generation completed without a result hash. Retry generation.',
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_MS * 2);
+    });
+    expect(getFigureStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not mutate request state when unmounted during an in-flight poll', async () => {
+    const request = deferred<FigureStatusResponse>();
+    vi.mocked(getFigureStatus).mockReturnValue(request.promise);
+    useDemandStore.getState().requestGeneration(NODE_ID);
+    setRequestId('request-a');
+    const view = render(<FigureStatusHarness />);
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_MS);
+    });
+    view.unmount();
+    await act(async () => {
+      request.resolve({
+        request_id: 'request-a',
+        status: 'complete',
+        figure_hashes: ['figure-a'],
+      });
+      await request.promise;
+    });
+
+    expect(useDemandStore.getState().requests[NODE_ID]).toMatchObject({
+      status: 'running',
+      figureHash: 'request-a',
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_MS * 2);
+    });
+    expect(getFigureStatus).toHaveBeenCalledTimes(1);
+  });
+
   it('stops polling after active request failure', async () => {
     vi.mocked(getFigureStatus).mockResolvedValue({
       request_id: 'request-a',
