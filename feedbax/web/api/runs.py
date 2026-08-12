@@ -827,6 +827,11 @@ async def list_eval_runs(training_run_id: str) -> list[EvalRunInfo]:
     if manifest_matches:
         return manifest_matches
 
+    indexed_training_row = get_indexed_manifest_record(training_run_id)
+    if indexed_training_row is not None:
+        _load_training_manifest_from_index(training_run_id)
+        return []
+
     with db_session(autocommit=False) as session:
         # Verify the training run exists
         model = (
@@ -1001,6 +1006,7 @@ async def create_eval_run(payload: CreateEvalRunRequest) -> EvalRunInfo:
     given parameters.  The actual evaluation computation is triggered
     separately (via ``POST /api/analyses/jobs``).
     """
+    _load_training_manifest_from_index(payload.training_run_id)
     training_ref = ParentRef(
         kind="TrainingRunManifest",
         id=payload.training_run_id,

@@ -68,6 +68,7 @@ def test_create_eval_run_writes_versioned_manifest_not_legacy_row(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    write_manifest(_training_manifest("training-a", "completed"), root=tmp_path)
 
     def fail_db_session():
         raise AssertionError("create_eval_run must not write the legacy evaluations table")
@@ -114,8 +115,12 @@ def test_create_eval_run_writes_versioned_manifest_not_legacy_row(
 
 
 def test_create_eval_run_fails_when_manifest_persistence_fails(
+    tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    write_manifest(_training_manifest("training-a", "completed"), root=tmp_path)
+
     def fail_write(*_args, **_kwargs):
         raise RuntimeError("manifest store offline")
 
@@ -132,6 +137,65 @@ def test_create_eval_run_fails_when_manifest_persistence_fails(
 
     assert excinfo.value.status_code == 500
     assert "Could not persist evaluation manifest" in str(excinfo.value.detail)
+
+
+def test_create_eval_run_rejects_missing_parent_before_writing(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+
+    def fail_write(*_args, **_kwargs):
+        raise AssertionError("missing parent must be rejected before writing")
+
+    monkeypatch.setattr(runs, "write_manifest", fail_write)
+    payload = runs.CreateEvalRunRequest(
+        training_run_id="feedbax-training-run:missing",
+        name="eval-a",
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(runs.create_eval_run(payload))
+
+    assert excinfo.value.status_code == 404
+    assert "Training run 'feedbax-training-run:missing' not found" == excinfo.value.detail
+
+
+def test_create_eval_run_rejects_wrong_kind_parent_before_writing(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    parent_id = "feedbax-eval-run:not-training"
+    write_manifest(_evaluation_manifest(parent_id, []), root=tmp_path)
+
+    def fail_write(*_args, **_kwargs):
+        raise AssertionError("wrong-kind parent must be rejected before writing")
+
+    monkeypatch.setattr(runs, "write_manifest", fail_write)
+    payload = runs.CreateEvalRunRequest(training_run_id=parent_id, name="eval-a")
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(runs.create_eval_run(payload))
+
+    assert excinfo.value.status_code == 409
+    assert "EvaluationRunManifest, not TrainingRunManifest" in excinfo.value.detail
+
+
+def test_list_eval_runs_returns_empty_for_indexed_training_manifest(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    training_id = "feedbax-training-run:no-evaluations"
+    write_manifest(_training_manifest(training_id, "completed"), root=tmp_path)
+
+    def fail_db_session(*_args, **_kwargs):
+        raise AssertionError("canonical training runs must not fall back to the legacy database")
+
+    monkeypatch.setattr(runs, "db_session", fail_db_session)
+
+    assert asyncio.run(runs.list_eval_runs(training_id)) == []
 
 
 def test_training_run_index_lists_pending_manifest_rows(
