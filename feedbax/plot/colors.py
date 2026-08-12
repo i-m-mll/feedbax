@@ -42,16 +42,26 @@ def color_add_alpha(rgb_str: str, alpha: float) -> str:
     rgb_match = re.fullmatch(r"rgb\(([^()]*)\)", rgb_str)
     if rgb_match is not None:
         components = rgb_match.group(1).split(",")
-        components_are_numeric = len(components) == 3 and all(
-            re.fullmatch(r"(?:\d+(?:\.\d*)?|\.\d+)", component.strip())
+        numeric_matches = [
+            re.fullmatch(r"([+]?(?:\d+|\d*\.\d+)(?:[eE][+-]?\d+)?)", component.strip())
             for component in components
-        )
-        values = (
-            [float(component.strip()) for component in components]
-            if components_are_numeric
-            else []
-        )
-        if values and all(np.isfinite(value) and 0 <= value <= 255 for value in values):
+        ]
+        percentage_matches = [
+            re.fullmatch(
+                r"([+]?(?:\d+|\d*\.\d+)(?:[eE][+-]?\d+)?)%", component.strip()
+            )
+            for component in components
+        ]
+        if len(components) == 3 and all(numeric_matches):
+            values = [float(match.group(1)) for match in numeric_matches if match]
+            maximum = 255.0
+        elif len(components) == 3 and all(percentage_matches):
+            values = [float(match.group(1)) for match in percentage_matches if match]
+            maximum = 100.0
+        else:
+            values = []
+            maximum = 0.0
+        if values and all(np.isfinite(value) and 0 <= value <= maximum for value in values):
             return f"rgba{rgb_str[3:-1]}, {alpha})"
 
     if re.fullmatch(r"#[0-9a-fA-F]{6}", rgb_str):
