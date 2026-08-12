@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import queue
-import re
 import shutil
 import threading
 import time
@@ -46,6 +45,7 @@ from feedbax.web.worker.diagnostics import (
     object_required_diagnostic,
     graph_compilation_error,
 )
+from feedbax.web.worker.identity import require_worker_job_id
 
 
 logger = logging.getLogger(__name__)
@@ -63,24 +63,6 @@ _EVENT_BUFFER_MAX = 1000
 
 # Maximum number of terminal jobs retained for status/manifest lookup.
 _TERMINAL_JOB_RETENTION_MAX = 32
-
-# Worker job IDs are orchestration row IDs and must remain safe as one path segment.
-_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
-
-
-def _validate_job_id(value: str) -> str:
-    """Return a normalized, path-safe externally supplied worker job ID."""
-    job_id = value.strip()
-    if not _JOB_ID_RE.fullmatch(job_id) or job_id in {".", ".."}:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "job_id must be a path-safe identifier containing only letters, "
-                "digits, '.', '_', or '-'"
-            ),
-        )
-    return job_id
-
 
 @dataclass
 class _Job:
@@ -436,19 +418,25 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg", bootstrap_state: Bootstra
         stop_event=job.stop_event,
         emit=lambda event: _emit(job, event),
     )
-    terminal_status = WorkerStatus.IDLE if job.stop_event.is_set() else WorkerStatus.COMPLETED
-    with job._state_lock:
-        job.last_loss = result.final_loss
-        job.batch = result.final_batch
-        job.checkpoint_path = result.checkpoint_path
-        job.retention_plan_payload = result.retention_plan
-        job.retained_observables_payload = result.retained_observables
-        job.manifest_path = result.manifest_path
-        job.manifest_payload = result.manifest_payload
-        job.status = terminal_status
-        job.terminal_at = time.monotonic()
-        batch = job.batch
-        last_loss = job.last_loss
+    try:
+        terminal_status = (
+            WorkerStatus.IDLE if job.stop_event.is_set() else WorkerStatus.COMPLETED
+        )
+        with job._state_lock:
+            job.last_loss = result.final_loss
+            job.batch = result.final_batch
+            job.retention_plan_payload = result.retention_plan
+            job.retained_observables_payload = result.retained_observables
+            job.manifest_path = result.manifest_path
+            job.manifest_payload = result.manifest_payload
+            job.status = terminal_status
+            job.terminal_at = time.monotonic()
+            job.checkpoint_path = result.checkpoint_path
+            batch = job.batch
+            last_loss = job.last_loss
+    except BaseException:
+        _cleanup_checkpoint_path(result.checkpoint_path)
+        raise
     if result.checkpoint_path is not None:
         _emit(
             job,
@@ -670,11 +658,12 @@ def create_app(
 
         job_id_raw = body.get("job_id")
         run_set_id_raw = body.get("run_set_id")
-        if not isinstance(job_id_raw, str) or not job_id_raw.strip():
-            raise HTTPException(status_code=400, detail="start request requires job_id")
+        try:
+            job_id = require_worker_job_id(job_id_raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not isinstance(run_set_id_raw, str) or not run_set_id_raw.strip():
             raise HTTPException(status_code=400, detail="start request requires run_set_id")
-        job_id = _validate_job_id(job_id_raw)
         run_set_id = run_set_id_raw.strip()
         stop_event = threading.Event()
         event_queue: queue.Queue = queue.Queue()
@@ -708,6 +697,8 @@ def create_app(
         job.thread = thread
         with _jobs_lock:
             _evict_terminal_jobs_locked()
+            if job_id in _jobs:
+                raise HTTPException(status_code=409, detail=f"Job {job_id} already exists")
             running_job_id = _running_job_id_locked()
             if running_job_id is not None:
                 raise HTTPException(

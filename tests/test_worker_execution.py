@@ -610,6 +610,112 @@ def test_worker_checkpoint_uses_provider_owned_filename(tmp_path: Path, monkeypa
     assert written_paths == [checkpoint_path]
 
 
+@pytest.mark.parametrize("failure_stage", ["block_until_ready", "serialize"])
+def test_worker_checkpoint_removes_partial_directory_on_write_failure(
+    failure_stage: str, tmp_path: Path, monkeypatch
+) -> None:
+    checkpoint_dir = tmp_path / "feedbax_ckpt_partial"
+    checkpoint_dir.mkdir()
+
+    monkeypatch.setattr(
+        worker_execution.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: str(checkpoint_dir),
+    )
+
+    if failure_stage == "block_until_ready":
+        monkeypatch.setattr(
+            worker_execution.jax,
+            "block_until_ready",
+            lambda _graph: (_ for _ in ()).throw(RuntimeError("block failed")),
+        )
+    else:
+        monkeypatch.setattr(worker_execution.jax, "block_until_ready", lambda graph: graph)
+
+        def fail_after_partial_write(path: str, _graph: object) -> None:
+            Path(path).write_bytes(b"partial")
+            raise RuntimeError("serialize failed")
+
+        monkeypatch.setattr(
+            worker_execution.eqx,
+            "tree_serialise_leaves",
+            fail_after_partial_write,
+        )
+
+    with pytest.raises(RuntimeError, match="failed"):
+        worker_execution._write_checkpoint(object())
+
+    assert not checkpoint_dir.exists()
+
+
+def test_worker_checkpoint_calls_use_distinct_directories(tmp_path: Path, monkeypatch) -> None:
+    checkpoint_dirs = [
+        tmp_path / "feedbax_ckpt_first",
+        tmp_path / "feedbax_ckpt_second",
+    ]
+    pending_dirs = iter(checkpoint_dirs)
+
+    def make_checkpoint_dir(**_kwargs) -> str:
+        path = next(pending_dirs)
+        path.mkdir()
+        return str(path)
+
+    monkeypatch.setattr(worker_execution.tempfile, "mkdtemp", make_checkpoint_dir)
+    monkeypatch.setattr(worker_execution.jax, "block_until_ready", lambda graph: graph)
+    monkeypatch.setattr(
+        worker_execution.eqx,
+        "tree_serialise_leaves",
+        lambda path, _graph: Path(path).write_bytes(b"checkpoint"),
+    )
+
+    first = worker_execution._write_checkpoint(object())
+    second = worker_execution._write_checkpoint(object())
+
+    assert Path(first).parent != Path(second).parent
+    assert Path(first).read_bytes() == b"checkpoint"
+    assert Path(second).read_bytes() == b"checkpoint"
+
+
+def test_run_training_graph_removes_checkpoint_after_post_serialization_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
+    compiled = compile_training_run(
+        component_registry=ComponentRegistry(load_user_components=False),
+        graph_spec=_linear_graph_spec(),
+        training_spec=_training_spec(),
+        task_spec={"type": "Generic", "params": {}},
+        task_binding_spec=_task_binding_spec(),
+        cfg=_cfg(),
+    )
+    checkpoint_dir = tmp_path / "feedbax_ckpt_post_serialization"
+
+    def write_checkpoint(_graph: object) -> str:
+        checkpoint_dir.mkdir()
+        checkpoint_path = checkpoint_dir / "checkpoint.eqx"
+        checkpoint_path.write_bytes(b"serialized")
+        return str(checkpoint_path)
+
+    monkeypatch.setattr(worker_execution, "_write_checkpoint", write_checkpoint)
+    monkeypatch.setattr(
+        worker_execution,
+        "_retained_observables_payload",
+        lambda _rollout: (_ for _ in ()).throw(RuntimeError("post-serialization failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="post-serialization failed"):
+        run_training_graph(
+            compiled,
+            job_id="test-job",
+            total_batches=1,
+            cfg=_cfg(snapshot_interval=1),
+            stop_event=threading.Event(),
+            emit=lambda _event: None,
+        )
+
+    assert not checkpoint_dir.exists()
+
+
 def test_run_training_graph_emits_executor_progress_each_batch(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
     compiled = compile_training_run(

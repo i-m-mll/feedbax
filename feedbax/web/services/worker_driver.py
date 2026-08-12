@@ -33,6 +33,7 @@ from feedbax.orchestration.drivers.capabilities import (
 )
 from feedbax.orchestration.events import RUN_EVENT_TERMINAL_TYPES, RunEvent
 from feedbax.orchestration.state import RunSetState
+from feedbax.web.worker.identity import require_worker_job_id
 
 
 class WorkerHttpDriver:
@@ -101,6 +102,7 @@ class WorkerHttpDriver:
         import httpx
 
         del state
+        require_worker_job_id(row.row_id)
         paths = _row_paths(bundle, row.row_id)
         if paths["done"].exists():
             return {"row_id": row.row_id, "status": "completed"}

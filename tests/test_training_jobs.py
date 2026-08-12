@@ -20,6 +20,7 @@ import feedbax.web.api.training as training_api
 import feedbax.web.services.training_service as training_service_module
 import feedbax.web.worker.client as worker_client
 import feedbax.web.worker.app as worker_app
+import feedbax.web.worker.execution as worker_execution
 from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
@@ -30,6 +31,7 @@ from feedbax.contracts.studio_training import (
 )
 from feedbax.orchestration.events import RUN_EVENT_SCHEMA_ID, RunEvent
 from feedbax.orchestration.assembly import assemble_run_bundle
+from feedbax.orchestration.bundle import ROW_ID_RE
 from feedbax.orchestration.drivers.base import DriverRowProbe
 from feedbax.orchestration.drivers.capabilities import DriverRegistration, DriverRegistry
 from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore
@@ -40,6 +42,7 @@ from feedbax.web.services.worker_driver import (
     load_worker_execution_payload,
 )
 from feedbax.web.worker.app import WorkerStatus
+from feedbax.web.worker.identity import require_worker_job_id
 
 
 def test_studio_training_assembly_spec_governs_worker_payload() -> None:
@@ -217,6 +220,19 @@ def test_worker_start_accepts_path_safe_job_id(monkeypatch) -> None:
     assert completed.wait(timeout=2)
 
 
+@pytest.mark.parametrize("job_id", ["job-a", "job_A.2", "A0-._z"])
+def test_worker_transport_accepts_canonical_path_safe_ids(job_id: str) -> None:
+    assert ROW_ID_RE.fullmatch(job_id)
+    assert require_worker_job_id(job_id) == job_id
+
+
+@pytest.mark.parametrize("job_id", [".", ".."])
+def test_worker_transport_is_narrower_than_canonical_row_id(job_id: str) -> None:
+    assert ROW_ID_RE.fullmatch(job_id)
+    with pytest.raises(ValueError, match="path-safe transport identifier"):
+        require_worker_job_id(job_id)
+
+
 @pytest.mark.parametrize(
     "job_id",
     [
@@ -224,6 +240,10 @@ def test_worker_start_accepts_path_safe_job_id(monkeypatch) -> None:
         "../outside",
         "nested/job",
         r"nested\job",
+        " job",
+        "job ",
+        "job\n",
+        "jób",
         ".",
         "..",
     ],
@@ -271,6 +291,102 @@ def test_worker_start_preserves_outside_sentinel_for_absolute_job_id(
 
     assert response.status_code == 400
     assert sentinel.read_bytes() == b"outside-sentinel"
+
+
+def test_worker_http_driver_rejects_transport_id_before_started_sentinel(tmp_path: Path) -> None:
+    bundle = SimpleNamespace(run_set_id="set-a", run_set_dir=tmp_path / "run-set")
+    row = SimpleNamespace(row_id="..")
+    driver = WorkerHttpDriver(base_url="http://worker")
+
+    with pytest.raises(ValueError, match="path-safe transport identifier"):
+        driver.launch_row(bundle, row, RunSetState(run_set_id="set-a"))
+
+    assert not bundle.run_set_dir.exists()
+
+
+def test_worker_rejects_repeated_terminal_job_id_without_checkpoint_residue(
+    monkeypatch, tmp_path: Path
+) -> None:
+    checkpoint_dirs: list[Path] = []
+
+    def fake_run_training(job: worker_app._Job, _bootstrap_state) -> None:
+        checkpoint_dir = tmp_path / f"feedbax_ckpt_{len(checkpoint_dirs)}"
+        checkpoint_dir.mkdir()
+        checkpoint_path = checkpoint_dir / "checkpoint.eqx"
+        checkpoint_path.write_bytes(b"first-checkpoint")
+        checkpoint_dirs.append(checkpoint_dir)
+        with job._state_lock:
+            job.checkpoint_path = str(checkpoint_path)
+        worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
+        job.event_queue.put(None)
+
+    monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
+
+    with TestClient(worker_app.create_app()) as client:
+        first = client.post(
+            "/start",
+            json={"job_id": "job-repeat", "run_set_id": "set-a", "total_batches": 1},
+        )
+        assert first.status_code == 200
+        assert _wait_for_worker_status(
+            client, "job-repeat", WorkerStatus.COMPLETED
+        ).status_code == 200
+
+        repeated = client.post(
+            "/start",
+            json={"job_id": "job-repeat", "run_set_id": "set-b", "total_batches": 1},
+        )
+
+    assert repeated.status_code == 409
+    assert repeated.json()["detail"] == "Job job-repeat already exists"
+    assert checkpoint_dirs == [tmp_path / "feedbax_ckpt_0"]
+    assert (checkpoint_dirs[0] / "checkpoint.eqx").read_bytes() == b"first-checkpoint"
+
+
+def test_worker_cleans_checkpoint_when_job_ownership_handoff_fails(
+    monkeypatch, tmp_path: Path
+) -> None:
+    checkpoint_dir = tmp_path / "feedbax_ckpt_handoff"
+    checkpoint_dir.mkdir()
+    checkpoint_path = checkpoint_dir / "checkpoint.eqx"
+    checkpoint_path.write_bytes(b"checkpoint")
+    result = SimpleNamespace(
+        checkpoint_path=str(checkpoint_path),
+        final_loss=0.5,
+        final_batch=1,
+        retention_plan={},
+        retained_observables={},
+        manifest_path=None,
+        manifest_payload=None,
+    )
+
+    class FailingStopEvent:
+        def is_set(self) -> bool:
+            raise RuntimeError("handoff failed")
+
+    job = worker_app._Job(
+        job_id="job-handoff",
+        run_set_id="set-a",
+        total_batches=1,
+        event_queue=worker_app.queue.Queue(),
+        stop_event=FailingStopEvent(),
+        graph_spec={},
+        training_spec={},
+        task_spec={},
+        task_binding_spec={},
+    )
+    monkeypatch.setattr(worker_execution, "compile_training_run", lambda **_kwargs: object())
+    monkeypatch.setattr(worker_execution, "run_training_graph", lambda *_args, **_kwargs: result)
+
+    with pytest.raises(RuntimeError, match="handoff failed"):
+        worker_app._run_training_real(
+            job,
+            SimpleNamespace(),
+            SimpleNamespace(bundle=SimpleNamespace(components={})),
+        )
+
+    assert job.checkpoint_path is None
+    assert not checkpoint_dir.exists()
 
 
 def test_worker_lifespan_publishes_bootstrap_state_before_routes() -> None:

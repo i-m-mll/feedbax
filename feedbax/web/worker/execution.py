@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 import os
+import shutil
 import tempfile
 import time
 from typing import Any, Callable
@@ -360,20 +361,26 @@ def run_training_graph(
             result.final_coordinate.metrics.get("train_loss", 0.0),
         )
     )
-    checkpoint_path = _write_checkpoint(graph)
-    final_rollout = rollout_graph(graph, compiled, key=result.final_slots["prng"])
-    return TrainingGraphResult(
-        graph=graph,
-        checkpoint_path=checkpoint_path,
-        final_loss=final_loss,
-        final_loss_terms=final_terms,
-        final_batch=result.final_coordinate.program_step,
-        manifest_path=str(result.manifest_path),
-        manifest_payload=result.manifest.model_dump(mode="json", exclude_none=True),
-        execution_metadata=dict(compiled.metadata),
-        retention_plan=retention_plan_to_json(compiled.retention_plan),
-        retained_observables=_retained_observables_payload(final_rollout),
-    )
+    checkpoint_path: str | None = None
+    try:
+        checkpoint_path = _write_checkpoint(graph)
+        final_rollout = rollout_graph(graph, compiled, key=result.final_slots["prng"])
+        return TrainingGraphResult(
+            graph=graph,
+            checkpoint_path=checkpoint_path,
+            final_loss=final_loss,
+            final_loss_terms=final_terms,
+            final_batch=result.final_coordinate.program_step,
+            manifest_path=str(result.manifest_path),
+            manifest_payload=result.manifest.model_dump(mode="json", exclude_none=True),
+            execution_metadata=dict(compiled.metadata),
+            retention_plan=retention_plan_to_json(compiled.retention_plan),
+            retained_observables=_retained_observables_payload(final_rollout),
+        )
+    except BaseException:
+        if checkpoint_path is not None:
+            _remove_checkpoint_directory(checkpoint_path)
+        raise
 
 
 class _StudioWorkerLossService(LossService):
@@ -952,9 +959,18 @@ def _live_xy_samples(value: Any, *, length: int) -> list[list[float]] | None:
     return samples
 
 
-def _write_checkpoint(graph: Graph) -> str | None:
+def _write_checkpoint(graph: Graph) -> str:
     ckpt_dir = tempfile.mkdtemp(prefix="feedbax_ckpt_")
     ckpt_path = os.path.join(ckpt_dir, "checkpoint.eqx")
-    ready_graph = jax.block_until_ready(graph)
-    eqx.tree_serialise_leaves(ckpt_path, ready_graph)
+    try:
+        ready_graph = jax.block_until_ready(graph)
+        eqx.tree_serialise_leaves(ckpt_path, ready_graph)
+    except BaseException:
+        shutil.rmtree(ckpt_dir, ignore_errors=True)
+        raise
     return ckpt_path
+
+
+def _remove_checkpoint_directory(checkpoint_path: str) -> None:
+    """Remove a checkpoint directory still owned by the execution function."""
+    shutil.rmtree(os.path.dirname(checkpoint_path), ignore_errors=True)
