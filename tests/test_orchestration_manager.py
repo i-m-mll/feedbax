@@ -1,7 +1,9 @@
 import asyncio
+import shlex
 
 from fastapi.testclient import TestClient
 
+from feedbax.bin import orchestrate
 from feedbax.web.app import create_app
 from feedbax.web.api import orchestration as orchestration_api
 from feedbax.web.orchestration.gcp import InstanceConfig, InstanceInfo, InstanceStatus
@@ -128,10 +130,20 @@ def test_orchestration_targets_describe_runpod_orchestration_driver():
     assert targets["runpod"]["billable"] is True
     assert targets["runpod"]["launch_mode"] == "execution-plan"
     assert targets["runpod"]["confirmation_token"] == "confirm-runpod-queue-launch"
-    assert targets["runpod"]["notes"] == [
-        "Queue launch prepares a RunPod ExecutionPlan with repository script commands.",
-        "Real pod acquisition is handled by feedbax-orchestrate launch --driver runpod.",
-    ]
+
+    acquisition_note = next(
+        note for note in targets["runpod"]["notes"] if "feedbax-orchestrate launch" in note
+    )
+    command = acquisition_note.removeprefix("Real pod acquisition is handled by ").removesuffix(
+        "."
+    )
+    tokens = shlex.split(command)
+    assert tokens.pop(0) == "feedbax-orchestrate"
+
+    args = orchestrate.build_parser().parse_args(tokens)
+    assert args.command == "launch"
+    assert args.assembly_request == "<path>"
+    assert args.driver == "runpod"
 
 
 def test_confirmed_launch_reserves_before_background(monkeypatch):
