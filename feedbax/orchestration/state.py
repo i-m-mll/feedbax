@@ -451,12 +451,25 @@ class RunSetStateStore:
             "acquired_at": time.time(),
             "state_path": str(self.path),
         }
+        created_lock = False
         try:
             descriptor = os.open(
                 self.lock_path,
-                _untrusted_open_flags(os.O_RDWR | os.O_CREAT),
+                _untrusted_open_flags(os.O_RDWR | os.O_CREAT | os.O_EXCL),
                 0o600,
             )
+            created_lock = True
+        except FileExistsError:
+            try:
+                descriptor = os.open(
+                    self.lock_path,
+                    _untrusted_open_flags(os.O_RDWR),
+                )
+            except OSError as exc:
+                raise StateLockError(
+                    f"unable to open run-set state lock safely: {self.lock_path}: {exc}",
+                    error_number=exc.errno,
+                ) from exc
         except OSError as exc:
             raise StateLockError(
                 f"unable to open run-set state lock safely: {self.lock_path}: {exc}",
@@ -487,7 +500,7 @@ class RunSetStateStore:
             except ControlFilesystemPreflightError as exc:
                 raise StateLockError(str(exc)) from exc
             existing = _read_lock_descriptor(descriptor)
-            if existing.get("protocol") != STATE_LOCK_PROTOCOL:
+            if not created_lock and existing.get("protocol") != STATE_LOCK_PROTOCOL:
                 legacy_pid = existing.get("pid")
                 if type(legacy_pid) is not int or legacy_pid <= 0:
                     raise StateLockError(
