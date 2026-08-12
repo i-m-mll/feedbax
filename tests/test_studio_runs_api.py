@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 
 import pytest
 from fastapi import HTTPException
@@ -13,6 +14,12 @@ from feedbax.contracts.manifest import (
     load_manifest,
     spec_payload,
     write_manifest,
+)
+from feedbax.persistence.database import (
+    EvaluationRecord,
+    ModelRecord,
+    clear_db_session_cache,
+    init_db_session,
 )
 from feedbax.web.api import runs
 from feedbax.web.app import create_app
@@ -196,6 +203,57 @@ def test_list_eval_runs_returns_empty_for_indexed_training_manifest(
     monkeypatch.setattr(runs, "db_session", fail_db_session)
 
     assert asyncio.run(runs.list_eval_runs(training_id)) == []
+
+
+def test_list_eval_runs_returns_matching_legacy_evaluation(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
+    clear_db_session_cache()
+    session = init_db_session(f"sqlite:///{tmp_path / 'models.db'}")
+    training_id = "legacy-training"
+    session.add(
+        ModelRecord(
+            hash=training_id,
+            is_path_defunct=False,
+            postprocessed=False,
+            has_replicate_info=False,
+            expt_name="Legacy training",
+            model__n_replicates=1,
+            pert__type="none",
+            pert__std=0.0,
+            where={},
+            n_batches=1,
+            save_model_parameters=[],
+        )
+    )
+    session.add(
+        EvaluationRecord(
+            hash="legacy-evaluation",
+            expt_name="Legacy evaluation",
+            model_hashes=[training_id],
+            archived=False,
+            perturbation_config={"type": "none"},
+        )
+    )
+    session.commit()
+
+    @contextmanager
+    def legacy_db_session(*_args, **_kwargs):
+        yield session
+
+    monkeypatch.setattr(runs, "db_session", legacy_db_session)
+    try:
+        result = asyncio.run(runs.list_eval_runs(training_id))
+    finally:
+        session.close()
+        clear_db_session_cache()
+
+    assert [evaluation.id for evaluation in result] == ["legacy-evaluation"]
+    assert result[0].training_run_id == training_id
+    assert result[0].name == "Legacy evaluation"
+    assert result[0].description == "none"
 
 
 def test_training_run_index_lists_pending_manifest_rows(

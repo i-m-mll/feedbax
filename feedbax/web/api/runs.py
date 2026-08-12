@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import String
 
 from feedbax.contracts.manifest import (
     BaseManifest,
@@ -854,7 +855,7 @@ async def list_eval_runs(training_run_id: str) -> list[EvalRunInfo]:
             session.query(EvaluationRecord)
             .filter(EvaluationRecord.archived == False)  # noqa: E712
             .filter(
-                EvaluationRecord.model_hashes.cast(str).contains(quoted_hash)
+                EvaluationRecord.model_hashes.cast(String).contains(quoted_hash)
             )
             .order_by(EvaluationRecord.created_at.desc())
             .all()
