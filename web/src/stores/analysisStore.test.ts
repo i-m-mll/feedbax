@@ -296,8 +296,10 @@ describe('useAnalysisStore stage ownership', () => {
     expect(useAnalysisStore.getState().graphSpec?.nodes[node.id]).toBeUndefined();
     expect(useAnalysisStore.getState().captureSnapshot().pages[0].graphSpec.nodes[node.id])
       .toBeUndefined();
-    expect(cancel).toHaveBeenCalledWith(expect.stringMatching(/saved immediately/i));
-    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/connected wires/i));
+    const confirmationCopy =
+      'Delete this analysis node and its connected wires? This cannot currently be undone.';
+    expect(cancel).toHaveBeenCalledWith(confirmationCopy);
+    expect(confirm).toHaveBeenCalledWith(confirmationCopy);
   });
 
   it('ignores volatile node position changes', () => {

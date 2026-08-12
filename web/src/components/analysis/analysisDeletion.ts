@@ -1,7 +1,7 @@
 import { useAnalysisStore } from '@/stores/analysisStore';
 
 const DELETE_CONFIRMATION =
-  'Delete this analysis node and its connected wires? This change is saved immediately.';
+  'Delete this analysis node and its connected wires? This cannot currently be undone.';
 
 export function deleteAnalysisNodeWithConfirmation(
   nodeId: string,
