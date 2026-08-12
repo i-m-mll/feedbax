@@ -12,6 +12,7 @@ from feedbax.plot.colors import color_add_alpha
     [
         ("rgb(31,119,180)", 0.6, "rgba(31,119,180, 0.6)"),
         ("rgb(31, 119, 180)", 0.6, "rgba(31, 119, 180, 0.6)"),
+        ("rgb(0.25, .5, 1.0)", 0.6, "rgba(0.25, .5, 1.0, 0.6)"),
         ("#2563eb", 0.2, "rgba(37, 99, 235, 0.2)"),
         ("#FFFFFF", 1.0, "rgba(255, 255, 255, 1.0)"),
     ],
@@ -24,7 +25,16 @@ def test_color_add_alpha_supports_rgb_and_six_digit_hex(
 
 @pytest.mark.parametrize(
     "color",
-    ["#fff", "red", "rgba(1,2,3,0.5)", "rgb(1,2)", "rgb(256,2,3)", "rgb(a,2,3)"],
+    [
+        "#fff",
+        "red",
+        "rgba(1,2,3,0.5)",
+        "rgb(1,2)",
+        "rgb(256,2,3)",
+        "rgb(a,2,3)",
+        "rgb(nan,2,3)",
+        "rgb(inf,2,3)",
+    ],
 )
 def test_color_add_alpha_rejects_unsupported_or_invalid_colors(color: str) -> None:
     with pytest.raises(ValueError, match="rgb\\(r,g,b\\) or #rrggbb"):

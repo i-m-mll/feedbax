@@ -67,6 +67,7 @@ from feedbax.plot.constructors import (
     registered_figure_constructors,
     register_default_figure_constructors,
 )
+from feedbax.plot.colors import adjust_color_brightness
 from feedbax.plugins.registry import ExperimentRegistry
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
@@ -370,6 +371,19 @@ def test_profile_band_converts_six_digit_hex_color_for_fill(figure_registry) -> 
 
     assert traces[0].line.color == "#2563eb"
     assert traces[2].fillcolor == "rgba(37, 99, 235, 0.2)"
+
+
+def test_profile_band_accepts_decimal_rgb_from_brightness_adjustment(figure_registry) -> None:
+    constructor = get_figure_constructor(
+        "feedbax.profile_band", tier="trace", registry=figure_registry
+    )
+    color = adjust_color_brightness(["rgb(100, 150, 200)"], factor=0.8)[0]
+    params = constructor.params({"color": color, "error_bars_alpha": 0.2})
+
+    traces = constructor.callable({"mean": [1.0, 2.0], "std": [0.1, 0.2]}, params)
+
+    assert traces[0].line.color == color
+    assert traces[2].fillcolor == f"rgba{color[3:-1]}, 0.2)"
 
 
 def test_profile_band_raw_samples_preserve_statistics_and_alpha_scaling(figure_registry) -> None:
