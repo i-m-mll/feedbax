@@ -482,14 +482,17 @@ def test_preflight_replaces_substituted_reserve_without_modifying_target(
     assert reserve_stat.st_size == expected_size
 
 
-def test_empty_crash_lock_is_recovered_without_pathname_replacement(tmp_path: Path) -> None:
+def test_first_lock_acquisition_creates_and_reuses_stable_inode(tmp_path: Path) -> None:
     store = RunSetStateStore(tmp_path / "state.json")
-    store.lock_path.touch()
-    original_inode = store.lock_path.stat().st_ino
+    assert not store.lock_path.exists()
 
     with store.lock():
+        original_inode = store.lock_path.stat().st_ino
         payload = json.loads(store.lock_path.read_text(encoding="utf-8"))
         assert payload["pid"] == os.getpid()
+
+    with store.lock():
+        assert store.lock_path.stat().st_ino == original_inode
 
     assert store.lock_path.stat().st_ino == original_inode
 
