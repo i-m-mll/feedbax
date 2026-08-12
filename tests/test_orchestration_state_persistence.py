@@ -849,18 +849,58 @@ def test_real_subprocess_owner_release(
         pass
 
 
-@pytest.mark.parametrize("legacy_bytes", [b"", b"not-json"])
-def test_empty_and_malformed_legacy_locks_are_recoverable(
+@pytest.mark.parametrize("legacy_bytes", [b"", b"not-json", b"[]", b"{}", b'{"pid": null}'])
+@pytest.mark.parametrize("break_stale", [False, True])
+def test_unverifiable_legacy_locks_require_offline_cleanup(
     tmp_path: Path,
     legacy_bytes: bytes,
+    break_stale: bool,
 ) -> None:
     store = RunSetStateStore(tmp_path / "state.json")
     store.lock_path.write_bytes(legacy_bytes)
 
-    with store.lock():
-        assert json.loads(store.lock_path.read_text(encoding="utf-8"))["protocol"] == (
-            STATE_LOCK_PROTOCOL
-        )
+    with pytest.raises(StateLockError, match="remove or migrate the lock offline"):
+        with store.lock(break_stale=break_stale):
+            pass
+
+    assert store.lock_path.read_bytes() == legacy_bytes
+
+
+def test_empty_legacy_lock_cannot_be_claimed_before_writer_publishes_pid(
+    tmp_path: Path,
+) -> None:
+    store = RunSetStateStore(tmp_path / "state.json")
+    inode_created = Event()
+    allow_pid_publication = Event()
+    legacy_owner_entered = Event()
+
+    def legacy_writer() -> None:
+        descriptor = os.open(store.lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            inode_created.set()
+            assert allow_pid_publication.wait(timeout=5)
+            os.write(descriptor, json.dumps({"pid": os.getpid()}).encode("utf-8"))
+            os.fsync(descriptor)
+            legacy_owner_entered.set()
+        finally:
+            os.close(descriptor)
+
+    writer = Thread(target=legacy_writer)
+    writer.start()
+    assert inode_created.wait(timeout=5)
+    new_owner_entered = False
+    try:
+        with pytest.raises(StateLockError, match="remove or migrate the lock offline"):
+            with store.lock(break_stale=True):
+                new_owner_entered = True
+    finally:
+        allow_pid_publication.set()
+        writer.join(timeout=5)
+
+    assert not writer.is_alive()
+    assert legacy_owner_entered.is_set()
+    assert new_owner_entered is False
+    assert json.loads(store.lock_path.read_text(encoding="utf-8"))["pid"] == os.getpid()
 
 
 def test_legacy_lock_payloads_preserve_active_and_stale_semantics(

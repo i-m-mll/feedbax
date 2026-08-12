@@ -434,7 +434,9 @@ class RunSetStateStore:
         interpret a released ``stable-flock-v1`` inode. Mixed-version execution or
         rollback therefore requires removing the persistent lock while no process is
         using the state directory; doing so during execution would reintroduce the
-        pathname-unlink race this protocol eliminates.
+        pathname-unlink race this protocol eliminates. An empty, malformed, or PID-less
+        legacy inode also requires that offline cleanup: it may belong to a legacy writer
+        in the interval between inode creation and PID publication.
 
         The lock guarantees one owner only while the parent directory is outside an
         adversary's mutation authority. A malicious same-UID writer that can replace
@@ -487,11 +489,17 @@ class RunSetStateStore:
             existing = _read_lock_descriptor(descriptor)
             if existing.get("protocol") != STATE_LOCK_PROTOCOL:
                 legacy_pid = existing.get("pid")
-                if isinstance(legacy_pid, int) and _pid_alive(legacy_pid):
+                if type(legacy_pid) is not int or legacy_pid <= 0:
+                    raise StateLockError(
+                        "run-set state lock has no verifiable legacy owner; "
+                        "stop all writers and remove or migrate the lock offline: "
+                        f"{self.lock_path}"
+                    )
+                if _pid_alive(legacy_pid):
                     raise StateLockError(
                         f"run-set state lock is active: {self.lock_path} pid={legacy_pid!r}"
                     )
-                if isinstance(legacy_pid, int) and not break_stale:
+                if not break_stale:
                     raise StateLockError(
                         f"run-set state lock is stale: {self.lock_path} pid={legacy_pid!r}"
                     )
@@ -516,7 +524,8 @@ class RunSetStateStore:
 def _read_lock_descriptor(descriptor: int) -> dict[str, Any]:
     try:
         size = os.fstat(descriptor).st_size
-        return json.loads(os.pread(descriptor, size, 0).decode("utf-8"))
+        payload = json.loads(os.pread(descriptor, size, 0).decode("utf-8"))
+        return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
 
