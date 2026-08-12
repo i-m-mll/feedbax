@@ -821,6 +821,102 @@ def test_worker_eviction_cleanup_failure_retains_registry_pointer_for_retry(
         assert not checkpoint_dir.exists()
 
 
+def test_worker_checkpoint_download_lease_defers_eviction_until_response_finishes(
+    monkeypatch, tmp_path: Path
+) -> None:
+    checkpoint_bytes = b"leased-checkpoint-bytes" * 1024
+    checkpoint_dir = tmp_path / "feedbax_ckpt_job-old"
+    checkpoint_path = checkpoint_dir / "checkpoint.eqx"
+    download_entered = threading.Event()
+    release_download = threading.Event()
+    download_result: dict[str, Any] = {}
+
+    def fake_run_training(job: worker_app._Job, _bootstrap_state) -> None:
+        if job.job_id == "job-old":
+            checkpoint_dir.mkdir()
+            checkpoint_path.write_bytes(checkpoint_bytes)
+            with job._state_lock:
+                job.checkpoint_path = str(checkpoint_path)
+        worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
+        job.event_queue.put(None)
+
+    original_handle_simple = worker_app._CheckpointFileResponse._handle_simple
+
+    async def blocked_handle_simple(self, send, send_header_only, send_pathsend):
+        download_entered.set()
+        while not release_download.is_set():
+            await asyncio.sleep(0.001)
+        await original_handle_simple(self, send, send_header_only, send_pathsend)
+
+    monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
+    monkeypatch.setattr(worker_app, "_TERMINAL_JOB_RETENTION_MAX", 1)
+    monkeypatch.setattr(
+        worker_app._CheckpointFileResponse,
+        "_handle_simple",
+        blocked_handle_simple,
+    )
+
+    with TestClient(worker_app.create_app()) as client:
+        assert client.post(
+            "/start",
+            json={"job_id": "job-old", "run_set_id": "set-a", "total_batches": 1},
+        ).status_code == 200
+        assert _wait_for_worker_status(
+            client, "job-old", WorkerStatus.COMPLETED
+        ).status_code == 200
+
+        def download() -> None:
+            response = client.get("/jobs/job-old/checkpoint/download")
+            download_result.update(status_code=response.status_code, content=response.content)
+
+        download_thread = threading.Thread(target=download)
+        download_thread.start()
+        assert download_entered.wait(timeout=2)
+
+        monkeypatch.setattr(worker_app, "_TERMINAL_JOB_RETENTION_MAX", 0)
+        assert client.post(
+            "/start",
+            json={"job_id": "job-new", "run_set_id": "set-a", "total_batches": 1},
+        ).status_code == 200
+        assert checkpoint_path.exists()
+        assert client.get("/jobs/job-old/status").status_code == 200
+
+        release_download.set()
+        download_thread.join(timeout=2)
+        assert not download_thread.is_alive()
+        assert download_result == {"status_code": 200, "content": checkpoint_bytes}
+        assert not checkpoint_dir.exists()
+        assert client.get("/jobs/job-old/status").status_code == 404
+
+
+def test_worker_checkpoint_response_releases_lease_when_send_fails(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.eqx"
+    checkpoint_path.write_bytes(b"checkpoint")
+    released = threading.Event()
+    response = worker_app._CheckpointFileResponse(
+        checkpoint_path,
+        release=released.set,
+    )
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if message["type"] == "http.response.body":
+            raise RuntimeError("client disconnected")
+
+    with pytest.raises(RuntimeError, match="client disconnected"):
+        asyncio.run(
+            response(
+                {"type": "http", "method": "GET", "headers": [], "extensions": {}},
+                receive,
+                send,
+            )
+        )
+
+    assert released.is_set()
+
+
 def test_worker_lifespan_publishes_bootstrap_state_before_routes() -> None:
     app = worker_app.create_app()
     with TestClient(app) as client:
