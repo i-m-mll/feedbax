@@ -2,7 +2,7 @@ shared:
   - issues
 
 post-merge:
-  - paths: ["web/package.json", "web/pnpm-lock.yaml"]
-    run: cd web && pnpm install
+  - paths: ["web/package.json", "web/package-lock.json"]
+    run: cd web && npm ci
   - paths: ["pyproject.toml", "uv.lock"]
     run: uv sync --extra all
