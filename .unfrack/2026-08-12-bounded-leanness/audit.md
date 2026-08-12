@@ -4,7 +4,9 @@ Date: 2026-08-12
 
 Baseline: protected `develop` at `9455af0a`
 
-Accepted integration snapshot: `31d9628c1eb13c5314bb49f6a674e0a937b2df78`
+Accepted high-review snapshot: `31d9628c1eb13c5314bb49f6a674e0a937b2df78`
+
+Tested integration snapshot: `61808cb227f28bb5e866017cc0161ebf5eae35d2`
 
 Coordination issue: [issue:925f4ad]
 
@@ -12,20 +14,21 @@ Synthesis issue: [issue:f4237a7]
 
 ## Verdict and evidence vocabulary
 
-The bounded portfolio is **accepted for the final integration gate** at
-`31d9628c`. This is a high-review verdict on the integrated code and does not mean
-that the broad suite, protected-branch auth, push, or protected merge has occurred.
-Those steps remain pending and are owned by the umbrella coordinator.
+The bounded portfolio passed independent high review at `31d9628c` and the final
+integration gate at `61808cb2`. The latter is the tested integration snapshot; the
+former remains useful as the distinct high-review snapshot before the gate-discovered
+optional-dependency repair. Protected-branch auth, push, and protected merge have not
+occurred and remain owned by the umbrella coordinator.
 
-- **Verified integrated fact** was checked against `31d9628c`, its Git history, or
-  current Mandible evidence.
+- **Verified integrated fact** was checked against `61808cb2`, its Git history, the
+  recorded integration-gate receipts, or current Mandible evidence.
 - **Survey evidence** is a read-only audit finding pinned to its named snapshot.
   File:line references in survey comments are historical evidence, not unqualified
   claims about `31d9628c`.
 - **Held** means the evidence requires an owner decision, a durable migration, or a
   wider trust/lifecycle contract. It does not mean the finding is disproved.
 - **Accepted** means focused review and the final integration re-review accepted the
-  implementation. It does not substitute for the pending full suite.
+  implementation. The full-suite result is recorded separately against `61808cb2`.
 
 ## Method and audit waves
 
@@ -83,7 +86,7 @@ CLOC 2.04 was run with identical baseline and final scopes:
 
 The checked-in baseline receipts are the exact bytes copied from the umbrella
 integration worktree and remain pinned to `9455af0a`. The final receipts were generated
-from the live integration worktree at `31d9628c`. The baseline web scope included
+from the tested integration tree at `61808cb2`. The baseline web scope included
 `web/src/assets/logo.svg`; its accepted deletion is therefore reflected naturally in
 the final language and file totals.
 
@@ -92,6 +95,10 @@ the final language and file totals.
 | `feedbax/` | 160,732 | 161,139 | +407 | 436 | 438 | +2 |
 | maintained web source | 68,428 | 69,355 | +927 | 211 | 214 | +3 |
 | combined | 229,160 | 230,494 | +1,334 | 647 | 652 | +5 |
+
+The tested snapshot's code and file counts are unchanged from the accepted high-review
+snapshot; the import-boundary repair adds one Python blank line but no maintained code
+line or file.
 
 The portfolio intentionally does not claim net line reduction. Most added lines are
 focused tests and fail-closed custody/concurrency checks. Leanness here means fewer
@@ -123,8 +130,22 @@ All three were repaired and independently accepted:
   passed four focused cases and returned ACCEPT.
 
 The final integration re-review at `31d9628c` returned **ACCEPT**: all three blockers
-remain closed after merge composition and no accepted lane was overwritten. The tree
-may proceed to, but has not yet passed, the single full integration gate.
+remained closed after merge composition and no accepted lane was overwritten.
+
+### Blocker resolved: the integration gate exposed an optional-dependency import
+
+The first full integration-gate attempt exposed [issue:3db32ab]. Integration commit
+`68f788c5` made the non-web CLI import `feedbax.web.worker.identity`, which first
+initialized `feedbax.web.worker`; that package initializer eagerly imported `uvicorn`
+and the FastAPI worker app even though the installed cold-start CLI uses only the
+`analysis` extra. The resulting `ModuleNotFoundError: uvicorn` failed two installed-wheel
+cold-start tests. This was a composition regression not visible at the accepted
+`31d9628c` high-review snapshot, so it required a bounded repair before the gate could
+honestly pass.
+
+Commit `1492a186` defers the web runtime imports until `main()` executes while preserving
+the worker entrypoint. Its focused import-boundary and cold-start checks passed before
+integration, and the repair is present in tested snapshot `61808cb2`.
 
 ### High held: downstream consumers invalidate three cleanup premises
 
@@ -214,22 +235,21 @@ helpers, reduced work to measured batches, and established the shared machine ga
 `/private/tmp/codex-large-test-gate/held` for broad or greater-than-2-GiB work, with a
 32-GiB launch threshold and 36-GiB recursive Codex-child no-start ceiling.
 
-This incident is operational evidence, not a test result. It explains why focused
-work was serialized and why the final broad suite is deliberately deferred until the
-documented tree is stable. No broad Feedbax gate is claimed in this packet.
+This incident is operational evidence, not a test result. It explains why focused work
+was serialized and why the broad suite ran only after the documented tree stabilized.
+For tested snapshot `61808cb2`, the frontend build passed, Vitest passed 58 files and
+384 tests, and `scripts/full_suite.sh` completed with 6020 passed, 9 xfailed, and 426
+warnings in 172.02 seconds. The shared large-test lock was released after the gate.
 
-## Remaining pre-auth sequence
+## Remaining delivery sequence
 
-1. Integrate this synthesis commit into the umbrella integration branch.
-2. Confirm the documented head and tested head are identical.
-3. Acquire the shared heavy-test gate and run `scripts/full_suite.sh` once.
-4. If the tree changes in a way that can affect the gate, update receipts and rerun only
-   as required by policy.
-5. Reconcile issue closeouts and run the Mandible independence/auth checks.
-6. Submit one protected-branch auth request for the umbrella integration branch.
+1. Reconcile the ledger, including incorporating this final receipt-only synthesis
+   without changing the tested source or test tree, and run the Mandible independence
+   check.
+2. Submit one protected-branch auth request for the umbrella integration branch.
 
-At this snapshot, steps 1 through 6 are pending. This document does not claim auth,
-push, protected merge, or full-suite success.
+Only ledger reconciliation and protected-branch auth remain. This document records the
+green integration gate but does not claim auth approval, push, or protected merge.
 
 ## Identity preservation rule
 
