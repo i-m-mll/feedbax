@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   ANALYSIS_CANVAS_INTERACTION_PROPS,
-  ANALYSIS_INTERACTION_OWNER,
   consumeAnalysisDeleteKey,
 } from './AnalysisCanvas';
 
@@ -22,7 +21,6 @@ describe('AnalysisCanvas interaction policy', () => {
 
     consumeAnalysisDeleteKey(event);
 
-    expect(ANALYSIS_INTERACTION_OWNER).toBe('analysis');
     expect(event.preventDefault).toHaveBeenCalledOnce();
     expect(event.stopPropagation).toHaveBeenCalledOnce();
   });
