@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 
 import feedbax.web.api.training as training_api
 import feedbax.web.services.training_service as training_service_module
+import feedbax.web.services.worker_driver as worker_driver_module
 import feedbax.web.worker.client as worker_client
 import feedbax.web.worker.app as worker_app
 import feedbax.web.worker.checkpoint as worker_checkpoint
@@ -40,6 +41,7 @@ from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore
 from feedbax.web.services.training_service import TrainingService
 from feedbax.web.services.worker_driver import (
     WorkerHttpDriver,
+    WorkerStreamTeardownError,
     _worker_start_body,
     load_worker_execution_payload,
 )
@@ -349,16 +351,26 @@ class _FakeWorkerStreamResponse:
         failure: Exception | None = None,
         blocked: bool = False,
         paused: bool = False,
+        header_blocked: bool = False,
+        close_failure: Exception | None = None,
     ) -> None:
         self.lines = lines
         self.failure = failure
         self.blocked = blocked
         self.paused = paused
+        self.header_blocked = header_blocked
+        self.close_failure = close_failure
+        self.request = SimpleNamespace(extensions={"timeout": {"read": 10.0}})
+        self.entering = threading.Event()
         self.iterating = threading.Event()
         self.closed = threading.Event()
         self.released = threading.Event()
+        self.close_calls = 0
 
     def __enter__(self):
+        self.entering.set()
+        if self.header_blocked:
+            self.released.wait(timeout=2.0)
         return self
 
     def __exit__(self, *_args: Any) -> None:
@@ -379,7 +391,10 @@ class _FakeWorkerStreamResponse:
         yield from self.lines
 
     def close(self) -> None:
+        self.close_calls += 1
         self.closed.set()
+        if self.close_failure is not None:
+            raise self.close_failure
 
 
 def _worker_stream_test_inputs(tmp_path: Path, row_id: str):
@@ -410,6 +425,112 @@ def test_worker_http_driver_teardown_closes_blocked_stream_and_is_idempotent(
     assert driver.teardown(bundle, state) == {"driver": "worker-http"}
     assert driver._streams == {}
     assert driver._stream_errors == {}
+
+
+def test_worker_http_driver_retains_pre_header_join_survivor_for_repeated_teardown(
+    monkeypatch, tmp_path: Path
+) -> None:
+    response = _FakeWorkerStreamResponse(header_blocked=True)
+    timeouts: list[float] = []
+
+    def fake_stream(*_args: Any, **kwargs: Any):
+        timeouts.append(kwargs["timeout"])
+        return response
+
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+    bundle, row, state = _worker_stream_test_inputs(tmp_path, "job-header-stall")
+    driver = WorkerHttpDriver(base_url="http://worker", request_timeout=0.25)
+    driver.stream_join_timeout_seconds = 0.01
+
+    driver._ensure_stream_thread(bundle, row)
+    assert response.entering.wait(timeout=1.0)
+    stream = driver._streams[row.row_id]
+
+    with pytest.raises(WorkerStreamTeardownError, match="did not terminate"):
+        driver.teardown(bundle, state)
+
+    assert timeouts == [0.25]
+    assert driver._streams == {row.row_id: stream}
+    assert stream.thread is not None and stream.thread.is_alive()
+
+    response.released.set()
+    stream.thread.join(timeout=1.0)
+    assert not stream.thread.is_alive()
+    assert driver.teardown(bundle, state) == {"driver": "worker-http"}
+    assert driver._streams == {}
+
+
+def test_worker_http_driver_concurrent_ensure_starts_one_stream(
+    monkeypatch, tmp_path: Path
+) -> None:
+    response = _FakeWorkerStreamResponse(blocked=True)
+    stream_start_entered = threading.Event()
+    release_stream_start = threading.Event()
+    second_ensure_done = threading.Event()
+    original_start = threading.Thread.start
+    stream_start_count = 0
+
+    def controlled_start(thread: threading.Thread) -> None:
+        nonlocal stream_start_count
+        if thread.name.startswith("feedbax-worker-http-events-"):
+            stream_start_count += 1
+            stream_start_entered.set()
+            assert release_stream_start.wait(timeout=1.0)
+        original_start(thread)
+
+    monkeypatch.setattr(httpx, "stream", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr(worker_driver_module.threading.Thread, "start", controlled_start)
+    bundle, row, state = _worker_stream_test_inputs(tmp_path, "job-concurrent")
+    driver = WorkerHttpDriver(base_url="http://worker")
+
+    def ensure_second_stream() -> None:
+        driver._ensure_stream_thread(bundle, row)
+        second_ensure_done.set()
+
+    first = threading.Thread(target=driver._ensure_stream_thread, args=(bundle, row))
+    second = threading.Thread(target=ensure_second_stream)
+    original_start(first)
+    assert stream_start_entered.wait(timeout=1.0)
+    original_start(second)
+    assert not second_ensure_done.wait(timeout=0.05)
+    release_stream_start.set()
+    first.join(timeout=1.0)
+    second.join(timeout=1.0)
+
+    assert stream_start_count == 1
+    assert len(driver._streams) == 1
+    assert response.iterating.wait(timeout=1.0)
+    driver.teardown(bundle, state)
+    assert driver._streams == {}
+
+
+def test_worker_http_driver_close_failure_does_not_skip_later_stream_cleanup(
+    monkeypatch, tmp_path: Path
+) -> None:
+    first_response = _FakeWorkerStreamResponse(
+        blocked=True,
+        close_failure=RuntimeError("close denied"),
+    )
+    second_response = _FakeWorkerStreamResponse(blocked=True)
+    responses = iter((first_response, second_response))
+    monkeypatch.setattr(httpx, "stream", lambda *_args, **_kwargs: next(responses))
+    bundle, first_row, state = _worker_stream_test_inputs(tmp_path, "job-close-failure")
+    second_row = SimpleNamespace(row_id="job-close-later")
+    driver = WorkerHttpDriver(base_url="http://worker")
+
+    driver._ensure_stream_thread(bundle, first_row)
+    assert first_response.iterating.wait(timeout=1.0)
+    driver._ensure_stream_thread(bundle, second_row)
+    assert second_response.iterating.wait(timeout=1.0)
+
+    with pytest.raises(WorkerStreamTeardownError, match="close denied"):
+        driver.teardown(bundle, state)
+
+    assert first_response.closed.is_set()
+    assert second_response.closed.is_set()
+    assert first_response.close_calls >= 1
+    assert second_response.close_calls >= 1
+    assert driver._streams == {}
 
 
 def test_worker_http_driver_terminal_stream_unregisters_itself(monkeypatch, tmp_path: Path) -> None:

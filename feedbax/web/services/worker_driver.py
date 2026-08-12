@@ -46,6 +46,10 @@ class _OwnedStream:
     response: Any | None = None
 
 
+class WorkerStreamTeardownError(RuntimeError):
+    """Raised after best-effort cleanup leaves stream failures or survivors."""
+
+
 class WorkerHttpDriver:
     """Drive one Studio training worker through the orchestration interface."""
 
@@ -220,20 +224,40 @@ class WorkerHttpDriver:
     def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         del bundle, state
         with self._stream_lock:
-            streams = tuple(self._streams.values())
-            for stream in streams:
+            streams = tuple(self._streams.items())
+            for _, stream in streams:
                 stream.cancel.set()
-            self._streams.clear()
             self._stream_errors.clear()
 
-        for stream in streams:
+        failures: list[str] = []
+        for row_id, stream in streams:
             response = stream.response
             if response is not None:
-                response.close()
-        for stream in streams:
+                try:
+                    response.close()
+                except Exception as exc:
+                    failures.append(f"{row_id}: response close failed: {exc}")
+        for row_id, stream in streams:
             thread = stream.thread
-            if thread is not None and thread is not threading.current_thread():
+            if thread is None:
+                continue
+            if thread is not threading.current_thread():
                 thread.join(timeout=self.stream_join_timeout_seconds)
+            if thread.is_alive():
+                failures.append(f"{row_id}: stream thread did not terminate")
+
+        with self._stream_lock:
+            for row_id, stream in streams:
+                thread = stream.thread
+                if (
+                    self._streams.get(row_id) is stream
+                    and thread is not None
+                    and not thread.is_alive()
+                ):
+                    del self._streams[row_id]
+
+        if failures:
+            raise WorkerStreamTeardownError("; ".join(failures))
         return {"driver": "worker-http"}
 
     def _headers(self) -> dict[str, str]:
@@ -244,8 +268,7 @@ class WorkerHttpDriver:
     def _ensure_stream_thread(self, bundle: RunBundle, row: RunRowSpec) -> None:
         row_id = require_worker_job_id(row.row_id)
         with self._stream_lock:
-            current = self._streams.get(row_id)
-            if current is not None and current.thread is not None and current.thread.is_alive():
+            if row_id in self._streams:
                 return
             stream = _OwnedStream()
             thread = threading.Thread(
@@ -256,13 +279,12 @@ class WorkerHttpDriver:
             )
             stream.thread = thread
             self._streams[row_id] = stream
-        try:
-            thread.start()
-        except BaseException:
-            with self._stream_lock:
+            try:
+                thread.start()
+            except BaseException:
                 if self._streams.get(row_id) is stream:
                     del self._streams[row_id]
-            raise
+                raise
 
     def _stream_row_events(
         self,
@@ -281,7 +303,7 @@ class WorkerHttpDriver:
                 "GET",
                 f"{self.base_url}/jobs/{row_id}/stream",
                 headers=self._headers(),
-                timeout=None,
+                timeout=self.request_timeout,
             ) as response:
                 with self._stream_lock:
                     stream.response = response
@@ -289,6 +311,7 @@ class WorkerHttpDriver:
                     response.close()
                     return
                 response.raise_for_status()
+                response.request.extensions["timeout"]["read"] = None
                 for line in response.iter_lines():
                     if not line.startswith("data:"):
                         continue
