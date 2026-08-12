@@ -1,9 +1,9 @@
 # Training-Run Lifecycle Contract
 
-Status: accepted historical design contract for feedbax issue `590d24b`, retained as context
-for the orchestration migration (umbrella `1c6293a`). Current operations use
-`feedbax-orchestrate`; the bash deploy scripts and Studio training service described below are
-historical or legacy/parity surfaces.
+Status: accepted historical design survey for feedbax issue `590d24b`, retained as context for
+the orchestration migration (umbrella `1c6293a`). `feedbax-orchestrate` is the current RunPod
+paved road; the bash deploy and poll scripts are legacy/parity surfaces. The Studio backend and
+worker path remains operative.
 
 Repository-state citations refer to feedbax and rlrmp as read on 2026-07-09 (feedbax `develop`
 at `1137e0f`). A detailed survey of the current surfaces is archived in Mandible custody with
