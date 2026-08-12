@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import queue
-import shutil
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -44,6 +43,10 @@ from feedbax.web.worker.diagnostics import (
     model_validation_diagnostics,
     object_required_diagnostic,
     graph_compilation_error,
+)
+from feedbax.web.worker.checkpoint import (
+    CheckpointCleanupError,
+    cleanup_worker_checkpoint,
 )
 from feedbax.web.worker.identity import require_worker_job_id
 
@@ -87,6 +90,8 @@ class _Job:
     graph_spec: Optional[Dict[str, Any]] = None
     # Path to the serialized checkpoint file after training completes.
     checkpoint_path: Optional[str] = None
+    # Cleanup failure retained with the path so eviction can retry safely.
+    checkpoint_cleanup_error: Optional[str] = None
     # Path/payload for the durable manifest emitted after training completes.
     manifest_path: Optional[str] = None
     manifest_payload: Optional[Dict[str, Any]] = None
@@ -148,19 +153,16 @@ def _job_checkpoint_payload(job: _Job) -> dict[str, Any]:
         return {
             "batch": job.batch,
             "loss": job.last_loss,
-            "weights_available": job.checkpoint_path is not None,
+            "weights_available": (
+                job.checkpoint_path is not None and job.checkpoint_cleanup_error is None
+            ),
             "job_id": job.job_id,
         }
 
 
 def _cleanup_checkpoint_path(path: str | None) -> None:
     """Remove a managed worker checkpoint tempdir when a job is evicted."""
-    if path is None:
-        return
-    checkpoint_dir = os.path.dirname(path)
-    if not os.path.basename(checkpoint_dir).startswith("feedbax_ckpt_"):
-        return
-    shutil.rmtree(checkpoint_dir, ignore_errors=True)
+    cleanup_worker_checkpoint(path, context="worker job eviction cleanup failed")
 
 
 def _manifest_history_events(job: _Job) -> list[dict[str, Any]]:
@@ -432,10 +434,20 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg", bootstrap_state: Bootstra
             job.status = terminal_status
             job.terminal_at = time.monotonic()
             job.checkpoint_path = result.checkpoint_path
+            job.checkpoint_cleanup_error = None
             batch = job.batch
             last_loss = job.last_loss
-    except BaseException:
-        _cleanup_checkpoint_path(result.checkpoint_path)
+    except BaseException as exc:
+        try:
+            cleanup_worker_checkpoint(
+                result.checkpoint_path,
+                context="worker checkpoint ownership handoff failed",
+            )
+        except CheckpointCleanupError as cleanup_exc:
+            with job._state_lock:
+                job.checkpoint_path = cleanup_exc.checkpoint_path
+                job.checkpoint_cleanup_error = str(cleanup_exc)
+            raise cleanup_exc from exc
         raise
     if result.checkpoint_path is not None:
         _emit(
@@ -513,6 +525,9 @@ def _run_training(job: _Job, bootstrap_state: BootstrapState) -> None:
     except Exception as exc:
         logger.exception("Unhandled worker exception while running training job %s", job.job_id)
         with job._state_lock:
+            if isinstance(exc, CheckpointCleanupError):
+                job.checkpoint_path = exc.checkpoint_path
+                job.checkpoint_cleanup_error = str(exc)
             should_emit = job.status == WorkerStatus.RUNNING
             if should_emit:
                 job.status = WorkerStatus.ERROR
@@ -619,10 +634,17 @@ def create_app(
         if overflow <= 0:
             return
         for _, job_id in sorted(terminal_jobs)[:overflow]:
-            job = _jobs.pop(job_id)
+            job = _jobs[job_id]
             with job._state_lock:
                 checkpoint_path = job.checkpoint_path
-            _cleanup_checkpoint_path(checkpoint_path)
+            try:
+                _cleanup_checkpoint_path(checkpoint_path)
+            except CheckpointCleanupError as exc:
+                with job._state_lock:
+                    job.checkpoint_cleanup_error = str(exc)
+                raise
+            if _jobs.get(job_id) is job:
+                del _jobs[job_id]
 
     def _running_job_id_locked() -> Optional[str]:
         """Return the active job id if the single-worker slot is occupied."""
@@ -706,7 +728,13 @@ def create_app(
                     detail=f"Worker is already running job {running_job_id}",
                 )
             _jobs[job_id] = job
-        thread.start()
+        try:
+            thread.start()
+        except BaseException:
+            with _jobs_lock:
+                if _jobs.get(job_id) is job:
+                    del _jobs[job_id]
+            raise
         return {"job_id": job_id}
 
     @app.post("/jobs/{job_id}/stop", dependencies=[_auth_dep])
@@ -798,6 +826,9 @@ def create_app(
         job = _get_job(job_id)
         with job._state_lock:
             checkpoint_path = job.checkpoint_path
+            checkpoint_cleanup_error = job.checkpoint_cleanup_error
+        if checkpoint_cleanup_error is not None:
+            raise HTTPException(status_code=409, detail="Checkpoint cleanup pending")
         if checkpoint_path is None:
             raise HTTPException(status_code=404, detail="No checkpoint available")
         if not os.path.exists(checkpoint_path):

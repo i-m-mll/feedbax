@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 import os
-import shutil
 import tempfile
 import time
 from typing import Any, Callable
@@ -63,6 +62,7 @@ from feedbax.web.worker.diagnostics import (
     exception_diagnostic,
     graph_compilation_error,
 )
+from feedbax.web.worker.checkpoint import cleanup_worker_checkpoint
 
 
 def _build_optimizer(
@@ -377,9 +377,15 @@ def run_training_graph(
             retention_plan=retention_plan_to_json(compiled.retention_plan),
             retained_observables=_retained_observables_payload(final_rollout),
         )
-    except BaseException:
+    except BaseException as exc:
         if checkpoint_path is not None:
-            _remove_checkpoint_directory(checkpoint_path)
+            try:
+                cleanup_worker_checkpoint(
+                    checkpoint_path,
+                    context="worker result finalization failed",
+                )
+            except BaseException as cleanup_exc:
+                raise cleanup_exc from exc
         raise
 
 
@@ -965,12 +971,13 @@ def _write_checkpoint(graph: Graph) -> str:
     try:
         ready_graph = jax.block_until_ready(graph)
         eqx.tree_serialise_leaves(ckpt_path, ready_graph)
-    except BaseException:
-        shutil.rmtree(ckpt_dir, ignore_errors=True)
+    except BaseException as exc:
+        try:
+            cleanup_worker_checkpoint(
+                ckpt_path,
+                context="worker checkpoint serialization failed",
+            )
+        except BaseException as cleanup_exc:
+            raise cleanup_exc from exc
         raise
     return ckpt_path
-
-
-def _remove_checkpoint_directory(checkpoint_path: str) -> None:
-    """Remove a checkpoint directory still owned by the execution function."""
-    shutil.rmtree(os.path.dirname(checkpoint_path), ignore_errors=True)
