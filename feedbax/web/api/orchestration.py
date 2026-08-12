@@ -318,7 +318,7 @@ async def list_orchestration_targets():
                 confirmation_token="confirm-runpod-queue-launch",
                 notes=[
                     "Queue launch prepares a RunPod ExecutionPlan with repository script commands.",
-                    "Real pod acquisition remains owned by scripts/deploy/runpod_deploy.sh.",
+                    "Real pod acquisition is handled by feedbax-orchestrate launch --driver runpod.",
                 ],
             ),
             OrchestrationTarget(

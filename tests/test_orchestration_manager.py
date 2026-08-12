@@ -117,7 +117,7 @@ def test_launch_requires_billable_confirmation(monkeypatch, tmp_path):
     assert detail["cost_estimate"]["hourly_estimate"] > 0
 
 
-def test_orchestration_targets_include_script_managed_runpod():
+def test_orchestration_targets_describe_runpod_orchestration_driver():
     client = TestClient(create_app())
     response = client.get("/api/orchestration/targets")
 
@@ -128,6 +128,10 @@ def test_orchestration_targets_include_script_managed_runpod():
     assert targets["runpod"]["billable"] is True
     assert targets["runpod"]["launch_mode"] == "execution-plan"
     assert targets["runpod"]["confirmation_token"] == "confirm-runpod-queue-launch"
+    assert targets["runpod"]["notes"] == [
+        "Queue launch prepares a RunPod ExecutionPlan with repository script commands.",
+        "Real pod acquisition is handled by feedbax-orchestrate launch --driver runpod.",
+    ]
 
 
 def test_confirmed_launch_reserves_before_background(monkeypatch):
