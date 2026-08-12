@@ -3,13 +3,10 @@
 Run as:
     python -m feedbax.web.worker --port <PORT> [--host HOST] [--auth-token TOKEN]
 """
+
 from __future__ import annotations
 
 import argparse
-
-import uvicorn
-
-from feedbax.web.worker.app import create_app
 
 
 def main() -> None:
@@ -29,6 +26,10 @@ def main() -> None:
         help="Shared secret; when set all requests must include Authorization: Bearer <token>",
     )
     args = parser.parse_args()
+
+    import uvicorn
+
+    from feedbax.web.worker.app import create_app
 
     app = create_app(auth_token=args.auth_token)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")

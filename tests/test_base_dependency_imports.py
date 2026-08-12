@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
 import sys
+import textwrap
 import tomllib
 from dataclasses import dataclass
 from importlib.metadata import packages_distributions
@@ -122,6 +124,40 @@ def test_unconditional_feedbax_imports_are_base_dependencies() -> None:
     )
 
     assert findings == []
+
+
+def test_worker_identity_import_does_not_require_web_runtime_dependencies() -> None:
+    script = textwrap.dedent(
+        """
+        import importlib
+        import importlib.abc
+        import sys
+
+        blocked_roots = {"fastapi", "uvicorn"}
+        blocked_modules = {"feedbax.web.worker.app"}
+
+        class BlockWebRuntimeImports(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname.partition(".")[0] in blocked_roots or fullname in blocked_modules:
+                    raise ModuleNotFoundError(fullname)
+                return None
+
+        sys.meta_path.insert(0, BlockWebRuntimeImports())
+        importlib.import_module("feedbax.web.worker.identity")
+
+        assert not blocked_modules.intersection(sys.modules)
+        assert not blocked_roots.intersection(sys.modules)
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_extras_only_top_level_import_canary_is_flagged() -> None:
