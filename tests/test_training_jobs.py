@@ -427,6 +427,67 @@ def test_worker_http_driver_teardown_closes_blocked_stream_and_is_idempotent(
     assert driver._stream_errors == {}
 
 
+def test_worker_http_driver_teardown_rejects_concurrent_stream_admission(
+    monkeypatch, tmp_path: Path
+) -> None:
+    response = _FakeWorkerStreamResponse(blocked=True)
+    teardown_close_entered = threading.Event()
+    release_teardown_close = threading.Event()
+    original_close = response.close
+
+    def controlled_close() -> None:
+        if threading.current_thread().name == "worker-driver-teardown":
+            teardown_close_entered.set()
+            assert release_teardown_close.wait(timeout=1.0)
+        original_close()
+
+    monkeypatch.setattr(response, "close", controlled_close)
+    monkeypatch.setattr(httpx, "stream", lambda *_args, **_kwargs: response)
+    bundle, row, state = _worker_stream_test_inputs(tmp_path, "job-before-teardown")
+    later_row = SimpleNamespace(row_id="job-during-teardown")
+    driver = WorkerHttpDriver(base_url="http://worker")
+
+    driver._ensure_stream_thread(bundle, row)
+    assert response.iterating.wait(timeout=1.0)
+    teardown_errors: list[BaseException] = []
+
+    def teardown_driver() -> None:
+        try:
+            driver.teardown(bundle, state)
+        except BaseException as exc:
+            teardown_errors.append(exc)
+
+    teardown_thread = threading.Thread(
+        target=teardown_driver,
+        name="worker-driver-teardown",
+    )
+    teardown_thread.start()
+    assert teardown_close_entered.wait(timeout=1.0)
+
+    with pytest.raises(RuntimeError, match="teardown has started"):
+        driver._ensure_stream_thread(bundle, later_row)
+
+    assert later_row.row_id not in driver._streams
+    release_teardown_close.set()
+    teardown_thread.join(timeout=1.0)
+    assert not teardown_thread.is_alive()
+    assert teardown_errors == []
+    assert driver._streams == {}
+
+
+def test_worker_http_driver_rejects_stream_admission_after_teardown(tmp_path: Path) -> None:
+    bundle, row, state = _worker_stream_test_inputs(tmp_path, "job-after-teardown")
+    driver = WorkerHttpDriver(base_url="http://worker")
+
+    assert driver.teardown(bundle, state) == {"driver": "worker-http"}
+
+    with pytest.raises(RuntimeError, match="teardown has started"):
+        driver._ensure_stream_thread(bundle, row)
+
+    assert driver._streams == {}
+    assert driver._stream_errors == {}
+
+
 def test_worker_http_driver_retains_pre_header_join_survivor_for_repeated_teardown(
     monkeypatch, tmp_path: Path
 ) -> None:

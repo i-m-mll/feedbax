@@ -86,6 +86,7 @@ class WorkerHttpDriver:
         self.auth_token = auth_token
         self.request_timeout = request_timeout
         self._stream_lock = threading.Lock()
+        self._teardown_started = False
         self._streams: dict[str, _OwnedStream] = {}
         self._stream_errors: dict[str, str] = {}
 
@@ -224,6 +225,7 @@ class WorkerHttpDriver:
     def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         del bundle, state
         with self._stream_lock:
+            self._teardown_started = True
             streams = tuple(self._streams.items())
             for _, stream in streams:
                 stream.cancel.set()
@@ -268,6 +270,8 @@ class WorkerHttpDriver:
     def _ensure_stream_thread(self, bundle: RunBundle, row: RunRowSpec) -> None:
         row_id = require_worker_job_id(row.row_id)
         with self._stream_lock:
+            if self._teardown_started:
+                raise RuntimeError("worker HTTP driver teardown has started")
             if row_id in self._streams:
                 return
             stream = _OwnedStream()
