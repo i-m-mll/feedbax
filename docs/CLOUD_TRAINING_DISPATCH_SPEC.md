@@ -1,5 +1,11 @@
 # Feedbax Studio: Cloud Training Dispatch — Implementation Spec
 
+> **Historical status (2026-08-12).** This document is retained as a record of an earlier
+> implementation proposal. Its statements about current behavior, open gaps, ownership, and
+> implementation phases do not describe the repository's current status. For operational
+> training, use `feedbax-orchestrate` as documented in
+> `docs/design/TRAINING_RUN_LIFECYCLE.md`; the Studio worker path remains under `feedbax/web/`.
+
 ## 1. Executive Summary
 
 This spec covers the work needed to close six gaps between what the Feedbax Studio UI configures and what the training worker actually executes. The infrastructure — GCP orchestration, SSE streaming, WebSocket relay, worker process lifecycle — is substantially complete. The missing pieces are all in the data-forwarding layer: specs configured in the UI are silently dropped before reaching the worker, trained weights are never persisted, and the startup script installs a stale PyPI package that may be missing critical classes.

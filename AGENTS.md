@@ -253,8 +253,8 @@ Both must be running for full functionality.
 - For Feedbax RunPod training, use the orchestration core as the primary paved
   road: run `feedbax-orchestrate preflight --assembly-request <path>` as the
   non-billable gate, then `feedbax-orchestrate launch --assembly-request <path>
-  --driver runpod`. Monitor through `feedbax-orchestrate status` or
-  `feedbax-orchestrate watch`. Downstream RLRMP launches route through RLRMP's
+  --driver runpod`. Monitor through `feedbax-orchestrate status --run-set <id>` or
+  `feedbax-orchestrate watch --run-set <id>`. Downstream RLRMP launches route through RLRMP's
   `scripts/launch_training.py execute`, not the Feedbax deploy scripts.
 - Normal RunPod workflow remains acquire first, deploy second. The RunPod
   driver enforces this discipline by completing preflight checks before pod
