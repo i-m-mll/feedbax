@@ -1017,7 +1017,7 @@ class TestCheckpointInitializationLowering:
         assert [leaf.path for leaf in structure.slots[0].leaves] == ["net.weight"]
 
 
-DRAFT_POLICY_ROW_IDS = ("report-surface", "evaluation-surface", "analysis-authoring")
+RATIFIED_POLICY_ROW_IDS = ("report-surface", "evaluation-surface", "analysis-authoring")
 
 
 def _policy_document_rows() -> dict[str, list[str]]:
@@ -1040,26 +1040,27 @@ def _policy_document_rows() -> dict[str, list[str]]:
     return rows
 
 
-class TestRatificationDraftRows:
-    """The report, evaluation, and analysis rows are drafted, not silently ratified."""
+class TestRatifiedEnvelopePolicyRows:
+    """The report, evaluation, and analysis rows carry their ratified limits."""
 
-    def test_draft_rows_are_present_in_the_policy_document(self) -> None:
+    def test_ratified_rows_are_present_in_the_policy_document(self) -> None:
         rows = _policy_document_rows()
-        assert set(DRAFT_POLICY_ROW_IDS) <= set(rows)
-        for row_id in DRAFT_POLICY_ROW_IDS:
+        assert set(RATIFIED_POLICY_ROW_IDS) <= set(rows)
+        for row_id in RATIFIED_POLICY_ROW_IDS:
             assert rows[row_id][-1] == "No external case"
 
-    def test_draft_rows_are_marked_pending_owner_ratification(self) -> None:
+    def test_rows_are_marked_owner_ratified(self) -> None:
         from pathlib import Path as _Path
 
         root = _Path(__file__).resolve().parents[1]
         text = (root / "docs" / "design" / "downstream_interface_stability.md").read_text(
             encoding="utf-8"
         )
-        assert "## Pending owner ratification: envelope-layer prerequisite rows" in text
-        assert "become ratified only when" in text
+        assert "## Owner-ratified envelope-layer prerequisite rows" in text
+        assert "accepted stability promises" in " ".join(text.split())
+        assert "Pending owner ratification" not in text
 
-    def test_fixture_manifest_declares_the_draft_rows_without_external_cases(self) -> None:
+    def test_fixture_manifest_declares_ratified_rows_without_external_cases(self) -> None:
         from pathlib import Path as _Path
 
         root = _Path(__file__).resolve().parents[1]
@@ -1074,7 +1075,7 @@ class TestRatificationDraftRows:
             ).read_text(encoding="utf-8")
         )
         rows = {row["row_id"]: row for row in manifest["guaranteed_rows"]}
-        for row_id in DRAFT_POLICY_ROW_IDS:
+        for row_id in RATIFIED_POLICY_ROW_IDS:
             assert rows[row_id]["coverage_status"] == "not-external-covered"
             assert rows[row_id]["case_ids"] == []
             assert set(rows[row_id]["schemas"]) == {"current", "migrated", "rejected"}
@@ -1084,12 +1085,12 @@ class TestRatificationDraftRows:
 
         assert "REPORT_RECIPES" in _NON_GUARANTEED_PLUGIN_EXPORTS
 
-    def test_every_drafted_public_name_resolves(self) -> None:
+    def test_every_ratified_public_name_resolves(self) -> None:
         import importlib
         import re
 
         rows = _policy_document_rows()
-        for row_id in DRAFT_POLICY_ROW_IDS:
+        for row_id in RATIFIED_POLICY_ROW_IDS:
             columns = rows[row_id]
             namespaces = re.findall(r"`([^`]+)`", columns[1])
             modules = [importlib.import_module(namespace) for namespace in namespaces]
@@ -1104,7 +1105,7 @@ class TestRatificationDraftRows:
             ]
             assert unresolved == [], f"{row_id}: {unresolved}"
 
-    def test_policy_consistency_check_accepts_the_draft(self) -> None:
+    def test_policy_consistency_check_accepts_the_ratified_rows(self) -> None:
         import importlib.util
         from pathlib import Path as _Path
 

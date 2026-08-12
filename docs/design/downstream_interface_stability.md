@@ -3,16 +3,17 @@
 | Field | Value |
 |---|---|
 | Policy identity | `feedbax.downstream-interface-stability.v1` |
-| Status | Ratification-ready; approval and merge of the final protected Feedbax auth ratifies this policy |
+| Status | Owner-ratified |
 | Effective release | Feedbax `0.2.0` |
 | Extension protocol | current `1`, minimum supported `1` |
-| Evidence head | `22faa8b54a4f2f5109c0e9d956681d23d9a914e0` plus this issue's adoption delta |
+| Evidence head | Protected `develop` merge `bc254ce60f8ce26640794788f8df9a236423052f`; external conformance result `feedbax.external_conformance.result.v14` |
 | Decision owner | Feedbax owner |
 
-This policy becomes effective only when the single final protected Feedbax auth
-for umbrella `f8a5183` is approved and merged. That auth spec must state
-explicitly that approval and merge ratifies
-`feedbax.downstream-interface-stability.v1`. No separate policy auth exists.
+The Feedbax owner ratified this policy through protected `develop` delivery.
+Protected merge `b6697280324b3a675cf1de5fbca25b42a0f56795` ratified the base
+policy, and protected merge `798c085268119074f0522e3a2313a1722dfaedc8`
+ratified the envelope-layer prerequisite rows below. Later protected amendments
+through the evidence head preserve that ratified status.
 
 ## Compatibility window
 
@@ -77,16 +78,14 @@ explicitly.
 | `analysis-authoring` | `feedbax.contracts.manifest`; `feedbax.analysis.specs`; `feedbax.analysis.bundles` | `ANALYSIS_RUN_SPEC_SCHEMA_ID`, `ANALYSIS_RUN_SPEC_SCHEMA_VERSION`, `ANALYSIS_RUN_SPEC_SCHEMA_VERSION_V1`, `AnalysisRunSpec`, `AnalysisRunManifest`, `analysis_run_manifest_id`; `execute_analysis_run_spec`; `ANALYSIS_BUNDLE_SCHEMA_ID`, `ANALYSIS_BUNDLE_SCHEMA_VERSION`, `AnalysisBundleSpec`, `AnalysisBundleDeltaSpec`, `authored_analysis_bundle_from_payload`, `resolve_analysis_bundle_authoring`, `execute_analysis_bundle`, `execute_staged_analysis_bundle`, `dry_run_staged_analysis_bundle`; CLI `feedbax-analysis run`, `feedbax-analysis bundle` | `feedbax.spec.analysis_run.v2` is current and `feedbax.spec.analysis_run.v1` migrates by making the historical implicit `recompute` evaluation-states policy explicit; v0 and unknown versions reject. `feedbax.spec.analysis_bundle.v6` is current and the registered chain migrates v2 through v5; older and unknown versions reject. `feedbax-analysis run` executes one serialized `AnalysisRunSpec` or `AnalysisRunDeltaSpec` with explicit run-alias catalogs and staged execution bindings, and `feedbax-analysis bundle` executes one file-authored bundle without a registered experiment package. A bundle must declare exactly one non-empty execution shape, `--exact-parents` documents must declare `schema_id` and `schema_version` explicitly, and staged bindings require an explicit execution descriptor. `execute_analysis_bundle` and `execute_staged_analysis_bundle` also accept an optional already-resolved `execution_context`, mutually exclusive with the raw descriptor and root bindings, and locate their own selected root refs beneath the manifest root they were selected from. | No external case |
 <!-- policy-guarantees:end -->
 
-## Pending owner ratification: envelope-layer prerequisite rows
+## Owner-ratified envelope-layer prerequisite rows
 
-The rows `report-surface`, `evaluation-surface`, and `analysis-authoring` are a
-**draft addition** raised by Feedbax issue `88d021d`. They describe surfaces the
-downstream envelope authoring layers consume, and they become ratified only when
-the owner approves and merges the protected-branch delivery that carries them.
-Until that merge they are a proposal recorded in the policy document, not an
-accepted stability promise.
+The rows `report-surface`, `evaluation-surface`, and `analysis-authoring` were
+raised by Feedbax issue `88d021d` and ratified by protected `develop` merge
+`798c085268119074f0522e3a2313a1722dfaedc8`. They are accepted stability
+promises for the surfaces consumed by downstream envelope authoring layers.
 
-Three deliberate limits apply to the draft:
+Three deliberate limits apply to these guarantees:
 
 - The three rows carry `coverage_status: not-external-covered` and name no
   external conformance case. They are covered by focused in-repo tests
@@ -224,6 +223,7 @@ owner gate is satisfied.
 The existing clean-wheel runner remains the only runner. CI invokes
 `scripts/run_external_conformance.py`, persists its validated machine-readable
 result, validates installed dependency metadata with `uv pip check`, and uploads
-that validated v13 result as an artifact. V13 is the single post-composition
-ratification transition; v12 remains explicit historical evidence and rejects
-rather than acquiring the new case synthetically.
+that validated v14 result as an artifact. V14 is the current result and adds
+figure-role-reference evidence to the exact v13 inventory; v13 and v12 remain
+explicit historical evidence and reject rather than acquiring later cases
+synthetically.

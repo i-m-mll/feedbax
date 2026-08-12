@@ -497,6 +497,47 @@ def test_ratified_policy_checker_rejects_residual_pending_rows(
         module.check_policy()
 
 
+@pytest.mark.parametrize(
+    ("old", "new", "match"),
+    [
+        ("| Status | Owner-ratified |", "| Status | Ratification-ready |", "field 'Status'"),
+        (
+            "| Evidence head | Protected `develop` merge ",
+            "| Evidence head | Unverified merge ",
+            "field 'Evidence head'",
+        ),
+        (
+            "that validated v14 result as an artifact",
+            "that validated v13 result as an artifact",
+            "current v14 result",
+        ),
+    ],
+)
+def test_policy_checker_rejects_ratification_metadata_staleness(
+    old: str,
+    new: str,
+    match: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = ROOT / "scripts" / "check_downstream_interface_policy.py"
+    spec = importlib.util.spec_from_file_location(
+        "check_downstream_interface_policy_ratification_metadata", script
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    document = module.POLICY_DOCUMENT.read_text(encoding="utf-8")
+    assert old in document
+    stale_document = tmp_path / "downstream_interface_stability.md"
+    stale_document.write_text(document.replace(old, new, 1), encoding="utf-8")
+    monkeypatch.setattr(module, "POLICY_DOCUMENT", stale_document)
+
+    with pytest.raises(ValueError, match=match):
+        module.check_policy()
+
+
 def test_policy_does_not_promote_runtime_namespace() -> None:
     document = (ROOT / "docs" / "design" / "downstream_interface_stability.md").read_text(
         encoding="utf-8"
