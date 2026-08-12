@@ -14,7 +14,6 @@ from jaxtyping import PRNGKeyArray, PyTree
 from feedbax.analysis.types import AnalysisInputData
 from feedbax.config.namespace import TreeNamespace
 from feedbax.analysis.analysis import AbstractAnalysis, NoPorts
-from feedbax.analysis.pca import PCA
 from feedbax.config.defaults import REPLICATE_CRITERION
 from feedbax.plot.utils import calculate_array_minmax, get_label_str
 
