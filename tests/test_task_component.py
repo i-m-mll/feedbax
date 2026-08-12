@@ -1,4 +1,3 @@
-import pytest
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
@@ -21,21 +20,15 @@ from feedbax.objectives.loss import AbstractLoss
 from feedbax.contracts.graphs.builders import build_component
 from feedbax.tasks.presets import delayed_center_out_reaches_params
 
-try:
-    from feedbax.tasks import (
-        AbstractTask,
-        DelayedReaches,
-        TaskComponent,
-        TaskInterventionSpecs,
-        TaskTrialSpec,
-        TrialSpecDependency,
-        eval_ensemble_on_trials,
-    )
-except ImportError:
-    pytest.skip(
-        "Circular import in feedbax.tasks (pre-existing issue, not on develop)",
-        allow_module_level=True,
-    )
+from feedbax.tasks import (
+    AbstractTask,
+    DelayedReaches,
+    TaskComponent,
+    TaskInterventionSpecs,
+    TaskTrialSpec,
+    TrialSpecDependency,
+    eval_ensemble_on_trials,
+)
 
 
 class DummyLoss(AbstractLoss):
