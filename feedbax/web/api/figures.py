@@ -11,7 +11,12 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from feedbax.analysis.figures import FIGURE_RENDER_ROLE
-from feedbax.contracts.manifest import FigureManifest, default_manifest_root, load_manifest
+from feedbax.contracts.manifest import (
+    FigureManifest,
+    default_manifest_root,
+    load_manifest,
+    media_type_for_extension,
+)
 from feedbax.persistence.manifest_index import iter_manifest_files
 from feedbax.plot.constructors import (
     constructor_catalog,
@@ -21,13 +26,9 @@ from feedbax.plot.constructors import (
 
 router = APIRouter()
 
+_SERVED_FORMATS = ("json", "html", "png", "svg", "webp", "pdf")
 _CONTENT_TYPES: dict[str, str] = {
-    "json": "application/json",
-    "html": "text/html",
-    "png": "image/png",
-    "svg": "image/svg+xml",
-    "webp": "image/webp",
-    "pdf": "application/pdf",
+    extension: media_type_for_extension(extension) for extension in _SERVED_FORMATS
 }
 
 
