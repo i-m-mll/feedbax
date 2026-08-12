@@ -10,7 +10,6 @@ import pytest
 
 import feedbax
 from feedbax.analysis.evaluation import EvaluationRecipeRegistry
-from feedbax.analysis.reports import ReportRecipeRegistry
 from feedbax.analysis.specs import AnalysisRecipeRegistry
 from feedbax.orchestration import revision as _revision
 from feedbax.orchestration.repo_snapshot import REPO_SNAPSHOT_CACHE_DIR_ENV
@@ -38,11 +37,6 @@ def evaluation_registry() -> EvaluationRecipeRegistry:
 @pytest.fixture
 def analysis_registry() -> AnalysisRecipeRegistry:
     return AnalysisRecipeRegistry()
-
-
-@pytest.fixture
-def report_registry() -> ReportRecipeRegistry:
-    return ReportRecipeRegistry()
 
 
 def _git_output(repo_root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
