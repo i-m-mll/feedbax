@@ -454,6 +454,8 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
     const requestEpoch = ++evaluationLoadEpoch;
     set({ selectedTrainingRunId: id, selectedEvalRunId: null, evalRuns: [], evalError: null });
     const selected = get().trainingRuns.find((run) => run.id === id) ?? null;
+    writeEvalRunsToWorkspace([]);
+    writeSelectedEvalRunToWorkspace(null);
     writeSelectedTrainingRunToWorkspace(selected);
     if (id === null) return;
     const isCurrentEvaluationLoad = () =>
@@ -464,9 +466,9 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
         errorToast: (error) => apiErrorMessage(error, 'Could not load evaluation runs'),
         toastId: 'eval-runs-load-error',
         onError: (error) => {
-          if (isCurrentEvaluationLoad()) {
-            set({ evalError: apiErrorMessage(error, 'Could not load evaluation runs') });
-          }
+          if (!isCurrentEvaluationLoad()) return false;
+          set({ evalError: apiErrorMessage(error, 'Could not load evaluation runs') });
+          return true;
         },
       },
     );

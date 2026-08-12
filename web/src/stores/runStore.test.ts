@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { toast } from 'sonner';
 import { fetchEvalRuns, fetchTrainingRuns } from '@/api/runAPI';
 import { useRunStore } from '@/stores/runStore';
 import { useSelectionContextStore } from '@/stores/selectionContextStore';
@@ -11,6 +12,12 @@ import { trainingRunSummaries } from '@/utils/pipelineCollections';
 vi.mock('@/api/runAPI', () => ({
   fetchTrainingRuns: vi.fn(),
   fetchEvalRuns: vi.fn(),
+}));
+
+vi.mock('sonner', () => ({
+  toast: {
+    error: vi.fn(),
+  },
 }));
 
 const graph: GraphSpec = {
@@ -113,6 +120,7 @@ const pendingTrainingRun: TrainingRun = {
 };
 
 beforeEach(() => {
+  vi.clearAllMocks();
   const workspace = buildWorkspaceSnapshot({
     workspace: null,
     graph,
@@ -460,6 +468,37 @@ describe('useRunStore stage collection ownership', () => {
     expect(getStageByKind(workspace, 'analysis')?.selection_spec.eval_run_ids).toEqual([]);
   });
 
+  it('keeps the newer same-training-run request when the older request resolves last', async () => {
+    const olderEvals = deferred<EvalRun[]>();
+    const newerEvals = deferred<EvalRun[]>();
+    const newerEvalRun = { ...evalRun, id: 'ev-stage-owned-newer' };
+    useRunStore.setState({ trainingRuns: [trainingRun] });
+    vi.mocked(fetchEvalRuns)
+      .mockReturnValueOnce(olderEvals.promise)
+      .mockReturnValueOnce(newerEvals.promise);
+
+    const olderSelection = useRunStore.getState().selectTrainingRun(trainingRun.id);
+    const newerSelection = useRunStore.getState().selectTrainingRun(trainingRun.id);
+    newerEvals.resolve([newerEvalRun]);
+    await newerSelection;
+    olderEvals.resolve([evalRun]);
+    await olderSelection;
+
+    expect(useRunStore.getState()).toMatchObject({
+      selectedTrainingRunId: trainingRun.id,
+      selectedEvalRunId: newerEvalRun.id,
+      evalRuns: [newerEvalRun],
+      evalError: null,
+    });
+    const workspace = useWorkspaceStore.getState().workspace;
+    expect(getStageByKind(workspace, 'eval')?.output_collections[0].item_refs).toMatchObject([
+      { id: newerEvalRun.id },
+    ]);
+    expect(getStageByKind(workspace, 'analysis')?.selection_spec.eval_run_ids).toEqual([
+      newerEvalRun.id,
+    ]);
+  });
+
   it('ignores a stale evaluation failure after a newer request succeeds', async () => {
     const evalsForA = deferred<EvalRun[]>();
     const evalsForB = deferred<EvalRun[]>();
@@ -488,5 +527,6 @@ describe('useRunStore stage collection ownership', () => {
     expect(getStageByKind(workspace, 'analysis')?.selection_spec.eval_run_ids).toEqual([
       evalRunB.id,
     ]);
+    expect(toast.error).not.toHaveBeenCalled();
   });
 });
