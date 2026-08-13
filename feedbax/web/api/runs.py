@@ -56,7 +56,7 @@ from feedbax.training.checkpoint_custody import (
     LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT,
     detect_known_legacy_checkpoint_layout,
 )
-from feedbax.web.services.training_service import training_service
+from feedbax.web.services.training_service import RunStateCorruptionError, training_service
 
 logger = logging.getLogger(__name__)
 
@@ -713,7 +713,19 @@ async def list_training_runs() -> list[TrainingRunInfo]:
         for row in iter_indexed_manifest_records_by_kind("TrainingRunManifest")
     ]
     by_id = {row.id: row for row in indexed}
-    for live in training_service.list_live_training_runs():
+    try:
+        live_runs = training_service.list_live_training_runs()
+    except RunStateCorruptionError as exc:
+        logger.error(
+            "Studio training-run listing failed on corrupt document at %s: %s",
+            exc.path,
+            exc.reason,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Persisted Studio run state is corrupt",
+        ) from exc
+    for live in live_runs:
         by_id.setdefault(live["id"], TrainingRunInfo.model_validate(live))
     for legacy in _legacy_training_runs_from_model_db():
         by_id.setdefault(legacy.id, legacy)
