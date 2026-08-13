@@ -146,6 +146,52 @@ def test_bundle_deletion_race_is_transient_not_corruption(
     assert TrainingService().list_live_training_runs() == []
 
 
+def test_legacy_status_uses_single_bundle_read_during_deletion_race(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
+    run_dir = _write_legacy_v2_run(tmp_path)
+    bundle_path = run_dir / "bundle.json"
+    service = TrainingService()
+    service.rebuild_cache_from_state_docs()
+    original_read_text = Path.read_text
+    bundle_reads = 0
+
+    def raced_read_text(path: Path, *args, **kwargs) -> str:
+        nonlocal bundle_reads
+        if path == bundle_path:
+            bundle_reads += 1
+            if bundle_reads > 1:
+                raise FileNotFoundError(bundle_path)
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", raced_read_text)
+
+    status = asyncio.run(service.get_status("job-visible"))
+
+    assert status is not None
+    assert status["total_batches"] == 4
+    assert bundle_reads == 1
+
+
+def test_duplicate_legacy_v2_row_ids_raise_typed_corruption(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
+    run_dir = _write_legacy_v2_run(tmp_path)
+    bundle_path = run_dir / "bundle.json"
+    raw = json.loads(bundle_path.read_text(encoding="utf-8"))
+    raw["rows"].append(dict(raw["rows"][0]))
+    bundle_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(RunStateCorruptionError) as raised:
+        TrainingService().list_live_training_runs()
+
+    assert "duplicate row_id" in raised.value.reason
+
+
 @pytest.mark.parametrize(
     ("state_run_set_id", "state_row_ids", "reason"),
     [
