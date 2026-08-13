@@ -13,6 +13,9 @@ from feedbax.web.orchestration.startup_script import (
 )
 
 
+_GCLOUD_TERMINATION_GRACE_SECONDS = 5.0
+
+
 class InstanceStatus(str, Enum):
     CREATING = "CREATING"
     RUNNING = "RUNNING"
@@ -112,7 +115,29 @@ async def _run_gcloud(*args: str) -> dict | list:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await proc.communicate()
+    except BaseException:
+        try:
+            if proc.returncode is None:
+                try:
+                    proc.terminate()
+                except ProcessLookupError:
+                    pass
+            try:
+                await asyncio.wait_for(
+                    proc.wait(),
+                    timeout=_GCLOUD_TERMINATION_GRACE_SECONDS,
+                )
+            except TimeoutError:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                await proc.wait()
+            await proc.communicate()
+        finally:
+            raise
     if proc.returncode != 0:
         raise RuntimeError(
             f"gcloud {' '.join(args)} failed (exit {proc.returncode}):\n"
