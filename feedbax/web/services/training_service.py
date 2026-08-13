@@ -625,7 +625,7 @@ class TrainingService:
             store = RunSetStateStore(ref.state_path)
             try:
                 state = self._load_state(ref)
-                bundle = self._load_bundle_allow_legacy_v2(ref)
+                bundle, _legacy_raw = self._load_bundle_allow_legacy_v2(ref)
             except _RunStateDocumentUnavailable:
                 continue
             if bundle is None:
@@ -796,15 +796,22 @@ class TrainingService:
                 cause=exc,
             )
 
-    def _load_bundle_allow_legacy_v2(self, ref: _JobRef) -> RunBundle | None:
+    def _load_bundle_allow_legacy_v2(
+        self,
+        ref: _JobRef,
+    ) -> tuple[RunBundle | None, dict[str, Any] | None]:
         try:
             bundle_text = self._read_document(ref.bundle_path)
-            return RunBundle.model_validate_json(bundle_text)
+            return RunBundle.model_validate_json(bundle_text), None
         except _RunStateDocumentUnavailable:
             raise
         except Exception as exc:
-            self._read_legacy_v2_bundle(ref.bundle_path, bundle_text=bundle_text, cause=exc)
-            return None
+            legacy_raw = self._read_legacy_v2_bundle(
+                ref.bundle_path,
+                bundle_text=bundle_text,
+                cause=exc,
+            )
+            return None, legacy_raw
 
     def _load_state(self, ref: _JobRef) -> RunSetState:
         try:
@@ -891,10 +898,17 @@ class TrainingService:
         rows = raw.get("rows")
         if not isinstance(rows, list):
             self._raise_run_state_corruption(bundle_path, "legacy v2 rows are invalid")
+        seen_row_ids: set[str] = set()
         for row in rows:
             job_id = row.get("row_id") if isinstance(row, dict) else None
             if not isinstance(job_id, str):
                 self._raise_run_state_corruption(bundle_path, "legacy v2 row_id is invalid")
+            if job_id in seen_row_ids:
+                self._raise_run_state_corruption(
+                    bundle_path,
+                    f"legacy v2 bundle contains duplicate row_id: {job_id!r}",
+                )
+            seen_row_ids.add(job_id)
         return raw
 
     def _validate_state_bundle(
@@ -931,7 +945,7 @@ class TrainingService:
         bundle: RunBundle | None
         legacy_worker_start: dict[str, Any] = {}
         try:
-            bundle = self._load_bundle_allow_legacy_v2(ref)
+            bundle, legacy_raw = self._load_bundle_allow_legacy_v2(ref)
         except _RunStateDocumentUnavailable:
             return None
         if bundle is not None:
@@ -946,19 +960,15 @@ class TrainingService:
             )
         else:
             try:
-                raw = self._read_legacy_v2_bundle(
-                    ref.bundle_path,
-                    bundle_text=self._read_document(ref.bundle_path),
-                    cause=ValueError("current bundle validation failed"),
-                )
+                assert legacy_raw is not None
                 self._validate_state_bundle(
                     ref.state_path,
                     state,
-                    raw["run_set_id"],
-                    [row["row_id"] for row in raw["rows"]],
+                    legacy_raw["run_set_id"],
+                    [row["row_id"] for row in legacy_raw["rows"]],
                 )
                 legacy_row = next(
-                    item for item in raw.get("rows", []) if item.get("row_id") == job_id
+                    item for item in legacy_raw.get("rows", []) if item.get("row_id") == job_id
                 )
                 legacy_worker_start = dict(
                     (legacy_row.get("metadata") or {}).get("worker_start") or {}
