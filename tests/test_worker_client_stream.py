@@ -161,9 +161,11 @@ def test_accepted_stream_exhausts_complete_attempts_with_backoff(
     cause_type: type[Exception],
 ) -> None:
     sleep_delays: list[float] = []
+    original_sleep = asyncio.sleep
 
     async def record_sleep(delay: float) -> None:
         sleep_delays.append(delay)
+        await original_sleep(0)
 
     _AcceptedResponse.failure = failure
     _AcceptedAsyncClient.attempts = 0
@@ -173,7 +175,7 @@ def test_accepted_stream_exhausts_complete_attempts_with_backoff(
     monkeypatch.setattr(worker_client, "_RECONNECT_DELAY", 0.25)
 
     with pytest.raises(worker_client.WorkerEventStreamError) as caught:
-        asyncio.run(_consume_stream())
+        asyncio.run(asyncio.wait_for(_consume_stream(), timeout=0.5))
 
     assert str(caught.value) == "Training worker event stream failed."
     assert isinstance(caught.value.__cause__, cause_type)
