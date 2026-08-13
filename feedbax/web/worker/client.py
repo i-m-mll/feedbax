@@ -26,6 +26,10 @@ class WorkerEventStreamError(Exception):
     """Raised when the worker event stream cannot be relayed safely."""
 
 
+class _WorkerEventStreamEnded(Exception):
+    """Internal signal for a non-terminal clean end of the SSE response."""
+
+
 def _auth_headers(auth_token: Optional[str]) -> dict:
     """Return an ``Authorization`` header dict when *auth_token* is set."""
     if auth_token is None:
@@ -267,8 +271,6 @@ async def stream_events(
                 async with client.stream("GET", url, params=params, headers=headers) as resp:
                     resp.raise_for_status()
                     resumed_after_disconnect = attempt > 0
-                    # Successful connection — reset attempt counter.
-                    attempt = 0
                     reported_resume = False
                     async for line in resp.aiter_lines():
                         line = line.strip()
@@ -321,7 +323,9 @@ async def stream_events(
                             "type"
                         ) in ("training_complete", "training_error"):
                             return
+            raise _WorkerEventStreamEnded
         except (
+            _WorkerEventStreamEnded,
             httpx.ConnectError,
             httpx.RemoteProtocolError,
             httpx.ReadError,

@@ -55,6 +55,45 @@ class _TerminalAsyncClient:
         return _TerminalStream()
 
 
+class _AcceptedResponse:
+    failure: Exception | None = None
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def aiter_lines(self):
+        if self.failure is not None:
+            raise self.failure
+        if False:
+            yield ""
+
+
+class _AcceptedStream:
+    async def __aenter__(self) -> _AcceptedResponse:
+        return _AcceptedResponse()
+
+    async def __aexit__(self, *args: object) -> None:
+        del args
+
+
+class _AcceptedAsyncClient:
+    attempts = 0
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+
+    async def __aenter__(self) -> "_AcceptedAsyncClient":
+        type(self).attempts += 1
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        del args
+
+    def stream(self, *args: object, **kwargs: object) -> _AcceptedStream:
+        del args, kwargs
+        return _AcceptedStream()
+
+
 async def _consume_stream() -> list[dict]:
     return [
         event
@@ -106,6 +145,40 @@ def test_stream_events_returns_cleanly_after_terminal_event(monkeypatch) -> None
         {"type": "training_complete", "job_id": "job-terminal", "seq": 4}
     ]
     assert _TerminalAsyncClient.attempts == 1
+
+
+@pytest.mark.parametrize(
+    ("failure", "cause_type"),
+    [
+        (httpx.ReadError("read exposed secret-token"), httpx.ReadError),
+        (None, worker_client._WorkerEventStreamEnded),
+    ],
+    ids=["post-connect-read-failure", "non-terminal-clean-eof"],
+)
+def test_accepted_stream_exhausts_complete_attempts_with_backoff(
+    monkeypatch,
+    failure: Exception | None,
+    cause_type: type[Exception],
+) -> None:
+    sleep_delays: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        sleep_delays.append(delay)
+
+    _AcceptedResponse.failure = failure
+    _AcceptedAsyncClient.attempts = 0
+    monkeypatch.setattr(worker_client.httpx, "AsyncClient", _AcceptedAsyncClient)
+    monkeypatch.setattr(worker_client.asyncio, "sleep", record_sleep)
+    monkeypatch.setattr(worker_client, "_MAX_RECONNECT_ATTEMPTS", 2)
+    monkeypatch.setattr(worker_client, "_RECONNECT_DELAY", 0.25)
+
+    with pytest.raises(worker_client.WorkerEventStreamError) as caught:
+        asyncio.run(_consume_stream())
+
+    assert str(caught.value) == "Training worker event stream failed."
+    assert isinstance(caught.value.__cause__, cause_type)
+    assert _AcceptedAsyncClient.attempts == 3
+    assert sleep_delays == [0.25, 0.25]
 
 
 async def _collect_terminal_stream() -> list[dict]:
