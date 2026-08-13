@@ -118,32 +118,61 @@ async def _run_gcloud(*args: str) -> dict | list:
     try:
         stdout, stderr = await proc.communicate()
     except BaseException:
-        try:
-            if proc.returncode is None:
-                try:
-                    proc.terminate()
-                except ProcessLookupError:
-                    pass
+        cleanup_task = asyncio.create_task(_reap_gcloud_process(proc))
+        while not cleanup_task.done():
             try:
-                await asyncio.wait_for(
-                    proc.wait(),
-                    timeout=_GCLOUD_TERMINATION_GRACE_SECONDS,
-                )
-            except TimeoutError:
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
-                await proc.wait()
-            await proc.communicate()
-        finally:
-            raise
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        if cleanup_task.done():
+            try:
+                cleanup_task.result()
+            except BaseException:
+                pass
+        raise
     if proc.returncode != 0:
         raise RuntimeError(
             f"gcloud {' '.join(args)} failed (exit {proc.returncode}):\n"
             + stderr.decode(errors="replace")
         )
     return json.loads(stdout.decode())
+
+
+async def _reap_gcloud_process(proc: asyncio.subprocess.Process) -> None:
+    """Boundedly stop one gcloud child while draining its output pipes."""
+    if proc.returncode is None:
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            pass
+
+    drain_task = asyncio.create_task(proc.communicate())
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(drain_task),
+            timeout=_GCLOUD_TERMINATION_GRACE_SECONDS,
+        )
+        return
+    except TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(drain_task),
+            timeout=_GCLOUD_TERMINATION_GRACE_SECONDS,
+        )
+    finally:
+        if not drain_task.done():
+            drain_task.cancel()
+            try:
+                await drain_task
+            except BaseException:
+                pass
 
 
 def _parse_instance(raw: dict) -> InstanceInfo:
