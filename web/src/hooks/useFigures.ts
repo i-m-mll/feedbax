@@ -52,19 +52,10 @@ export function useFigures() {
       setFigures(result.items);
       setTotal(result.total);
     } catch (err) {
-      // Distinguish "no data" (500 from missing DB / empty tables) from
-      // genuine unexpected failures. Server 500s when no figures exist
-      // should show the empty state, not the red error banner.
       const msg = err instanceof Error ? err.message : '';
-      const isServerError = msg.includes('500') || msg.includes('Internal Server Error');
-      const isNotFound = msg.includes('404') || msg.includes('Not Found');
-      if (isServerError || isNotFound) {
-        // Treat as empty — no figures yet
-        setFigures([]);
-        setTotal(0);
-      } else {
-        setError(msg || 'Failed to load figures');
-      }
+      setFigures([]);
+      setTotal(0);
+      setError(msg || 'Failed to load figures');
     } finally {
       setLoading(false);
     }
