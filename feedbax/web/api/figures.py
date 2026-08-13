@@ -93,8 +93,11 @@ def _figure_manifests(root: Path | None = None) -> list[FigureManifest]:
     for path in iter_manifest_files(root_path):
         try:
             manifest = load_manifest(path)
-        except Exception:
-            continue
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="Figure registry contains an unreadable manifest",
+            ) from exc
         if isinstance(manifest, FigureManifest):
             manifests.append(manifest)
     return sorted(manifests, key=lambda item: item.created_at, reverse=True)

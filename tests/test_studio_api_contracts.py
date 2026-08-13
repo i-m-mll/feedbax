@@ -97,6 +97,36 @@ def test_figure_registry_api_lists_bootstrapped_constructors() -> None:
     assert any(item["key"] == "feedbax.grid_figure" for item in response.json())
 
 
+def test_figure_registry_empty_root_returns_empty_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(figures_api, "default_manifest_root", lambda: tmp_path)
+
+    with TestClient(create_app()) as client:
+        response = client.get("/api/figures/")
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "total": 0, "limit": 50, "offset": 0}
+
+
+def test_figure_registry_unreadable_manifest_fails_without_exposing_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_path = tmp_path / "manifests" / "figures" / "private-custody.json"
+    private_path.parent.mkdir(parents=True)
+    private_path.write_text("not-json", encoding="utf-8")
+    monkeypatch.setattr(figures_api, "default_manifest_root", lambda: tmp_path)
+
+    with TestClient(create_app()) as client:
+        response = client.get("/api/figures/")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Figure registry contains an unreadable manifest"}
+    assert str(private_path) not in response.text
+
+
 def test_figure_file_formats_use_shared_media_types() -> None:
     assert figures_api._SERVED_FORMATS == ("json", "html", "png", "svg", "webp", "pdf")
     assert figures_api._CONTENT_TYPES == {

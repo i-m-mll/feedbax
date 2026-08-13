@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 import os
 import tempfile
 from typing import Any, Dict, List, Optional
@@ -21,7 +22,9 @@ from feedbax.contracts.studio_api import (
 )
 from feedbax.web.services.graph_service import GraphService
 from feedbax.objectives.service import loss_service
-from feedbax.web.services.training_service import training_service
+from feedbax.web.services.training_service import RunStateCorruptionError, training_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 graph_service = GraphService()
@@ -92,7 +95,18 @@ async def start_training(payload: TrainingRequest, request: Request) -> Training
 
 @router.get("/{job_id}", response_model=TrainingStatusResponse)
 async def get_training_status(job_id: str) -> TrainingStatusResponse:
-    status = await training_service.get_status(job_id)
+    try:
+        status = await training_service.get_status(job_id)
+    except RunStateCorruptionError as exc:
+        logger.error(
+            "Studio training status failed on corrupt document at %s: %s",
+            exc.path,
+            exc.reason,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Persisted Studio run state is corrupt",
+        ) from exc
     if status is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return TrainingStatusResponse(data={"status": status})

@@ -173,7 +173,7 @@ export function FigureGalleryPanel() {
         )}
 
         {/* Empty state: no figures at all */}
-        {!loading && total === 0 && !hasActiveFilters && (
+        {!loading && !error && total === 0 && !hasActiveFilters && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="text-center">
               <div className="text-sm text-slate-400">No figures yet</div>
@@ -185,7 +185,7 @@ export function FigureGalleryPanel() {
         )}
 
         {/* Empty state: no results matching filters */}
-        {!loading && total === 0 && hasActiveFilters && (
+        {!loading && !error && total === 0 && hasActiveFilters && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="text-center">
               <div className="text-sm text-slate-400">No figures match the current filters</div>

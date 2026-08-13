@@ -22,6 +22,14 @@ _MAX_RECONNECT_ATTEMPTS = 10
 _RECONNECT_DELAY = 2.0
 
 
+class WorkerEventStreamError(Exception):
+    """Raised when the worker event stream cannot be relayed safely."""
+
+
+class _WorkerEventStreamEnded(Exception):
+    """Internal signal for a non-terminal clean end of the SSE response."""
+
+
 def _auth_headers(auth_token: Optional[str]) -> dict:
     """Return an ``Authorization`` header dict when *auth_token* is set."""
     if auth_token is None:
@@ -231,8 +239,8 @@ async def stream_events(
     received event to resume from the correct position via the ``from_seq``
     query parameter.
 
-    The generator exits when the SSE stream closes (worker completed or
-    errored), or when all reconnection attempts are exhausted.
+    The generator exits cleanly after a terminal event. Stream failures are
+    retried where classified as reconnectable, then surfaced to the caller.
 
     Args:
         base_url: Worker base URL.
@@ -241,6 +249,10 @@ async def stream_events(
 
     Yields:
         Parsed event dicts (the ``data:`` payload from each SSE line).
+
+    Raises:
+        WorkerEventStreamError: If reconnect attempts are exhausted or an
+            unclassified stream failure occurs.
     """
     last_seq: Optional[int] = None
     attempt = 0
@@ -259,8 +271,6 @@ async def stream_events(
                 async with client.stream("GET", url, params=params, headers=headers) as resp:
                     resp.raise_for_status()
                     resumed_after_disconnect = attempt > 0
-                    # Successful connection — reset attempt counter.
-                    attempt = 0
                     reported_resume = False
                     async for line in resp.aiter_lines():
                         line = line.strip()
@@ -313,15 +323,17 @@ async def stream_events(
                             "type"
                         ) in ("training_complete", "training_error"):
                             return
+            raise _WorkerEventStreamEnded
         except (
+            _WorkerEventStreamEnded,
             httpx.ConnectError,
             httpx.RemoteProtocolError,
             httpx.ReadError,
-        ):
+        ) as exc:
             attempt += 1
             if attempt > _MAX_RECONNECT_ATTEMPTS:
-                return
+                raise WorkerEventStreamError("Training worker event stream failed.") from exc
             await asyncio.sleep(_RECONNECT_DELAY)
-        except Exception:
-            # Unknown error — stop cleanly rather than reconnecting blindly.
-            return
+        except Exception as exc:
+            # Do not expose upstream response bodies, URLs, or transport details.
+            raise WorkerEventStreamError("Training worker event stream failed.") from exc

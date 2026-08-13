@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 websockets = pytest.importorskip("starlette.websockets")
 WebSocketState = websockets.WebSocketState
 from feedbax.web.app import create_app  # noqa: E402
+from feedbax.web.worker.client import WorkerEventStreamError  # noqa: E402
 from feedbax.web.ws import training  # noqa: E402
 
 
@@ -55,6 +56,30 @@ def test_training_ws_sends_upstream_errors_and_closes(monkeypatch) -> None:
     assert error["seq"] >= 0
     assert isinstance(error["emitted_at_ms"], int)
     assert error["schema_version"] == "feedbax.spec.studio.api_transport.v2"
+    assert websocket.closed is True
+
+
+def test_training_ws_sends_sanitized_worker_stream_error(monkeypatch) -> None:
+    async def stream_progress(job_id: str):
+        assert job_id == "job-stream-failure"
+        if False:
+            yield None
+        raise WorkerEventStreamError("Training worker event stream failed.") from ValueError(
+            "upstream secret"
+        )
+
+    websocket = FakeWebSocket()
+    monkeypatch.setattr(training.training_service, "stream_progress", stream_progress)
+
+    asyncio.run(training.training_ws(websocket, "job-stream-failure"))
+
+    assert len(websocket.sent) == 1
+    error = websocket.sent[0]
+    assert error["type"] == "training_error"
+    assert error["job_id"] == "job-stream-failure"
+    assert error["error"] == "Training worker event stream failed."
+    assert error["diagnostics"][0]["message"] == "Training worker event stream failed."
+    assert "secret" not in str(error)
     assert websocket.closed is True
 
 
