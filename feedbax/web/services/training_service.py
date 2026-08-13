@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -12,7 +13,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional, Sequence
+from typing import Any, AsyncIterator, NoReturn, Optional, Sequence
 
 import httpx
 
@@ -66,6 +67,9 @@ import feedbax.web.worker.client as worker_client
 from feedbax.web.services.worker_driver import load_worker_execution_payload
 
 
+logger = logging.getLogger(__name__)
+
+
 # ---------------------------------------------------------------------------
 # Public event type
 # ---------------------------------------------------------------------------
@@ -76,6 +80,15 @@ class TrainingEvent:
     """A single event relayed from the worker SSE stream."""
 
     raw: dict  # parsed JSON from the SSE data: line
+
+
+class RunStateCorruptionError(RuntimeError):
+    """A persisted Studio orchestration document cannot be admitted safely."""
+
+    def __init__(self, path: Path, reason: str) -> None:
+        super().__init__("Persisted Studio run state is corrupt")
+        self.path = path
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -559,11 +572,11 @@ class TrainingService:
         for state_path in self._iter_state_paths():
             bundle_path = state_path.with_name("bundle.json")
             if not bundle_path.exists():
-                continue
+                self._raise_run_state_corruption(bundle_path, "bundle document is missing")
             try:
                 bundle = RunBundle.model_validate_json(bundle_path.read_text(encoding="utf-8"))
-            except Exception:
-                self._index_legacy_v2_bundle(refs, state_path, bundle_path)
+            except Exception as exc:
+                self._index_legacy_v2_bundle(refs, state_path, bundle_path, cause=exc)
                 continue
             for row in bundle.rows:
                 refs[row.row_id] = _JobRef(
@@ -578,11 +591,10 @@ class TrainingService:
         """Finalize terminal rows and fail truly orphaned rows after backend restart."""
         self.rebuild_cache_from_state_docs()
         for ref in list(self._job_refs_by_job.values()):
-            try:
-                bundle = self._load_bundle(ref)
-                store = RunSetStateStore(ref.state_path)
-                state = store.load()
-            except Exception:
+            store = RunSetStateStore(ref.state_path)
+            state = self._load_state(ref)
+            bundle = self._load_bundle_allow_legacy_v2(ref)
+            if bundle is None:
                 continue
             changed = False
             for row in bundle.rows:
@@ -739,51 +751,112 @@ class TrainingService:
         return self._job_refs_by_job.get(job_id)
 
     def _load_bundle(self, ref: _JobRef) -> RunBundle:
-        return RunBundle.model_validate_json(ref.bundle_path.read_text(encoding="utf-8"))
+        try:
+            return RunBundle.model_validate_json(ref.bundle_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self._raise_run_state_corruption(
+                ref.bundle_path,
+                f"bundle validation failed: {type(exc).__name__}: {exc}",
+                cause=exc,
+            )
+
+    def _load_bundle_allow_legacy_v2(self, ref: _JobRef) -> RunBundle | None:
+        try:
+            return RunBundle.model_validate_json(ref.bundle_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self._read_legacy_v2_bundle(ref.bundle_path, cause=exc)
+            return None
+
+    def _load_state(self, ref: _JobRef) -> RunSetState:
+        try:
+            return RunSetStateStore(ref.state_path).load()
+        except Exception as exc:
+            self._raise_run_state_corruption(
+                ref.state_path,
+                f"state validation failed: {type(exc).__name__}: {exc}",
+                cause=exc,
+            )
+
+    @staticmethod
+    def _raise_run_state_corruption(
+        path: Path,
+        reason: str,
+        *,
+        cause: Exception | None = None,
+    ) -> NoReturn:
+        logger.error("Corrupt Studio run-state document at %s: %s", path, reason)
+        raise RunStateCorruptionError(path, reason) from cause
 
     def _index_legacy_v2_bundle(
         self,
         refs: dict[str, _JobRef],
         state_path: Path,
         bundle_path: Path,
+        *,
+        cause: Exception,
     ) -> None:
         """Index historical v2 rows for read-only status visibility only."""
+        raw = self._read_legacy_v2_bundle(bundle_path, cause=cause)
+        run_set_id = raw["run_set_id"]
+        for row in raw["rows"]:
+            refs[row["row_id"]] = _JobRef(row["row_id"], run_set_id, state_path, bundle_path)
+
+    def _read_legacy_v2_bundle(
+        self,
+        bundle_path: Path,
+        *,
+        cause: Exception,
+    ) -> dict[str, Any]:
+        """Admit a structurally valid historical v2 bundle or fail explicitly."""
         try:
             raw = json.loads(bundle_path.read_text(encoding="utf-8"))
-        except Exception:
-            return
+        except Exception as exc:
+            self._raise_run_state_corruption(
+                bundle_path,
+                f"bundle JSON is unreadable: {type(exc).__name__}: {exc}",
+                cause=exc,
+            )
+        if not isinstance(raw, dict):
+            self._raise_run_state_corruption(bundle_path, "bundle JSON is not an object")
         if raw.get("schema_version") != "feedbax.orchestration.run_bundle.v2":
-            return
+            self._raise_run_state_corruption(
+                bundle_path,
+                f"bundle validation failed: {type(cause).__name__}: {cause}",
+                cause=cause,
+            )
         run_set_id = raw.get("run_set_id")
         if not isinstance(run_set_id, str):
-            return
-        for row in raw.get("rows", []):
+            self._raise_run_state_corruption(bundle_path, "legacy v2 run_set_id is invalid")
+        rows = raw.get("rows")
+        if not isinstance(rows, list):
+            self._raise_run_state_corruption(bundle_path, "legacy v2 rows are invalid")
+        for row in rows:
             job_id = row.get("row_id") if isinstance(row, dict) else None
-            if isinstance(job_id, str):
-                refs[job_id] = _JobRef(job_id, run_set_id, state_path, bundle_path)
+            if not isinstance(job_id, str):
+                self._raise_run_state_corruption(bundle_path, "legacy v2 row_id is invalid")
+        return raw
 
     def _status_from_state(self, job_id: str) -> dict[str, Any] | None:
         ref = self._job_ref_for(job_id)
         if ref is None or not ref.state_path.exists():
             return None
-        try:
-            state = RunSetStateStore(ref.state_path).load()
-        except Exception:
-            return None
+        state = self._load_state(ref)
         row = state.rows.get(job_id)
         if row is None:
             return None
         bundle: RunBundle | None
         legacy_worker_start: dict[str, Any] = {}
-        try:
-            bundle = self._load_bundle(ref)
+        bundle = self._load_bundle_allow_legacy_v2(ref)
+        if bundle is not None:
             total_batches = load_worker_execution_payload(bundle.row(job_id)).get(
                 "total_batches", 0
             )
-        except Exception:
-            bundle = None
+        else:
             try:
-                raw = json.loads(ref.bundle_path.read_text(encoding="utf-8"))
+                raw = self._read_legacy_v2_bundle(
+                    ref.bundle_path,
+                    cause=ValueError("current bundle validation failed"),
+                )
                 legacy_row = next(
                     item for item in raw.get("rows", []) if item.get("row_id") == job_id
                 )
@@ -791,8 +864,12 @@ class TrainingService:
                     (legacy_row.get("metadata") or {}).get("worker_start") or {}
                 )
                 total_batches = legacy_worker_start.get("total_batches", 0)
-            except Exception:
-                return None
+            except Exception as exc:
+                self._raise_run_state_corruption(
+                    ref.bundle_path,
+                    f"legacy v2 bundle lookup failed: {type(exc).__name__}: {exc}",
+                    cause=exc,
+                )
         events = (
             self._read_job_events(bundle, job_id)
             if bundle is not None
