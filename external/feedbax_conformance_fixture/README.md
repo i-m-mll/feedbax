@@ -28,29 +28,56 @@ therefore authenticates installed-wheel provenance at both execution
 boundaries. The deployment policy is explicitly local and cloud-unauthorized;
 all custody, orchestration, and cache paths are unique temporary directories.
 
-The result schema is `feedbax.external_conformance.result.v12`. Its evidence map
-has exactly twelve strict-boolean cases. The `unified_plugin_bootstrap` case loads
-two typed `PluginRegistration` values from the installed package through the
-single `feedbax.plugins` group and adds a fixture-owned typed registry family
-without loader changes. It proves deterministic dependency sorting, atomic
-failure and conflict non-publication, isolated cached contexts, typed errors,
-sealed publication, provenance, and fail-closed legacy registrar values. V2
-remains the protected exact six-case foundation and rejects rather than
-pretending it measured later cases. Unshipped v3-v6 results reject explicitly;
-shipped v7 lacks the array-value case, shipped v8 lacks the unified-bootstrap
-case, shipped v9 lacks the dynamic-port case, and shipped v10 lacks the external
-driver case, so all reject rather than acquiring synthetic evidence. Shipped
-v11 lacks both `custody_persistence_recovery` and bound numeric protocol roles,
-so it also rejects without synthetic migration. The
-`dynamic_component_ports` case proves an
+The result schema is `feedbax.external_conformance.result.v14`. Its evidence map
+has exactly fourteen strict-boolean cases, in this order:
+
+1. `ordered_registration`
+2. `unified_plugin_bootstrap`
+3. `external_driver_plugin`
+4. `component_registration_and_migration`
+5. `dynamic_component_ports`
+6. `value_identity`
+7. `component_param_array_values`
+8. `material_dependencies`
+9. `staged_exact_parent_migration`
+10. `resolved_evaluation_row_projection`
+11. `public_lifecycle_recovery`
+12. `custody_persistence_recovery`
+13. `figure_composition_public_contract`
+14. `figure_role_reference_public_contract`
+
+The `unified_plugin_bootstrap` case loads two typed `PluginRegistration` values
+from the installed package through the single `feedbax.plugins` group and adds a
+fixture-owned typed registry family without loader changes. It proves
+deterministic dependency sorting, atomic failure and conflict non-publication,
+isolated cached contexts, typed errors, sealed publication, provenance, and
+fail-closed legacy registrar values. The `dynamic_component_ports` case proves an
 external policy-bearing component through unified bootstrap, deterministic
 materialization, GraphSpec build, runtime execution, and fail-closed mismatch.
 The `custody_persistence_recovery` case proves a primary ENOSPC persistence
 failure survives restart, publishes the bounded v1 emergency recovery record,
 blocks destructive teardown until custody is complete, and permits exactly one
-post-custody deletion. The versioned `policy_manifest.v1.json` maps each
-externally exercised policy row to real case IDs and marks terminal
-certification as non-external-covered rather than inventing a case.
+post-custody deletion. The `figure_composition_public_contract` case proves the
+installed public figure composition and display contract, including the
+`feedbax-figure resolve` CLI. The `figure_role_reference_public_contract` case
+proves the installed public row index, row-set selector, and figure role
+reference contract, including digest-pinned expansion and fail-closed selector
+rejection.
+
+Every earlier shipped version rejects rather than acquiring synthetic evidence.
+V2 remains the protected exact six-case foundation and rejects rather than
+pretending it measured later cases. Unshipped v3-v6 results reject explicitly;
+shipped v7 lacks the array-value case, shipped v8 lacks the unified-bootstrap
+case, shipped v9 lacks the dynamic-port case, and shipped v10 lacks the external
+driver case. Shipped v11 lacks both `custody_persistence_recovery` and bound
+numeric protocol roles, shipped v12 lacks
+`figure_composition_public_contract`, and shipped v13 lacks
+`figure_role_reference_public_contract`.
+
+The versioned `policy_manifest.v1.json` maps each externally exercised policy row
+to real case IDs. It marks terminal certification and the three envelope-layer
+rows (`report-surface`, `evaluation-surface`, `analysis-authoring`) as
+non-external-covered rather than inventing a case for them.
 
 The required `current` and `minimum` protocol role members are both the strict
 numeric value `1`. Version 1 retains its v2 normalization-before-rejection

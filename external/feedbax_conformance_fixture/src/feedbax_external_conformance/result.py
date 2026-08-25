@@ -208,7 +208,7 @@ class ConformanceResult(BaseModel):
 
 
 def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResult:
-    """Load v13 while preserving explicit decisions for older incomplete evidence."""
+    """Load v14 while preserving explicit decisions for older incomplete evidence."""
 
     if isinstance(payload, ConformanceResult):
         return ConformanceResult.model_validate(payload.model_dump(mode="json"))
