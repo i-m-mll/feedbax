@@ -1,0 +1,124 @@
+{
+  "schema_id": "feedbax.guarantee_dependency_scan.corpora",
+  "schema_version": "feedbax.guarantee_dependency_scan.corpora.v1",
+  "comment": [
+    "Declarative scan-target configuration for scripts/guarantee_dependency_scan.py.",
+    "Source roots and durable-artifact roots are declared separately: source roots are",
+    "enumerated from an explicit NUL-delimited tracked-file listing (git ls-files -z),",
+    "while artifact roots are walked on the filesystem because durable run output is",
+    "deliberately untracked. Sealed source snapshots inside artifact roots are detected",
+    "structurally (a nested checkout marker) and excluded, because they are verbatim",
+    "copies of scanned source and would manufacture false consumers.",
+    "'root' entries beginning with './' are resolved against --library-root."
+  ],
+  "corpora": [
+    {
+      "name": "rlrmp2",
+      "role": "active-consumer",
+      "root": "/Users/mll/Main/10 Projects/10 PhD/rlrmp2",
+      "source": {
+        "mode": "git-tracked",
+        "exclude_prefixes": [
+          "worktrees/"
+        ]
+      },
+      "artifact_roots": [
+        "_artifacts",
+        "generated"
+      ],
+      "restatement_paths": [
+        "ci/"
+      ],
+      "restatement_reason": "ci/*.toml are allowlists that restate this repository's own surface as data in order to declare a rule about it. They are evidence of a policy, not an independent dependency on a guaranteed interface."
+    },
+    {
+      "name": "rlrmp",
+      "role": "frozen-archive",
+      "root": "/Users/mll/Main/10 Projects/10 PhD/rlrmp",
+      "source": {
+        "mode": "git-tracked",
+        "exclude_prefixes": [
+          "worktrees/"
+        ]
+      },
+      "artifact_roots": [
+        "_artifacts"
+      ],
+      "restatement_paths": [
+        "ci/feedbax-public-imports.toml"
+      ],
+      "restatement_reason": "ci/feedbax-public-imports.toml is an import allowlist: it names this library's public symbols as data in order to declare a rule about importing them. It is evidence of a policy, not an independent dependency. The rest of ci/ is ordinary configuration and is scanned normally."
+    },
+    {
+      "name": "feedbax-fixtures",
+      "role": "library-fixtures",
+      "comment": "This library's own durable fixture data: saved documents that would have to migrate or be re-authored if a guarantee changed. Deliberately excludes the library source, which defines the guarantees rather than depending on them.",
+      "root": ".",
+      "source": {
+        "mode": "git-tracked",
+        "exclude_prefixes": [
+          "feedbax/",
+          "web/",
+          "worktrees/",
+          "scripts/guarantee_scan_controls/"
+        ],
+        "include_suffixes": [
+          ".json",
+          ".jsonl",
+          ".yaml",
+          ".yml",
+          ".toml"
+        ]
+      },
+      "artifact_roots": [],
+      "restatement_paths": [
+        "docs/"
+      ],
+      "restatement_reason": "docs/ restates the guaranteed inventory verbatim; it declares the guarantee rather than depending on it."
+    },
+    {
+      "name": "feedbax-tests",
+      "role": "library-tests",
+      "comment": "This library's own tests, scripts, and examples. Their dependence on a guarantee is expected and does not by itself argue that anything outside the library needs it; it is reported separately so the two are never conflated.",
+      "root": ".",
+      "source": {
+        "mode": "git-tracked",
+        "exclude_prefixes": [
+          "feedbax/",
+          "web/",
+          "worktrees/",
+          "scripts/guarantee_scan_controls/"
+        ],
+        "include_suffixes": [
+          ".py",
+          ".pyi",
+          ".sh",
+          ".md"
+        ]
+      },
+      "artifact_roots": [],
+      "restatement_paths": [
+        "docs/",
+        "AGENTS.md",
+        "CLAUDE.md"
+      ],
+      "restatement_reason": "docs/ and the agent instruction files restate the policy; they declare the guarantee rather than depending on it."
+    }
+  ],
+  "control_corpus": {
+    "name": "controls",
+    "role": "control",
+    "root": "./scripts/guarantee_scan_controls",
+    "source": {
+      "mode": "filesystem",
+      "exclude_prefixes": [
+        "README.md"
+      ]
+    },
+    "artifact_roots": [],
+    "restatement_paths": [
+      "restatement/"
+    ],
+    "restatement_reason": "Negative control: an import-allowlist restatement that must never be counted as a dependency."
+  }
+}

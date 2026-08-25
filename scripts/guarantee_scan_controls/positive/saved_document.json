@@ -1,0 +1,21 @@
+{
+  "schema_id": "feedbax.spec.graph",
+  "schema_version": "feedbax.spec.graph.v5",
+  "legacy_sibling_version": "feedbax.spec.graph.v1",
+  "graph_spec": {
+    "kind": "GraphSpec",
+    "components": [
+      {"id": "plant", "type": "AffineFeedbackController"}
+    ]
+  },
+  "plugin_registries": {
+    "training_methods": ["control"],
+    "row_lowerers": ["control"]
+  },
+  "console_entry_point": "feedbax.cli:main",
+  "stored_module_path": "feedbax.contracts.array_values",
+  "checkpoint_structure": {
+    "__module__": "feedbax.contracts.graph",
+    "__qualname__": "feedbax.contracts.graph.GraphSpec"
+  }
+}
