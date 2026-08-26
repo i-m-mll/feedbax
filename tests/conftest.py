@@ -171,6 +171,12 @@ def _fresh_checkout_revision_cache() -> Iterator[None]:
     while it runs. Clearing the cache on both sides of each test keeps that
     freedom, so no test can observe an answer another test resolved and none can
     leak one forward.
+
+    This covers test boundaries only. A single test that resolves a checkout and
+    *then* changes what Git would answer about it — initialising a repository over
+    an installed wheel, committing, checking out — must call
+    ``revision._reset_checkout_revision_cache()`` itself between the two, or it
+    will assert against the answer it already took.
     """
     _revision._reset_checkout_revision_cache()
     yield
