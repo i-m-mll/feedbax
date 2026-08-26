@@ -1,4 +1,15 @@
-"""Real-wheel acceptance tests for Feedbax distribution provenance."""
+"""Real-wheel acceptance tests for Feedbax distribution provenance.
+
+These build a real wheel and install it, which needs a clean Git checkout —
+Feedbax refuses to stamp distribution provenance onto uncommitted bytes, and the
+module-scoped fixtures assert that before they start — plus either a network or
+a warm ``uv`` cache. The default per-iteration gate cannot promise any of those,
+and a gate that goes red whenever someone has an edit in progress names the
+developer's working tree rather than a defect. The module therefore carries
+``slow``, which ``pyproject.toml`` deselects from the default gate and
+``scripts/full_suite.py`` restores for the closeout bar, alongside
+``test_cold_start_conformance`` which pays the same price for the same reason.
+"""
 
 from __future__ import annotations
 
@@ -22,6 +33,8 @@ from feedbax.orchestration.revision import (
     resolve_feedbax_provenance,
     resolve_feedbax_revision,
 )
+
+pytestmark = pytest.mark.slow
 
 
 def _run(

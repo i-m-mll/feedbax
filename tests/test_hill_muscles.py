@@ -9,6 +9,7 @@ and musculoskeletal arm integration.
 
 import pytest
 import diffrax as dfx
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -505,20 +506,32 @@ class TestRigidTendonMusculoskeletalArm:
         assert not jnp.any(jnp.isnan(grad_exc))
 
     def test_no_nan_in_simulation(self, arm):
-        """Test no NaN in extended simulation."""
+        """Test no NaN in extended simulation.
+
+        Scanned under one compiled rollout: same 1000 steps and the same per-step
+        NaN check on effector position and muscle forces, without paying a host
+        round trip and a device sync for each of them.
+        """
         state = init_state_from_component(arm)
-        key = jr.PRNGKey(3)
 
         n_steps = 1000
         excitations = jnp.array([0.5, 0.3, 0.4, 0.2, 0.6, 0.1])
         inputs = {"excitations": excitations}
 
-        for i in range(n_steps):
-            key, subkey = jr.split(key)
-            outputs, state = arm(inputs, state, key=subkey)
+        @eqx.filter_jit
+        def rollout(initial_state, keys):
+            def step(step_state, step_key):
+                outputs, next_state = arm(inputs, step_state, key=step_key)
+                nan_seen = jnp.any(jnp.isnan(outputs["effector"].pos)) | jnp.any(
+                    jnp.isnan(outputs["forces"])
+                )
+                return next_state, nan_seen
 
-            assert not jnp.any(jnp.isnan(outputs["effector"].pos)), f"NaN at step {i}"
-            assert not jnp.any(jnp.isnan(outputs["forces"])), f"NaN at step {i}"
+            return jax.lax.scan(step, initial_state, keys)
+
+        _final_state, nan_at_step = rollout(state, jr.split(jr.PRNGKey(3), n_steps))
+
+        assert not jnp.any(nan_at_step), f"NaN at step {int(jnp.argmax(nan_at_step))}"
 
     def test_muscle_activation_bounds(self, arm):
         """Test that muscle activations stay bounded."""

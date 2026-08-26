@@ -332,20 +332,32 @@ def _git_seal_ready(root: Path, *tracked: str) -> None:
     root.mkdir(parents=True, exist_ok=True)
     if (root / ".git").exists():
         return
-    subprocess.run(["git", "-C", str(root), "init"], check=True, capture_output=True)
-    subprocess.run(
-        ["git", "-C", str(root), "config", "user.email", "runpod@example.invalid"],
-        check=True,
-    )
-    subprocess.run(["git", "-C", str(root), "config", "user.name", "RunPod Test"], check=True)
     to_add = [name for name in tracked if (root / name).exists()]
     if not to_add:
         (root / ".sealed").write_text("sealed\n", encoding="utf-8")
         to_add = [".sealed"]
-    for name in to_add:
-        subprocess.run(["git", "-C", str(root), "add", name], check=True)
+    # Every fixture repo in this module is built this way and forking `git` is
+    # the file's dominant cost, so this is deliberately three processes rather
+    # than one per file plus two for identity: the adds are batched and the
+    # committer identity rides on the commit as `-c` overrides.
+    git = ["git", "-C", str(root), "--no-optional-locks"]
+    subprocess.run([*git, "init", "--quiet"], check=True, capture_output=True)
+    subprocess.run([*git, "add", "--", *to_add], check=True, capture_output=True)
     subprocess.run(
-        ["git", "-C", str(root), "commit", "-m", "fixture"],
+        [
+            *git,
+            "-c",
+            "user.email=runpod@example.invalid",
+            "-c",
+            "user.name=RunPod Test",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--quiet",
+            "--no-verify",
+            "-m",
+            "fixture",
+        ],
         check=True,
         capture_output=True,
     )
@@ -5717,6 +5729,14 @@ def test_run_command_timeout_kills_entire_child_process_group(tmp_path: Path) ->
 
 
 def test_interrupt_while_run_command_waits_does_not_wedge_parent(tmp_path: Path) -> None:
+    # The child has to boot an interpreter and import feedbax before it can
+    # signal readiness, and this suite runs with one worker per core, so the
+    # setup wait is bounded generously: a tight deadline here measures how busy
+    # the host is, not whether an interrupted parent wedges. The contract under
+    # test is the wait *after* the signal — a wedged parent never returns at all,
+    # so a generous bound still names the defect.
+    startup_deadline_seconds = 120.0
+    shutdown_deadline_seconds = 60.0
     child_pid = tmp_path / "child.pid"
     script = (
         "import pathlib, sys\n"
@@ -5733,14 +5753,21 @@ def test_interrupt_while_run_command_waits_does_not_wedge_parent(tmp_path: Path)
             ),
         },
     )
-    deadline = time.monotonic() + 5
-    while not child_pid.exists() and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert child_pid.exists()
+    try:
+        deadline = time.monotonic() + startup_deadline_seconds
+        while not child_pid.exists() and time.monotonic() < deadline:
+            if parent.poll() is not None:
+                pytest.fail(f"child exited before signalling readiness: {parent.returncode}")
+            time.sleep(0.02)
+        assert child_pid.exists()
 
-    parent.send_signal(signal.SIGINT)
+        parent.send_signal(signal.SIGINT)
 
-    assert parent.wait(timeout=5) != 0
+        assert parent.wait(timeout=shutdown_deadline_seconds) != 0
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+            parent.wait(timeout=shutdown_deadline_seconds)
 
 
 def test_abort_teardown_pulls_failure_logs_before_pod_removal(tmp_path: Path) -> None:

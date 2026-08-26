@@ -218,6 +218,15 @@ These rules are exported to downstream projects verbatim in
   `--include-optional` to add those explicit tiers. Direct pytest selections use
   `-m optional_mjx` or `-m optional_ppo`; cheap PPO API and structural contract
   tests remain in the core profile.
+- The `slow` tier is the one tier the wrapper adds rather than removes. A plain
+  `pytest` run deselects it through `addopts`, because those modules build a real
+  wheel and install it and so require a clean Git checkout plus a network or a
+  warm `uv` cache — a gate that must pass on every invocation cannot promise any
+  of that, and one that goes red whenever an edit is in progress reports the
+  working tree rather than a defect. Every `full_suite.sh` profile passes its own
+  `-m` on the command line, which overrides `addopts`, so the closeout bar always
+  runs the `slow` tier. Put a test there only for that resource reason, never for
+  cost alone, and never deselect `slow` from a wrapper profile.
 - The wrapper uses `uv run --no-sync python -m pytest tests -n auto`, configures
   the persistent JAX compilation cache, and records green-tree memo entries only
   for a clean Git tree with the same test profile and passthrough pytest arguments,

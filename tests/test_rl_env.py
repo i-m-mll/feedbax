@@ -1,5 +1,6 @@
 """Tests for feedbax.training.rl.env."""
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
@@ -77,10 +78,26 @@ class TestRLEnvStep:
         assert obs.ndim == 1
 
     def test_done_at_end(self, plant, config, state):
+        """The episode reports done once the configured horizon is reached.
+
+        Scanned under one compiled rollout: the same ``config.n_steps`` control
+        steps, but the step function is traced once instead of dispatched from
+        the host on every iteration.
+        """
         action = jnp.zeros(config.n_muscles)
-        for _ in range(config.n_steps):
-            state, obs, reward, done = rl_env_step(plant, config, state, action)
-        assert float(done) == 1.0
+
+        @eqx.filter_jit
+        def rollout(initial_state):
+            def step(step_state, _):
+                next_state, _obs, _reward, done = rl_env_step(
+                    plant, config, step_state, action
+                )
+                return next_state, done
+
+            return jax.lax.scan(step, initial_state, None, length=config.n_steps)
+
+        _final_state, done_per_step = rollout(state)
+        assert float(done_per_step[-1]) == 1.0
 
 
 class TestRLEnvObs:

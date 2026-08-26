@@ -49,6 +49,14 @@ EXECUTION_RELEVANT_UNTRACKED_PATHS = (
     "tox.ini",
     "uv.lock",
 )
+# None of these expressions deselect `slow`, and that is deliberate. The
+# per-iteration default gate deselects it through `addopts` in `pyproject.toml`
+# because the `slow` tests build a real wheel and install it, which needs a
+# clean Git checkout plus a network or warm `uv` cache — resources a gate that
+# must pass on every invocation cannot promise. These expressions are passed on
+# the command line, and a command-line `-m` overrides `addopts`, so the closeout
+# bar this wrapper runs restores the `slow` tier every time. `test_full_suite_wrapper`
+# pins both halves of that relationship.
 SUITE_MARKER_EXPRESSIONS = {
     "core": "not optional_mjx and not optional_ppo",
     "mjx": "not optional_ppo",
