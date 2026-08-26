@@ -83,6 +83,17 @@ The scan config used:
 }
 ```
 
+### Raw outputs
+
+The complete machine-readable outputs are in Mandible custody, so the ranking
+below can be re-read at any depth rather than only at the ranks quoted here:
+
+- `[artifact-version:1e3c0176bdef]` — full NCD report, all 747 primary and 2,106
+  dropped pairs, JSON.
+- `[artifact-version:82483cce87dc]` — the same run rendered as Markdown.
+- `[artifact-version:7049d74d88a8]` — the `jscpd` report, all 824 clones, JSON.
+- `[artifact-version:bba030b89391]` — the scan config, verbatim.
+
 ## Census
 
 Every figure below is Python, over the tracked tree only.
