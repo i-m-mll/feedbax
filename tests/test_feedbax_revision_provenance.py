@@ -121,6 +121,54 @@ def test_check_feedbax_provenance_refuses_dirty_tree(
         check_feedbax_provenance(head)
 
 
+def test_checkout_revision_is_resolved_once_per_process(
+    clean_checkout: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-asserting the pin at every gate must not re-fork Git at every gate.
+
+    Each resolution costs three ``git`` subprocesses and the gates deliberately
+    re-assert per stage and per launched row, so the memo is what keeps that
+    design affordable rather than an optimisation the module can quietly lose.
+    """
+    _package_root, head = clean_checkout
+    queried: list[Path] = []
+    uncached_query = revision._query_checkout_revision
+
+    def counting_query(package_root: Path) -> str | None:
+        queried.append(package_root)
+        return uncached_query(package_root)
+
+    monkeypatch.setattr(revision, "_query_checkout_revision", counting_query)
+
+    assert resolve_feedbax_provenance().revision == head
+    assert assert_feedbax_revision_exact(head) == head
+    assert check_feedbax_provenance(head) is not None
+    assert len(queried) == 1
+
+    revision._reset_checkout_revision_cache()
+
+    assert assert_feedbax_revision_exact(head) == head
+    assert len(queried) == 2
+
+
+def test_working_tree_cleanliness_is_never_memoized(
+    clean_checkout: tuple[Path, str],
+) -> None:
+    """An edit made after a clean resolution must still fail the provenance gate.
+
+    Cleanliness is a live property of the tree rather than of the imported bytes,
+    so it is deliberately outside the memo that holds the resolved revision.
+    """
+    package_root, head = clean_checkout
+    assert resolve_feedbax_provenance().dirty is False
+
+    (package_root / "__init__.py").write_text("# uncommitted edit\n")
+
+    assert resolve_feedbax_provenance().dirty is True
+    with pytest.raises(FeedbaxRevisionError, match="uncommitted changes"):
+        check_feedbax_provenance(head)
+
+
 def test_resolve_feedbax_provenance_detects_dirty_tree(
     clean_checkout: tuple[Path, str],
 ) -> None:

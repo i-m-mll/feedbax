@@ -161,6 +161,29 @@ _WORKING_PACKAGE_ROOT = Path(feedbax.__file__).resolve().parent
 
 
 @pytest.fixture(autouse=True)
+def _fresh_checkout_revision_cache() -> Iterator[None]:
+    """Give every test the memoized revision state of a freshly started process.
+
+    ``revision._resolve_checkout_revision`` memoizes per package directory because
+    the commit that supplied an imported package is fixed once the interpreter has
+    loaded it. A test is not a process: it redirects ``feedbax.__file__`` at a
+    throwaway checkout it just built, and may commit to or rewrite that checkout
+    while it runs. Clearing the cache on both sides of each test keeps that
+    freedom, so no test can observe an answer another test resolved and none can
+    leak one forward.
+
+    This covers test boundaries only. A single test that resolves a checkout and
+    *then* changes what Git would answer about it — initialising a repository over
+    an installed wheel, committing, checking out — must call
+    ``revision._reset_checkout_revision_cache()`` itself between the two, or it
+    will assert against the answer it already took.
+    """
+    _revision._reset_checkout_revision_cache()
+    yield
+    _revision._reset_checkout_revision_cache()
+
+
+@pytest.fixture(autouse=True)
 def _tolerate_dirty_working_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
     """Report only the working checkout under test as clean to the provenance gate.
 
