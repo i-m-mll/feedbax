@@ -12,11 +12,19 @@ named file.
 
 Run:
 
-    uv run --no-sync python scripts/guarantee_dependency_scan.py
+    uv run --no-sync python scripts/maintenance/guarantee_dependency_scan.py
 
-The result lands in ``_evidence/guarantee_dependency_scan.v1.json``, which is an
+The result lands in
+``scripts/maintenance/_evidence/guarantee_dependency_scan.v1.json``, which is an
 ignored path: the scan is evidence produced from tracked inputs, not a tracked
 deliverable, and it is reproduced by rerunning the command.
+
+Status: this is an on-demand diagnostic for one recurring question, not
+maintained repo infrastructure. It lives under ``scripts/maintenance/`` rather
+than ``scripts/`` proper, and its test module (in this same directory) is
+outside ``testpaths`` and does not run on the default test gate. A full run
+against the declared corpora takes roughly 8 minutes, peaks around 0.6 GB RSS,
+and writes roughly 17 MB of output.
 
 Design notes that are load-bearing rather than incidental:
 
@@ -70,8 +78,8 @@ DEFAULT_MANIFEST = (
     "external/feedbax_conformance_fixture/src/feedbax_external_conformance/policy_manifest.v1.json"
 )
 DEFAULT_POLICY_DOC = "docs/design/downstream_interface_stability.md"
-DEFAULT_CORPORA = "scripts/guarantee_dependency_scan.corpora.json"
-DEFAULT_OUTPUT = "_evidence/guarantee_dependency_scan.v1.json"
+DEFAULT_CORPORA = "scripts/maintenance/guarantee_dependency_scan.corpora.json"
+DEFAULT_OUTPUT = "scripts/maintenance/_evidence/guarantee_dependency_scan.v1.json"
 
 GUARANTEE_MARK_START = "<!-- policy-guarantees:start -->"
 GUARANTEE_MARK_END = "<!-- policy-guarantees:end -->"
@@ -1131,7 +1139,7 @@ def prefilter(
     # Paths are passed as arguments in bounded batches rather than on stdin,
     # because ripgrep reads stdin as content to search, not as a path list.
     root_prefix = str(corpus.root) + os.sep
-    candidates: set[str] = set()
+    candidate_set: set[str] = set()
     unreadable: list[str] = []
     batches = 0
     for batch in _batched(files, PREFILTER_BATCH_SIZE):
@@ -1152,13 +1160,13 @@ def prefilter(
         for entry in result.stdout.decode("utf-8", "surrogateescape").split("\0"):
             entry = entry.strip("\n")
             if entry.startswith(root_prefix):
-                candidates.add(entry[len(root_prefix) :])
+                candidate_set.add(entry[len(root_prefix) :])
     stats["engine"] = "ripgrep"
     stats["batches"] = batches
-    stats["candidate_file_count"] = len(candidates)
+    stats["candidate_file_count"] = len(candidate_set)
     stats["unreadable_path_count"] = len(unreadable)
     stats["unreadable_paths"] = unreadable[:20]
-    return sorted(candidates), stats
+    return sorted(candidate_set), stats
 
 
 #: Paths per ripgrep invocation. Bounded so the argument vector stays well below
@@ -2517,7 +2525,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     library_root = (
         Path(args.library_root).resolve()
         if args.library_root
-        else Path(__file__).resolve().parent.parent
+        else Path(__file__).resolve().parent.parent.parent
     )
     manifest_path = Path(args.manifest) if args.manifest else library_root / DEFAULT_MANIFEST
     doc_path = Path(args.policy_doc) if args.policy_doc else library_root / DEFAULT_POLICY_DOC

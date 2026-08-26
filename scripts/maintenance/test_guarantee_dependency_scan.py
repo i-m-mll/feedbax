@@ -18,8 +18,8 @@ from typing import Any
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "guarantee_dependency_scan.py"
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts" / "maintenance" / "guarantee_dependency_scan.py"
 
 
 def _load_scanner() -> Any:

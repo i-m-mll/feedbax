@@ -1,6 +1,6 @@
 # Guarantee dependency scan controls
 
-Every channel in `scripts/guarantee_dependency_scan.py` carries a positive
+Every channel in `scripts/maintenance/guarantee_dependency_scan.py` carries a positive
 control here. The scanner runs this corpus on every invocation and refuses to
 report a zero from a channel whose own control came back empty, so "nothing
 depends on this row" is never confused with "this channel never worked".

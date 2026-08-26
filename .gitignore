@@ -49,7 +49,7 @@ tmp*
 .zellij-session
 *.insyncdl
 _debris/
-_evidence/
+/scripts/maintenance/_evidence/
 .feedbax_cache/
 
 # training checkpoints

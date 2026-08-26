@@ -2,7 +2,7 @@
   "schema_id": "feedbax.guarantee_dependency_scan.corpora",
   "schema_version": "feedbax.guarantee_dependency_scan.corpora.v1",
   "comment": [
-    "Declarative scan-target configuration for scripts/guarantee_dependency_scan.py.",
+    "Declarative scan-target configuration for scripts/maintenance/guarantee_dependency_scan.py.",
     "Source roots and durable-artifact roots are declared separately: source roots are",
     "enumerated from an explicit NUL-delimited tracked-file listing (git ls-files -z),",
     "while artifact roots are walked on the filesystem because durable run output is",
@@ -60,7 +60,7 @@
           "feedbax/",
           "web/",
           "worktrees/",
-          "scripts/guarantee_scan_controls/"
+          "scripts/maintenance/guarantee_scan_controls/"
         ],
         "include_suffixes": [
           ".json",
@@ -87,7 +87,7 @@
           "feedbax/",
           "web/",
           "worktrees/",
-          "scripts/guarantee_scan_controls/"
+          "scripts/maintenance/guarantee_scan_controls/"
         ],
         "include_suffixes": [
           ".py",
@@ -108,7 +108,7 @@
   "control_corpus": {
     "name": "controls",
     "role": "control",
-    "root": "./scripts/guarantee_scan_controls",
+    "root": "./scripts/maintenance/guarantee_scan_controls",
     "source": {
       "mode": "filesystem",
       "exclude_prefixes": [
