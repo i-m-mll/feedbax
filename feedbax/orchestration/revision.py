@@ -27,6 +27,33 @@ those checks are run against at assembly time (Mandible-Issue a09bad3).
 ``assert_feedbax_source_residence`` is the runtime-only companion: an operator
 asserts on the invocation which checkout it believes supplies ``import feedbax``.
 An absolute checkout path is machine-local, so it is never recorded durably.
+
+Memoization
+-----------
+
+Every check above resolves the same fact — the commit that supplied the imported
+package — and the gates deliberately re-assert it at each boundary, per stage and
+per launched row. Each resolution costs three ``git`` subprocesses, so the
+repeated question, not any individual query, is what makes the cost visible.
+
+``_resolve_checkout_revision`` is therefore memoized per package directory for the
+life of the process. That is sound because of what the question means: it asks
+which commit supplied the code this interpreter has *already imported*, and that
+is settled at import time. If the supplying checkout is later committed to or
+checked out, the loaded module objects do not change with it, so a freshly
+queried ``HEAD`` would describe code that is not the code running. Holding the
+first answer is the accurate one as well as the cheap one.
+
+Working-tree cleanliness is deliberately *not* memoized. Unlike a revision it is a
+live property of the tree rather than of the imported bytes, and the provenance
+gate exists precisely to notice an edit, so ``_feedbax_tree_is_dirty`` re-runs
+``git status`` on every call. Wheel provenance is likewise re-read each time: it
+costs no subprocess, and re-reading keeps the checkout/distribution conflict check
+honest.
+
+``_reset_checkout_revision_cache`` re-opens the question for a host that has
+grounds to ask it again — chiefly the test suite, where each test stands in for a
+fresh process and builds its own throwaway checkout.
 """
 
 from __future__ import annotations
@@ -87,7 +114,40 @@ def _feedbax_package_root() -> Path:
     return Path(source).resolve().parent
 
 
+_CHECKOUT_REVISION_CACHE: dict[Path, str | None] = {}
+
+
 def _resolve_checkout_revision(package_root: Path) -> str | None:
+    """Return the memoized revision of the checkout that owns this package directory.
+
+    Memoized per ``package_root`` for the life of the process; see the module
+    docstring for why the imported package's commit identity cannot change once
+    the interpreter has loaded it. A failure to resolve is not cached, so an
+    unresolvable checkout raises identically on every call.
+
+    A concurrent first call may compute the answer twice, which is harmless: the
+    query is pure, and dictionary read/write is atomic under the GIL.
+    """
+    try:
+        return _CHECKOUT_REVISION_CACHE[package_root]
+    except KeyError:
+        pass
+    revision = _query_checkout_revision(package_root)
+    _CHECKOUT_REVISION_CACHE[package_root] = revision
+    return revision
+
+
+def _reset_checkout_revision_cache() -> None:
+    """Discard memoized checkout revisions so the next call re-queries Git.
+
+    Only a host that knows the imported package's identity may legitimately have
+    changed should call this — principally the test suite, where each test stands
+    in for a fresh process over its own throwaway checkout.
+    """
+    _CHECKOUT_REVISION_CACHE.clear()
+
+
+def _query_checkout_revision(package_root: Path) -> str | None:
     """Return a revision only when Git owns this exact package directory."""
     top_level = _run_git(package_root, ["rev-parse", "--show-toplevel"])
     if top_level is None or top_level.returncode != 0:
