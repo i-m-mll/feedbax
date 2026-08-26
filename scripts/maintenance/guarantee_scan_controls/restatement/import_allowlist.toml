@@ -1,0 +1,9 @@
+# Negative control: an import allowlist restates a surface as data. It declares
+# a policy about imports; it is not itself an independent dependency.
+schema_version = 1
+source_roots = ["src"]
+
+[[allowed_file]]
+path = "src/example/method.py"
+symbols = ["GraphSpec", "TRAINING_METHODS", "PluginRegistration", "RegistrationContext"]
+reason = "restatement control"
