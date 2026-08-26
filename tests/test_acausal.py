@@ -571,22 +571,34 @@ class TestLongHorizonStability:
     """Test long simulations do not produce NaN or diverge."""
 
     def test_long_horizon_no_nan(self):
-        """10k steps of damped MSD without NaN."""
+        """10k steps of damped MSD without NaN.
+
+        The horizon is scanned under one compiled rollout rather than driven by a
+        Python loop. That is how long rollouts actually run in Feedbax
+        (``scan_rollout`` in ``feedbax.runtime.graph``), it checks every step for
+        NaN instead of one step in a thousand, and it replaces ten thousand host
+        dispatches — which were the entire cost — with one.
+        """
         msd = _make_msd(dt=0.001, damping=1.0)
         state = init_state_from_component(msd)
-        key = jr.PRNGKey(0)
+        n_steps = 10000
+        inputs = {"f_in": jnp.array([0.1])}
 
-        for i in range(10000):
-            key, subkey = jr.split(key)
-            outputs, state = msd({"f_in": jnp.array([0.1])}, state, key=subkey)
+        @eqx.filter_jit
+        def rollout(initial_state, keys):
+            def step(step_state, step_key):
+                _outputs, next_state = msd(inputs, step_state, key=step_key)
+                y = msd.state_view(next_state).system.y
+                return next_state, jnp.any(jnp.isnan(y))
 
-            if i % 1000 == 0:
-                dae_state = msd.state_view(state)
-                assert not jnp.any(jnp.isnan(dae_state.system.y)), (
-                    f"NaN at step {i}"
-                )
+            return jax.lax.scan(step, initial_state, keys)
 
-        dae_state = msd.state_view(state)
+        final_state, nan_at_step = rollout(state, jr.split(jr.PRNGKey(0), n_steps))
+
+        assert not jnp.any(nan_at_step), (
+            f"NaN at step {int(jnp.argmax(nan_at_step))}"
+        )
+        dae_state = msd.state_view(final_state)
         assert not jnp.any(jnp.isnan(dae_state.system.y)), "NaN at final step"
         # Position should not diverge: damped + finite force -> bounded
         assert jnp.all(jnp.abs(dae_state.system.y) < 100.0), (
