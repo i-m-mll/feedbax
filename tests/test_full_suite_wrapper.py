@@ -10,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tomllib
 
 import pytest
 
@@ -312,6 +313,60 @@ def _class_pytest_markers(source: str, class_name: str) -> set[str]:
                 if isinstance(decorator, ast.Attribute)
             }
     raise AssertionError(f"class {class_name} not found")
+
+
+def _module_pytest_markers(source: str) -> set[str]:
+    """Return every ``pytest.mark.<name>`` assigned to a module-level ``pytestmark``."""
+    tree = ast.parse(source)
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == "pytestmark" for target in node.targets
+        ):
+            continue
+        value = node.value
+        elements = value.elts if isinstance(value, (ast.List, ast.Tuple)) else [value]
+        return {
+            element.attr for element in elements if isinstance(element, ast.Attribute)
+        }
+    return set()
+
+
+def test_slow_tier_leaves_the_default_gate_and_returns_for_every_closeout_profile() -> None:
+    """The `slow` tier is deselected per iteration and restored by this wrapper.
+
+    The `slow` modules build a real wheel and install it, so they need a clean Git
+    checkout plus a network or a warm `uv` cache. That is not a promise the gate
+    that must pass on every invocation can make, so `addopts` deselects them. They
+    are still load-bearing — `test_cold_start_conformance` is the honesty gate for
+    the whole upstreaming program — so every profile this wrapper runs must bring
+    them back. A command-line `-m` overrides `addopts`, which is exactly how that
+    happens; this test fails if either half of the arrangement is edited away.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    addopts = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))[
+        "tool"
+    ]["pytest"]["ini_options"]["addopts"]
+
+    assert "not slow" in addopts, (
+        "the default gate must deselect the `slow` tier; the marker is declared for "
+        "exactly this purpose and is inert unless `addopts` names it"
+    )
+
+    full_suite = load_full_suite_module()
+    for profile, expression in full_suite.SUITE_MARKER_EXPRESSIONS.items():
+        assert "slow" not in expression, (
+            f"the `{profile}` closeout profile must not deselect `slow`: the wrapper is "
+            "where the wheel-building tier is paid for"
+        )
+
+    tests_dir = repo_root / "tests"
+    for module in ("test_cold_start_conformance.py", "test_feedbax_wheel_provenance.py"):
+        markers = _module_pytest_markers((tests_dir / module).read_text(encoding="utf-8"))
+        assert "slow" in markers, (
+            f"{module} builds and installs a real wheel and must stay in the `slow` tier"
+        )
 
 
 def test_representative_nodes_have_expected_optional_markers() -> None:
