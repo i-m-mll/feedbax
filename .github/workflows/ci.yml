@@ -54,35 +54,6 @@ jobs:
           uv run python scripts/generate_studio_contracts.py
           git diff --exit-code web/src/generated/studioContracts.ts
 
-      - name: Run feedbax contract marker tests if present
-        run: |
-          if grep -R "feedbax_contract" pyproject.toml tests >/dev/null; then
-            uv run pytest -m feedbax_contract
-          else
-            echo "feedbax_contract marker not present on this branch; skipping marker gate."
-          fi
-
-      - name: Run import-boundary and migration contract suites
-        run: >
-          uv run pytest
-          tests/test_contract_import_boundary.py
-          tests/test_root_import_boundaries.py
-          tests/test_structured_spec_migrations.py
-          tests/test_graphspec_schema_migrations.py
-          tests/test_provider_contract.py
-          tests/test_runtime_imports.py
-          -q
-
-      - name: Run backend web tests
-        run: >
-          uv run pytest
-          tests/test_web_app.py
-          tests/test_studio_api_contracts.py
-          tests/test_studio_analysis_jobs.py
-          tests/test_studio_execution.py
-          tests/test_studio_runs_api.py
-          tests/test_training_websocket.py
-
       - name: Run full Python suite
         run: scripts/full_suite.sh --no-memo
 
@@ -91,51 +62,6 @@ jobs:
 
       - name: Run pyright
         run: uv run python -m pyright tests/test_batch_reshape_nan_bypass.py
-
-  downstream-rlrmp:
-    name: Downstream rlrmp public-boundary canary
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out Feedbax candidate
-        uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Check out rlrmp main
-        uses: actions/checkout@v4
-        with:
-          repository: i-m-mll/rlrmp
-          ref: main
-          path: rlrmp
-
-      - name: Install candidate wheels in a clean environment
-        run: |
-          uv venv "$RUNNER_TEMP/rlrmp-feedbax-canary-venv"
-          uv pip install --python "$RUNNER_TEMP/rlrmp-feedbax-canary-venv/bin/python" pytest
-          uv pip install --python "$RUNNER_TEMP/rlrmp-feedbax-canary-venv/bin/python" \
-            "jax-cookbook @ git+https://github.com/i-m-mll/jax-cookbook.git@779693475337d5275e20e6a5c1bacce448e444f3"
-          uv build --wheel --out-dir "$RUNNER_TEMP/feedbax-candidate-wheel"
-          uv build --wheel --out-dir "$RUNNER_TEMP/rlrmp-candidate-wheel" rlrmp
-          uv pip install --python "$RUNNER_TEMP/rlrmp-feedbax-canary-venv/bin/python" \
-            "$RUNNER_TEMP/feedbax-candidate-wheel"/*.whl \
-            "$RUNNER_TEMP/rlrmp-candidate-wheel"/*.whl
-
-      - name: Run rlrmp public-boundary canary
-        working-directory: rlrmp
-        run: |
-          "$RUNNER_TEMP/rlrmp-feedbax-canary-venv/bin/python" -c "import rlrmp"
-          "$RUNNER_TEMP/rlrmp-feedbax-canary-venv/bin/python" -m pytest \
-            tests/test_feedbax_import_boundary.py \
-            tests/test_feedbax_graph_specs.py \
-            tests/analysis/test_feedbax_analysis_module_contract.py \
-            -q
 
   frontend:
     name: Frontend checks

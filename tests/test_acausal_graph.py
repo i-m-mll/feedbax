@@ -156,7 +156,16 @@ class TestAcausalSystemInGraph:
         assert float(jnp.abs(pos)) > 0.01, f"Expected non-zero position, got {pos}"
 
     def test_p_controller_with_plant(self):
-        """P-controller + plant in a Graph achieves tracking."""
+        """P-controller + plant in a Graph achieves tracking.
+
+        The rollout is one scanned call rather than 5000 single-step calls. That
+        is not only cheaper, it is the only way the loop is actually closed:
+        ``cycle_init`` seeds the scan carry, so re-supplying it on every
+        single-step call pinned ``controller.measured`` at 0.0 forever and the
+        controller never saw the plant. Driven as one rollout the recurrent wire
+        carries, and the steady state the docstring claims can be asserted
+        against the analytical value instead of a placeholder bound.
+        """
         plant = _make_plant()
         controller = ProportionalController(gain=50.0)
         target_source = ConstantSource(value=0.5)
@@ -181,28 +190,30 @@ class TestAcausalSystemInGraph:
         state = init_state_from_component(graph)
         key = jr.PRNGKey(0)
 
-        # The graph has a cycle (plant.x_out -> controller.measured),
-        # so it needs n_steps and cycle_init for the feedback wire.
+        # The graph has a cycle (plant.x_out -> controller.measured), so it needs
+        # n_steps and cycle_init to seed the feedback wire on the first step.
         cycle_init = {("controller", "measured"): jnp.float64(0.0)}
         n_steps = 5000
-        for _ in range(n_steps):
-            key, subkey = jr.split(key)
-            outputs, state = graph(
-                {},
-                state,
-                key=subkey,
-                n_steps=1,
-                cycle_init=cycle_init,
-            )
+        outputs, state = graph(
+            {},
+            state,
+            key=key,
+            n_steps=n_steps,
+            cycle_init=cycle_init,
+        )
 
-        # outputs from scan are batched with leading dim of 1
+        # outputs from scan are batched with a leading step dimension
         pos = outputs.get("position", None)
-        if pos is not None:
-            pos_val = float(jnp.squeeze(pos))
-            # With high gain, damping, should approach target=0.5
-            # Steady state: gain*(0.5 - x) = k*x
-            # 50*(0.5 - x) = 5*x -> 25 = 55*x -> x ~ 0.4545
-            assert abs(pos_val) > 0.1, f"Expected non-trivial position, got {pos_val}"
+        assert pos is not None
+        trajectory = jnp.reshape(pos, (-1,))
+        assert trajectory.shape == (n_steps,)
+        # With this gain and damping the loop settles on target=0.5.
+        # Steady state: gain*(0.5 - x) = k*x
+        # 50*(0.5 - x) = 5*x -> 25 = 55*x -> x ~ 0.4545
+        settled = float(trajectory[-1])
+        assert settled == pytest.approx(25.0 / 55.0, abs=0.01), (
+            f"Expected the closed loop to settle near 0.4545, got {settled}"
+        )
 
 
 class TestPrescribedMotion:

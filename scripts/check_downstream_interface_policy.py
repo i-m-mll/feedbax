@@ -188,7 +188,7 @@ def _document_plugin_api(text: str) -> dict[str, object]:
         (line for line in block.splitlines() if line.startswith("Namespace `")), None
     )
     direct_line = next(
-        (line for line in block.splitlines() if line.startswith("Direct RLRMP")), None
+        (line for line in block.splitlines() if line.startswith("Direct downstream")), None
     )
     if namespace_line is None or direct_line is None:
         raise ValueError("policy document omits the rendered plugin namespace or direct imports")
@@ -244,7 +244,7 @@ def _check_plugin_api(row: dict[str, object], document: str) -> None:
             raise ValueError(f"feedbax.plugins does not export declared name {name!r}")
     direct_imports = tuple(plugin_api["direct_entrypoint_imports"])
     if any(name not in facade_names for name in direct_imports):
-        raise ValueError("direct RLRMP imports contain an unclassified facade name")
+        raise ValueError("direct downstream imports contain an unclassified facade name")
 
     keys = {key.family: key for key in facade.APPLICATION_REGISTRY_KEYS}
     classified_types = set()

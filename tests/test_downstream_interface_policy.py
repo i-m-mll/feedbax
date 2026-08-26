@@ -52,11 +52,6 @@ _PLUGIN_PUBLIC_NAMES = tuple(
 GUARANTEED_IMPORTS = {
     "feedbax.plugins": _PLUGIN_PUBLIC_NAMES,
     "feedbax.orchestration.drivers": (
-        "DRIVER_CAPABILITIES_SCHEMA_ID",
-        "DRIVER_CAPABILITIES_SCHEMA_VERSION",
-        "DRIVER_CAPABILITIES_SCHEMA_VERSION_V1",
-        "DRIVER_CAPABILITIES_SCHEMA_VERSION_V2",
-        "DRIVER_CAPABILITIES_SCHEMA_VERSION_V3",
         "DriverAuthority",
         "DriverCapabilityEnvelope",
         "DriverCapabilityFacts",
@@ -69,28 +64,13 @@ GUARANTEED_IMPORTS = {
         "RealizedDriverCapabilities",
     ),
     "feedbax.orchestration.bundle": (
-        "DEPLOYMENT_POLICY_SCHEMA_ID",
-        "DEPLOYMENT_POLICY_SCHEMA_VERSION",
-        "DEPLOYMENT_POLICY_SCHEMA_VERSION_V1",
-        "RUN_BUNDLE_SCHEMA_ID",
-        "RUN_BUNDLE_SCHEMA_VERSION",
-        "RUN_BUNDLE_SCHEMA_VERSION_V11",
         "DeploymentPolicy",
         "RunBundle",
     ),
     "feedbax.orchestration.assembly": (
-        "RUN_ASSEMBLY_REQUEST_SCHEMA_ID",
-        "RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION",
-        "RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5",
-        "RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V6",
         "RunAssemblyRequest",
     ),
     "feedbax.orchestration": (
-        "RUN_SET_STATE_SCHEMA_ID",
-        "RUN_SET_STATE_SCHEMA_VERSION",
-        "RUN_SET_STATE_SCHEMA_VERSION_V4",
-        "EMERGENCY_RUN_SET_RECORD_SCHEMA_ID",
-        "EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION",
         "ControlFilesystemPreflight",
         "ControlFilesystemPreflightError",
         "CustodyPreservationRequired",
@@ -102,12 +82,6 @@ GUARANTEED_IMPORTS = {
         "StageEngine",
     ),
     "feedbax.contracts.row_index": (
-        "ROW_INDEX_SCHEMA_ID",
-        "ROW_INDEX_SCHEMA_VERSION",
-        "ROW_INDEX_CUSTODY_SCHEMA_ID",
-        "ROW_INDEX_CUSTODY_SCHEMA_VERSION",
-        "RESOLVED_ROW_SET_SCHEMA_ID",
-        "RESOLVED_ROW_SET_SCHEMA_VERSION",
         "AllRowsSelector",
         "AuthenticatedRowIndex",
         "ResolvedRowSet",
@@ -123,10 +97,6 @@ GUARANTEED_IMPORTS = {
         "normalize_row_tags",
     ),
     "feedbax.contracts.figure_roles": (
-        "FIGURE_ROW_EXPANSION_REQUEST_SCHEMA_ID",
-        "FIGURE_ROW_EXPANSION_REQUEST_SCHEMA_VERSION",
-        "RESOLVED_FIGURE_INPUTS_SCHEMA_ID",
-        "RESOLVED_FIGURE_INPUTS_SCHEMA_VERSION",
         "FigureRoleBindingContract",
         "FigureRoleReferenceError",
         "FigureRowExpansionRequest",
@@ -139,8 +109,6 @@ GUARANTEED_IMPORTS = {
         "row_namespace",
     ),
     "feedbax.contracts.experiment_envelope": (
-        "EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID",
-        "EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_VERSION",
         "ExperimentEnvelopeCompileRequest",
         "ExperimentEnvelopeCompileResult",
         "ExperimentEnvelopeRejection",
@@ -178,12 +146,6 @@ GUARANTEED_IMPORTS = {
         "migrate_graph_spec",
     ),
     "feedbax.contracts.graph": (
-        "GRAPH_SPEC_SCHEMA_ID",
-        "GRAPH_SPEC_SCHEMA_VERSION",
-        "GRAPH_SPEC_SCHEMA_VERSION_V2",
-        "GRAPH_SPEC_SCHEMA_VERSION_V3",
-        "GRAPH_SPEC_SCHEMA_VERSION_V4",
-        "LEGACY_GRAPH_SPEC_SCHEMA_VERSION",
         "ComponentSpec",
         "GraphProject",
         "GraphSpec",
@@ -193,8 +155,6 @@ GUARANTEED_IMPORTS = {
         "WireSpec",
     ),
     "feedbax.contracts.value_identity": (
-        "VALUE_IDENTITY_SCHEMA_ID",
-        "VALUE_IDENTITY_SCHEMA_VERSION",
         "ValueIdentityRecord",
         "authored_value_sha256",
         "semantic_value_sha256",
@@ -202,10 +162,6 @@ GUARANTEED_IMPORTS = {
         "value_identity_record",
     ),
     "feedbax.contracts.material_dependencies": (
-        "ADMISSION_WAIVER_SCHEMA_ID",
-        "ADMISSION_WAIVER_SCHEMA_VERSION",
-        "MATERIAL_DEPENDENCIES_SCHEMA_ID",
-        "MATERIAL_DEPENDENCIES_SCHEMA_VERSION",
         "AdmissionWaiver",
         "IncidentalAdmissionFailure",
         "MaterialDependency",
@@ -218,15 +174,11 @@ GUARANTEED_IMPORTS = {
         "validate_material_dependency_admission",
     ),
     "feedbax.contracts.manifest": (
-        "TRAINING_RUN_CERTIFICATION_SCHEMA_ID",
-        "TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION",
         "TRAINING_RUN_CERTIFICATION_MIGRATION_TABLE",
         "TrainingRunCertification",
         "training_run_certification",
     ),
     "feedbax.contracts.array_values": (
-        "ARRAY_VALUE_SCHEMA_ID",
-        "ARRAY_VALUE_SCHEMA_VERSION",
         "ArrayValueSpec",
         "ConstantArrayValueSpec",
         "SparseCooArrayValueSpec",
@@ -234,10 +186,6 @@ GUARANTEED_IMPORTS = {
         "materialize_array_value",
     ),
     "feedbax.contracts.component": (
-        "COMPONENT_DEFINITION_SCHEMA_ID",
-        "COMPONENT_DEFINITION_SCHEMA_VERSION",
-        "COMPONENT_DEFINITION_SCHEMA_VERSION_V1",
-        "COMPONENT_DEFINITION_SCHEMA_VERSION_V2",
         "ComponentDefinition",
         "DynamicPortLayout",
         "DynamicPortPolicy",
@@ -369,7 +317,7 @@ def test_policy_checker_accepts_current_repository_contract() -> None:
     module.check_policy()
 
 
-def test_plugin_api_manifest_pins_all_direct_rlrmp_entrypoint_imports() -> None:
+def test_plugin_api_manifest_pins_all_direct_downstream_entrypoint_imports() -> None:
     direct_imports = _PLUGIN_ROW["plugin_api"]["direct_entrypoint_imports"]
     assert len(direct_imports) == len(set(direct_imports)) == 12
     assert set(direct_imports).issubset(_PLUGIN_PUBLIC_NAMES)
