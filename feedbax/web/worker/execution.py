@@ -49,7 +49,6 @@ from feedbax.contracts.training import (
     standard_supervised_method_payload,
     standard_supervised_method_ref,
 )
-from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.contracts.graphs.serialization import prototypes_from_task_bindings
 from feedbax.objectives import ObjectiveExecutionRequirements
 from feedbax.objectives.service import LossService, LoweredObjective
@@ -183,6 +182,8 @@ def compile_training_run(
         )
 
     try:
+        from feedbax.compiler import GraphDocument, compile_graph
+
         graph = compile_graph(
             GraphDocument(graph=graph_model),
             component_registry,
