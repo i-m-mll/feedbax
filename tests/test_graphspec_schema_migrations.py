@@ -4,7 +4,6 @@ import pytest
 from pydantic import ValidationError
 
 import feedbax.compiler.graph as graph_compiler
-import feedbax.contracts.graphs.serialization as serialization
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import (
@@ -20,6 +19,8 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION_V3,
     GRAPH_SPEC_SCHEMA_VERSION_V4,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
+    STUDIO_SCENARIO_SCHEMA_VERSION,
+    STUDIO_SCENARIO_SCHEMA_VERSION_V2,
     ComponentSpec,
     GraphMetadata,
     GraphProject,
@@ -46,6 +47,7 @@ from feedbax.contracts.migrations import (
     UnsupportedSpecVersion,
     migrate_graph_project_payload,
     migrate_graph_spec,
+    migrate_structured_spec_payload,
 )
 from feedbax.integrations.provider import validate_graph_spec_manifest, validate_spec
 
@@ -66,6 +68,25 @@ GRAPH_V2_TO_V5_MIGRATIONS = [
     "graph-spec-v3-to-v4-discriminated-subgraphs",
     "graph-spec-v4-to-v5-component-param-array-values",
 ]
+
+
+def test_studio_scenario_v2_migration_removes_graph_and_presentation_copies() -> None:
+    result = migrate_structured_spec_payload(
+        "StudioScenarioSpec",
+        {
+            "id": "scenario:train",
+            "label": "Train",
+            "schema_version": STUDIO_SCENARIO_SCHEMA_VERSION_V2,
+            "graph": GraphSpec().model_dump(mode="json"),
+            "graph_ui_state": {"viewport": {"x": 1, "y": 2, "zoom": 1}},
+            "ui_state": {"workspace_view_state": {"mode": "model"}},
+        },
+    )
+
+    assert result.target_version == STUDIO_SCENARIO_SCHEMA_VERSION
+    assert "graph" not in result.payload
+    assert "graph_ui_state" not in result.payload
+    assert "ui_state" not in result.payload
 
 
 def _legacy_metadata() -> dict[str, str]:
@@ -203,7 +224,11 @@ def test_graph_project_round_trips_with_acausal_interior() -> None:
         },
         subgraphs={"plant": AcausalGraphSpec.model_validate(_acausal_graph_payload())},
     )
-    project = GraphProject(metadata=graph.metadata, graph=graph)
+    project = GraphProject.model_validate(
+        migrate_graph_project_payload(
+            {"metadata": graph.metadata.model_dump(), "graph": graph.model_dump()}
+        )
+    )
 
     dumped = project.model_dump(mode="json")
     loaded = GraphProject.model_validate_json(project.model_dump_json())

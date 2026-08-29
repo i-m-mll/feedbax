@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import pytest
+import jax
+import jax.numpy as jnp
 from pydantic import ValidationError
 
 from feedbax.compiler import (
@@ -10,11 +12,20 @@ from feedbax.compiler import (
     compile_graph,
 )
 from feedbax.component_registry import ComponentRegistry
-from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
+from feedbax.contracts.graph import (
+    ComponentSpec,
+    GraphSpec,
+    GraphUIState,
+    NodeUIState,
+    SemanticAnchor,
+    WorkspaceDocument,
+    WireSpec,
+)
 from feedbax.contracts.graph import (
     AdditiveGraphChannelAdapterSpec,
     AdditiveGraphChannelTargetSpec,
 )
+from feedbax.runtime.graph import init_state_from_component
 
 
 def _document() -> GraphDocument:
@@ -69,6 +80,19 @@ def test_graph_document_rejects_unknown_version_without_restamping() -> None:
         GraphDocument.model_validate(payload)
 
 
+def test_source_map_anchor_schema_rejects_pre_anchor_compiler_records() -> None:
+    compiled = compile_graph(_document(), ComponentRegistry(load_user_components=False))
+    resolved_payload = compiled.resolved.model_dump(mode="json")
+    resolved_payload["schema_version"] = "1"
+    record_payload = compiled.record.model_dump(mode="json")
+    record_payload["schema_version"] = "1"
+
+    with pytest.raises(ValidationError, match="migration_intentionally_absent=yes"):
+        ResolvedGraph.model_validate(resolved_payload)
+    with pytest.raises(ValidationError, match="migration_intentionally_absent=yes"):
+        CompilationRecord.model_validate(record_payload)
+
+
 def test_compile_graph_migrates_an_explicit_older_graph_schema() -> None:
     payload = _document().graph.model_dump(mode="json", exclude_none=True)
     payload["schema_version"] = "feedbax.spec.graph.v4"
@@ -116,3 +140,48 @@ def test_compiler_generated_adapter_has_truthful_source_map_origin() -> None:
     )
     assert entry.origin == "compiler-generated"
     assert entry.authored_path == "/graph"
+
+
+def test_workspace_view_edits_cannot_change_semantic_or_runtime_identity() -> None:
+    registry = ComponentRegistry(load_user_components=False)
+    first = compile_graph(_document(), registry)
+    root = SemanticAnchor(
+        semantic_document_sha256=first.record.document_sha256,
+        authored_path="/graph",
+    )
+    initial_workspace = WorkspaceDocument(semantic_root=root)
+    moved_workspace = initial_workspace.model_copy(
+        update={
+            "graph_ui_state": GraphUIState(
+                node_states={
+                    "gain": NodeUIState(position={"x": 640, "y": 360})
+                }
+            )
+        }
+    )
+
+    second = compile_graph(_document(), registry)
+    first_output, _ = first.graph(
+        {}, init_state_from_component(first.graph), key=jax.random.PRNGKey(0)
+    )
+    second_output, _ = second.graph(
+        {}, init_state_from_component(second.graph), key=jax.random.PRNGKey(0)
+    )
+
+    assert moved_workspace != initial_workspace
+    assert first.record.document_sha256 == second.record.document_sha256
+    assert first.record.resolved_sha256 == second.record.resolved_sha256
+    assert first.record == second.record
+    assert first.record.key_schedule == second.record.key_schedule
+    assert jnp.array_equal(first_output["output"], second_output["output"])
+
+
+def test_graph_document_and_compiler_reject_presentation_state() -> None:
+    payload = _document().model_dump(mode="json")
+    payload["workspace_document"] = {
+        "schema_id": "feedbax.workspace_document",
+        "schema_version": "1",
+    }
+
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        GraphDocument.model_validate(payload)

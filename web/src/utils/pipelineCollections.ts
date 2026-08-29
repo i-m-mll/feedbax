@@ -1047,14 +1047,14 @@ function evaluationRunSummary(ref: StudioManifestRef): EvaluationRunSummary {
 
 export function currentDraftSpecHashesForScenario(
   scenario: {
-    graph?: unknown;
     training_spec?: unknown;
     task_spec?: unknown;
     task_binding_spec?: unknown;
-  } | null | undefined
+  } | null | undefined,
+  graph?: unknown
 ): Record<string, string | null> {
   return {
-    graph_spec: scenario?.graph ? stableHash(scenario.graph) : null,
+    graph_spec: graph ? stableHash(graph) : null,
     training_spec: scenario?.training_spec ? stableHash(scenario.training_spec) : null,
     task_spec: scenario?.task_spec ? stableHash(scenario.task_spec) : null,
     task_binding_spec: scenario?.task_binding_spec ? stableHash(scenario.task_binding_spec) : null,

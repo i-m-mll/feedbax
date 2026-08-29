@@ -1,5 +1,5 @@
 import { isCausalGraphSpec, type ComponentSpec, type GraphSpec, type TapSpec } from '@/types/graph';
-import type { StudioTaskBindingSpec, StudioWorkspaceSpec } from '@/types/workspace';
+import type { StudioTaskBindingSpec } from '@/types/workspace';
 import { taskBindingId } from '@/features/scenario/taskBindings';
 import { normalizeDynamicPorts } from '@/features/graph/dynamicPorts';
 
@@ -206,30 +206,4 @@ export function normalizeTaskBindingSpecForStudioAuthoring(
     };
   });
   return changed ? { ...taskBindingSpec, bindings } : taskBindingSpec;
-}
-
-export function normalizeWorkspaceGraphsForStudioAuthoring(
-  workspace: StudioWorkspaceSpec | null
-): StudioWorkspaceSpec | null {
-  if (!workspace) return workspace;
-  let changed = false;
-  const scenarios = Object.fromEntries(
-    Object.entries(workspace.scenarios).map(([scenarioId, scenario]) => {
-      if (!scenario.graph) return [scenarioId, scenario];
-      const graph = normalizeGraphForStudioAuthoring(
-        scenario.graph,
-        scenario.task_binding_spec
-      );
-      const taskBindingSpec = normalizeTaskBindingSpecForStudioAuthoring(
-        scenario.task_binding_spec,
-        graph
-      );
-      if (graph === scenario.graph && taskBindingSpec === scenario.task_binding_spec) {
-        return [scenarioId, scenario];
-      }
-      changed = true;
-      return [scenarioId, { ...scenario, graph, task_binding_spec: taskBindingSpec }];
-    })
-  );
-  return changed ? { ...workspace, scenarios } : workspace;
 }

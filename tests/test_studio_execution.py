@@ -90,7 +90,7 @@ def _graph() -> GraphSpec:
 
 
 def _workspace():
-    workspace = build_default_studio_workspace(label="Studio execution", graph=_graph())
+    workspace = build_default_studio_workspace(label="Studio execution")
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.training_spec = {
@@ -225,6 +225,7 @@ def studio_default_analysis_recipe(registry_bundle):
 def test_prepare_studio_training_execution_lowers_workspace_to_provider_plan(registry_bundle):
     request = StudioTrainingExecutionRequest(
         workspace=_workspace(),
+        graph=_graph(),
         job_id="studio-plan",
         local_cwd="/tmp/feedbax-studio",
         issues=["ddd3758"],
@@ -294,6 +295,7 @@ def test_studio_training_plan_endpoint_returns_updated_workspace(studio_client):
         "/api/provider/studio/training/plan",
         json={
             "workspace": _workspace().model_dump(mode="json", exclude_none=True),
+            "graph": _graph().model_dump(mode="json", exclude_none=True),
             "job_id": "http-studio-plan",
             "issues": ["ddd3758"],
         },
@@ -318,6 +320,7 @@ def test_prepare_studio_training_execution_writes_idempotent_pending_manifest(
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     request = StudioTrainingExecutionRequest(
         workspace=_workspace(),
+        graph=_graph(),
         job_id="studio-plan",
         local_cwd="/tmp/feedbax-studio",
         issues=["9aa8ff2"],
@@ -374,6 +377,7 @@ def test_prepare_studio_training_execution_expands_sweep_matrix_to_pending_run_s
     }
     request = StudioTrainingExecutionRequest(
         workspace=workspace,
+        graph=_graph(),
         job_id="studio-plan",
         local_cwd="/tmp/feedbax-studio",
         issues=["c199a9c"],
@@ -451,6 +455,7 @@ def test_prepare_studio_training_execution_uses_queue_subset_target_not_stale_st
     prepared = prepare_studio_training_execution(
         StudioTrainingExecutionRequest(
             workspace=workspace,
+            graph=_graph(),
             backend="runpod",
             job_id="studio-plan",
             queue_target="runpod",
@@ -497,6 +502,7 @@ def test_prepare_studio_training_execution_rejects_queue_subset_target_mismatch(
         prepare_studio_training_execution(
             StudioTrainingExecutionRequest(
                 workspace=workspace,
+                graph=_graph(),
                 backend="runpod",
                 job_id="studio-plan",
                 queue_target="runpod",
@@ -530,6 +536,7 @@ def test_prepare_studio_training_execution_rejects_invalid_expanded_sweep_run(
     }
     request = StudioTrainingExecutionRequest(
         workspace=workspace,
+        graph=_graph(),
         job_id="studio-plan",
         local_cwd="/tmp/feedbax-studio",
         issues=["c199a9c"],
@@ -550,6 +557,7 @@ def test_prepare_studio_training_execution_restages_cancelled_deterministic_mani
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     request = StudioTrainingExecutionRequest(
         workspace=_workspace(),
+        graph=_graph(),
         job_id="studio-plan",
         local_cwd="/tmp/feedbax-studio",
         issues=["9aa8ff2"],
@@ -588,6 +596,7 @@ def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempot
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     training_request = StudioTrainingExecutionRequest(
         workspace=_workspace(),
+        graph=_graph(),
         job_id="studio-plan",
         issues=["717e8fb"],
     )
@@ -666,7 +675,7 @@ def test_studio_evaluation_preview_filters_stale_manifests_explicitly(
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     prepared_training = prepare_studio_training_execution(
-        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan"),
+        StudioTrainingExecutionRequest(workspace=_workspace(), graph=_graph(), job_id="studio-plan"),
         registry_bundle=registry_bundle,
     )
     train_stage = next(
@@ -725,7 +734,7 @@ def test_studio_evaluation_run_local_reprocesses_stale_manifest(
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     prepared_training = prepare_studio_training_execution(
-        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan"),
+        StudioTrainingExecutionRequest(workspace=_workspace(), graph=_graph(), job_id="studio-plan"),
         registry_bundle=registry_bundle,
     )
     train_stage = next(
@@ -795,7 +804,7 @@ def test_studio_evaluation_run_local_preserves_skipped_failed_status(
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     prepared_training = prepare_studio_training_execution(
-        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan"),
+        StudioTrainingExecutionRequest(workspace=_workspace(), graph=_graph(), job_id="studio-plan"),
         registry_bundle=registry_bundle,
     )
     train_stage = next(
@@ -850,7 +859,7 @@ def test_studio_evaluation_endpoints_preview_stage_and_run_local(
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     prepared_training = prepare_studio_training_execution(
-        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan"),
+        StudioTrainingExecutionRequest(workspace=_workspace(), graph=_graph(), job_id="studio-plan"),
         registry_bundle=registry_bundle,
     )
     train_stage = next(
@@ -898,12 +907,15 @@ def test_studio_evaluation_endpoints_preview_stage_and_run_local(
 
 
 def test_studio_training_plan_endpoint_rejects_missing_training_spec(studio_client):
-    workspace = build_default_studio_workspace(label="Missing spec", graph=_graph())
+    workspace = build_default_studio_workspace(label="Missing spec")
     client = studio_client
 
     response = client.post(
         "/api/provider/studio/training/plan",
-        json={"workspace": workspace.model_dump(mode="json", exclude_none=True)},
+        json={
+            "workspace": workspace.model_dump(mode="json", exclude_none=True),
+            "graph": _graph().model_dump(mode="json", exclude_none=True),
+        },
     )
 
     assert response.status_code == 422
@@ -959,6 +971,7 @@ def test_run_studio_training_local_execution_materializes_snapshot_and_refs(
     result = run_studio_training_local_execution(
         StudioTrainingLocalRunRequest(
             workspace=_workspace(),
+            graph=_graph(),
             job_id="studio-local-run",
             root=str(tmp_path),
             issues=["ff19bc8"],
@@ -1036,6 +1049,7 @@ def test_studio_training_run_local_endpoint_returns_execution_result(tmp_path: P
         "/api/provider/studio/training/run-local",
         json={
             "workspace": _workspace().model_dump(mode="json", exclude_none=True),
+            "graph": _graph().model_dump(mode="json", exclude_none=True),
             "job_id": "http-studio-local-run",
             "root": str(tmp_path),
             "issues": ["ff19bc8"],
@@ -1066,7 +1080,7 @@ def test_studio_pipeline_materialize_training_writes_validation_only_artifact(
     binding_path = tmp_path / "task-binding-spec.json"
     output_path = tmp_path / "artifacts" / "training-summary.json"
     graph_path.write_text(
-        scenario.graph.model_dump_json(indent=2, exclude_none=True) + "\n",
+        _graph().model_dump_json(indent=2, exclude_none=True) + "\n",
         encoding="utf-8",
     )
     training_path.write_text(json.dumps(scenario.training_spec), encoding="utf-8")
@@ -1106,6 +1120,7 @@ def test_materialize_studio_pipeline_requires_registered_eval_recipe(
     training = run_studio_training_local_execution(
         StudioTrainingLocalRunRequest(
             workspace=_workspace(),
+            graph=_graph(),
             job_id="studio-pipeline-train-unregistered",
             root=str(tmp_path),
             issues=["d30d4c2"],
@@ -1133,6 +1148,7 @@ def test_materialize_studio_pipeline_requires_explicit_analysis_type(
     training = run_studio_training_local_execution(
         StudioTrainingLocalRunRequest(
             workspace=_workspace(),
+            graph=_graph(),
             job_id="studio-pipeline-train-no-analysis-type",
             root=str(tmp_path),
             issues=["d30d4c2"],
@@ -1164,6 +1180,7 @@ def test_materialize_studio_pipeline_consumes_stage_collections(
     training = run_studio_training_local_execution(
         StudioTrainingLocalRunRequest(
             workspace=_workspace_with_analysis_type("feedbax.analysis.activity"),
+            graph=_graph(),
             job_id="studio-pipeline-train",
             root=str(tmp_path),
             issues=["d30d4c2"],
@@ -1263,6 +1280,7 @@ def test_materialize_studio_pipeline_carries_authored_evaluation_states_policy(
     training = run_studio_training_local_execution(
         StudioTrainingLocalRunRequest(
             workspace=workspace,
+            graph=_graph(),
             job_id="studio-policy-train",
             root=str(tmp_path),
             issues=["b594b56"],
@@ -1302,6 +1320,7 @@ def test_materialize_studio_pipeline_endpoint_returns_updated_workspace(
     training = run_studio_training_local_execution(
         StudioTrainingLocalRunRequest(
             workspace=_workspace_with_analysis_type("feedbax.analysis.activity"),
+            graph=_graph(),
             job_id="http-studio-pipeline-train",
             root=str(tmp_path),
             issues=["d30d4c2"],
@@ -1341,7 +1360,7 @@ def _matrix_row_for_scenario(
     stage = next(stage for stage in workspace.stages if stage.kind == "train")
     scenario = workspace.scenarios[stage.scenario_id]
     envelope = {
-        "graph_spec": scenario.graph.model_dump(mode="json", exclude_none=True),
+        "graph_spec": _graph().model_dump(mode="json", exclude_none=True),
         "training_spec": scenario.training_spec,
         "task_spec": scenario.task_spec,
         "task_binding_spec": scenario.task_binding_spec.model_dump(mode="json", exclude_none=True),
@@ -1372,11 +1391,13 @@ def _single_run_emitter_kwargs(workspace) -> dict:
         "workspace": workspace,
         "stage": stage,
         "scenario_id": stage.scenario_id,
-        "graph_spec": scenario.graph.model_dump(mode="json", exclude_none=True),
+        "graph_spec": _graph().model_dump(mode="json", exclude_none=True),
         "training_spec": scenario.training_spec,
         "task_spec": scenario.task_spec,
         "task_binding_spec": scenario.task_binding_spec.model_dump(mode="json", exclude_none=True),
-        "request": StudioTrainingExecutionRequest(workspace=workspace, job_id="job-shared"),
+        "request": StudioTrainingExecutionRequest(
+            workspace=workspace, graph=_graph(), job_id="job-shared"
+        ),
         "execution_target": "local",
     }
 
@@ -1386,7 +1407,9 @@ def test_studio_training_contract_files_are_declared_once(registry_bundle):
     workspace = _workspace()
     stage = next(stage for stage in workspace.stages if stage.kind == "train")
     spec = _build_execution_spec(
-        request=StudioTrainingExecutionRequest(workspace=workspace, job_id="contract-files"),
+        request=StudioTrainingExecutionRequest(
+            workspace=workspace, graph=_graph(), job_id="contract-files"
+        ),
         workspace=workspace,
         stage=stage,
         job_id="contract-files",
@@ -1422,7 +1445,9 @@ def test_pending_training_manifest_paths_emit_through_one_builder(tmp_path: Path
         stage=next(stage for stage in workspace.stages if stage.kind == "train"),
         scenario_id="scenario:train",
         run_set_id="run-set-shared",
-        request=StudioTrainingExecutionRequest(workspace=workspace, job_id="job-shared"),
+        request=StudioTrainingExecutionRequest(
+            workspace=workspace, graph=_graph(), job_id="job-shared"
+        ),
         root=tmp_path,
         execution_target="local",
     )
@@ -1455,7 +1480,9 @@ def test_single_run_and_matrix_row_pending_manifests_agree_except_on_run_identit
         stage=next(stage for stage in workspace.stages if stage.kind == "train"),
         scenario_id="scenario:train",
         run_set_id="run-set-parity",
-        request=StudioTrainingExecutionRequest(workspace=workspace, job_id="job-shared"),
+        request=StudioTrainingExecutionRequest(
+            workspace=workspace, graph=_graph(), job_id="job-shared"
+        ),
         root=tmp_path,
         execution_target="local",
     )
@@ -1500,7 +1527,9 @@ def test_pending_matrix_manifest_reuses_existing_before_deriving_row_specs(tmp_p
         stage=stage,
         scenario_id="scenario:train",
         run_set_id="run-set-reuse",
-        request=StudioTrainingExecutionRequest(workspace=workspace, job_id="job-reuse"),
+        request=StudioTrainingExecutionRequest(
+            workspace=workspace, graph=_graph(), job_id="job-reuse"
+        ),
         root=tmp_path,
         execution_target="local",
     )
@@ -1528,7 +1557,9 @@ def test_pending_matrix_manifest_restages_cancelled_run(tmp_path: Path):
         stage=stage,
         scenario_id="scenario:train",
         run_set_id="run-set-restage",
-        request=StudioTrainingExecutionRequest(workspace=workspace, job_id="job-restage"),
+        request=StudioTrainingExecutionRequest(
+            workspace=workspace, graph=_graph(), job_id="job-restage"
+        ),
         root=tmp_path,
         execution_target="local",
     )

@@ -206,6 +206,7 @@ async def enumerate_studio_schemas(
     return enumerate_studio_schema_registry(
         payload.workspace,
         payload.scenario_id,
+        graph=payload.graph,
         runtime_introspection=payload.runtime_introspection,
         component_registry=request.app.state.bootstrap_state.bundle.components,
     )

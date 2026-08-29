@@ -13,10 +13,6 @@ import {
   retargetTaskBindingsForNodeRename,
   retargetTaskBindingsForNodePortRename,
 } from '@/features/scenario/taskBindings';
-import {
-  normalizeGraphForStudioAuthoring,
-  normalizeTaskBindingSpecForStudioAuthoring,
-} from '@/features/graph/normalization';
 import { WORKSPACE_VIEW_STATE_SCHEMA_VERSION } from '@/types/workspace';
 import type { AnalysisSnapshot } from '@/types/analysis';
 import { isCausalGraphSpec, type GraphSpec, type GraphUIState } from '@/types/graph';
@@ -40,9 +36,57 @@ import type {
   WorkspaceViewMode,
   WorkspaceViewState,
 } from '@/types/workspace';
+import type { WorkspaceDocument } from '@/generated/studioContracts';
 
-const WORKSPACE_SCHEMA_VERSION = 'feedbax.studio.workspace.v1';
-const SCENARIO_SCHEMA_VERSION = 'feedbax.spec.studio.scenario.v2';
+export function buildWorkspaceDocumentSnapshot(
+  document: WorkspaceDocument | null,
+  graphUiState: GraphUIState,
+  analysisSnapshot: AnalysisSnapshot | null,
+  workspace: StudioWorkspaceSpec | null,
+): WorkspaceDocument {
+  if (!document) {
+    throw new Error('WorkspaceDocument is required to save an existing semantic graph.');
+  }
+  return {
+    ...document,
+    graph_ui_state: graphUiState,
+    workspace_ui_state: workspace?.ui_state ?? {},
+    stage_ui_state: Object.fromEntries(
+      (workspace?.stages ?? []).map((stage) => [stage.id, stage.ui_state])
+    ),
+    scenario_ui_state: Object.fromEntries(
+      Object.entries(workspace?.scenarios ?? {}).map(([id, scenario]) => [id, scenario.ui_state])
+    ),
+    analysis_pages: analysisPagesFromSnapshot(
+      analysisSnapshot
+    ) as unknown as WorkspaceDocument['analysis_pages'],
+    active_analysis_page_id: analysisSnapshot?.activePageId ?? null,
+  };
+}
+
+export function hydrateWorkspacePresentation(
+  workspace: StudioWorkspaceSpec | null,
+  document: WorkspaceDocument,
+): StudioWorkspaceSpec | null {
+  if (!workspace) return null;
+  return {
+    ...workspace,
+    ui_state: document.workspace_ui_state ?? {},
+    stages: workspace.stages.map((stage) => ({
+      ...stage,
+      ui_state: document.stage_ui_state?.[stage.id] ?? {},
+    })),
+    scenarios: Object.fromEntries(
+      Object.entries(workspace.scenarios).map(([id, scenario]) => [
+        id,
+        { ...scenario, ui_state: document.scenario_ui_state?.[id] ?? {} },
+      ])
+    ),
+  };
+}
+
+const WORKSPACE_SCHEMA_VERSION = 'feedbax.spec.studio.workspace.v2';
+const SCENARIO_SCHEMA_VERSION = 'feedbax.spec.studio.scenario.v3';
 const OBJECTIVE_SCHEMA_VERSION = 'feedbax.studio.objective.v1';
 
 const DEFAULT_STAGE_IDS = {
@@ -471,8 +515,6 @@ function defaultScenario(
     label,
     stage_id: stageId,
     parent_scenario_id: null,
-    graph: null,
-    graph_ui_state: null,
     training_spec: null,
     task_spec: null,
     task_binding_spec: null,
@@ -487,48 +529,6 @@ function defaultScenario(
     metadata: {},
     ...overrides,
   };
-}
-
-function normalizeScenarioTaskBindingSpec(
-  scenario: StudioScenarioSpec
-): StudioScenarioSpec {
-  if (!scenario.graph) return scenario;
-  const graph = normalizeGraphForStudioAuthoring(
-    scenario.graph,
-    scenario.task_binding_spec
-  );
-  const normalizedExistingTaskBindingSpec = normalizeTaskBindingSpecForStudioAuthoring(
-    scenario.task_binding_spec,
-    graph
-  );
-  const taskBindingSpec = ensureTaskBindingSpec(
-    normalizedExistingTaskBindingSpec,
-    graph,
-    scenario.task_spec
-  );
-  if (graph === scenario.graph && taskBindingSpec === scenario.task_binding_spec) {
-    return scenario;
-  }
-  return {
-    ...scenario,
-    graph,
-    task_binding_spec: taskBindingSpec,
-  };
-}
-
-function normalizeWorkspaceTaskBindingSpecs(
-  workspace: StudioWorkspaceSpec | null
-): StudioWorkspaceSpec | null {
-  if (!workspace) return workspace;
-  let changed = false;
-  const scenarios = Object.fromEntries(
-    Object.entries(workspace.scenarios).map(([scenarioId, scenario]) => {
-      const normalized = normalizeScenarioTaskBindingSpec(scenario);
-      if (normalized !== scenario) changed = true;
-      return [scenarioId, normalized];
-    })
-  );
-  return changed ? { ...workspace, scenarios } : workspace;
 }
 
 function stageForScenario(
@@ -590,7 +590,7 @@ function normalizeWorkspaceViewStates(
 function normalizeWorkspaceForStudioState(
   workspace: StudioWorkspaceSpec | null
 ): StudioWorkspaceSpec | null {
-  return normalizeWorkspaceViewStates(normalizeWorkspaceTaskBindingSpecs(workspace));
+  return normalizeWorkspaceViewStates(workspace);
 }
 
 function analysisPagesFromSnapshot(snapshot: AnalysisSnapshot | null): AnalysisPageWire[] {
@@ -757,8 +757,6 @@ export function buildWorkspaceSnapshot({
   scenarios[trainScenarioId] = {
     ...defaultScenario(trainScenarioId, existingTrain?.label ?? 'Training scenario', trainStage.id),
     ...existingTrain,
-    graph,
-    graph_ui_state: uiState,
     training_spec: scenarioTrainingSpec,
     task_spec: scenarioTaskSpec,
     task_binding_spec: scenarioTaskBindingSpec,
@@ -819,10 +817,12 @@ export function buildWorkspaceSnapshot({
 
 interface WorkspaceStoreState {
   workspace: StudioWorkspaceSpec | null;
+  workspaceDocument: WorkspaceDocument | null;
   lastTrainingExecutionPreparation: StudioTrainingExecutionPreparation | null;
   lastTrainingLocalRunResult: StudioTrainingLocalRunResult | null;
   lastPipelineMaterializationResult: StudioPipelineMaterializationResult | null;
   setWorkspace: (workspace: StudioWorkspaceSpec | null) => void;
+  setWorkspaceDocument: (document: WorkspaceDocument | null) => void;
   setActiveStage: (stageId: string | null) => void;
   setActiveStageByKind: (kind: StudioStageKind) => void;
   updateStageDraft: (stageId: string, patch: Partial<StudioStageSpec>, reason?: string) => void;
@@ -910,8 +910,6 @@ export function getProjectedScenario(
     label: scenario.label,
     stage_id: scenario.stage_id ?? stage?.id ?? null,
     parent_scenario_id: scenario.parent_scenario_id,
-    graph: scenario.graph ?? parent.graph,
-    graph_ui_state: scenario.graph_ui_state ?? parent.graph_ui_state,
     task_spec: scenario.task_spec ?? parent.task_spec,
     task_binding_spec: scenario.task_binding_spec ?? parent.task_binding_spec,
     probe_specs:
@@ -1001,6 +999,7 @@ export function getWorkspaceViewMode(
 
 export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
   workspace: null,
+  workspaceDocument: null,
   lastTrainingExecutionPreparation: null,
   lastTrainingLocalRunResult: null,
   lastPipelineMaterializationResult: null,
@@ -1012,6 +1011,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
       .setFrozenSnapshot(frozenSnapshotProjectionFromWorkspace(normalizedWorkspace));
     set({ workspace: normalizedWorkspace });
   },
+  setWorkspaceDocument: (workspaceDocument) => set({ workspaceDocument }),
 
   setActiveStage: (stageId) =>
     set((state) => {

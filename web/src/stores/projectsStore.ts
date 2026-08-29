@@ -11,14 +11,12 @@ import { useTrajectoryStore } from '@/stores/trajectoryStore';
 import { useStatisticsStore } from '@/stores/statisticsStore';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { buildWorkspaceSnapshot, useWorkspaceStore } from '@/stores/workspaceStore';
-import {
-  normalizeGraphForStudioAuthoring,
-  normalizeWorkspaceGraphsForStudioAuthoring,
-} from '@/features/graph/normalization';
+import { normalizeGraphForStudioAuthoring } from '@/features/graph/normalization';
 import type { TrainingSpec, TaskSpec, LossValidationError } from '@/types/training';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { AnalysisSnapshot } from '@/types/analysis';
 import type { StudioWorkspaceSpec } from '@/types/workspace';
+import type { WorkspaceDocument } from '@/generated/studioContracts';
 
 export interface TrainingSnapshot {
   trainingSpec: TrainingSpec;
@@ -35,6 +33,7 @@ export interface OpenTab {
   trainingSnapshot: TrainingSnapshot;
   analysisSnapshot: AnalysisSnapshot | null;
   workspaceSnapshot: StudioWorkspaceSpec | null;
+  workspaceDocumentSnapshot: WorkspaceDocument | null;
 }
 
 type StoredGraphSnapshot = Omit<GraphSnapshot, 'past' | 'future' | 'saveRevision'> & {
@@ -255,6 +254,7 @@ function captureCurrentTab(tab: OpenTab): OpenTab {
       trainingSnapshot,
       analysisSnapshot,
     ),
+    workspaceDocumentSnapshot: useWorkspaceStore.getState().workspaceDocument,
   };
 }
 
@@ -311,7 +311,8 @@ function tabForRuntime(tab: StoredOpenTab): OpenTab {
   return {
     ...tab,
     graphSnapshot: graphSnapshotForRuntime(tab.graphSnapshot),
-    workspaceSnapshot: normalizeWorkspaceGraphsForStudioAuthoring(tab.workspaceSnapshot),
+    workspaceSnapshot: tab.workspaceSnapshot,
+    workspaceDocumentSnapshot: tab.workspaceDocumentSnapshot ?? null,
   };
 }
 
@@ -319,7 +320,7 @@ function tabForStorage(tab: OpenTab): StoredOpenTab {
   return {
     ...tab,
     graphSnapshot: graphSnapshotForStorage(tab.graphSnapshot),
-    workspaceSnapshot: normalizeWorkspaceGraphsForStudioAuthoring(tab.workspaceSnapshot),
+    workspaceSnapshot: tab.workspaceSnapshot,
   };
 }
 
@@ -363,6 +364,9 @@ function restoreTabStores(tab: OpenTab) {
   });
   restoreAnalysisSnapshot(normalizedTab.analysisSnapshot);
   useWorkspaceStore.getState().setWorkspace(normalizedTab.workspaceSnapshot);
+  useWorkspaceStore
+    .getState()
+    .setWorkspaceDocument(normalizedTab.workspaceDocumentSnapshot);
   resetTrajectoryStoreForTabSwitch();
   resetStatisticsStoreForTabSwitch();
 }
@@ -433,7 +437,11 @@ interface ProjectsStoreState {
     projectName?: string,
     analysisSnapshot?: AnalysisSnapshot | null,
     workspaceSnapshot?: StudioWorkspaceSpec | null,
-    options?: { replaceActiveTab?: boolean; saveRevision?: number | null },
+    options?: {
+      replaceActiveTab?: boolean;
+      saveRevision?: number | null;
+      workspaceDocument?: WorkspaceDocument | null;
+    },
   ) => void;
   switchTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
@@ -458,6 +466,7 @@ function buildInitialTab(): OpenTab {
     trainingSnapshot,
     analysisSnapshot,
     workspaceSnapshot,
+    workspaceDocumentSnapshot: null,
   };
 }
 
@@ -497,6 +506,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
         trainingSnapshot: newTrainingSnapshot,
         analysisSnapshot: newAnalysisSnapshot,
         workspaceSnapshot: newWorkspaceSnapshot,
+        workspaceDocumentSnapshot: null,
       };
 
       // Restore the new tab's state into stores
@@ -510,6 +520,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
       });
       restoreAnalysisSnapshot(newAnalysisSnapshot);
       useWorkspaceStore.getState().setWorkspace(newWorkspaceSnapshot);
+      useWorkspaceStore.getState().setWorkspaceDocument(null);
       resetTrajectoryStoreForTabSwitch();
       resetStatisticsStoreForTabSwitch();
 
@@ -530,8 +541,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
         tab.tabId === activeTabId ? captureCurrentTab(tab) : tab
       );
       const authoringGraph = normalizeGraphForStudioAuthoring(graph);
-      const authoringWorkspace =
-        normalizeWorkspaceGraphsForStudioAuthoring(workspaceSnapshot ?? null);
+      const authoringWorkspace = workspaceSnapshot ?? null;
       const tabLabel = projectName ?? authoringGraph.metadata?.name ?? 'Untitled';
 
       const graphSnapshot = createGraphSnapshotFromPersistedGraph({
@@ -563,6 +573,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
         trainingSnapshot,
         analysisSnapshot: restoredAnalysis,
         workspaceSnapshot: restoredWorkspace,
+        workspaceDocumentSnapshot: options?.workspaceDocument ?? null,
       };
 
       // Restore the new project into stores
@@ -576,6 +587,9 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
       });
       restoreAnalysisSnapshot(restoredAnalysis);
       useWorkspaceStore.getState().setWorkspace(restoredWorkspace);
+      useWorkspaceStore
+        .getState()
+        .setWorkspaceDocument(options?.workspaceDocument ?? null);
       resetTrajectoryStoreForTabSwitch();
       resetStatisticsStoreForTabSwitch();
 
@@ -620,6 +634,9 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
       });
       restoreAnalysisSnapshot(target.analysisSnapshot);
       useWorkspaceStore.getState().setWorkspace(target.workspaceSnapshot);
+      useWorkspaceStore
+        .getState()
+        .setWorkspaceDocument(target.workspaceDocumentSnapshot);
       resetTrajectoryStoreForTabSwitch();
       resetStatisticsStoreForTabSwitch();
 
@@ -660,6 +677,9 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
         });
         restoreAnalysisSnapshot(nextTab.analysisSnapshot);
         useWorkspaceStore.getState().setWorkspace(nextTab.workspaceSnapshot);
+        useWorkspaceStore
+          .getState()
+          .setWorkspaceDocument(nextTab.workspaceDocumentSnapshot);
         resetTrajectoryStoreForTabSwitch();
         resetStatisticsStoreForTabSwitch();
 

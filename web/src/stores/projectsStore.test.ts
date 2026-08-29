@@ -152,6 +152,22 @@ describe('projectsStore local restore state', () => {
 
     const { useProjectsStore } = await import('@/stores/projectsStore');
     const { useGraphStore } = await import('@/stores/graphStore');
+    const { useWorkspaceStore } = await import('@/stores/workspaceStore');
+    const workspaceDocument = {
+      schema_id: 'feedbax.workspace_document' as const,
+      schema_version: '1' as const,
+      semantic_root: {
+        semantic_document_sha256: 'a'.repeat(64),
+        authored_path: '/graph',
+      },
+      graph_ui_state: { viewport: { x: 0, y: 0, zoom: 1 }, node_states: {} },
+      workspace_ui_state: {},
+      stage_ui_state: {},
+      scenario_ui_state: {},
+      analysis_pages: [],
+      active_analysis_page_id: null,
+      semantic_anchors: {},
+    };
 
     expect(useProjectsStore.getState().tabs).toHaveLength(1);
     expect(useGraphStore.getState().currentGraphLabel).toBe('Reaching Task Model');
@@ -176,7 +192,7 @@ describe('projectsStore local restore state', () => {
       'RLRMP movement-ramp training runs',
       { pages: [], activePageId: null },
       null,
-      { replaceActiveTab: true },
+      { replaceActiveTab: true, workspaceDocument },
     );
 
     expect(useProjectsStore.getState().tabs).toHaveLength(1);
@@ -187,6 +203,10 @@ describe('projectsStore local restore state', () => {
       'RLRMP movement-ramp training runs'
     );
     expect(useGraphStore.getState().graphId).toBe('movement-ramp-project');
+    expect(useProjectsStore.getState().tabs[0].workspaceDocumentSnapshot).toEqual(
+      workspaceDocument
+    );
+    expect(useWorkspaceStore.getState().workspaceDocument).toEqual(workspaceDocument);
   });
 
   it('reopens a saved project inside its persisted subgraph path', async () => {

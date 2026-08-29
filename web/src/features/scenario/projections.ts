@@ -1248,7 +1248,7 @@ export function buildResolvedScene({
   poseValues?: ResolvedScenePoseValues;
   requirePoseValues?: boolean;
 }): ResolvedScene {
-  const resolvedGraph = graph ?? scenario?.graph ?? null;
+  const resolvedGraph = graph ?? null;
   const componentsByName = componentByName(components);
   const scene: ResolvedScene = {
     scenario_id: scenario?.id ?? registry.scenario_id,

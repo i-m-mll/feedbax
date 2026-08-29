@@ -1,6 +1,4 @@
 import type {
-  GraphSpec,
-  GraphUIState,
   RetainedObservableSpec,
   RetentionPolicySpec,
 } from '@/types/graph';
@@ -487,12 +485,10 @@ export interface AnalysisPageWire {
 
 export interface StudioScenarioSpec {
   id: string;
-  schema_version: 'feedbax.spec.studio.scenario.v2' | string;
+  schema_version: 'feedbax.spec.studio.scenario.v3' | string;
   label: string;
   stage_id?: string | null;
   parent_scenario_id?: string | null;
-  graph?: GraphSpec | null;
-  graph_ui_state?: GraphUIState | null;
   training_spec?: TrainingSpec | null;
   task_spec?: TaskSpec | null;
   task_binding_spec?: StudioTaskBindingSpec | null;
@@ -509,6 +505,7 @@ export interface StudioScenarioSpec {
 
 export interface StudioStageSpec {
   id: string;
+  schema_version?: 'feedbax.spec.studio.stage.v2' | string;
   kind: StudioStageKind;
   label: string;
   status: StudioStageStatus;
@@ -526,7 +523,7 @@ export interface StudioStageSpec {
 
 export interface StudioWorkspaceSpec {
   id: string;
-  schema_version: 'feedbax.studio.workspace.v1' | string;
+  schema_version: 'feedbax.spec.studio.workspace.v2' | string;
   label: string;
   active_stage_id?: string | null;
   stages: StudioStageSpec[];

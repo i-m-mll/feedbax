@@ -21,8 +21,6 @@ function scenario(): StudioScenarioSpec {
     schema_version: 'feedbax.spec.studio.scenario.v2',
     label: 'Train',
     stage_id: 'stage:train',
-    graph: null,
-    graph_ui_state: null,
     training_spec: defaultTrainingSpec,
     task_spec: defaultTaskSpec,
     task_binding_spec: null,

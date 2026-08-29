@@ -165,6 +165,7 @@ export function TrainCollectionPanel() {
     (state) => state.updateActiveScenarioTrainingSpec
   );
   const markDirty = useGraphStore((state) => state.markDirty);
+  const rootGraph = useGraphStore((state) => state.graph);
   const trainingProgress = useTrainingStore((state) => state.progress);
   const trainingJobId = useTrainingStore((state) => state.jobId);
   const lossHistory = useTrainingStore((state) => state.lossHistory);
@@ -224,8 +225,8 @@ export function TrainCollectionPanel() {
   const metrics = useMemo(() => scenarioMetricSpecs(workspace), [workspace]);
   const lineage = useMemo(() => buildLineageProjection(workspace), [workspace]);
   const currentSpecHashes = useMemo(
-    () => currentDraftSpecHashesForScenario(trainScenario),
-    [trainScenario]
+    () => currentDraftSpecHashesForScenario(trainScenario, rootGraph),
+    [rootGraph, trainScenario]
   );
   const rows = useMemo(
     () =>
@@ -510,6 +511,7 @@ export function TrainCollectionPanel() {
       setWorkspace(nextWorkspace);
       const preparation = await prepareStudioTrainingExecution({
         workspace: nextWorkspace,
+        graph: useGraphStore.getState().capturePersistedGraph().graph,
         stage_id: stageId,
         backend: 'local',
         issues: ['3a6d02e'],
@@ -756,6 +758,7 @@ export function TrainCollectionPanel() {
     try {
       const preparation = await prepareStudioTrainingExecution({
         workspace,
+        graph: useGraphStore.getState().capturePersistedGraph().graph,
         stage_id: trainItem.stageId,
         backend,
         queue_target: launchTarget,
@@ -1550,7 +1553,6 @@ function workspaceWithTrainingSnapshot(
   manifest: Record<string, unknown>,
   axisCoordinates: Record<string, unknown>
 ): StudioWorkspaceSpec {
-  const graphSpec = specPayloadInlineValue(manifest, 'graph_spec');
   const trainingSpec = specPayloadInlineValue(manifest, 'training_spec');
   const taskSpec = specPayloadInlineValue(manifest, 'task_spec');
   const taskBindingSpec = specPayloadInlineValue(manifest, 'task_binding_spec');
@@ -1566,7 +1568,6 @@ function workspaceWithTrainingSnapshot(
         id === scenarioId
           ? {
               ...scenario,
-              graph: (graphSpec ?? scenario.graph) as typeof scenario.graph,
               training_spec: trainingSpec as unknown as typeof scenario.training_spec,
               task_spec: taskSpec as unknown as typeof scenario.task_spec,
               task_binding_spec:

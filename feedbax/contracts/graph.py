@@ -600,11 +600,16 @@ class AnalysisPageSpec(BaseModel):
     expanded_field_paths: List[str] = Field(default_factory=list)
 
 
-STUDIO_WORKSPACE_SCHEMA_VERSION = "feedbax.spec.studio.workspace.v1"
+STUDIO_WORKSPACE_SCHEMA_VERSION_V1 = "feedbax.spec.studio.workspace.v1"
+STUDIO_WORKSPACE_SCHEMA_VERSION = "feedbax.spec.studio.workspace.v2"
+WORKSPACE_DOCUMENT_SCHEMA_ID = "feedbax.workspace_document"
+WORKSPACE_DOCUMENT_SCHEMA_VERSION = "1"
 LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION = "feedbax.studio.scenario.v1"
 STUDIO_SCENARIO_SCHEMA_VERSION_V1 = "feedbax.spec.studio.scenario.v1"
-STUDIO_SCENARIO_SCHEMA_VERSION = "feedbax.spec.studio.scenario.v2"
-STUDIO_STAGE_SCHEMA_VERSION = "feedbax.spec.studio.stage.v1"
+STUDIO_SCENARIO_SCHEMA_VERSION_V2 = "feedbax.spec.studio.scenario.v2"
+STUDIO_SCENARIO_SCHEMA_VERSION = "feedbax.spec.studio.scenario.v3"
+STUDIO_STAGE_SCHEMA_VERSION_V1 = "feedbax.spec.studio.stage.v1"
+STUDIO_STAGE_SCHEMA_VERSION = "feedbax.spec.studio.stage.v2"
 STUDIO_BIOMECHANICS_SCHEMA_ID = "feedbax.spec.studio.biomechanics"
 STUDIO_BIOMECHANICS_SCHEMA_VERSION = "feedbax.spec.studio.biomechanics.v1"
 
@@ -1043,15 +1048,13 @@ class StudioScenarioSpec(BaseModel):
     these typed fields rather than replacing this workspace boundary.
     """
 
-    model_config = ConfigDict(validate_assignment=True)
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
     id: str
     schema_version: Literal[STUDIO_SCENARIO_SCHEMA_VERSION] = STUDIO_SCENARIO_SCHEMA_VERSION
     label: str
     stage_id: Optional[str] = None
     parent_scenario_id: Optional[str] = None
-    graph: Optional[GraphSpec] = None
-    graph_ui_state: Optional[GraphUIState] = None
     training_spec: Optional[Dict[str, Any]] = None
     task_spec: Optional[Dict[str, Any]] = None
     task_binding_spec: Optional[StudioTaskBindingSpec] = None
@@ -1062,12 +1065,13 @@ class StudioScenarioSpec(BaseModel):
     analysis_spec: Optional[Dict[str, Any]] = None
     report_spec: Optional[Dict[str, Any]] = None
     validation: StudioValidationState = Field(default_factory=StudioValidationState)
-    ui_state: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class StudioStageSpec(BaseModel):
     """Pipeline stage over scenario drafts, collections, and manifests."""
+
+    model_config = ConfigDict(extra="forbid")
 
     id: str
     schema_version: str = STUDIO_STAGE_SCHEMA_VERSION
@@ -1082,12 +1086,13 @@ class StudioStageSpec(BaseModel):
     execution_spec: Optional[Dict[str, Any]] = None
     selection_spec: Dict[str, Any] = Field(default_factory=dict)
     validation: StudioValidationState = Field(default_factory=StudioValidationState)
-    ui_state: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class StudioWorkspaceSpec(BaseModel):
     """Durable Studio workspace/pipeline model stored with a project."""
+
+    model_config = ConfigDict(extra="forbid")
 
     id: str
     schema_version: str = STUDIO_WORKSPACE_SCHEMA_VERSION
@@ -1099,19 +1104,61 @@ class StudioWorkspaceSpec(BaseModel):
     manifest_refs: List[StudioManifestRef] = Field(default_factory=list)
     artifact_refs: List[StudioArtifactRef] = Field(default_factory=list)
     validation: StudioValidationState = Field(default_factory=StudioValidationState)
-    ui_state: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class SemanticAnchor(BaseModel):
+    """Stable reference from presentation state to one authored semantic element."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    semantic_document_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    authored_path: str = Field(pattern=r"^/")
+
+
+class WorkspaceDocument(BaseModel):
+    """Durable Studio presentation state for one exact semantic graph revision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_id: Literal[WORKSPACE_DOCUMENT_SCHEMA_ID] = WORKSPACE_DOCUMENT_SCHEMA_ID
+    schema_version: Literal[WORKSPACE_DOCUMENT_SCHEMA_VERSION] = (
+        WORKSPACE_DOCUMENT_SCHEMA_VERSION
+    )
+    semantic_root: SemanticAnchor
+    graph_ui_state: GraphUIState = Field(default_factory=GraphUIState)
+    workspace_ui_state: Dict[str, Any] = Field(default_factory=dict)
+    stage_ui_state: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    scenario_ui_state: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    analysis_pages: List[AnalysisPageSpec] = Field(default_factory=list)
+    active_analysis_page_id: Optional[str] = None
+    semantic_anchors: Dict[str, SemanticAnchor] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_semantic_anchors(self) -> "WorkspaceDocument":
+        if self.semantic_root.authored_path != "/graph":
+            raise ValueError("WorkspaceDocument semantic_root must target /graph")
+        revision = self.semantic_root.semantic_document_sha256
+        stale = [
+            name
+            for name, anchor in self.semantic_anchors.items()
+            if anchor.semantic_document_sha256 != revision
+        ]
+        if stale:
+            raise ValueError(
+                "WorkspaceDocument semantic anchors target a different semantic revision: "
+                + ", ".join(sorted(stale))
+            )
+        return self
+
+
 class GraphProject(BaseModel):
-    """A complete graph project with metadata and UI state."""
+    """Semantic graph and separately versioned Studio presentation authority."""
 
     metadata: GraphMetadata
     graph: GraphSpec
-    ui_state: Optional[GraphUIState] = None
+    workspace_document: WorkspaceDocument
     demo_training_data: Optional[Any] = None
-    analysis_pages: Optional[List[AnalysisPageSpec]] = None
-    active_analysis_page_id: Optional[str] = None
     workspace: Optional[StudioWorkspaceSpec] = None
     compile_reports: Optional[Dict[str, DomainCompileReport]] = None
 
@@ -1135,8 +1182,6 @@ class GraphProject(BaseModel):
 def build_default_studio_workspace(
     *,
     label: str,
-    graph: GraphSpec,
-    ui_state: Optional[GraphUIState] = None,
     analysis_pages: Optional[List[AnalysisPageSpec]] = None,
     active_analysis_page_id: Optional[str] = None,
 ) -> StudioWorkspaceSpec:
@@ -1169,8 +1214,6 @@ def build_default_studio_workspace(
             id=train_scenario_id,
             label="Training scenario",
             stage_id=train_stage_id,
-            graph=graph,
-            graph_ui_state=ui_state,
             metadata={"source": "graph_project_migration"},
         ),
         eval_scenario_id: StudioScenarioSpec(

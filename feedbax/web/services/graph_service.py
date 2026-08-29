@@ -25,8 +25,11 @@ from feedbax.contracts.graph import (
     GraphUIState,
     GraphMetadata,
     StudioWorkspaceSpec,
+    SemanticAnchor,
+    WorkspaceDocument,
     build_default_studio_workspace,
 )
+from feedbax.compiler import GraphDocument, compile_graph
 
 
 @dataclass
@@ -77,8 +80,9 @@ class GraphService:
     def create_graph(
         self,
         graph: GraphSpec,
-        ui_state: Optional[GraphUIState],
         *,
+        workspace: StudioWorkspaceSpec | None = None,
+        workspace_document: WorkspaceDocument | None = None,
         component_registry: object | None = None,
     ) -> GraphRecord:
         ensure_dirs()
@@ -97,16 +101,33 @@ class GraphService:
         )
         if graph.metadata is None:
             graph.metadata = metadata
-        workspace = build_default_studio_workspace(
-            label=metadata.name,
-            graph=graph,
-            ui_state=ui_state,
+        semantic_workspace = workspace or build_default_studio_workspace(label=metadata.name)
+        semantic_workspace = normalize_workspace_for_studio_authoring(
+            semantic_workspace,
+            graph,
+            component_registry=component_registry,
+        )
+        presentation = self._workspace_document(
+            graph,
+            graph_ui_state=(workspace_document.graph_ui_state if workspace_document else None),
+            workspace_ui_state=(
+                workspace_document.workspace_ui_state if workspace_document else None
+            ),
+            stage_ui_state=(workspace_document.stage_ui_state if workspace_document else None),
+            scenario_ui_state=(
+                workspace_document.scenario_ui_state if workspace_document else None
+            ),
+            analysis_pages=(workspace_document.analysis_pages if workspace_document else None),
+            active_analysis_page_id=(
+                workspace_document.active_analysis_page_id if workspace_document else None
+            ),
+            component_registry=component_registry,
         )
         project = GraphProject(
             metadata=metadata,
             graph=graph,
-            ui_state=ui_state,
-            workspace=workspace,
+            workspace_document=presentation,
+            workspace=semantic_workspace,
         )
         self._save_project(self._path_for(graph_id), project)
         return GraphRecord(graph_id=graph_id, project=project)
@@ -127,10 +148,9 @@ class GraphService:
         self,
         graph_id: str,
         graph: Optional[GraphSpec],
-        ui_state: Optional[GraphUIState],
-        analysis_pages: Optional[List[AnalysisPageSpec]] = None,
-        active_analysis_page_id: Optional[str] = None,
+        *,
         workspace: Optional[StudioWorkspaceSpec] = None,
+        workspace_document: Optional[WorkspaceDocument] = None,
         expected_save_revision: Optional[int] = None,
         require_save_revision: bool = False,
         component_registry: object | None = None,
@@ -150,29 +170,38 @@ class GraphService:
                 current_revision=current_revision,
                 expected_revision=expected_save_revision,
             )
+        graph_changed = False
         if graph is not None:
-            project.graph = normalize_graph_for_studio_authoring(
+            normalized_graph = normalize_graph_for_studio_authoring(
                 graph,
                 component_registry=component_registry,
             )
-        if ui_state is not None:
-            project.ui_state = ui_state
-        if analysis_pages is not None:
-            project.analysis_pages = analysis_pages
-        if active_analysis_page_id is not None:
-            project.active_analysis_page_id = active_analysis_page_id
+            graph_changed = normalized_graph != project.graph
+            project.graph = normalized_graph
+        presentation = workspace_document or project.workspace_document
         if workspace is not None:
             project.workspace = normalize_workspace_for_studio_authoring(
                 workspace,
+                project.graph,
                 component_registry=component_registry,
             )
         updated_at = datetime.now(timezone.utc).isoformat()
         next_revision = current_revision + 1
         project.metadata.updated_at = updated_at
         project.metadata.save_revision = next_revision
-        if project.graph.metadata is not None:
+        if graph_changed and project.graph.metadata is not None:
             project.graph.metadata.updated_at = updated_at
             project.graph.metadata.save_revision = next_revision
+        project.workspace_document = self._workspace_document(
+            project.graph,
+            graph_ui_state=presentation.graph_ui_state,
+            workspace_ui_state=presentation.workspace_ui_state,
+            stage_ui_state=presentation.stage_ui_state,
+            scenario_ui_state=presentation.scenario_ui_state,
+            analysis_pages=presentation.analysis_pages,
+            active_analysis_page_id=presentation.active_analysis_page_id,
+            component_registry=component_registry,
+        )
         self._ensure_workspace(project, component_registry=component_registry)
         self._save_project(self._path_for(graph_id), project)
         return GraphRecord(graph_id=graph_id, project=project)
@@ -339,16 +368,75 @@ class GraphService:
         )
         project.workspace = normalize_workspace_for_studio_authoring(
             project.workspace,
+            project.graph,
             component_registry=component_registry,
         )
+        current_workspace = project.workspace_document
+        expected_root = self._workspace_document(
+            project.graph,
+            graph_ui_state=current_workspace.graph_ui_state,
+            workspace_ui_state=current_workspace.workspace_ui_state,
+            stage_ui_state=current_workspace.stage_ui_state,
+            scenario_ui_state=current_workspace.scenario_ui_state,
+            analysis_pages=current_workspace.analysis_pages,
+            active_analysis_page_id=current_workspace.active_analysis_page_id,
+            component_registry=component_registry,
+        )
+        if (
+            current_workspace.semantic_root != expected_root.semantic_root
+            or (
+                component_registry is not None
+                and current_workspace.semantic_anchors != expected_root.semantic_anchors
+            )
+        ):
+            project.workspace_document = expected_root
         if project.workspace is not None:
             return
         project.workspace = build_default_studio_workspace(
             label=project.metadata.name,
-            graph=project.graph,
-            ui_state=project.ui_state,
-            analysis_pages=project.analysis_pages,
-            active_analysis_page_id=project.active_analysis_page_id,
+            analysis_pages=project.workspace_document.analysis_pages,
+            active_analysis_page_id=project.workspace_document.active_analysis_page_id,
+        )
+
+    def _workspace_document(
+        self,
+        graph: GraphSpec,
+        *,
+        graph_ui_state: GraphUIState | None = None,
+        workspace_ui_state: dict[str, object] | None = None,
+        stage_ui_state: dict[str, dict[str, object]] | None = None,
+        scenario_ui_state: dict[str, dict[str, object]] | None = None,
+        analysis_pages: List[AnalysisPageSpec] | None = None,
+        active_analysis_page_id: str | None = None,
+        component_registry: object | None = None,
+    ) -> WorkspaceDocument:
+        document = GraphDocument(graph=graph)
+        semantic_anchors: dict[str, SemanticAnchor] = {}
+        if component_registry is not None:
+            compilation = compile_graph(document, component_registry)
+            document_sha256 = compilation.record.document_sha256
+            semantic_anchors = {
+                entry.resolved_path: entry.authored_anchor
+                for entry in compilation.record.source_map.entries
+            }
+        else:
+            from feedbax.contracts.authored_canonical import canonical_sha256
+
+            document_sha256 = canonical_sha256(
+                document.model_dump(mode="json", exclude_none=True)
+            )
+        return WorkspaceDocument(
+            semantic_root=SemanticAnchor(
+                semantic_document_sha256=document_sha256,
+                authored_path="/graph",
+            ),
+            graph_ui_state=graph_ui_state or GraphUIState(),
+            workspace_ui_state=workspace_ui_state or {},
+            stage_ui_state=stage_ui_state or {},
+            scenario_ui_state=scenario_ui_state or {},
+            analysis_pages=analysis_pages or [],
+            active_analysis_page_id=active_analysis_page_id,
+            semantic_anchors=semantic_anchors,
         )
 
     def _detect_cycles(self, graph: GraphSpec) -> List[List[str]]:
