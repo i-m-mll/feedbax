@@ -906,6 +906,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _fulfill_experiment_envelope(args, registries)
     if args.command == "execute-training-run-spec":
         run_spec = validate_training_run_spec(_read_json(args.spec))
+        if run_spec.graph.inline is None:
+            raise ValueError("execute-training-run-spec requires an inline graph document")
+        from feedbax.compiler import DocumentRoot, GraphDocument, compile_graph
+        from feedbax.contracts.authored_canonical import canonical_sha256
+
+        executable_graph = compile_graph(
+            GraphDocument(
+                graph=run_spec.graph.inline,
+                trial_root=DocumentRoot(
+                    schema_id="feedbax.spec.training.task",
+                    schema_version="1",
+                    content_sha256=canonical_sha256(run_spec.task.model_dump(mode="json")),
+                ),
+                objective_root=DocumentRoot(
+                    schema_id=run_spec.objective.schema_id or "feedbax.objective_slot",
+                    schema_version=run_spec.objective.schema_version or "1",
+                    content_sha256=canonical_sha256(
+                        run_spec.objective.model_dump(mode="json", exclude_none=True)
+                    ),
+                ),
+            ),
+            registries.components,
+        )
         resolved_method = resolve_training_run_spec(run_spec, registries.training_methods)
         method_registration = resolved_method.registration
         preparation_registration = registries.execution_preparations.get(run_spec.method_ref.key)
@@ -931,6 +954,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             prepared = registries.execution_preparations.prepare(
                 ExecutionPreparationRequest(
                     run_spec=run_spec,
+                    executable_graph=executable_graph,
                     method_payload=resolved_method.payload,
                     method_contract=resolved_method.contract,
                     effective_phase=resolved_method.effective_phase,
@@ -943,6 +967,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     prepared = materialize_execution_preparation(
                         ExecutionPreparationRequest(
                             run_spec=run_spec,
+                            executable_graph=executable_graph,
                             method_payload=resolved_method.payload,
                             method_contract=resolved_method.contract,
                             effective_phase=resolved_method.effective_phase,

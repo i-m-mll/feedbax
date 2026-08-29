@@ -38,8 +38,8 @@ from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
 from feedbax.contracts.graphs.serialization import (
     graph_to_spec,
     prototypes_from_task_bindings,
-    spec_to_graph,
 )
+from tests.graph_compiler_test_support import spec_to_graph
 from feedbax.contracts.graphs.prototypes import output_prototypes_for_node
 from feedbax.contracts.graphs.prototypes import infer_node_input_prototypes
 from feedbax.runtime.state import CartesianState

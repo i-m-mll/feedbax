@@ -7,7 +7,8 @@ from feedbax.runtime.graph import Graph, init_state_from_component
 from feedbax.mechanics import LinearStateSpace
 from feedbax.runtime.state_feedback import StateFeedbackSelector
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
-from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
+from feedbax.contracts.graphs.serialization import graph_to_spec
+from tests.graph_compiler_test_support import spec_to_graph
 from feedbax.component_registry import ComponentRegistry
 
 

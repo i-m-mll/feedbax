@@ -11,9 +11,9 @@ import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
+from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.contracts.graph import GraphSpec
 from feedbax.runtime.graph import Graph, GraphTraceRequest
-from feedbax.contracts.graphs.serialization import spec_to_graph
 
 if TYPE_CHECKING:
     from feedbax.component_registry import ComponentRegistry
@@ -204,7 +204,7 @@ def graph_controller(
                 "component_registry is required when graph_controller receives a GraphSpec; "
                 "pass an executable Graph to use the registry-free boundary"
             )
-        executable = spec_to_graph(graph, component_registry)
+        executable = compile_graph(GraphDocument(graph=graph), component_registry).graph
     else:
         executable = graph
     if input_builder is None and input_port not in executable.input_ports:

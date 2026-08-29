@@ -3,7 +3,9 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+import feedbax.compiler.graph as graph_compiler
 import feedbax.contracts.graphs.serialization as serialization
+from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import (
     ACAUSAL_GRAPH_SCHEMA_ID,
@@ -277,8 +279,8 @@ def test_spec_to_graph_requires_acausal_system_interior() -> None:
     )
 
     with pytest.raises(ValueError, match="feedbax.domain.acausal"):
-        serialization.spec_to_graph(
-            graph,
+        compile_graph(
+            GraphDocument(graph=graph),
             ComponentRegistry(load_user_components=False),
         )
 
@@ -611,7 +613,7 @@ def test_provider_validation_rejects_unsupported_manifest_graph_spec_version(
     assert "feedbax.spec.graph.v99" in result.errors[0].message
 
 
-def test_spec_to_graph_invokes_public_graph_spec_migration(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_compile_graph_invokes_public_graph_spec_migration(monkeypatch: pytest.MonkeyPatch) -> None:
     called = False
 
     migrated = GraphSpec(
@@ -640,9 +642,12 @@ def test_spec_to_graph_invokes_public_graph_spec_migration(monkeypatch: pytest.M
             migration_records=[],
         )
 
-    monkeypatch.setattr(serialization, "migrate_graph_spec", fake_migrate_graph_spec)
+    monkeypatch.setattr(graph_compiler, "migrate_graph_spec", fake_migrate_graph_spec)
 
-    graph = serialization.spec_to_graph(GraphSpec(), ComponentRegistry(load_user_components=False))
+    graph = compile_graph(
+        GraphDocument(graph=GraphSpec()),
+        ComponentRegistry(load_user_components=False),
+    ).graph
 
     assert called
     assert "constant" in graph.nodes
