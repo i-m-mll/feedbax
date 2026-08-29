@@ -33,7 +33,7 @@ from feedbax.contracts.training import (
     TaskSpec,
     TrainingConfig,
     TrainingMethodAuthoringContribution,
-    TrainingMethodDescriptor,
+    DeclaredTrainingProgram,
     TrainingRunSpec,
     WorkerExecutionSpec,
 )
@@ -180,22 +180,22 @@ def _copy_typed_option(
     return model.model_validate(value.model_dump(mode="python"))
 
 
-def _descriptor_for_authoring(
+def _program_for_authoring(
     method_ref: MethodRefSpec,
-    registry: training_contracts.TrainingMethodRegistry,
-) -> TrainingMethodDescriptor[Any]:
+    registry: training_contracts.TrainingProgramRegistry,
+) -> DeclaredTrainingProgram[Any]:
     registry.resolve(method_ref, path="/method_ref")
-    descriptor = registry.descriptor(method_ref)
-    if descriptor is None:
+    program = registry.program(method_ref)
+    if program is None:
         raise TrainingMethodAuthoringError(
             f"/method_ref {method_ref.key!r} is a low-level-only registration; "
-            "typed authoring requires a TrainingMethodDescriptor"
+            "typed authoring requires a declared training program"
         )
-    if descriptor.authoring_hook is None:
+    if program.authoring_hook is None:
         raise TrainingMethodAuthoringError(
-            f"/method_ref {method_ref.key!r} descriptor has no authoring_hook"
+            f"/method_ref {method_ref.key!r} program has no authoring_hook"
         )
-    return descriptor
+    return program
 
 
 def compile_training_method_authoring(
@@ -206,7 +206,7 @@ def compile_training_method_authoring(
     continuation: CheckpointContinuationRequest | Mapping[str, Any] | None = None,
     artifacts: ArtifactPolicySpec | None = None,
     risk_aggregation: RiskAggregationSpec | None = None,
-    registry: training_contracts.TrainingMethodRegistry,
+    registry: training_contracts.TrainingProgramRegistry,
 ) -> TrainingMethodAuthoringCompilation:
     """Compile one compact typed method payload into canonical run contracts.
 
@@ -227,7 +227,7 @@ def compile_training_method_authoring(
             "/row/payload_hash does not match the canonical authored payload"
         )
     normalized_ref = _normalize_method_ref(method_ref)
-    descriptor = _descriptor_for_authoring(normalized_ref, registry)
+    program = _program_for_authoring(normalized_ref, registry)
     artifact_policy = _copy_typed_option(
         artifacts,
         ArtifactPolicySpec,
@@ -239,9 +239,9 @@ def compile_training_method_authoring(
         path="/risk_aggregation",
     )
 
-    authoring_hook = descriptor.authoring_hook
-    if authoring_hook is None:  # Narrowed by _descriptor_for_authoring.
-        raise AssertionError("descriptor authoring hook unexpectedly missing")
+    authoring_hook = program.authoring_hook
+    if authoring_hook is None:  # Narrowed by _program_for_authoring.
+        raise AssertionError("training-program authoring hook unexpectedly missing")
     try:
         hook_identity = RowLowererIdentity(
             lowerer_id=authoring_hook.lowerer_id,
@@ -257,14 +257,14 @@ def compile_training_method_authoring(
     method_payload = copy.deepcopy(authored_row.payload)
     if TRAINING_ROW_LOWERER_REF_FIELD in method_payload:
         dispatch_identity = {
-            "schema_id": descriptor.payload_schema_id,
-            "schema_version": descriptor.payload_schema_version,
+            "schema_id": program.payload_schema_id,
+            "schema_version": program.payload_schema_version,
         }
         for field, expected in dispatch_identity.items():
             observed = method_payload.get(field)
             if observed != expected:
                 raise TrainingMethodAuthoringError(
-                    f"/row/payload/{field} does not match bound descriptor authority; "
+                    f"/row/payload/{field} does not match bound training-program authority; "
                     f"expected {expected!r}, observed {observed!r}"
                 )
         for field in (
@@ -274,14 +274,14 @@ def compile_training_method_authoring(
         ):
             method_payload.pop(field)
     try:
-        typed_payload = descriptor.payload_model.model_validate(method_payload)
+        typed_payload = program.payload_model.model_validate(method_payload)
     except Exception as exc:
         raise TrainingMethodAuthoringError(
             f"/row/payload does not match method payload schema: {exc}"
         ) from exc
     envelope = MethodPayloadEnvelope(
-        schema_id=descriptor.payload_schema_id,
-        schema_version=descriptor.payload_schema_version,
+        schema_id=program.payload_schema_id,
+        schema_version=program.payload_schema_version,
         payload=typed_payload.model_dump(mode="json"),
     )
     registry.validate_payload(normalized_ref, envelope, path="/method_payload")
@@ -379,15 +379,15 @@ def compile_training_method_authoring(
 
 
 def training_method_row_lowerer_registration(
-    descriptor: TrainingMethodDescriptor[Any],
-    registry: training_contracts.TrainingMethodRegistry,
+    program: DeclaredTrainingProgram[Any],
+    registry: training_contracts.TrainingProgramRegistry,
 ) -> TrainingRowLowererRegistration:
     """Derive one row-lowering registration from a complete authoring hook."""
     from feedbax.training.row_lowering import TrainingRowLowererRegistration
 
-    authoring_hook = descriptor.authoring_hook
+    authoring_hook = program.authoring_hook
     if authoring_hook is None:
-        raise ValueError("descriptor has no authoring hook")
+        raise ValueError("training program has no authoring hook")
     hook_identity = RowLowererIdentity(
         lowerer_id=authoring_hook.lowerer_id,
         lowerer_version=authoring_hook.lowerer_version,
@@ -399,7 +399,7 @@ def training_method_row_lowerer_registration(
     ) -> TrainingRowLoweringResult:
         compiled = compile_training_method_authoring(
             row,
-            method_ref=descriptor.method_ref,
+            method_ref=program.method_ref,
             registry=registry,
         )
         return TrainingRowLoweringResult(
@@ -416,32 +416,32 @@ def training_method_row_lowerer_registration(
         authoring_hook.domain,
     )
     lower.__feedbax_implementation_identity__ = (  # type: ignore[attr-defined]
-        descriptor.method_ref
+        program.method_ref
     )
     return TrainingRowLowererRegistration(
-        authored_schema_id=descriptor.payload_schema_id,
-        authored_schema_version=descriptor.payload_schema_version,
+        authored_schema_id=program.payload_schema_id,
+        authored_schema_version=program.payload_schema_version,
         lowerer_id=authoring_hook.lowerer_id,
         lowerer_version=authoring_hook.lowerer_version,
-        implementation_sha256=training_method_authoring_implementation_sha256(descriptor),
+        implementation_sha256=training_method_authoring_implementation_sha256(program),
         lower=lower,
-        owner=descriptor.owner,
+        owner=program.owner,
     )
 
 
 def training_method_authoring_implementation_sha256(
-    descriptor: TrainingMethodDescriptor[Any],
+    program: DeclaredTrainingProgram[Any],
 ) -> str:
-    """Return the exact implementation digest for descriptor-derived lowering."""
+    """Return the exact implementation digest for declaration-derived lowering."""
     from feedbax.training.row_lowering import (
         _bound_training_row_lowerer_implementation_sha256,
     )
 
-    authoring_hook = descriptor.authoring_hook
+    authoring_hook = program.authoring_hook
     if authoring_hook is None:
-        raise ValueError("descriptor has no authoring hook")
+        raise ValueError("training program has no authoring hook")
     return _bound_training_row_lowerer_implementation_sha256(
-        identity=descriptor.method_ref,
+        identity=program.method_ref,
         dependencies=(
             compile_training_method_authoring,
             authoring_hook.compile,

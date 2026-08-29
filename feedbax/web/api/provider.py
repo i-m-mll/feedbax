@@ -89,7 +89,7 @@ async def validate_provider_spec(
             payload.spec,
             graph_spec=payload.graph_spec,
             component_registry=request.app.state.bootstrap_state.bundle.components,
-            training_method_registry=request.app.state.bootstrap_state.bundle.training_methods,
+            training_method_registry=request.app.state.bootstrap_state.bundle.training_programs,
             analysis_registry=request.app.state.bootstrap_state.bundle.analysis_recipes,
         )
     except ValueError as exc:

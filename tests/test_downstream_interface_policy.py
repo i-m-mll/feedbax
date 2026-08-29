@@ -124,7 +124,8 @@ GUARANTEED_IMPORTS = {
     ),
     "feedbax.component_registry": (
         "ComponentBuilder",
-        "ComponentMeta",
+        "DeclaredComponent",
+        "declare_component",
         "ComponentResolution",
         "ComponentRegistry",
         "ComponentMigration",
@@ -319,7 +320,7 @@ def test_policy_checker_accepts_current_repository_contract() -> None:
 
 def test_plugin_api_manifest_pins_all_direct_downstream_entrypoint_imports() -> None:
     direct_imports = _PLUGIN_ROW["plugin_api"]["direct_entrypoint_imports"]
-    assert len(direct_imports) == len(set(direct_imports)) == 12
+    assert len(direct_imports) == len(set(direct_imports)) == 10
     assert set(direct_imports).issubset(_PLUGIN_PUBLIC_NAMES)
 
 

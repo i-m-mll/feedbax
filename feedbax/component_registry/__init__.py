@@ -1,6 +1,17 @@
 from __future__ import annotations
 
-from .meta import ComponentBuilder, ComponentMeta, OutputPrototypeFn
+from .declarations import (
+    ComponentAuthoringFacet,
+    ComponentBuilder,
+    ComponentCompilerFacet,
+    ComponentRuntimeFacet,
+    ComponentSerializationFacet,
+    ComponentStudioFacet,
+    ComponentTrainingFacet,
+    DeclaredComponent,
+    OutputPrototypeFn,
+    declare_component,
+)
 from .registry import (
     ComponentRegistry,
     ComponentResolution,
@@ -16,7 +27,14 @@ __all__ = [
     "ComponentBuilder",
     "ComponentMigration",
     "ComponentMigrationPack",
-    "ComponentMeta",
+    "ComponentAuthoringFacet",
+    "ComponentCompilerFacet",
+    "ComponentRuntimeFacet",
+    "ComponentSerializationFacet",
+    "ComponentStudioFacet",
+    "ComponentTrainingFacet",
+    "DeclaredComponent",
+    "declare_component",
     "ComponentResolution",
     "OutputPrototypeFn",
     "ComponentRegistry",

@@ -41,28 +41,31 @@
               "DRIVERS",
               "APPLICATION_REGISTRY_KEYS",
               "ApplicationRegistryBundle",
+              "TrainingProgramCatalog",
               "COMPONENTS",
-              "TRAINING_METHODS",
-              "ROW_LOWERERS",
-              "EXECUTION_PREPARATIONS",
+              "TRAINING_PROGRAMS",
               "ANALYSIS_RECIPES",
               "EVALUATION_RECIPES",
               "EVALUATION_BATCH_CONSUMERS",
               "EVALUATION_PRODUCT_UNION_FINALIZERS",
-              "TrainingMethodDescriptor",
-              "TrainingMethodRegistry",
-              "TrainingRowLowererRegistration",
-              "TrainingRowLowererRegistry",
-              "TrainingRowLoweringContext",
-              "TrainingRowLoweringResult",
+              "DeclaredTrainingProgram",
+              "TrainingProgramDeclaration",
+              "TrainingProgramRuntimeFacet",
+              "TrainingProgramAuthoringFacet",
+              "TrainingProgramPreparationFacet",
+              "TrainingProgramProjectionFacet",
+              "TrainingProgramRowLoweringFacet",
+              "declare_training_program",
+              "TrainingMethodAuthoringContribution",
+              "TrainingMethodAuthoringHook",
+              "TrainingMethodMetadataProjector",
+              "TrainingMethodScheduleProjector",
+              "TrainingProgramRegistry",
               "ExecutionPreparationProvider",
-              "ExecutionPreparationProviderRegistry",
-              "ExecutionPreparationRegistration",
               "ExecutionPreparationRequest",
               "ExecutionPreparationResult",
               "ExecutionPreparationPlan",
               "compile_training_method_authoring",
-              "training_method_row_lowerer_registration",
               "AnalysisRecipe",
               "AnalysisRecipeRegistry",
               "AnalysisRecipeResult",
@@ -98,51 +101,33 @@
           "ANALYSIS_RECIPES",
           "EVALUATION_BATCH_CONSUMERS",
           "EVALUATION_PRODUCT_UNION_FINALIZERS",
-          "EXECUTION_PREPARATIONS",
-          "ROW_LOWERERS",
-          "TRAINING_METHODS"
+          "TRAINING_PROGRAMS"
         ],
         "families": [
           {
-            "key": "training_methods",
-            "registry_type": "TrainingMethodRegistry",
+            "key": "training_programs",
+            "registry_type": "TrainingProgramCatalog",
             "registry_methods": [
-              "register_descriptor",
+              "register_program",
               "resolve",
               "validate_payload",
               "resolve_execution"
             ],
-            "callback_types": ["TrainingMethodDescriptor"],
-            "support_types": [],
-            "public_consumers": [
-              "feedbax.training.authoring:compile_training_method_authoring"
-            ]
-          },
-          {
-            "key": "row_lowerers",
-            "registry_type": "TrainingRowLowererRegistry",
-            "registry_methods": ["register", "lower"],
-            "callback_types": ["TrainingRowLowererRegistration"],
+            "callback_types": ["DeclaredTrainingProgram"],
             "support_types": [
-              "TrainingRowLoweringContext",
-              "TrainingRowLoweringResult"
-            ],
-            "public_consumers": [
-              "feedbax.training.authoring:training_method_row_lowerer_registration"
-            ]
-          },
-          {
-            "key": "execution_preparations",
-            "registry_type": "ExecutionPreparationProviderRegistry",
-            "registry_methods": ["register", "get", "prepare"],
-            "callback_types": ["ExecutionPreparationProvider"],
-            "support_types": [
-              "ExecutionPreparationRegistration",
+              "TrainingProgramDeclaration",
+              "TrainingProgramRuntimeFacet",
+              "TrainingProgramAuthoringFacet",
+              "TrainingProgramPreparationFacet",
+              "TrainingProgramProjectionFacet",
+              "TrainingProgramRowLoweringFacet",
               "ExecutionPreparationRequest",
               "ExecutionPreparationResult",
               "ExecutionPreparationPlan"
             ],
-            "public_consumers": []
+            "public_consumers": [
+              "feedbax.training.authoring:compile_training_method_authoring"
+            ]
           },
           {
             "key": "analysis_recipes",

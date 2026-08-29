@@ -30,7 +30,7 @@ from feedbax.contracts.studio_training import (
     StudioTrainingAssemblySpec,
     StudioTrainingIdentityAdapter,
 )
-from feedbax.contracts.training import default_training_method_registry
+from feedbax.contracts.training import default_training_program_registry
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
@@ -3855,7 +3855,7 @@ def test_declared_continuation_without_source_custody_fails_before_transport(
             local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
-        training_method_registry=default_training_method_registry(),
+        training_method_registry=default_training_program_registry(),
     )
 
     checks = driver.preflight_checks(bundle)
@@ -4559,7 +4559,7 @@ orchestrate._run_existing(
     sys.argv[1],
     stop_after_stage="PROVISION",
     conformance_registry=bootstrap.bundle.conformance_checks,
-    training_method_registry=bootstrap.bundle.training_methods,
+    training_method_registry=bootstrap.bundle.training_programs,
     driver_registry=bootstrap.bundle.drivers,
     plugin_provenance=bootstrap.provenance,
 )

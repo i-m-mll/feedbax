@@ -16,7 +16,7 @@ from feedbax.contracts.training import (
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
     StandardSupervisedMethodPayload,
     TrainingMethodRegistration,
-    TrainingMethodRegistry,
+    TrainingProgramRegistry,
     standard_supervised_method_contract,
     standard_supervised_method_ref,
 )
@@ -73,7 +73,7 @@ def studio_training_registry(
     stop_event: Any,
     rollout_fn: Callable[[Any, Any, Any], dict[str, Any]],
     evaluate_loss_fn: Callable[[Any, dict[str, Any]], tuple[jax.Array, dict[str, jax.Array]]],
-) -> TrainingMethodRegistry:
+) -> TrainingProgramRegistry:
     """Build an executor registry whose kernel performs one Studio graph update."""
     method_contract = executor_method_contract(total_batches=total_batches)
 
@@ -126,7 +126,7 @@ def studio_training_registry(
         del slots, context
         return coordinate.program_step < total_batches and not stop_event.is_set()
 
-    registry = TrainingMethodRegistry()
+    registry = TrainingProgramRegistry()
     registry.register(
         TrainingMethodRegistration(
             method_ref=standard_supervised_method_ref().key,

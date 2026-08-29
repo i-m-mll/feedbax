@@ -68,7 +68,7 @@ from feedbax.contracts.training import (
     OptimizerSpec,
     ResolvedTrainingMethod,
     ScheduleProjection,
-    TrainingMethodRegistry,
+    TrainingProgramRegistry,
     TrainingManifestMetadataProjection,
     TrainingRunSpec,
 )
@@ -483,10 +483,10 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
                     f"segment_start_batch={self.segment_start_batch}"
                 )
         checkpoint_metadata: dict[str, Any] = {"barrier_visit_ordinal": saved.visit_ordinal}
-        descriptor = self.resolved_method.descriptor
-        if descriptor is not None and descriptor.optimizer_step_extractor is not None:
+        program = self.resolved_method.program
+        if program is not None and program.optimizer_step_extractor is not None:
             checkpoint_metadata["optimizer_step"] = _synchronized_optimizer_step(
-                descriptor.optimizer_step_extractor,
+                program.optimizer_step_extractor,
                 self.resolved_method.payload,
                 saved.slots,
                 self.slot_axis_bindings,
@@ -562,7 +562,7 @@ def execute_training_run_spec(
     manifest_root: Path | str | None = None,
     checkpoint_root: Path | str | None = None,
     checkpoint_source_root: Path | str | None = None,
-    registry: TrainingMethodRegistry,
+    registry: TrainingProgramRegistry,
     loss_service: LossService | None = None,
     environment: WorkerExecutabilityEnvironment | None = None,
     training_spec_payload: Mapping[str, Any] | None = None,
@@ -775,7 +775,7 @@ def execute_training_run_spec(
         active_mapping_axes=tuple(level.axis for level in mapping_levels),
     )
     if (
-        resolved_method.descriptor is not None
+        resolved_method.program is not None
         and effective_phase != run_spec.worker_execution.effective_phase
     ):
         raise TrainingRunExecutorError(
@@ -1551,7 +1551,7 @@ def _validate_execution_context(
 def prepare_training_manifest_metadata_projection(
     supplied: TrainingManifestMetadataProjection | Mapping[str, Any] | None,
     *,
-    registry: TrainingMethodRegistry,
+    registry: TrainingProgramRegistry,
     run_spec: TrainingRunSpec,
     training_spec_payload: Mapping[str, Any] | None,
     training_spec_payload_kind: str,
@@ -1559,15 +1559,15 @@ def prepare_training_manifest_metadata_projection(
     training_spec_payload_schema_version: str | None,
     resolved_method: ResolvedTrainingMethod[Any] | None = None,
 ) -> TrainingManifestMetadataProjectionCustody | None:
-    """Validate and bind explicit or descriptor metadata before any side effect."""
+    """Validate and bind explicit or program metadata before any side effect."""
     if supplied is None:
-        descriptor = resolved_method.descriptor if resolved_method is not None else None
-        projector = descriptor.metadata_projector if descriptor is not None else None
+        program = resolved_method.program if resolved_method is not None else None
+        projector = program.metadata_projector if program is not None else None
         if projector is None:
             return None
-        if not descriptor.package:
+        if not program.package:
             raise TrainingRunExecutorError(
-                "descriptor metadata projection requires a non-empty package identity"
+                "program metadata projection requires a non-empty package identity"
             )
         try:
             projected = projector.project(resolved_method.payload)
@@ -1576,7 +1576,7 @@ def prepare_training_manifest_metadata_projection(
             )
         except (TypeError, ValueError, ValidationError) as exc:
             raise TrainingRunExecutorError(
-                f"/descriptor/metadata_projector validation failed: {exc}"
+                f"/program/metadata_projector validation failed: {exc}"
             ) from exc
         _reject_reserved_projection_keys(canonical_values, run_spec=run_spec)
         source_payload, source_schema_id, source_schema_version = (
@@ -1597,8 +1597,8 @@ def prepare_training_manifest_metadata_projection(
             projection_schema_version=projector.schema_version,
             values=canonical_values,
             values_sha256=training_spec_sha256(canonical_values),
-            registration_owner=descriptor.owner,
-            registration_package=descriptor.package,
+            registration_owner=program.owner,
+            registration_package=program.package,
         )
     raw_projection: Any = (
         supplied.model_dump(mode="json", exclude_none=True)
@@ -1860,21 +1860,18 @@ def _validated_optimizer_step(
     payload: Any,
     runtime: Mapping[str, Any],
 ) -> int:
-    """Invoke a descriptor extractor and enforce its runtime-only int contract."""
+    """Invoke a program extractor and enforce its runtime-only int contract."""
     try:
         value = extractor(payload, runtime)
     except Exception as exc:
-        raise TrainingRunExecutorError(
-            f"/descriptor/optimizer_step_extractor failed: {exc}"
-        ) from exc
+        raise TrainingRunExecutorError(f"/program/optimizer_step_extractor failed: {exc}") from exc
     if isinstance(value, bool) or not isinstance(value, int):
         raise TrainingRunExecutorError(
-            "/descriptor/optimizer_step_extractor must return a non-bool integer; "
-            f"observed={value!r}"
+            f"/program/optimizer_step_extractor must return a non-bool integer; observed={value!r}"
         )
     if value < 0:
         raise TrainingRunExecutorError(
-            "/descriptor/optimizer_step_extractor must return a non-negative integer; "
+            "/program/optimizer_step_extractor must return a non-negative integer; "
             f"observed={value}"
         )
     return value
@@ -1922,7 +1919,7 @@ def _synchronized_optimizer_step(
     ]
     if any(value != values[0] for value in values[1:]):
         raise TrainingRunExecutorError(
-            f"/descriptor/optimizer_step_extractor mapped authorities diverged: {values!r}"
+            f"/program/optimizer_step_extractor mapped authorities diverged: {values!r}"
         )
     return values[0]
 
@@ -1937,7 +1934,7 @@ def _bind_restored_schedule_context(
     binder: RestoredScheduleContextBinder | None,
 ) -> dict[str, Any]:
     continuation = run_spec.checkpoint_progress.continuation
-    descriptor = resolved_method.descriptor
+    program = resolved_method.program
     if continuation is None:
         return dict(kernel_context)
     current_step = continuation.source_completed_batches
@@ -1955,20 +1952,20 @@ def _bind_restored_schedule_context(
         **kernel_context,
         "schedule_projection": projection.model_dump(mode="json"),
     }
-    # Schedule projection already enforces both descriptor requirements.
-    assert descriptor is not None and descriptor.optimizer_spec_projector is not None
+    # Schedule projection already enforces both program requirements.
+    assert program is not None and program.optimizer_spec_projector is not None
     optimizer_spec = OptimizerSpec.model_validate(
-        descriptor.optimizer_spec_projector(resolved_method.payload)
+        program.optimizer_spec_projector(resolved_method.payload)
     )
     schedule = optimizer_spec.lr_schedule
     if schedule is None or schedule.kind == "constant":
         return projected_context
-    if descriptor.optimizer_step_extractor is None:
+    if program.optimizer_step_extractor is None:
         raise TrainingRunExecutorError(
-            "scheduled continuation requires /descriptor/optimizer_step_extractor"
+            "scheduled continuation requires /program/optimizer_step_extractor"
         )
     restored_count = _synchronized_optimizer_step(
-        descriptor.optimizer_step_extractor,
+        program.optimizer_step_extractor,
         resolved_method.payload,
         slots,
         slot_axis_bindings,
@@ -2112,7 +2109,7 @@ def _executor_nan_guard(
     expected_slots: Mapping[str, Any],
     resume_slot_transform: ResumeSlotTransform | None,
     resolved_method: ResolvedTrainingMethod[Any],
-    registry: TrainingMethodRegistry,
+    registry: TrainingProgramRegistry,
     slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
     schedule_lineage: CheckpointSegmentLineage,
 ) -> Callable[[Mapping[str, Any], ProgressCoordinate, Mapping[str, Any]], StepGuardResult | None]:
@@ -2268,7 +2265,7 @@ def _nan_attribution_detection(
     run_spec: TrainingRunSpec,
     run_id: str,
     resolved_method: ResolvedTrainingMethod[Any],
-    registry: TrainingMethodRegistry,
+    registry: TrainingProgramRegistry,
     schedule_lineage: CheckpointSegmentLineage,
     slots: Mapping[str, Any],
     coordinate: ProgressCoordinate,
@@ -2353,11 +2350,11 @@ def _nan_attribution_detection(
         else schedule_lineage.start_batch
     )
     try:
-        schedule_descriptor = resolved_method.descriptor or registry.descriptor(run_spec.method_ref)
+        schedule_program = resolved_method.program or registry.program(run_spec.method_ref)
         schedule_method = (
             resolved_method
-            if resolved_method.descriptor is not None
-            else replace(resolved_method, descriptor=schedule_descriptor)
+            if resolved_method.program is not None
+            else replace(resolved_method, program=schedule_program)
         )
         full_schedule_state = project_training_schedules(
             run_spec,
