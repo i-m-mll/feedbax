@@ -7,7 +7,7 @@ import json
 from collections.abc import Callable, Mapping, Sequence, Set
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -30,6 +30,9 @@ from feedbax.contracts.worker import (
 from feedbax.objectives.service import LossService
 from feedbax.training.checkpoint_custody import ResumeSlotTransform
 from feedbax.training.worker_validation import resolve_execution_mapping
+
+if TYPE_CHECKING:
+    from feedbax.compiler import ExecutableGraph
 
 _RESERVED_KERNEL_CONTEXT_KEYS = frozenset({"run_spec", "method_payload"})
 PREPARATION_RNG_ALGORITHM_VERSION = "feedbax.preparation_rng_scope.fold_in.v1"
@@ -78,6 +81,7 @@ class ExecutionPreparationRequest:
     """Validated runtime request passed to an execution-preparation provider."""
 
     run_spec: TrainingRunSpec
+    executable_graph: ExecutableGraph | None = None
     method_payload: BaseModel | None = None
     method_contract: MethodContractSpec | None = None
     effective_phase: EffectivePhaseSpec | None = None
@@ -881,6 +885,7 @@ class ExecutionPreparationProviderRegistry:
         )
         provider_request = ExecutionPreparationRequest(
             run_spec=provider_spec,
+            executable_graph=request.executable_graph,
             method_payload=provider_payload,
             method_contract=provider_contract,
             effective_phase=provider_effective_phase,

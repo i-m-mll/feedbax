@@ -330,6 +330,27 @@
       "coverage_status": "covered"
     },
     {
+      "row_id": "graph-compiler",
+      "case_ids": [
+        "component_param_array_values",
+        "dynamic_component_ports"
+      ],
+      "schemas": {
+        "current": [
+          "feedbax.graph_document version 1",
+          "feedbax.resolved_graph version 1",
+          "feedbax.graph_compilation_record version 1"
+        ],
+        "migrated": [
+          "GraphSpec 1.0.0 through feedbax.spec.graph.v4"
+        ],
+        "rejected": [
+          "unknown"
+        ]
+      },
+      "coverage_status": "covered"
+    },
+    {
       "row_id": "value-identity",
       "case_ids": [
         "value_identity"

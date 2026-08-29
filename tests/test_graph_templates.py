@@ -20,7 +20,8 @@ from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_au
 from feedbax.models.networks import LeakyRNNCell, SimpleStagedNetwork, VanillaRNN
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.contracts.graphs.prototypes import infer_node_input_prototypes
-from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
+from feedbax.contracts.graphs.serialization import graph_to_spec
+from tests.graph_compiler_test_support import spec_to_graph
 from feedbax.component_registry import ComponentRegistry
 
 

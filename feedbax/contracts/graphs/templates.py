@@ -2,7 +2,7 @@
 
 Templates are the canonical representation for Feedbax-provided composite
 structures. They produce portable ``GraphSpec`` payloads that can be stored,
-opened in Studio, and instantiated by ``spec_to_graph`` without relying on a
+opened in Studio, and instantiated by ``compile_graph`` without relying on a
 separate backend-special model type.
 """
 

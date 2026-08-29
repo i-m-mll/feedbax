@@ -49,7 +49,8 @@ from feedbax.contracts.training import (
     standard_supervised_method_payload,
     standard_supervised_method_ref,
 )
-from feedbax.contracts.graphs.serialization import prototypes_from_task_bindings, spec_to_graph
+from feedbax.compiler import GraphDocument, compile_graph
+from feedbax.contracts.graphs.serialization import prototypes_from_task_bindings
 from feedbax.objectives import ObjectiveExecutionRequirements
 from feedbax.objectives.service import LossService, LoweredObjective
 from feedbax.training.executor import execute_training_run_spec
@@ -182,11 +183,11 @@ def compile_training_run(
         )
 
     try:
-        graph = spec_to_graph(
-            graph_model,
+        graph = compile_graph(
+            GraphDocument(graph=graph_model),
             component_registry,
             input_prototypes=prototypes_from_task_bindings(binding_model),
-        )
+        ).graph
     except NotImplementedError as exc:
         raise GraphCompilationError(
             "GraphSpec contains an unsupported executable component",

@@ -2950,7 +2950,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             owner_module="feedbax.contracts.graph",
             emitted_by=("Studio canvas save/load", "provider_manifest.schemas"),
             consumed_by=(
-                "feedbax.contracts.graphs.serialization.spec_to_graph",
+                "feedbax.compiler.compile_graph",
                 "Studio backend",
                 "worker",
             ),

@@ -1,0 +1,41 @@
+"""Scientific graph compiler public contract."""
+
+from feedbax.compiler.graph import (
+    COMPILATION_RECORD_SCHEMA_ID,
+    COMPILATION_RECORD_SCHEMA_VERSION,
+    GRAPH_COMPILER_ID,
+    GRAPH_COMPILER_VERSION,
+    GRAPH_DOCUMENT_SCHEMA_ID,
+    GRAPH_DOCUMENT_SCHEMA_VERSION,
+    RESOLVED_GRAPH_SCHEMA_ID,
+    RESOLVED_GRAPH_SCHEMA_VERSION,
+    CompilationRecord,
+    DocumentRoot,
+    ExecutableGraph,
+    GraphDocument,
+    GraphKeySchedule,
+    GraphSourceMap,
+    GraphSourceMapEntry,
+    ResolvedGraph,
+    compile_graph,
+)
+
+__all__ = [
+    "COMPILATION_RECORD_SCHEMA_ID",
+    "COMPILATION_RECORD_SCHEMA_VERSION",
+    "GRAPH_COMPILER_ID",
+    "GRAPH_COMPILER_VERSION",
+    "GRAPH_DOCUMENT_SCHEMA_ID",
+    "GRAPH_DOCUMENT_SCHEMA_VERSION",
+    "RESOLVED_GRAPH_SCHEMA_ID",
+    "RESOLVED_GRAPH_SCHEMA_VERSION",
+    "CompilationRecord",
+    "DocumentRoot",
+    "ExecutableGraph",
+    "GraphDocument",
+    "GraphKeySchedule",
+    "GraphSourceMap",
+    "GraphSourceMapEntry",
+    "ResolvedGraph",
+    "compile_graph",
+]

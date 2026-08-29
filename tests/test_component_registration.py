@@ -22,7 +22,7 @@ from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.contracts.graphs.builders import build_component
 from feedbax.models.cde import CDENetwork
 from feedbax.runtime.graph import Component
-from feedbax.contracts.graphs.serialization import spec_to_graph
+from tests.graph_compiler_test_support import spec_to_graph
 from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION, RepresentationSpec
 from feedbax.plugins.application import COMPONENTS, new_registration_context
 from feedbax.plugins.bootstrap import (

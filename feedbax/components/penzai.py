@@ -427,7 +427,7 @@ class PenzaiSubgraph(Component):
                 by scanning the model for StateVariables.
             builder_name: Name of the registered builder used to create this
                 component. Stored for serialization round-tripping via
-                graph_to_spec / spec_to_graph.
+                graph_to_spec / compile_graph.
         """
         self.pz_model = pz_model
         self.input_mapping = input_mapping

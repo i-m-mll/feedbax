@@ -109,7 +109,8 @@ from feedbax.contracts.row_index import (
     RowSelectionErrorCode,
     expand_row_selector,
 )
-from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
+from feedbax.compiler import GraphDocument, compile_graph
+from feedbax.contracts.graphs.serialization import graph_to_spec
 from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
 from feedbax.contracts.manifest import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
@@ -942,7 +943,7 @@ def check_dynamic_component_ports(*, entry_points: Iterable[object] | None = Non
     if node.output_ports != ["output"]:
         raise AssertionError("external fixed output was not materialized")
 
-    graph = spec_to_graph(graph_spec, component_registry=registry)
+    graph = compile_graph(GraphDocument(graph=graph_spec), registry).graph
     runtime_node = graph.nodes["external"]
     if tuple(runtime_node.input_ports) != tuple(node.input_ports):
         raise AssertionError("runtime dynamic port order drifted from the materialized schema")
@@ -967,7 +968,7 @@ def check_dynamic_component_ports(*, entry_points: Iterable[object] | None = Non
         }
     )
     try:
-        spec_to_graph(invalid, component_registry=registry)
+        compile_graph(GraphDocument(graph=invalid), registry)
     except ValueError as exc:
         if "dynamic port layout mismatch" not in str(exc):
             raise
@@ -1153,7 +1154,10 @@ def check_component_param_array_values() -> bool:
             )
         }
     )
-    runtime = spec_to_graph(graph_spec, ComponentRegistry(load_user_components=False))
+    runtime = compile_graph(
+        GraphDocument(graph=graph_spec),
+        ComponentRegistry(load_user_components=False),
+    ).graph
     if runtime.nodes["plant"].initial_delta_A != ((0.0, 0.5), (0.0, 0.0)):
         raise AssertionError("GraphSpec did not materialize sparse component params")
     if graph_to_spec(runtime).nodes["plant"].params["delta_A"] != sparse.model_dump(mode="json"):
