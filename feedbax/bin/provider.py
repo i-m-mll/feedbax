@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
             _read_json(args.path),
             graph_spec=graph_spec,
             component_registry=registries.components,
-            training_method_registry=registries.training_methods,
+            training_method_registry=registries.training_programs,
             analysis_registry=registries.analysis_recipes,
         )
         _write_json(result)

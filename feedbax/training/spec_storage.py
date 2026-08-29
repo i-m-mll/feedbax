@@ -22,7 +22,7 @@ from feedbax.contracts.run_matrix import (
     TrainingRunMatrixSpec,
 )
 from feedbax.contracts.migrations import default_spec_registry
-from feedbax.contracts.training import TrainingMethodRegistry
+from feedbax.contracts.training import TrainingProgramRegistry
 from feedbax.contracts.training_matrix_composition import (
     TrainingRunMatrixDeltaSpec,
     flatten_training_run_matrix_delta,
@@ -74,7 +74,7 @@ def compile_training_run_matrix(
     *,
     run_set_id: str,
     context: Any,
-    method_registry: TrainingMethodRegistry,
+    method_registry: TrainingProgramRegistry,
     allow_inline_base: bool = False,
     row_validator: RowPayloadValidator | None = None,
     row_lowerer: TrainingRowLowerer | None = None,
@@ -187,7 +187,7 @@ class TrainingRunMatrixCompiler:
     def __init__(
         self,
         *,
-        method_registry: TrainingMethodRegistry,
+        method_registry: TrainingProgramRegistry,
         allow_inline_base: bool = False,
         row_validator: RowPayloadValidator | None = None,
         row_lowerer: TrainingRowLowerer | None = None,
@@ -276,7 +276,7 @@ class TrainingRunIdentityAdapter:
 def register_training_run_matrix_compiler(
     registry: Any,
     *,
-    method_registry: TrainingMethodRegistry,
+    method_registry: TrainingProgramRegistry,
     allow_inline_base: bool = False,
     row_validator: RowPayloadValidator | None = None,
     row_lowerer: TrainingRowLowerer | None = None,
@@ -340,7 +340,7 @@ def emit_training_run_spec_storage(
     dependency_lock_path: Path,
     input_data_identities: list[dict[str, Any]] | None = None,
     environment_digest: str | None = None,
-    method_registry: TrainingMethodRegistry,
+    method_registry: TrainingProgramRegistry,
     allow_inline_base: bool = False,
     row_validator: RowPayloadValidator | None = None,
     row_lowerer: TrainingRowLowerer | None = None,

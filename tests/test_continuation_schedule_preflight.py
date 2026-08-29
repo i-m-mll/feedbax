@@ -31,11 +31,12 @@ from feedbax.contracts.training import (
     TrainingMethodScheduleProjector,
     TrainingRunSpec,
     WorkerExecutionSpec,
+    evolve_training_program,
     standard_supervised_effective_phase_spec,
     standard_supervised_method_contract,
     standard_supervised_method_payload,
     standard_supervised_method_ref,
-    default_training_method_registry,
+    default_training_program_registry,
     resolve_training_run_spec,
 )
 from feedbax.orchestration.schedule_eval import (
@@ -102,8 +103,8 @@ def _with_method_schedule(
     run_spec: TrainingRunSpec,
     values: tuple[float, float, float] | None,
 ) -> object:
-    resolved = resolve_training_run_spec(run_spec, default_training_method_registry())
-    assert resolved.descriptor is not None
+    resolved = resolve_training_run_spec(run_spec, default_training_program_registry())
+    assert resolved.program is not None
     if values is None:
         projector = None
     else:
@@ -126,8 +127,8 @@ def _with_method_schedule(
                 )
             ),
         )
-    descriptor = replace(resolved.descriptor, schedule_projector=projector)
-    return replace(resolved, descriptor=descriptor)
+    program = evolve_training_program(resolved.program, schedule_projector=projector)
+    return replace(resolved, program=program)
 
 
 def _source_manifest(
@@ -213,8 +214,8 @@ def test_source_history_projection_accepts_continuation_bearing_run_spec() -> No
 def test_lineage_projector_uses_segment_origin_for_boundary_and_later_call() -> None:
     request = _continuation()
     run_spec = _run_spec(continuation=request)
-    resolved = resolve_training_run_spec(run_spec, default_training_method_registry())
-    assert resolved.descriptor is not None
+    resolved = resolve_training_run_spec(run_spec, default_training_program_registry())
+    assert resolved.program is not None
 
     def project_segment_schedule(_payload, coordinates, lineage):
         return ScheduleProjection(
@@ -232,15 +233,15 @@ def test_lineage_projector_uses_segment_origin_for_boundary_and_later_call() -> 
             }
         )
 
-    descriptor = replace(
-        resolved.descriptor,
+    descriptor = evolve_training_program(
+        resolved.program,
         schedule_projector=TrainingMethodScheduleProjector(
             projector_id="tests.segment_local_projection",
             projector_version="v1",
             lineage_projector=project_segment_schedule,
         ),
     )
-    resolved = replace(resolved, descriptor=descriptor)
+    resolved = replace(resolved, program=descriptor)
     lineage = CheckpointSegmentLineage(
         parent_transaction_id="tx-source",
         start_batch=10,

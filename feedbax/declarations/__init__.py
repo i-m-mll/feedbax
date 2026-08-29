@@ -1,0 +1,46 @@
+"""Lean public declaration boundary for Feedbax and science packages."""
+
+from .core import Declaration, DeclarationCatalog, DeclarationCompositionError, Facet
+from .science import (
+    AuthoringFacet,
+    BackendProtocol,
+    BackendFacet,
+    CompilerFacet,
+    ObjectiveProtocol,
+    OperationProtocol,
+    OperationFacet,
+    ResolvedBackend,
+    ResolvedObjective,
+    ResolvedOperation,
+    ResolvedTrialSource,
+    RuntimeFacet,
+    SerializationFacet,
+    StudioFacet,
+    TrialSourceProtocol,
+    facet,
+    scientific_declaration,
+)
+
+__all__ = [
+    "AuthoringFacet",
+    "BackendFacet",
+    "BackendProtocol",
+    "CompilerFacet",
+    "Declaration",
+    "DeclarationCatalog",
+    "DeclarationCompositionError",
+    "Facet",
+    "ObjectiveProtocol",
+    "OperationFacet",
+    "OperationProtocol",
+    "ResolvedBackend",
+    "ResolvedObjective",
+    "ResolvedOperation",
+    "ResolvedTrialSource",
+    "RuntimeFacet",
+    "SerializationFacet",
+    "StudioFacet",
+    "TrialSourceProtocol",
+    "facet",
+    "scientific_declaration",
+]

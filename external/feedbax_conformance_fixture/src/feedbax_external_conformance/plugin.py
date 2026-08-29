@@ -5,7 +5,6 @@ from __future__ import annotations
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from dataclasses import replace
 from pydantic import BaseModel, ConfigDict
 from typing import Literal, NamedTuple
 
@@ -19,28 +18,25 @@ from feedbax.plugins import (
     EVALUATION_BATCH_CONSUMERS,
     EVALUATION_PRODUCT_UNION_FINALIZERS,
     EVALUATION_RECIPES,
-    EXECUTION_PREPARATIONS,
     FamilyRequirement,
     PluginDeclaration,
     PluginDependency,
     PluginRegistration,
     RegistrationContext,
     RegistryFamilyRegistration,
-    ROW_LOWERERS,
-    TRAINING_METHODS,
+    TRAINING_PROGRAMS,
     EvaluationBatchFragment,
     EvaluationAuthoringSchema,
-    ExecutionPreparationRegistration,
-    TrainingRowLowererRegistration,
 )
 from feedbax.contracts.training import (
     MethodExtensionsSpec,
     TrainingConfig,
     TrainingMethodAuthoringContribution,
     TrainingMethodAuthoringHook,
-    TrainingMethodDescriptor,
+    DeclaredTrainingProgram,
+    declare_training_program,
     standard_supervised_method_contract,
-    standard_supervised_method_descriptor,
+    standard_supervised_training_program,
 )
 from feedbax.analysis.evaluation import EvaluationRecipeResult
 from feedbax.analysis.specs import AnalysisRecipeResult
@@ -48,7 +44,10 @@ from feedbax.analysis.types import AnalysisInputData
 from feedbax.config.namespace import TreeNamespace
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowLoweringResult
 from feedbax.training.preparation import ExecutionPreparationResult
-from feedbax.training.row_lowering import training_row_lowerer_implementation_sha256
+from feedbax.training.row_lowering import (
+    TrainingRowLowererRegistration,
+    training_row_lowerer_implementation_sha256,
+)
 from feedbax.orchestration.drivers import (
     AcquisitionSemantics,
     AuthorizationSemantics,
@@ -183,10 +182,9 @@ class FixtureAnalysis(AbstractAnalysis):
         return None
 
 
-def _fixture_method_descriptor() -> TrainingMethodDescriptor:
-    baseline = standard_supervised_method_descriptor()
-    return replace(
-        baseline,
+def _fixture_training_program() -> DeclaredTrainingProgram:
+    baseline = standard_supervised_training_program()
+    return declare_training_program(
         method_ref=_FIXTURE_METHOD_REF,
         payload_schema_id="feedbax_external_conformance.training",
         payload_schema_version="feedbax_external_conformance.training.v1",
@@ -199,6 +197,18 @@ def _fixture_method_descriptor() -> TrainingMethodDescriptor:
         ),
         owner="feedbax-external-conformance",
         package="feedbax-external-conformance",
+        update_kernels_factory=baseline.update_kernels_factory,
+        guard_predicates_factory=baseline.guard_predicates_factory,
+        preparation_provider=_fixture_preparation,
+        row_lowerers=(TrainingRowLowererRegistration(
+            authored_schema_id="feedbax_external_conformance.training",
+            authored_schema_version="v1",
+            lowerer_id="feedbax_external_conformance.lowerer",
+            lowerer_version="v1",
+            implementation_sha256=FIXTURE_LOWERER_IMPLEMENTATION_SHA256,
+            lower=_fixture_lowerer,
+            owner="feedbax-external-conformance",
+        ),),
         authoring_hook=TrainingMethodAuthoringHook(
             lowerer_id="feedbax_external_conformance.authoring",
             lowerer_version="v1",
@@ -354,25 +364,7 @@ def _register_foundation(context: RegistrationContext) -> None:
         provenance="package:feedbax-external-conformance",
     )
     context.registry(DRIVERS).register(_fixture_driver_registration())
-    context.registry(TRAINING_METHODS).register_descriptor(_fixture_method_descriptor())
-    context.registry(ROW_LOWERERS).register(
-        TrainingRowLowererRegistration(
-            authored_schema_id="feedbax_external_conformance.training",
-            authored_schema_version="v1",
-            lowerer_id="feedbax_external_conformance.lowerer",
-            lowerer_version="v1",
-            implementation_sha256=FIXTURE_LOWERER_IMPLEMENTATION_SHA256,
-            lower=_fixture_lowerer,
-            owner="feedbax-external-conformance",
-        )
-    )
-    context.registry(EXECUTION_PREPARATIONS).register(
-        ExecutionPreparationRegistration(
-            method_ref=_FIXTURE_METHOD_REF,
-            provider=_fixture_preparation,
-            owner="feedbax-external-conformance",
-        )
-    )
+    context.registry(TRAINING_PROGRAMS).register_program(_fixture_training_program())
     context.registry(ANALYSIS_RECIPES).register(
         _FIXTURE_ANALYSIS_TYPE,
         _fixture_analysis,
@@ -422,9 +414,7 @@ FOUNDATION_PLUGIN_REGISTRATION = PluginRegistration(
             FamilyRequirement(COMPONENTS.family),
             FamilyRequirement(FIXTURE_RECORDS.family),
             FamilyRequirement(DRIVERS.family),
-            FamilyRequirement(TRAINING_METHODS.family),
-            FamilyRequirement(ROW_LOWERERS.family),
-            FamilyRequirement(EXECUTION_PREPARATIONS.family),
+            FamilyRequirement(TRAINING_PROGRAMS.family),
             FamilyRequirement(ANALYSIS_RECIPES.family),
             FamilyRequirement(EVALUATION_RECIPES.family),
             FamilyRequirement(EVALUATION_BATCH_CONSUMERS.family),

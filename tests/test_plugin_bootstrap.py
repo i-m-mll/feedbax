@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import FrozenInstanceError, dataclass
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -9,16 +9,14 @@ import pytest
 from pydantic import BaseModel
 
 from feedbax.analysis.evaluation import EvaluationAuthoringSchema
-from feedbax.component_registry.meta import ComponentMeta
+from feedbax.component_registry import declare_component
 from feedbax.plugins.application import (
     APPLICATION_REGISTRY_KEYS,
     COMPONENTS,
-    EXECUTION_PREPARATIONS,
     EXPERIMENT_PACKAGES,
     EVALUATION_RECIPES,
     FIGURES,
-    ROW_LOWERERS,
-    TRAINING_METHODS,
+    TRAINING_PROGRAMS,
     ApplicationRegistryBundle,
     new_application_registry_bundle,
 )
@@ -36,7 +34,6 @@ from feedbax.plugins.bootstrap import (
     discover_plugin_registrations,
 )
 from feedbax.plugins.composition import compose_application
-from feedbax.training.row_lowering import TrainingRowLowererRegistration
 
 
 class NamesRegistry:
@@ -610,7 +607,7 @@ def test_published_concrete_registries_are_sealed() -> None:
             "pkg", __import__("types"), (), "analysis", "training", "config"
         )
     with pytest.raises(RuntimeError, match="training method registry is sealed"):
-        state.bundle.training_methods.register_descriptor(object())  # type: ignore[arg-type]
+        state.bundle.training_programs.register_program(object())  # type: ignore[arg-type]
     with pytest.raises(RuntimeError, match="analysis recipe registry is sealed"):
         state.bundle.analysis_recipes.register("pkg.analysis", lambda _context: None)
     with pytest.raises(RuntimeError, match="figure registry is sealed"):
@@ -621,7 +618,7 @@ def test_published_registry_metadata_is_detached() -> None:
     class Params(BaseModel):
         value: int = 1
 
-    component_meta = ComponentMeta(
+    component_meta = declare_component(
         name="pkg.Snapshot",
         category="Original",
         description="snapshot",
@@ -663,7 +660,8 @@ def test_published_registry_metadata_is_detached() -> None:
     )
     state = asyncio.run(bootstrap_application(_context(), registrations=(plugin,)))
 
-    component_meta.category = "mutated-input"
+    with pytest.raises(FrozenInstanceError):
+        component_meta.category = "mutated-input"
     routing["paths"].append("mutated-input")
     template.metadata["values"].append("mutated-input")
     piece.style["values"].append("mutated-input")
@@ -671,7 +669,8 @@ def test_published_registry_metadata_is_detached() -> None:
 
     returned_component = state.bundle.components.get("pkg.Snapshot")
     assert returned_component is not None
-    returned_component.category = "mutated-output"
+    with pytest.raises(FrozenInstanceError):
+        returned_component.category = "mutated-output"
     package = state.bundle.experiment_packages.get_package_metadata("pkg")
     package.figure_routing["paths"].append("mutated-output")
     returned_template = state.bundle.figures.template("pkg.template")
@@ -729,39 +728,7 @@ def test_component_and_plugin_namespace_collisions_are_typed() -> None:
     assert package_error.value.code is BootstrapErrorCode.NAMESPACE_COLLISION
 
 
-def test_row_lowerer_authority_collision_is_typed_namespace_failure() -> None:
-    def plugin(plugin_id: str, owner: str) -> PluginRegistration:
-        registration = TrainingRowLowererRegistration(
-            authored_schema_id="tests.spec.row",
-            authored_schema_version="tests.spec.row.v1",
-            lowerer_id="tests.row",
-            lowerer_version="tests.row.v1",
-            implementation_sha256="0" * 64,
-            lower=lambda _row, _context: {},
-            owner=owner,
-        )
-        return PluginRegistration(
-            PluginDeclaration(
-                plugin_id,
-                "1",
-                1,
-                families=(FamilyRequirement(ROW_LOWERERS.family),),
-            ),
-            lambda context: context.registry(ROW_LOWERERS).register(registration),
-        )
-
-    with pytest.raises(BootstrapError) as caught:
-        asyncio.run(
-            bootstrap_application(
-                _context(),
-                registrations=(plugin("pkg.one", "one"), plugin("pkg.two", "two")),
-            )
-        )
-
-    assert caught.value.code is BootstrapErrorCode.NAMESPACE_COLLISION
-
-
-def test_runpod_smoke_fixture_registers_method_and_preparation_families() -> None:
+def test_runpod_smoke_fixture_derives_program_preparation_facet() -> None:
     from feedbax.training.runpod_smoke_fixture import METHOD_REF
 
     state = asyncio.run(
@@ -772,5 +739,5 @@ def test_runpod_smoke_fixture_registers_method_and_preparation_families() -> Non
         )
     )
 
-    assert state.registry(TRAINING_METHODS).descriptor(METHOD_REF) is not None
-    assert state.registry(EXECUTION_PREPARATIONS).get(METHOD_REF) is not None
+    assert state.registry(TRAINING_PROGRAMS).program(METHOD_REF) is not None
+    assert state.bundle.execution_preparations.get(METHOD_REF) is not None

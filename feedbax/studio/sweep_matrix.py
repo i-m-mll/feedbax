@@ -28,7 +28,7 @@ from feedbax.training.run_matrix import (
     materialize_run_matrix,
     variation_values,
 )
-from feedbax.contracts.training import TrainingMethodRegistry
+from feedbax.contracts.training import TrainingProgramRegistry
 from feedbax.training.row_lowering import TrainingRowLowererRegistry
 
 
@@ -98,7 +98,7 @@ def expand_sweep_matrix(
     task_spec: dict[str, Any],
     task_binding_spec: dict[str, Any] | None,
     default_name: str,
-    method_registry: TrainingMethodRegistry,
+    method_registry: TrainingProgramRegistry,
     row_lowerer_registry: TrainingRowLowererRegistry,
 ) -> ExpandedSweepMatrix:
     """Adapt the shared materializer result to the legacy Studio return shape."""
@@ -148,7 +148,7 @@ def materialize_sweep_matrix(
     task_spec: dict[str, Any],
     task_binding_spec: dict[str, Any] | None,
     default_name: str,
-    method_registry: TrainingMethodRegistry,
+    method_registry: TrainingProgramRegistry,
     row_lowerer_registry: TrainingRowLowererRegistry,
     repo_root: Path | None = None,
 ) -> MaterializedRunMatrix:

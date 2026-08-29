@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import importlib.util
 import logging
 from pathlib import Path
@@ -33,7 +33,7 @@ from feedbax.contracts.representation import (
 )
 
 from .builtins import register_builtin_components
-from .meta import ComponentBuilder, ComponentMeta, OutputPrototypeFn
+from .declarations import ComponentBuilder, DeclaredComponent, OutputPrototypeFn, declare_component
 
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ class ComponentResolution:
     type_id: str
     params: dict[str, Any]
     param_schema_version: str | None
-    meta: ComponentMeta
+    meta: DeclaredComponent
     migrations: tuple[ComponentMigrationInfo, ...] = ()
 
 
@@ -90,7 +90,7 @@ class ComponentRegistry:
         template_packs: Iterable[Callable[[ComponentRegistry], None]] = (),
     ) -> None:
         self._sealed = False
-        self._components: Dict[str, ComponentMeta] = {}
+        self._components: Dict[str, DeclaredComponent] = {}
         self._component_migrations: Dict[tuple[str, str | None], ComponentMigration] = {}
         self._migration_owners: Dict[str, set[str]] = {}
         self._register_builtins()
@@ -117,13 +117,13 @@ class ComponentRegistry:
         with _registration_provenance(provenance):
             template_pack(self)
 
-    def register(self, meta: ComponentMeta) -> None:
+    def register(self, meta: DeclaredComponent) -> None:
         self._require_mutable()
         meta = deepcopy(meta)
         if meta.provenance is None:
-            meta.provenance = _current_provenance()
-        self._complete_identity(meta)
-        meta.migrations = self._migration_infos_for_target(meta.name)
+            meta = replace(meta, provenance=_current_provenance())
+        meta = self._complete_identity(meta)
+        meta = self._with_migrations(meta, self._migration_infos_for_target(meta.name))
         self._validate_representation(meta)
         if meta.name in self._components:
             raise ValueError(f"component type already registered: {meta.name!r}")
@@ -163,7 +163,7 @@ class ComponentRegistry:
         supported_param_schema_versions: Iterable[str] | None = None,
         trainable_by_default: bool = False,
         representation: RepresentationSpec | dict[str, Any] | None = None,
-    ) -> ComponentMeta:
+    ) -> DeclaredComponent:
         self._require_mutable()
         if not callable(builder):
             raise TypeError(f"Builder for component type {name!r} must be callable")
@@ -175,7 +175,7 @@ class ComponentRegistry:
             dynamic_port_policy = DynamicPortPolicy.model_validate(dynamic_port_policy)
         if representation is not None and not isinstance(representation, RepresentationSpec):
             representation = RepresentationSpec.model_validate(representation)
-        meta = ComponentMeta(
+        meta = declare_component(
             name=name,
             category=category,
             description=description,
@@ -220,13 +220,13 @@ class ComponentRegistry:
         *,
         provenance: str | None = None,
         owner: str | None = None,
-    ) -> ComponentMeta:
+    ) -> DeclaredComponent:
         self._require_mutable()
         if not callable(builder):
             raise TypeError(f"Builder for component type {name!r} must be callable")
         meta = self._components.get(name)
         if meta is None:
-            meta = ComponentMeta(
+            meta = declare_component(
                 name=name,
                 category="Custom",
                 description="",
@@ -240,11 +240,10 @@ class ComponentRegistry:
         else:
             if meta.builder is not None:
                 raise ValueError(f"component builder already registered: {name!r}")
-            meta.builder = builder
-            if meta.provenance is None:
-                meta.provenance = provenance or _current_provenance()
-            if meta.owner is None:
-                meta.owner = owner
+            from .declarations import ComponentRuntimeFacet
+
+            meta = replace(meta, runtime=ComponentRuntimeFacet(builder))
+            self._components[name] = meta
             self._validate_representation(meta)
             registered = self.get(name)
             assert registered is not None
@@ -269,7 +268,9 @@ class ComponentRegistry:
         self._migration_owners.setdefault(migration.owner, set()).add(migration.source_type)
         target_meta = self._components.get(migration.target_type)
         if target_meta is not None:
-            target_meta.migrations = self._migration_infos_for_target(target_meta.name)
+            self._components[target_meta.name] = self._with_migrations(
+                target_meta, self._migration_infos_for_target(target_meta.name)
+            )
 
     def register_migration_pack(self, pack: ComponentMigrationPack) -> None:
         self._require_mutable()
@@ -357,7 +358,7 @@ class ComponentRegistry:
             return True
         return "." in type_id
 
-    def get(self, name: str) -> Optional[ComponentMeta]:
+    def get(self, name: str) -> Optional[DeclaredComponent]:
         meta = self._components.get(name)
         return deepcopy(meta) if meta is not None else None
 
@@ -397,7 +398,7 @@ class ComponentRegistry:
 
     def template_builder_issues(
         self,
-        meta: ComponentMeta | None = None,
+        meta: DeclaredComponent | None = None,
     ) -> list[TemplateBuilderIssue]:
         """Return template graph nodes that cannot be materialized as executable graph nodes."""
 
@@ -417,7 +418,7 @@ class ComponentRegistry:
 
     def _template_graph_builder_issues(
         self,
-        template_meta: ComponentMeta,
+        template_meta: DeclaredComponent,
         graph: Any,
         *,
         node_path: str,
@@ -556,14 +557,23 @@ class ComponentRegistry:
                     representation=meta.get("representation"),
                 )
 
-    def _complete_identity(self, meta: ComponentMeta) -> None:
+    def _complete_identity(self, meta: DeclaredComponent) -> DeclaredComponent:
         details = _identity_from_provenance(meta.name, meta.provenance)
-        if meta.owner is None:
-            meta.owner = details.owner
-        if meta.identity is None:
-            meta.identity = details.model_copy(update={"owner": meta.owner})
+        declaration = meta.declaration
+        if declaration.owner == "local" and details.owner is not None:
+            declaration = replace(declaration, owner=details.owner)
+        identity = meta.identity or details.model_copy(update={"owner": declaration.owner})
+        return replace(meta, declaration=declaration, identity=identity)
 
-    def _to_definition(self, meta: ComponentMeta) -> ComponentDefinition:
+    @staticmethod
+    def _with_migrations(
+        meta: DeclaredComponent,
+        migrations: list[ComponentMigrationInfo],
+    ) -> DeclaredComponent:
+        serialization = replace(meta.serialization, migrations=tuple(migrations))
+        return replace(meta, serialization=serialization)
+
+    def _to_definition(self, meta: DeclaredComponent) -> ComponentDefinition:
         meta = deepcopy(meta)
         return ComponentDefinition(
             name=meta.name,
@@ -593,7 +603,7 @@ class ComponentRegistry:
             representation=meta.representation,
         )
 
-    def _validate_representation(self, meta: ComponentMeta) -> None:
+    def _validate_representation(self, meta: DeclaredComponent) -> None:
         if meta.representation is None:
             return
         issues = validate_representation_against_component(
@@ -636,13 +646,13 @@ class ComponentRegistry:
 
     def _accepts_param_schema(
         self,
-        meta: ComponentMeta,
+        meta: DeclaredComponent,
         param_schema_version: str | None,
     ) -> bool:
         version = param_schema_version or meta.param_schema_version
         return version == meta.param_schema_version
 
-    def _owner_for_missing_type(self, type_id: str, meta: ComponentMeta | None) -> str | None:
+    def _owner_for_missing_type(self, type_id: str, meta: DeclaredComponent | None) -> str | None:
         if meta is not None:
             return meta.owner
         if "." in type_id:

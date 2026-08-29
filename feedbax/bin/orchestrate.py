@@ -28,7 +28,7 @@ from feedbax.contracts.evaluation_lifecycle import (
     EvaluationWorkerTopologyEvidence,
 )
 from feedbax.contracts.staged_execution import validate_staged_binding_name
-from feedbax.contracts.training import TrainingMethodRegistry
+from feedbax.contracts.training import TrainingProgramRegistry
 from feedbax.orchestration import (
     STAGE_ORDER,
     MatrixAuthorityError,
@@ -365,7 +365,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
         driver = _construct_driver(
             bundle,
             driver_registry=args.bootstrap_state.bundle.drivers,
-            training_method_registry=args.bootstrap_state.bundle.training_methods,
+            training_method_registry=args.bootstrap_state.bundle.training_programs,
             input_provider_bindings=input_provider_bindings,
             staged_root_bindings=staged_root_bindings,
             load_credentials=False,
@@ -579,7 +579,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
         stop_after_stage="COLLECT",
         collection_recovery_bindings=_collection_recovery_bindings(args.recover_collected_root),
         conformance_registry=args.bootstrap_state.bundle.conformance_checks,
-        training_method_registry=args.bootstrap_state.bundle.training_methods,
+        training_method_registry=args.bootstrap_state.bundle.training_programs,
         driver_registry=args.bootstrap_state.bundle.drivers,
         plugin_provenance=args.bootstrap_state.provenance,
     )
@@ -597,7 +597,7 @@ def cmd_certify(args: argparse.Namespace) -> int:
     state = _run_existing(
         args.run_set,
         conformance_registry=args.bootstrap_state.bundle.conformance_checks,
-        training_method_registry=args.bootstrap_state.bundle.training_methods,
+        training_method_registry=args.bootstrap_state.bundle.training_programs,
         driver_registry=args.bootstrap_state.bundle.drivers,
         plugin_provenance=args.bootstrap_state.provenance,
         **run_options,
@@ -613,7 +613,7 @@ def cmd_teardown(args: argparse.Namespace) -> int:
         stop_after_stage="TEARDOWN",
         break_stale_lock=args.force,
         conformance_registry=args.bootstrap_state.bundle.conformance_checks,
-        training_method_registry=args.bootstrap_state.bundle.training_methods,
+        training_method_registry=args.bootstrap_state.bundle.training_programs,
         driver_registry=args.bootstrap_state.bundle.drivers,
         plugin_provenance=args.bootstrap_state.provenance,
     )
@@ -628,7 +628,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
             input_provider_bindings=_input_provider_bindings(args.input_provider),
             collection_recovery_bindings=_collection_recovery_bindings(args.recover_collected_root),
             conformance_registry=args.bootstrap_state.bundle.conformance_checks,
-            training_method_registry=args.bootstrap_state.bundle.training_methods,
+            training_method_registry=args.bootstrap_state.bundle.training_programs,
             driver_registry=args.bootstrap_state.bundle.drivers,
             plugin_provenance=args.bootstrap_state.provenance,
         )
@@ -675,7 +675,7 @@ def _run_engine(
     collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
     staged_root_bindings: tuple[StagedRootSnapshotBinding, ...] = (),
     conformance_registry: CheckRegistry,
-    training_method_registry: TrainingMethodRegistry,
+    training_method_registry: TrainingProgramRegistry,
     driver_registry: DriverRegistry,
     plugin_provenance: Sequence[Any],
 ) -> RunSetState:
@@ -711,7 +711,7 @@ def _run_existing(
     retry_failed_certification: bool = False,
     interruption_probe: Callable[[], CancellationDecision | None] | None = None,
     conformance_registry: CheckRegistry,
-    training_method_registry: TrainingMethodRegistry,
+    training_method_registry: TrainingProgramRegistry,
     driver_registry: DriverRegistry,
     plugin_provenance: Sequence[Any],
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
@@ -737,7 +737,7 @@ def _construct_driver(
     bundle: RunBundle,
     *,
     driver_registry: DriverRegistry,
-    training_method_registry: TrainingMethodRegistry,
+    training_method_registry: TrainingProgramRegistry,
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
     collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
     native_update_budget: int | None = None,
@@ -765,7 +765,7 @@ def _driver_construction_context(
     collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
     native_update_budget: int | None = None,
     staged_root_bindings: tuple[StagedRootSnapshotBinding, ...] = (),
-    training_method_registry: TrainingMethodRegistry,
+    training_method_registry: TrainingProgramRegistry,
     load_credentials: bool = True,
 ) -> DriverConstructionContext:
     api_key = load_runpod_api_key() if load_credentials else None
@@ -839,7 +839,7 @@ def _request_engine(
             input_provider_bindings=input_provider_bindings,
             native_update_budget=native_update_budget,
             staged_root_bindings=staged_root_bindings,
-            training_method_registry=registry_bundle.training_methods,
+            training_method_registry=registry_bundle.training_programs,
         ),
         run_set_id=run_set_id,
         conformance_registry=conformance_registry,
@@ -850,7 +850,7 @@ def _request_engine(
 
 def _assembly_registry(bundle: Any) -> Any:
     return build_default_assembly_registry(
-        method_registry=bundle.training_methods,
+        method_registry=bundle.training_programs,
         row_lowerer_registry=bundle.row_lowerers,
         evaluation_registry=bundle.evaluation_recipes,
     )

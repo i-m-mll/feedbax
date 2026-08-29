@@ -30,7 +30,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
 from feedbax.contracts.training import (
-    TrainingMethodRegistry,
+    TrainingProgramRegistry,
     TrainingRunSpec,
     resolve_training_run_spec,
 )
@@ -870,7 +870,7 @@ class RunPodOrchestrationDriver:
         input_provider_bindings: Sequence[InputProviderRootBinding] = (),
         staged_root_bindings: Sequence[StagedRootSnapshotBinding] = (),
         collection_recovery_bindings: Sequence[CollectionRecoveryBinding] = (),
-        training_method_registry: TrainingMethodRegistry | None = None,
+        training_method_registry: TrainingProgramRegistry | None = None,
         realized_capabilities: RealizedDriverCapabilities | None = None,
     ) -> None:
         self.config = config or RunPodDriverConfig()
@@ -3012,7 +3012,7 @@ def _preflight_continuation_schedule_consistency(
     bundle: RunBundle,
     input_provider_bindings: Sequence[InputProviderRootBinding],
     *,
-    training_method_registry: TrainingMethodRegistry | None,
+    training_method_registry: TrainingProgramRegistry | None,
     input_bindings_valid: bool = True,
 ) -> tuple[list[str], dict[str, Any]]:
     """Authenticate and compare continuation schedules without provider transport calls."""

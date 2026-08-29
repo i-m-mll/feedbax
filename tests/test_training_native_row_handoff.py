@@ -260,13 +260,13 @@ def _assemble_lowered_bundle(
     registries = new_application_registry_bundle(local_component_source=None)
     register_training_run_matrix_compiler(
         registry,
-        method_registry=registries.training_methods,
+        method_registry=registries.training_programs,
         allow_inline_base=True,
         row_lowerer=lower,
         row_validator=lambda payload, row_id: _validate_training_payload(
             payload,
             row_id=row_id,
-            method_registry=registries.training_methods,
+            method_registry=registries.training_programs,
         ),
     )
 
@@ -545,7 +545,7 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
         manifest_root=collection_root / "manifests",
         checkpoint_root=checkpoint_root,
         execution_context=context,
-        registry=registries.training_methods,
+        registry=registries.training_programs,
     )
 
     assert result.run_id == provenance.planned_run_id
@@ -730,7 +730,7 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
             collection_root=resumed_collection_root,
             current_step=1,
         ),
-        registry=registries.training_methods,
+        registry=registries.training_programs,
     )
 
     assert resumed.run_id == resumed_provenance.planned_run_id
@@ -1510,7 +1510,7 @@ def test_local_driver_executes_authenticated_custody_continuation_with_parent_li
             parent_bundle,
             collection_root=parent_bundle.run_set_dir / "rows" / parent_row.row_id,
         ),
-        registry=registries.training_methods,
+        registry=registries.training_programs,
     )
     parent_write = parent_result.checkpoint_writes[0]
     parent_ref = ParentRef(
@@ -1587,7 +1587,7 @@ def test_local_driver_executes_authenticated_custody_continuation_with_parent_li
     schedule_failures, schedule_observed = _preflight_continuation_schedule_consistency(
         resumed_bundle,
         [InputProviderRootBinding("checkpoint.inputs", provider_root)],
-        training_method_registry=registries.training_methods,
+        training_method_registry=registries.training_programs,
     )
     assert schedule_failures == []
     assert schedule_observed[resumed_row.row_id]["coordinates"] == [1, 2, 3]
@@ -1626,7 +1626,7 @@ def test_local_driver_executes_authenticated_custody_continuation_with_parent_li
             collection_root=row_dir,
             current_step=1,
         ),
-        registry=registries.training_methods,
+        registry=registries.training_programs,
     )
 
     assert resumed_result.checkpoint_writes[0].manifest.parent_lineage[0].transaction_id == (

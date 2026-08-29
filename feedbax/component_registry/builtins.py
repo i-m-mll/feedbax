@@ -39,12 +39,12 @@ from feedbax.intervene.intervene import (
 )
 
 from .acausal_adapters import register_acausal_components
-from .meta import ComponentMeta, MissingPrototypeInput
+from .declarations import DeclaredComponent, MissingPrototypeInput, declare_component
 from .templates import register_builtin_graph_templates
 
 
 class _Registry(Protocol):
-    def register(self, meta: ComponentMeta) -> None: ...
+    def register(self, meta: DeclaredComponent) -> None: ...
 
     def register_migration(self, migration: ComponentMigration) -> None: ...
 
@@ -1093,7 +1093,7 @@ def rate_limiter_output_prototype(
 
 def register_builtin_components(registry: _Registry) -> None:
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Subgraph",
             category="Structure",
             description="Nested graph container.",
@@ -1107,7 +1107,7 @@ def register_builtin_components(registry: _Registry) -> None:
     register_builtin_graph_templates(registry)
     penzai_builders = penzai_builder_options()
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="PenzaiAdapter",
             category="Structure",
             description="Penzai neural network adapter (leaf). Wraps a trained Penzai model for inference.",
@@ -1139,7 +1139,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Gain",
             category="Math",
             description="Multiply input by constant.",
@@ -1156,7 +1156,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Sum",
             category="Math",
             description="Add present inputs.",
@@ -1177,7 +1177,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Input",
             category="Sources",
             description="Pass an external graph input through a source-like node.",
@@ -1195,7 +1195,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Subtract",
             category="Math",
             description="Subtract input b from input a.",
@@ -1211,7 +1211,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Multiply",
             category="Math",
             description="Element-wise product.",
@@ -1227,7 +1227,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Reshape",
             category="Math",
             description="Reshape an array to a fixed output shape.",
@@ -1245,7 +1245,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="MatMul",
             category="Math",
             description="Matrix multiply a and b.",
@@ -1261,7 +1261,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Scale",
             category="Math",
             description="Multiply input by a scalar or broadcastable scale.",
@@ -1279,7 +1279,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Sigmoid",
             category="Math",
             description="Apply a logistic sigmoid elementwise.",
@@ -1295,7 +1295,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="ElementwiseAffineModulator",
             category="Math",
             description=(
@@ -1325,7 +1325,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Constant",
             category="Sources",
             description="Constant value output.",
@@ -1343,7 +1343,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Ramp",
             category="Sources",
             description="Linear ramp over time.",
@@ -1363,7 +1363,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Sine",
             category="Sources",
             description="Sinusoidal signal.",
@@ -1385,7 +1385,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Pulse",
             category="Sources",
             description="Pulse/square wave.",
@@ -1407,7 +1407,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Noise",
             category="Signal Processing",
             description="Random noise source.",
@@ -1427,7 +1427,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Saturation",
             category="Signal Processing",
             description="Clamp to min/max range.",
@@ -1446,7 +1446,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="DelayLine",
             category="Signal Processing",
             description="Discrete delay buffer.",
@@ -1465,7 +1465,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="MLP",
             category="Neural Networks",
             description="Multi-layer perceptron.",
@@ -1500,7 +1500,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Linear",
             category="Neural Networks",
             description="Linear layer.",
@@ -1528,7 +1528,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="GRU",
             category="Neural Networks",
             description="GRU cell.",
@@ -1548,7 +1548,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="VanillaRNN",
             category="Neural Networks",
             description="Vanilla recurrent cell.",
@@ -1576,7 +1576,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="LSTM",
             category="Neural Networks",
             description="LSTM cell.",
@@ -1604,7 +1604,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="GRUOracle",
             category="Neural Networks",
             description="GRU-based oracle/policy network that maps observations to muscle excitations.",
@@ -1646,7 +1646,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Spring",
             category="Mechanics",
             description="Linear spring.",
@@ -1664,7 +1664,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Damper",
             category="Mechanics",
             description="Viscous damper.",
@@ -1682,7 +1682,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="TwoLinkArm",
             category="Mechanics",
             description="Two-link arm plant with direct force input.",
@@ -1710,7 +1710,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="PointMass",
             category="Mechanics",
             description="Point-mass plant with direct force input.",
@@ -1737,7 +1737,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="LinearStateSpace",
             category="Mechanics",
             description="Discrete linear state-space mechanics.",
@@ -1792,7 +1792,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="StructuralLinearStateSpace",
             category="Mechanics",
             description="Discrete linear mechanics with a trial-selectable structural delta_A.",
@@ -1866,7 +1866,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="StateFeedbackSelector",
             category="Mechanics",
             description="Select named state-vector slices and optional target-relative feedback.",
@@ -1906,7 +1906,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="MomentArmProjection",
             category="Mechanics",
             description="Projects muscle forces to joint torques via moment arm matrix (R^T @ forces). Also computes musculotendon lengths and velocities from joint kinematics.",
@@ -1932,7 +1932,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="RadialForceProjection",
             category="Mechanics",
             description="Projects radially-arranged muscle forces to a 2D net force vector. Muscles are arranged in evenly-spaced antagonist pairs.",
@@ -1949,7 +1949,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="AcausalSystem",
             category="Mechanics",
             description="Assembled acausal mechanical system (mass-spring-damper etc.).",
@@ -1976,7 +1976,7 @@ def register_builtin_components(registry: _Registry) -> None:
     )
     register_acausal_components(registry)
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Channel",
             category="Channels",
             description="Delay and noise for a signal.",
@@ -2025,7 +2025,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="FeedbackChannels",
             category="Channels",
             description="Mechanics feedback selector followed by delay/noise channels.",
@@ -2077,7 +2077,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="FirstOrderFilter",
             category="Channels",
             description="First-order low-pass filter.",
@@ -2098,7 +2098,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="CurlField",
             category="Interventions",
             description="Velocity-dependent curl field.",
@@ -2123,7 +2123,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="FixedField",
             category="Interventions",
             description="Fixed force field.",
@@ -2148,7 +2148,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="ThresholdLatchedForce",
             category="Interventions",
             description="Additive force latched by a runtime state-threshold crossing.",
@@ -2225,7 +2225,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="DynamicsMatrixPerturb",
             category="Interventions",
             description="State-feedback dynamics-matrix perturbation in the force channel.",
@@ -2268,7 +2268,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="AffineValueComposer",
             category="Interventions",
             description="State/target-conditioned affine value composer.",
@@ -2318,7 +2318,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="AddNoise",
             category="Interventions",
             description="Add noise to a signal.",
@@ -2337,7 +2337,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="NetworkClamp",
             category="Interventions",
             description="Clamp network unit activity.",
@@ -2357,7 +2357,7 @@ def register_builtin_components(registry: _Registry) -> None:
     )
     # --- Muscles ---
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="ReluMuscle",
             category="Muscles",
             description="Simple muscle: force = activation * F_max.",
@@ -2419,7 +2419,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="RigidTendonHillMuscleThelen",
             category="Muscles",
             description="Hill-type muscle with rigid tendon assumption. Vectorized for multiple muscles.",
@@ -2468,7 +2468,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Arm6MuscleRigidTendon",
             category="Mechanics",
             description="6-muscle arm with Thelen rigid tendon.",
@@ -2527,7 +2527,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="PointMass8MuscleRelu",
             category="Mechanics",
             description="8-muscle point mass with ReLU actuators.",
@@ -2570,7 +2570,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="AnalyticalMusculoskeletalPlant",
             category="Mechanics",
             description=(
@@ -2642,7 +2642,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="NetworkConstantInput",
             category="Interventions",
             description="Add constant input to network units.",
@@ -2661,7 +2661,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="ConstantInput",
             category="Interventions",
             description="Add a constant input to a signal.",
@@ -2680,7 +2680,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="SimpleReaches",
             category="Tasks",
             description="Random reach endpoints in a workspace.",
@@ -2712,7 +2712,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="DelayedReaches",
             category="Tasks",
             description="Reaches with a delay period before movement.",
@@ -2803,7 +2803,7 @@ def register_builtin_components(registry: _Registry) -> None:
     )
     # --- Control components ---
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Integrator",
             category="Control",
             description="Continuous-time integrator (Euler).",
@@ -2823,7 +2823,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Derivative",
             category="Control",
             description="Finite-difference derivative.",
@@ -2843,7 +2843,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="StateSpace",
             category="Control",
             description="Continuous LTI state-space (Euler).",
@@ -2860,7 +2860,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="TransferFunction",
             category="Control",
             description="Transfer function H(s)=num/den.",
@@ -2877,7 +2877,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="PID",
             category="Control",
             description="Continuous PID with anti-windup.",
@@ -2900,7 +2900,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="PIDDiscrete",
             category="Control",
             description="Discrete PID (velocity form).",
@@ -2923,7 +2923,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="AffineFeedbackController",
             category="Control",
             description="Time-varying affine feedback controller with optional feedforward.",
@@ -2955,7 +2955,7 @@ def register_builtin_components(registry: _Registry) -> None:
     )
     # --- Discrete components ---
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="IntegratorDiscrete",
             category="Discrete",
             description="Discrete-time accumulator.",
@@ -2975,7 +2975,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="UnitDelay",
             category="Discrete",
             description="Unit delay (z^-1).",
@@ -2994,7 +2994,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="ZeroOrderHold",
             category="Discrete",
             description="Sample and hold every N steps.",
@@ -3015,7 +3015,7 @@ def register_builtin_components(registry: _Registry) -> None:
     )
     # --- Signal processing components ---
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Mux",
             category="Signal Processing",
             description="Concatenate inputs into single vector.",
@@ -3044,7 +3044,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Ravel",
             category="Signal Processing",
             description="Flatten a PyTree value into a vector.",
@@ -3060,7 +3060,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Demux",
             category="Signal Processing",
             description="Split vector into multiple outputs.",
@@ -3089,7 +3089,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Switch",
             category="Signal Processing",
             description="Route signal by threshold condition.",
@@ -3111,7 +3111,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="DeadZone",
             category="Signal Processing",
             description="Zero output for small inputs.",
@@ -3129,7 +3129,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="RateLimiter",
             category="Signal Processing",
             description="Limit rate of change of signal.",
@@ -3150,7 +3150,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="HighPassFilter",
             category="Signal Processing",
             description="High-pass filter (input - lowpass).",
@@ -3170,7 +3170,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="BandPassFilter",
             category="Signal Processing",
             description="Band-pass: high-pass then low-pass.",
@@ -3191,7 +3191,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="Stabilization",
             category="Tasks",
             description="Hold position against perturbations.",

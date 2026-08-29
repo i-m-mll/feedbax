@@ -30,7 +30,7 @@ from feedbax.contracts.project_experiment import (
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.run_matrix import ExecutionDependency
 from feedbax.contracts.training import (
-    TrainingMethodRegistry,
+    TrainingProgramRegistry,
     TrainingRunSpec,
     resolve_training_run_spec,
     validate_training_run_spec_semantics,
@@ -89,7 +89,7 @@ def _read_pickle(path: str) -> Any:
 
 def _load_checkpoint_fork_plan_bindings(
     path: str,
-    training_method_registry: TrainingMethodRegistry,
+    training_method_registry: TrainingProgramRegistry,
 ) -> CheckpointForkPlanBindings:
     manifest_path = Path(path).resolve()
     payload = _read_json(str(manifest_path))
@@ -929,7 +929,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             registries.components,
         )
-        resolved_method = resolve_training_run_spec(run_spec, registries.training_methods)
+        resolved_method = resolve_training_run_spec(run_spec, registries.training_programs)
         method_registration = resolved_method.registration
         preparation_registration = registries.execution_preparations.get(run_spec.method_ref.key)
         mapping_levels, _slot_axis_bindings = resolve_execution_mapping(run_spec.worker_execution)
@@ -1005,7 +1005,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     initial_slots=initial_slots,
                     manifest_root=args.manifest_root,
                     checkpoint_root=args.checkpoint_root,
-                    registry=registries.training_methods,
+                    registry=registries.training_programs,
                     training_spec_payload=training_payload,
                     training_spec_payload_kind=args.training_payload_kind,
                     training_spec_payload_schema_id=args.training_payload_schema_id,
@@ -1065,7 +1065,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         projection_custody = prepare_training_manifest_metadata_projection(
             metadata_projection,
-            registry=registries.training_methods,
+            registry=registries.training_programs,
             run_spec=run_spec,
             training_spec_payload=training_payload,
             training_spec_payload_kind=args.training_payload_kind,
@@ -1114,7 +1114,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.adopt_command == "adopt":
             run_spec = validate_training_run_spec_semantics(
                 TrainingRunSpec.model_validate(_read_json(args.run_spec)),
-                registries.training_methods,
+                registries.training_programs,
             )
             phase_program = run_spec.worker_execution.method_contract.phase_program
             model_mapping, optimizer_mapping = _load_path_mapping(args.path_mapping)
@@ -1175,7 +1175,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             validate_checkpoint_fork_execution_dependencies(plan, dependencies)
             bindings = _load_checkpoint_fork_plan_bindings(
                 args.bindings,
-                registries.training_methods,
+                registries.training_programs,
             )
             results = fork_checkpoint_plan(plan, bindings)
             json.dump(
@@ -1196,7 +1196,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.checkpoint_command == "relock":
             bindings = _load_checkpoint_fork_plan_bindings(
                 args.bindings,
-                registries.training_methods,
+                registries.training_programs,
             )
             evidence = _load_run_contract_historical_evidence(args.historical_evidence)
             if args.write:
@@ -1257,7 +1257,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     spec_path, checkpoint_root = _parse_checkpoint_fork_target(raw_target)
                     run_spec = validate_training_run_spec_semantics(
                         TrainingRunSpec.model_validate(_read_json(str(spec_path))),
-                        registries.training_methods,
+                        registries.training_programs,
                     )
                     phase_program = run_spec.worker_execution.method_contract.phase_program
                     result = fork_checkpoint_transaction(

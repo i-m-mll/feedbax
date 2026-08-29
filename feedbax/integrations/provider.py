@@ -109,7 +109,7 @@ from feedbax.contracts.training import (
     LrScheduleSpec,
     TaskSpec,
     TrainingRunSpec,
-    TrainingMethodRegistry,
+    TrainingProgramRegistry,
     TrainingSpec,
     validate_training_run_spec_semantics,
 )
@@ -1439,7 +1439,7 @@ def validate_training_spec(
 def validate_training_run_spec(
     payload: dict[str, Any] | TrainingRunSpec,
     *,
-    method_registry: TrainingMethodRegistry,
+    method_registry: TrainingProgramRegistry,
 ) -> ProviderValidationResult:
     """Validate the public governed training-run request contract."""
     try:
@@ -2292,7 +2292,7 @@ def validate_spec(
     *,
     graph_spec: Optional[dict[str, Any]] = None,
     component_registry: Any,
-    training_method_registry: TrainingMethodRegistry,
+    training_method_registry: TrainingProgramRegistry,
     analysis_registry: Any,
 ) -> ProviderValidationResult:
     if kind == "graph":

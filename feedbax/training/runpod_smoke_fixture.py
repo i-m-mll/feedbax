@@ -10,23 +10,19 @@ from feedbax.contracts.training import (
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
     StandardSupervisedMethodPayload,
-    TrainingMethodDescriptor,
+    declare_training_program,
     standard_supervised_method_contract,
     standard_supervised_update_kernels,
 )
 from feedbax.contracts.worker import MetricGuardSpec, PhaseTransitionSpec
 from feedbax.plugins import (
-    EXECUTION_PREPARATIONS,
-    TRAINING_METHODS,
+    TRAINING_PROGRAMS,
     FamilyRequirement,
     PluginDeclaration,
     PluginRegistration,
     RegistrationContext,
 )
-from feedbax.training.preparation import (
-    ExecutionPreparationRegistration,
-    ExecutionPreparationResult,
-)
+from feedbax.training.preparation import ExecutionPreparationResult
 
 
 METHOD_REF = "feedbax.validation/native_smoke/v1"
@@ -55,8 +51,7 @@ def method_contract(payload: StandardSupervisedMethodPayload):
 
 def _register_plugin(context: RegistrationContext) -> None:
     """Register the smoke method through the unified plugin protocol."""
-    registry = context.registry(TRAINING_METHODS)
-    preparation_registry = context.registry(EXECUTION_PREPARATIONS)
+    registry = context.registry(TRAINING_PROGRAMS)
 
     def continue_training(
         slots: Mapping[str, Any], coordinate: Any, context: Mapping[str, Any]
@@ -74,8 +69,8 @@ def _register_plugin(context: RegistrationContext) -> None:
             }
         )
 
-    registry.register_descriptor(
-        TrainingMethodDescriptor(
+    registry.register_program(
+        declare_training_program(
             method_ref=METHOD_REF,
             payload_schema_id=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
             payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
@@ -88,13 +83,6 @@ def _register_plugin(context: RegistrationContext) -> None:
             package="feedbax",
         )
     )
-    preparation_registry.register(
-        ExecutionPreparationRegistration(
-            method_ref=METHOD_REF,
-            provider=prepare,
-            owner="feedbax.validation.native_smoke",
-        )
-    )
 
 
 PLUGIN_REGISTRATION = PluginRegistration(
@@ -103,8 +91,7 @@ PLUGIN_REGISTRATION = PluginRegistration(
         "1",
         1,
         families=(
-            FamilyRequirement("training_methods"),
-            FamilyRequirement("execution_preparations"),
+            FamilyRequirement("training_programs"),
         ),
     ),
     _register_plugin,

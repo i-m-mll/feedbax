@@ -1419,7 +1419,7 @@ def _stage_pending_training_manifests(
             task_spec=task_spec,
             task_binding_spec=task_binding_spec,
             default_name=f"{stage.label} matrix",
-            method_registry=registry_bundle.training_methods,
+            method_registry=registry_bundle.training_programs,
             row_lowerer_registry=registry_bundle.row_lowerers,
         )
     except SweepMatrixError as exc:

@@ -130,7 +130,7 @@ rendering vocabulary and makes representations unavailable without instantiating
 The frontend should **not** infer representations — that is the `isMechanicsNode` name-sniffing
 dead end. Instead:
 
-- The **component registry entry** (`ComponentMeta`/`ComponentDefinition`) gains an optional
+- The **component declaration** (`DeclaredComponent` projected as `ComponentDefinition`) gains an optional
   `representation: RepresentationSpec` block — declarative data, versioned with its own schema
   id, served through the existing `/api/components` catalog next to `param_schema`. This is the
   same pattern as MJCF (visual metadata rides on the model spec, one authoring surface) and

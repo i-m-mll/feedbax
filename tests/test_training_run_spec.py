@@ -28,7 +28,7 @@ from feedbax.contracts.training import (
     TrainingConfig,
     TrainingRunSpec,
     WorkerExecutionSpec,
-    default_training_method_registry,
+    default_training_program_registry,
     resolve_training_run_spec,
     standard_supervised_effective_phase_spec,
     standard_supervised_method_contract,
@@ -225,7 +225,7 @@ def test_standard_supervised_method_payload_validates_and_round_trips() -> None:
     payload = _training_run_payload()
     result = validate_training_run_spec(
         payload,
-        method_registry=default_training_method_registry(),
+        method_registry=default_training_program_registry(),
     )
     method_payload = payload["method_payload"]
     method_result = default_spec_registry.migrate(
@@ -251,7 +251,7 @@ def test_training_run_spec_unknown_method_ref_fails_with_available_registry_keys
 
     spec = TrainingRunSpec.model_validate(payload)
     with pytest.raises(ValueError) as excinfo:
-        resolve_training_run_spec(spec, default_training_method_registry())
+        resolve_training_run_spec(spec, default_training_program_registry())
 
     message = str(excinfo.value)
     assert "/method_ref" in message
@@ -269,7 +269,7 @@ def test_training_run_spec_unsupported_method_payload_version_fails_closed() -> 
 
     spec = TrainingRunSpec.model_validate(payload)
     with pytest.raises(ValueError) as excinfo:
-        resolve_training_run_spec(spec, default_training_method_registry())
+        resolve_training_run_spec(spec, default_training_program_registry())
 
     message = str(excinfo.value)
     assert "/method_payload/schema_version" in message
@@ -328,18 +328,18 @@ def test_descriptor_rejects_embedded_contract_or_effective_phase_drift() -> None
     contract_spec = TrainingRunSpec.model_validate(contract_payload)
 
     with pytest.raises(ValueError, match="must exactly match.*payload-compiled"):
-        resolve_training_run_spec(contract_spec, default_training_method_registry())
+        resolve_training_run_spec(contract_spec, default_training_program_registry())
 
     phase_payload = _training_run_payload()
     phase_payload["worker_execution"]["effective_phase"]["axes"][0]["role"] = "environment"
     phase_spec = TrainingRunSpec.model_validate(phase_payload)
 
     with pytest.raises(ValueError, match="effective_phase must exactly match"):
-        resolve_training_run_spec(phase_spec, default_training_method_registry())
+        resolve_training_run_spec(phase_spec, default_training_program_registry())
 
 
 def test_explicit_method_resolution_revalidates_model_copy_updates() -> None:
-    registry = default_training_method_registry()
+    registry = default_training_program_registry()
     spec = TrainingRunSpec.model_validate(_training_run_payload())
     original_resolution = resolve_training_run_spec(spec, registry)
 

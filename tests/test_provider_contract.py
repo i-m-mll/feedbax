@@ -92,7 +92,7 @@ pytestmark = [pytest.mark.feedbax_contract, pytest.mark.provider_contract]
 def validation_registries(application_registry_bundle):
     return {
         "component_registry": application_registry_bundle.components,
-        "training_method_registry": application_registry_bundle.training_methods,
+        "training_method_registry": application_registry_bundle.training_programs,
         "analysis_registry": application_registry_bundle.analysis_recipes,
     }
 

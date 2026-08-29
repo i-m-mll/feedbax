@@ -44,12 +44,14 @@ from feedbax.contracts.training import (
     TaskSpec,
     TrainingConfig,
     TrainingRunSpec,
+    TrainingProgramRowLoweringFacet,
     WorkerExecutionSpec,
-    default_training_method_registry,
+    default_training_program_registry,
     standard_supervised_effective_phase_spec,
     standard_supervised_method_contract,
     standard_supervised_method_payload,
     standard_supervised_method_ref,
+    standard_supervised_training_program,
 )
 from feedbax.orchestration import (
     AssemblyCompilerRegistry,
@@ -66,7 +68,7 @@ from feedbax.orchestration import (
     run_authority_preflight_checks,
 )
 from feedbax.plugins import (
-    ROW_LOWERERS,
+    TRAINING_PROGRAMS,
     FamilyRequirement,
     PluginDeclaration,
     PluginRegistration,
@@ -96,14 +98,27 @@ _LOWERER_VERSION = f"{_LOWERER_ID}.v1"
 
 
 def _lowerer_plugin(plugin_id: str = "tests.downstream") -> PluginRegistration:
+    baseline = standard_supervised_training_program()
+    program = replace(
+        baseline,
+        declaration=replace(
+            baseline.declaration,
+            method_ref=f"{plugin_id}/training/v1",
+            payload_schema_id=f"{plugin_id}.training",
+            payload_schema_version=f"{plugin_id}.training.v1",
+            owner=plugin_id,
+            package="tests",
+        ),
+        row_lowering=TrainingProgramRowLoweringFacet((_registration(),)),
+    )
     return PluginRegistration(
         PluginDeclaration(
             plugin_id,
             "1",
             1,
-            families=(FamilyRequirement("row_lowerers"),),
+            families=(FamilyRequirement("training_programs"),),
         ),
-        lambda context: context.registry(ROW_LOWERERS).register(_registration()),
+        lambda context: context.registry(TRAINING_PROGRAMS).register_program(program),
     )
 
 
@@ -589,7 +604,7 @@ def test_assembly_supplies_exact_composition_parents_and_binds_provenance(
     registry = AssemblyCompilerRegistry()
     register_training_run_matrix_compiler(
         registry,
-        method_registry=default_training_method_registry(),
+        method_registry=default_training_program_registry(),
         row_lowerer=lowerers.lower,
         row_validator=lambda payload, _row_id: TrainingRunSpec.model_validate(payload),
     )
@@ -752,7 +767,7 @@ def _assemble_governed_parent(
     registry = AssemblyCompilerRegistry()
     register_training_run_matrix_compiler(
         registry,
-        method_registry=default_training_method_registry(),
+        method_registry=default_training_program_registry(),
         row_lowerer=lowerers.lower,
         row_validator=lambda payload, _row_id: TrainingRunSpec.model_validate(payload),
     )
@@ -845,7 +860,9 @@ def test_installed_plugin_replays_identical_rows_across_fresh_processes(
         """
 from feedbax.contracts.run_composition import CompositionNode, flatten_composition
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowLoweringResult
-from feedbax.plugins import FamilyRequirement, PluginDeclaration, PluginRegistration, ROW_LOWERERS
+from feedbax.contracts.training import TrainingProgramRowLoweringFacet, standard_supervised_training_program
+from feedbax.plugins import FamilyRequirement, PluginDeclaration, PluginRegistration, TRAINING_PROGRAMS
+from dataclasses import replace
 from feedbax.training.row_lowering import TrainingRowLowererRegistration, training_row_lowerer_implementation_sha256
 
 def register(context):
@@ -861,7 +878,8 @@ def register(context):
                 lowerer_version="tests.downstream-row.v1",
             )],
         )
-    context.registry(ROW_LOWERERS).register(TrainingRowLowererRegistration(
+    baseline = standard_supervised_training_program()
+    registration = TrainingRowLowererRegistration(
         authored_schema_id="tests.spec.downstream_authored_row",
         authored_schema_version="tests.spec.downstream_authored_row.v1",
         lowerer_id="tests.downstream-row",
@@ -869,6 +887,11 @@ def register(context):
         implementation_sha256=training_row_lowerer_implementation_sha256(lower),
         lower=lower,
         owner="fresh-process-plugin",
+    )
+    context.registry(TRAINING_PROGRAMS).register_program(replace(
+        baseline,
+        declaration=replace(baseline.declaration, method_ref="tests/downstream-row/v1", payload_schema_id="tests.downstream-row", payload_schema_version="tests.downstream-row.v1", owner="fresh-process-plugin", package="tests"),
+        row_lowering=TrainingProgramRowLoweringFacet((registration,)),
     ))
 
 PLUGIN_REGISTRATION = PluginRegistration(
@@ -876,7 +899,7 @@ PLUGIN_REGISTRATION = PluginRegistration(
         "tests.downstream_row",
         "1",
         1,
-        families=(FamilyRequirement("row_lowerers"),),
+        families=(FamilyRequirement("training_programs"),),
     ),
     register,
 )
@@ -910,7 +933,7 @@ bundle = assemble_run_bundle(
     run_set_id="fresh-process",
     context=AssemblyContext(custody_root=Path(sys.argv[2]), repo_root=Path(sys.argv[3])),
     registry=build_default_assembly_registry(
-        method_registry=state.bundle.training_methods,
+        method_registry=state.bundle.training_programs,
         row_lowerer_registry=state.bundle.row_lowerers,
         evaluation_registry=state.bundle.evaluation_recipes,
     ),

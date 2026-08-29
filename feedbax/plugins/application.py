@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from pydantic import BaseModel
+
 from feedbax.component_registry import ComponentRegistry
 from feedbax.analysis.evaluation import EvaluationRecipeRegistry
 from feedbax.analysis.evaluation_compaction import EvaluationBatchConsumerRegistry
@@ -13,16 +15,53 @@ from feedbax.analysis.evaluation_product_union import (
 )
 from feedbax.analysis.reports import ReportRecipeRegistry, register_builtin_report_recipes
 from feedbax.analysis.specs import AnalysisRecipeRegistry
-from feedbax.contracts.training import TrainingMethodRegistry, default_training_method_registry
+from feedbax.contracts.training import (
+    DeclaredTrainingProgram,
+    TrainingProgramRegistry,
+    standard_supervised_training_program,
+)
 from feedbax.orchestration.conformance import CheckRegistry, build_core_check_registry
 from feedbax.orchestration.drivers.builtins import build_builtin_driver_registry
 from feedbax.orchestration.drivers.capabilities import DriverRegistry
 from feedbax.plot.constructors import FigureRegistry, register_default_figure_constructors
-from feedbax.training.preparation import ExecutionPreparationProviderRegistry
+from feedbax.training.preparation import (
+    ExecutionPreparationProviderRegistry,
+    ExecutionPreparationRegistration,
+)
 from feedbax.training.row_lowering import TrainingRowLowererRegistry
+from feedbax.training.authoring import training_method_row_lowerer_registration
 
 from .bootstrap import RegistrationContext, RegistryKey
 from .registry import ExperimentRegistry
+
+
+class TrainingProgramCatalog(TrainingProgramRegistry):
+    """Training declarations that derive their layer registries at composition."""
+
+    def __init__(
+        self,
+        row_lowerers: TrainingRowLowererRegistry,
+        preparations: ExecutionPreparationProviderRegistry,
+    ) -> None:
+        super().__init__()
+        self._row_lowerers = row_lowerers
+        self._preparations = preparations
+
+    def register_program(self, program: DeclaredTrainingProgram[BaseModel]) -> None:
+        super().register_program(program)
+        if program.row_lowering is not None:
+            for registration in program.row_lowering.registrations:
+                self._row_lowerers.register(registration)
+        if program.authoring_hook is not None:
+            self._row_lowerers.register(training_method_row_lowerer_registration(program, self))
+        if program.preparation_provider is not None:
+            self._preparations.register(
+                ExecutionPreparationRegistration(
+                    method_ref=program.method_ref,
+                    provider=program.preparation_provider,
+                    owner=program.owner,
+                )
+            )
 
 
 @dataclass(frozen=True)
@@ -30,7 +69,7 @@ class ApplicationRegistryBundle:
     """Fresh registries owned by one completed application bootstrap."""
 
     components: ComponentRegistry
-    training_methods: TrainingMethodRegistry
+    training_programs: TrainingProgramCatalog
     row_lowerers: TrainingRowLowererRegistry
     execution_preparations: ExecutionPreparationProviderRegistry
     experiment_packages: ExperimentRegistry
@@ -45,7 +84,7 @@ class ApplicationRegistryBundle:
 
     def seal(self) -> None:
         self.components.seal()
-        self.training_methods.seal()
+        self.training_programs.seal()
         self.row_lowerers.seal()
         self.execution_preparations.seal()
         self.experiment_packages.seal()
@@ -62,22 +101,10 @@ class ApplicationRegistryBundle:
 COMPONENTS = RegistryKey(
     "components", "components", ComponentRegistry, registered_keys=lambda value: value.names()
 )
-TRAINING_METHODS = RegistryKey(
-    "training_methods",
-    "training_methods",
-    TrainingMethodRegistry,
-    registered_keys=lambda value: value.available_keys(),
-)
-ROW_LOWERERS = RegistryKey(
-    "row_lowerers",
-    "row_lowerers",
-    TrainingRowLowererRegistry,
-    registered_keys=lambda value: value.available_keys(),
-)
-EXECUTION_PREPARATIONS = RegistryKey(
-    "execution_preparations",
-    "execution_preparations",
-    ExecutionPreparationProviderRegistry,
+TRAINING_PROGRAMS = RegistryKey(
+    "training_programs",
+    "training_programs",
+    TrainingProgramCatalog,
     registered_keys=lambda value: value.available_keys(),
 )
 EXPERIMENT_PACKAGES = RegistryKey(
@@ -134,9 +161,7 @@ DRIVERS = RegistryKey(
 
 APPLICATION_REGISTRY_KEYS = (
     COMPONENTS,
-    TRAINING_METHODS,
-    ROW_LOWERERS,
-    EXECUTION_PREPARATIONS,
+    TRAINING_PROGRAMS,
     EXPERIMENT_PACKAGES,
     ANALYSIS_RECIPES,
     EVALUATION_RECIPES,
@@ -160,11 +185,15 @@ def new_application_registry_bundle(
     register_default_figure_constructors(figures)
     reports = ReportRecipeRegistry()
     register_builtin_report_recipes(reports)
+    row_lowerers = TrainingRowLowererRegistry()
+    preparations = ExecutionPreparationProviderRegistry()
+    training_programs = TrainingProgramCatalog(row_lowerers, preparations)
+    training_programs.register_program(standard_supervised_training_program())
     return ApplicationRegistryBundle(
         components=components,
-        training_methods=default_training_method_registry(),
-        row_lowerers=TrainingRowLowererRegistry(),
-        execution_preparations=ExecutionPreparationProviderRegistry(),
+        training_programs=training_programs,
+        row_lowerers=row_lowerers,
+        execution_preparations=preparations,
         experiment_packages=ExperimentRegistry(),
         analysis_recipes=AnalysisRecipeRegistry(),
         evaluation_recipes=EvaluationRecipeRegistry(),

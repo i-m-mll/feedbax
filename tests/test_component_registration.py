@@ -149,14 +149,14 @@ def test_registered_component_output_prototype_feeds_stateful_materialization() 
     assert graph.nodes["delay"].input_proto.shape == (3,)
 
 
-def test_feedbax_component_meta_rejects_output_prototype_mutation() -> None:
+def test_declared_component_is_immutable() -> None:
     registry = ComponentRegistry(load_user_components=False)
     meta = registry.get("FixedField")
     assert meta is not None
     assert meta.provenance == "feedbax"
     original = meta.output_prototype_fn
 
-    with pytest.raises(AttributeError, match="Feedbax-owned ComponentMeta.output_prototype_fn"):
+    with pytest.raises(AttributeError):
         meta.output_prototype_fn = lambda params, inputs: {"force": inputs["force"]}
 
     assert meta.output_prototype_fn is original

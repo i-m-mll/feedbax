@@ -577,7 +577,7 @@ def test_provider_validation_reports_manifest_migration_custody_states(
             graph_spec=spec_payload("GraphSpec", _legacy_graph_payload()),
         ).model_dump(mode="json"),
         component_registry=registries.components,
-        training_method_registry=registries.training_methods,
+        training_method_registry=registries.training_programs,
         analysis_registry=registries.analysis_recipes,
     )
     assert routed.valid

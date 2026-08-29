@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID, GRAPH_SPEC_SCHEMA_VERSION_V3
-from feedbax.contracts.training import default_training_method_registry
+from feedbax.contracts.training import default_training_program_registry
 from feedbax.contracts.manifest import TrainingRunManifest, TrainingSweepAxis
 from feedbax.contracts.run_composition import ResolvedOutputParent
 from feedbax.contracts.run_matrix import (
@@ -45,7 +45,7 @@ from feedbax.training.spec_storage import (
 from feedbax.orchestration.bundle import DeploymentPolicy
 from feedbax.orchestration.revision import resolve_feedbax_revision
 
-_METHOD_REGISTRY = default_training_method_registry()
+_METHOD_REGISTRY = default_training_program_registry()
 
 
 def _matrix(base: dict[str, object]) -> TrainingRunMatrixSpec:

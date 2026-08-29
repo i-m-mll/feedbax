@@ -80,7 +80,7 @@ from feedbax.contracts.checkpoints import (
 from feedbax.contracts.training import (
     LrScheduleSpec,
     OptimizerSpec,
-    TrainingMethodRegistry,
+    TrainingProgramRegistry,
     TrainingRunSpec,
 )
 from feedbax.training.checkpoint_custody import (
@@ -154,9 +154,7 @@ def verify_compiled_training_row_parent(
     try:
         matrix = TrainingRunMatrixSpec.model_validate(matrix_document)
     except ValueError as exc:
-        raise RunMatrixError(
-            "/parent/matrix is not feedbax.spec.training_run_matrix.v6"
-        ) from exc
+        raise RunMatrixError("/parent/matrix is not feedbax.spec.training_run_matrix.v6") from exc
 
     lock_document = _load_pinned_canonical_document(
         repo_root,
@@ -193,9 +191,7 @@ def verify_compiled_training_row_parent(
         )
 
     pinned_refs = [
-        reference["ref"]
-        for reference in lock["references"]
-        if reference["kind"] == "content_pin"
+        reference["ref"] for reference in lock["references"] if reference["kind"] == "content_pin"
     ]
     required_refs = [source.uri for source in matrix.sources]
     authority = contribution.get("authority")
@@ -464,7 +460,7 @@ class TrainingRowLowerer(Protocol):
 class StandardLrContinuationReporter:
     """Generic LR reporter for constant and declarative schedule optimizer specs."""
 
-    def __init__(self, registry: TrainingMethodRegistry) -> None:
+    def __init__(self, registry: TrainingProgramRegistry) -> None:
         self.registry = registry
 
     def points(
@@ -479,7 +475,7 @@ class StandardLrContinuationReporter:
         optimizer = _project_optimizer_spec(row_spec, registry=self.registry)
         if optimizer is None:
             raise RunMatrixError(
-                "scheduled LR continuation requires the method descriptor to define "
+                "scheduled LR continuation requires the method program to define "
                 "optimizer_spec_projector, or the caller to supply an explicit lr_reporter"
             )
         segment_start = _source_completed_step(source_manifest, row_spec)
@@ -543,7 +539,7 @@ def materialize_run_matrix(
     spec: TrainingRunMatrixSpec | Mapping[str, Any],
     *,
     repo_root: Path,
-    method_registry: TrainingMethodRegistry,
+    method_registry: TrainingProgramRegistry,
     row_lowerer: TrainingRowLowerer | None = None,
 ) -> MaterializedRunMatrix:
     """Materialize a ``TrainingRunMatrixSpec`` into validated row specs."""
@@ -708,7 +704,7 @@ def render_spec_lock_table(
     materialized: MaterializedRunMatrix,
     *,
     segment_lineages: Mapping[str, CheckpointSegmentLineage] | None = None,
-    method_registry: TrainingMethodRegistry,
+    method_registry: TrainingProgramRegistry,
 ) -> str:
     """Render a Markdown spec-lock summary for reviewable launch plans."""
     override_paths = sorted(
@@ -771,7 +767,7 @@ def _resolved_schedule_lines(
     materialized: MaterializedRunMatrix,
     segment_lineages: Mapping[str, CheckpointSegmentLineage],
     *,
-    method_registry: TrainingMethodRegistry,
+    method_registry: TrainingProgramRegistry,
 ) -> list[str]:
     lines: list[str] = []
     for row in materialized.rows:
@@ -924,7 +920,7 @@ def fork_matrix_checkpoints(
     ) = None,
     skip_fork: bool = False,
     lr_reporter: LrContinuationReporter | None = None,
-    method_registry: TrainingMethodRegistry,
+    method_registry: TrainingProgramRegistry,
     tool_version: str = "feedbax.run_matrix_fork.v1",
     _preflight_lr_points: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> dict[str, Any]:
@@ -1357,9 +1353,7 @@ def _resolve_composed_base(
 
                 def resolve_parent(
                     parent: (
-                        AuthoredIntentParent
-                        | ResolvedOutputParent
-                        | CompiledTrainingRowParent
+                        AuthoredIntentParent | ResolvedOutputParent | CompiledTrainingRowParent
                     ),
                 ) -> Any:
                     if isinstance(parent, CompiledTrainingRowParent):
@@ -1391,9 +1385,7 @@ def _resolve_composed_base(
                         ) from exc
                     return parse_composition_node(parent_document)
 
-                flattened = flatten_composition(
-                    parse_composition_node(document), resolve_parent
-                )
+                flattened = flatten_composition(parse_composition_node(document), resolve_parent)
                 resolved, local_attribution, written = apply_composition_deltas(
                     flattened.payload,
                     spec.deltas,
@@ -1783,7 +1775,7 @@ def _validate_training_payload(
     payload: dict[str, Any],
     *,
     row_id: str,
-    method_registry: TrainingMethodRegistry,
+    method_registry: TrainingProgramRegistry,
 ) -> TrainingRunSpec:
     try:
         spec = TrainingRunSpec.model_validate(payload)
@@ -2284,16 +2276,16 @@ def _preflight_lr_continuation_points(
 def _project_optimizer_spec(
     row_spec: TrainingRunSpec,
     *,
-    registry: TrainingMethodRegistry,
+    registry: TrainingProgramRegistry,
 ) -> OptimizerSpec | None:
-    """Project optimizer intent through the method descriptor only."""
-    descriptor = registry.descriptor(row_spec.method_ref)
+    """Project optimizer intent through the method program only."""
+    program = registry.program(row_spec.method_ref)
     payload = registry.validate_payload(
         row_spec.method_ref,
         row_spec.method_payload,
         path="/method_payload",
     )
-    projector = descriptor.optimizer_spec_projector if descriptor is not None else None
+    projector = program.optimizer_spec_projector if program is not None else None
     if projector is None:
         return None
     try:
@@ -2315,19 +2307,19 @@ def _recorded_optimizer_step(
     row_spec: TrainingRunSpec,
     source_manifest: Mapping[str, Any],
     *,
-    registry: TrainingMethodRegistry,
+    registry: TrainingProgramRegistry,
 ) -> int | None:
-    """Read an explicitly recorded checkpoint step through the descriptor hook."""
+    """Read an explicitly recorded checkpoint step through the program hook."""
     metadata = source_manifest.get("metadata")
     if not isinstance(metadata, Mapping) or "optimizer_step" not in metadata:
         return None
-    descriptor = registry.descriptor(row_spec.method_ref)
+    program = registry.program(row_spec.method_ref)
     payload = registry.validate_payload(
         row_spec.method_ref,
         row_spec.method_payload,
         path="/method_payload",
     )
-    extractor = descriptor.optimizer_step_extractor if descriptor is not None else None
+    extractor = program.optimizer_step_extractor if program is not None else None
     if extractor is None:
         return None
     slots = getattr(source_manifest, "slots", None)
@@ -2354,7 +2346,7 @@ def _recorded_optimizer_step(
     value = values[0]
     if value != metadata["optimizer_step"]:
         raise ForkParityError(
-            "recorded optimizer step disagrees with descriptor extraction; "
+            "recorded optimizer step disagrees with program extraction; "
             f"metadata={metadata['optimizer_step']!r}, extracted={value!r}"
         )
     return value
@@ -2481,7 +2473,7 @@ def main(argv: list[str] | None = None) -> int:
     materialized = materialize_run_matrix(
         spec,
         repo_root=args.repo_root,
-        method_registry=state.bundle.training_methods,
+        method_registry=state.bundle.training_programs,
         row_lowerer=state.bundle.row_lowerers.lower,
     )
     if args.command == "render":
@@ -2489,7 +2481,7 @@ def main(argv: list[str] | None = None) -> int:
             render_spec_lock_table(
                 spec,
                 materialized,
-                method_registry=state.bundle.training_methods,
+                method_registry=state.bundle.training_programs,
             )
         )
         return 0
@@ -2502,7 +2494,7 @@ def main(argv: list[str] | None = None) -> int:
                 target_checkpoint_roots=_fork_target_roots(args.target),
                 parity_output_path=args.parity_output,
                 skip_fork=args.skip_fork,
-                method_registry=state.bundle.training_methods,
+                method_registry=state.bundle.training_programs,
             )
         except ForkParityError as exc:
             print(str(exc), file=sys.stderr)
