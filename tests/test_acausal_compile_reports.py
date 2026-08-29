@@ -13,7 +13,13 @@ from feedbax.contracts.domain import (
     DomainDiagnostic,
     derive_compile_status,
 )
-from feedbax.contracts.graph import ComponentSpec, GraphProject, GraphSpec
+from feedbax.contracts.graph import (
+    ComponentSpec,
+    GraphProject,
+    GraphSpec,
+    SemanticAnchor,
+    WorkspaceDocument,
+)
 from feedbax.contracts.graphs.acausal_compiler import compile_acausal_authoring_report
 from feedbax.contracts.graphs.mechanics_templates import two_link_arm_6muscle_template_graph
 from feedbax.web.app import create_app
@@ -357,6 +363,12 @@ def test_graph_project_drops_old_compile_report_versions() -> None:
                 "updated_at": "2026-01-01T00:00:00+00:00",
             },
             "graph": GraphSpec().model_dump(mode="json"),
+            "workspace_document": WorkspaceDocument(
+                semantic_root=SemanticAnchor(
+                    semantic_document_sha256="0" * 64,
+                    authored_path="/graph",
+                )
+            ).model_dump(mode="json"),
             "compile_reports": {
                 "plant": {
                     "schema_id": "feedbax.spec.domain_compile_report",
@@ -375,7 +387,7 @@ def test_graph_project_drops_old_compile_report_versions() -> None:
 
 def test_graph_service_persists_report_and_derives_stale_status(tmp_path: Path) -> None:
     service = GraphService(storage_dir=tmp_path)
-    record = service.create_graph(GraphSpec(), None)
+    record = service.create_graph(GraphSpec())
     interior = _msd_interior()
 
     report = service.compile_node(
@@ -429,7 +441,7 @@ def test_compile_endpoint_returns_report_and_malformed_body_422(
     import feedbax.web.api.graphs as graphs_api
 
     service = GraphService(storage_dir=tmp_path)
-    record = service.create_graph(GraphSpec(), None)
+    record = service.create_graph(GraphSpec())
     monkeypatch.setattr(graphs_api, "service", service)
 
     with TestClient(create_app()) as client:

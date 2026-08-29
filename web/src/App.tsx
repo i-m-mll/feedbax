@@ -10,7 +10,11 @@ import { useGraphStore } from '@/stores/graphStore';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { persistLocalProjectTabs } from '@/stores/projectsStore';
-import { buildWorkspaceSnapshot, useWorkspaceStore } from '@/stores/workspaceStore';
+import {
+  buildWorkspaceDocumentSnapshot,
+  buildWorkspaceSnapshot,
+  useWorkspaceStore,
+} from '@/stores/workspaceStore';
 import { fetchGraph, updateGraph } from '@/api/client';
 import { isHttpConflict } from '@/api/request';
 import { summarizeSaveConflict } from '@/utils/saveConflict';
@@ -25,27 +29,6 @@ import {
 
 const AUTO_SAVE_DELAY_MS = 800;
 const PROJECT_CHANNEL_NAME = 'feedbax:studio-project-presence';
-
-/** Convert analysis snapshot into the snake_case wire format the backend expects. */
-function getAnalysisForSave(): {
-  pages: Array<Record<string, unknown>>;
-  activePageId: string | null;
-} | null {
-  const snapshot = useAnalysisStore.getState().captureSnapshot();
-  if (snapshot.pages.length === 0) return null;
-  return {
-    pages: snapshot.pages.map((page) => ({
-      id: page.id,
-      name: page.name,
-      graph_spec: page.graphSpec,
-      eval_params: page.evalParams,
-      viewport: page.viewport,
-      eval_run_id: page.evalRunId,
-      expanded_field_paths: page.expandedFieldPaths ?? [],
-    })),
-    activePageId: snapshot.activePageId,
-  };
-}
 
 export default function App() {
   useAppShortcuts();
@@ -98,7 +81,12 @@ export default function App() {
       savingRef.current = true;
       const graphStore = useGraphStore.getState();
       const { graph, uiState } = graphStore.capturePersistedGraph();
-      const analysis = getAnalysisForSave();
+      const currentWorkspaceDocument = useWorkspaceStore.getState().workspaceDocument;
+      if (!currentWorkspaceDocument) {
+        toast.error('Auto-save stopped: the semantic workspace anchor is missing.');
+        savingRef.current = false;
+        return;
+      }
       const workspace = buildWorkspaceSnapshot({
         workspace: useWorkspaceStore.getState().workspace,
         graph,
@@ -108,15 +96,19 @@ export default function App() {
         analysisSnapshot: useAnalysisStore.getState().captureSnapshot(),
         graphStackPath: graphStore.captureGraphStackPath(),
       });
+      const workspaceDocument = buildWorkspaceDocumentSnapshot(
+        currentWorkspaceDocument,
+        uiState,
+        useAnalysisStore.getState().captureSnapshot(),
+        workspace,
+      );
       useWorkspaceStore.getState().setWorkspace(workspace);
       let saveConflict = false;
       try {
         const response = await updateGraph(
           graphId,
           graph,
-          uiState,
-          analysis?.pages ?? null,
-          analysis?.activePageId,
+          workspaceDocument,
           workspace,
           graphStore.saveRevision,
         );
@@ -132,17 +124,18 @@ export default function App() {
                 serverMetadata: server.metadata,
                 local: {
                   graph,
-                  uiState,
+                  uiState: workspaceDocument.graph_ui_state,
                   workspace,
-                  analysisPages: analysis?.pages ?? null,
-                  activeAnalysisPageId: analysis?.activePageId ?? null,
+                  analysisPages: workspaceDocument.analysis_pages,
+                  activeAnalysisPageId: workspaceDocument.active_analysis_page_id ?? null,
                 },
                 server: {
                   graph: server.graph,
-                  uiState: server.ui_state,
+                  uiState: server.workspace_document.graph_ui_state,
                   workspace: server.workspace,
-                  analysisPages: server.analysis_pages,
-                  activeAnalysisPageId: server.active_analysis_page_id,
+                  analysisPages: server.workspace_document.analysis_pages,
+                  activeAnalysisPageId:
+                    server.workspace_document.active_analysis_page_id ?? null,
                 },
               })
             : 'Save conflict: project changed elsewhere, but the server copy could not be fetched. Your local edits are still unsaved.';
@@ -174,7 +167,8 @@ export default function App() {
       const { isDirty: dirty, graphId: gid } = graphStore;
       if (!dirty || !gid) return;
       const { graph: rootGraph, uiState: rootUiState } = graphStore.capturePersistedGraph();
-      const analysis = getAnalysisForSave();
+      const currentWorkspaceDocument = useWorkspaceStore.getState().workspaceDocument;
+      if (!currentWorkspaceDocument) return;
       const workspace = buildWorkspaceSnapshot({
         workspace: useWorkspaceStore.getState().workspace,
         graph: rootGraph,
@@ -184,6 +178,12 @@ export default function App() {
         analysisSnapshot: useAnalysisStore.getState().captureSnapshot(),
         graphStackPath: graphStore.captureGraphStackPath(),
       });
+      const workspaceDocument = buildWorkspaceDocumentSnapshot(
+        currentWorkspaceDocument,
+        rootUiState,
+        useAnalysisStore.getState().captureSnapshot(),
+        workspace,
+      );
       useWorkspaceStore.getState().setWorkspace(workspace);
       // Cancel pending debounce timer
       if (timerRef.current) {
@@ -192,13 +192,9 @@ export default function App() {
       }
       const beaconPayload: Record<string, unknown> = {
         graph: rootGraph,
-        ui_state: rootUiState,
+        workspace_document: workspaceDocument,
         expected_save_revision: graphStore.saveRevision,
       };
-      if (analysis) {
-        beaconPayload.analysis_pages = analysis.pages;
-        beaconPayload.active_analysis_page_id = analysis.activePageId;
-      }
       beaconPayload.workspace = workspace;
       const body = new Blob(
         [JSON.stringify(beaconPayload)],

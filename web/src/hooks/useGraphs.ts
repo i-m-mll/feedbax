@@ -5,7 +5,11 @@ import type { GraphSpec, GraphUIState } from '@/types/graph';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { useGraphStore } from '@/stores/graphStore';
 import { useTrainingStore } from '@/stores/trainingStore';
-import { buildWorkspaceSnapshot, useWorkspaceStore } from '@/stores/workspaceStore';
+import {
+  buildWorkspaceDocumentSnapshot,
+  buildWorkspaceSnapshot,
+  useWorkspaceStore,
+} from '@/stores/workspaceStore';
 
 export function useGraphsList() {
   return useQuery({
@@ -52,13 +56,17 @@ export function useSaveGraph() {
       });
       useWorkspaceStore.getState().setWorkspace(workspace);
       if (graphId) {
+        const workspaceDocument = buildWorkspaceDocumentSnapshot(
+          useWorkspaceStore.getState().workspaceDocument,
+          persistedGraph.uiState,
+          useAnalysisStore.getState().captureSnapshot(),
+          workspace,
+        );
         try {
           return await updateGraph(
             graphId,
             persistedGraph.graph,
-            persistedGraph.uiState,
-            undefined,
-            undefined,
+            workspaceDocument,
             workspace,
             graphStore.saveRevision,
           );
@@ -72,7 +80,10 @@ export function useSaveGraph() {
           throw error;
         }
       }
-      return createGraph(persistedGraph.graph, persistedGraph.uiState, workspace);
+      const created = await createGraph(persistedGraph.graph, undefined, workspace);
+      const loaded = await fetchGraph(created.id);
+      useWorkspaceStore.getState().setWorkspaceDocument(loaded.workspace_document);
+      return created;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['graphs'] });

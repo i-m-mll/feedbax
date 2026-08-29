@@ -118,9 +118,10 @@ describe('pipeline collection summaries', () => {
         }],
       } as any,
       {
-        currentSpecHashes: currentDraftSpecHashesForScenario({
-          training_spec: currentTrainingSpec,
-        }),
+        currentSpecHashes: currentDraftSpecHashesForScenario(
+          { training_spec: currentTrainingSpec },
+          { schema_id: 'feedbax.spec.graph', schema_version: '5' }
+        ),
       }
     );
 

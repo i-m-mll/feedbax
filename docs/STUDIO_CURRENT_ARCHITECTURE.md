@@ -58,8 +58,13 @@ revision through `expected_save_revision`/`If-Match`; stale saves return HTTP
 where possible and shows concrete local-versus-server conflict sections.
 
 Autosave is debounced in `web/src/App.tsx`. The pagehide path uses the beacon
-save endpoint so refresh/close events still attempt to persist graph, UI state,
-workspace, and analysis pages. Same-project multi-tab editing is warned through
+save endpoint so refresh/close events still attempt to persist the semantic
+graph and its separate `WorkspaceDocument`. That document is the durable
+authority for graph layout, viewport, analysis-page presentation, and
+workspace-, stage-, and scenario-level view state, plus revision-pinned
+semantic anchors. The semantic workspace sent to the backend contains no UI
+state; Studio composes the presentation fields into its runtime view model when
+loading a project. Same-project multi-tab editing is warned through
 `BroadcastChannel`.
 
 Local UI preferences are intentionally persisted where visible state should

@@ -36,10 +36,10 @@ describe('analysis bundle dry-run API', () => {
     const fetchMock = vi.fn(async () =>
       Response.json({
         schema_id: 'feedbax.spec.studio.api_transport',
-        schema_version: 'feedbax.spec.studio.api_transport.v2',
+        schema_version: 'feedbax.spec.studio.api_transport.v3',
         data: {
           schema_id: 'feedbax.spec.studio.api_transport',
-          schema_version: 'feedbax.spec.studio.api_transport.v2',
+          schema_version: 'feedbax.spec.studio.api_transport.v3',
           dry_run: {
             bundle_name: 'bundle-a',
             match_preview: {

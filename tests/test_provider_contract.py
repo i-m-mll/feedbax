@@ -220,8 +220,8 @@ def _minimal_training_spec() -> dict:
     }
 
 
-def _schema_workspace():
-    graph = GraphSpec(
+def _schema_graph() -> GraphSpec:
+    return GraphSpec(
         nodes={
             "network": {
                 "type": "Gain",
@@ -246,7 +246,10 @@ def _schema_workspace():
             updated_at="2026-05-20T00:00:00+00:00",
         ),
     )
-    workspace = build_default_studio_workspace(label="Schema provider", graph=graph)
+
+
+def _schema_workspace():
+    workspace = build_default_studio_workspace(label="Schema provider")
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
@@ -1339,6 +1342,7 @@ def test_provider_http_endpoints(provider_client) -> None:
         "/api/provider/studio/schemas",
         json={
             "workspace": _schema_workspace().model_dump(mode="json", exclude_none=True),
+            "graph": _schema_graph().model_dump(mode="json", exclude_none=True),
             "scenario_id": "scenario:train",
         },
     )
@@ -1358,6 +1362,7 @@ def test_provider_http_endpoints(provider_client) -> None:
         "/api/provider/studio/schemas",
         json={
             "workspace": _schema_workspace().model_dump(mode="json", exclude_none=True),
+            "graph": _schema_graph().model_dump(mode="json", exclude_none=True),
             "scenario_id": "scenario:train",
             "runtime_introspection": {"enabled": True, "max_targets": 4},
         },
@@ -1377,6 +1382,7 @@ def test_studio_schema_enumeration_returns_ports_task_data_targets_and_issues(
     registry = enumerate_studio_schema_registry(
         _schema_workspace(),
         "scenario:train",
+        graph=_schema_graph(),
         component_registry=application_registry_bundle.components,
     )
 
@@ -1406,7 +1412,10 @@ def test_studio_schema_enumeration_reports_workspace_migration_rejection(
     }
 
     registry = enumerate_studio_schema_registry(
-        workspace, "scenario:train", component_registry=application_registry_bundle.components
+        workspace,
+        "scenario:train",
+        graph=_schema_graph(),
+        component_registry=application_registry_bundle.components,
     )
 
     assert registry.ports == []
@@ -1417,10 +1426,8 @@ def test_studio_schema_enumeration_reports_workspace_migration_rejection(
 def test_studio_schema_enumeration_does_not_wrap_runtime_network_ports(
     application_registry_bundle,
 ) -> None:
-    workspace = build_default_studio_workspace(
-        label="Runtime network",
-        graph=GraphSpec.model_validate(_runtime_network_graph_spec()),
-    )
+    graph = GraphSpec.model_validate(_runtime_network_graph_spec())
+    workspace = build_default_studio_workspace(label="Runtime network")
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
@@ -1453,6 +1460,7 @@ def test_studio_schema_enumeration_does_not_wrap_runtime_network_ports(
     registry = enumerate_studio_schema_registry(
         workspace,
         train_stage.scenario_id,
+        graph=graph,
         component_registry=application_registry_bundle.components,
     )
 
@@ -1676,7 +1684,7 @@ def test_studio_schema_enumeration_reports_dynamic_mux_input_mismatch(
         output_ports=["output"],
         output_bindings={"output": ("mux", "output")},
     )
-    workspace = build_default_studio_workspace(label="Mux schema", graph=graph)
+    workspace = build_default_studio_workspace(label="Mux schema")
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
@@ -1712,6 +1720,7 @@ def test_studio_schema_enumeration_reports_dynamic_mux_input_mismatch(
     registry = enumerate_studio_schema_registry(
         workspace,
         train_stage.scenario_id,
+        graph=graph,
         component_registry=application_registry_bundle.components,
     )
     issue_types = {issue.type for issue in registry.issues}
@@ -1738,12 +1747,13 @@ def test_studio_schema_enumeration_reports_dynamic_demux_output_mismatch(
         input_bindings={"input": ("split", "input")},
         output_bindings={"tail": ("split", "out_2")},
     )
-    workspace = build_default_studio_workspace(label="Demux schema", graph=graph)
+    workspace = build_default_studio_workspace(label="Demux schema")
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
 
     registry = enumerate_studio_schema_registry(
         workspace,
         train_stage.scenario_id,
+        graph=graph,
         component_registry=application_registry_bundle.components,
     )
     issue = next(issue for issue in registry.issues if issue.type == "dynamic_port_arity_mismatch")
@@ -1783,12 +1793,13 @@ def test_studio_schema_materializes_external_dynamic_policy_without_type_branchi
         input_bindings={"input": ("external", "input")},
         output_bindings={"tail": ("external", "result_2")},
     )
-    workspace = build_default_studio_workspace(label="External dynamic", graph=graph)
+    workspace = build_default_studio_workspace(label="External dynamic")
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
 
     schema = enumerate_studio_schema_registry(
         workspace,
         train_stage.scenario_id,
+        graph=graph,
         component_registry=components,
     )
 
@@ -1808,12 +1819,13 @@ def test_studio_schema_reports_invalid_dynamic_policy_parameter_as_typed_issue(
             "mux": ComponentSpec(type="Mux", params={"n_inputs": True}),
         }
     )
-    workspace = build_default_studio_workspace(label="Invalid dynamic", graph=graph)
+    workspace = build_default_studio_workspace(label="Invalid dynamic")
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
 
     schema = enumerate_studio_schema_registry(
         workspace,
         train_stage.scenario_id,
+        graph=graph,
         component_registry=application_registry_bundle.components,
     )
 
@@ -1854,7 +1866,7 @@ def test_studio_schema_task_data_trajectory_bindings_use_sample_view(
             }
         }
     )
-    workspace = build_default_studio_workspace(label="Sample view schema", graph=graph)
+    workspace = build_default_studio_workspace(label="Sample view schema")
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
@@ -1890,6 +1902,7 @@ def test_studio_schema_task_data_trajectory_bindings_use_sample_view(
     registry = enumerate_studio_schema_registry(
         workspace,
         train_stage.scenario_id,
+        graph=graph,
         component_registry=application_registry_bundle.components,
     )
     task_data = next(item for item in registry.task_data if item.id == "task_data:target_position")
@@ -1920,7 +1933,7 @@ def test_studio_schema_enumeration_infers_mux_output_width_from_sample_shapes(
         output_ports=["output"],
         output_bindings={"output": ("mux", "output")},
     )
-    workspace = build_default_studio_workspace(label="Mux width schema", graph=graph)
+    workspace = build_default_studio_workspace(label="Mux width schema")
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
@@ -1975,6 +1988,7 @@ def test_studio_schema_enumeration_infers_mux_output_width_from_sample_shapes(
     registry = enumerate_studio_schema_registry(
         workspace,
         train_stage.scenario_id,
+        graph=graph,
         component_registry=application_registry_bundle.components,
     )
     mux_output = next(port for port in registry.ports if port.id == "port:mux.output:output")
@@ -2018,7 +2032,7 @@ def test_studio_schema_reports_derived_dimension_conflict(application_registry_b
             }
         ],
     )
-    workspace = build_default_studio_workspace(label="Derived dimension conflict", graph=graph)
+    workspace = build_default_studio_workspace(label="Derived dimension conflict")
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
@@ -2073,6 +2087,7 @@ def test_studio_schema_reports_derived_dimension_conflict(application_registry_b
     registry = enumerate_studio_schema_registry(
         workspace,
         train_stage.scenario_id,
+        graph=graph,
         component_registry=application_registry_bundle.components,
     )
     conflict = next(
@@ -2132,7 +2147,7 @@ def test_studio_schema_uses_subgraph_boundary_shapes_for_parent_ports(
         },
         subgraphs={"network": child_graph},
     )
-    workspace = build_default_studio_workspace(label="Subgraph boundary schema", graph=graph)
+    workspace = build_default_studio_workspace(label="Subgraph boundary schema")
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
@@ -2206,6 +2221,7 @@ def test_studio_schema_uses_subgraph_boundary_shapes_for_parent_ports(
     registry = enumerate_studio_schema_registry(
         workspace,
         train_stage.scenario_id,
+        graph=graph,
         component_registry=application_registry_bundle.components,
     )
     mux_output = next(port for port in registry.ports if port.id == "port:task_mux.output:output")
@@ -2246,6 +2262,7 @@ def test_studio_schema_enumeration_runtime_introspection_hook_adds_sample_leaf_t
     registry = enumerate_studio_schema_registry(
         _schema_workspace(),
         "scenario:train",
+        graph=_schema_graph(),
         runtime_introspection={"enabled": True, "max_targets": 1},
         runtime_introspector=introspector,
         component_registry=application_registry_bundle.components,
@@ -2275,6 +2292,7 @@ def test_studio_schema_enumeration_runtime_introspection_failure_is_warning(
     registry = enumerate_studio_schema_registry(
         _schema_workspace(),
         "scenario:train",
+        graph=_schema_graph(),
         runtime_introspection=True,
         runtime_introspector=introspector,
         component_registry=application_registry_bundle.components,
@@ -2286,26 +2304,28 @@ def test_studio_schema_enumeration_runtime_introspection_failure_is_warning(
     assert registry.metadata["runtime_introspection"]["status"] == "failed"
 
 
-def test_studio_schema_enumeration_reports_missing_scenario_graph_and_binding(
+def test_studio_schema_enumeration_reports_missing_scenario_and_binding(
     application_registry_bundle,
 ) -> None:
     missing = enumerate_studio_schema_registry(
         _schema_workspace(),
         "scenario:missing",
+        graph=_schema_graph(),
         component_registry=application_registry_bundle.components,
     )
     assert any(issue.type == "missing_scenario" for issue in missing.issues)
 
     workspace = _schema_workspace()
     scenario = workspace.scenarios["scenario:train"]
-    scenario.graph = None
     scenario.task_binding_spec = None
     registry = enumerate_studio_schema_registry(
-        workspace, "scenario:train", component_registry=application_registry_bundle.components
+        workspace,
+        "scenario:train",
+        graph=_schema_graph(),
+        component_registry=application_registry_bundle.components,
     )
 
     issue_types = {issue.type for issue in registry.issues}
-    assert "missing_graph" in issue_types
     assert "missing_task_binding_spec" in issue_types
 
 
@@ -2314,12 +2334,16 @@ def test_studio_schema_enumeration_validates_task_binding_schema_mismatch(
 ) -> None:
     workspace = _schema_workspace()
     scenario = next(iter(workspace.scenarios.values()))
-    scenario.graph.nodes["network"].type = "Linear"
+    graph = _schema_graph()
+    graph.nodes["network"].type = "Linear"
     assert scenario.task_binding_spec is not None
     scenario.task_binding_spec.exposed_data[0].dtype = "scalar"
 
     registry = enumerate_studio_schema_registry(
-        workspace, scenario.id, component_registry=application_registry_bundle.components
+        workspace,
+        scenario.id,
+        graph=graph,
+        component_registry=application_registry_bundle.components,
     )
     issue_types = {issue.type for issue in registry.issues}
 
@@ -2340,7 +2364,10 @@ def test_studio_schema_enumeration_validates_task_binding_identity(
     ]
 
     registry = enumerate_studio_schema_registry(
-        workspace, scenario.id, component_registry=application_registry_bundle.components
+        workspace,
+        scenario.id,
+        graph=_schema_graph(),
+        component_registry=application_registry_bundle.components,
     )
     issue_types = {issue.type for issue in registry.issues}
 
@@ -2359,7 +2386,10 @@ def test_studio_schema_enumerates_task_data_roles_and_rejects_protocol_bindings(
     scenario.task_binding_spec.bindings[0].source_data_id = "targets"
 
     registry = enumerate_studio_schema_registry(
-        workspace, scenario.id, component_registry=application_registry_bundle.components
+        workspace,
+        scenario.id,
+        graph=_schema_graph(),
+        component_registry=application_registry_bundle.components,
     )
     task_data = {item.path: item for item in registry.task_data}
     issue_types = {issue.type for issue in registry.issues}
@@ -2484,9 +2514,8 @@ def test_studio_schema_enumeration_validates_intervention_targets(
     application_registry_bundle,
 ) -> None:
     workspace = _schema_workspace()
-    scenario = workspace.scenarios["scenario:train"]
-    assert scenario.graph is not None
-    scenario.graph.taps = [
+    graph = _schema_graph()
+    graph.taps = [
         TapSpec.model_validate(item)
         for item in [
             {
@@ -2534,7 +2563,10 @@ def test_studio_schema_enumeration_validates_intervention_targets(
     ]
 
     registry = enumerate_studio_schema_registry(
-        workspace, "scenario:train", component_registry=application_registry_bundle.components
+        workspace,
+        "scenario:train",
+        graph=graph,
+        component_registry=application_registry_bundle.components,
     )
     issue_types = {issue.type for issue in registry.issues}
 

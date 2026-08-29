@@ -85,12 +85,10 @@ const graph: GraphSpec = {
 
 const scenario: StudioScenarioSpec = {
   id: 'scenario:train',
-  schema_version: 'feedbax.spec.studio.scenario.v2',
+  schema_version: 'feedbax.spec.studio.scenario.v3',
   label: 'Training scenario',
   stage_id: 'stage:train',
   parent_scenario_id: null,
-  graph,
-  graph_ui_state: null,
   training_spec: null,
   task_spec: { type: 'ReachingTask', params: { n_targets: 8 } },
   task_binding_spec: {
@@ -179,7 +177,7 @@ describe('graph port entity ids', () => {
 
 describe('scenario entity registry', () => {
   it('derives graph, task, mechanics, probe, and objective entities', () => {
-    const registry = buildScenarioEntityRegistry({ scenario });
+    const registry = buildScenarioEntityRegistry({ scenario, graph });
     const wire = graph.wires[0];
 
     expect(registry.entities[graphNodeEntityId('network')]).toMatchObject({
@@ -283,7 +281,7 @@ describe('scenario entity registry', () => {
   });
 
   it('maps graph-port selectors back to the selected port direction', () => {
-    const registry = buildScenarioEntityRegistry({ scenario });
+    const registry = buildScenarioEntityRegistry({ scenario, graph });
     const inputSelector = registry.entities[graphPortEntityId('mechanics', 'input', 'force')]
       .selector;
     const outputSelector = registry.entities[graphPortEntityId('mechanics', 'output', 'effector')]
@@ -356,6 +354,7 @@ describe('scenario entity registry', () => {
         id: 'scenario:eval',
         parent_scenario_id: 'scenario:train',
       },
+      graph,
     });
 
     expect(registry.entities[taskEntityId('scenario:eval')]).toMatchObject({

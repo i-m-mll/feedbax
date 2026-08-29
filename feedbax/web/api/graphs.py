@@ -1,15 +1,14 @@
 from __future__ import annotations
 from fastapi import APIRouter, Header, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional
 
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.domain import DomainCompileReport
 from feedbax.contracts.graph import (
-    AnalysisPageSpec,
     GraphSpec,
-    GraphUIState,
     StudioWorkspaceSpec,
+    WorkspaceDocument,
 )
 from feedbax.contracts.studio_api import (
     GraphCreateResponse,
@@ -34,16 +33,18 @@ def _component_registry(request: Request):
 
 
 class GraphCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     graph: GraphSpec
-    ui_state: Optional[GraphUIState] = None
+    workspace_document: Optional[WorkspaceDocument] = None
     workspace: Optional[StudioWorkspaceSpec] = None
 
 
 class GraphUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     graph: Optional[GraphSpec] = None
-    ui_state: Optional[GraphUIState] = None
-    analysis_pages: Optional[list[AnalysisPageSpec]] = None
-    active_analysis_page_id: Optional[str] = None
+    workspace_document: Optional[WorkspaceDocument] = None
     workspace: Optional[StudioWorkspaceSpec] = None
     expected_save_revision: Optional[int] = None
 
@@ -95,19 +96,10 @@ async def create_graph(payload: GraphCreateRequest, request: Request) -> GraphCr
     component_registry = _component_registry(request)
     record = service.create_graph(
         payload.graph,
-        payload.ui_state,
+        workspace=payload.workspace,
+        workspace_document=payload.workspace_document,
         component_registry=component_registry,
     )
-    if payload.workspace is not None:
-        record = service.update_graph(
-            record.graph_id,
-            None,
-            None,
-            workspace=payload.workspace,
-            expected_save_revision=record.project.metadata.save_revision,
-            require_save_revision=True,
-            component_registry=component_registry,
-        )
     return GraphCreateResponse(data={"id": record.graph_id, "metadata": record.project.metadata})
 
 
@@ -124,11 +116,9 @@ async def get_graph(graph_id: str, request: Request, response: Response) -> Grap
     return GraphDetailResponse(
         data={
             "graph": record.project.graph,
-            "ui_state": record.project.ui_state,
+            "workspace_document": record.project.workspace_document,
             "demo_training_data": record.project.demo_training_data,
             "metadata": record.project.metadata,
-            "analysis_pages": record.project.analysis_pages,
-            "active_analysis_page_id": record.project.active_analysis_page_id,
             "workspace": record.project.workspace,
             "compile_reports": record.project.compile_reports,
         }
@@ -149,10 +139,8 @@ async def update_graph(
         record = service.update_graph(
             graph_id,
             payload.graph,
-            payload.ui_state,
-            payload.analysis_pages,
-            payload.active_analysis_page_id,
-            payload.workspace,
+            workspace=payload.workspace,
+            workspace_document=payload.workspace_document,
             expected_save_revision=expected_revision,
             require_save_revision=True,
             component_registry=_component_registry(request),
@@ -175,10 +163,8 @@ async def beacon_update_graph(
         service.update_graph(
             graph_id,
             payload.graph,
-            payload.ui_state,
-            payload.analysis_pages,
-            payload.active_analysis_page_id,
-            payload.workspace,
+            workspace=payload.workspace,
+            workspace_document=payload.workspace_document,
             expected_save_revision=payload.expected_save_revision,
             require_save_revision=True,
             component_registry=_component_registry(request),

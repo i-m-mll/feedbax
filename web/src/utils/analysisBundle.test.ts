@@ -35,8 +35,6 @@ function scenario(analysisSpec: Record<string, unknown> | null): StudioScenarioS
     label: 'Analysis',
     stage_id: 'stage:analysis',
     parent_scenario_id: null,
-    graph: null,
-    graph_ui_state: null,
     training_spec: null,
     task_spec: null,
     task_binding_spec: null,

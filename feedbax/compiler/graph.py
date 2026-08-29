@@ -8,7 +8,7 @@ from typing import Any, Literal, Mapping
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from feedbax.contracts.authored_canonical import canonical_sha256
-from feedbax.contracts.graph import GraphSpec
+from feedbax.contracts.graph import GraphSpec, SemanticAnchor
 from feedbax.contracts.graphs.prototypes import (
     normalize_derived_dimensions,
     normalize_stateful_prototypes,
@@ -24,9 +24,9 @@ GRAPH_COMPILER_VERSION = "1"
 GRAPH_DOCUMENT_SCHEMA_ID = "feedbax.graph_document"
 GRAPH_DOCUMENT_SCHEMA_VERSION = "1"
 RESOLVED_GRAPH_SCHEMA_ID = "feedbax.resolved_graph"
-RESOLVED_GRAPH_SCHEMA_VERSION = "1"
+RESOLVED_GRAPH_SCHEMA_VERSION = "2"
 COMPILATION_RECORD_SCHEMA_ID = "feedbax.graph_compilation_record"
-COMPILATION_RECORD_SCHEMA_VERSION = "1"
+COMPILATION_RECORD_SCHEMA_VERSION = "2"
 KEY_SCHEDULE_ID = "feedbax.graph_key_schedule.execution_order_split.v1"
 
 
@@ -65,6 +65,7 @@ class GraphSourceMapEntry(BaseModel):
     resolved_path: str
     authored_path: str
     origin: Literal["authored", "compiler-generated"] = "authored"
+    authored_anchor: SemanticAnchor
 
 
 class GraphSourceMap(BaseModel):
@@ -155,26 +156,46 @@ def _require_version(family: str, value: str, current: str) -> str:
     return value
 
 
+def _json_pointer_token(value: str) -> str:
+    return value.replace("~", "~0").replace("/", "~1")
+
+
 def _source_map(
     document: GraphDocument,
     authored_graph: GraphSpec,
     graph: GraphSpec,
+    document_sha256: str,
 ) -> GraphSourceMap:
     authored_wires = [
         wire.model_dump(mode="json", exclude_none=True) for wire in authored_graph.wires
     ]
     entries = [
-        GraphSourceMapEntry(resolved_path="/graph", authored_path="/graph"),
+        GraphSourceMapEntry(
+            resolved_path="/graph",
+            authored_path="/graph",
+            authored_anchor=SemanticAnchor(
+                semantic_document_sha256=document_sha256,
+                authored_path="/graph",
+            ),
+        ),
         *(
             GraphSourceMapEntry(
-                resolved_path=f"/graph/nodes/{node_id}",
+                resolved_path=f"/graph/nodes/{_json_pointer_token(node_id)}",
                 authored_path=(
-                    f"/graph/nodes/{node_id}"
+                    f"/graph/nodes/{_json_pointer_token(node_id)}"
                     if node_id in authored_graph.nodes
                     else "/graph"
                 ),
                 origin=(
                     "authored" if node_id in authored_graph.nodes else "compiler-generated"
+                ),
+                authored_anchor=SemanticAnchor(
+                    semantic_document_sha256=document_sha256,
+                    authored_path=(
+                        f"/graph/nodes/{_json_pointer_token(node_id)}"
+                        if node_id in authored_graph.nodes
+                        else "/graph"
+                    ),
                 ),
             )
             for node_id in sorted(graph.nodes)
@@ -188,6 +209,14 @@ def _source_map(
                     else "/graph"
                 ),
                 origin=("authored" if wire_payload in authored_wires else "compiler-generated"),
+                authored_anchor=SemanticAnchor(
+                    semantic_document_sha256=document_sha256,
+                    authored_path=(
+                        f"/graph/wires/{authored_wires.index(wire_payload)}"
+                        if wire_payload in authored_wires
+                        else "/graph"
+                    ),
+                ),
             )
             for index, wire_payload in enumerate(
                 wire.model_dump(mode="json", exclude_none=True) for wire in graph.wires
@@ -195,10 +224,24 @@ def _source_map(
         ),
     ]
     if document.trial_root is not None:
-        entries.append(GraphSourceMapEntry(resolved_path="/trial_root", authored_path="/trial_root"))
+        entries.append(GraphSourceMapEntry(
+            resolved_path="/trial_root",
+            authored_path="/trial_root",
+            authored_anchor=SemanticAnchor(
+                semantic_document_sha256=document_sha256,
+                authored_path="/trial_root",
+            ),
+        ))
     if document.objective_root is not None:
         entries.append(
-            GraphSourceMapEntry(resolved_path="/objective_root", authored_path="/objective_root")
+            GraphSourceMapEntry(
+                resolved_path="/objective_root",
+                authored_path="/objective_root",
+                authored_anchor=SemanticAnchor(
+                    semantic_document_sha256=document_sha256,
+                    authored_path="/objective_root",
+                ),
+            )
         )
     return GraphSourceMap(entries=tuple(entries))
 
@@ -237,11 +280,11 @@ def compile_graph(
         input_prototypes,
         component_registry=component_registry,
     )
-    source_map = _source_map(document, authored_graph, graph)
+    document_sha256 = canonical_sha256(document.model_dump(mode="json", exclude_none=True))
+    source_map = _source_map(document, authored_graph, graph, document_sha256)
     executable = _instantiate_graph(graph, component_registry, input_prototypes)
     node_order = tuple(executable._execution_order)
     key_schedule = GraphKeySchedule(node_order=node_order)
-    document_sha256 = canonical_sha256(document.model_dump(mode="json", exclude_none=True))
     resolved_sha256 = _resolved_digest(graph, source_map, key_schedule)
     resolved = ResolvedGraph(
         graph=graph,

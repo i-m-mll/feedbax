@@ -130,6 +130,7 @@ class StudioTrainingExecutionRequest(StudioExecutionModel):
     """Request to prepare an execution plan from a Studio train stage."""
 
     workspace: StudioWorkspaceSpec
+    graph: GraphSpec
     stage_id: Optional[str] = None
     backend: ExecutionBackend = "local"
     job_id: Optional[str] = None
@@ -147,6 +148,7 @@ class StudioTrainingExecutionPreparation(StudioExecutionModel):
     """Prepared provider execution plan plus workspace updates."""
 
     workspace: StudioWorkspaceSpec
+    graph: GraphSpec
     stage_id: str
     scenario_id: str
     execution_spec: ExecutionSpec
@@ -157,6 +159,7 @@ class StudioTrainingLocalRunRequest(StudioExecutionModel):
     """Request to run the active Studio train-stage scenario locally."""
 
     workspace: StudioWorkspaceSpec
+    graph: GraphSpec
     stage_id: Optional[str] = None
     job_id: Optional[str] = None
     local_cwd: Optional[str] = None
@@ -320,10 +323,6 @@ def prepare_studio_training_execution(
         raise StudioExecutionPreparationError(
             f"Train stage {stage.id!r} references missing scenario {stage.scenario_id!r}"
         )
-    if scenario.graph is None:
-        raise StudioExecutionPreparationError(
-            f"Scenario {scenario.id!r} cannot execute without a graph"
-        )
     if scenario.training_spec is None:
         raise StudioExecutionPreparationError(
             f"Scenario {scenario.id!r} cannot execute without a training_spec"
@@ -334,7 +333,7 @@ def prepare_studio_training_execution(
         )
 
     validation = _validate_training_scenario(
-        graph=scenario.graph.model_dump(mode="json", exclude_none=True),
+        graph=request.graph.model_dump(mode="json", exclude_none=True),
         training_spec=scenario.training_spec,
         task_spec=scenario.task_spec,
         component_registry=registry_bundle.components,
@@ -413,7 +412,7 @@ def prepare_studio_training_execution(
                 workspace=workspace,
                 stage=stage,
                 scenario_id=stage.scenario_id,
-                graph_spec=scenario.graph.model_dump(mode="json", exclude_none=True),
+                graph_spec=request.graph.model_dump(mode="json", exclude_none=True),
                 training_spec=scenario.training_spec,
                 task_spec=scenario.task_spec,
                 task_binding_spec=scenario.task_binding_spec.model_dump(
@@ -467,6 +466,7 @@ def prepare_studio_training_execution(
 
     return StudioTrainingExecutionPreparation(
         workspace=workspace,
+        graph=request.graph,
         stage_id=stage.id,
         scenario_id=stage.scenario_id,
         execution_spec=execution_spec,
@@ -493,6 +493,7 @@ def run_studio_training_local_execution(
     preparation = prepare_studio_training_execution(
         StudioTrainingExecutionRequest(
             workspace=request.workspace,
+            graph=request.graph,
             stage_id=request.stage_id,
             backend="local",
             job_id=job_id,
@@ -1100,9 +1101,7 @@ def _build_execution_spec(
             "stage_kind": stage.kind,
             "scenario_id": scenario.id,
             "scenario_schema_version": scenario.schema_version,
-            "graph_spec": scenario.graph.model_dump(mode="json", exclude_none=True)
-            if scenario.graph is not None
-            else None,
+            "graph_spec": request.graph.model_dump(mode="json", exclude_none=True),
             "training_spec": scenario.training_spec,
             "task_spec": scenario.task_spec,
             "task_binding_spec": scenario.task_binding_spec.model_dump(
@@ -1161,9 +1160,7 @@ def _materialize_local_execution_snapshot(
             mode="json", exclude_none=True
         ),
         "workspace-snapshot.json": preparation.workspace.model_dump(mode="json", exclude_none=True),
-        "graph-spec.json": scenario.graph.model_dump(mode="json", exclude_none=True)
-        if scenario.graph is not None
-        else {},
+        "graph-spec.json": preparation.graph.model_dump(mode="json", exclude_none=True),
         "training-spec.json": scenario.training_spec or {},
         "task-spec.json": scenario.task_spec or {},
         "task-binding-spec.json": scenario.task_binding_spec.model_dump(

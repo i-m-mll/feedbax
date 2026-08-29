@@ -7,6 +7,7 @@ import {
   updateGraph,
 } from '@/api/client';
 import type { GraphMetadata, GraphSpec, GraphUIState } from '@/types/graph';
+import type { WorkspaceDocument } from '@/generated/studioContracts';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -34,6 +35,17 @@ const uiState: GraphUIState = {
   viewport: { x: 0, y: 0, zoom: 1 },
   node_states: {},
 };
+const workspaceDocument: WorkspaceDocument = {
+  schema_id: 'feedbax.workspace_document',
+  schema_version: '1',
+  semantic_root: {
+    semantic_document_sha256: '0'.repeat(64),
+    authored_path: '/graph',
+  },
+  graph_ui_state: uiState,
+  analysis_pages: [],
+  semantic_anchors: {},
+};
 
 describe('graph API save concurrency', () => {
   it('sends the expected revision in both header and JSON payload', async () => {
@@ -45,17 +57,39 @@ describe('graph API save concurrency', () => {
     }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const response = await updateGraph('graph-1', graph, uiState, undefined, undefined, null, 4);
+    const workspace = {
+      id: 'workspace:test',
+      schema_version: 'feedbax.spec.studio.workspace.v2',
+      label: 'Test',
+      active_stage_id: 'stage:train',
+      ui_state: { top_pane: { kind: 'model' } },
+      stages: [{ id: 'stage:train', ui_state: { collapsed: true } }],
+      scenarios: {
+        'scenario:train': {
+          id: 'scenario:train',
+          ui_state: { workspace_view_state: { mode: 'model' } },
+        },
+      },
+      collections: [],
+      manifest_refs: [],
+      validation: { errors: [], warnings: [] },
+      metadata: {},
+    } as any;
+    const response = await updateGraph('graph-1', graph, workspaceDocument, workspace, 4);
 
     expect(response.metadata.save_revision).toBe(5);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(options.headers).toMatchObject({ 'If-Match': '4' });
-    expect(JSON.parse(options.body as string)).toMatchObject({
+    const body = JSON.parse(options.body as string);
+    expect(body).toMatchObject({
       expected_save_revision: 4,
       graph,
-      ui_state: uiState,
+      workspace_document: workspaceDocument,
     });
+    expect(body.workspace).not.toHaveProperty('ui_state');
+    expect(body.workspace.stages[0]).not.toHaveProperty('ui_state');
+    expect(body.workspace.scenarios['scenario:train']).not.toHaveProperty('ui_state');
   });
 });
 
@@ -63,7 +97,7 @@ describe('Studio evaluation provider API', () => {
   it('posts eval matrix preview, stage, and local run payloads to backend state endpoints', async () => {
     const workspace = {
       id: 'workspace:eval',
-      schema_version: 'feedbax.spec.studio.workspace.v1',
+      schema_version: 'feedbax.spec.studio.workspace.v2',
       label: 'Eval workspace',
       stages: [],
       scenarios: {},

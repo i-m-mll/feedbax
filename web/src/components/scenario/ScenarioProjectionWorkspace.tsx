@@ -1966,13 +1966,11 @@ function frozenSnapshotScenario(
 ): StudioScenarioSpec | null {
   if (!activeScenario || !frozenSnapshot) return activeScenario;
   const { snapshot } = frozenSnapshot;
-  const graphSpec = snapshotRecord(snapshot.graph_spec);
   const trainingSpec = snapshotRecord(snapshot.training_spec);
   const taskSpec = snapshotRecord(snapshot.task_spec);
   const taskBindingSpec = snapshotRecord(snapshot.task_binding_spec);
   return {
     ...activeScenario,
-    graph: snapshot.graph_spec === undefined ? activeScenario.graph : asScenarioGraph(graphSpec),
     training_spec:
       snapshot.training_spec === undefined
         ? activeScenario.training_spec
@@ -1994,10 +1992,6 @@ function frozenSnapshotScenario(
 
 function snapshotRecord(value: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
-
-function asScenarioGraph(value: Record<string, unknown> | null): StudioScenarioSpec['graph'] {
-  return value === null ? null : (value as unknown as StudioScenarioSpec['graph']);
 }
 
 function asScenarioTrainingSpec(

@@ -17,11 +17,10 @@ from feedbax.contracts.domain import (
     DomainRegistryPayload,
 )
 from feedbax.contracts.graph import (
-    AnalysisPageSpec,
     GraphMetadata,
     GraphSpec,
-    GraphUIState,
     StudioWorkspaceSpec,
+    WorkspaceDocument,
 )
 from feedbax.contracts.manifest import EvaluationStatesConsumptionPolicy, ParentRef
 from feedbax.contracts.selection import SelectionPreview, SelectionSpec
@@ -29,7 +28,7 @@ from feedbax.contracts.workspace_replay import WorkspaceReplaySampleAxis, Worksp
 
 
 STUDIO_API_TRANSPORT_SCHEMA_ID = "feedbax.spec.studio.api_transport"
-STUDIO_API_TRANSPORT_SCHEMA_VERSION = "feedbax.spec.studio.api_transport.v2"
+STUDIO_API_TRANSPORT_SCHEMA_VERSION = "feedbax.spec.studio.api_transport.v3"
 TRAINING_TRAJECTORY_SCHEMA_ID = "feedbax.event.studio.training_trajectory"
 TRAINING_TRAJECTORY_SCHEMA_VERSION = "feedbax.event.studio.training_trajectory.v1"
 
@@ -106,11 +105,9 @@ class GraphDetailPayload(StudioApiModel):
     """Payload for ``GET /api/graphs/{graph_id}``."""
 
     graph: GraphSpec
-    ui_state: Optional[GraphUIState] = None
+    workspace_document: WorkspaceDocument
     demo_training_data: Optional[Any] = None
     metadata: Optional[GraphMetadata] = None
-    analysis_pages: Optional[list[AnalysisPageSpec]] = None
-    active_analysis_page_id: Optional[str] = None
     workspace: Optional[StudioWorkspaceSpec] = None
     compile_reports: Optional[dict[str, DomainCompileReport]] = None
 

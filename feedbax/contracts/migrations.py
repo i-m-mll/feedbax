@@ -276,6 +276,11 @@ from feedbax.contracts.graph import (
     STUDIO_BIOMECHANICS_SCHEMA_VERSION,
     STUDIO_SCENARIO_SCHEMA_VERSION,
     STUDIO_SCENARIO_SCHEMA_VERSION_V1,
+    STUDIO_SCENARIO_SCHEMA_VERSION_V2,
+    STUDIO_STAGE_SCHEMA_VERSION,
+    STUDIO_STAGE_SCHEMA_VERSION_V1,
+    STUDIO_WORKSPACE_SCHEMA_VERSION,
+    STUDIO_WORKSPACE_SCHEMA_VERSION_V1,
     GraphSpec,
 )
 from feedbax.contracts.array_values import (
@@ -1732,6 +1737,29 @@ def _migrate_studio_scenario_v1_to_v2_payload(payload: dict[str, Any]) -> dict[s
     return dict(payload)
 
 
+def _migrate_studio_scenario_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Remove graph semantics and presentation copies from scenario drafts."""
+    migrated = dict(payload)
+    migrated.pop("graph", None)
+    migrated.pop("graph_ui_state", None)
+    migrated.pop("ui_state", None)
+    return migrated
+
+
+def _migrate_studio_stage_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Remove presentation state from a semantic pipeline stage."""
+    migrated = dict(payload)
+    migrated.pop("ui_state", None)
+    return migrated
+
+
+def _migrate_studio_workspace_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Remove presentation state from a semantic Studio workspace."""
+    migrated = dict(payload)
+    migrated.pop("ui_state", None)
+    return migrated
+
+
 def migrate_graph_spec(
     payload: Mapping[str, Any] | GraphSpec,
     *,
@@ -2193,6 +2221,11 @@ def migrate_studio_workspace_spec(
             scenario_payload = _stamp_parent_carried_nested_schema_version(
                 "StudioScenarioSpec",
                 scenario_payload,
+                carried_version=(
+                    STUDIO_SCENARIO_SCHEMA_VERSION_V2
+                    if result.source_version == STUDIO_WORKSPACE_SCHEMA_VERSION_V1
+                    else None
+                ),
                 registry=registry,
             )
             scenario_result = migrate_studio_scenario_spec(
@@ -2214,6 +2247,11 @@ def migrate_studio_workspace_spec(
             stage_payload = _stamp_parent_carried_nested_schema_version(
                 "StudioStageSpec",
                 stage_payload,
+                carried_version=(
+                    STUDIO_STAGE_SCHEMA_VERSION_V1
+                    if result.source_version == STUDIO_WORKSPACE_SCHEMA_VERSION_V1
+                    else None
+                ),
                 registry=registry,
             )
             stage_result = migrate_studio_stage_spec(
@@ -2239,6 +2277,7 @@ def _stamp_parent_carried_nested_schema_version(
     kind: str,
     payload: Mapping[str, Any],
     *,
+    carried_version: str | None = None,
     registry: SpecSchemaRegistry,
 ) -> dict[str, Any]:
     """Return a copy stamped when current workspace schema carries nested identity.
@@ -2252,7 +2291,7 @@ def _stamp_parent_carried_nested_schema_version(
     if _payload_schema_version(payload) is not None:
         return payload_dict
     family = registry.resolve(kind)
-    payload_dict["schema_version"] = family.current_version
+    payload_dict["schema_version"] = carried_version or family.current_version
     return payload_dict
 
 
@@ -2264,6 +2303,9 @@ def migrate_graph_project_payload(
     """Migrate durable project-level graph and workspace payloads before validation."""
     registry = registry or default_spec_registry
     migrated = dict(payload)
+    workspace_ui_state: dict[str, Any] = {}
+    stage_ui_state: dict[str, dict[str, Any]] = {}
+    scenario_ui_state: dict[str, dict[str, Any]] = {}
     graph_payload = migrated.get("graph")
     if isinstance(graph_payload, Mapping) or isinstance(graph_payload, GraphSpec):
         migrated["graph"] = migrate_graph_spec(
@@ -2273,11 +2315,56 @@ def migrate_graph_project_payload(
         ).payload
     workspace_payload = migrated.get("workspace")
     if isinstance(workspace_payload, Mapping):
+        workspace_ui_state = dict(workspace_payload.get("ui_state") or {})
+        stage_ui_state = {
+            str(stage["id"]): dict(stage.get("ui_state") or {})
+            for stage in workspace_payload.get("stages", [])
+            if isinstance(stage, Mapping) and isinstance(stage.get("id"), str)
+        }
+        scenarios_payload = workspace_payload.get("scenarios", {})
+        if isinstance(scenarios_payload, Mapping):
+            scenario_ui_state = {
+                str(scenario_id): dict(scenario.get("ui_state") or {})
+                for scenario_id, scenario in scenarios_payload.items()
+                if isinstance(scenario, Mapping)
+            }
         migrated["workspace"] = migrate_studio_workspace_spec(
             workspace_payload,
             path="workspace",
             registry=registry,
         ).payload
+    if "workspace_document" not in migrated:
+        from feedbax.contracts.authored_canonical import canonical_sha256
+
+        graph_document_sha256 = canonical_sha256(
+            {
+                "schema_id": "feedbax.graph_document",
+                "schema_version": "1",
+                "graph": migrated["graph"],
+            }
+        )
+        root_anchor = {
+            "semantic_document_sha256": graph_document_sha256,
+            "authored_path": "/graph",
+        }
+        migrated["workspace_document"] = {
+            "schema_id": "feedbax.workspace_document",
+            "schema_version": "1",
+            "semantic_root": root_anchor,
+            "graph_ui_state": migrated.pop("ui_state", None) or {},
+            "workspace_ui_state": workspace_ui_state,
+            "stage_ui_state": stage_ui_state,
+            "scenario_ui_state": scenario_ui_state,
+            "analysis_pages": migrated.pop("analysis_pages", None) or [],
+            "active_analysis_page_id": migrated.pop("active_analysis_page_id", None),
+            "semantic_anchors": {},
+        }
+    else:
+        workspace_document = dict(migrated["workspace_document"])
+        workspace_document.setdefault("workspace_ui_state", workspace_ui_state)
+        workspace_document.setdefault("stage_ui_state", stage_ui_state)
+        workspace_document.setdefault("scenario_ui_state", scenario_ui_state)
+        migrated["workspace_document"] = workspace_document
     return migrated
 
 
@@ -5046,8 +5133,19 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             supported = (
                 LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
                 STUDIO_SCENARIO_SCHEMA_VERSION_V1,
+                STUDIO_SCENARIO_SCHEMA_VERSION_V2,
             )
             rejected = ("feedbax.spec.studio.scenario.v0",)
+        elif kind == "StudioWorkspaceSpec":
+            current_version = STUDIO_WORKSPACE_SCHEMA_VERSION
+            stance = "migrate"
+            supported = (STUDIO_WORKSPACE_SCHEMA_VERSION_V1,)
+            rejected = ("feedbax.spec.studio.workspace.v0",)
+        elif kind == "StudioStageSpec":
+            current_version = STUDIO_STAGE_SCHEMA_VERSION
+            stance = "migrate"
+            supported = (STUDIO_STAGE_SCHEMA_VERSION_V1,)
+            rejected = ("feedbax.spec.studio.stage.v0",)
         elif kind == "StudioBiomechanicsSpec":
             current_version = STUDIO_BIOMECHANICS_SCHEMA_VERSION
             stance = "reject"
@@ -5984,7 +6082,7 @@ default_spec_registry.register_migration(
     "StudioScenarioSpec",
     SchemaMigration(
         source_version=LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
-        target_version=STUDIO_SCENARIO_SCHEMA_VERSION,
+        target_version=STUDIO_SCENARIO_SCHEMA_VERSION_V2,
         migration_id="studio-scenario-legacy-v1-to-v2-typed-biomechanics",
         migrate=_migrate_studio_scenario_v1_to_v2_payload,
         description=(
@@ -5996,10 +6094,40 @@ default_spec_registry.register_migration(
     "StudioScenarioSpec",
     SchemaMigration(
         source_version=STUDIO_SCENARIO_SCHEMA_VERSION_V1,
-        target_version=STUDIO_SCENARIO_SCHEMA_VERSION,
+        target_version=STUDIO_SCENARIO_SCHEMA_VERSION_V2,
         migration_id="studio-scenario-v1-to-v2-typed-biomechanics",
         migrate=_migrate_studio_scenario_v1_to_v2_payload,
         description="Type and version the scenario biomechanics representation boundary.",
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioScenarioSpec",
+    SchemaMigration(
+        source_version=STUDIO_SCENARIO_SCHEMA_VERSION_V2,
+        target_version=STUDIO_SCENARIO_SCHEMA_VERSION,
+        migration_id="studio-scenario-v2-to-v3-semantic-workspace-separation",
+        migrate=_migrate_studio_scenario_v2_to_v3_payload,
+        description="Remove graph and graph presentation copies from scenario drafts.",
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioStageSpec",
+    SchemaMigration(
+        source_version=STUDIO_STAGE_SCHEMA_VERSION_V1,
+        target_version=STUDIO_STAGE_SCHEMA_VERSION,
+        migration_id="studio-stage-v1-to-v2-semantic-workspace-separation",
+        migrate=_migrate_studio_stage_v1_to_v2_payload,
+        description="Remove presentation state from semantic pipeline stages.",
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioWorkspaceSpec",
+    SchemaMigration(
+        source_version=STUDIO_WORKSPACE_SCHEMA_VERSION_V1,
+        target_version=STUDIO_WORKSPACE_SCHEMA_VERSION,
+        migration_id="studio-workspace-v1-to-v2-semantic-workspace-separation",
+        migrate=_migrate_studio_workspace_v1_to_v2_payload,
+        description="Remove presentation state from the semantic Studio workspace.",
     ),
 )
 default_spec_registry.register_migration(

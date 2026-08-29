@@ -196,7 +196,7 @@ describe('buildWorkspaceSnapshot', () => {
       projectName: 'Workspace test',
     });
 
-    expect(workspace.schema_version).toBe('feedbax.studio.workspace.v1');
+    expect(workspace.schema_version).toBe('feedbax.spec.studio.workspace.v2');
     expect(workspace.active_stage_id).toBe('stage:train');
     expect(workspace.stages.map((stage) => stage.kind)).toEqual([
       'train',
@@ -219,7 +219,8 @@ describe('buildWorkspaceSnapshot', () => {
       bindings: [],
     });
     expect(scenario.objective_spec).toEqual(objectiveSpecFromLossSpec(trainingSpec.loss));
-    expect(scenario.graph).toEqual(graph);
+    expect(scenario).not.toHaveProperty('graph');
+    expect(scenario).not.toHaveProperty('graph_ui_state');
   });
 
   it('persists nested graph edits and analysis pages in one workspace snapshot', () => {
@@ -308,15 +309,8 @@ describe('buildWorkspaceSnapshot', () => {
 
     const trainStage = workspace.stages.find((stage) => stage.kind === 'train')!;
     const trainScenario = workspace.scenarios[trainStage.scenario_id!];
-    expect(trainScenario.graph?.subgraphs?.network.nodes.gain).toMatchObject({
-      type: 'Gain',
-      params: { gain: 2 },
-    });
-    expect(
-      trainScenario.graph_ui_state?.subgraph_states?.network?.node_states.gain
-    ).toMatchObject({
-      position: { x: 480, y: 120 },
-    });
+    expect(trainScenario).not.toHaveProperty('graph');
+    expect(trainScenario).not.toHaveProperty('graph_ui_state');
 
     const analysisStage = workspace.stages.find((stage) => stage.kind === 'analysis')!;
     const analysisSpec = workspace.scenarios[analysisStage.scenario_id!]
@@ -373,7 +367,7 @@ describe('buildWorkspaceSnapshot', () => {
     const trainStage = workspace.stages.find((stage) => stage.kind === 'train')!;
     const scenario = workspace.scenarios[trainStage.scenario_id!];
 
-    expect(scenario.graph?.wires).toEqual([]);
+    expect(scenario).not.toHaveProperty('graph');
     expect(scenario.task_binding_spec?.bindings).toEqual([
       {
         id: 'task:inputs->network:input',
@@ -483,7 +477,7 @@ describe('buildWorkspaceSnapshot', () => {
         { id: 'intervene', bindable: false },
       ],
     });
-    expect(scenario.graph?.output_ports).toEqual(['effector']);
+    expect(scenario).not.toHaveProperty('graph');
   });
 
   it('switches active stages and exposes active stage/scenario selectors', () => {
@@ -616,7 +610,7 @@ describe('buildWorkspaceSnapshot', () => {
     const projectedEvalObjective = evalProjection.objective_spec as StudioObjectiveSpec;
 
     expect(trainObjective.terms[0].label).toBe('Train endpoint loss');
-    expect(evalProjection.graph).toBe(trainScenario.graph);
+    expect(evalProjection).not.toHaveProperty('graph');
     expect(evalProjection.task_spec?.params.target_radius).toBe(0.08);
     expect(evalProjection.biomechanics_spec).toEqual({
       schema_id: 'feedbax.spec.studio.biomechanics',
@@ -860,7 +854,7 @@ describe('buildWorkspaceSnapshot', () => {
     });
   });
 
-  it('normalizes task binding specs when restoring workspace snapshots', () => {
+  it('preserves semantic task bindings without consulting a shadow graph', () => {
     const workspace = buildWorkspaceSnapshot({
       workspace: null,
       graph: {
@@ -914,15 +908,8 @@ describe('buildWorkspaceSnapshot', () => {
     useWorkspaceStore.getState().setWorkspace(workspace);
 
     const restored = getTrainingScenario(useWorkspaceStore.getState().workspace)!;
-    expect(restored.task_binding_spec?.exposed_data.map((data) => data.id)).toEqual([
-      'target_position',
-      'hold',
-      'target_on',
-      'movement_target',
-      'inits',
-      'intervene',
-    ]);
-    expect(restored.task_binding_spec?.bindings).toEqual([]);
+    expect(restored.task_binding_spec?.exposed_data.map((data) => data.id)).toEqual(['inputs']);
+    expect(restored.task_binding_spec?.bindings).toHaveLength(1);
   });
 
   it('normalizes runtime graph aliases without synthesizing network subgraphs', () => {
@@ -951,14 +938,7 @@ describe('buildWorkspaceSnapshot', () => {
     useWorkspaceStore.getState().setWorkspace(workspace);
 
     const restored = getTrainingScenario(useWorkspaceStore.getState().workspace)!;
-    expect(restored.graph?.nodes.network).toMatchObject({
-      type: 'SimpleStagedNetwork',
-      params: { input_size: 4, hidden_size: 100, output_size: 2 },
-      input_ports: ['target'],
-    });
-    expect(restored.graph?.subgraphs?.network).toBeUndefined();
-    expect(restored.graph?.input_ports).toEqual(['input']);
-    expect(restored.graph?.input_bindings).toEqual({ input: ['network', 'target'] });
+    expect(restored).not.toHaveProperty('graph');
   });
 
   it('retargets active scenario task bindings when a model node is renamed', () => {

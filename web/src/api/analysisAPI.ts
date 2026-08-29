@@ -112,7 +112,7 @@ export async function fetchAnalysisPages(
   graphId: string
 ): Promise<AnalysisSnapshot | null> {
   const data = await fetchGraph(graphId);
-  const wirePages = data.analysis_pages as AnalysisPageWire[] | null;
+  const wirePages = data.workspace_document.analysis_pages as AnalysisPageWire[];
   if (!wirePages || wirePages.length === 0) return null;
   const pages = wirePages.map(pageFromWire);
   return {
@@ -123,7 +123,7 @@ export async function fetchAnalysisPages(
 
 /**
  * Save analysis pages for a project via the graph update endpoint.
- * Sends only the analysis_pages field (graph/ui_state are omitted).
+ * Replaces the analysis view inside the versioned WorkspaceDocument.
  */
 export async function saveAnalysisPages(
   graphId: string,
@@ -131,5 +131,16 @@ export async function saveAnalysisPages(
   expectedSaveRevision?: number | null,
 ): Promise<void> {
   const wirePages = snapshot.pages.map(pageToWire);
-  await updateGraph(graphId, null, null, wirePages, undefined, undefined, expectedSaveRevision);
+  const current = await fetchGraph(graphId);
+  await updateGraph(
+    graphId,
+    null,
+    {
+      ...current.workspace_document,
+      analysis_pages: wirePages,
+      active_analysis_page_id: snapshot.activePageId,
+    },
+    undefined,
+    expectedSaveRevision,
+  );
 }

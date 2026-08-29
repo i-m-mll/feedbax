@@ -739,7 +739,7 @@ export function buildScenarioEntityRegistry({
   scenario: StudioScenarioSpec | null | undefined;
   graph?: GraphSpec | null;
 }): StudioScenarioEntityRegistry {
-  const resolvedGraph = graph ?? scenario?.graph ?? null;
+  const resolvedGraph = graph ?? null;
   const registry: StudioScenarioEntityRegistry = {
     scenario_id: scenario?.id ?? null,
     stage_id: scenario?.stage_id ?? null,

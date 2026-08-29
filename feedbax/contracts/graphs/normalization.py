@@ -133,6 +133,7 @@ def normalize_task_binding_spec_for_studio_authoring(
 
 def normalize_workspace_for_studio_authoring(
     workspace: Optional[StudioWorkspaceSpec],
+    graph: GraphSpec,
     *,
     component_registry: Any | None = None,
 ) -> Optional[StudioWorkspaceSpec]:
@@ -141,20 +142,14 @@ def normalize_workspace_for_studio_authoring(
     changed = False
     scenarios = dict(workspace.scenarios)
     for scenario_id, scenario in workspace.scenarios.items():
-        if scenario.graph is None:
-            continue
-        graph = normalize_graph_for_studio_authoring(
-            scenario.graph,
-            component_registry=component_registry,
-        )
         task_binding_spec = normalize_task_binding_spec_for_studio_authoring(
             scenario.task_binding_spec,
             graph,
         )
-        if graph is scenario.graph and task_binding_spec is scenario.task_binding_spec:
+        if task_binding_spec is scenario.task_binding_spec:
             continue
         scenarios[scenario_id] = scenario.model_copy(
-            update={"graph": graph, "task_binding_spec": task_binding_spec}
+            update={"task_binding_spec": task_binding_spec}
         )
         changed = True
     return workspace.model_copy(update={"scenarios": scenarios}) if changed else workspace
@@ -171,6 +166,7 @@ def normalize_project_for_studio_authoring(
     )
     workspace = normalize_workspace_for_studio_authoring(
         project.workspace,
+        graph,
         component_registry=component_registry,
     )
     if graph is project.graph and workspace is project.workspace:

@@ -1,4 +1,4 @@
-import type { GraphMetadata, GraphSpec, GraphUIState } from '@/types/graph';
+import type { GraphMetadata, GraphSpec } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 import {
   DomainCompileReportSchema,
@@ -10,6 +10,7 @@ import {
   type PenzaiInspectorPayload,
   type PenzaiNodeRequest,
   type SelectionSpec,
+  type WorkspaceDocument,
 } from '@/generated/studioContracts';
 import type {
   StudioPipelineMaterializationResult,
@@ -143,18 +144,9 @@ export async function fetchGraph(graphId: string) {
   );
   return response.data as unknown as {
     graph: GraphSpec;
-    ui_state: GraphUIState | null;
+    workspace_document: WorkspaceDocument;
     demo_training_data: DemoTrainingData | null;
     metadata: GraphMetadata | null;
-    analysis_pages: Array<{
-      id: string;
-      name: string;
-      graph_spec: Record<string, unknown>;
-      eval_params: Record<string, unknown>;
-      viewport: { x: number; y: number; zoom: number };
-      eval_run_id: string | null;
-    }> | null;
-    active_analysis_page_id: string | null;
     workspace: StudioWorkspaceSpec | null;
     compile_reports: Record<string, DomainCompileReport> | null;
   };
@@ -177,11 +169,12 @@ export async function compileGraphNode(
 
 export async function createGraph(
   graph: GraphSpec,
-  uiState: GraphUIState | null,
+  workspaceDocument?: WorkspaceDocument | null,
   workspace?: StudioWorkspaceSpec | null,
 ) {
-  const payload: Record<string, unknown> = { graph, ui_state: uiState };
-  if (workspace !== undefined) payload.workspace = workspace;
+  const payload: Record<string, unknown> = { graph };
+  if (workspaceDocument !== undefined) payload.workspace_document = workspaceDocument;
+  if (workspace !== undefined) payload.workspace = semanticWorkspaceForSave(workspace);
   const response = parseContract(
     'GraphCreateResponse',
     await requestJson(`/api/graphs`, {
@@ -195,18 +188,16 @@ export async function createGraph(
 export async function updateGraph(
   graphId: string,
   graph: GraphSpec | null,
-  uiState: GraphUIState | null,
-  analysisPages?: unknown[] | null,
-  activeAnalysisPageId?: string | null,
+  workspaceDocument?: WorkspaceDocument | null,
   workspace?: StudioWorkspaceSpec | null,
   expectedSaveRevision?: number | null,
 ) {
   const payload: Record<string, unknown> = {};
   if (graph !== null && graph !== undefined) payload.graph = graph;
-  if (uiState !== null && uiState !== undefined) payload.ui_state = uiState;
-  if (analysisPages !== undefined) payload.analysis_pages = analysisPages;
-  if (activeAnalysisPageId !== undefined) payload.active_analysis_page_id = activeAnalysisPageId;
-  if (workspace !== undefined) payload.workspace = workspace;
+  if (workspaceDocument !== null && workspaceDocument !== undefined) {
+    payload.workspace_document = workspaceDocument;
+  }
+  if (workspace !== undefined) payload.workspace = semanticWorkspaceForSave(workspace);
   if (expectedSaveRevision !== undefined && expectedSaveRevision !== null) {
     payload.expected_save_revision = expectedSaveRevision;
   }
@@ -225,8 +216,26 @@ export async function updateGraph(
   return response.data;
 }
 
+function semanticWorkspaceForSave(
+  workspace: StudioWorkspaceSpec | null,
+): Record<string, unknown> | null {
+  if (!workspace) return null;
+  const { ui_state: _workspaceUiState, ...semanticWorkspace } = workspace;
+  return {
+    ...semanticWorkspace,
+    stages: workspace.stages.map(({ ui_state: _uiState, ...stage }) => stage),
+    scenarios: Object.fromEntries(
+      Object.entries(workspace.scenarios).map(([id, scenario]) => {
+        const { ui_state: _uiState, ...semanticScenario } = scenario;
+        return [id, semanticScenario];
+      })
+    ),
+  };
+}
+
 export async function prepareStudioTrainingExecution(payload: {
   workspace: StudioWorkspaceSpec;
+  graph: GraphSpec;
   stage_id?: string | null;
   backend?: 'local' | 'ssh' | 'runpod' | 'modal';
   job_id?: string | null;
@@ -244,6 +253,7 @@ export async function prepareStudioTrainingExecution(payload: {
 
 export async function runStudioTrainingLocalExecution(payload: {
   workspace: StudioWorkspaceSpec;
+  graph: GraphSpec;
   stage_id?: string | null;
   job_id?: string | null;
   local_cwd?: string | null;
@@ -370,6 +380,7 @@ export async function sampleTaskTrials(payload: {
 
 export async function fetchStudioSchemaRegistry(payload: {
   workspace: StudioWorkspaceSpec;
+  graph: GraphSpec;
   scenario_id?: string | null;
   runtime_introspection?: boolean | { enabled: boolean; max_targets?: number } | null;
 }) {

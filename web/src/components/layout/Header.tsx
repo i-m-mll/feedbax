@@ -23,7 +23,12 @@ import {
 import { useRunStore } from '@/stores/runStore';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { useCompileStatusStore } from '@/stores/compileStatusStore';
-import { buildWorkspaceSnapshot } from '@/stores/workspaceStore';
+import {
+  buildWorkspaceDocumentSnapshot,
+  buildWorkspaceSnapshot,
+  hydrateWorkspacePresentation,
+  useWorkspaceStore,
+} from '@/stores/workspaceStore';
 import { SettingsOverlay } from '@/components/layout/SettingsOverlay';
 import { PROJECT_TEMPLATES } from '@/data/project-templates';
 import { normalizeTrainingTrajectoryPayload } from '@/features/scenario/liveTraining';
@@ -115,10 +120,14 @@ export function Header() {
   const handleOpen = async (id: string, options?: { replaceActiveTab?: boolean }) => {
     try {
       const data = await fetchGraph(id);
+      const hydratedWorkspace = hydrateWorkspacePresentation(
+        data.workspace,
+        data.workspace_document,
+      );
       // Build analysis snapshot from persisted pages (convert snake_case wire format)
       let analysisSnapshot: AnalysisSnapshot | null = null;
-      if (data.analysis_pages && data.analysis_pages.length > 0) {
-        const pages = data.analysis_pages.map((wp: any) => ({
+      if (data.workspace_document.analysis_pages.length > 0) {
+        const pages = data.workspace_document.analysis_pages.map((wp: any) => ({
           id: wp.id,
           name: wp.name,
           graphSpec: wp.graph_spec as unknown as AnalysisGraphSpec,
@@ -128,7 +137,7 @@ export function Header() {
           expandedFieldPaths: (wp.expanded_field_paths as string[]) ?? [],
         }));
         // Restore the persisted active page, falling back to the first page
-        const restoredActiveId = data.active_analysis_page_id;
+        const restoredActiveId = data.workspace_document.active_analysis_page_id;
         const activePageId = restoredActiveId && pages.some((p) => p.id === restoredActiveId)
           ? restoredActiveId
           : pages[0].id;
@@ -137,17 +146,18 @@ export function Header() {
       openProjectInTab(
         id,
         data.graph,
-        data.ui_state ?? {
-          viewport: { x: 0, y: 0, zoom: 1 },
-          node_states: {},
-        },
+        data.workspace_document.graph_ui_state,
         data.metadata?.name ?? undefined,
         analysisSnapshot,
-        data.workspace,
-        { ...options, saveRevision: data.metadata?.save_revision ?? null },
+        hydratedWorkspace,
+        {
+          ...options,
+          saveRevision: data.metadata?.save_revision ?? null,
+          workspaceDocument: data.workspace_document,
+        },
       );
       useCompileStatusStore.getState().setReports(data.compile_reports);
-      useRunStore.getState().hydrateFromWorkspace(data.workspace);
+      useRunStore.getState().hydrateFromWorkspace(hydratedWorkspace);
       if (data.demo_training_data) {
         const demo = data.demo_training_data;
         const totalBatches = demo.loss_history.length;
@@ -479,26 +489,23 @@ function ProjectOpenOverlay({
       }
 
       try {
-        const response = await createGraph(modelGraph, uiState, workspace);
+        const response = await createGraph(modelGraph, undefined, workspace);
         const graphId = response.id;
-        const analysisPages = analysisSnapshot.pages.map((page) => ({
-          id: page.id,
-          name: page.name,
-          graph_spec: page.graphSpec,
-          eval_params: page.evalParams,
-          viewport: page.viewport,
-          eval_run_id: page.evalRunId ?? null,
-          expanded_field_paths: page.expandedFieldPaths ?? [],
-        }));
+        const created = await fetchGraph(graphId);
+        const workspaceDocument = buildWorkspaceDocumentSnapshot(
+          created.workspace_document,
+          uiState,
+          analysisSnapshot,
+          workspace,
+        );
         const updateResponse = await updateGraph(
           graphId,
           null,
-          null,
-          analysisPages,
-          analysisSnapshot.activePageId,
+          workspaceDocument,
           workspace,
           response.metadata.save_revision,
         );
+        useWorkspaceStore.getState().setWorkspaceDocument(workspaceDocument);
         openProjectInTab(
           graphId,
           modelGraph,
@@ -506,7 +513,10 @@ function ProjectOpenOverlay({
           template.name,
           analysisSnapshot,
           workspace,
-          { saveRevision: updateResponse.metadata.save_revision },
+          {
+            saveRevision: updateResponse.metadata.save_revision,
+            workspaceDocument,
+          },
         );
         useRunStore.getState().hydrateFromWorkspace(workspace);
         setLastProjectId(graphId);

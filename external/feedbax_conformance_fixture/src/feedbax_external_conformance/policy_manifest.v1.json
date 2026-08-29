@@ -315,7 +315,8 @@
       ],
       "schemas": {
         "current": [
-          "feedbax.spec.graph.v5"
+          "feedbax.spec.graph.v5",
+          "feedbax.workspace_document version 1"
         ],
         "migrated": [
           "1.0.0",
@@ -338,8 +339,8 @@
       "schemas": {
         "current": [
           "feedbax.graph_document version 1",
-          "feedbax.resolved_graph version 1",
-          "feedbax.graph_compilation_record version 1"
+          "feedbax.resolved_graph version 2",
+          "feedbax.graph_compilation_record version 2"
         ],
         "migrated": [
           "GraphSpec 1.0.0 through feedbax.spec.graph.v4"
