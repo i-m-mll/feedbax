@@ -24,6 +24,7 @@ from feedbax.analysis.manifest_inputs import (
     canonical_staged_manifest_locator,
     is_authenticated_manifest_ref,
     is_staged_manifest_kind,
+    restated_parent_differences,
 )
 from feedbax.contracts.evaluation_states import (
     EVALUATION_STATES_ARTIFACT_ROLE,
@@ -551,18 +552,43 @@ class StagedExecutionContext:
         parent: ParentRef,
         *,
         structure: jtu.PyTreeDef | None = None,
+        prerequisite_artifact_provider: str | None = None,
+        validate_staged_prerequisite: bool = False,
     ) -> Any:
-        """Load v1/v2 states through the authority retained for an exact eval parent.
+        """Load v1/v2 states through retained evaluation-parent authority.
 
         Typed v3 staged prerequisites fail closed with
-        ``EvaluationStatesCustodyUnavailable``.
+        ``EvaluationStatesCustodyUnavailable``. Direct callers retain exact-parent
+        lookup. A validated staged prerequisite may restate authenticated material
+        under the executable ``evaluation_run`` role.
         """
         if parent.kind != "EvaluationRunManifest" or parent.role != "evaluation_run":
             raise StagedExecutionContextError(
                 "evaluation states require an EvaluationRunManifest evaluation_run parent"
             )
-        location = self.parent_execution_location(parent)
-        resolved = self.resolve_manifest_input(parent)
+        if validate_staged_prerequisite and is_authenticated_manifest_ref(parent):
+            locations = tuple(
+                location
+                for location in self.parent_execution_locations
+                if not restated_parent_differences(parent, location.parent)
+            )
+            if len(locations) != 1:
+                raise StagedExecutionContextError(
+                    "evaluation states require exactly one matching material-identity "
+                    "staged parent authority"
+                )
+            location = locations[0]
+        else:
+            location = self.parent_execution_location(parent)
+        if (
+            validate_staged_prerequisite
+            and location.artifact_provider != prerequisite_artifact_provider
+        ):
+            raise StagedExecutionContextError(
+                "staged evaluation prerequisite provider disagrees with retained authority"
+            )
+        authority_parent = location.parent
+        resolved = self.resolve_manifest_input(authority_parent)
         manifest = resolved.manifest
         if not isinstance(manifest, EvaluationRunManifest):
             raise StagedExecutionContextError(
@@ -583,7 +609,7 @@ class StagedExecutionContext:
             )
         artifact = artifacts[0]
         key = _EvaluationStatesAuthorityKey(
-            manifest=_manifest_authority_key(parent, location),
+            manifest=_manifest_authority_key(authority_parent, location),
             states_sha256=str(artifact.sha256),
             states_size_bytes=int(artifact.size_bytes),
             requested_structure_fingerprint=(

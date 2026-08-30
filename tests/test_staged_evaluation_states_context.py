@@ -136,6 +136,47 @@ def test_load_evaluation_states_uses_retained_local_authority(tmp_path: Path) ->
     np.testing.assert_array_equal(states["trajectory"], expected["trajectory"])
 
 
+@pytest.mark.parametrize("drift", ["kind", "id", "digest", "size"])
+def test_load_evaluation_states_refuses_staged_material_identity_drift(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    artifact = store_evaluation_states_artifact(
+        {"trajectory": np.arange(4, dtype=np.float32)},
+        root=tmp_path,
+        manifest_id="feedbax-evaluation-run:authority-test",
+    )
+    context, executable_parent = _local_context(_manifest(artifact), tmp_path)
+    location = context.parent_execution_locations[0]
+    staged_update: dict[str, object] = {"role": "paired_trial_bank"}
+    if drift == "kind":
+        staged_update["kind"] = "TrainingRunManifest"
+    elif drift == "id":
+        staged_update["id"] = "feedbax-evaluation-run:different"
+    else:
+        metadata = dict(executable_parent.metadata)
+        metadata["manifest_sha256" if drift == "digest" else "size_bytes"] = (
+            "0" * 64 if drift == "digest" else int(metadata["size_bytes"]) + 1
+        )
+        staged_update["metadata"] = metadata
+    context = with_staged_parent_execution_locations(
+        EMPTY_STAGED_EXECUTION_CONTEXT,
+        [
+            StagedParentExecutionLocation(
+                parent=executable_parent.model_copy(update=staged_update),
+                root=location.root,
+                execution_uri=location.execution_uri,
+            )
+        ],
+    )
+
+    with pytest.raises(StagedExecutionContextError, match="matching material-identity"):
+        resolve_staged_evaluation_prerequisite(
+            StagedEvaluationPrerequisite(parent=executable_parent),
+            execution_context=context,
+        )
+
+
 def test_identical_authenticated_states_are_decoded_once_and_reused_immutably(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

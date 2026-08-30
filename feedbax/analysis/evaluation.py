@@ -930,12 +930,11 @@ def resolve_staged_evaluation_prerequisite(
     Typed v3 containers fail closed with ``EvaluationStatesCustodyUnavailable``.
     """
     declared = StagedEvaluationPrerequisite.model_validate(prerequisite)
-    location = execution_context.parent_execution_location(declared.parent)
-    if location.artifact_provider != declared.artifact_provider:
-        raise StagedExecutionContextError(
-            "staged evaluation prerequisite provider disagrees with retained authority"
-        )
-    return execution_context.load_evaluation_states(declared.parent)
+    return execution_context.load_evaluation_states(
+        declared.parent,
+        prerequisite_artifact_provider=declared.artifact_provider,
+        validate_staged_prerequisite=True,
+    )
 
 
 def _validate_matrix_staged_parent_references(
