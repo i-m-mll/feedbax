@@ -91,6 +91,7 @@ from feedbax.analysis.execution_context import (
     StagedCheckpointCustodyRootBinding,
     StagedExecutionContext,
     StagedExecutionContextError,
+    resolve_evaluation_states,
     StagedParentExecutionLocation,
     resolve_staged_execution_context,
     with_staged_parent_execution_locations,
@@ -929,22 +930,13 @@ def resolve_staged_evaluation_prerequisite(
 
     Typed v3 containers fail closed with ``EvaluationStatesCustodyUnavailable``.
     """
-    return _resolve_staged_evaluation_prerequisite(
-        prerequisite,
-        execution_context,
-    ).states
-
-
-def _resolve_staged_evaluation_prerequisite(
-    prerequisite: StagedEvaluationPrerequisite | Mapping[str, Any],
-    execution_context: StagedExecutionContext,
-):
     declared = StagedEvaluationPrerequisite.model_validate(prerequisite)
-    return execution_context._resolve_evaluation_states(
+    return resolve_evaluation_states(
         declared.parent,
+        execution_context=execution_context,
         prerequisite_artifact_provider=declared.artifact_provider,
         validate_staged_prerequisite=True,
-    )
+    ).states
 
 
 def _validate_matrix_staged_parent_references(

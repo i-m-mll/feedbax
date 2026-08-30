@@ -11,7 +11,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Protocol, overload
 from urllib.parse import unquote, urlsplit
 
 import jax.tree as jt
@@ -164,9 +164,54 @@ class _EvaluationStatesAuthorityKey:
 
 
 @dataclass(frozen=True, slots=True)
-class _ResolvedEvaluationStates:
+class ResolvedEvaluationStates:
+    """Evaluation states paired with their authenticated manifest authority."""
+
     states: Any
     manifest_input: ResolvedManifestInput
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationStatesResolutionRequest:
+    """One public request for states and their authenticated manifest authority."""
+
+    parent: ParentRef
+    structure: jtu.PyTreeDef | None = None
+    prerequisite_artifact_provider: str | None = None
+    validate_staged_prerequisite: bool = False
+
+
+class EvaluationStatesResolver(Protocol):
+    """Public staged-execution surface for authenticated evaluation states."""
+
+    def load_evaluation_states(
+        self,
+        request: EvaluationStatesResolutionRequest,
+    ) -> ResolvedEvaluationStates: ...
+
+
+def resolve_evaluation_states(
+    parent: ParentRef,
+    *,
+    execution_context: EvaluationStatesResolver,
+    structure: jtu.PyTreeDef | None = None,
+    prerequisite_artifact_provider: str | None = None,
+    validate_staged_prerequisite: bool = False,
+) -> ResolvedEvaluationStates:
+    """Resolve states and manifest authority through the public staged surface."""
+    result = execution_context.load_evaluation_states(
+        EvaluationStatesResolutionRequest(
+            parent=parent,
+            structure=structure,
+            prerequisite_artifact_provider=prerequisite_artifact_provider,
+            validate_staged_prerequisite=validate_staged_prerequisite,
+        )
+    )
+    if not isinstance(result, ResolvedEvaluationStates):
+        raise TypeError(
+            "evaluation-state resolver returned no authenticated manifest authority"
+        )
+    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -553,9 +598,29 @@ class StagedExecutionContext:
                 kind="artifact provider",
             )
 
+    @overload
+    def load_evaluation_states(
+        self,
+        parent: EvaluationStatesResolutionRequest,
+        *,
+        structure: None = None,
+        prerequisite_artifact_provider: None = None,
+        validate_staged_prerequisite: bool = False,
+    ) -> ResolvedEvaluationStates: ...
+
+    @overload
     def load_evaluation_states(
         self,
         parent: ParentRef,
+        *,
+        structure: jtu.PyTreeDef | None = None,
+        prerequisite_artifact_provider: str | None = None,
+        validate_staged_prerequisite: bool = False,
+    ) -> Any: ...
+
+    def load_evaluation_states(
+        self,
+        parent: ParentRef | EvaluationStatesResolutionRequest,
         *,
         structure: jtu.PyTreeDef | None = None,
         prerequisite_artifact_provider: str | None = None,
@@ -566,8 +631,24 @@ class StagedExecutionContext:
         Typed v3 staged prerequisites fail closed with
         ``EvaluationStatesCustodyUnavailable``. Direct callers retain exact-parent
         lookup. A validated staged prerequisite may restate authenticated material
-        under the executable ``evaluation_run`` role.
+        under the executable ``evaluation_run`` role. A public resolution request
+        returns the states together with the manifest authority used.
         """
+        if isinstance(parent, EvaluationStatesResolutionRequest):
+            if (
+                structure is not None
+                or prerequisite_artifact_provider is not None
+                or validate_staged_prerequisite
+            ):
+                raise TypeError(
+                    "evaluation-state resolution request cannot be combined with load options"
+                )
+            return self._resolve_evaluation_states(
+                parent.parent,
+                structure=parent.structure,
+                prerequisite_artifact_provider=parent.prerequisite_artifact_provider,
+                validate_staged_prerequisite=parent.validate_staged_prerequisite,
+            )
         return self._resolve_evaluation_states(
             parent,
             structure=structure,
@@ -582,7 +663,8 @@ class StagedExecutionContext:
         structure: jtu.PyTreeDef | None = None,
         prerequisite_artifact_provider: str | None = None,
         validate_staged_prerequisite: bool = False,
-    ) -> _ResolvedEvaluationStates:
+    ) -> ResolvedEvaluationStates:
+        """Resolve states with the exact authenticated manifest authority used."""
         if parent.kind != "EvaluationRunManifest" or parent.role != "evaluation_run":
             raise StagedExecutionContextError(
                 "evaluation states require an EvaluationRunManifest evaluation_run parent"
@@ -595,8 +677,8 @@ class StagedExecutionContext:
             )
             if len(locations) != 1:
                 raise StagedExecutionContextError(
-                    "evaluation states require exactly one matching material-identity "
-                    "staged parent authority"
+                    "evaluation states require exactly one matching authenticated "
+                    "material-identity staged parent authority"
                 )
             location = locations[0]
         else:
@@ -646,7 +728,7 @@ class StagedExecutionContext:
                     key,
                     reconstructed=isinstance(cached.value, _ReconstructableEvaluationStates),
                 )
-                return _ResolvedEvaluationStates(states, resolved)
+                return ResolvedEvaluationStates(states, resolved)
             self._memo.invalidate_evaluation_states(key)
         if location.artifact_provider is None:
             location_index = self.parent_execution_locations.index(location)
@@ -671,7 +753,7 @@ class StagedExecutionContext:
                 )
                 memo_value = _evaluation_states_memo_value(states)
                 if memo_value is None:
-                    return _ResolvedEvaluationStates(states, resolved)
+                    return ResolvedEvaluationStates(states, resolved)
                 self._memo.evaluation_states[key] = _MemoEntry(memo_value, (snapshot,))
                 states = _materialize_evaluation_states(memo_value)
                 self._memo.remember_evaluation_states(
@@ -679,7 +761,7 @@ class StagedExecutionContext:
                     key,
                     reconstructed=isinstance(memo_value, _ReconstructableEvaluationStates),
                 )
-                return _ResolvedEvaluationStates(states, resolved)
+                return ResolvedEvaluationStates(states, resolved)
             finally:
                 _require_directory_identity(
                     location.root, expected_root_identity, kind="parent execution"
@@ -726,7 +808,7 @@ class StagedExecutionContext:
                     "provider-backed evaluation_states artifact identity changed during read"
                 )
             if memo_value is None:
-                return _ResolvedEvaluationStates(states, resolved)
+                return ResolvedEvaluationStates(states, resolved)
             self._memo.evaluation_states[key] = _MemoEntry(memo_value, (snapshot,))
             states = _materialize_evaluation_states(memo_value)
             self._memo.remember_evaluation_states(
@@ -734,7 +816,7 @@ class StagedExecutionContext:
                 key,
                 reconstructed=isinstance(memo_value, _ReconstructableEvaluationStates),
             )
-            return _ResolvedEvaluationStates(states, resolved)
+            return ResolvedEvaluationStates(states, resolved)
         finally:
             _require_directory_identity(
                 Path(provider.root),
@@ -1879,6 +1961,9 @@ def _validate_checkpoint_ref_uri(uri: str | None) -> None:
 
 __all__ = [
     "EMPTY_STAGED_EXECUTION_CONTEXT",
+    "EvaluationStatesResolutionRequest",
+    "EvaluationStatesResolver",
+    "ResolvedEvaluationStates",
     "StagedArtifactProviderRootBinding",
     "StagedCheckpointCustodyRootBinding",
     "StagedExecutionContext",
@@ -1886,6 +1971,7 @@ __all__ = [
     "StagedManifestRootBinding",
     "StagedParentExecutionLocation",
     "resolve_staged_execution_context",
+    "resolve_evaluation_states",
     "with_staged_manifest_provider_inputs",
     "with_staged_parent_execution_locations",
     "with_staged_resolved_parents",

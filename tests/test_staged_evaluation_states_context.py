@@ -170,7 +170,10 @@ def test_load_evaluation_states_refuses_staged_material_identity_drift(
         ],
     )
 
-    with pytest.raises(StagedExecutionContextError, match="matching material-identity"):
+    with pytest.raises(
+        StagedExecutionContextError,
+        match="matching authenticated material-identity",
+    ):
         resolve_staged_evaluation_prerequisite(
             StagedEvaluationPrerequisite(parent=executable_parent),
             execution_context=context,
