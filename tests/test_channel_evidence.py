@@ -9,6 +9,8 @@ from feedbax.analysis import (
 )
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
+    EvaluationStatesResolutionRequest,
+    ResolvedEvaluationStates,
     StagedParentExecutionLocation,
     with_staged_parent_execution_locations,
 )
@@ -36,19 +38,22 @@ class _Context:
             metadata={"channels": records},
         )
 
-    def _resolve_evaluation_states(
-        self,
-        _parent,
-        *,
-        prerequisite_artifact_provider,
-        validate_staged_prerequisite,
-    ):
-        assert prerequisite_artifact_provider == "provider"
-        assert validate_staged_prerequisite is True
-        return SimpleNamespace(
+    def load_evaluation_states(self, request):
+        assert isinstance(request, EvaluationStatesResolutionRequest)
+        assert request.prerequisite_artifact_provider == "provider"
+        assert request.validate_staged_prerequisite is True
+        return ResolvedEvaluationStates(
             states=self.states,
             manifest_input=SimpleNamespace(manifest=self.manifest),
         )
+
+
+class _PublicLoadWrapper:
+    def __init__(self, staged):
+        self._staged = staged
+
+    def load_evaluation_states(self, parent):
+        return self._staged.load_evaluation_states(parent)
 
 
 def _prerequisite():
@@ -136,7 +141,7 @@ def test_authenticated_channels_reuse_trial_bank_material_authority(tmp_path):
 
     resolved = resolve_authenticated_evaluation_channels(
         StagedEvaluationPrerequisite(parent=executable_parent),
-        execution_context=context,
+        execution_context=_PublicLoadWrapper(context),
     )
 
     assert resolved.channels["noise"] is resolved.states["channels"]["noise"]
