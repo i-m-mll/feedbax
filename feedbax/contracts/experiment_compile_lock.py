@@ -113,7 +113,8 @@ from feedbax.contracts.manifest import StrictModel
 EXPERIMENT_COMPILE_LOCK_SCHEMA_ID = "feedbax.spec.experiment_compile_lock"
 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v1"
 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v2"
-EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2
+EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v3"
+EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3
 
 #: The only lock versions read. Enumerated, never inferred. v1 remains readable
 #: as exactly the grammar it names: a lock recorded before figure runtime input
@@ -123,6 +124,7 @@ EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_
 EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
 )
 
 #: Versions this loader accepts, mapped to the version they migrate to. Empty:
@@ -237,6 +239,20 @@ class AnalysisInputBinding(StrictModel):
         return self
 
 
+class AnalysisReceiptSetBinding(StrictModel):
+    """The referenced product fills one analysis input with every receipt it produced."""
+
+    consumer: Literal["analysis_receipt_set"] = "analysis_receipt_set"
+    alias: str
+    role: str
+
+    @model_validator(mode="after")
+    def _validate(self) -> "AnalysisReceiptSetBinding":
+        _require_nonempty(self.alias, "analysis_receipt_set alias")
+        _require_nonempty(self.role, "analysis_receipt_set role")
+        return self
+
+
 class FigureRuntimeInputBinding(StrictModel):
     """The referenced product satisfies one figure runtime input authority.
 
@@ -309,6 +325,7 @@ class CheckpointInitializationBinding(StrictModel):
 CompileLockConsumerBinding: TypeAlias = Annotated[
     EvaluationSubjectBinding
     | AnalysisInputBinding
+    | AnalysisReceiptSetBinding
     | FigureRuntimeInputBinding
     | ReportParentBinding
     | CheckpointInitializationBinding,
@@ -1156,6 +1173,22 @@ def _refuse_v1_figure_input_contract(references: Sequence[Any], *, field: str) -
         )
 
 
+def _refuse_pre_v3_analysis_receipt_set(references: Sequence[Any], *, field: str) -> None:
+    """Refuse a v1/v2 lock edited to carry the v3 receipt-set discriminator."""
+    for index, reference in enumerate(references):
+        if not isinstance(reference, Mapping):
+            continue
+        consumer = reference.get("consumer")
+        if isinstance(consumer, Mapping) and consumer.get("consumer") == "analysis_receipt_set":
+            raise ExperimentEnvelopeRejection(
+                ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+                "an analysis receipt-set binding is "
+                f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3!r} grammar, but this lock "
+                "declares an earlier version; a version names exactly one grammar",
+                field=f"{field}#references[{index}]#consumer.consumer",
+            )
+
+
 def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
     """Read one compile lock, failing closed on an unsupported version.
 
@@ -1209,6 +1242,11 @@ def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
         parse_compile_lock_reference(reference, field=f"{field}#references[{index}]")
     if version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1:
         _refuse_v1_figure_input_contract(references, field=field)
+    if version in (
+        EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
+        EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
+    ):
+        _refuse_pre_v3_analysis_receipt_set(references, field=field)
     provenance = lock.get("row_provenance", [])
     if not isinstance(provenance, Sequence) or isinstance(provenance, (str, bytes)):
         raise ExperimentEnvelopeRejection(
@@ -1247,9 +1285,11 @@ __all__ = [
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2",
+    "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3",
     "EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS",
     "RUN_RECEIPT_ONLY_FACTS",
     "AnalysisInputBinding",
+    "AnalysisReceiptSetBinding",
     "AuthenticatedReceiptReference",
     "CheckpointInitializationBinding",
     "CompileLockConsumerBinding",

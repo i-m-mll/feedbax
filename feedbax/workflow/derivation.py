@@ -69,6 +69,7 @@ from feedbax.workflow.report import lower_report_operation
 from feedbax.contracts.analysis_bundle_composition import ANALYSIS_BUNDLE_SPEC_SCHEMA_ID
 from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.experiment_compile_lock import (
+    AnalysisReceiptSetBinding,
     AuthenticatedReceiptReference,
     NotApplicableReference,
     PlannedProductReference,
@@ -107,6 +108,7 @@ class CompiledProductKind:
 
     schema_id: str
     layer: str
+    receipt_shape: str
 
 
 #: Compiled ``schema_id`` to the layer it belongs to. Both sides are
@@ -115,14 +117,14 @@ class CompiledProductKind:
 COMPILED_PRODUCT_KINDS: Mapping[str, CompiledProductKind] = {
     kind.schema_id: kind
     for kind in (
-        CompiledProductKind(TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID, "campaign"),
-        CompiledProductKind(EVALUATION_RUN_SPEC_SCHEMA_ID, "evaluation"),
-        CompiledProductKind(EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID, "evaluation"),
-        CompiledProductKind(ANALYSIS_RUN_SPEC_SCHEMA_ID, "analysis"),
-        CompiledProductKind(ANALYSIS_BUNDLE_SPEC_SCHEMA_ID, "analysis"),
-        CompiledProductKind(FIGURE_SPEC_SCHEMA_ID, "figure"),
-        CompiledProductKind(FIGURE_COMPOSITION_SPEC_SCHEMA_ID, "figure"),
-        CompiledProductKind(REPORT_SPEC_SCHEMA_ID, "report"),
+        CompiledProductKind(TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID, "campaign", "set"),
+        CompiledProductKind(EVALUATION_RUN_SPEC_SCHEMA_ID, "evaluation", "single"),
+        CompiledProductKind(EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID, "evaluation", "set"),
+        CompiledProductKind(ANALYSIS_RUN_SPEC_SCHEMA_ID, "analysis", "single"),
+        CompiledProductKind(ANALYSIS_BUNDLE_SPEC_SCHEMA_ID, "analysis", "set"),
+        CompiledProductKind(FIGURE_SPEC_SCHEMA_ID, "figure", "single"),
+        CompiledProductKind(FIGURE_COMPOSITION_SPEC_SCHEMA_ID, "figure", "single"),
+        CompiledProductKind(REPORT_SPEC_SCHEMA_ID, "report", "single"),
     )
 }
 
@@ -403,20 +405,33 @@ def _external_record(
 def _edge_declaration(reference: Any, *, consumer: CompiledEnvelope) -> EdgeDeclaration:
     """Return the one edge a typed reference determines. No other input decides it."""
     role_path = _role_path_parts(str(reference.role_path))
+    binding = (
+        "complete_receipt_set"
+        if isinstance(getattr(reference, "consumer", None), AnalysisReceiptSetBinding)
+        else "single_receipt"
+    )
     if isinstance(reference, PlannedProductReference):
         return EdgeDeclaration(
             role_path=role_path,
             status="required",
             basis="authored",
+            binding=binding,
             input_type=reference.product_schema_id,
             producer_ref=reference.envelope_ref,
             producer_output="primary",
         )
     if isinstance(reference, (ReceiptLocatorReference, AuthenticatedReceiptReference)):
+        if binding == "complete_receipt_set":
+            raise CompiledOutputError(
+                f"{consumer.lock_path.name} binds {reference.role_path!r} as a complete "
+                "receipt set, but a receipt locator or authenticated receipt names exactly "
+                "one receipt"
+            )
         return EdgeDeclaration(
             role_path=role_path,
             status="required",
             basis="authored",
+            binding=binding,
             input_type=f"feedbax.manifest.{reference.manifest_kind}",
             external=_external_record(reference),
             external_type=f"feedbax.manifest.{reference.manifest_kind}",
@@ -481,6 +496,16 @@ def _check_planned_product(
         mismatches.append(
             f"product_name pinned {reference.product_name!r} but the upstream compiled output "
             f"is named {upstream.name!r}"
+        )
+    binding = (
+        "complete_receipt_set"
+        if isinstance(reference.consumer, AnalysisReceiptSetBinding)
+        else "single_receipt"
+    )
+    if binding == "complete_receipt_set" and upstream.kind.receipt_shape != "set":
+        mismatches.append(
+            f"complete_receipt_set requires a set-valued product, but "
+            f"{upstream.schema_id!r} is {upstream.kind.receipt_shape!r}"
         )
     if mismatches:
         raise CompiledOutputError(

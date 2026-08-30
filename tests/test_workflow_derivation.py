@@ -38,6 +38,7 @@ from feedbax.workflow.plan import (
 )
 from feedbax.contracts.experiment_compile_lock import (
     AnalysisInputBinding,
+    AnalysisReceiptSetBinding,
     AuthenticatedReceiptReference,
     CheckpointInitializationBinding,
     ContentPinReference,
@@ -254,6 +255,47 @@ def test_a_not_applicable_reference_binds_nothing_and_quotes_its_basis(
     assert (edge.status, edge.basis, edge.rule) == ("not_applicable", basis, rule_id)
     assert edge.producer is None and edge.external is None
     assert edge.reason == "this target has no appendix"
+
+
+def test_receipt_set_binding_is_derived_only_for_a_set_valued_product(
+    outputs: QuillonOutputs,
+) -> None:
+    matrix = outputs.probe_matrix("matrix-set")
+    outputs.condensate(
+        "matrix-consumer",
+        references=[
+            planned(
+                matrix,
+                role_path="inputs.evaluation",
+                consumer=AnalysisReceiptSetBinding(
+                    alias="evaluation", role="evaluation"
+                ),
+            )
+        ],
+    )
+    (edge,) = derive_workflow_plan(
+        read_compiled_outputs(outputs.output_directory), target="matrix-consumer"
+    ).required_edges(LogicalKey("analysis", "matrix-consumer"))
+    assert edge.binding == "complete_receipt_set"
+
+    single = outputs.probe("single-product")
+    outputs.condensate(
+        "invalid-set-consumer",
+        references=[
+            planned(
+                single,
+                role_path="inputs.evaluation",
+                consumer=AnalysisReceiptSetBinding(
+                    alias="evaluation", role="evaluation"
+                ),
+            )
+        ],
+    )
+    with pytest.raises(CompiledOutputError, match="requires a set-valued product"):
+        derive_workflow_plan(
+            read_compiled_outputs(outputs.output_directory),
+            target="invalid-set-consumer",
+        )
 
 
 def test_two_references_at_one_role_refuse(outputs: QuillonOutputs) -> None:

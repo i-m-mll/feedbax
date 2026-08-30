@@ -5,14 +5,13 @@ project does not define an envelope family, a layer, a lowerer, or a rule: it
 authors documents in this dialect and Feedbax compiles them into the spec
 families it already owns.
 
-## Four numbered versions, each with one meaning
+## Six numbered versions, each with one meaning
 
 The dialect is a durable authored format, so what a version *accepts* is part of
 its identity. ``feedbax.experiment_envelope.v1`` is exactly the grammar it was
-ratified with; ``feedbax.experiment_envelope.v2`` adds four authored constructs
-(see :data:`V2_ONLY_CONSTRUCTS`), while ``feedbax.experiment_envelope.v3`` is
-current and adds the closed typed training root. All three versions are
-supported and none is reinterpreted as another:
+ratified with; later versions add closed grammar deliberately, including the
+explicit analysis receipt binding in v6. All supported versions are held to
+their own grammar and none is reinterpreted as another:
 
 * a v1 document is held to the v1 grammar. Declaring a v2 construct under v1 is
   refused by version, naming the construct and the version that owns it, rather
@@ -21,7 +20,7 @@ supported and none is reinterpreted as another:
   string is what the compile lock records and what the envelope hash covers, so
   a corpus authored at v1 does not move because a v2 exists;
 * :func:`migrate_experiment_envelope_payload` is the explicit, deterministic
-  schema-only upgrade through v2 to v3. It is a *payload* migration an author runs, never something a
+  schema-only upgrade through the current version. It is a *payload* migration an author runs, never something a
   compile does silently: migrating changes the authored bytes, and authored
   bytes are the identity every compiled lock is pinned by.
 
@@ -128,9 +127,10 @@ EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v2"
 EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v3"
 EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v4"
 EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v5"
+EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6 = f"{EXPERIMENT_ENVELOPE_FAMILY}.v6"
 
 #: The current grammar. A new document is authored at this version.
-EXPERIMENT_ENVELOPE_SCHEMA_VERSION = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5
+EXPERIMENT_ENVELOPE_SCHEMA_VERSION = EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6
 
 #: Enumerated, never inferred. Every member is compiled as authored: a v1 or v2
 #: document is held to its declared grammar and keeps that identity.
@@ -140,6 +140,7 @@ EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = (
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
 )
 
 #: One closed, content-pinned structure shared by root-authored training matrices.
@@ -157,6 +158,7 @@ EXPERIMENT_ENVELOPE_MIGRATION_TABLE: dict[str, str] = {
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
 }
 
 #: The compiler contract is global. There is no per-project contract indirection:
@@ -165,7 +167,12 @@ EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID = f"{EXPERIMENT_ENVELOPE_FAMILY}.compil
 EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1 = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v1"
 EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2 = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v2"
 EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3 = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v3"
-EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v4"
+EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V4 = (
+    f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v4"
+)
+EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION = (
+    f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v5"
+)
 
 
 def compiler_contract_version_for_schema(schema: str) -> str:
@@ -180,6 +187,8 @@ def compiler_contract_version_for_schema(schema: str) -> str:
     if schema == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4:
         return EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3
     if schema == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5:
+        return EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V4
+    if schema == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6:
         return EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION
     raise ExperimentEnvelopeRejection(
         ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
@@ -788,6 +797,7 @@ class AnalysisSubjectAuthoring(DialectModel):
 
     alias: str
     role: str
+    binding: Literal["single_receipt", "complete_receipt_set"] = "single_receipt"
     ref: AuthoredReference
 
     @model_validator(mode="after")
@@ -1256,6 +1266,7 @@ class ExperimentEnvelope(DialectModel):
         "feedbax.experiment_envelope.v3",
         "feedbax.experiment_envelope.v4",
         "feedbax.experiment_envelope.v5",
+        "feedbax.experiment_envelope.v6",
     ] = Field(alias="schema")
     name: str
     base: str | None = None
@@ -1599,13 +1610,16 @@ def _require_declared_figure_input_grammar(
     renamed for clarity would silently address a different payload.
     """
     mode, inputs = _figure_input_items(document)
-    is_current = declared == ROOT_FIGURE_INPUT_CONTRACT_VERSION
+    has_contract_grammar = declared in (
+        ROOT_FIGURE_INPUT_CONTRACT_VERSION,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
+    )
     for index, item in enumerate(inputs):
         if not isinstance(item, Mapping):
             continue
         contract = item.get("contract")
         path = f"figure.inputs[{index}].contract"
-        if isinstance(contract, Mapping) and not is_current:
+        if isinstance(contract, Mapping) and not has_contract_grammar:
             pinned = sorted(
                 key
                 for key in ("payload_schema_id", "payload_schema_version")
@@ -1627,7 +1641,7 @@ def _require_declared_figure_input_grammar(
                     ROOT_FIGURE_INPUT_CONTRACT_VERSION,
                     declared,
                 )
-    if not is_current or mode != FigureLayerMode.ROOT.value:
+    if not has_contract_grammar or mode != FigureLayerMode.ROOT.value:
         return
     for index, item in enumerate(inputs):
         if not isinstance(item, Mapping):
@@ -1660,11 +1674,34 @@ def _require_declared_figure_input_grammar(
 def _require_declared_grammar(document: Mapping[str, Any], *, declared: str, field: str) -> None:
     """Refuse a construct the document's own declared version does not have."""
     training = document.get("training")
+    analysis = document.get("analysis")
+    subjects = analysis.get("subjects") if isinstance(analysis, Mapping) else None
+    if isinstance(subjects, Sequence) and not isinstance(subjects, (str, bytes)):
+        for index, subject in enumerate(subjects):
+            if not isinstance(subject, Mapping):
+                continue
+            has_binding = "binding" in subject
+            path = f"analysis.subjects[{index}].binding"
+            if declared == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6 and not has_binding:
+                raise ExperimentEnvelopeRejection(
+                    ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
+                    f"{declared!r} analysis subjects require an explicit receipt binding",
+                    field=f"{field}#{path}",
+                )
+            if declared != EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6 and has_binding:
+                _reject_unversioned_construct(
+                    field,
+                    path,
+                    "the explicit singular-or-complete receipt binding for an analysis input",
+                    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
+                    declared,
+                )
     has_root = isinstance(training, Mapping) and "root" in training
     if has_root and declared not in (
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
     ):
         _reject_unversioned_construct(
             field,
@@ -1682,6 +1719,7 @@ def _require_declared_grammar(document: Mapping[str, Any], *, declared: str, fie
             not in (
                 EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
                 EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+                EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
             )
         ):
             _reject_unversioned_construct(
@@ -1694,6 +1732,7 @@ def _require_declared_grammar(document: Mapping[str, Any], *, declared: str, fie
     if "comparison" in document and declared not in (
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
     ):
         _reject_unversioned_construct(
             field,
@@ -1710,6 +1749,7 @@ def _require_declared_grammar(document: Mapping[str, Any], *, declared: str, fie
             field=f"{field}#training.rows_mode",
         )
     if declared in (
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
@@ -1767,6 +1807,19 @@ def migrate_experiment_envelope_payload(
             _require_root_figure_reauthoring(migrated, declared=declared, field=field)
         declared = target
         migrated = {**migrated, "schema": declared}
+        if declared == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6:
+            analysis = migrated.get("analysis")
+            if isinstance(analysis, Mapping):
+                migrated_analysis = dict(analysis)
+                subjects = migrated_analysis.get("subjects")
+                if isinstance(subjects, Sequence) and not isinstance(subjects, (str, bytes)):
+                    migrated_analysis["subjects"] = [
+                        {**dict(subject), "binding": "single_receipt"}
+                        if isinstance(subject, Mapping)
+                        else subject
+                        for subject in subjects
+                    ]
+                migrated["analysis"] = migrated_analysis
     return migrated
 
 
@@ -1857,6 +1910,7 @@ __all__ = [
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1",
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2",
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3",
+    "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V4",
     "EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID",
     "EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION",
     "EXPERIMENT_ENVELOPE_FAMILY",
@@ -1867,6 +1921,7 @@ __all__ = [
     "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3",
     "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4",
     "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5",
+    "EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6",
     "EXPERIMENT_ENVELOPE_SUFFIX",
     "EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS",
     "FIGURE_COMPOSITION_OUTPUT",
