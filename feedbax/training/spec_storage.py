@@ -23,6 +23,7 @@ from feedbax.contracts.run_matrix import (
 )
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.training import TrainingProgramRegistry
+from feedbax.contracts.worker import NATIVE_TRAINING_COLLECTION_OUTPUTS
 from feedbax.contracts.training_matrix_composition import (
     TrainingRunMatrixDeltaSpec,
     flatten_training_run_matrix_delta,
@@ -82,10 +83,6 @@ def compile_training_run_matrix(
     """Purely lower an authored training matrix into generic compiled rows."""
     from feedbax.orchestration.assembly import CompiledExecutionRow, CompiledRunSet
     from feedbax.orchestration.bundle import RowLaunchSpec
-    from feedbax.orchestration.drivers.native_execution import (
-        NATIVE_TRAINING_COLLECTION_OUTPUTS,
-    )
-
     repo_root = context.repo_root
     if repo_root is None:
         raise ValueError("training matrix assembly requires AssemblyContext.repo_root")

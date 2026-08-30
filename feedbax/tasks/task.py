@@ -40,7 +40,7 @@ from equinox import AbstractVar, Module, field
 from jax_cookbook import is_module, is_none, is_type
 from jaxtyping import Array, ArrayLike, Float, Int, PRNGKeyArray, PyTree, Shaped
 
-from feedbax.config.mapping import WhereDict
+from feedbax.runtime.mapping import WhereDict
 from feedbax.tasks._tree import tree_call
 from feedbax.runtime.graph import Component, Graph, RolloutStepHook, init_state_from_component
 from feedbax.runtime.iteration import run_component

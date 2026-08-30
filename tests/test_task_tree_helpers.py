@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import jax_cookbook.tree as jtree
 
-from feedbax.config.mapping import WhereDict
+from feedbax.runtime.mapping import WhereDict
 from feedbax.intervene.schedule import evaluate_intervenor_params
 from feedbax.objectives.loss import TermTree
 from feedbax.tasks._tree import is_marked_shared, mark_shared, tree_call_with_keys

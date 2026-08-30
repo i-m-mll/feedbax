@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import jax.numpy as jnp
 import pytest
 
-from feedbax.config.mapping import WhereDict
+from feedbax.runtime.mapping import WhereDict
 from feedbax.objectives.loss import TargetSpec
 from feedbax.xabdeef.losses import EffectorFixationLoss, delayed_reach_loss
 

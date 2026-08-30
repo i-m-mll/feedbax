@@ -15,7 +15,7 @@ from feedbax.runtime.graph import (
 )
 from feedbax.runtime.iteration import run_component
 from feedbax.runtime.iteration import iterate_component
-from feedbax.config.selectors import attr_str_tree_to_where_func
+from feedbax.runtime.where_selectors import attr_str_tree_to_where_func
 
 
 class Increment(Component):

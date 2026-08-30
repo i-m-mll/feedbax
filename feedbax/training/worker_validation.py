@@ -24,7 +24,7 @@ from feedbax.contracts.worker import (
     UpdateStepKind,
     derive_consistency_predicate,
 )
-from feedbax.studio.protocol import GRAPH_BINDABLE_TASK_DATA_ROLES
+from feedbax.runtime.task_data_roles import GRAPH_BINDABLE_TASK_DATA_ROLES
 
 
 SUPPORTED_AXIS_ROLES: frozenset[AxisRole] = frozenset(

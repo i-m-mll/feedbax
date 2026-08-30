@@ -1,6 +1,6 @@
 """Small configuration helpers."""
 
-from collections.abc import Mapping, Sequence, Set
+from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
@@ -33,13 +33,3 @@ def copy_delattr(obj: Any, *attr_names: str):
     for attr_name in attr_names:
         delattr(obj, attr_name)
     return obj
-
-
-def get_unique_label(label: str, invalid_labels: Sequence[str] | Set[str]) -> str:
-    """Get a unique label by appending integers until no collision remains."""
-    i = 0
-    label_ = label
-    while label_ in invalid_labels:
-        label_ = f"{label}_{i}"
-        i += 1
-    return label_

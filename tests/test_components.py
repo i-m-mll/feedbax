@@ -16,7 +16,10 @@ from feedbax.runtime.state_indices import align_state_indices_like
 from feedbax.mechanics import Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass
-from feedbax.config.selectors import attr_str_tree_to_where_func, where_func_to_attr_str_tree
+from feedbax.runtime.where_selectors import (
+    attr_str_tree_to_where_func,
+    where_func_to_attr_str_tree,
+)
 from feedbax.models.networks import LeakyRNNCell, SimpleStagedNetwork
 from feedbax.models.feedback import SimpleFeedback
 
