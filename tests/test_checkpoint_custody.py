@@ -64,8 +64,6 @@ from feedbax.contracts.worker import (
     TrainingBatchProgressSpec,
 )
 from feedbax.training.checkpoint_custody import (
-    LEGACY_CHECKPOINT_ADOPTION_DOCS,
-    LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT,
     CheckpointCompatibilityError,
     CheckpointConsistencyError,
     CheckpointContractBindingError,
@@ -79,7 +77,6 @@ from feedbax.training.checkpoint_custody import (
     checkpoint_fork_binding_content_sha256,
     checkpoint_slot_names,
     derive_checkpoint_fork_compatibility_projection,
-    detect_known_legacy_checkpoint_layout,
     fork_checkpoint_transaction,
     fork_checkpoint_plan,
     load_latest_checkpoint,
@@ -201,8 +198,7 @@ def _rewrite_controller_leaf_type(result, leaf_type: str) -> None:
     fingerprint = controller["structural_abi_fingerprint"]
     fingerprint["leaves"][0]["leaf_type"] = leaf_type
     leaves = [
-        custody_module.SlotLeafFingerprint.model_validate(leaf)
-        for leaf in fingerprint["leaves"]
+        custody_module.SlotLeafFingerprint.model_validate(leaf) for leaf in fingerprint["leaves"]
     ]
     fingerprint["fingerprint_sha256"] = structural_abi_content_sha256(
         {**fingerprint, "leaves": leaves}
@@ -257,9 +253,7 @@ def test_structural_abi_content_projection_field_classification() -> None:
     )
 
     assert structural_abi_content_projection(fingerprint) == {
-        "fingerprint_algorithm_version": (
-            "feedbax.training_checkpoint.structural_abi.content.v2"
-        ),
+        "fingerprint_algorithm_version": ("feedbax.training_checkpoint.structural_abi.content.v2"),
         "treedef": "PyTreeDef(*)",
         "leaf_count": 1,
         "leaves": [
@@ -276,9 +270,7 @@ def test_structural_abi_content_projection_field_classification() -> None:
 
 def test_structural_abi_content_projection_preserves_tolerant_migration_shape() -> None:
     raw = {
-        "fingerprint_algorithm_version": (
-            "feedbax.training_checkpoint.structural_abi.content.v2"
-        ),
+        "fingerprint_algorithm_version": ("feedbax.training_checkpoint.structural_abi.content.v2"),
         "treedef": "PyTreeDef(*)",
         "leaf_count": 1,
         "leaves": [
@@ -367,9 +359,7 @@ def _replace_resolver_slot_blob(result, slot_name: str, value: object) -> dict[s
     payload = json.loads(result.manifest_path.read_text())
     slot = next(item for item in payload["slots"] if item["slot"] == slot_name)
     digest = next(
-        item
-        for item in payload["content_integrity_digest"]["slots"]
-        if item["slot"] == slot_name
+        item for item in payload["content_integrity_digest"]["slots"] if item["slot"] == slot_name
     )
     blob_path = _manifest_blob_path(result.manifest_path, slot["relative_path"])
     blob_bytes = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
@@ -664,9 +654,9 @@ def test_checkpoint_transaction_schema_family_is_registered() -> None:
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
-            TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
-            TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
-            TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
     )
 
 
@@ -701,9 +691,9 @@ def test_checkpoint_transaction_manifest_v1_migrates_to_current_portable_custody
         "training-checkpoint-transaction-v2-to-v3-portable-custody",
         "training-checkpoint-transaction-v3-to-v4-batch-progress",
         "training-checkpoint-transaction-v4-to-v5-program-coordinate",
-            "training-checkpoint-transaction-v5-to-v6-batch-history",
-            "training-checkpoint-transaction-v6-to-v7-segment-lineage",
-            "training-checkpoint-transaction-v7-to-v8-mapped-axes",
+        "training-checkpoint-transaction-v5-to-v6-batch-history",
+        "training-checkpoint-transaction-v6-to-v7-segment-lineage",
+        "training-checkpoint-transaction-v7-to-v8-mapped-axes",
     ]
     assert migrated.payload["metadata"]["batch_history_tree_migration"] == (
         "declared_paths_v5_to_v6"
@@ -1089,9 +1079,7 @@ def test_public_checkpoint_document_loaders_migrate_and_preserve_provenance(
         run_spec=spec,
         phase_program=program,
         barrier_name="after_train_batch",
-        coordinate=ProgressCoordinate(
-            run_id="public-loader", phase="train_batch", program_step=24
-        ),
+        coordinate=ProgressCoordinate(run_id="public-loader", phase="train_batch", program_step=24),
         slots={
             "model": 0,
             "optimizer": {"count": 0},
@@ -1232,9 +1220,7 @@ def test_run_contract_binding_normalizes_nested_signed_zero() -> None:
     positive_binding = custody_module.run_contract_binding(positive, program)
     negative_binding = custody_module.run_contract_binding(negative, program)
 
-    assert positive_binding.training_run_spec_sha256 == (
-        negative_binding.training_run_spec_sha256
-    )
+    assert positive_binding.training_run_spec_sha256 == (negative_binding.training_run_spec_sha256)
     assert positive_binding.graph_sha256 == negative_binding.graph_sha256
     assert positive_binding.canonical_projection_sha256 == (
         negative_binding.canonical_projection_sha256
@@ -1288,9 +1274,7 @@ def _rewrite_binding_as_historical(
         for field_name in ("method_contract", "effective_phase"):
             embedded = training_run_spec["worker_execution"][field_name]
             embedded["schema_version"] = "feedbax.spec.worker.execution_program.v1"
-            embedded["phase_program"]["schema_version"] = (
-                "feedbax.spec.worker.execution_program.v1"
-            )
+            embedded["phase_program"]["schema_version"] = "feedbax.spec.worker.execution_program.v1"
     if training_spec_version == "feedbax.spec.training_run.v1":
         training_run_spec.pop("on_nan", None)
     if training_spec_version == "feedbax.spec.training_run.v3":
@@ -1305,9 +1289,7 @@ def _rewrite_binding_as_historical(
         else custody_module._run_contract_hash
     )
     binding["training_run_spec_sha256"] = hash_value(training_run_spec)
-    binding["method_payload_sha256"] = hash_value(
-        training_run_spec["method_payload"]
-    )
+    binding["method_payload_sha256"] = hash_value(training_run_spec["method_payload"])
     binding["phase_program_sha256"] = hash_value(phase_program)
     binding["objective_sha256"] = hash_value(training_run_spec["objective"])
     binding["graph_sha256"] = hash_value(training_run_spec["graph"])
@@ -1389,9 +1371,7 @@ def test_strict_load_rejects_v3_projection_with_scientific_difference(tmp_path: 
     payload = json.loads(result.manifest_path.read_text())
     binding = payload["run_contract_binding"]
     _rewrite_binding_as_v3(binding, execution={})
-    binding["canonical_projection"]["training_run_spec"]["training_config"][
-        "learning_rate"
-    ] = 0.5
+    binding["canonical_projection"]["training_run_spec"]["training_config"]["learning_rate"] = 0.5
     binding["canonical_projection_sha256"] = custody_module._run_contract_hash(
         binding["canonical_projection"]
     )
@@ -2033,7 +2013,13 @@ def test_checkpoint_fork_derived_digest_rebuild_reports_exact_deterministic_diff
 
     assert not comparison.matches_stored_lock
     assert [difference.target_id for difference in comparison.differences] == [
-        "target-a", "target-a", "target-a", "target-a", "target-a", "target-a", "target-a",
+        "target-a",
+        "target-a",
+        "target-a",
+        "target-a",
+        "target-a",
+        "target-a",
+        "target-a",
     ]
     assert [difference.path for difference in comparison.differences] == [
         "/compatibility/run_contract_algorithm_version",
@@ -2106,7 +2092,9 @@ def test_checkpoint_fork_relock_changes_only_derived_locks_and_emits_requirement
 
     assert isinstance(result, CheckpointForkPlanRelockResult)
     assert result.requalification_requirements == ("re-run target qualification",)
-    assert _checkpoint_fork_authored_payload(result.plan) == _checkpoint_fork_authored_payload(stale_plan)
+    assert _checkpoint_fork_authored_payload(result.plan) == _checkpoint_fork_authored_payload(
+        stale_plan
+    )
     assert result.plan.targets[0].compatibility == plan.targets[0].compatibility
     assert rebuild_checkpoint_fork_derived_digests(result.plan, bindings).matches_stored_lock
 
@@ -2252,8 +2240,7 @@ def test_typed_checkpoint_fork_plan_preserves_untransformed_hardlinks(tmp_path: 
     )
     assert set(results) == {"target-a", "target-b"}
     assert all(
-        set(result.slot_transfer_modes.values()) == {"hardlink"}
-        for result in results.values()
+        set(result.slot_transfer_modes.values()) == {"hardlink"} for result in results.values()
     )
 
 
@@ -2272,9 +2259,7 @@ def test_typed_checkpoint_fork_plan_requires_declared_target_only_slot(
     )
     target_spec = source_spec.model_copy(deep=True)
     target_program = target_spec.worker_execution.method_contract.phase_program
-    target_program.checkpoint_barriers[0].slots.append(
-        CheckpointSlotSpec(slot="adaptive_state")
-    )
+    target_program.checkpoint_barriers[0].slots.append(CheckpointSlotSpec(slot="adaptive_state"))
     expected = {**_minimax_slots(), "adaptive_state": jnp.zeros((2,), dtype=jnp.float32)}
     declaration = {"identity": "tests.adaptive-state-slot.v1"}
     plan = CheckpointForkPlan(
@@ -2624,9 +2609,7 @@ def test_defaulted_legacy_projection_migrates_and_resumes(
 
     assert loaded.manifest.schema_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
     assert loaded.manifest.run_contract_binding.canonical_projection is not None
-    stored_run_spec = loaded.manifest.run_contract_binding.canonical_projection[
-        "training_run_spec"
-    ]
+    stored_run_spec = loaded.manifest.run_contract_binding.canonical_projection["training_run_spec"]
     assert stored_run_spec["schema_version"] == "feedbax.spec.training_run.v1"
     assert "on_nan" not in stored_run_spec
 
@@ -2691,7 +2674,9 @@ def test_checkpoint_fork_plan_cli_executes_from_fresh_process(tmp_path: Path) ->
     run_spec = _run_spec(minimax=True)
     slots = _minimax_slots()
     changed = {**slots, "controller": slots["controller"] + 1}
-    assert checkpoint_fork_binding_content_sha256(slots) != checkpoint_fork_binding_content_sha256(changed)
+    assert checkpoint_fork_binding_content_sha256(slots) != checkpoint_fork_binding_content_sha256(
+        changed
+    )
     source = write_checkpoint_transaction(
         tmp_path / "source",
         run_spec=run_spec,
@@ -2702,13 +2687,16 @@ def test_checkpoint_fork_plan_cli_executes_from_fresh_process(tmp_path: Path) ->
     )
     base_plan = _typed_fork_plan(run_spec, slots, transformed=False)
     plan = base_plan.model_copy(
-        update={"source": CheckpointForkSourcePreparation(
-            checkpoint_root_ref="source",
-            source_execution_hash="d" * 64,
-            source_row_id="source",
-            expected_transaction_id=source.manifest.transaction_id,
-            expected_transaction_root_sha256=source.manifest.content_integrity_digest.transaction_root_sha256,
-        )})
+        update={
+            "source": CheckpointForkSourcePreparation(
+                checkpoint_root_ref="source",
+                source_execution_hash="d" * 64,
+                source_row_id="source",
+                expected_transaction_id=source.manifest.transaction_id,
+                expected_transaction_root_sha256=source.manifest.content_integrity_digest.transaction_root_sha256,
+            )
+        }
+    )
     plan_path = tmp_path / "plan.json"
     spec_path = tmp_path / "run.json"
     slots_path = tmp_path / "slots.pkl"
@@ -2722,23 +2710,32 @@ def test_checkpoint_fork_plan_cli_executes_from_fresh_process(tmp_path: Path) ->
             {
                 "schema_id": "feedbax.runtime.checkpoint_fork_plan_bindings",
                 "schema_version": "feedbax.runtime.checkpoint_fork_plan_bindings.v1",
-                "checkpoint_roots": dict(source="source", **{"target-a": "target-a", "target-b": "target-b"}),
+                "checkpoint_roots": dict(
+                    source="source", **{"target-a": "target-a", "target-b": "target-b"}
+                ),
                 "run_specs": {"run": "run.json"},
                 "slot_templates": {"slots": "slots.pkl"},
             }
         ),
         encoding="utf-8",
     )
-    dependencies = [{"kind": "fork_from_selected_checkpoint", "source_execution_hash": "d" * 64,
-        "source_row_id": "source", "checkpoint_transaction_id": source.manifest.transaction_id,
-        "checkpoint_root_hash": source.manifest.content_integrity_digest.transaction_root_sha256}]
+    dependencies = [
+        {
+            "kind": "fork_from_selected_checkpoint",
+            "source_execution_hash": "d" * 64,
+            "source_row_id": "source",
+            "checkpoint_transaction_id": source.manifest.transaction_id,
+            "checkpoint_root_hash": source.manifest.content_integrity_digest.transaction_root_sha256,
+        }
+    ]
 
     command = [sys.executable, "-m", "feedbax", "checkpoint", "fork-plan"]
     command += ["--plan", str(plan_path), "--bindings", str(bindings_path)]
     command += ["--dependencies", json.dumps(dependencies)]
     command += ["--plugin", CHECKPOINT_MINIMAX_PLUGIN]
-    completed = subprocess.run(command, check=False, cwd=Path(__file__).parents[1],
-                               text=True, capture_output=True)
+    completed = subprocess.run(
+        command, check=False, cwd=Path(__file__).parents[1], text=True, capture_output=True
+    )
 
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout)["targets"]["target-a"]["transaction_id"]
@@ -2792,9 +2789,7 @@ def test_jax_array_leaf_identity_accepts_known_private_spelling(
     recorded_leaf_type: str,
 ) -> None:
     run_spec, program, result = _write_minimax_checkpoint(tmp_path)
-    assert result.manifest.slots[0].structural_abi_fingerprint.leaves[0].leaf_type == (
-        "jax.Array"
-    )
+    assert result.manifest.slots[0].structural_abi_fingerprint.leaves[0].leaf_type == ("jax.Array")
     _rewrite_controller_leaf_type(result, recorded_leaf_type)
 
     loaded = load_latest_checkpoint(
@@ -2949,7 +2944,6 @@ def test_resume_slot_transform_runs_before_structural_abi_validation(
     )
 
     assert loaded.slots["controller"].tolist() == [1.0, 2.0, 0.0]
-
 
 
 def test_batch_history_validates_per_batch_and_interval_without_declarations(
@@ -3135,19 +3129,28 @@ def test_segment_lineage_reader_fails_closed(tmp_path: Path, failure: str) -> No
     parent_slots = _minimax_slots()
     parent_slots["controller"] = BatchHistory(jnp.arange(4), batch_axis=0)
     parent = write_checkpoint_transaction(
-        parent_root, run_spec=run_spec, phase_program=program,
-        barrier_name="after_warmup", coordinate=_coordinate(step=4),
-        slots=parent_slots, completed_training_batches=4,
+        parent_root,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=4),
+        slots=parent_slots,
+        completed_training_batches=4,
     )
     child_slots = _minimax_slots()
     child_slots["controller"] = BatchHistory(
-        jnp.arange(1 if failure == "granularity" else 2), batch_axis=0,
+        jnp.arange(1 if failure == "granularity" else 2),
+        batch_axis=0,
         granularity=Granularity.per_interval(2) if failure == "granularity" else None,
     )
     child = write_checkpoint_transaction(
-        child_root, run_spec=run_spec, phase_program=program,
-        barrier_name="after_warmup", coordinate=_coordinate(step=2),
-        slots=child_slots, completed_training_batches=2,
+        child_root,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=2),
+        slots=child_slots,
+        completed_training_batches=2,
     )
     payload = json.loads(child.manifest_path.read_text())
     payload["segment_lineage"].update(
@@ -3185,7 +3188,6 @@ def test_segment_lineage_reader_fails_closed_on_duplicate_cyclic_parent_chain(
 
     with pytest.raises(CheckpointIntegrityError, match="duplicate/cycle"):
         concatenate_checkpoint_histories(tmp_path, parent_roots={})
-
 
 
 def test_checkpoint_continuation_rejects_unknown_schema_version() -> None:
@@ -3350,10 +3352,14 @@ def test_continuation_applied_marker_absent_or_valid_false_requires_allocation()
     )
 
     for marker in (None, False):
-        metadata = {} if marker is None else {
-            "checkpoint_continuation_applied": marker,
-            "checkpoint_continuation": request.model_dump(mode="json", exclude_none=True),
-        }
+        metadata = (
+            {}
+            if marker is None
+            else {
+                "checkpoint_continuation_applied": marker,
+                "checkpoint_continuation": request.model_dump(mode="json", exclude_none=True),
+            }
+        )
         manifest = type("Manifest", (), {"metadata": metadata})()
         assert custody_module._continuation_was_applied(manifest, request) is False
 
@@ -3568,7 +3574,6 @@ def test_latest_pointer_missing_corrupt_and_stale_cases_fail_closed(
             expected_phase_program=program,
             expected_slots=_minimax_slots(),
         )
-    assert detect_known_legacy_checkpoint_layout(tmp_path) is None
 
     (tmp_path / "latest.json").write_text("{not-json")
     with pytest.raises(CheckpointIntegrityError, match="latest pointer is corrupt"):
@@ -3597,53 +3602,6 @@ def test_latest_pointer_missing_corrupt_and_stale_cases_fail_closed(
             expected_phase_program=program,
             expected_slots=_minimax_slots(),
         )
-
-
-@pytest.mark.parametrize(
-    ("layout_name", "populate"),
-    [
-        (
-            "Feedbax supervised trainer legacy checkpoint",
-            lambda root: (root / "last_batch.txt").write_text("10\n"),
-        ),
-        (
-            "RLRMP Equinox stream legacy checkpoint",
-            lambda root: (
-                (root / "checkpoint_000001").mkdir(),
-                (root / "checkpoint_000001" / "model.eqx").write_bytes(b"model"),
-                (root / "checkpoint_000001" / "optimizer_state.eqx").write_bytes(b"optimizer"),
-                (root / "checkpoint_000001" / "metadata.json").write_text("{}"),
-            ),
-        ),
-    ],
-)
-def test_known_legacy_layout_missing_pointer_names_adoption_remedy(
-    tmp_path: Path,
-    layout_name: str,
-    populate,
-) -> None:
-    run_spec = _run_spec(minimax=True)
-    program = run_spec.worker_execution.method_contract.phase_program
-    populate(tmp_path)
-
-    layout = detect_known_legacy_checkpoint_layout(tmp_path)
-    assert layout is not None
-    assert layout.name == layout_name
-
-    with pytest.raises(CheckpointCompatibilityError) as excinfo:
-        load_latest_checkpoint(
-            tmp_path,
-            expected_run_spec=run_spec,
-            expected_phase_program=program,
-            expected_slots=_minimax_slots(),
-        )
-
-    message = str(excinfo.value)
-    assert layout_name in message
-    assert LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT in message
-    assert "producing commit" in message
-    assert "path-mapping rules" in message
-    assert LEGACY_CHECKPOINT_ADOPTION_DOCS in message
 
 
 def test_changed_learning_rate_fails_closed_with_field_diff_unless_override(
@@ -3782,23 +3740,6 @@ def test_interrupted_toy_resume_matches_uninterrupted(tmp_path: Path) -> None:
     assert resumed["model"].tolist() == continuous["model"].tolist()
     assert resumed["optimizer"]["count"].tolist() == continuous["optimizer"]["count"].tolist()
     assert resumed["prng"].tolist() == continuous["prng"].tolist()
-
-
-def test_legacy_task_trainer_checkpoint_files_reject_with_clear_error(
-    tmp_path: Path,
-) -> None:
-    (tmp_path / "last_batch.txt").write_text("7")
-    (tmp_path / "ckpt_7.eqx").write_bytes(b"legacy eqx.tree_serialise_leaves payload")
-    run_spec = _run_spec()
-    program = run_spec.worker_execution.method_contract.phase_program
-
-    with pytest.raises(CheckpointCompatibilityError, match="schema identity"):
-        load_latest_checkpoint(
-            tmp_path,
-            expected_run_spec=run_spec,
-            expected_phase_program=program,
-            expected_slots=_minimax_slots(),
-        )
 
 
 def test_distinct_barrier_mapping_requires_explicit_coordinate_provenance() -> None:
@@ -4012,11 +3953,7 @@ def test_checkpoint_custody_ref_resolver_rejects_absolute_uri(
     absolute_uri: str,
 ) -> None:
     result = _write_resolver_checkpoint(tmp_path)
-    uri = (
-        str(result.manifest_path)
-        if absolute_uri == "path"
-        else result.manifest_path.as_uri()
-    )
+    uri = str(result.manifest_path) if absolute_uri == "path" else result.manifest_path.as_uri()
     ref = _resolver_parent_ref(result, uri=uri)
 
     with pytest.raises(CheckpointReferenceResolutionError, match="root-relative"):
@@ -4058,9 +3995,7 @@ def test_checkpoint_custody_ref_resolver_rejects_absolute_slot_path(
     result = _write_resolver_checkpoint(tmp_path)
     payload = json.loads(result.manifest_path.read_text())
     slot = payload["slots"][0]
-    slot["relative_path"] = str(
-        _manifest_blob_path(result.manifest_path, slot["relative_path"])
-    )
+    slot["relative_path"] = str(_manifest_blob_path(result.manifest_path, slot["relative_path"]))
     _write_json(result.manifest_path, payload)
 
     with pytest.raises(CheckpointReferenceResolutionError, match="must be relative"):

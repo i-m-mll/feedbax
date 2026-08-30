@@ -358,7 +358,6 @@ def test_an_ambiguous_digest_prefix_refuses_instead_of_picking_by_sort_order(
         root=tmp_path,
         role="evaluation_states",
         logical_name="states.bin",
-        suffix=".bin",
     )
     digest = stored.sha256
     assert digest is not None
@@ -371,7 +370,7 @@ def test_an_ambiguous_digest_prefix_refuses_instead_of_picking_by_sort_order(
 
     assert resolution.path is None
     assert resolution.reason == "digest_ambiguous"
-    assert resolution.candidates == (f"{digest}.aliased", f"{digest}.bin")
+    assert resolution.candidates == (digest, f"{digest}.aliased")
     assert artifact_bytes_path(without_location, root=tmp_path) is None
 
     spec = _evaluation_spec()
@@ -380,7 +379,7 @@ def test_an_ambiguous_digest_prefix_refuses_instead_of_picking_by_sort_order(
     assert not outcome.admitted
     unresolvable = next(f for f in outcome.failures if f.code == "artifact_bytes_unresolvable")
     assert unresolvable.details["reason"] == "digest_ambiguous"
-    assert unresolvable.details["candidates"] == [f"{digest}.aliased", f"{digest}.bin"]
+    assert unresolvable.details["candidates"] == [digest, f"{digest}.aliased"]
 
 
 def test_an_unambiguous_digest_prefix_still_resolves(tmp_path: Path) -> None:
@@ -390,15 +389,14 @@ def test_an_unambiguous_digest_prefix_still_resolves(tmp_path: Path) -> None:
         root=tmp_path,
         role="evaluation_states",
         logical_name="states.bin",
-        suffix=".bin",
     )
     without_location = stored.model_copy(update={"metadata": {}})
 
     resolution = resolve_artifact_bytes(without_location, root=tmp_path)
 
     assert resolution.reason is None
-    assert resolution.path == tmp_path / "artifacts" / "sha256" / stored.sha256[:2] / (
-        f"{stored.sha256}.bin"
+    assert resolution.path == (
+        tmp_path / "artifacts" / "sha256" / stored.sha256[:2] / stored.sha256
     )
 
     spec = _evaluation_spec()

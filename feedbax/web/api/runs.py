@@ -51,11 +51,6 @@ from feedbax.persistence.manifest_index import (
     remove_manifest_from_index,
     rebuild_manifest_index,
 )
-from feedbax.training.checkpoint_custody import (
-    LEGACY_CHECKPOINT_ADOPTION_DOCS,
-    LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT,
-    detect_known_legacy_checkpoint_layout,
-)
 from feedbax.web.services.training_service import RunStateCorruptionError, training_service
 
 logger = logging.getLogger(__name__)
@@ -66,16 +61,6 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 # Pydantic response models
 # ---------------------------------------------------------------------------
-
-
-class LegacyCheckpointInfo(BaseModel):
-    """Detected pre-custody checkpoint root that needs adoption."""
-
-    layout_id: str
-    layout_name: str
-    message: str
-    docs: str = LEGACY_CHECKPOINT_ADOPTION_DOCS
-    adoption_entrypoint: str = LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT
 
 
 class TrainingRunInfo(BaseModel):
@@ -98,7 +83,6 @@ class TrainingRunInfo(BaseModel):
     source_issue: Optional[str] = None
     provenance_id: Optional[str] = None
     superseded_by: Optional[str] = None
-    legacy_checkpoint: Optional[LegacyCheckpointInfo] = None
 
 
 class EvalRunInfo(BaseModel):
@@ -340,39 +324,6 @@ def _local_path_from_uri(uri: Any) -> Path | None:
     return Path(uri)
 
 
-def _checkpoint_candidate_paths(payload: dict[str, Any]) -> list[Path]:
-    candidates: list[Path] = []
-    for key in ("checkpoint_custody", "artifacts"):
-        records = payload.get(key)
-        if not isinstance(records, list):
-            continue
-        for record in records:
-            if not isinstance(record, dict):
-                continue
-            if key == "artifacts" and record.get("role") != "training_checkpoint":
-                continue
-            path = _local_path_from_uri(record.get("uri") or record.get("path"))
-            if path is not None:
-                candidates.append(path)
-    return candidates
-
-
-def _legacy_checkpoint_info(payload: dict[str, Any]) -> LegacyCheckpointInfo | None:
-    for path in _checkpoint_candidate_paths(payload):
-        layout = detect_known_legacy_checkpoint_layout(path)
-        if layout is None:
-            continue
-        return LegacyCheckpointInfo(
-            layout_id=layout.layout_id,
-            layout_name=layout.name,
-            message=(
-                "Checkpoint predates checkpoint custody; adoption required before "
-                f"Studio can load it. See {LEGACY_CHECKPOINT_ADOPTION_DOCS}."
-            ),
-        )
-    return None
-
-
 def _training_summary_from_index_row(row: dict[str, Any]) -> TrainingRunInfo:
     payload = json.loads(row["payload_json"])
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
@@ -398,7 +349,6 @@ def _training_summary_from_index_row(row: dict[str, Any]) -> TrainingRunInfo:
         superseded_by=metadata.get("superseded_by")
         if isinstance(metadata, dict) and isinstance(metadata.get("superseded_by"), str)
         else None,
-        legacy_checkpoint=_legacy_checkpoint_info(payload),
     )
 
 
@@ -415,10 +365,7 @@ def _compare_row_from_index_row(
     axis_coordinates = axis_coordinates if isinstance(axis_coordinates, dict) else {}
     params = {
         **hyperparams,
-        **{
-            str(key): value
-            for key, value in axis_coordinates.items()
-        },
+        **{str(key): value for key, value in axis_coordinates.items()},
     }
     metrics = payload.get("summary_metrics")
     metrics = metrics if isinstance(metrics, dict) else {}
@@ -468,9 +415,7 @@ def _load_training_manifest_from_index(training_run_id: str) -> tuple[TrainingRu
 
 def _selection_index_rows(spec: SelectionSpec):
     manifest_kind = spec.query.manifest_kind if spec.query is not None else spec.manifest_kind
-    return manifest_index_rows_from_records(
-        iter_indexed_manifest_records_by_kind(manifest_kind)
-    )
+    return manifest_index_rows_from_records(iter_indexed_manifest_records_by_kind(manifest_kind))
 
 
 def _load_evaluation_manifest_from_index(eval_run_id: str) -> tuple[EvaluationRunManifest, Path]:
@@ -834,9 +779,7 @@ async def list_eval_runs(training_run_id: str) -> list[EvalRunInfo]:
         _eval_summary_from_index_row(row)
         for row in iter_indexed_manifest_records_by_kind("EvaluationRunManifest")
     ]
-    manifest_matches = [
-        row for row in manifest_rows if training_run_id in row.training_run_ids
-    ]
+    manifest_matches = [row for row in manifest_rows if training_run_id in row.training_run_ids]
     if manifest_matches:
         return manifest_matches
 
@@ -847,11 +790,7 @@ async def list_eval_runs(training_run_id: str) -> list[EvalRunInfo]:
 
     with db_session(autocommit=False) as session:
         # Verify the training run exists
-        model = (
-            session.query(ModelRecord)
-            .filter(ModelRecord.hash == training_run_id)
-            .first()
-        )
+        model = session.query(ModelRecord).filter(ModelRecord.hash == training_run_id).first()
         if model is None:
             raise HTTPException(
                 status_code=404,
@@ -866,9 +805,7 @@ async def list_eval_runs(training_run_id: str) -> list[EvalRunInfo]:
         evals = (
             session.query(EvaluationRecord)
             .filter(EvaluationRecord.archived == False)  # noqa: E712
-            .filter(
-                EvaluationRecord.model_hashes.cast(String).contains(quoted_hash)
-            )
+            .filter(EvaluationRecord.model_hashes.cast(String).contains(quoted_hash))
             .order_by(EvaluationRecord.created_at.desc())
             .all()
         )

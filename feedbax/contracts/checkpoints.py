@@ -63,13 +63,6 @@ TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2 = (
 TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION = (
     "feedbax.manifest.training_checkpoint_latest_pointer.v3"
 )
-LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID = "feedbax.manifest.legacy_checkpoint_leaf_manifest"
-LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION = (
-    "feedbax.manifest.legacy_checkpoint_leaf_manifest.v1"
-)
-LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION_V0 = (
-    "feedbax.manifest.legacy_checkpoint_leaf_manifest.v0"
-)
 
 CheckpointSlotRole = Literal[
     "model",
@@ -182,9 +175,9 @@ class CheckpointContinuationRequest(StrictModel):
     source_completed_batches: int = Field(ge=0)
     additional_batches: int | None = Field(default=None, gt=0)
     self_contained: bool = False
-    schedule_discontinuity_exemptions: list[
-        ContinuationScheduleDiscontinuityExemption
-    ] = Field(default_factory=list)
+    schedule_discontinuity_exemptions: list[ContinuationScheduleDiscontinuityExemption] = Field(
+        default_factory=list
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -284,62 +277,6 @@ class SlotLeafFingerprint(StrictModel):
     static_repr_sha256: str | None = None
 
 
-class LeafManifestEntry(StrictModel):
-    """One ordered leaf slot in a legacy Equinox checkpoint stream ABI."""
-
-    tree_path: str
-    kind: Literal["array", "static"]
-    shape: tuple[int, ...] | None = None
-    dtype: str | None = None
-    static_repr_sha256: str | None = None
-
-    @model_validator(mode="after")
-    def _validate_leaf_metadata(self) -> "LeafManifestEntry":
-        if self.kind == "array" and (self.shape is None or self.dtype is None):
-            raise ValueError("array manifest entries must include shape and dtype")
-        if self.kind == "static" and ((self.shape is None) != (self.dtype is None)):
-            raise ValueError(
-                "static manifest entries must include both shape and dtype, or neither"
-            )
-        return self
-
-
-class LeafManifestProvenance(StrictModel):
-    """Where and how a legacy leaf manifest was produced."""
-
-    producing_commit: str
-    spec_ref: str | None = None
-    spec_hash: str | None = None
-    dumped_at: str
-    dumper_version: str
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class LeafManifest(StrictModel):
-    """Versioned ABI manifest for legacy ``tree_serialise_leaves`` streams."""
-
-    kind: Literal["LegacyCheckpointLeafManifest"] = "LegacyCheckpointLeafManifest"
-    schema_id: str = LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID
-    schema_version: str = LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION
-    model: list[LeafManifestEntry]
-    optimizer: list[LeafManifestEntry] = Field(default_factory=list)
-    provenance: LeafManifestProvenance
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def _validate_schema_identity(self) -> "LeafManifest":
-        if self.schema_id != LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID:
-            raise ValueError(
-                f"unsupported legacy checkpoint leaf manifest schema_id {self.schema_id!r}"
-            )
-        if self.schema_version != LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION:
-            raise ValueError(
-                "unsupported legacy checkpoint leaf manifest schema_version "
-                f"{self.schema_version!r}"
-            )
-        return self
-
-
 class StructuralAbiFingerprint(StrictModel):
     """Compatibility fingerprint for a slot PyTree."""
 
@@ -359,12 +296,14 @@ def structural_abi_leaf_content_projection(
     leaf: SlotLeafFingerprint | Mapping[str, Any],
 ) -> dict[str, Any]:
     """Return the structural content fields for one fingerprint leaf."""
-    payload = leaf.model_dump(mode="json", exclude_none=True) if isinstance(leaf, SlotLeafFingerprint) else leaf
+    payload = (
+        leaf.model_dump(mode="json", exclude_none=True)
+        if isinstance(leaf, SlotLeafFingerprint)
+        else leaf
+    )
     return {
         key: payload[key]
-        for key in (
-            "path", "leaf_type", "shape", "dtype", "weak_type", "static_repr_sha256"
-        )
+        for key in ("path", "leaf_type", "shape", "dtype", "weak_type", "static_repr_sha256")
         if key in payload and payload[key] is not None
     }
 
@@ -378,7 +317,11 @@ def structural_abi_content_projection(
     fingerprints before the migrated envelope is validatable. Non-mapping leaf
     entries retain the migration path's existing tolerant behavior and are ignored.
     """
-    payload = fingerprint.model_dump(mode="json", exclude_none=True) if isinstance(fingerprint, StructuralAbiFingerprint) else fingerprint
+    payload = (
+        fingerprint.model_dump(mode="json", exclude_none=True)
+        if isinstance(fingerprint, StructuralAbiFingerprint)
+        else fingerprint
+    )
     leaves = [
         structural_abi_leaf_content_projection(leaf)
         for leaf in list(payload.get("leaves") or ())
@@ -724,9 +667,7 @@ class CheckpointForkTarget(StrictModel):
     run_spec_ref: str = Field(min_length=1)
     slot_template_ref: str = Field(min_length=1)
     compatibility: CheckpointForkCompatibilityProjection
-    history_policy: CheckpointForkHistoryPolicy = Field(
-        default_factory=CheckpointForkHistoryPolicy
-    )
+    history_policy: CheckpointForkHistoryPolicy = Field(default_factory=CheckpointForkHistoryPolicy)
     transforms: list[CheckpointForkTransformStep] = Field(default_factory=list)
     barrier_mapping: CheckpointForkBarrierMapping | None = None
     target_coordinate: ProgressCoordinate | None = None
@@ -776,15 +717,10 @@ class CheckpointDigestMigrationRecord(StrictModel):
             )
         if self.schema_version != CHECKPOINT_DIGEST_MIGRATION_RECORD_SCHEMA_VERSION:
             raise ValueError(
-                "unsupported checkpoint digest migration schema_version "
-                f"{self.schema_version!r}"
+                f"unsupported checkpoint digest migration schema_version {self.schema_version!r}"
             )
-        _validate_sha256(
-            self.source_plan_canonical_sha256, path="/source_plan_canonical_sha256"
-        )
-        _validate_sha256(
-            self.target_plan_canonical_sha256, path="/target_plan_canonical_sha256"
-        )
+        _validate_sha256(self.source_plan_canonical_sha256, path="/source_plan_canonical_sha256")
+        _validate_sha256(self.target_plan_canonical_sha256, path="/target_plan_canonical_sha256")
         if any(not field for field in self.affected_fields):
             raise ValueError("/affected_fields entries must be non-empty")
         if any(not requirement for requirement in self.requalification_requirements):

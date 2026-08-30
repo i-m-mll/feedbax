@@ -16,6 +16,13 @@ from feedbax.persistence.artifact_custody import (
     ImmutableArtifactBlobProvider,
     open_immutable_artifact_blob_provider,
 )
+from feedbax.persistence.publication import (
+    LocalBlobStore,
+    PublicationConflictError,
+    PublicationError,
+    SQLitePublicationCatalog,
+    UnsupportedPublicationSchemaError,
+)
 
 __all__ = [
     "ArtifactBlobContainmentError",
@@ -29,5 +36,10 @@ __all__ = [
     "ImmutableArtifactBlobProvider",
     "ImmutableArtifactBlobProviderConfig",
     "ImmutableArtifactBlobProviderSpec",
+    "LocalBlobStore",
+    "PublicationConflictError",
+    "PublicationError",
+    "SQLitePublicationCatalog",
+    "UnsupportedPublicationSchemaError",
     "open_immutable_artifact_blob_provider",
 ]

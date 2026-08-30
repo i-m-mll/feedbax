@@ -537,7 +537,6 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
                     role=prepared.sink.role,
                     logical_name=prepared.logical_name,
                     media_type=prepared.media_type,
-                    suffix=prepared.suffix,
                     metadata={
                         **prepared.sink.metadata,
                         "slot": prepared.sink.slot,

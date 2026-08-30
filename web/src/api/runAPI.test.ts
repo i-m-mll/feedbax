@@ -73,13 +73,6 @@ describe('runAPI failure behavior', () => {
           source_issue: '9aa8ff2',
           provenance_id: 'feedbax-training-run:pending',
           superseded_by: null,
-          legacy_checkpoint: {
-            layout_id: 'rlrmp_eqx_stream_v0',
-            layout_name: 'RLRMP Equinox stream legacy checkpoint',
-            message: 'Checkpoint predates checkpoint custody; adoption required before Studio can load it.',
-            docs: 'docs/structure.md#legacy-checkpoint-adoption',
-            adoption_entrypoint: 'feedbax.training.legacy_checkpoint_adoption.adopt_legacy_checkpoint',
-          },
         },
       ]),
       { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -95,10 +88,6 @@ describe('runAPI failure behavior', () => {
         scenarioId: 'scenario:train',
         planned: true,
         sourceIssue: '9aa8ff2',
-        legacyCheckpoint: expect.objectContaining({
-          layout_id: 'rlrmp_eqx_stream_v0',
-          docs: 'docs/structure.md#legacy-checkpoint-adoption',
-        }),
       }),
     ]);
   });

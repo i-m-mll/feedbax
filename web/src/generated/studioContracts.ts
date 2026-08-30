@@ -1664,14 +1664,6 @@ export interface ValidateLossResponse {
   errors: ValidationErrorResponse[];
 }
 
-export interface LegacyCheckpointInfo {
-  layout_id: string;
-  layout_name: string;
-  message: string;
-  docs?: string;
-  adoption_entrypoint?: string;
-}
-
 export interface TrainingRunInfo {
   id: string;
   name: string;
@@ -1687,7 +1679,6 @@ export interface TrainingRunInfo {
   source_issue?: string | null;
   provenance_id?: string | null;
   superseded_by?: string | null;
-  legacy_checkpoint?: LegacyCheckpointInfo | null;
 }
 
 export interface EvalRunInfo {
@@ -4307,18 +4298,6 @@ export const ValidateLossResponseSchema: z.ZodType<ValidateLossResponse> = z.laz
     .strict()
 ) as unknown as z.ZodType<ValidateLossResponse>;
 
-export const LegacyCheckpointInfoSchema: z.ZodType<LegacyCheckpointInfo> = z.lazy(() =>
-  z
-    .object({
-      "layout_id": z.string(),
-      "layout_name": z.string(),
-      "message": z.string(),
-      "docs": z.string().optional(),
-      "adoption_entrypoint": z.string().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<LegacyCheckpointInfo>;
-
 export const TrainingRunInfoSchema: z.ZodType<TrainingRunInfo> = z.lazy(() =>
   z
     .object({
@@ -4336,7 +4315,6 @@ export const TrainingRunInfoSchema: z.ZodType<TrainingRunInfo> = z.lazy(() =>
       "source_issue": z.string().nullable().optional(),
       "provenance_id": z.string().nullable().optional(),
       "superseded_by": z.string().nullable().optional(),
-      "legacy_checkpoint": LegacyCheckpointInfoSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrainingRunInfo>;

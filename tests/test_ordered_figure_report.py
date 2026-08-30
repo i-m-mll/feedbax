@@ -88,7 +88,6 @@ def _write_figure_manifest(
         role="figure_render",
         logical_name=f"{name}{suffix}",
         media_type=media_type,
-        suffix=suffix,
     )
     artifacts = [artifact]
     if retain_plotly_json:
@@ -814,7 +813,6 @@ def test_report_inputs_resolve_once_across_distinct_retained_roots(
             role="figure_render",
             logical_name=f"{name}.png",
             media_type="image/png",
-            suffix=".png",
         )
         manifest = FigureManifest(
             id=f"feedbax-figure:{name}",
@@ -950,7 +948,6 @@ def test_report_input_duplicated_across_retained_roots_fails_before_outputs(
         role="figure_render",
         logical_name="figure.png",
         media_type="image/png",
-        suffix=".png",
     )
     figure = FigureManifest(
         id="feedbax-figure:duplicated",
@@ -1157,7 +1154,6 @@ def test_ordered_figure_report_accepts_exact_embedded_figure_spec_pin(
         role="figure_render",
         logical_name="exact.png",
         media_type="image/png",
-        suffix=".png",
     )
     figure_spec = _figure_spec_payload("exact")
     parent = _authenticated_provider_manifest_ref(

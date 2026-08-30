@@ -1037,7 +1037,6 @@ def _promote_artifact_bytes(
         role=artifact.role,
         logical_name=artifact.logical_name,
         media_type=artifact.media_type,
-        suffix=_artifact_suffix(source, digest=artifact.sha256),
         metadata=dict(artifact.metadata),
     )
     return artifact.model_copy(update={"uri": stored.uri})

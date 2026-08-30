@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState, type DragEvent } from 'react
 import clsx from 'clsx';
 import {
   Activity,
-  AlertTriangle,
   BarChart3,
   Check,
   CheckCircle2,
@@ -3047,16 +3046,11 @@ function TrainingRunRow({
         : row.status === 'pending'
           ? 'Pending'
           : 'Not recorded');
-  const checkpoint = row.legacyCheckpoint
-    ? 'Adoption required'
-    : row.checkpointAvailable && row.warmupBatches !== null
+  const checkpoint = row.checkpointAvailable && row.warmupBatches !== null
       ? row.warmupBatches.toLocaleString()
       : row.checkpointAvailable
         ? 'Available'
         : 'None';
-  const checkpointTitle = row.legacyCheckpoint
-    ? `${row.legacyCheckpoint.message} Docs: ${row.legacyCheckpoint.docs ?? 'docs/structure.md#legacy-checkpoint-adoption'}`
-    : checkpoint;
   const complete = row.status === 'completed';
 
   return (
@@ -3139,12 +3133,8 @@ function TrainingRunRow({
         />
       ))}
       <div className="flex items-center gap-1 text-slate-600">
-        {row.legacyCheckpoint ? (
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600" />
-        ) : (
-          !row.checkpointAvailable && <XCircle className="h-3.5 w-3.5 shrink-0 text-red-500" />
-        )}
-        <span className="truncate" title={checkpointTitle}>{checkpoint}</span>
+        {!row.checkpointAvailable && <XCircle className="h-3.5 w-3.5 shrink-0 text-red-500" />}
+        <span className="truncate" title={checkpoint}>{checkpoint}</span>
       </div>
       <div className="flex items-center gap-1">
         <button
@@ -3374,8 +3364,8 @@ function RunDetailPane({
       </div>
       <button
         type="button"
-        disabled={Boolean(run.legacyCheckpoint) || !run.checkpointAvailable || !run.uri}
-        title={run.legacyCheckpoint?.message ?? 'Checkpoint'}
+        disabled={!run.checkpointAvailable || !run.uri}
+        title="Checkpoint"
         onClick={() => onDownloadCheckpoint(run)}
         className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
       >

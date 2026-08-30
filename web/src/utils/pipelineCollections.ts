@@ -5,7 +5,6 @@ import type {
   StudioStageSpec,
   StudioWorkspaceSpec,
 } from '@/types/workspace';
-import type { LegacyCheckpointInfo } from '@/types/runs';
 import {
   executionTargetIsBillable,
   executionTargetLabel,
@@ -32,7 +31,6 @@ export interface TrainingRunSummary {
   batchSize: number | null;
   warmupBatches: number | null;
   checkpointAvailable: boolean;
-  legacyCheckpoint?: LegacyCheckpointInfo | null;
   sourceIssue: string | null;
   provenanceId: string;
   uri: string | null;
@@ -745,7 +743,6 @@ function trainingRunSummary(
     checkpointAvailable:
       typedCheckpointAvailable ??
       (Boolean(ref.uri) || stringValue(ref.metadata.checkpoint_uri) !== null),
-    legacyCheckpoint: legacyCheckpointValue(ref.metadata.legacy_checkpoint),
     sourceIssue: stringValue(ref.metadata.source_issue),
     provenanceId: stringValue(ref.metadata.provenance_id) ?? ref.id,
     uri: ref.uri ?? null,
@@ -1155,25 +1152,6 @@ function objectValue(value: unknown): Record<string, unknown> | null {
 
 function booleanValue(value: unknown): boolean | null {
   return typeof value === 'boolean' ? value : null;
-}
-
-function legacyCheckpointValue(value: unknown): LegacyCheckpointInfo | null {
-  const payload = objectValue(value);
-  if (
-    !payload ||
-    typeof payload.layout_id !== 'string' ||
-    typeof payload.layout_name !== 'string' ||
-    typeof payload.message !== 'string'
-  ) {
-    return null;
-  }
-  return {
-    layout_id: payload.layout_id,
-    layout_name: payload.layout_name,
-    message: payload.message,
-    docs: stringValue(payload.docs) ?? undefined,
-    adoption_entrypoint: stringValue(payload.adoption_entrypoint) ?? undefined,
-  };
 }
 
 function nestedNumber(value: unknown, key: string): number | null {

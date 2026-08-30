@@ -16,6 +16,20 @@ from feedbax.contracts.component import (
     derive_dynamic_port_layout as derive_dynamic_port_layout,
     validate_dynamic_port_layout as validate_dynamic_port_layout,
 )
+from feedbax.contracts.publication import (
+    ArtifactRecord,
+    BlobRef,
+    BlobStore,
+    CheckpointSet,
+    CheckpointSlot,
+    ExactRef,
+    ProvenanceEdge,
+    PublicationCatalog,
+    PublicationReceipt,
+    PublicationRequest,
+    PublicationService,
+    artifact_record,
+)
 from feedbax.contracts.staged_execution import (
     STAGED_CHECKPOINT_CUSTODY_BACKEND,
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
@@ -1015,4 +1029,16 @@ __all__ = [
     "material_dependency_identity_sha256",
     "training_run_certification",
     "validate_material_dependency_admission",
+    "ArtifactRecord",
+    "BlobRef",
+    "BlobStore",
+    "CheckpointSet",
+    "CheckpointSlot",
+    "ExactRef",
+    "ProvenanceEdge",
+    "PublicationCatalog",
+    "PublicationReceipt",
+    "PublicationRequest",
+    "PublicationService",
+    "artifact_record",
 ]
