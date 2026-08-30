@@ -339,8 +339,9 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert "RuntimeIntrospectionOptions" in manifest.schemas
     assert "RuntimeSampleLeafSchema" in manifest.schemas
     assert "MandibleManifestMapping" in manifest.schemas
-    assert "ExecutionPlan" in manifest.schemas
-    assert "LocalExecutionResult" in manifest.schemas
+    assert "Invocation" in manifest.schemas
+    assert "BackendPlan" in manifest.schemas
+    assert "Attempt" in manifest.schemas
 
 
 def test_provider_manifest_discovers_immutable_blob_spec_and_open_capability() -> None:
@@ -364,35 +365,22 @@ def test_provider_manifest_discovers_immutable_blob_spec_and_open_capability() -
     assert "absolute explicit_root" in capability.compatibility_predicates[1]
 
 
-def test_provider_manifest_exports_governed_execution_artifact_refs() -> None:
+def test_provider_manifest_exports_separate_invocation_realization_and_attempt_records() -> None:
     manifest = provider_manifest()
-    plan_schema = manifest.schemas["ExecutionPlan"]
-    result_schema = manifest.schemas["LocalExecutionResult"]
+    invocation = manifest.schemas["Invocation"]["properties"]
+    backend_plan = manifest.schemas["BackendPlan"]["properties"]
+    attempt = manifest.schemas["Attempt"]["properties"]
 
-    assert plan_schema["properties"]["artifact_routes"]["items"]["$ref"] == "#/$defs/ArtifactRef"
-    for field in ("stdout", "stderr", "manifest", "execution_plan"):
-        assert result_schema["properties"][field]["$ref"] == "#/$defs/ArtifactRef"
-    assert (
-        result_schema["properties"]["produced_artifacts"]["items"]["$ref"] == "#/$defs/ArtifactRef"
+    assert invocation["schema_version"]["const"] == "feedbax.spec.invocation.v1"
+    assert "backend_id" not in invocation
+    assert backend_plan["schema_version"]["const"] == (
+        "feedbax.orchestration.backend_plan.v1"
     )
-
-    prepare_roles = set(manifest.capabilities["prepare_execution_plan"].artifact_roles)
-    assert {
-        "execution_plan",
-        "execution_log",
-        "training_run_spec",
-        "training_run_manifest",
-        "tracked_spec",
-        "bulk_output",
-    }.issubset(prepare_roles)
-    local_roles = set(manifest.capabilities["run_local_execution"].artifact_roles)
-    assert {
-        "execution_plan",
-        "execution_log",
-        "execution_stdout",
-        "execution_stderr",
-        "training_run_manifest",
-    }.issubset(local_roles)
+    assert "provider_resource_handle" not in backend_plan
+    assert attempt["schema_version"]["const"] == "feedbax.manifest.attempt.v1"
+    assert "provider_resource_handle" in attempt
+    assert "prepare_execution_plan" not in manifest.capabilities
+    assert "run_local_execution" not in manifest.capabilities
 
 
 def test_provider_manifest_exposes_eval_analysis_report_action_depth() -> None:

@@ -82,7 +82,7 @@ import {
 } from '@/utils/pipelineCollections';
 import {
   executionBackendForTarget,
-  stageExecutionSpecWithProtocolPatch,
+  stageMetadataWithExecutionTarget,
   stageExecutionTarget,
   trainingProtocolSnapshot,
   trainingSpecWithProtocolPatch,
@@ -340,9 +340,9 @@ export function TrainCollectionPanel() {
       progressBindingsForRuns(
         rows,
         trainingProgress,
-        trainingJobId ?? lastTrainingExecutionPreparation?.plan.job_id ?? null
+        trainingJobId ?? lastTrainingExecutionPreparation?.invocation.invocation_id ?? null
       ),
-    [lastTrainingExecutionPreparation?.plan.job_id, rows, trainingJobId, trainingProgress]
+    [lastTrainingExecutionPreparation?.invocation.invocation_id, rows, trainingJobId, trainingProgress]
   );
 
   useEffect(() => {
@@ -805,9 +805,7 @@ export function TrainCollectionPanel() {
       updateStageDraft(
         trainStage.id,
         {
-          execution_spec: stageExecutionSpecWithProtocolPatch(trainStage, {
-            compute_target: target,
-          }),
+          metadata: stageMetadataWithExecutionTarget(trainStage, target),
         },
         'training_compute_target_changed'
       );
@@ -1280,9 +1278,7 @@ export function EvaluateCollectionPanel() {
       updateStageDraft(
         evalStage.id,
         {
-          execution_spec: stageExecutionSpecWithProtocolPatch(evalStage, {
-            compute_target: target,
-          }),
+          metadata: stageMetadataWithExecutionTarget(evalStage, target),
         },
         'evaluation_compute_target_changed'
       );
@@ -3601,7 +3597,7 @@ function ExecutionTarget({
       id: 'runpod',
       icon: Activity,
       title: 'RunPod',
-      detail: 'GPU pod execution plan',
+      detail: 'Inert GPU backend plan',
     },
     {
       id: 'manual',

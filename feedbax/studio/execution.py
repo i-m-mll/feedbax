@@ -1,32 +1,28 @@
-"""Lower Studio workspace stages into provider execution plans."""
+"""Bind Studio workspace stages to invocations and inert backend plans."""
 
 from __future__ import annotations
 
 import json
-import os
-import shlex
-import sys
 import uuid
 import copy
+import hashlib
+import subprocess
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from feedbax.execution.models import (
-    ArtifactPolicy,
-    ExecutionBackend,
-    LocalExecutionResult,
-    ExecutionPlan,
-    ExecutionSpec,
-    LocalBackendConfig,
-    RepoSource,
+from feedbax.execution.records import Invocation, InvocationExecutionPolicy, invocation_for_operation
+from feedbax.orchestration.drivers.local import local_driver_registration
+from feedbax.orchestration.drivers.runpod import runpod_driver_registration
+from feedbax.orchestration.realization import (
+    BackendPlan,
+    BackendRealizationRequest,
+    MachineShape,
+    OrchestrationBackend,
 )
-from feedbax.execution.planning import (
-    default_feedbax_sources,
-    prepare_execution_plan,
-)
-from feedbax.execution.local import run_local_execution
+from feedbax.workflow.plan import LogicalKey, Operation, PlanNode, build_workflow_plan
 from feedbax.analysis.evaluation import (
     EvaluationRecipeExecutionError,
     execute_evaluation_run_spec,
@@ -100,19 +96,6 @@ if TYPE_CHECKING:
 
 ExecutionTarget = Literal["local", "gcp", "runpod", "manual"]
 
-#: Files the Studio training command contracts to produce, in emission order.
-#: Declared once so the command contract and the artifact policy cannot drift.
-STUDIO_TRAINING_CONTRACT_FILES: tuple[str, ...] = (
-    "execution-spec.json",
-    "workspace-snapshot.json",
-    "graph-spec.json",
-    "training-spec.json",
-    "task-spec.json",
-    "task-binding-spec.json",
-    "artifacts/training-summary.json",
-)
-
-
 class _Unset:
     """Sentinel distinguishing an omitted argument from an explicit `None`."""
 
@@ -127,17 +110,15 @@ class StudioExecutionModel(BaseModel):
 
 
 class StudioTrainingExecutionRequest(StudioExecutionModel):
-    """Request to prepare an execution plan from a Studio train stage."""
+    """Request to bind a Studio train stage to an inert backend realization."""
 
     workspace: StudioWorkspaceSpec
     graph: GraphSpec
     stage_id: Optional[str] = None
-    backend: ExecutionBackend = "local"
+    backend: Literal["local", "runpod"] = "local"
     job_id: Optional[str] = None
     local_cwd: Optional[str] = None
-    feedbax_ref: Optional[str] = None
-    repos: Optional[list[RepoSource]] = None
-    primary_repo: Optional[str] = None
+    backend_realization: BackendRealizationRequest | None = None
     queue_target: Optional[ExecutionTarget] = None
     queue_manifest_ids: list[str] = Field(default_factory=list)
     issues: list[str] = Field(default_factory=list)
@@ -145,39 +126,14 @@ class StudioTrainingExecutionRequest(StudioExecutionModel):
 
 
 class StudioTrainingExecutionPreparation(StudioExecutionModel):
-    """Prepared provider execution plan plus workspace updates."""
+    """Prepared invocation and inert backend plan plus workspace updates."""
 
     workspace: StudioWorkspaceSpec
     graph: GraphSpec
     stage_id: str
     scenario_id: str
-    execution_spec: ExecutionSpec
-    plan: ExecutionPlan
-
-
-class StudioTrainingLocalRunRequest(StudioExecutionModel):
-    """Request to run the active Studio train-stage scenario locally."""
-
-    workspace: StudioWorkspaceSpec
-    graph: GraphSpec
-    stage_id: Optional[str] = None
-    job_id: Optional[str] = None
-    local_cwd: Optional[str] = None
-    root: Optional[str] = None
-    timeout: Optional[float] = None
-    issues: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class StudioTrainingLocalRunResult(StudioExecutionModel):
-    """Result from a local Studio train-stage provider execution."""
-
-    workspace: StudioWorkspaceSpec
-    stage_id: str
-    scenario_id: str
-    execution_spec: ExecutionSpec
-    result: LocalExecutionResult
-    snapshot_dir: str
+    invocation: Invocation
+    backend_plan: BackendPlan
 
 
 EvalCheckpointPolicyMode = Literal["last", "best-by-metric", "every-k"]
@@ -296,7 +252,7 @@ class StudioPipelineMaterializationResult(StudioExecutionModel):
 
 
 class StudioExecutionPreparationError(ValueError):
-    """Raised when a workspace cannot be lowered to an execution plan."""
+    """Raised when a workspace cannot be bound to an invocation and backend plan."""
 
 
 def prepare_studio_training_execution(
@@ -304,13 +260,7 @@ def prepare_studio_training_execution(
     *,
     registry_bundle: ApplicationRegistryBundle,
 ) -> StudioTrainingExecutionPreparation:
-    """Prepare a provider execution plan from the active Studio train scenario.
-
-    This function is intentionally provider/domain owned. Frontend state is
-    submitted as a typed workspace snapshot, then Feedbax validates and lowers
-    it into the same provider-neutral ``ExecutionSpec`` used by local, SSH,
-    RunPod, and Modal plans.
-    """
+    """Prepare one provider-neutral invocation and one inert backend plan."""
 
     workspace = request.workspace.model_copy(deep=True)
     stage = _select_train_stage(workspace, request.stage_id)
@@ -351,32 +301,29 @@ def prepare_studio_training_execution(
 
     job_id = request.job_id or f"studio-train-{uuid.uuid4().hex[:12]}"
     execution_target = _request_execution_target(stage, request)
-    execution_spec = _build_execution_spec(
+    invocation, backend_plan = _build_invocation_backend_plan(
         request=request,
         workspace=workspace,
         stage=stage,
         job_id=job_id,
     )
-    plan = prepare_execution_plan(execution_spec)
-    plan.warnings.extend(
-        issue.message for issue in validation.warnings if issue.message not in plan.warnings
-    )
 
     prepared_at = utc_now().isoformat()
     plan_ref = StudioArtifactRef(
-        kind="ExecutionPlan",
-        id=f"execution-plan:{plan.job_id}",
-        role="execution_plan",
-        uri=f"{plan.run_directory.rstrip('/')}/execution-plan.json",
+        kind="BackendPlan",
+        id=f"backend-plan:{backend_plan.backend_plan_id}",
+        role="backend_plan",
+        uri=f"backend-plan:{backend_plan.backend_plan_id}",
         media_type="application/json",
         metadata={
-            "backend": plan.backend,
+            "backend": backend_plan.backend_id,
+            "invocation_id": invocation.invocation_id,
             "stage_id": stage.id,
             "scenario_id": stage.scenario_id,
             "prepared_at": prepared_at,
         },
     )
-    stage.execution_spec = execution_spec.model_dump(mode="json", exclude_none=True)
+    stage.execution_spec = invocation.model_dump(mode="json", exclude_none=True)
     stage.status = "ready"
     stage.validation = StudioValidationState(
         valid=True,
@@ -384,18 +331,19 @@ def prepare_studio_training_execution(
         warnings=validation.warnings,
         metadata={
             **validation.metadata,
-            "execution_job_id": plan.job_id,
-            "execution_backend": plan.backend,
-            "execution_run_directory": plan.run_directory,
+            "execution_job_id": job_id,
+            "invocation_id": invocation.invocation_id,
+            "backend_plan_id": backend_plan.backend_plan_id,
+            "execution_backend": backend_plan.backend_id,
         },
     )
     stage.artifact_refs = _upsert_artifact_ref(stage.artifact_refs, plan_ref)
     stage.manifest_refs = _upsert_manifest_ref(
         stage.manifest_refs,
         StudioManifestRef(
-            kind="ExecutionPlan",
-            id=f"execution-plan:{plan.job_id}",
-            role="execution_plan",
+            kind="BackendPlan",
+            id=f"backend-plan:{backend_plan.backend_plan_id}",
+            role="backend_plan",
             uri=plan_ref.uri,
             metadata=plan_ref.metadata,
         ),
@@ -421,7 +369,7 @@ def prepare_studio_training_execution(
                 if scenario.task_binding_spec is not None
                 else None,
                 request=request,
-                job_id=plan.job_id,
+                job_id=job_id,
                 execution_target=execution_target,
                 registry_bundle=registry_bundle,
             )
@@ -445,11 +393,12 @@ def prepare_studio_training_execution(
         )
     stage.metadata = {
         **stage.metadata,
-        "last_execution_plan": {
-            "job_id": plan.job_id,
-            "backend": plan.backend,
+        "last_backend_plan": {
+            "job_id": job_id,
+            "invocation_id": invocation.invocation_id,
+            "backend_plan_id": backend_plan.backend_plan_id,
+            "backend": backend_plan.backend_id,
             "prepared_at": prepared_at,
-            "run_directory": plan.run_directory,
         },
         "last_staged_training": staged_summary,
     }
@@ -469,128 +418,8 @@ def prepare_studio_training_execution(
         graph=request.graph,
         stage_id=stage.id,
         scenario_id=stage.scenario_id,
-        execution_spec=execution_spec,
-        plan=plan,
-    )
-
-
-def run_studio_training_local_execution(
-    request: StudioTrainingLocalRunRequest,
-    *,
-    registry_bundle: ApplicationRegistryBundle,
-) -> StudioTrainingLocalRunResult:
-    """Run a Studio train-stage scenario through the local provider boundary."""
-
-    job_id = request.job_id or f"studio-train-{uuid.uuid4().hex[:12]}"
-    root_path = Path(request.root).expanduser() if request.root else default_manifest_root()
-    snapshot_dir = (
-        Path(request.local_cwd).expanduser()
-        if request.local_cwd
-        else root_path / "executions" / job_id / "inputs"
-    )
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
-
-    preparation = prepare_studio_training_execution(
-        StudioTrainingExecutionRequest(
-            workspace=request.workspace,
-            graph=request.graph,
-            stage_id=request.stage_id,
-            backend="local",
-            job_id=job_id,
-            local_cwd=str(snapshot_dir),
-            issues=request.issues,
-            metadata=request.metadata,
-        ),
-        registry_bundle=registry_bundle,
-    )
-    _materialize_local_execution_snapshot(preparation, snapshot_dir)
-
-    result = run_local_execution(
-        preparation.execution_spec,
-        root=root_path,
-        timeout=request.timeout,
-    )
-    workspace = preparation.workspace.model_copy(deep=True)
-    stage = _select_train_stage(workspace, preparation.stage_id)
-    completed_at = utc_now().isoformat()
-    manifest_ref = StudioManifestRef(
-        kind=result.manifest_payload.get("kind", "TrainingRunManifest"),
-        id=str(result.manifest_payload.get("id", f"training-run:{result.job_id}")),
-        role="training_run",
-        uri=result.manifest_path,
-        metadata={
-            "job_id": result.job_id,
-            "status": result.status,
-            "stage_id": stage.id,
-            "scenario_id": preparation.scenario_id,
-            "completed_at": completed_at,
-        },
-    )
-    stage.status = "completed" if result.status == "completed" else "failed"
-    stage.validation = StudioValidationState(
-        valid=result.status == "completed",
-        checked_at=completed_at,
-        errors=(
-            []
-            if result.status == "completed"
-            else [
-                StudioValidationIssue(
-                    type="local_execution_failed",
-                    message=f"Local execution returned code {result.return_code}",
-                    location={"path": "/execution_spec/command"},
-                    severity="error",
-                )
-            ]
-        ),
-        warnings=stage.validation.warnings,
-        metadata={
-            **stage.validation.metadata,
-            "execution_job_id": result.job_id,
-            "execution_status": result.status,
-            "execution_return_code": result.return_code,
-            "snapshot_dir": str(snapshot_dir),
-            "manifest_path": result.manifest_path,
-        },
-    )
-    stage.manifest_refs = _upsert_manifest_ref(stage.manifest_refs, manifest_ref)
-    stage.artifact_refs = _upsert_many_artifact_refs(
-        stage.artifact_refs,
-        _local_result_artifact_refs(result, snapshot_dir, stage.id, preparation.scenario_id),
-    )
-    stage.output_collections = _upsert_training_manifest_in_outputs(
-        _drop_pending_training_manifest_for_job(stage.output_collections, result.job_id),
-        manifest_ref,
-        stage.id,
-    )
-    stage.metadata = {
-        **stage.metadata,
-        "last_execution_result": {
-            "job_id": result.job_id,
-            "status": result.status,
-            "return_code": result.return_code,
-            "completed_at": completed_at,
-            "manifest_path": result.manifest_path,
-            "snapshot_dir": str(snapshot_dir),
-        },
-    }
-    workspace.manifest_refs = _upsert_manifest_ref(workspace.manifest_refs, manifest_ref)
-    workspace.artifact_refs = _upsert_many_artifact_refs(
-        workspace.artifact_refs,
-        _local_result_artifact_refs(result, snapshot_dir, stage.id, preparation.scenario_id),
-    )
-    workspace.collections = _upsert_many_collection_refs(
-        workspace.collections,
-        stage.output_collections,
-    )
-    _replace_stage(workspace, stage)
-
-    return StudioTrainingLocalRunResult(
-        workspace=workspace,
-        stage_id=stage.id,
-        scenario_id=preparation.scenario_id,
-        execution_spec=preparation.execution_spec,
-        result=result,
-        snapshot_dir=str(snapshot_dir),
+        invocation=invocation,
+        backend_plan=backend_plan,
     )
 
 
@@ -1076,101 +905,153 @@ def _provider_issues_to_studio(
     return converted
 
 
-def _build_execution_spec(
+def _build_invocation_backend_plan(
     *,
     request: StudioTrainingExecutionRequest,
     workspace: StudioWorkspaceSpec,
     stage: StudioStageSpec,
     job_id: str,
-) -> ExecutionSpec:
+) -> tuple[Invocation, BackendPlan]:
     scenario = workspace.scenarios[stage.scenario_id or ""]
-    repos = request.repos
-    if repos is None and request.backend != "local":
-        repos = default_feedbax_sources(feedbax_ref=request.feedbax_ref or "develop")
-    python_cmd = shlex.quote(sys.executable) if request.backend == "local" else "python"
-    repo_root = Path(__file__).resolve().parents[2]
-    pythonpath = str(repo_root)
-    if existing_pythonpath := os.environ.get("PYTHONPATH"):
-        pythonpath = os.pathsep.join([pythonpath, existing_pythonpath])
-    metadata = {
-        **request.metadata,
-        "studio": {
-            "workspace_id": workspace.id,
-            "workspace_schema_version": workspace.schema_version,
-            "stage_id": stage.id,
-            "stage_kind": stage.kind,
-            "scenario_id": scenario.id,
-            "scenario_schema_version": scenario.schema_version,
-            "graph_spec": request.graph.model_dump(mode="json", exclude_none=True),
-            "training_spec": scenario.training_spec,
-            "task_spec": scenario.task_spec,
-            "task_binding_spec": scenario.task_binding_spec.model_dump(
-                mode="json", exclude_none=True
-            )
+    semantic_payload = {
+        "graph": request.graph.model_dump(mode="json", exclude_none=True),
+        "training": scenario.training_spec,
+        "task": scenario.task_spec,
+        "task_binding": (
+            scenario.task_binding_spec.model_dump(mode="json", exclude_none=True)
             if scenario.task_binding_spec is not None
-            else None,
-            "objective_spec": scenario.objective_spec,
-            "temporal_spec": scenario.temporal_spec,
-        },
-        "command_contract": {
-            "expected_files": list(STUDIO_TRAINING_CONTRACT_FILES),
-            "current_command_role": "materialize_mvp_training_result",
-            "future_command_role": "launch_training_runner",
-        },
+            else None
+        ),
+        "objective": scenario.objective_spec,
+        "temporal": scenario.temporal_spec,
     }
-    return ExecutionSpec(
-        kind="training",
-        job_id=job_id,
-        backend=request.backend,
+    semantic_hash = hashlib.sha256(
+        json.dumps(semantic_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    key = LogicalKey("campaign", f"studio/{stage.id}/{scenario.id}")
+    node = PlanNode(
+        key=key,
+        source_ref=f"studio:{workspace.id}:{stage.id}:{scenario.id}",
+        operation=Operation(
+            type_id="feedbax.operation.train",
+            parameters={
+                "compiled_schema_id": "feedbax.studio.training_scenario",
+                "semantic_hash": semantic_hash,
+            },
+            output_types={"training_run": "feedbax.training_run"},
+            determinism="seeded",
+            cache_policy="never",
+            effect="external",
+            capabilities=("training",),
+        ),
+        content_hash=semantic_hash,
+        execution_identity=semantic_hash,
+    )
+    workflow = build_workflow_plan(key, (node,), ())
+    realization = request.backend_realization
+    if realization is None:
+        if request.backend != "local":
+            raise StudioExecutionPreparationError(
+                "paid-resource-capable Studio planning requires an exact backend_realization; "
+                "backend selection alone cannot mint machine shape or expected cost"
+            )
+        realization = _default_local_realization(job_id=job_id, cwd=request.local_cwd)
+    invocation = invocation_for_operation(
+        workflow,
+        key,
+        bound_inputs={},
+        execution_policy=InvocationExecutionPolicy(
+            timeout_seconds=realization.timeout_seconds,
+            max_attempts=1,
+        ),
+        scientific_seeds=_studio_scientific_seeds(scenario.training_spec),
+    )
+    registration = (
+        local_driver_registration() if request.backend == "local" else runpod_driver_registration()
+    )
+    backend = OrchestrationBackend(
+        backend_id=registration.name,
+        supported_scientific_capabilities=frozenset({"training"}),
+        driver_capabilities=registration.supported_capabilities,
+    )
+    if realization.configuration.get("job_id") not in {None, job_id}:
+        raise StudioExecutionPreparationError(
+            "backend realization job_id does not match the Studio preparation job_id"
+        )
+    plan = backend.realize("training", (invocation, realization))
+    if not isinstance(plan, BackendPlan):
+        raise TypeError("backend realization did not produce a BackendPlan")
+    return invocation, plan
+
+
+def _default_local_realization(*, job_id: str, cwd: str | None) -> BackendRealizationRequest:
+    repo_root = Path(__file__).resolve().parents[2]
+    revision = subprocess.run(
+        ["git", "--no-optional-locks", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5,
+    ).stdout.strip()
+    listed = subprocess.run(
+        ["git", "--no-optional-locks", "ls-files", "-co", "--exclude-standard", "feedbax"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5,
+    ).stdout.splitlines()
+    code_hash = hashlib.sha256(revision.encode("ascii") + b"\0")
+    for relative in sorted(set(listed)):
+        path = repo_root / relative
+        if not path.is_file():
+            continue
+        code_hash.update(relative.encode("utf-8") + b"\0")
+        code_hash.update(path.read_bytes())
+    code_digest = code_hash.hexdigest()
+    lock_path = repo_root / "uv.lock"
+    environment_digest = hashlib.sha256(lock_path.read_bytes()).hexdigest()
+    return BackendRealizationRequest(
+        adapter_id="feedbax.orchestration.local",
+        adapter_version="1",
+        capability_variant="local-stop",
+        code_bundle_id=f"feedbax-working-tree:sha256:{code_digest}",
+        environment_bundle_id=f"uv-lock:sha256:{environment_digest}",
         command=(
-            f"{python_cmd} -m feedbax.bin.studio_pipeline materialize-training "
-            "--graph graph-spec.json "
-            "--training training-spec.json "
-            "--task task-spec.json "
-            "--task-binding task-binding-spec.json "
-            "--output artifacts/training-summary.json"
+            sys.executable,
+            "-m",
+            "feedbax.bin.studio_pipeline",
+            "materialize-training",
+            "--graph",
+            "graph-spec.json",
+            "--training",
+            "training-spec.json",
+            "--task",
+            "task-spec.json",
+            "--task-binding",
+            "task-binding-spec.json",
+            "--output",
+            "artifacts/training-summary.json",
         ),
-        repos=repos or [],
-        primary_repo=request.primary_repo,
-        local=LocalBackendConfig(cwd=request.local_cwd),
-        artifact_policy=ArtifactPolicy(
-            tracked_paths=list(STUDIO_TRAINING_CONTRACT_FILES),
-            bulk_paths=["artifacts"],
-            metadata={"studio_stage_id": stage.id, "studio_scenario_id": scenario.id},
-        ),
-        issues=request.issues,
-        env={
-            "PYTHONPATH": pythonpath,
-            "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
-            "FEEDBAX_STUDIO_WORKSPACE_ID": workspace.id,
-            "FEEDBAX_STUDIO_STAGE_ID": stage.id,
-            "FEEDBAX_STUDIO_SCENARIO_ID": scenario.id,
-        },
-        metadata=metadata,
+        machine=MachineShape(),
+        timeout_seconds=3600,
+        retry_classification="same-plan",
+        external_effect_key=f"studio-local:{job_id}",
+        configuration={"job_id": job_id, "cwd": cwd},
     )
 
 
-def _materialize_local_execution_snapshot(
-    preparation: StudioTrainingExecutionPreparation,
-    snapshot_dir: Path,
-) -> None:
-    scenario = preparation.workspace.scenarios[preparation.scenario_id]
-    files = {
-        "execution-spec.json": preparation.execution_spec.model_dump(
-            mode="json", exclude_none=True
-        ),
-        "workspace-snapshot.json": preparation.workspace.model_dump(mode="json", exclude_none=True),
-        "graph-spec.json": preparation.graph.model_dump(mode="json", exclude_none=True),
-        "training-spec.json": scenario.training_spec or {},
-        "task-spec.json": scenario.task_spec or {},
-        "task-binding-spec.json": scenario.task_binding_spec.model_dump(
-            mode="json", exclude_none=True
-        )
-        if scenario.task_binding_spec is not None
-        else {},
+def _studio_scientific_seeds(training_spec: Mapping[str, Any]) -> dict[str, int]:
+    seeds = training_spec.get("seeds")
+    if not isinstance(seeds, Mapping):
+        seed = training_spec.get("seed")
+        return {"training": seed} if isinstance(seed, int) and not isinstance(seed, bool) else {}
+    return {
+        str(name): value
+        for name, value in sorted(seeds.items())
+        if isinstance(value, int) and not isinstance(value, bool)
     }
-    for filename, payload in files.items():
-        _write_json(snapshot_dir / filename, payload)
 
 
 def _restaged_metadata(
@@ -1842,13 +1723,12 @@ def _manifest_ref_run_count(ref: StudioManifestRef) -> int:
 
 
 def _stage_execution_target(stage: StudioStageSpec, backend: str) -> ExecutionTarget:
-    execution_spec = stage.execution_spec if isinstance(stage.execution_spec, dict) else {}
-    protocol = execution_spec.get("protocol")
-    compute_target = protocol.get("compute_target") if isinstance(protocol, dict) else None
-    if compute_target == "managed":
-        return "gcp"
-    if compute_target in {"local", "gcp", "runpod", "manual"}:
-        return str(compute_target)
+    realization = stage.metadata.get("backend_realization")
+    execution_target = (
+        realization.get("execution_target") if isinstance(realization, dict) else None
+    )
+    if execution_target in {"local", "gcp", "runpod", "manual"}:
+        return str(execution_target)
     if backend == "runpod":
         return "runpod"
     return "local"
@@ -1860,85 +1740,6 @@ def _stage_axis_coordinates(stage: StudioStageSpec) -> dict[str, Any]:
         if isinstance(value, dict):
             return value
     return {}
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-
-def _local_result_artifact_refs(
-    result: LocalExecutionResult,
-    snapshot_dir: Path,
-    stage_id: str,
-    scenario_id: str,
-) -> list[StudioArtifactRef]:
-    metadata = {
-        "job_id": result.job_id,
-        "stage_id": stage_id,
-        "scenario_id": scenario_id,
-        "status": result.status,
-    }
-    run_dir = Path(result.stdout_path).parent
-    refs = [
-        StudioArtifactRef(
-            kind="ExecutionPlan",
-            id=f"execution-plan:{result.job_id}",
-            role="execution_plan",
-            uri=str(run_dir / "execution-plan.json"),
-            media_type="application/json",
-            metadata=metadata,
-        ),
-        StudioArtifactRef(
-            kind="ExecutionLog",
-            id=f"execution-log:{result.job_id}:stdout",
-            role="execution_stdout",
-            uri=result.stdout_path,
-            media_type="text/plain",
-            metadata=metadata,
-        ),
-        StudioArtifactRef(
-            kind="ExecutionLog",
-            id=f"execution-log:{result.job_id}:stderr",
-            role="execution_stderr",
-            uri=result.stderr_path,
-            media_type="text/plain",
-            metadata=metadata,
-        ),
-        StudioArtifactRef(
-            kind="StudioExecutionSnapshot",
-            id=f"studio-execution-snapshot:{result.job_id}",
-            role="execution_input_snapshot",
-            uri=str(snapshot_dir),
-            media_type="application/x-directory",
-            metadata={
-                **metadata,
-                "files": [
-                    "execution-spec.json",
-                    "workspace-snapshot.json",
-                    "graph-spec.json",
-                    "training-spec.json",
-                    "task-spec.json",
-                    "task-binding-spec.json",
-                ],
-            },
-        ),
-    ]
-    training_summary_path = snapshot_dir / "artifacts" / "training-summary.json"
-    if training_summary_path.exists():
-        refs.append(
-            StudioArtifactRef(
-                kind="StudioTrainingResult",
-                id=f"studio-training-result:{result.job_id}",
-                role="training_result",
-                uri=str(training_summary_path),
-                media_type="application/json",
-                metadata=metadata,
-            )
-        )
-    return refs
 
 
 def _request_root(root: str | None) -> Path:
@@ -3119,29 +2920,6 @@ def _upsert_training_manifest_in_outputs(
                 item_refs=[manifest_ref],
             )
         )
-    return updated
-
-
-def _drop_pending_training_manifest_for_job(
-    collections: list[StudioCollectionRef],
-    job_id: str,
-) -> list[StudioCollectionRef]:
-    updated: list[StudioCollectionRef] = []
-    for collection in collections:
-        if collection.kind != "training_runs":
-            updated.append(collection)
-            continue
-        collection = collection.model_copy(deep=True)
-        collection.item_refs = [
-            ref
-            for ref in collection.item_refs
-            if not (
-                ref.role == "training_run"
-                and ref.metadata.get("planned") is True
-                and ref.metadata.get("job_id") == job_id
-            )
-        ]
-        updated.append(collection)
     return updated
 
 

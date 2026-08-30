@@ -313,11 +313,11 @@ async def list_orchestration_targets():
                 id="runpod",
                 label="RunPod",
                 billable=True,
-                launch_mode="execution-plan",
+                launch_mode="backend-plan",
                 available=True,
                 confirmation_token="confirm-runpod-queue-launch",
                 notes=[
-                    "Queue launch prepares a RunPod ExecutionPlan with repository script commands.",
+                    "Queue launch requires an inert RunPod BackendPlan bound to an Invocation.",
                     (
                         "Real pod acquisition is handled by feedbax-orchestrate launch "
                         "--assembly-request <path> --driver runpod."

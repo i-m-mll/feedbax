@@ -29,7 +29,6 @@ import type {
   StudioTopPaneState,
   StudioStageKind,
   StudioStageSpec,
-  StudioTrainingLocalRunResult,
   StudioTrainingExecutionPreparation,
   StudioValidationState,
   StudioWorkspaceSpec,
@@ -819,7 +818,6 @@ interface WorkspaceStoreState {
   workspace: StudioWorkspaceSpec | null;
   workspaceDocument: WorkspaceDocument | null;
   lastTrainingExecutionPreparation: StudioTrainingExecutionPreparation | null;
-  lastTrainingLocalRunResult: StudioTrainingLocalRunResult | null;
   lastPipelineMaterializationResult: StudioPipelineMaterializationResult | null;
   setWorkspace: (workspace: StudioWorkspaceSpec | null) => void;
   setWorkspaceDocument: (document: WorkspaceDocument | null) => void;
@@ -834,7 +832,6 @@ interface WorkspaceStoreState {
   setTrainingExecutionPreparation: (
     preparation: StudioTrainingExecutionPreparation | null
   ) => void;
-  setTrainingLocalRunResult: (result: StudioTrainingLocalRunResult | null) => void;
   setPipelineMaterializationResult: (
     result: StudioPipelineMaterializationResult | null
   ) => void;
@@ -1001,7 +998,6 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
   workspace: null,
   workspaceDocument: null,
   lastTrainingExecutionPreparation: null,
-  lastTrainingLocalRunResult: null,
   lastPipelineMaterializationResult: null,
 
   setWorkspace: (workspace) => {
@@ -1110,12 +1106,6 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
     set((state) => ({
       lastTrainingExecutionPreparation: preparation,
       workspace: preparation?.workspace ?? state.workspace,
-    })),
-
-  setTrainingLocalRunResult: (result) =>
-    set((state) => ({
-      lastTrainingLocalRunResult: result,
-      workspace: result?.workspace ?? state.workspace,
     })),
 
   setPipelineMaterializationResult: (result) =>

@@ -5,6 +5,19 @@ from __future__ import annotations
 import importlib
 
 __all__ = [
+    "ATTEMPT_SCHEMA_ID",
+    "ATTEMPT_SCHEMA_VERSION",
+    "BACKEND_PLAN_SCHEMA_ID",
+    "BACKEND_PLAN_SCHEMA_VERSION",
+    "Attempt",
+    "BackendPlan",
+    "BackendRealizationRequest",
+    "ExpectedCost",
+    "MachineShape",
+    "OrchestrationBackend",
+    "UnsupportedBackendRecordVersionError",
+    "attempt_from_document",
+    "backend_plan_from_document",
     "EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID",
     "EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION",
     "EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1",
@@ -154,6 +167,7 @@ __all__ = [
 ]
 
 _EXPORT_MODULES = (
+    "feedbax.orchestration.realization",
     "feedbax.contracts.evaluation_preflight",
     "feedbax.orchestration.matrix_authority",
     "feedbax.orchestration.bundle",

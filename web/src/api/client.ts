@@ -19,7 +19,6 @@ import type {
   StudioEvaluationLocalRunResult,
   StudioEvaluationMatrixPreview,
   StudioEvaluationStagingResult,
-  StudioTrainingLocalRunResult,
   StudioTrainingExecutionPreparation,
   StudioWorkspaceSpec,
 } from '@/types/workspace';
@@ -237,32 +236,16 @@ export async function prepareStudioTrainingExecution(payload: {
   workspace: StudioWorkspaceSpec;
   graph: GraphSpec;
   stage_id?: string | null;
-  backend?: 'local' | 'ssh' | 'runpod' | 'modal';
+  backend?: 'local' | 'runpod';
   job_id?: string | null;
   local_cwd?: string | null;
+  backend_realization?: Record<string, unknown> | null;
   queue_target?: 'local' | 'gcp' | 'runpod' | 'manual' | null;
   queue_manifest_ids?: string[];
   issues?: string[];
   metadata?: Record<string, unknown>;
 }) {
   return request<StudioTrainingExecutionPreparation>('/api/provider/studio/training/plan', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function runStudioTrainingLocalExecution(payload: {
-  workspace: StudioWorkspaceSpec;
-  graph: GraphSpec;
-  stage_id?: string | null;
-  job_id?: string | null;
-  local_cwd?: string | null;
-  root?: string | null;
-  timeout?: number | null;
-  issues?: string[];
-  metadata?: Record<string, unknown>;
-}) {
-  return request<StudioTrainingLocalRunResult>('/api/provider/studio/training/run-local', {
     method: 'POST',
     body: JSON.stringify(payload),
   });

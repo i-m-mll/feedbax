@@ -156,7 +156,6 @@ describe('AnalysisPanel interaction ownership', () => {
     useWorkspaceStore.setState({
       workspace: null,
       lastTrainingExecutionPreparation: null,
-      lastTrainingLocalRunResult: null,
       lastPipelineMaterializationResult: null,
     });
   });
