@@ -25,7 +25,7 @@ from feedbax.web.api import (
     training,
     trajectories,
 )
-from feedbax.web.orchestration.manager import orchestration_manager
+from feedbax.web.orchestration.controller import get_studio_controller
 from feedbax.web.services.training_service import training_service
 from feedbax.web.ws import training as ws_training
 from feedbax.web.ws import simulation as ws_simulation
@@ -40,13 +40,13 @@ def create_app(*, bootstrap_modules: tuple[str, ...] = ()) -> FastAPI:
         app.state.bootstrap_modules = bootstrap_modules
         app.state.bootstrap_state = await compose_application(modules=bootstrap_modules)
         try:
-            await orchestration_manager.reconcile_from_provider()
+            await get_studio_controller(training_service).reconcile_on_startup()
         except Exception:
-            logger.exception("Failed to reconcile orchestration state during startup")
+            logger.exception("Failed to reconcile durable controller state during startup")
         try:
-            await training_service.reconcile_from_state_docs()
+            training_service.rebuild_cache_from_state_docs()
         except Exception:
-            logger.exception("Failed to reconcile training run state during startup")
+            logger.exception("Failed to rebuild the Studio run-state projection")
         try:
             yield
         finally:

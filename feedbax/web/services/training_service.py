@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import socket
@@ -57,13 +56,9 @@ from feedbax.orchestration.events import (
 )
 from feedbax.orchestration.stages import (
     STAGE_ASSEMBLE,
-    STAGE_CERTIFY,
-    STAGE_COLLECT,
-    STAGE_MONITOR,
-    STAGE_REGISTER,
     StageEngine,
 )
-from feedbax.orchestration.state import RunSetState, RunSetStateStore, utc_now
+from feedbax.orchestration.state import RunSetState
 import feedbax.web.worker.client as worker_client
 from feedbax.web.services.worker_driver import load_worker_execution_payload
 
@@ -362,7 +357,6 @@ class TrainingService:
                 job_id,
                 auth_token=self._auth_token,
             )
-            self._mark_row_stopped(job_id)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 raise ValueError(f"Unknown job {job_id!r}") from exc
@@ -594,15 +588,11 @@ class TrainingService:
             try:
                 bundle = RunBundle.model_validate_json(bundle_text)
             except Exception as exc:
-                self._index_legacy_v2_bundle(
-                    refs,
-                    state,
-                    state_path,
+                self._raise_run_state_corruption(
                     bundle_path,
-                    bundle_text=bundle_text,
+                    f"bundle validation failed: {type(exc).__name__}: {exc}",
                     cause=exc,
                 )
-                continue
             self._validate_state_bundle(
                 state_path,
                 state,
@@ -617,71 +607,6 @@ class TrainingService:
                     bundle_path=bundle_path,
                 )
         self._job_refs_by_job = refs
-
-    async def reconcile_from_state_docs(self) -> None:
-        """Finalize terminal rows and fail truly orphaned rows after backend restart."""
-        self.rebuild_cache_from_state_docs()
-        for ref in list(self._job_refs_by_job.values()):
-            store = RunSetStateStore(ref.state_path)
-            try:
-                state = self._load_state(ref)
-                bundle, _legacy_raw = self._load_bundle_allow_legacy_v2(ref)
-            except _RunStateDocumentUnavailable:
-                continue
-            if bundle is None:
-                continue
-            changed = False
-            for row in bundle.rows:
-                row_state = state.rows.get(row.row_id)
-                if row_state is None or row_state.status in ("completed", "failed", "stopped"):
-                    continue
-                event_path = bundle.run_set_dir / "events" / f"{row.row_id}.events.jsonl"
-                done = bundle.run_set_dir / "sentinels" / f"{row.row_id}.done"
-                failed = bundle.run_set_dir / "sentinels" / f"{row.row_id}.failed"
-                reader = RunEventReader(event_path)
-                events = reader.read_all()
-                reconciled = reader.reconcile_sentinels(
-                    done_sentinel=done,
-                    failed_sentinel=failed,
-                )
-                high_water = events[-1].seq if events else row_state.event_seq_high_water_mark
-                last_type = events[-1].type if events else row_state.last_event_type
-                update: dict[str, Any] = {
-                    "event_seq_high_water_mark": high_water,
-                    "last_event_type": last_type,
-                    "event_discrepancies": [dict(item) for item in reconciled.discrepancies],
-                }
-                if reconciled.status == "completed":
-                    update.update({"status": "completed", "completed_at": utc_now()})
-                elif reconciled.status in ("failed", "error"):
-                    update.update(
-                        {
-                            "status": "failed",
-                            "completed_at": utc_now(),
-                            "error": "terminal event/sentinel reported failure",
-                        }
-                    )
-                else:
-                    discrepancies = list(update["event_discrepancies"])
-                    discrepancies.append(
-                        {
-                            "code": "backend_restart_orphaned_row",
-                            "detail": "row was non-terminal at startup with no live worker claim",
-                        }
-                    )
-                    update.update(
-                        {
-                            "status": "failed",
-                            "completed_at": utc_now(),
-                            "error": "orphaned after backend restart",
-                            "event_discrepancies": discrepancies,
-                        }
-                    )
-                state = state.with_row(row.row_id, row_state.model_copy(update=update))
-                changed = True
-            if changed:
-                state = self._finalize_terminal_state(state)
-                store.save(state)
 
     def list_live_training_runs(self) -> list[dict[str, Any]]:
         """Return state-backed rows that may not have durable manifests yet."""
@@ -796,23 +721,6 @@ class TrainingService:
                 cause=exc,
             )
 
-    def _load_bundle_allow_legacy_v2(
-        self,
-        ref: _JobRef,
-    ) -> tuple[RunBundle | None, dict[str, Any] | None]:
-        try:
-            bundle_text = self._read_document(ref.bundle_path)
-            return RunBundle.model_validate_json(bundle_text), None
-        except _RunStateDocumentUnavailable:
-            raise
-        except Exception as exc:
-            legacy_raw = self._read_legacy_v2_bundle(
-                ref.bundle_path,
-                bundle_text=bundle_text,
-                cause=exc,
-            )
-            return None, legacy_raw
-
     def _load_state(self, ref: _JobRef) -> RunSetState:
         try:
             return RunSetState.model_validate_json(self._read_document(ref.state_path))
@@ -841,75 +749,6 @@ class TrainingService:
     ) -> NoReturn:
         logger.error("Corrupt Studio run-state document at %s: %s", path, reason)
         raise RunStateCorruptionError(path, reason) from cause
-
-    def _index_legacy_v2_bundle(
-        self,
-        refs: dict[str, _JobRef],
-        state: RunSetState,
-        state_path: Path,
-        bundle_path: Path,
-        *,
-        bundle_text: str,
-        cause: Exception,
-    ) -> None:
-        """Index historical v2 rows for read-only status visibility only."""
-        raw = self._read_legacy_v2_bundle(
-            bundle_path,
-            bundle_text=bundle_text,
-            cause=cause,
-        )
-        run_set_id = raw["run_set_id"]
-        self._validate_state_bundle(
-            state_path,
-            state,
-            run_set_id,
-            [row["row_id"] for row in raw["rows"]],
-        )
-        for row in raw["rows"]:
-            refs[row["row_id"]] = _JobRef(row["row_id"], run_set_id, state_path, bundle_path)
-
-    def _read_legacy_v2_bundle(
-        self,
-        bundle_path: Path,
-        *,
-        bundle_text: str,
-        cause: Exception,
-    ) -> dict[str, Any]:
-        """Admit a structurally valid historical v2 bundle or fail explicitly."""
-        try:
-            raw = json.loads(bundle_text)
-        except Exception as exc:
-            self._raise_run_state_corruption(
-                bundle_path,
-                f"bundle JSON is unreadable: {type(exc).__name__}: {exc}",
-                cause=exc,
-            )
-        if not isinstance(raw, dict):
-            self._raise_run_state_corruption(bundle_path, "bundle JSON is not an object")
-        if raw.get("schema_version") != "feedbax.orchestration.run_bundle.v2":
-            self._raise_run_state_corruption(
-                bundle_path,
-                f"bundle validation failed: {type(cause).__name__}: {cause}",
-                cause=cause,
-            )
-        run_set_id = raw.get("run_set_id")
-        if not isinstance(run_set_id, str):
-            self._raise_run_state_corruption(bundle_path, "legacy v2 run_set_id is invalid")
-        rows = raw.get("rows")
-        if not isinstance(rows, list):
-            self._raise_run_state_corruption(bundle_path, "legacy v2 rows are invalid")
-        seen_row_ids: set[str] = set()
-        for row in rows:
-            job_id = row.get("row_id") if isinstance(row, dict) else None
-            if not isinstance(job_id, str):
-                self._raise_run_state_corruption(bundle_path, "legacy v2 row_id is invalid")
-            if job_id in seen_row_ids:
-                self._raise_run_state_corruption(
-                    bundle_path,
-                    f"legacy v2 bundle contains duplicate row_id: {job_id!r}",
-                )
-            seen_row_ids.add(job_id)
-        return raw
 
     def _validate_state_bundle(
         self,
@@ -942,51 +781,18 @@ class TrainingService:
         row = state.rows.get(job_id)
         if row is None:
             return None
-        bundle: RunBundle | None
-        legacy_worker_start: dict[str, Any] = {}
         try:
-            bundle, legacy_raw = self._load_bundle_allow_legacy_v2(ref)
+            bundle = self._load_bundle(ref)
         except _RunStateDocumentUnavailable:
             return None
-        if bundle is not None:
-            self._validate_state_bundle(
-                ref.state_path,
-                state,
-                bundle.run_set_id,
-                [row.row_id for row in bundle.rows],
-            )
-            total_batches = load_worker_execution_payload(bundle.row(job_id)).get(
-                "total_batches", 0
-            )
-        else:
-            try:
-                assert legacy_raw is not None
-                self._validate_state_bundle(
-                    ref.state_path,
-                    state,
-                    legacy_raw["run_set_id"],
-                    [row["row_id"] for row in legacy_raw["rows"]],
-                )
-                legacy_row = next(
-                    item for item in legacy_raw.get("rows", []) if item.get("row_id") == job_id
-                )
-                legacy_worker_start = dict(
-                    (legacy_row.get("metadata") or {}).get("worker_start") or {}
-                )
-                total_batches = legacy_worker_start.get("total_batches", 0)
-            except Exception as exc:
-                self._raise_run_state_corruption(
-                    ref.bundle_path,
-                    f"legacy v2 bundle lookup failed: {type(exc).__name__}: {exc}",
-                    cause=exc,
-                )
-        events = (
-            self._read_job_events(bundle, job_id)
-            if bundle is not None
-            else RunEventReader(
-                ref.state_path.parent / "events" / f"{job_id}.events.jsonl"
-            ).read_all()
+        self._validate_state_bundle(
+            ref.state_path,
+            state,
+            bundle.run_set_id,
+            [row.row_id for row in bundle.rows],
         )
+        total_batches = load_worker_execution_payload(bundle.row(job_id)).get("total_batches", 0)
+        events = self._read_job_events(bundle, job_id)
         latest = events[-1] if events else None
         payload = dict(latest.payload) if latest is not None else {}
         status = row.status
@@ -1034,46 +840,6 @@ class TrainingService:
             return RunEventReader(path).read_all()
         except Exception:
             return []
-
-    def _mark_row_stopped(self, job_id: str) -> None:
-        ref = self._job_ref_for(job_id)
-        if ref is None or not ref.state_path.exists():
-            return
-        store = RunSetStateStore(ref.state_path)
-        state = store.load()
-        row = state.rows.get(job_id)
-        if row is None:
-            return
-        state = state.with_row(
-            job_id,
-            row.model_copy(update={"status": "stopped", "completed_at": utc_now()}),
-        )
-        store.save(state)
-
-    def _finalize_terminal_state(self, state: RunSetState) -> RunSetState:
-        if not state.rows:
-            return state
-        if not all(row.status in ("completed", "failed", "stopped") for row in state.rows.values()):
-            return state
-        for stage_id in (STAGE_MONITOR, STAGE_COLLECT, STAGE_CERTIFY, STAGE_REGISTER):
-            stage = state.stage(stage_id)
-            if stage.status != "completed":
-                state = state.with_stage(
-                    stage_id,
-                    stage.model_copy(
-                        update={
-                            "status": "completed",
-                            "started_at": stage.started_at or utc_now(),
-                            "completed_at": utc_now(),
-                            "outputs": {
-                                **stage.outputs,
-                                "reconciled_by": "TrainingService.reconcile_from_state_docs",
-                            },
-                            "error": None,
-                        }
-                    ),
-                )
-        return state
 
     def _iter_state_paths(self) -> list[Path]:
         root = _orchestration_parent_root()

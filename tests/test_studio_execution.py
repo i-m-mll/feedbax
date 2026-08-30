@@ -295,6 +295,54 @@ def test_prepare_studio_training_execution_binds_invocation_and_backend_plan(reg
     assert future_stage.metadata["later_product_surface"]["keep"] is True
 
 
+def test_prepare_studio_gcp_execution_emits_inert_paid_backend_plan(registry_bundle):
+    request = StudioTrainingExecutionRequest(
+        workspace=_workspace(),
+        graph=_graph(),
+        backend="gcp",
+        job_id="studio-gcp-plan",
+        backend_realization=BackendRealizationRequest(
+            adapter_id="feedbax.orchestration.gcp-controller",
+            adapter_version="1",
+            capability_variant="controller-acquired",
+            code_bundle_id="git:feedbax@signed-revision",
+            environment_bundle_id="uv-lock:" + "d" * 64,
+            command=("feedbax", "worker"),
+            machine=MachineShape(cpu_count=4, memory_gib=15),
+            network_requirements=("egress:https",),
+            secret_names=("gcp_application_credentials",),
+            timeout_seconds=300,
+            retry_classification="same-plan",
+            expected_cost=ExpectedCost(maximum=1.0, basis="one-hour operator ceiling"),
+            billable_confirmation_class="authenticated-effect-reservation",
+            external_effect_key="studio-gcp-plan-effect",
+            configuration={
+                "job_id": "studio-gcp-plan",
+                "project": "inert-project",
+                "zone": "northamerica-northeast1-a",
+                "machine_type": "n1-standard-4",
+                "preemptible": True,
+                "worker_port": 8765,
+                "install_spec": {
+                    "schema_version": "feedbax.orchestration.install.v1",
+                    "source": "git",
+                    "repository": "https://github.com/mlll-io/feedbax.git",
+                    "ref": "develop",
+                    "extras": [],
+                },
+            },
+        ),
+    )
+
+    prepared = prepare_studio_training_execution(request, registry_bundle=registry_bundle)
+
+    assert prepared.backend_plan.backend_id == "gcp"
+    assert prepared.backend_plan.driver_capability_variant == "controller-acquired"
+    assert prepared.backend_plan.expected_cost.maximum == 1.0
+    assert prepared.backend_plan.invocation_id == prepared.invocation.invocation_id
+    assert "provider_resource_handle" not in prepared.backend_plan.model_dump(mode="json")
+
+
 def test_studio_training_plan_endpoint_returns_updated_workspace(studio_client):
     client = studio_client
 
@@ -684,7 +732,9 @@ def test_studio_evaluation_preview_filters_stale_manifests_explicitly(
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     prepared_training = prepare_studio_training_execution(
-        StudioTrainingExecutionRequest(workspace=_workspace(), graph=_graph(), job_id="studio-plan"),
+        StudioTrainingExecutionRequest(
+            workspace=_workspace(), graph=_graph(), job_id="studio-plan"
+        ),
         registry_bundle=registry_bundle,
     )
     train_stage = next(
@@ -743,7 +793,9 @@ def test_studio_evaluation_run_local_reprocesses_stale_manifest(
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     prepared_training = prepare_studio_training_execution(
-        StudioTrainingExecutionRequest(workspace=_workspace(), graph=_graph(), job_id="studio-plan"),
+        StudioTrainingExecutionRequest(
+            workspace=_workspace(), graph=_graph(), job_id="studio-plan"
+        ),
         registry_bundle=registry_bundle,
     )
     train_stage = next(
@@ -813,7 +865,9 @@ def test_studio_evaluation_run_local_preserves_skipped_failed_status(
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     prepared_training = prepare_studio_training_execution(
-        StudioTrainingExecutionRequest(workspace=_workspace(), graph=_graph(), job_id="studio-plan"),
+        StudioTrainingExecutionRequest(
+            workspace=_workspace(), graph=_graph(), job_id="studio-plan"
+        ),
         registry_bundle=registry_bundle,
     )
     train_stage = next(
@@ -868,7 +922,9 @@ def test_studio_evaluation_endpoints_preview_stage_and_run_local(
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     prepared_training = prepare_studio_training_execution(
-        StudioTrainingExecutionRequest(workspace=_workspace(), graph=_graph(), job_id="studio-plan"),
+        StudioTrainingExecutionRequest(
+            workspace=_workspace(), graph=_graph(), job_id="studio-plan"
+        ),
         registry_bundle=registry_bundle,
     )
     train_stage = next(
