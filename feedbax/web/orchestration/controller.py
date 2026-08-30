@@ -16,7 +16,11 @@ from feedbax.orchestration.controller import (
     DurableController,
     EffectObservation,
     EffectReservation,
+    OrphanHandlingPolicy,
+    ProviderInventoryObservation,
+    ProviderResourceObservation,
     RunIntent,
+    provider_inventory_observation,
     utc_now,
 )
 from feedbax.orchestration.realization import BackendPlan, ExpectedCost
@@ -27,6 +31,7 @@ from feedbax.web.orchestration.gcp import (
     create_instance,
     delete_instance,
     get_instance,
+    list_instances,
 )
 from feedbax.web.orchestration.startup_script import FeedbaxInstallSpec
 from feedbax.web.worker.client import wait_for_health
@@ -123,6 +128,31 @@ class GcpEffectAdapter:
         if info.status == InstanceStatus.RUNNING and info.external_ip is not None:
             worker_url = self._worker_url(info, int(parameters["worker_port"]))
         return self._observation(info, worker_url, reservation.expected_cost)
+
+    async def observe_inventory(self, scope: Mapping[str, Any]) -> ProviderInventoryObservation:
+        if set(scope) != {"project", "zone"}:
+            raise ValueError("GCP inventory scope requires exactly project and zone")
+        instances = await list_instances(str(scope["project"]), str(scope["zone"]))
+        resources = tuple(
+            ProviderResourceObservation(
+                provider_resource_handle=info.name,
+                external_effect_key=info.name,
+                status=info.status.value,
+                attributes={
+                    "internal_ip": info.internal_ip,
+                    "external_ip": info.external_ip,
+                    "zone": info.zone,
+                    "machine_type": info.machine_type,
+                },
+            )
+            for info in instances
+        )
+        return provider_inventory_observation(
+            backend_id="gcp",
+            scope=scope,
+            observed_at=utc_now(),
+            resources=resources,
+        )
 
     def _config(self, reservation: EffectReservation) -> InstanceConfig:
         parameters = reservation.normalized_parameters
@@ -226,6 +256,7 @@ class StudioController:
             effect_class="cloud-machine-acquisition",
             normalized_parameters=parameters,
             expires_at=utc_now() + timedelta(seconds=ttl_seconds),
+            external_effect_key=str(parameters["instance_name"]),
         )
         self.gcp.bind_secret_material(reservation.reservation_id, secrets)
         return intent, reservation
@@ -250,7 +281,43 @@ class StudioController:
         return self.controller.expire_reservations(intent_id)
 
     async def refresh(self, intent_id: str) -> ControllerProjection:
-        return await self.controller.reconcile(intent_id, self.adapters)
+        projection = await self.controller.reconcile(intent_id, self.adapters)
+        scopes: dict[tuple[str, str], list[str]] = {}
+        for reservation_id, reserved in projection.reservations.items():
+            if (
+                reserved.reservation.backend_id != "gcp"
+                or reserved.reservation.effect_class != "cloud-machine-acquisition"
+            ):
+                continue
+            parameters = reserved.reservation.normalized_parameters
+            key = (str(parameters["project"]), str(parameters["zone"]))
+            scopes.setdefault(key, []).append(reservation_id)
+        policy = OrphanHandlingPolicy(policy_id="feedbax.orchestration.orphan.require_operator")
+        for (project, zone), reservation_ids in sorted(scopes.items()):
+            projection = await self.controller.observe_provider_inventory(
+                intent_id,
+                self.gcp,
+                backend_id="gcp",
+                scope={"project": project, "zone": zone},
+                reservation_ids=tuple(sorted(reservation_ids)),
+                policy=policy,
+            )
+        return projection
+
+    def admit_retry(
+        self,
+        intent_id: str,
+        invocation: Invocation,
+        previous_reservation_id: str,
+        *,
+        ttl_seconds: int,
+    ) -> EffectReservation:
+        return self.controller.admit_retry(
+            intent_id,
+            invocation,
+            previous_reservation_id,
+            expires_at=utc_now() + timedelta(seconds=ttl_seconds),
+        )
 
     async def reconcile_on_startup(self) -> None:
         intent_ids = tuple(

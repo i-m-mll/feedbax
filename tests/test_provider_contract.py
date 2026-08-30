@@ -395,10 +395,17 @@ def test_provider_manifest_exports_versioned_durable_controller_records() -> Non
         "feedbax.orchestration.effect_reservation.v1"
     )
     assert schemas["ControllerEvent"]["properties"]["schema_version"]["const"] == (
-        "feedbax.orchestration.controller_event.v1"
+        "feedbax.orchestration.controller_event.v2"
     )
     assert schemas["ControllerProjection"]["properties"]["schema_version"]["const"] == (
-        "feedbax.orchestration.controller_projection.v1"
+        "feedbax.orchestration.controller_projection.v2"
+    )
+    assert (
+        schemas["ProviderInventoryObservation"]["properties"]["schema_version"]["const"]
+        == "feedbax.orchestration.provider_inventory_observation.v1"
+    )
+    assert schemas["OrphanHandlingPolicy"]["properties"]["schema_version"]["const"] == (
+        "feedbax.orchestration.orphan_handling_policy.v1"
     )
 
 

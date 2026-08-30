@@ -18,9 +18,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from feedbax.contracts.manifest import StrictModel, canonical_json_bytes
+from feedbax.execution.records import Invocation, invocation_from_document
 from feedbax.orchestration.realization import (
     Attempt,
     BackendPlan,
@@ -35,9 +36,15 @@ RUN_INTENT_SCHEMA_VERSION = "feedbax.orchestration.run_intent.v1"
 EFFECT_RESERVATION_SCHEMA_ID = "feedbax.orchestration.effect_reservation"
 EFFECT_RESERVATION_SCHEMA_VERSION = "feedbax.orchestration.effect_reservation.v1"
 CONTROLLER_EVENT_SCHEMA_ID = "feedbax.orchestration.controller_event"
-CONTROLLER_EVENT_SCHEMA_VERSION = "feedbax.orchestration.controller_event.v1"
+CONTROLLER_EVENT_SCHEMA_VERSION_V1 = "feedbax.orchestration.controller_event.v1"
+CONTROLLER_EVENT_SCHEMA_VERSION = "feedbax.orchestration.controller_event.v2"
 CONTROLLER_PROJECTION_SCHEMA_ID = "feedbax.orchestration.controller_projection"
-CONTROLLER_PROJECTION_SCHEMA_VERSION = "feedbax.orchestration.controller_projection.v1"
+CONTROLLER_PROJECTION_SCHEMA_VERSION_V1 = "feedbax.orchestration.controller_projection.v1"
+CONTROLLER_PROJECTION_SCHEMA_VERSION = "feedbax.orchestration.controller_projection.v2"
+PROVIDER_INVENTORY_SCHEMA_ID = "feedbax.orchestration.provider_inventory_observation"
+PROVIDER_INVENTORY_SCHEMA_VERSION = "feedbax.orchestration.provider_inventory_observation.v1"
+ORPHAN_HANDLING_POLICY_SCHEMA_ID = "feedbax.orchestration.orphan_handling_policy"
+ORPHAN_HANDLING_POLICY_SCHEMA_VERSION = "feedbax.orchestration.orphan_handling_policy.v1"
 
 ControllerEventType = Literal[
     "intent_admitted",
@@ -54,6 +61,7 @@ ControllerEventType = Literal[
     "external_effect_dispatched",
     "external_effect_observed",
     "external_effect_reconciled",
+    "external_effect_absence_reconciled",
     "external_effect_abandoned",
     "attempt_started",
     "attempt_heartbeat_observed",
@@ -66,7 +74,40 @@ ControllerEventType = Literal[
     "retry_admitted",
     "invocation_permanently_failed",
     "operator_action_required",
+    "provider_inventory_observed",
+    "provider_orphan_detected",
+    "provider_orphan_handling_recorded",
 ]
+_CONTROLLER_EVENT_TYPES_V1 = frozenset(
+    {
+        "intent_admitted",
+        "intent_rejected",
+        "intent_cancelled",
+        "intent_superseded",
+        "backend_plan_selected",
+        "backend_plan_rejected",
+        "effect_reservation_created",
+        "effect_reservation_authenticated",
+        "effect_reservation_expired",
+        "effect_reservation_cancelled",
+        "effect_reservation_invalidated",
+        "external_effect_dispatched",
+        "external_effect_observed",
+        "external_effect_reconciled",
+        "external_effect_abandoned",
+        "attempt_started",
+        "attempt_heartbeat_observed",
+        "attempt_terminal_observed",
+        "attempt_state_unknown",
+        "output_staged",
+        "publication_committed",
+        "publication_failed",
+        "invocation_satisfied",
+        "retry_admitted",
+        "invocation_permanently_failed",
+        "operator_action_required",
+    }
+)
 ReservationStatus = Literal[
     "inert",
     "authenticated",
@@ -154,7 +195,7 @@ class ControllerEvent(StrictModel):
     """One replay-safe event in an intent's monotonic controller stream."""
 
     schema_id: Literal["feedbax.orchestration.controller_event"] = CONTROLLER_EVENT_SCHEMA_ID
-    schema_version: Literal["feedbax.orchestration.controller_event.v1"] = (
+    schema_version: Literal["feedbax.orchestration.controller_event.v2"] = (
         CONTROLLER_EVENT_SCHEMA_VERSION
     )
     event_id: str = Field(min_length=1)
@@ -186,14 +227,18 @@ class ControllerProjection(StrictModel):
     schema_id: Literal["feedbax.orchestration.controller_projection"] = (
         CONTROLLER_PROJECTION_SCHEMA_ID
     )
-    schema_version: Literal["feedbax.orchestration.controller_projection.v1"] = (
+    schema_version: Literal["feedbax.orchestration.controller_projection.v2"] = (
         CONTROLLER_PROJECTION_SCHEMA_VERSION
     )
     intent: RunIntent | None = None
     status: str = "absent"
     backend_plan_id: str | None = None
+    backend_plan: BackendPlan | None = None
     reservations: dict[str, ReservationProjection] = Field(default_factory=dict)
     attempts: dict[str, Attempt] = Field(default_factory=dict)
+    retry_count: int = 0
+    provider_inventories: dict[str, "ProviderInventoryObservation"] = Field(default_factory=dict)
+    orphans: dict[str, "OrphanProjection"] = Field(default_factory=dict)
     artifact_refs: tuple[str, ...] = ()
     diagnostics: tuple[dict[str, Any], ...] = ()
     last_sequence: int = -1
@@ -209,12 +254,123 @@ class EffectObservation(StrictModel):
     observations: tuple[dict[str, Any], ...] = ()
 
 
+class ProviderResourceObservation(StrictModel):
+    """One provider resource identity observed in a complete inventory."""
+
+    provider_resource_handle: str = Field(min_length=1)
+    external_effect_key: str = Field(min_length=1)
+    status: str = Field(min_length=1)
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProviderInventoryObservation(StrictModel):
+    """Complete provider inventory whose exact bytes are durable controller input."""
+
+    schema_id: Literal["feedbax.orchestration.provider_inventory_observation"] = (
+        PROVIDER_INVENTORY_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.orchestration.provider_inventory_observation.v1"] = (
+        PROVIDER_INVENTORY_SCHEMA_VERSION
+    )
+    inventory_id: str = Field(min_length=1)
+    backend_id: str = Field(min_length=1)
+    scope: dict[str, Any]
+    complete: Literal[True] = True
+    observed_at: datetime
+    resources: tuple[ProviderResourceObservation, ...] = ()
+
+    @field_validator("resources")
+    @classmethod
+    def _canonical_resources(
+        cls, value: tuple[ProviderResourceObservation, ...]
+    ) -> tuple[ProviderResourceObservation, ...]:
+        identities = tuple(
+            (item.external_effect_key, item.provider_resource_handle) for item in value
+        )
+        if identities != tuple(sorted(identities)) or len(set(identities)) != len(identities):
+            raise ValueError("provider inventory resources must be unique and canonically ordered")
+        return value
+
+    @field_validator("scope")
+    @classmethod
+    def _canonical_scope(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if not value:
+            raise ValueError("provider inventory scope must be explicit")
+        canonical_json_bytes(value)
+        return value
+
+    @model_validator(mode="after")
+    def _identity_matches_content(self) -> "ProviderInventoryObservation":
+        content = {
+            "backend_id": self.backend_id,
+            "scope": self.scope,
+            "complete": self.complete,
+            "observed_at": self.observed_at.isoformat(),
+            "resources": [item.model_dump(mode="json") for item in self.resources],
+        }
+        expected = hashlib.sha256(canonical_json_bytes(content)).hexdigest()
+        if self.inventory_id != expected:
+            raise ValueError("provider inventory identity does not match canonical content")
+        return self
+
+
+class OrphanHandlingPolicy(StrictModel):
+    """Versioned deterministic policy for resources outside live controller state."""
+
+    schema_id: Literal["feedbax.orchestration.orphan_handling_policy"] = (
+        ORPHAN_HANDLING_POLICY_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.orchestration.orphan_handling_policy.v1"] = (
+        ORPHAN_HANDLING_POLICY_SCHEMA_VERSION
+    )
+    policy_id: str = Field(min_length=1)
+    action: Literal["require-operator"] = "require-operator"
+
+
+class OrphanProjection(StrictModel):
+    backend_id: str = Field(min_length=1)
+    inventory_id: str = Field(min_length=1)
+    resource: ProviderResourceObservation
+    status: Literal["detected", "operator_action_required"] = "detected"
+    handling_policy: OrphanHandlingPolicy | None = None
+
+
+def provider_inventory_observation(
+    *,
+    backend_id: str,
+    scope: Mapping[str, Any],
+    observed_at: datetime,
+    resources: Sequence[ProviderResourceObservation],
+) -> ProviderInventoryObservation:
+    """Build a canonically ordered, content-identified complete inventory."""
+
+    ordered = tuple(
+        sorted(
+            resources,
+            key=lambda item: (item.external_effect_key, item.provider_resource_handle),
+        )
+    )
+    content: dict[str, Any] = {
+        "backend_id": backend_id,
+        "scope": dict(scope),
+        "complete": True,
+        "observed_at": observed_at.isoformat(),
+        "resources": [item.model_dump(mode="json") for item in ordered],
+    }
+    return ProviderInventoryObservation(
+        inventory_id=hashlib.sha256(canonical_json_bytes(content)).hexdigest(),
+        **content,
+    )
+
+
 class EffectAdapter(Protocol):
     """Provider adapter used only by the durable controller."""
 
     async def dispatch(self, reservation: EffectReservation) -> EffectObservation: ...
 
     async def reconcile(self, reservation: EffectReservation) -> EffectObservation | None: ...
+
+    async def observe_inventory(self, scope: Mapping[str, Any]) -> ProviderInventoryObservation: ...
 
 
 class ControllerEventStore:
@@ -361,6 +517,10 @@ def effect_reservation_from_document(document: Any) -> EffectReservation:
 
 
 def controller_event_from_document(document: Any) -> ControllerEvent:
+    if isinstance(document, Mapping) and document.get("schema_version") == (
+        CONTROLLER_EVENT_SCHEMA_VERSION_V1
+    ):
+        document = migrate_controller_event_v1_document(document)
     return _load_versioned(
         ControllerEvent,
         document,
@@ -370,8 +530,52 @@ def controller_event_from_document(document: Any) -> ControllerEvent:
     )
 
 
+def migrate_controller_event_v1_document(document: Mapping[str, Any]) -> dict[str, Any]:
+    migrated = dict(document)
+    declared_schema_id = migrated.get("schema_id")
+    if declared_schema_id not in {None, CONTROLLER_EVENT_SCHEMA_ID}:
+        raise ControllerProtocolError(
+            f"unsupported ControllerEvent schema_id {declared_schema_id!r}; "
+            f"expected {CONTROLLER_EVENT_SCHEMA_ID!r}"
+        )
+    event_type = migrated.get("event_type")
+    if event_type is not None and event_type not in _CONTROLLER_EVENT_TYPES_V1:
+        raise ControllerProtocolError(
+            f"ControllerEvent v1 does not define event_type {event_type!r}"
+        )
+    migrated.setdefault("schema_id", CONTROLLER_EVENT_SCHEMA_ID)
+    migrated["schema_version"] = CONTROLLER_EVENT_SCHEMA_VERSION
+    return migrated
+
+
+def provider_inventory_from_document(document: Any) -> ProviderInventoryObservation:
+    return _load_versioned(
+        ProviderInventoryObservation,
+        document,
+        schema_id=PROVIDER_INVENTORY_SCHEMA_ID,
+        schema_version=PROVIDER_INVENTORY_SCHEMA_VERSION,
+        label="ProviderInventoryObservation",
+    )
+
+
+def orphan_handling_policy_from_document(document: Any) -> OrphanHandlingPolicy:
+    return _load_versioned(
+        OrphanHandlingPolicy,
+        document,
+        schema_id=ORPHAN_HANDLING_POLICY_SCHEMA_ID,
+        schema_version=ORPHAN_HANDLING_POLICY_SCHEMA_VERSION,
+        label="OrphanHandlingPolicy",
+    )
+
+
 def _load_versioned(
-    model: type[RunIntent] | type[EffectReservation] | type[ControllerEvent],
+    model: (
+        type[RunIntent]
+        | type[EffectReservation]
+        | type[ControllerEvent]
+        | type[ProviderInventoryObservation]
+        | type[OrphanHandlingPolicy]
+    ),
     document: Any,
     *,
     schema_id: str,
@@ -443,7 +647,12 @@ def _apply_event(
         if projection.backend_plan_id not in (None, event.backend_plan_id):
             _invalid(event, "intent already selected a different backend plan")
         return projection.model_copy(
-            update={**update, "backend_plan_id": event.backend_plan_id, "status": "planned"}
+            update={
+                **update,
+                "backend_plan_id": event.backend_plan_id,
+                "backend_plan": plan,
+                "status": "planned",
+            }
         )
     if event_type == "backend_plan_rejected":
         return projection.model_copy(update={**update, "status": "backend_rejected"})
@@ -461,6 +670,121 @@ def _apply_event(
         reservations[reservation.reservation_id] = ReservationProjection(reservation=reservation)
         return projection.model_copy(
             update={**update, "reservations": reservations, "status": "reserved"}
+        )
+    if event_type == "provider_inventory_observed":
+        observation = provider_inventory_from_document(event.payload["inventory"])
+        inventories = dict(projection.provider_inventories)
+        existing = inventories.get(observation.inventory_id)
+        if existing is not None and existing != observation:
+            _invalid(event, "provider inventory identity has conflicting content")
+        inventories[observation.inventory_id] = observation
+        return projection.model_copy(
+            update={
+                **update,
+                "provider_inventories": inventories,
+                "status": "inventory_observed",
+            }
+        )
+    if event_type == "provider_orphan_detected":
+        inventory_id = str(event.payload["inventory_id"])
+        inventory = projection.provider_inventories.get(inventory_id)
+        if inventory is None:
+            _invalid(event, "orphan detection references an unknown inventory")
+        resource = ProviderResourceObservation.model_validate(event.payload["resource"])
+        if resource not in inventory.resources:
+            _invalid(event, "orphan resource is absent from the referenced inventory")
+        orphan_id = str(event.payload["orphan_id"])
+        orphans = dict(projection.orphans)
+        existing = orphans.get(orphan_id)
+        candidate = OrphanProjection(
+            backend_id=inventory.backend_id,
+            inventory_id=inventory_id,
+            resource=resource,
+        )
+        if existing is not None and existing.resource != candidate.resource:
+            _invalid(event, "orphan identity has conflicting resource content")
+        orphans[orphan_id] = existing or candidate
+        return projection.model_copy(
+            update={**update, "orphans": orphans, "status": "orphan_detected"}
+        )
+    if event_type == "provider_orphan_handling_recorded":
+        orphan_id = str(event.payload["orphan_id"])
+        orphan = projection.orphans.get(orphan_id)
+        if orphan is None:
+            _invalid(event, "orphan handling references an unknown orphan")
+        policy = orphan_handling_policy_from_document(event.payload["policy"])
+        orphans = dict(projection.orphans)
+        orphans[orphan_id] = orphan.model_copy(
+            update={
+                "status": "operator_action_required",
+                "handling_policy": policy,
+            }
+        )
+        diagnostics = (
+            *projection.diagnostics,
+            {
+                "code": "provider_orphan_requires_operator",
+                "orphan_id": orphan_id,
+                "backend_id": orphan.backend_id,
+                "provider_resource_handle": orphan.resource.provider_resource_handle,
+                "policy_id": policy.policy_id,
+            },
+        )
+        return projection.model_copy(
+            update={
+                **update,
+                "orphans": orphans,
+                "diagnostics": diagnostics,
+                "status": "operator_action_required",
+            }
+        )
+    if event_type == "retry_admitted":
+        invocation = invocation_from_document(event.payload["invocation"])
+        if invocation.invocation_id != projection.intent.invocation_id:
+            _invalid(event, "retry Invocation differs from the admitted invocation")
+        if projection.backend_plan is None:
+            _invalid(event, "retry requires the selected backend plan")
+        if projection.backend_plan.retry_classification != "same-plan":
+            _invalid(event, "selected backend plan forbids retry")
+        previous_id = str(event.payload["previous_reservation_id"])
+        previous = projection.reservations.get(previous_id)
+        if previous is None:
+            _invalid(event, "retry references an unknown prior reservation")
+        previous_attempts = tuple(
+            item for item in projection.attempts.values() if item.reservation_id == previous_id
+        )
+        if len(previous_attempts) != 1 or previous_attempts[0].status != "failed":
+            _invalid(event, "retry requires one durably failed prior attempt")
+        reservation = effect_reservation_from_document(event.payload["reservation"])
+        if reservation.reservation_id != event.reservation_id:
+            _invalid(event, "retry reservation identity does not match event")
+        if reservation.external_effect_key != previous.reservation.external_effect_key:
+            _invalid(event, "retry must preserve the external effect key")
+        if reservation.backend_plan_id != projection.backend_plan_id:
+            _invalid(event, "retry must preserve the selected backend plan")
+        attempts_for_effect = tuple(
+            item
+            for item in projection.attempts.values()
+            if item.reservation_id in projection.reservations
+            and projection.reservations[item.reservation_id].reservation.external_effect_key
+            == reservation.external_effect_key
+        )
+        attempt_number = int(event.payload["attempt_number"])
+        if attempt_number != len(attempts_for_effect) + 1:
+            _invalid(event, "retry attempt number is not the next durable attempt")
+        if attempt_number > invocation.execution_policy.max_attempts:
+            _invalid(event, "Invocation execution policy has exhausted retry attempts")
+        if reservation.reservation_id in projection.reservations:
+            _invalid(event, "retry reservation already exists")
+        reservations = dict(projection.reservations)
+        reservations[reservation.reservation_id] = ReservationProjection(reservation=reservation)
+        return projection.model_copy(
+            update={
+                **update,
+                "reservations": reservations,
+                "retry_count": projection.retry_count + 1,
+                "status": "retry_admitted",
+            }
         )
     if event.reservation_id is not None:
         reservation_projection = projection.reservations.get(event.reservation_id)
@@ -515,6 +839,10 @@ def _apply_event(
                     ),
                 }
             )
+        elif event_type == "external_effect_absence_reconciled":
+            if current.status not in {"dispatched", "observed", "reconciled"}:
+                _invalid(event, f"cannot reconcile effect absence from {current.status}")
+            current = current.model_copy(update={"status": "abandoned"})
         elif event_type == "external_effect_abandoned":
             if current.status not in {"dispatched", "observed", "reconciled"}:
                 _invalid(event, f"cannot abandon reservation from {current.status}")
@@ -528,9 +856,31 @@ def _apply_event(
             in {
                 "external_effect_observed",
                 "external_effect_reconciled",
+                "external_effect_absence_reconciled",
             }
         ):
             attempt = attempts[event.attempt_id]
+            if event_type == "external_effect_absence_reconciled":
+                if attempt.status in {"succeeded", "cancelled"}:
+                    _invalid(event, "successful or cancelled attempt cannot become absent")
+                attempts[event.attempt_id] = attempt.model_copy(
+                    update={
+                        "status": "failed",
+                        "terminal_at": event.occurred_at,
+                        "exit_classification": "provider_inventory_verified_absent",
+                        "observations": (*attempt.observations, dict(event.payload)),
+                        "event_refs": (*attempt.event_refs, event.event_id),
+                    }
+                )
+                reservations[event.reservation_id] = current
+                return projection.model_copy(
+                    update={
+                        **update,
+                        "reservations": reservations,
+                        "attempts": attempts,
+                        "status": "failed",
+                    }
+                )
             observed_status = event.payload.get("status", attempt.status)
             attempt_update: dict[str, Any] = {
                 "provider_resource_handle": event.payload.get("provider_resource_handle"),
@@ -632,8 +982,6 @@ def _apply_event(
         return projection.model_copy(update={**update, "status": "publication_failed"})
     if event_type == "invocation_satisfied":
         return projection.model_copy(update={**update, "status": "satisfied"})
-    if event_type == "retry_admitted":
-        return projection.model_copy(update={**update, "status": "retry_admitted"})
     if event_type == "invocation_permanently_failed":
         return projection.model_copy(update={**update, "status": "permanently_failed"})
     if event_type == "operator_action_required":
@@ -728,6 +1076,14 @@ class DurableController:
             created_at=now,
             expires_at=expires_at,
         )
+        effect_identity = hashlib.sha256(
+            canonical_json_bytes(
+                {
+                    "backend_id": reservation.backend_id,
+                    "external_effect_key": reservation.external_effect_key,
+                }
+            )
+        ).hexdigest()
         self._record(
             "effect_reservation_created",
             intent_id,
@@ -735,7 +1091,7 @@ class DurableController:
             backend_plan_id=plan.backend_plan_id,
             reservation_id=reservation.reservation_id,
             payload={"reservation": reservation.model_dump(mode="json")},
-            idempotency_key=f"reservation:{reservation.reservation_id}:created",
+            idempotency_key=f"effect:{effect_identity}:reserved",
         )
         return reservation
 
@@ -768,6 +1124,84 @@ class DurableController:
             idempotency_key=f"reservation:{reservation_id}:auth:{authentication_id}",
         )
         return _reservation(self.project(intent_id), reservation_id)
+
+    def admit_retry(
+        self,
+        intent_id: str,
+        invocation: Invocation,
+        previous_reservation_id: str,
+        *,
+        expires_at: datetime | None = None,
+    ) -> EffectReservation:
+        """Atomically admit one policy-bounded retry with the same effect identity."""
+
+        projection = self._expire_due(intent_id)
+        if projection.intent is None or projection.intent.invocation_id != invocation.invocation_id:
+            raise ControllerProtocolError("retry Invocation differs from the admitted invocation")
+        for event in self.store.read_all():
+            if (
+                event.intent_id == intent_id
+                and event.event_type == "retry_admitted"
+                and event.payload.get("previous_reservation_id") == previous_reservation_id
+            ):
+                return effect_reservation_from_document(event.payload["reservation"])
+        plan = projection.backend_plan
+        if plan is None:
+            raise ControllerProtocolError("retry requires the selected backend plan")
+        if plan.retry_classification != "same-plan":
+            raise ControllerProtocolError("selected backend plan forbids retry")
+        previous = _reservation(projection, previous_reservation_id)
+        attempts = tuple(
+            item
+            for item in projection.attempts.values()
+            if item.reservation_id == previous_reservation_id
+        )
+        if len(attempts) != 1 or attempts[0].status != "failed":
+            raise ControllerProtocolError(
+                "retry requires one durably failed prior attempt; reconcile ambiguity first"
+            )
+        attempts_for_effect = tuple(
+            item
+            for item in projection.attempts.values()
+            if item.reservation_id is not None
+            and projection.reservations[item.reservation_id].reservation.external_effect_key
+            == previous.reservation.external_effect_key
+        )
+        attempt_number = len(attempts_for_effect) + 1
+        if attempt_number > invocation.execution_policy.max_attempts:
+            raise ControllerProtocolError("Invocation execution policy exhausted retry attempts")
+        now = self.clock()
+        reservation_id = (
+            "retry-"
+            + hashlib.sha256(f"{previous_reservation_id}:{attempt_number}".encode()).hexdigest()[
+                :24
+            ]
+        )
+        if previous.reservation.requires_authentication and expires_at is None:
+            raise OperatorGateError("paid retry requires a new explicit reservation expiry")
+        reservation = EffectReservation.model_validate(
+            {
+                **previous.reservation.model_dump(mode="python"),
+                "reservation_id": reservation_id,
+                "created_at": now,
+                "expires_at": expires_at,
+            }
+        )
+        self._record(
+            "retry_admitted",
+            intent_id,
+            invocation_id=invocation.invocation_id,
+            backend_plan_id=plan.backend_plan_id,
+            reservation_id=reservation_id,
+            payload={
+                "invocation": invocation.model_dump(mode="json"),
+                "previous_reservation_id": previous_reservation_id,
+                "attempt_number": attempt_number,
+                "reservation": reservation.model_dump(mode="json"),
+            },
+            idempotency_key=f"retry:{previous_reservation_id}:{attempt_number}:admitted",
+        )
+        return reservation
 
     def expire_reservations(self, intent_id: str) -> ControllerProjection:
         return self._expire_due(intent_id)
@@ -939,6 +1373,111 @@ class DurableController:
             projection = self.project(intent_id)
         return self.project(intent_id)
 
+    async def observe_provider_inventory(
+        self,
+        intent_id: str,
+        adapter: EffectAdapter,
+        *,
+        backend_id: str,
+        scope: Mapping[str, Any],
+        reservation_ids: Sequence[str],
+        policy: OrphanHandlingPolicy,
+    ) -> ControllerProjection:
+        """Persist complete provider truth, reconcile absence, and classify orphans."""
+
+        projection = self.project(intent_id)
+        if projection.intent is None:
+            raise ControllerProtocolError("provider inventory requires an admitted intent")
+        reservations = tuple(_reservation(projection, item) for item in reservation_ids)
+        if any(item.reservation.backend_id != backend_id for item in reservations):
+            raise ControllerProtocolError("inventory reservation backend differs from request")
+        observation = await adapter.observe_inventory(scope)
+        if observation.backend_id != backend_id:
+            raise ControllerProtocolError("provider inventory backend differs from request")
+        if canonical_json_bytes(observation.scope) != canonical_json_bytes(dict(scope)):
+            raise ControllerProtocolError("provider inventory scope differs from request")
+        self._record(
+            "provider_inventory_observed",
+            intent_id,
+            payload={
+                "inventory": observation.model_dump(mode="json"),
+                "reservation_ids": list(reservation_ids),
+            },
+            idempotency_key=f"intent:{intent_id}:inventory:{observation.inventory_id}:observed",
+        )
+        observed_keys = {item.external_effect_key for item in observation.resources}
+        projection = self.project(intent_id)
+        for reserved in reservations:
+            attempt = next(
+                (
+                    item
+                    for item in projection.attempts.values()
+                    if item.reservation_id == reserved.reservation.reservation_id
+                ),
+                None,
+            )
+            if (
+                attempt is not None
+                and attempt.status not in {"succeeded", "failed", "cancelled"}
+                and reserved.reservation.external_effect_key not in observed_keys
+            ):
+                self._record(
+                    "external_effect_absence_reconciled",
+                    intent_id,
+                    reservation_id=reserved.reservation.reservation_id,
+                    attempt_id=attempt.attempt_id,
+                    payload={
+                        "inventory_id": observation.inventory_id,
+                        "external_effect_key": reserved.reservation.external_effect_key,
+                    },
+                    idempotency_key=(
+                        f"reservation:{reserved.reservation.reservation_id}:"
+                        f"absent:{observation.inventory_id}"
+                    ),
+                )
+                projection = self.project(intent_id)
+
+        live_effect_keys = self._live_effect_keys(backend_id)
+        for resource in observation.resources:
+            if resource.external_effect_key in live_effect_keys:
+                continue
+            orphan_id = hashlib.sha256(
+                canonical_json_bytes(
+                    {
+                        "backend_id": backend_id,
+                        "scope": observation.scope,
+                        "provider_resource_handle": resource.provider_resource_handle,
+                        "external_effect_key": resource.external_effect_key,
+                    }
+                )
+            ).hexdigest()
+            projection = self.project(intent_id)
+            if orphan_id not in projection.orphans:
+                self._record(
+                    "provider_orphan_detected",
+                    intent_id,
+                    payload={
+                        "orphan_id": orphan_id,
+                        "inventory_id": observation.inventory_id,
+                        "resource": resource.model_dump(mode="json"),
+                    },
+                    idempotency_key=f"intent:{intent_id}:orphan:{orphan_id}:detected",
+                )
+                projection = self.project(intent_id)
+            if projection.orphans[orphan_id].handling_policy is None:
+                self._record(
+                    "provider_orphan_handling_recorded",
+                    intent_id,
+                    payload={
+                        "orphan_id": orphan_id,
+                        "policy": policy.model_dump(mode="json"),
+                    },
+                    idempotency_key=(
+                        f"intent:{intent_id}:orphan:{orphan_id}:handling:{policy.policy_id}"
+                    ),
+                )
+        return self.project(intent_id)
+
     def cancel_reservation(self, intent_id: str, reservation_id: str, *, reason: str) -> None:
         reserved = _reservation(self.project(intent_id), reservation_id)
         if reserved.status not in {"inert", "authenticated"}:
@@ -1080,6 +1619,31 @@ class DurableController:
                 reservation_id=reservation_id,
             )
 
+    def _live_effect_keys(self, backend_id: str) -> frozenset[str]:
+        events = self.store.read_all()
+        intent_ids = tuple(dict.fromkeys(event.intent_id for event in events))
+        keys: set[str] = set()
+        for intent_id in intent_ids:
+            projection = project_controller_events(events, intent_id=intent_id)
+            for reservation_id, reserved in projection.reservations.items():
+                if reserved.reservation.backend_id != backend_id:
+                    continue
+                attempt = next(
+                    (
+                        item
+                        for item in projection.attempts.values()
+                        if item.reservation_id == reservation_id
+                    ),
+                    None,
+                )
+                if (
+                    reserved.status in {"dispatched", "observed", "reconciled"}
+                    and attempt is not None
+                    and attempt.status not in {"succeeded", "failed", "cancelled"}
+                ):
+                    keys.add(reserved.reservation.external_effect_key)
+        return frozenset(keys)
+
     def _record(
         self,
         event_type: ControllerEventType,
@@ -1129,10 +1693,16 @@ def _refs_identity(refs: Sequence[str]) -> str:
 __all__ = [
     "CONTROLLER_EVENT_SCHEMA_ID",
     "CONTROLLER_EVENT_SCHEMA_VERSION",
+    "CONTROLLER_EVENT_SCHEMA_VERSION_V1",
     "CONTROLLER_PROJECTION_SCHEMA_ID",
     "CONTROLLER_PROJECTION_SCHEMA_VERSION",
+    "CONTROLLER_PROJECTION_SCHEMA_VERSION_V1",
     "EFFECT_RESERVATION_SCHEMA_ID",
     "EFFECT_RESERVATION_SCHEMA_VERSION",
+    "ORPHAN_HANDLING_POLICY_SCHEMA_ID",
+    "ORPHAN_HANDLING_POLICY_SCHEMA_VERSION",
+    "PROVIDER_INVENTORY_SCHEMA_ID",
+    "PROVIDER_INVENTORY_SCHEMA_VERSION",
     "RUN_INTENT_SCHEMA_ID",
     "RUN_INTENT_SCHEMA_VERSION",
     "ControllerConflictError",
@@ -1146,10 +1716,18 @@ __all__ = [
     "EffectObservation",
     "EffectReservation",
     "OperatorGateError",
+    "OrphanHandlingPolicy",
+    "OrphanProjection",
+    "ProviderInventoryObservation",
+    "ProviderResourceObservation",
     "ReservationProjection",
     "RunIntent",
     "controller_event_from_document",
     "effect_reservation_from_document",
+    "migrate_controller_event_v1_document",
+    "orphan_handling_policy_from_document",
     "project_controller_events",
+    "provider_inventory_from_document",
+    "provider_inventory_observation",
     "run_intent_from_document",
 ]

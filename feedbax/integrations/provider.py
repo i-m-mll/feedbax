@@ -76,6 +76,8 @@ from feedbax.orchestration.controller import (
     ControllerEvent,
     ControllerProjection,
     EffectReservation,
+    OrphanHandlingPolicy,
+    ProviderInventoryObservation,
     RunIntent,
 )
 from feedbax.orchestration.realization import Attempt, BackendPlan
@@ -307,6 +309,8 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "EffectReservation": EffectReservation,
         "ControllerEvent": ControllerEvent,
         "ControllerProjection": ControllerProjection,
+        "ProviderInventoryObservation": ProviderInventoryObservation,
+        "OrphanHandlingPolicy": OrphanHandlingPolicy,
         "StudioTrainingExecutionRequest": StudioTrainingExecutionRequest,
         "StudioTrainingExecutionPreparation": StudioTrainingExecutionPreparation,
         "StudioPipelineMaterializationRequest": StudioPipelineMaterializationRequest,
