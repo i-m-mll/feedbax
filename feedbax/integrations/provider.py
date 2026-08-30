@@ -72,6 +72,12 @@ from feedbax.objectives.spec import (
     validate_objective_spec as _validate_objective_spec,
 )
 from feedbax.execution.records import Invocation
+from feedbax.orchestration.controller import (
+    ControllerEvent,
+    ControllerProjection,
+    EffectReservation,
+    RunIntent,
+)
 from feedbax.orchestration.realization import Attempt, BackendPlan
 from feedbax.studio.protocol import parse_positive_n_steps, task_n_steps_values
 from feedbax.studio.execution import (
@@ -297,6 +303,10 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "Invocation": Invocation,
         "BackendPlan": BackendPlan,
         "Attempt": Attempt,
+        "RunIntent": RunIntent,
+        "EffectReservation": EffectReservation,
+        "ControllerEvent": ControllerEvent,
+        "ControllerProjection": ControllerProjection,
         "StudioTrainingExecutionRequest": StudioTrainingExecutionRequest,
         "StudioTrainingExecutionPreparation": StudioTrainingExecutionPreparation,
         "StudioPipelineMaterializationRequest": StudioPipelineMaterializationRequest,

@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING, Any, Literal, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from feedbax.execution.records import Invocation, InvocationExecutionPolicy, invocation_for_operation
+from feedbax.execution.records import (
+    Invocation,
+    InvocationExecutionPolicy,
+    invocation_for_operation,
+)
 from feedbax.orchestration.drivers.local import local_driver_registration
 from feedbax.orchestration.drivers.runpod import runpod_driver_registration
 from feedbax.orchestration.realization import (
@@ -22,6 +26,7 @@ from feedbax.orchestration.realization import (
     MachineShape,
     OrchestrationBackend,
 )
+from feedbax.orchestration.gcp_backend import GCP_CONTROLLER_CAPABILITIES
 from feedbax.workflow.plan import LogicalKey, Operation, PlanNode, build_workflow_plan
 from feedbax.analysis.evaluation import (
     EvaluationRecipeExecutionError,
@@ -96,6 +101,7 @@ if TYPE_CHECKING:
 
 ExecutionTarget = Literal["local", "gcp", "runpod", "manual"]
 
+
 class _Unset:
     """Sentinel distinguishing an omitted argument from an explicit `None`."""
 
@@ -115,7 +121,7 @@ class StudioTrainingExecutionRequest(StudioExecutionModel):
     workspace: StudioWorkspaceSpec
     graph: GraphSpec
     stage_id: Optional[str] = None
-    backend: Literal["local", "runpod"] = "local"
+    backend: Literal["local", "gcp", "runpod"] = "local"
     job_id: Optional[str] = None
     local_cwd: Optional[str] = None
     backend_realization: BackendRealizationRequest | None = None
@@ -966,13 +972,19 @@ def _build_invocation_backend_plan(
         ),
         scientific_seeds=_studio_scientific_seeds(scenario.training_spec),
     )
-    registration = (
-        local_driver_registration() if request.backend == "local" else runpod_driver_registration()
-    )
+    if request.backend == "local":
+        backend_id = "local"
+        capabilities = local_driver_registration().supported_capabilities
+    elif request.backend == "runpod":
+        backend_id = "runpod"
+        capabilities = runpod_driver_registration().supported_capabilities
+    else:
+        backend_id = "gcp"
+        capabilities = GCP_CONTROLLER_CAPABILITIES
     backend = OrchestrationBackend(
-        backend_id=registration.name,
+        backend_id=backend_id,
         supported_scientific_capabilities=frozenset({"training"}),
-        driver_capabilities=registration.supported_capabilities,
+        driver_capabilities=capabilities,
     )
     if realization.configuration.get("job_id") not in {None, job_id}:
         raise StudioExecutionPreparationError(

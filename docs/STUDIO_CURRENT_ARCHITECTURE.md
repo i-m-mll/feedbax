@@ -92,6 +92,12 @@ The Studio backend is FastAPI under `feedbax/web/`.
   worker. It relays worker SSE progress, tracks monotonic event/status state,
   emits schema-versioned error/resync events, and proxies checkpoint metadata
   and checkpoint downloads.
+- `feedbax/orchestration/controller.py` is the durable authority for Studio
+  invocation intent, effect reservations, operator authentication, external
+  effects, attempts, recovery, cancellation, and artifact inspection. Its
+  append-only event log reconstructs status; the web layer owns no parallel
+  cloud state machine. GCP is an adapter behind this controller and an inert
+  reservation must be authenticated by identity before provider contact.
 - `feedbax/web/worker/client.py` is the HTTP/SSE client for worker health,
   start/stop/status/checkpoint endpoints, streaming, reconnect, and resync.
 - `feedbax/web/ws/training.py` relays the worker SSE stream to browser
@@ -111,8 +117,8 @@ Use this file for current orientation, then route to narrower authorities:
 - Typed subgraph domains, including acausal/mechanics/penzai interiors and
   compile-status routing: `docs/design/typed_subgraph_domains.md`; umbrella
   `6116155`.
-- Loss and training UI details: `docs/LOSS_UI_SPEC.md` and
-  `docs/CLOUD_TRAINING_DISPATCH_SPEC.md`.
+- Loss and training UI details: `docs/LOSS_UI_SPEC.md`; durable cloud operations
+  are described above and implemented by the controller protocol.
 - Historical UI design conversation and old issue lists:
   `docs/WEB_UI_RESPONSE_2026-01-27.md` and `docs/WEB_UI_ISSUES*.md`.
 - Pipeline pane and Workspace view behavior: current code in

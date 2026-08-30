@@ -22,12 +22,13 @@ from feedbax.web.services.training_service import (
     RunStateCorruptionError,
     TrainingService,
 )
+from tests.test_orchestration_core import _bundle, _compiled_row
 
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.no_silent_substitution_contract]
 
 
-def _write_legacy_v2_run(
+def _write_current_run(
     root: Path,
     *,
     state_text: str | None = None,
@@ -36,22 +37,12 @@ def _write_legacy_v2_run(
 ) -> Path:
     run_dir = root / "private-run-root"
     run_dir.mkdir(parents=True)
-    (run_dir / "bundle.json").write_text(
-        json.dumps(
-            {
-                "schema_id": "feedbax.orchestration.run_bundle",
-                "schema_version": "feedbax.orchestration.run_bundle.v2",
-                "run_set_id": "set-visible",
-                "rows": [
-                    {
-                        "row_id": "job-visible",
-                        "metadata": {"worker_start": {"total_batches": 4}},
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
+    bundle = _bundle(
+        root / "bundle-source",
+        rows=[_compiled_row("job-visible")],
+        run_set_id="set-visible",
     )
+    (run_dir / "bundle.json").write_text(bundle.model_dump_json(), encoding="utf-8")
     state_path = run_dir / "state.json"
     if state_text is None:
         RunSetStateStore(state_path).save(
@@ -132,7 +123,7 @@ def test_bundle_deletion_race_is_transient_not_corruption(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
-    run_dir = _write_legacy_v2_run(tmp_path)
+    run_dir = _write_current_run(tmp_path)
     bundle_path = run_dir / "bundle.json"
     original_read_text = Path.read_text
 
@@ -146,12 +137,12 @@ def test_bundle_deletion_race_is_transient_not_corruption(
     assert TrainingService().list_live_training_runs() == []
 
 
-def test_legacy_status_uses_single_bundle_read_during_deletion_race(
+def test_status_uses_single_bundle_read_during_deletion_race(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
-    run_dir = _write_legacy_v2_run(tmp_path)
+    run_dir = _write_current_run(tmp_path)
     bundle_path = run_dir / "bundle.json"
     service = TrainingService()
     service.rebuild_cache_from_state_docs()
@@ -171,16 +162,16 @@ def test_legacy_status_uses_single_bundle_read_during_deletion_race(
     status = asyncio.run(service.get_status("job-visible"))
 
     assert status is not None
-    assert status["total_batches"] == 4
+    assert status["total_batches"] == 1
     assert bundle_reads == 1
 
 
-def test_duplicate_legacy_v2_row_ids_raise_typed_corruption(
+def test_duplicate_row_ids_raise_typed_corruption(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
-    run_dir = _write_legacy_v2_run(tmp_path)
+    run_dir = _write_current_run(tmp_path)
     bundle_path = run_dir / "bundle.json"
     raw = json.loads(bundle_path.read_text(encoding="utf-8"))
     raw["rows"].append(dict(raw["rows"][0]))
@@ -207,7 +198,7 @@ def test_cross_document_mismatch_raises_typed_corruption(
     reason: str,
 ) -> None:
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
-    _write_legacy_v2_run(
+    _write_current_run(
         tmp_path,
         state_run_set_id=state_run_set_id,
         state_row_ids=state_row_ids,
@@ -250,17 +241,17 @@ def test_malformed_non_v2_bundle_raises_typed_corruption(
     assert "bundle validation failed" in raised.value.reason
 
 
-def test_valid_legacy_v2_bundle_remains_visible_without_mutation(
+def test_valid_current_bundle_remains_visible_without_mutation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
-    run_dir = _write_legacy_v2_run(tmp_path)
+    run_dir = _write_current_run(tmp_path)
     state_path = run_dir / "state.json"
     original_state = state_path.read_bytes()
 
     service = TrainingService()
-    asyncio.run(service.reconcile_from_state_docs())
+    service.rebuild_cache_from_state_docs()
     rows = service.list_live_training_runs()
 
     assert [(row["job_id"], row["status"]) for row in rows] == [("job-visible", "running")]
@@ -273,7 +264,7 @@ def test_training_run_list_surfaces_sanitized_corruption_failure(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
-    run_dir = _write_legacy_v2_run(tmp_path, state_text="{not-json")
+    run_dir = _write_current_run(tmp_path, state_text="{not-json")
     monkeypatch.setattr(runs_api, "training_service", TrainingService())
     monkeypatch.setattr(runs_api, "iter_indexed_manifest_records_by_kind", lambda *_args: [])
     monkeypatch.setattr(runs_api, "_legacy_training_runs_from_model_db", lambda: [])
@@ -295,7 +286,7 @@ def test_training_status_surfaces_sanitized_corruption_failure(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
-    run_dir = _write_legacy_v2_run(tmp_path, state_text="{not-json")
+    run_dir = _write_current_run(tmp_path, state_text="{not-json")
     monkeypatch.setattr(training_api, "training_service", TrainingService())
     app = FastAPI()
     app.include_router(training_api.router, prefix="/api/training")

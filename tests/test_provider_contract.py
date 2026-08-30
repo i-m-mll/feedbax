@@ -342,6 +342,10 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert "Invocation" in manifest.schemas
     assert "BackendPlan" in manifest.schemas
     assert "Attempt" in manifest.schemas
+    assert "RunIntent" in manifest.schemas
+    assert "EffectReservation" in manifest.schemas
+    assert "ControllerEvent" in manifest.schemas
+    assert "ControllerProjection" in manifest.schemas
 
 
 def test_provider_manifest_discovers_immutable_blob_spec_and_open_capability() -> None:
@@ -373,14 +377,29 @@ def test_provider_manifest_exports_separate_invocation_realization_and_attempt_r
 
     assert invocation["schema_version"]["const"] == "feedbax.spec.invocation.v1"
     assert "backend_id" not in invocation
-    assert backend_plan["schema_version"]["const"] == (
-        "feedbax.orchestration.backend_plan.v1"
-    )
+    assert backend_plan["schema_version"]["const"] == ("feedbax.orchestration.backend_plan.v1")
     assert "provider_resource_handle" not in backend_plan
     assert attempt["schema_version"]["const"] == "feedbax.manifest.attempt.v1"
     assert "provider_resource_handle" in attempt
     assert "prepare_execution_plan" not in manifest.capabilities
     assert "run_local_execution" not in manifest.capabilities
+
+
+def test_provider_manifest_exports_versioned_durable_controller_records() -> None:
+    schemas = provider_manifest().schemas
+
+    assert schemas["RunIntent"]["properties"]["schema_version"]["const"] == (
+        "feedbax.orchestration.run_intent.v1"
+    )
+    assert schemas["EffectReservation"]["properties"]["schema_version"]["const"] == (
+        "feedbax.orchestration.effect_reservation.v1"
+    )
+    assert schemas["ControllerEvent"]["properties"]["schema_version"]["const"] == (
+        "feedbax.orchestration.controller_event.v1"
+    )
+    assert schemas["ControllerProjection"]["properties"]["schema_version"]["const"] == (
+        "feedbax.orchestration.controller_projection.v1"
+    )
 
 
 def test_provider_manifest_exposes_eval_analysis_report_action_depth() -> None:

@@ -38,7 +38,7 @@ from feedbax.orchestration.bundle import ROW_ID_RE
 from feedbax.orchestration.drivers.base import DriverRowProbe
 from feedbax.orchestration.drivers.capabilities import DriverRegistration, DriverRegistry
 from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore
-from feedbax.web.services.training_service import TrainingService
+from feedbax.web.services.training_service import RunStateCorruptionError, TrainingService
 from feedbax.web.services.worker_driver import (
     WorkerHttpDriver,
     WorkerStreamTeardownError,
@@ -1304,7 +1304,7 @@ def test_training_service_starts_state_backed_worker_run(
     asyncio.run(run())
 
 
-def test_training_service_reads_legacy_v2_terminal_status_without_mutating(
+def test_training_service_rejects_legacy_v2_terminal_state_without_mutating(
     monkeypatch, tmp_path
 ) -> None:
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
@@ -1352,15 +1352,12 @@ def test_training_service_reads_legacy_v2_terminal_status_without_mutating(
     )
 
     service = TrainingService()
-    status = service._status_from_state("job-terminal")
-    assert status is not None
-    assert status["status"] == "running"
-    assert status["total_batches"] == 1
-    assert status["last_loss"] == 0.5
+    with pytest.raises(RunStateCorruptionError, match="Persisted Studio run state is corrupt"):
+        service._status_from_state("job-terminal")
     assert store.load().rows["job-terminal"].status == "running"
 
 
-def test_training_service_reads_legacy_v2_orphan_status_without_mutating(
+def test_training_service_rejects_legacy_v2_orphan_state_without_mutating(
     monkeypatch, tmp_path
 ) -> None:
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
@@ -1393,10 +1390,8 @@ def test_training_service_reads_legacy_v2_orphan_status_without_mutating(
     )
 
     service = TrainingService()
-    status = service._status_from_state("job-orphan")
-    assert status is not None
-    assert status["status"] == "running"
-    assert status["total_batches"] == 1
+    with pytest.raises(RunStateCorruptionError, match="Persisted Studio run state is corrupt"):
+        service._status_from_state("job-orphan")
     assert store.load().rows["job-orphan"].status == "running"
 
 
