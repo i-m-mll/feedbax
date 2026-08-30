@@ -25,7 +25,15 @@ class _Context:
     def parent_execution_location(self, _parent):
         return SimpleNamespace(artifact_provider="provider")
 
-    def load_evaluation_states(self, _parent):
+    def load_evaluation_states(
+        self,
+        _parent,
+        *,
+        prerequisite_artifact_provider,
+        validate_staged_prerequisite,
+    ):
+        assert prerequisite_artifact_provider == "provider"
+        assert validate_staged_prerequisite is True
         return self.states
 
     def resolve_manifest_input(self, _parent):
