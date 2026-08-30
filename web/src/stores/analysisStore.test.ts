@@ -51,7 +51,6 @@ beforeEach(() => {
   useWorkspaceStore.setState({
     workspace,
     lastTrainingExecutionPreparation: null,
-    lastTrainingLocalRunResult: null,
     lastPipelineMaterializationResult: null,
   });
   useAnalysisStore.getState().resetAnalysis();

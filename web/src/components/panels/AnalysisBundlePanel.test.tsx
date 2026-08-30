@@ -52,7 +52,6 @@ afterEach(() => {
     useWorkspaceStore.setState({
       workspace: null,
       lastTrainingExecutionPreparation: null,
-      lastTrainingLocalRunResult: null,
       lastPipelineMaterializationResult: null,
     });
   });

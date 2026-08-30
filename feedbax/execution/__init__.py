@@ -13,7 +13,20 @@ _TRAINING_EXECUTOR_EXPORTS = {
     "load_training_run_spec",
 }
 
+_RECORD_EXPORTS = {
+    "INVOCATION_SCHEMA_ID",
+    "INVOCATION_SCHEMA_VERSION",
+    "Invocation",
+    "InvocationExecutionPolicy",
+    "InvocationInput",
+    "InvocationOutput",
+    "UnsupportedInvocationVersionError",
+    "invocation_for_operation",
+    "invocation_from_document",
+}
+
 __all__ = [
+    *_RECORD_EXPORTS,
     "ManifestEmissionConflictError",
     "TrainingRunExecutionResult",
     "TrainingRunExecutorError",
@@ -23,6 +36,10 @@ __all__ = [
 
 
 def __getattr__(name: str):
+    if name in _RECORD_EXPORTS:
+        value = getattr(importlib.import_module("feedbax.execution.records"), name)
+        globals()[name] = value
+        return value
     if name not in _TRAINING_EXECUTOR_EXPORTS:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     value = getattr(importlib.import_module("feedbax.training.executor"), name)

@@ -418,17 +418,15 @@ from feedbax.contracts.workspace_replay import (
     WORKSPACE_REPLAY_SCHEMA_VERSION,
     WORKSPACE_REPLAY_SCHEMA_VERSION_V0,
 )
-from feedbax.execution.models import (
-    EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
-    EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION,
-    EXECUTION_PLAN_SCHEMA_VERSION,
-    EXECUTION_PLAN_SCHEMA_VERSION_V3,
-    EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
-    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
-    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1,
-    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V2,
-    EXECUTION_SPEC_SCHEMA_VERSION,
-    LOCAL_EXECUTION_RESULT_SCHEMA_VERSION,
+from feedbax.execution.records import (
+    INVOCATION_SCHEMA_ID,
+    INVOCATION_SCHEMA_VERSION,
+)
+from feedbax.orchestration.realization import (
+    ATTEMPT_SCHEMA_ID,
+    ATTEMPT_SCHEMA_VERSION,
+    BACKEND_PLAN_SCHEMA_ID,
+    BACKEND_PLAN_SCHEMA_VERSION,
 )
 from feedbax.orchestration.events import (
     RUN_EVENT_SCHEMA_ID,
@@ -2613,7 +2611,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     studio_schema_emitters = ("feedbax.studio.schema", "feedbax.integrations.provider")
     studio_execution_emitters = ("feedbax.studio.execution", "feedbax.integrations.provider")
     objective_emitters = ("feedbax.objective_spec", "feedbax.integrations.provider")
-    execution_emitters = ("feedbax.execution.models", "feedbax.integrations.provider")
+    invocation_emitters = ("feedbax.execution.records", "feedbax.integrations.provider")
+    realization_emitters = (
+        "feedbax.orchestration.realization",
+        "feedbax.integrations.provider",
+    )
 
     families = [
         _family(
@@ -4097,7 +4099,6 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.orchestration.repo_snapshot.seal_repo_snapshots",),
             consumed_by=(
                 "feedbax.orchestration.drivers.runpod.RunPodOrchestrationDriver",
-                "feedbax.execution.planning.prepare_execution_plan",
             ),
             description="Sealed tracked-working-tree transfer authority.",
             rejected_old_versions=("feedbax.orchestration.repo_snapshot_manifest.v0",),
@@ -4992,49 +4993,58 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             )
         )
 
-    for kind, schema_id, current_version, rejected_versions, description in (
+    for (
+        kind,
+        schema_id,
+        current_version,
+        owner_module,
+        emitted_by,
+        consumed_by,
+        rejected_versions,
+        description,
+    ) in (
         (
-            "ExecutionSpec",
-            "feedbax.spec.execution",
-            EXECUTION_SPEC_SCHEMA_VERSION,
-            ("feedbax.spec.execution.v1",),
-            "Provider-neutral execution request.",
+            "Invocation",
+            INVOCATION_SCHEMA_ID,
+            INVOCATION_SCHEMA_VERSION,
+            "feedbax.execution.records",
+            invocation_emitters,
+            ("feedbax.orchestration.realization", "durable controller"),
+            ("feedbax.spec.execution.v1", "feedbax.spec.execution.v2"),
+            "Exact provider-neutral request for one admitted workflow operation.",
         ),
         (
-            "ExecutionPlan",
-            "feedbax.manifest.execution_plan",
-            EXECUTION_PLAN_SCHEMA_VERSION,
+            "BackendPlan",
+            BACKEND_PLAN_SCHEMA_ID,
+            BACKEND_PLAN_SCHEMA_VERSION,
+            "feedbax.orchestration.realization",
+            realization_emitters,
+            ("durable controller", "backend adapter"),
             (
-                EXECUTION_PLAN_SCHEMA_VERSION_V3,
+                "feedbax.manifest.execution.v4",
+                "feedbax.manifest.execution.v3",
                 "feedbax.manifest.execution.v2",
                 "feedbax.manifest.execution.v1",
+                "feedbax.manifest.execution_cloud_payload.v1",
+                "feedbax.manifest.execution_reproducibility.v1",
+                "feedbax.manifest.execution_reproducibility.v2",
+                "feedbax.manifest.execution_reproducibility.v3",
             ),
-            "Inspectable concrete execution plan.",
+            "Exact inert realization through a declared backend adapter.",
         ),
         (
-            "ExecutionCloudPayload",
-            EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
-            EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION,
-            ("feedbax.manifest.execution_cloud_payload.v0",),
-            "Typed provider payload embedded in an execution plan.",
-        ),
-        (
-            "ExecutionReproducibility",
-            EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
-            EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
+            "Attempt",
+            ATTEMPT_SCHEMA_ID,
+            ATTEMPT_SCHEMA_VERSION,
+            "feedbax.orchestration.realization",
+            realization_emitters,
+            ("durable controller", "event projection"),
             (
-                "feedbax.manifest.execution_reproducibility.v0",
-                EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1,
-                EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V2,
+                "feedbax.manifest.execution.v1",
+                "feedbax.manifest.execution.v2",
+                "feedbax.manifest.execution.v3",
             ),
-            "Typed reproducibility payload embedded in an execution plan.",
-        ),
-        (
-            "LocalExecutionResult",
-            "feedbax.manifest.local_execution_result",
-            LOCAL_EXECUTION_RESULT_SCHEMA_VERSION,
-            ("feedbax.manifest.execution.v2", "feedbax.manifest.execution.v1"),
-            "Local execution result.",
+            "One observed backend realization with explicit terminal classification.",
         ),
     ):
         families.append(
@@ -5042,9 +5052,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 kind,
                 schema_id,
                 current_version,
-                owner_module="feedbax.execution.models",
-                emitted_by=execution_emitters,
-                consumed_by=("execution planning", "Studio execution"),
+                owner_module=owner_module,
+                emitted_by=emitted_by,
+                consumed_by=consumed_by,
                 description=description,
                 rejected_old_versions=rejected_versions,
             )
@@ -5185,22 +5195,12 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         (
             "StudioTrainingExecutionRequest",
             "feedbax.spec.studio.training_execution_request",
-            "Request to lower a Studio train stage into an execution plan.",
+            "Request to bind a Studio train stage to an invocation and backend plan.",
         ),
         (
             "StudioTrainingExecutionPreparation",
             "feedbax.spec.studio.training_execution_preparation",
-            "Prepared Studio training execution plan.",
-        ),
-        (
-            "StudioTrainingLocalRunRequest",
-            "feedbax.spec.studio.training_local_run_request",
-            "Request to execute Studio training locally.",
-        ),
-        (
-            "StudioTrainingLocalRunResult",
-            "feedbax.manifest.studio.training_local_run_result",
-            "Result from local Studio training execution.",
+            "Prepared Studio invocation and inert backend plan.",
         ),
         (
             "StudioPipelineMaterializationRequest",

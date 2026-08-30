@@ -163,13 +163,15 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
 )
 from feedbax.contracts.value_schema import ValueSchema
-from feedbax.execution.models import (
-    EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
-    EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION,
-    EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
-    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
-    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1,
-    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V2,
+from feedbax.execution.records import (
+    INVOCATION_SCHEMA_ID,
+    INVOCATION_SCHEMA_VERSION,
+)
+from feedbax.orchestration.realization import (
+    ATTEMPT_SCHEMA_ID,
+    ATTEMPT_SCHEMA_VERSION,
+    BACKEND_PLAN_SCHEMA_ID,
+    BACKEND_PLAN_SCHEMA_VERSION,
 )
 from feedbax.orchestration.repo_realization import (
     REPO_REALIZATION_PLAN_SCHEMA_ID,
@@ -1099,26 +1101,17 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
         == "feedbax.spec.analysis_data_product_requirement"
     )
     assert families["AnalysisDataProduct"].identity == "feedbax.manifest.analysis_data_product"
-    assert families["ExecutionSpec"].identity == "feedbax.spec.execution"
-    assert families["ExecutionSpec"].current_version == "feedbax.spec.execution.v2"
-    assert families["ExecutionPlan"].identity == "feedbax.manifest.execution_plan"
-    assert families["ExecutionPlan"].current_version == "feedbax.manifest.execution.v4"
-    assert families["ExecutionCloudPayload"].identity == EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID
-    assert (
-        families["ExecutionCloudPayload"].current_version == EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION
-    )
-    assert families["ExecutionReproducibility"].identity == EXECUTION_REPRODUCIBILITY_SCHEMA_ID
-    assert (
-        families["ExecutionReproducibility"].current_version
-        == EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION
-    )
+    assert families["Invocation"].identity == INVOCATION_SCHEMA_ID
+    assert families["Invocation"].current_version == INVOCATION_SCHEMA_VERSION
+    assert families["BackendPlan"].identity == BACKEND_PLAN_SCHEMA_ID
+    assert families["BackendPlan"].current_version == BACKEND_PLAN_SCHEMA_VERSION
     assert families["RepoRealizationPlan"].identity == REPO_REALIZATION_PLAN_SCHEMA_ID
     assert families["RepoRealizationPlan"].current_version == REPO_REALIZATION_PLAN_SCHEMA_VERSION
     assert (
         families["RunPodPreflightBaseEvidence"].identity == RUNPOD_PREFLIGHT_BASE_EVIDENCE_SCHEMA_ID
     )
-    assert families["LocalExecutionResult"].identity == "feedbax.manifest.local_execution_result"
-    assert families["LocalExecutionResult"].current_version == "feedbax.manifest.execution.v3"
+    assert families["Attempt"].identity == ATTEMPT_SCHEMA_ID
+    assert families["Attempt"].current_version == ATTEMPT_SCHEMA_VERSION
     assert (
         families["StagedAnalysisBundleExecution"].identity
         == "feedbax.manifest.analysis_bundle_execution"
@@ -1383,13 +1376,11 @@ def test_manifest_schema_identities_survive_contract_package_move() -> None:
         ),
         "TrainingCheckpointLatestPointer": "feedbax.manifest.training_checkpoint_latest_pointer",
         "TrainingRunManifest": "feedbax.manifest.training_run",
-        "ExecutionCloudPayload": EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
-        "ExecutionReproducibility": EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
+        "Attempt": ATTEMPT_SCHEMA_ID,
         "StudioPipelineMaterializationResult": (
             "feedbax.manifest.studio.pipeline_materialization_result"
         ),
         "StudioSchemaRegistry": "feedbax.manifest.studio.schema_registry",
-        "StudioTrainingLocalRunResult": "feedbax.manifest.studio.training_local_run_result",
         "WorkspaceReplayProduct": WORKSPACE_REPLAY_SCHEMA_ID,
     }
 
@@ -1447,25 +1438,17 @@ def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
             "feedbax.contracts.checkpoints",
             ("feedbax.training.checkpoint_custody",),
         ),
-        "ExecutionSpec": (
-            "feedbax.execution.models",
-            ("feedbax.execution.models", "feedbax.integrations.provider"),
+        "Invocation": (
+            "feedbax.execution.records",
+            ("feedbax.execution.records", "feedbax.integrations.provider"),
         ),
-        "ExecutionPlan": (
-            "feedbax.execution.models",
-            ("feedbax.execution.models", "feedbax.integrations.provider"),
+        "BackendPlan": (
+            "feedbax.orchestration.realization",
+            ("feedbax.orchestration.realization", "feedbax.integrations.provider"),
         ),
-        "ExecutionCloudPayload": (
-            "feedbax.execution.models",
-            ("feedbax.execution.models", "feedbax.integrations.provider"),
-        ),
-        "ExecutionReproducibility": (
-            "feedbax.execution.models",
-            ("feedbax.execution.models", "feedbax.integrations.provider"),
-        ),
-        "LocalExecutionResult": (
-            "feedbax.execution.models",
-            ("feedbax.execution.models", "feedbax.integrations.provider"),
+        "Attempt": (
+            "feedbax.orchestration.realization",
+            ("feedbax.orchestration.realization", "feedbax.integrations.provider"),
         ),
         "ArrayStorePayload": (
             "feedbax.contracts.artifact_schema",
@@ -1555,7 +1538,7 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "ExtractionProductSpec",
         "ReportSpec",
         "RegenerationSpec",
-        "ExecutionSpec",
+        "Invocation",
         "StudioApiTransport",
         "StudioWorkspaceSpec",
         "StudioTaskBindingSpec",
@@ -1571,10 +1554,7 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "TrainingCheckpointLatestPointer",
         "TrainingRunManifest",
         "AnalysisDataProduct",
-        "ExecutionPlan",
-        "ExecutionCloudPayload",
-        "ExecutionReproducibility",
-        "LocalExecutionResult",
+        "Attempt",
         "StagedAnalysisBundleExecution",
         "ProviderManifest",
         "RegistrySnapshot",
@@ -1800,14 +1780,12 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     task_binding_policy = default_spec_registry.resolve("StudioTaskBindingSpec").policy
     objective_policy = default_spec_registry.resolve("ObjectiveSpec").policy
     population_policy = default_spec_registry.resolve("PopulationStructureSpec").policy
-    execution_policy = default_spec_registry.resolve("ExecutionSpec").policy
-    execution_plan_policy = default_spec_registry.resolve("ExecutionPlan").policy
+    execution_policy = default_spec_registry.resolve("Invocation").policy
+    execution_plan_policy = default_spec_registry.resolve("BackendPlan").policy
     checkpoint_policy = default_spec_registry.resolve(
         "TrainingCheckpointTransactionManifest"
     ).policy
-    cloud_payload_policy = default_spec_registry.resolve("ExecutionCloudPayload").policy
-    reproducibility_policy = default_spec_registry.resolve("ExecutionReproducibility").policy
-    local_execution_result_policy = default_spec_registry.resolve("LocalExecutionResult").policy
+    attempt_policy = default_spec_registry.resolve("Attempt").policy
     studio_api_policy = default_spec_registry.resolve("StudioApiTransport").policy
     report_policy = default_spec_registry.resolve("ReportSpec").policy
     extraction_policy = default_spec_registry.resolve("ExtractionProductSpec").policy
@@ -1870,7 +1848,10 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
     )
     assert execution_policy is not None
-    assert execution_policy.rejected_old_versions == ("feedbax.spec.execution.v1",)
+    assert execution_policy.rejected_old_versions == (
+        "feedbax.spec.execution.v1",
+        "feedbax.spec.execution.v2",
+    )
     assert report_policy is not None
     assert report_policy.stance == "reject"
     assert report_policy.rejected_old_versions == ("feedbax.spec.report.v0",)
@@ -1879,24 +1860,20 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert extraction_policy.rejected_old_versions == ("feedbax.spec.extraction_product.v0",)
     assert execution_plan_policy is not None
     assert execution_plan_policy.rejected_old_versions == (
+        "feedbax.manifest.execution.v4",
         "feedbax.manifest.execution.v3",
         "feedbax.manifest.execution.v2",
         "feedbax.manifest.execution.v1",
+        "feedbax.manifest.execution_cloud_payload.v1",
+        "feedbax.manifest.execution_reproducibility.v1",
+        "feedbax.manifest.execution_reproducibility.v2",
+        "feedbax.manifest.execution_reproducibility.v3",
     )
-    assert cloud_payload_policy is not None
-    assert cloud_payload_policy.rejected_old_versions == (
-        "feedbax.manifest.execution_cloud_payload.v0",
-    )
-    assert reproducibility_policy is not None
-    assert reproducibility_policy.rejected_old_versions == (
-        "feedbax.manifest.execution_reproducibility.v0",
-        EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1,
-        EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V2,
-    )
-    assert local_execution_result_policy is not None
-    assert local_execution_result_policy.rejected_old_versions == (
-        "feedbax.manifest.execution.v2",
+    assert attempt_policy is not None
+    assert attempt_policy.rejected_old_versions == (
         "feedbax.manifest.execution.v1",
+        "feedbax.manifest.execution.v2",
+        "feedbax.manifest.execution.v3",
     )
     assert studio_api_policy is not None
     assert studio_api_policy.rejected_old_versions == ("feedbax.spec.studio.api_transport.v0",)

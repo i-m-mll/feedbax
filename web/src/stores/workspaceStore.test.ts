@@ -65,7 +65,6 @@ beforeEach(() => {
   useWorkspaceStore.setState({
     workspace: null,
     lastTrainingExecutionPreparation: null,
-    lastTrainingLocalRunResult: null,
     lastPipelineMaterializationResult: null,
   });
 });
@@ -1088,7 +1087,7 @@ describe('buildWorkspaceSnapshot', () => {
     expect(updatedEvalStage?.metadata.dirty).toBe(true);
   });
 
-  it('stores prepared execution plans without dropping workspace state', () => {
+  it('stores prepared invocations and backend plans without dropping workspace state', () => {
     const workspace = buildWorkspaceSnapshot({
       workspace: null,
       graph,
@@ -1107,9 +1106,9 @@ describe('buildWorkspaceSnapshot', () => {
               status: 'ready' as const,
               artifact_refs: [
                 {
-                  kind: 'ExecutionPlan',
-                  id: 'execution-plan:studio-plan',
-                  role: 'execution_plan',
+                  kind: 'BackendPlan',
+                  id: 'backend-plan:studio-plan',
+                  role: 'backend_plan',
                   provider: 'feedbax',
                   uri: '/tmp/feedbax_runs/studio-plan/execution-plan.json',
                   media_type: 'application/json',
@@ -1124,121 +1123,37 @@ describe('buildWorkspaceSnapshot', () => {
     useWorkspaceStore.getState().setWorkspace(workspace);
     useWorkspaceStore.getState().setTrainingExecutionPreparation({
       workspace: prepared,
-      stage_id: 'stage:train',
-      scenario_id: 'scenario:train',
-      execution_spec: { job_id: 'studio-plan' },
-      plan: {
-        kind: 'ExecutionPlan',
-        schema_version: 'feedbax.execution.v1',
-        job_id: 'studio-plan',
-        backend: 'local',
-        command: 'feedbax-provider validate training training-spec.json',
-        run_directory: '/tmp/feedbax_runs/studio-plan',
-        bootstrap: [],
-        health_checks: [],
-        launch: {
-          id: 'launch',
-          title: 'Launch execution',
-          command: null,
-          description: '',
-          critical: true,
-          metadata: {},
-        },
-        monitor: [],
-        artifact_routes: [],
-        cloud_payload: {},
-        reproducibility: {},
-        warnings: [],
-      },
-    });
-
-    const state = useWorkspaceStore.getState();
-    expect(state.lastTrainingExecutionPreparation?.plan.job_id).toBe('studio-plan');
-    expect(state.workspace?.stages.find((stage) => stage.kind === 'train')?.status).toBe('ready');
-  });
-
-  it('stores local execution results and returned workspace refs', () => {
-    const workspace = buildWorkspaceSnapshot({
-      workspace: null,
       graph,
-      uiState,
-      trainingSpec,
-      taskSpec,
-      analysisSnapshot: null,
-      projectName: 'Workspace test',
-    });
-    const completed = {
-      ...workspace,
-      stages: workspace.stages.map((stage) =>
-        stage.kind === 'train'
-          ? {
-              ...stage,
-              status: 'completed' as const,
-              manifest_refs: [
-                {
-                  kind: 'TrainingRunManifest',
-                  id: 'feedbax-training-run:studio-run',
-                  role: 'training_run',
-                  provider: 'feedbax',
-                  uri: '/tmp/feedbax_runs/manifests/training_runs/studio-run.json',
-                  metadata: {},
-                },
-              ],
-            }
-          : stage
-      ),
-    };
-
-    useWorkspaceStore.getState().setWorkspace(workspace);
-    useWorkspaceStore.getState().setTrainingLocalRunResult({
-      workspace: completed,
       stage_id: 'stage:train',
       scenario_id: 'scenario:train',
-      execution_spec: { job_id: 'studio-run' },
-      snapshot_dir: '/tmp/feedbax_runs/executions/studio-run/inputs',
-      result: {
-        job_id: 'studio-run',
-        status: 'completed',
-        return_code: 0,
-        stdout_path: '/tmp/feedbax_runs/executions/studio-run/stdout.log',
-        stderr_path: '/tmp/feedbax_runs/executions/studio-run/stderr.log',
-        manifest_path: '/tmp/feedbax_runs/manifests/training_runs/studio-run.json',
-        manifest_payload: { kind: 'TrainingRunManifest' },
-        plan: {
-          kind: 'ExecutionPlan',
-          schema_version: 'feedbax.execution.v1',
-          job_id: 'studio-run',
-          backend: 'local',
-          command: 'python -m feedbax.bin.provider validate training training-spec.json',
-          run_directory: '/tmp/feedbax_runs/studio-run',
-          bootstrap: [],
-          health_checks: [],
-          launch: {
-            id: 'launch',
-            title: 'Launch execution',
-            command: null,
-            description: '',
-            critical: true,
-            metadata: {},
-          },
-          monitor: [],
-          artifact_routes: [],
-          cloud_payload: {},
-          reproducibility: {},
-          warnings: [],
-        },
+      invocation: {
+        schema_id: 'feedbax.spec.invocation',
+        schema_version: 'feedbax.spec.invocation.v1',
+        invocation_id: 'a'.repeat(64),
+        workflow_plan_id: 'b'.repeat(64),
+        operation_key: 'campaign:studio',
+        operation: {},
+        inputs: [],
+        requested_outputs: [],
+        scientific_seeds: {},
+        capabilities: ['training'],
+        execution_policy: { timeout_seconds: 60, max_attempts: 1 },
+      },
+      backend_plan: {
+        schema_id: 'feedbax.orchestration.backend_plan',
+        schema_version: 'feedbax.orchestration.backend_plan.v1',
+        backend_plan_id: 'c'.repeat(64),
+        invocation_id: 'a'.repeat(64),
+        backend_id: 'local',
+        configuration: { job_id: 'studio-plan' },
       },
     });
 
     const state = useWorkspaceStore.getState();
-    expect(state.lastTrainingLocalRunResult?.result.status).toBe('completed');
-    expect(state.workspace?.stages.find((stage) => stage.kind === 'train')?.status).toBe(
-      'completed'
+    expect(state.lastTrainingExecutionPreparation?.backend_plan.configuration.job_id).toBe(
+      'studio-plan'
     );
-    expect(
-      state.workspace?.stages.find((stage) => stage.kind === 'train')?.manifest_refs[0]
-        .role
-    ).toBe('training_run');
+    expect(state.workspace?.stages.find((stage) => stage.kind === 'train')?.status).toBe('ready');
   });
 
   it('stores pipeline materialization results and downstream stage refs', () => {

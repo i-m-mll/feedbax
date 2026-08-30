@@ -17,8 +17,6 @@ from feedbax.integrations.provider import (
     registry_snapshot,
     validate_spec,
 )
-from feedbax.execution.models import ExecutionPlan, ExecutionSpec
-from feedbax.execution.planning import prepare_execution_plan
 from feedbax.studio.schema import (
     StudioSchemaEnumerationRequest,
     StudioSchemaRegistry,
@@ -33,15 +31,12 @@ from feedbax.studio.execution import (
     StudioEvaluationStagingResult,
     StudioPipelineMaterializationRequest,
     StudioPipelineMaterializationResult,
-    StudioTrainingLocalRunRequest,
-    StudioTrainingLocalRunResult,
     StudioTrainingExecutionPreparation,
     StudioTrainingExecutionRequest,
     materialize_studio_pipeline,
     prepare_studio_training_execution,
     preview_studio_evaluation_matrix,
     run_studio_evaluation_local_execution,
-    run_studio_training_local_execution,
     stage_studio_evaluation_matrix,
 )
 
@@ -96,11 +91,6 @@ async def validate_provider_spec(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.post("/execution/plan", response_model=ExecutionPlan)
-async def prepare_provider_execution_plan(payload: ExecutionSpec) -> ExecutionPlan:
-    return prepare_execution_plan(payload)
-
-
 @router.post(
     "/studio/training/plan",
     response_model=StudioTrainingExecutionPreparation,
@@ -111,23 +101,6 @@ async def prepare_studio_training_plan(
 ) -> StudioTrainingExecutionPreparation:
     try:
         return prepare_studio_training_execution(
-            payload,
-            registry_bundle=request.app.state.bootstrap_state.bundle,
-        )
-    except StudioExecutionPreparationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@router.post(
-    "/studio/training/run-local",
-    response_model=StudioTrainingLocalRunResult,
-)
-async def run_studio_training_local(
-    payload: StudioTrainingLocalRunRequest,
-    request: Request,
-) -> StudioTrainingLocalRunResult:
-    try:
-        return run_studio_training_local_execution(
             payload,
             registry_bundle=request.app.state.bootstrap_state.bundle,
         )

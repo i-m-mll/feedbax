@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  stageExecutionSpecWithProtocolPatch,
+  stageMetadataWithExecutionTarget,
   trainingProtocolSnapshot,
   trainingSpecWithProtocolPatch,
 } from '@/utils/stageProtocol';
@@ -25,11 +25,11 @@ const stage: StudioStageSpec = {
   output_collections: [],
   manifest_refs: [],
   artifact_refs: [],
-  execution_spec: { protocol: { compute_target: 'managed' } },
+  execution_spec: null,
   selection_spec: {},
   validation: { valid: null, checked_at: null, errors: [], warnings: [], metadata: {} },
   ui_state: {},
-  metadata: {},
+  metadata: { backend_realization: { execution_target: 'gcp' } },
 };
 
 const scenario = {
@@ -38,7 +38,7 @@ const scenario = {
 } as StudioScenarioSpec;
 
 describe('stage protocol helpers', () => {
-  it('derives protocol state from stage execution spec and scenario training spec', () => {
+  it('derives protocol state from stage realization metadata and scenario training spec', () => {
     expect(trainingProtocolSnapshot(stage, scenario)).toEqual({
       learningRate: 0.003,
       batchCount: 200,
@@ -48,19 +48,19 @@ describe('stage protocol helpers', () => {
     });
   });
 
-  it('distinguishes RunPod and keeps legacy managed stages readable as GCP', () => {
+  it('distinguishes RunPod from GCP', () => {
     expect(trainingProtocolSnapshot(stage, scenario).computeTarget).toBe('gcp');
     expect(
       trainingProtocolSnapshot(
-        { ...stage, execution_spec: { protocol: { compute_target: 'runpod' } } },
+        { ...stage, metadata: { backend_realization: { execution_target: 'runpod' } } },
         scenario
       ).computeTarget
     ).toBe('runpod');
   });
 
   it('patches stage protocol and training spec independently', () => {
-    expect(stageExecutionSpecWithProtocolPatch(stage, { compute_target: 'manual' })).toEqual({
-      protocol: { compute_target: 'manual' },
+    expect(stageMetadataWithExecutionTarget(stage, 'manual')).toEqual({
+      backend_realization: { execution_target: 'manual' },
     });
     expect(
       trainingSpecWithProtocolPatch(trainingSpec, {

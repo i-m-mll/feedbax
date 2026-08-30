@@ -15,11 +15,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
-function protocolRecord(stage: StudioStageSpec | null | undefined): Record<string, unknown> {
-  const executionSpec = stage?.execution_spec;
-  if (!isRecord(executionSpec)) return {};
-  const protocol = executionSpec.protocol;
-  return isRecord(protocol) ? protocol : {};
+function realizationRecord(stage: StudioStageSpec | null | undefined): Record<string, unknown> {
+  const realization = stage?.metadata?.backend_realization;
+  return isRecord(realization) ? realization : {};
 }
 
 function computeTarget(value: unknown): ExecutionTargetChoice {
@@ -58,33 +56,32 @@ export function trainingProtocolSnapshot(
   stage: StudioStageSpec | null | undefined,
   scenario: StudioScenarioSpec | null | undefined
 ): TrainingProtocolSnapshot {
-  const protocol = protocolRecord(stage);
+  const realization = realizationRecord(stage);
   const trainingSpec = scenario?.training_spec;
   return {
     learningRate: learningRate(trainingSpec),
     batchCount: trainingSpec?.n_batches ?? 0,
     batchSize: trainingSpec?.batch_size ?? 0,
     checkpointInterval: trainingSpec?.checkpoint_interval ?? null,
-    computeTarget: computeTarget(protocol.compute_target),
+    computeTarget: computeTarget(realization.execution_target),
   };
 }
 
 export function stageExecutionTarget(
   stage: StudioStageSpec | null | undefined
 ): ExecutionTargetChoice {
-  return computeTarget(protocolRecord(stage).compute_target);
+  return computeTarget(realizationRecord(stage).execution_target);
 }
 
-export function stageExecutionSpecWithProtocolPatch(
+export function stageMetadataWithExecutionTarget(
   stage: StudioStageSpec,
-  patch: Record<string, unknown>
+  executionTarget: ExecutionTargetChoice
 ): Record<string, unknown> {
-  const executionSpec = isRecord(stage.execution_spec) ? stage.execution_spec : {};
   return {
-    ...executionSpec,
-    protocol: {
-      ...protocolRecord(stage),
-      ...patch,
+    ...stage.metadata,
+    backend_realization: {
+      ...realizationRecord(stage),
+      execution_target: executionTarget,
     },
   };
 }
