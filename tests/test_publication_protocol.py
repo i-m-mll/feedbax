@@ -11,23 +11,20 @@ from pydantic import ValidationError
 from feedbax.contracts.publication import (
     ArtifactRecord,
     BlobRef,
+    CheckpointSet,
+    CheckpointSlot,
     ExactRef,
     ProvenanceEdge,
     PublicationRequest,
     PublicationService,
     artifact_record,
+    checkpoint_set_id,
 )
 from feedbax.persistence.publication import (
     LocalBlobStore,
     PublicationConflictError,
     SQLitePublicationCatalog,
     UnsupportedPublicationSchemaError,
-)
-from feedbax.workflow.publication import (
-    ArtifactPayload,
-    CheckpointPayload,
-    SISU_ARTIFACT_CHAIN,
-    publish_sisu_artifact_chain,
 )
 
 
@@ -51,12 +48,12 @@ def test_exact_references_cannot_omit_digest_size_or_identity() -> None:
     with pytest.raises(ValidationError):
         ArtifactRecord.model_validate(
             {
-                "logical_id": "sisu.report",
+                "logical_id": "example.report",
                 "version_id": "artifact-version:unverified",
                 "role": "report",
                 "media_type": "application/pdf",
-                "payload_schema_id": "sisu.report",
-                "payload_schema_version": "sisu.report.v1",
+                "payload_schema_id": "example.report",
+                "payload_schema_version": "example.report.v1",
                 "blobs": [],
             }
         )
@@ -108,47 +105,77 @@ def test_publication_is_idempotent_and_conflicting_replay_fails_closed(tmp_path:
     _, catalog, service = _stack(tmp_path)
     blob = service.stage(b"analysis")
     record = artifact_record(
-        logical_id="sisu.analysis",
+        logical_id="example.analysis",
         role="analysis",
         media_type="application/json",
-        payload_schema_id="sisu.analysis",
-        payload_schema_version="sisu.analysis.v1",
+        payload_schema_id="example.analysis",
+        payload_schema_version="example.analysis.v1",
         blobs=(blob,),
     )
-    request = PublicationRequest(idempotency_key="sisu-publication", artifacts=(record,))
+    request = PublicationRequest(idempotency_key="example-publication", artifacts=(record,))
     first = service.publish(request)
     assert service.publish(request) == first
     assert catalog.receipt(first.publication_id) == first
     assert catalog.artifact(record.version_id) == record
 
     changed = artifact_record(
-        logical_id="sisu.analysis",
+        logical_id="example.analysis",
         role="analysis",
         media_type="application/json",
-        payload_schema_id="sisu.analysis",
-        payload_schema_version="sisu.analysis.v1",
+        payload_schema_id="example.analysis",
+        payload_schema_version="example.analysis.v1",
         blobs=(service.stage(b"changed"),),
     )
     with pytest.raises(PublicationConflictError, match="different canonical content"):
         service.publish(
-            PublicationRequest(idempotency_key="sisu-publication", artifacts=(changed,))
+            PublicationRequest(idempotency_key="example-publication", artifacts=(changed,))
         )
+
+
+def test_publication_commits_one_complete_checkpoint_set(tmp_path: Path) -> None:
+    _, catalog, service = _stack(tmp_path)
+    slot = CheckpointSlot(
+        name="model",
+        state_type="model_state",
+        array_structure_id="example.model.structure.v1",
+        codec_schema_id="feedbax.array_codec",
+        codec_schema_version="feedbax.array_codec.v1",
+        blob=service.stage(b"model state"),
+    )
+    values = {
+        "training_program_id": "example.training",
+        "graph": _ref("semantic_ir", "example-graph", b"graph"),
+        "experiment": _ref("document_revision", "example-experiment", b"experiment"),
+        "progress": {"step": 10},
+        "prng_state": service.stage(b"prng state"),
+        "slots": (slot,),
+        "continuation": "fork",
+        "parent": None,
+    }
+    checkpoint = CheckpointSet(checkpoint_id=checkpoint_set_id(**values), **values)
+    receipt = service.publish(
+        PublicationRequest(
+            idempotency_key="example-checkpoint", artifacts=(), checkpoints=(checkpoint,)
+        )
+    )
+    assert receipt.checkpoint_refs == (checkpoint.exact_ref,)
+    assert catalog.checkpoint(checkpoint.checkpoint_id) == checkpoint
 
 
 def test_publication_rolls_back_every_logical_record_on_late_failure(tmp_path: Path) -> None:
     _, catalog, service = _stack(tmp_path)
     record = artifact_record(
-        logical_id="sisu.figure",
+        logical_id="example.figure",
         role="figure",
         media_type="image/svg+xml",
-        payload_schema_id="sisu.figure",
-        payload_schema_version="sisu.figure.v1",
+        payload_schema_id="example.figure",
+        payload_schema_version="example.figure.v1",
         blobs=(service.stage(b"<svg/>"),),
     )
     edge = ProvenanceEdge(
         relation="produced_by",
         subject=record.exact_ref,
-        object=_ref("workflow_plan", "sisu-plan", b"plan"),
+        object=_ref("workflow_plan", "example-plan", b"plan"),
     )
     request = PublicationRequest(
         idempotency_key="rollback",
@@ -174,11 +201,11 @@ def test_publication_rolls_back_every_logical_record_on_late_failure(tmp_path: P
 def test_catalog_reads_fail_closed_when_exact_record_bytes_are_corrupted(tmp_path: Path) -> None:
     _, catalog, service = _stack(tmp_path)
     record = artifact_record(
-        logical_id="sisu.analysis",
+        logical_id="example.analysis",
         role="analysis",
         media_type="application/json",
-        payload_schema_id="sisu.analysis",
-        payload_schema_version="sisu.analysis.v1",
+        payload_schema_id="example.analysis",
+        payload_schema_version="example.analysis.v1",
         blobs=(service.stage(b"analysis"),),
     )
     service.publish(PublicationRequest(idempotency_key="corruption", artifacts=(record,)))
@@ -195,11 +222,11 @@ def test_catalog_reads_fail_closed_when_exact_record_bytes_are_corrupted(tmp_pat
 def test_publication_refuses_lineage_to_unpublished_logical_records(tmp_path: Path) -> None:
     _, catalog, service = _stack(tmp_path)
     record = artifact_record(
-        logical_id="sisu.report",
+        logical_id="example.report",
         role="report",
         media_type="application/pdf",
-        payload_schema_id="sisu.report",
-        payload_schema_version="sisu.report.v1",
+        payload_schema_id="example.report",
+        payload_schema_version="example.report.v1",
         blobs=(service.stage(b"report"),),
     )
     unknown = ExactRef(
@@ -217,78 +244,3 @@ def test_publication_refuses_lineage_to_unpublished_logical_records(tmp_path: Pa
     with pytest.raises(PublicationConflictError, match="unknown or mismatched artifact"):
         service.publish(request)
     assert catalog.artifact(record.version_id) is None
-
-
-def _checkpoint_payload(step: int) -> CheckpointPayload:
-    return CheckpointPayload(
-        progress={"step": step},
-        prng_state=f"rng-{step}".encode(),
-        slots={
-            "controller": (
-                "controller_state",
-                "sisu.controller.structure.v1",
-                "feedbax.array_codec",
-                "feedbax.array_codec.v1",
-                f"params-{step}".encode(),
-            ),
-            "optimizer": (
-                "optimizer_state",
-                "sisu.optimizer.structure.v1",
-                "feedbax.array_codec",
-                "feedbax.array_codec.v1",
-                f"optimizer-{step}".encode(),
-            ),
-        },
-    )
-
-
-def test_sisu_exemplar_publishes_complete_chain_and_checkpoints_once(tmp_path: Path) -> None:
-    _, catalog, service = _stack(tmp_path)
-    payloads = {
-        role: ArtifactPayload(
-            data=f"{role} bytes".encode(),
-            media_type="application/json",
-            schema_id=f"sisu.{role}",
-            schema_version=f"sisu.{role}.v1",
-        )
-        for role in SISU_ARTIFACT_CHAIN
-    }
-    arguments = {
-        "idempotency_key": "sisu-complete-chain",
-        "study_id": "sisu-continuous-conditioning",
-        "training_program_id": "sisu.training.continuous",
-        "workflow_plan": _ref("workflow_plan", "sisu-plan", b"plan"),
-        "graph": _ref("semantic_ir", "sisu-graph", b"graph"),
-        "experiment": _ref("document_revision", "sisu-experiment", b"experiment"),
-        "payloads": payloads,
-        "trained_checkpoint": _checkpoint_payload(100),
-        "continued_checkpoint": _checkpoint_payload(200),
-    }
-    first = publish_sisu_artifact_chain(service, **arguments)
-    assert publish_sisu_artifact_chain(service, **arguments) == first
-    assert len(first.artifact_refs) == 6
-    assert len(first.checkpoint_refs) == 2
-    assert [catalog.artifact(ref.identity).role for ref in first.artifact_refs] == list(
-        SISU_ARTIFACT_CHAIN
-    )
-    continued = catalog.checkpoint(first.checkpoint_refs[1].identity)
-    assert continued is not None
-    assert continued.parent == first.checkpoint_refs[0]
-
-
-def test_sisu_exemplar_refuses_a_partial_chain_before_publication(tmp_path: Path) -> None:
-    _, catalog, service = _stack(tmp_path)
-    with pytest.raises(ValueError, match="complete artifact chain"):
-        publish_sisu_artifact_chain(
-            service,
-            idempotency_key="partial",
-            study_id="sisu",
-            training_program_id="sisu.training",
-            workflow_plan=_ref("workflow_plan", "plan", b"plan"),
-            graph=_ref("semantic_ir", "graph", b"graph"),
-            experiment=_ref("document_revision", "experiment", b"experiment"),
-            payloads={},
-            trained_checkpoint=_checkpoint_payload(1),
-            continued_checkpoint=_checkpoint_payload(2),
-        )
-    assert catalog.receipt("publication:missing") is None
