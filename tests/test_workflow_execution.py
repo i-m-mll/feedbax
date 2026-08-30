@@ -112,6 +112,14 @@ class _Calls:
         self.analysis = 0
         self.report = 0
         self.payload = "baseline"
+        self.deterministic_analysis = False
+
+
+class _DeterministicToyAnalysis(ToyAnalysis):
+    """Toy analysis without Plotly's random HTML element IDs."""
+
+    def make_figs(self, data, *, result, **kwargs):
+        return {}
 
 
 @pytest.fixture
@@ -155,7 +163,13 @@ def environment(tmp_path: Path, application_registry_bundle, calls: _Calls):
     def analysis_recipe(_spec, _root, inputs, _execution_context):
         calls.analysis += 1
         return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            analyses={
+                "toy": (
+                    _DeterministicToyAnalysis(variant="toy", cache_result=True)
+                    if calls.deterministic_analysis
+                    else ToyAnalysis(variant="toy", cache_result=True)
+                )
+            },
             data=build_toy_analysis_data(value=len(inputs)),
         )
 
@@ -359,6 +373,7 @@ def test_a_consumer_binding_names_the_role_its_receipt_is_bound_under(
 def test_a_matrix_receipt_set_executes_analysis_in_row_order_and_rebuilds(
     outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
 ) -> None:
+    calls.deterministic_analysis = True
     matrix = outputs.probe_matrix("set-source", rows=2)
     outputs.condensate(
         "set-consumer",
@@ -366,9 +381,7 @@ def test_a_matrix_receipt_set_executes_analysis_in_row_order_and_rebuilds(
             planned(
                 matrix,
                 role_path="inputs.evaluation",
-                consumer=AnalysisReceiptSetBinding(
-                    alias="evaluation", role="evaluation"
-                ),
+                consumer=AnalysisReceiptSetBinding(alias="evaluation", role="evaluation"),
             )
         ],
     )
@@ -391,11 +404,9 @@ def test_a_matrix_receipt_set_executes_analysis_in_row_order_and_rebuilds(
     assert [parent.id for parent in requests[-1].spec.inputs] == [
         receipt.manifest_id for receipt in produced
     ]
-    with pytest.raises(FulfillmentDriftError) as rebuilt:
-        rebuild_workflow(closure, environment=environment)
-    assert [outcome.node_key for outcome in rebuilt.value.outcomes][-1] == (
-        "analysis:set-consumer"
-    )
+    rebuilt = rebuild_workflow(closure, environment=environment)
+    assert rebuilt.drifted == ()
+    assert rebuilt.verification_order[-1] == ("analysis:set-consumer")
 
 
 def test_repair_rebuilds_a_set_bound_analysis_from_all_admitted_rows(
@@ -408,9 +419,7 @@ def test_repair_rebuilds_a_set_bound_analysis_from_all_admitted_rows(
             planned(
                 matrix,
                 role_path="inputs.evaluation",
-                consumer=AnalysisReceiptSetBinding(
-                    alias="evaluation", role="evaluation"
-                ),
+                consumer=AnalysisReceiptSetBinding(alias="evaluation", role="evaluation"),
             )
         ],
     )
@@ -457,9 +466,7 @@ def test_a_partial_or_corrupt_matrix_set_never_reaches_analysis(
             planned(
                 matrix,
                 role_path="inputs.evaluation",
-                consumer=AnalysisReceiptSetBinding(
-                    alias="evaluation", role="evaluation"
-                ),
+                consumer=AnalysisReceiptSetBinding(alias="evaluation", role="evaluation"),
             )
         ],
     )
@@ -489,9 +496,7 @@ def test_an_empty_or_duplicate_receipt_set_is_refused(
             planned(
                 matrix,
                 role_path="inputs.evaluation",
-                consumer=AnalysisReceiptSetBinding(
-                    alias="evaluation", role="evaluation"
-                ),
+                consumer=AnalysisReceiptSetBinding(alias="evaluation", role="evaluation"),
             )
         ],
     )
