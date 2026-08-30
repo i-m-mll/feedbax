@@ -1,9 +1,9 @@
-"""The public fulfillment entry points: one API call, one CLI subcommand.
+"""The public workflow entry points: one API call, one CLI subcommand.
 
-``fulfill_experiment_envelope`` takes what to fulfill and where to fulfill it,
+``execute_experiment_workflow`` takes which finite workflow to execute and where to fulfill it,
 and nothing else — no lowering, no payload preparer, no omission applier. The
 CLI is the same operation from a shell, with the documented exit codes: ``0``
-fulfilled, ``2`` a stable typed rejection, ``1`` infrastructure.
+executed, ``2`` a stable typed rejection, ``1`` infrastructure.
 """
 
 from __future__ import annotations
@@ -15,11 +15,11 @@ import pytest
 
 from feedbax.analysis.evaluation import EvaluationRecipeResult
 from feedbax.analysis.fulfillment_adapters import FulfillmentEnvironment
-from feedbax.analysis.fulfillment_derivation import CompiledOutputError
-from feedbax.analysis.fulfillment_driver import ExternalBoundaryError
-from feedbax.analysis.fulfillment_experiment import (
-    fulfill_experiment_envelope,
-    plan_experiment_envelope,
+from feedbax.workflow.derivation import CompiledOutputError
+from feedbax.workflow.execution import ExternalOperationError
+from feedbax.workflow.experiment import (
+    execute_experiment_workflow,
+    plan_experiment_workflow,
 )
 from feedbax.analysis.reports import REPORT_RENDER_ROLE, ReportRecipeResult
 from feedbax.contracts.experiment_compile_lock import EvaluationSubjectBinding, ReportParentBinding
@@ -91,7 +91,7 @@ def test_one_call_fulfils_the_whole_closure(
     outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
     target = _pair(outputs)
-    result = fulfill_experiment_envelope(
+    result = execute_experiment_workflow(
         target, output_directory=outputs.output_directory, environment=environment
     )
     assert result.summary()["order"] == ["evaluation:study", "report:study-bulletin"]
@@ -100,7 +100,7 @@ def test_one_call_fulfils_the_whole_closure(
     for entry in result.run.results:
         assert load_manifest(entry.receipt.path).status == "completed"
 
-    again = fulfill_experiment_envelope(
+    again = execute_experiment_workflow(
         target, output_directory=outputs.output_directory, environment=environment
     )
     assert again.summary()["executed"] == []
@@ -111,7 +111,7 @@ def test_planning_reads_nothing_it_does_not_need_and_writes_nothing(
     outputs: QuillonOutputs, tmp_path: Path
 ) -> None:
     target = _pair(outputs)
-    plan, index = plan_experiment_envelope(target, output_directory=outputs.output_directory)
+    plan, index = plan_experiment_workflow(target, output_directory=outputs.output_directory)
     assert plan.target.text == "report:study-bulletin"
     assert len(index.envelopes) == 2
     assert not (tmp_path / "receipts").exists()
@@ -131,8 +131,8 @@ def test_a_closure_still_needing_training_refuses(
             )
         ],
     )
-    with pytest.raises(ExternalBoundaryError):
-        fulfill_experiment_envelope(
+    with pytest.raises(ExternalOperationError):
+        execute_experiment_workflow(
             "sweep-probe",
             output_directory=outputs.output_directory,
             environment=environment,
@@ -144,7 +144,7 @@ def test_an_output_directory_that_is_not_one_refuses(
     tmp_path: Path, environment: FulfillmentEnvironment
 ) -> None:
     with pytest.raises(CompiledOutputError, match="not a directory"):
-        fulfill_experiment_envelope(
+        execute_experiment_workflow(
             "anything", output_directory=tmp_path / "absent", environment=environment
         )
 
@@ -159,7 +159,7 @@ def _cli(outputs: QuillonOutputs, target: str, receipt_root: Path, plugin: str) 
 
     return main(
         [
-            "fulfill-experiment-envelope",
+            "execute-experiment-workflow",
             target,
             "--out-dir",
             str(outputs.output_directory),
@@ -177,7 +177,7 @@ def test_the_cli_exits_zero_and_prints_the_walk(
     outputs: QuillonOutputs, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     target = _pair(outputs)
-    code = _cli(outputs, target, tmp_path / "cli-receipts", "tests.fulfillment_cli_plugin")
+    code = _cli(outputs, target, tmp_path / "cli-receipts", "tests.workflow_cli_plugin")
     assert code == 0
     summary = json.loads(capsys.readouterr().out)
     assert summary["target"] == "report:study-bulletin"
@@ -188,7 +188,7 @@ def test_the_cli_exits_two_on_a_stable_typed_rejection(
     outputs: QuillonOutputs, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     outputs.probe("known")
-    code = _cli(outputs, "unknown", tmp_path / "cli-receipts", "tests.fulfillment_cli_plugin")
+    code = _cli(outputs, "unknown", tmp_path / "cli-receipts", "tests.workflow_cli_plugin")
     assert code == 2
     assert "CompiledOutputError" in capsys.readouterr().err
 
@@ -207,11 +207,9 @@ def test_the_cli_exits_two_when_the_closure_still_needs_training(
             )
         ],
     )
-    code = _cli(
-        outputs, "sweep-probe", tmp_path / "cli-receipts", "tests.fulfillment_cli_plugin"
-    )
+    code = _cli(outputs, "sweep-probe", tmp_path / "cli-receipts", "tests.workflow_cli_plugin")
     assert code == 2
-    assert "ExternalBoundaryError" in capsys.readouterr().err
+    assert "ExternalOperationError" in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------
@@ -241,14 +239,12 @@ def _write_descriptor(tmp_path: Path, *provider_names: str) -> Path:
     return path
 
 
-def _fulfill_cli(
-    outputs: QuillonOutputs, target: str, receipt_root: Path, *extra: str
-) -> int:
+def _fulfill_cli(outputs: QuillonOutputs, target: str, receipt_root: Path, *extra: str) -> int:
     from feedbax.__main__ import main
 
     return main(
         [
-            "fulfill-experiment-envelope",
+            "execute-experiment-workflow",
             target,
             "--out-dir",
             str(outputs.output_directory),
@@ -257,7 +253,7 @@ def _fulfill_cli(
             "--receipt-root",
             str(receipt_root),
             "--plugin",
-            "tests.fulfillment_cli_plugin",
+            "tests.workflow_cli_plugin",
             *extra,
         ]
     )
@@ -316,17 +312,13 @@ def test_a_bound_root_the_descriptor_never_declares_refuses(
     assert not (tmp_path / "receipts").exists()
 
 
-@pytest.mark.parametrize(
-    "flag", ["--artifact-provider", "--manifest-root", "--checkpoint-custody"]
-)
+@pytest.mark.parametrize("flag", ["--artifact-provider", "--manifest-root", "--checkpoint-custody"])
 def test_a_binding_flag_without_a_descriptor_refuses_before_fulfillment(
     outputs: QuillonOutputs, tmp_path: Path, capsys: pytest.CaptureFixture[str], flag: str
 ) -> None:
     """A root bound to a name no descriptor declares is a root nobody asked for."""
     target = _pair(outputs)
-    code = _fulfill_cli(
-        outputs, target, tmp_path / "receipts", f"{flag}=named={tmp_path}"
-    )
+    code = _fulfill_cli(outputs, target, tmp_path / "receipts", f"{flag}=named={tmp_path}")
     assert code == 2
     assert "require --execution-descriptor" in capsys.readouterr().err
     assert not (tmp_path / "receipts").exists()

@@ -38,17 +38,17 @@ from typing import Any
 import pytest
 
 from feedbax.analysis.fulfillment_adapters import FulfillmentEnvironment
-from feedbax.analysis.fulfillment_derivation import (
-    derive_fulfillment_plan,
+from feedbax.workflow.derivation import (
+    derive_workflow_plan,
     read_compiled_outputs,
 )
-from feedbax.analysis.fulfillment_driver import closure_requests, preflight
+from feedbax.workflow.execution import workflow_requests, prepare_workflow
 from feedbax.analysis.fulfillment_row_custody import (
     RowCustodyFulfillmentError,
     read_row_expansion_record,
     resolve_row_custody_overlay,
 )
-from feedbax.analysis.fulfillment_plan import LogicalKey
+from feedbax.workflow.plan import LogicalKey
 from feedbax.contracts.applicability_rules import (
     PER_ROW_FIGURE_INPUT_RULE,
     certify_not_applicable,
@@ -118,9 +118,9 @@ def _compile_plot(repo: Path) -> Path:
     lock_path.write_text(
         json.dumps(outcome.compile_lock, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    (directory / f"{outcome.name}.{outcome.compile_lock['compiled_document']['family']}.json").write_text(
-        json.dumps(outcome.document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    (
+        directory / f"{outcome.name}.{outcome.compile_lock['compiled_document']['family']}.json"
+    ).write_text(json.dumps(outcome.document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return lock_path
 
 
@@ -168,10 +168,10 @@ def _write_custody(
 
 def _closure_request(repo: Path, environment: FulfillmentEnvironment):
     index = read_compiled_outputs(repo / "compiled")
-    plan = derive_fulfillment_plan(index, target="widened-plot")
-    closure = preflight(plan, index)
+    plan = derive_workflow_plan(index, target="widened-plot")
+    closure = prepare_workflow(plan, index)
     key = LogicalKey("figure", "widened-plot")
-    return closure_requests(closure, environment=environment, stop_at=key)[-1]
+    return workflow_requests(closure, environment=environment, stop_at=key)[-1]
 
 
 @pytest.fixture
@@ -188,9 +188,7 @@ def test_the_compile_records_where_the_per_row_custody_will_be(repo: Path) -> No
     lock_path = _compile_plot(repo)
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
 
-    locator = FigureRowCustodyLocator.model_validate(
-        lock["identity_contributions"]["row_custody"]
-    )
+    locator = FigureRowCustodyLocator.model_validate(lock["identity_contributions"]["row_custody"])
     assert locator.ref == ROW_CUSTODY_REF
     assert locator.index_id == "quillon-span-survey"
     assert locator.binding_keys == ["observations"]
@@ -199,9 +197,7 @@ def test_the_compile_records_where_the_per_row_custody_will_be(repo: Path) -> No
 
 def test_the_declaration_is_named_rather_than_derived_from_the_index_id(repo: Path) -> None:
     """A convention is a rule nothing states, so the locator quotes the envelope."""
-    envelope = json.loads(
-        envelope_path(repo, "widened-plot").read_text(encoding="utf-8")
-    )
+    envelope = json.loads(envelope_path(repo, "widened-plot").read_text(encoding="utf-8"))
     envelope["figure"]["row_custody"] = "elsewhere/named-by-hand.json"
     envelope_path(repo, "widened-plot").write_text(
         json.dumps(envelope, indent=2) + "\n", encoding="utf-8"
@@ -209,9 +205,7 @@ def test_the_declaration_is_named_rather_than_derived_from_the_index_id(repo: Pa
 
     lock = json.loads(_compile_plot(repo).read_text(encoding="utf-8"))
 
-    assert lock["identity_contributions"]["row_custody"]["ref"] == (
-        "elsewhere/named-by-hand.json"
-    )
+    assert lock["identity_contributions"]["row_custody"]["ref"] == ("elsewhere/named-by-hand.json")
 
 
 def test_a_first_time_figure_compiles_before_the_custody_document_exists(repo: Path) -> None:
@@ -219,9 +213,9 @@ def test_a_first_time_figure_compiles_before_the_custody_document_exists(repo: P
     lock_path = _compile_plot(repo)
 
     assert not (repo / ROW_CUSTODY_REF).exists()
-    assert "row_custody" in json.loads(lock_path.read_text(encoding="utf-8"))[
-        "identity_contributions"
-    ]
+    assert (
+        "row_custody" in json.loads(lock_path.read_text(encoding="utf-8"))["identity_contributions"]
+    )
 
 
 def test_a_custody_ref_that_escapes_the_repository_is_refused() -> None:
@@ -297,8 +291,7 @@ def test_the_overlay_carries_the_authentication_the_custody_document_recorded(
     request = _closure_request(repo, environment)
 
     profiles = {
-        parent.id: authenticated_manifest_ref_profile(parent)
-        for parent in request.runtime_inputs
+        parent.id: authenticated_manifest_ref_profile(parent) for parent in request.runtime_inputs
     }
     assert profiles == {
         "near-span-0": (ROW_MANIFESTS["near-span"][1], ROW_MANIFESTS["near-span"][2]),
@@ -741,9 +734,7 @@ def test_the_expanded_rows_and_the_custody_agree_on_order(repo: Path) -> None:
     assert record is not None and overlay is not None
     rows = list(record.resolved_rows.row_ids)
     assert rows == ["near-span", "far-span"]
-    assert [parent.id for parent in overlay.inputs] == [
-        ROW_MANIFESTS[row][0] for row in rows
-    ]
+    assert [parent.id for parent in overlay.inputs] == [ROW_MANIFESTS[row][0] for row in rows]
 
 
 def test_the_selector_the_compile_expanded_is_what_custody_binds(repo: Path) -> None:
@@ -785,10 +776,7 @@ def _external_custody(repo: Path, destination: Path) -> Path:
     resolved = _row_index(repo)
     document = build_row_index_custody_bindings(
         resolved,
-        {
-            row_id: {"observations": _parent(*record)}
-            for row_id, record in ROW_MANIFESTS.items()
-        },
+        {row_id: {"observations": _parent(*record)} for row_id, record in ROW_MANIFESTS.items()},
     )
     return write_row_index_custody_bindings(document, destination, index=resolved)
 
@@ -861,9 +849,7 @@ def test_a_row_index_outside_the_repository_is_refused_though_it_hashes_right(
     _write_custody(nested_repo)
     outside = tmp_path / "outside"
     outside.mkdir()
-    (outside / "quillon.row_index.json").write_bytes(
-        (nested_repo / ROW_INDEX_BASE).read_bytes()
-    )
+    (outside / "quillon.row_index.json").write_bytes((nested_repo / ROW_INDEX_BASE).read_bytes())
     (nested_repo / "elsewhere").symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(RowCustodyFulfillmentError) as caught:
@@ -908,9 +894,7 @@ def test_a_row_index_ref_that_walks_out_of_the_repository_is_refused(
     _write_custody(nested_repo)
     outside = tmp_path / "outside"
     outside.mkdir()
-    (outside / "quillon.row_index.json").write_bytes(
-        (nested_repo / ROW_INDEX_BASE).read_bytes()
-    )
+    (outside / "quillon.row_index.json").write_bytes((nested_repo / ROW_INDEX_BASE).read_bytes())
 
     with pytest.raises(RowCustodyFulfillmentError) as caught:
         resolve_row_custody_overlay(
@@ -948,9 +932,7 @@ def test_a_per_row_omission_still_reaches_the_lock_through_the_closed_rule(
     """The two halves are one story: nothing binds the slot, custody binds the role."""
     lock = json.loads(_compile_plot(repo).read_text(encoding="utf-8"))
 
-    reference = next(
-        item for item in lock["references"] if item["kind"] == "not_applicable"
-    )
+    reference = next(item for item in lock["references"] if item["kind"] == "not_applicable")
     assert reference == certify_not_applicable(
         reference["role_path"], PER_ROW_FIGURE_INPUT_RULE
     ).model_dump(mode="json", exclude_none=True)

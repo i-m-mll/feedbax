@@ -1259,9 +1259,7 @@ class TestFigureMode:
             )
 
     def test_a_binding_without_its_key_addresses_nothing(self) -> None:
-        with pytest.raises(
-            ExperimentEnvelopeRejection, match="binding and binding_key together"
-        ):
+        with pytest.raises(ExperimentEnvelopeRejection, match="binding and binding_key together"):
             _parse(
                 _minimal(
                     figure={
@@ -1329,7 +1327,7 @@ class TestFigureMode:
 
 
 def test_the_report_layer_output_is_the_top_level_report_spec() -> None:
-    from feedbax.analysis.fulfillment_derivation import COMPILED_PRODUCT_KINDS
+    from feedbax.workflow.derivation import COMPILED_PRODUCT_KINDS
     from feedbax.contracts.experiment_envelope_dialect import REPORT_OUTPUT
     from feedbax.contracts.manifest import (
         REPORT_SPEC_SCHEMA_ID,
@@ -1670,9 +1668,7 @@ def _root_figure(
 def test_a_root_figure_input_states_a_ref_and_its_artifact_contract() -> None:
     envelope = _parse(
         _root_figure(
-            inputs=[
-                {"input_role": "summary", "ref": _ROOT_REF, "contract": _ROOT_CONTRACT}
-            ]
+            inputs=[{"input_role": "summary", "ref": _ROOT_REF, "contract": _ROOT_CONTRACT}]
         )
     )
 
@@ -1712,9 +1708,7 @@ def test_a_current_root_figure_contract_states_its_payload_name_explicitly() -> 
     contract = {key: value for key, value in _ROOT_CONTRACT.items() if key != "payload_name"}
     with pytest.raises(ExperimentEnvelopeRejection) as caught:
         _parse(
-            _root_figure(
-                inputs=[{"input_role": "summary", "ref": _ROOT_REF, "contract": contract}]
-            )
+            _root_figure(inputs=[{"input_role": "summary", "ref": _ROOT_REF, "contract": contract}])
         )
 
     assert caught.value.category is ExperimentEnvelopeRejectionCategory.MISSING_FIELD
@@ -1734,9 +1728,7 @@ def test_a_prior_grammar_stating_a_root_input_contract_is_refused_by_version() -
         _parse(
             _root_figure(
                 schema=EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
-                inputs=[
-                    {"input_role": "summary", "ref": _ROOT_REF, "contract": _ROOT_CONTRACT}
-                ],
+                inputs=[{"input_role": "summary", "ref": _ROOT_REF, "contract": _ROOT_CONTRACT}],
             )
         )
 
@@ -1774,9 +1766,7 @@ def test_a_prior_grammar_pinning_a_payload_schema_is_refused_by_version() -> Non
     assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5 in str(caught.value)
 
 
-@pytest.mark.parametrize(
-    "half", ["payload_schema_id", "payload_schema_version"]
-)
+@pytest.mark.parametrize("half", ["payload_schema_id", "payload_schema_version"])
 def test_a_figure_input_contract_pins_a_payload_schema_whole_or_not_at_all(half: str) -> None:
     with pytest.raises(ExperimentEnvelopeRejection, match="together or states neither"):
         _parse(

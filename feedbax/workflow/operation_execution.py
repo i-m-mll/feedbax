@@ -122,10 +122,10 @@ from feedbax.analysis.fulfillment_adapters import (
     NodeRequest,
     ReportNodeRequest,
 )
-from feedbax.analysis.fulfillment_derivation import (
+from feedbax.workflow.derivation import (
     COMPILED_PRODUCT_KINDS,
     CompiledEnvelope,
-    FulfillmentDerivationError,
+    WorkflowDerivationError,
 )
 from feedbax.analysis.fulfillment_row_custody import (
     read_row_expansion_record,
@@ -166,15 +166,11 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.staged_execution import validate_staged_binding_name
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from feedbax.analysis.fulfillment_driver import ClosureNode, NodeBinding
+    from feedbax.workflow.execution import PreparedOperation, NodeBinding
 
 
-class NodeLoweringError(FulfillmentDerivationError):
+class NodeLoweringError(WorkflowDerivationError):
     """A compiled node cannot be lowered into a node request it would execute."""
-
-
-class BoundaryNodeLoweringError(NodeLoweringError):
-    """A boundary node reached lowering, which only an executable node may."""
 
 
 def binding_role(consumer: Any, *, ref: str) -> str:
@@ -195,7 +191,7 @@ def binding_role(consumer: Any, *, ref: str) -> str:
         raise NodeLoweringError(
             f"{ref} binds a checkpoint initialization for row {consumer.row_id!r}, which "
             "initializes a training row. Training is launched through its own orchestration "
-            "entrypoint and is never executed by artifact fulfillment, so this binding cannot "
+            "entrypoint and is not a local artifact operation, so this binding cannot "
             "appear on an executable node."
         )
     raise NodeLoweringError(
@@ -223,7 +219,7 @@ def _require_unbound_inputs(document: Mapping[str, Any], *, ref: str) -> None:
 
 
 def bound_parents(
-    node: "ClosureNode", *, binding: "NodeBinding"
+    node: "PreparedOperation", *, binding: "NodeBinding"
 ) -> tuple[tuple[ParentRef, ...], tuple[str, ...]]:
     """Return the authenticated parents one node binds, and the roles they fill.
 
@@ -253,7 +249,7 @@ def bound_parents(
 
 
 def _exact_parents(
-    node: "ClosureNode", *, binding: "NodeBinding"
+    node: "PreparedOperation", *, binding: "NodeBinding"
 ) -> StagedExactParents | None:
     """Bind one node's required inputs to the locations they execute from."""
     compiled = node.compiled
@@ -277,7 +273,7 @@ def _exact_parents(
 
 
 def _node_execution_context(
-    node: "ClosureNode",
+    node: "PreparedOperation",
     *,
     binding: "NodeBinding",
     extra_parents: Sequence[ParentRef] = (),
@@ -321,23 +317,24 @@ def _node_execution_context(
         # Locating the extra parents would search authorities that were never
         # declared, so the cold-start answer is settled before that search.
         return binding.node_execution_context(locations)
-    locations.extend(
-        binding.authenticated_parent_location(parent) for parent in extra_parents
-    )
+    locations.extend(binding.authenticated_parent_location(parent) for parent in extra_parents)
     return binding.node_execution_context(locations)
 
 
-def _document(node: "ClosureNode") -> dict[str, Any]:
+def _document(node: "PreparedOperation") -> dict[str, Any]:
     return dict(node.compiled.document)
 
 
-def _lower_evaluation(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
+def _lower_evaluation(node: "PreparedOperation", *, binding: "NodeBinding") -> NodeRequest:
     document = _document(node)
     _require_unbound_inputs(document, ref=str(node.compiled.document_path))
     parents, _roles = bound_parents(node, binding=binding)
-    spec = EvaluationRunSpec.model_validate({**document, "inputs": [
-        parent.model_dump(mode="json", exclude_none=True) for parent in parents
-    ]})
+    spec = EvaluationRunSpec.model_validate(
+        {
+            **document,
+            "inputs": [parent.model_dump(mode="json", exclude_none=True) for parent in parents],
+        }
+    )
     return EvaluationNodeRequest(
         node_key=node.key.text,
         spec=spec,
@@ -346,7 +343,7 @@ def _lower_evaluation(node: "ClosureNode", *, binding: "NodeBinding") -> NodeReq
     )
 
 
-def _lower_evaluation_matrix(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
+def _lower_evaluation_matrix(node: "PreparedOperation", *, binding: "NodeBinding") -> NodeRequest:
     document = _document(node)
     context = _node_execution_context(node, binding=binding)
     if not binding.plan.required_edges(node.key):
@@ -365,7 +362,7 @@ def _lower_evaluation_matrix(node: "ClosureNode", *, binding: "NodeBinding") -> 
 
 
 def _matrix_with_staged_parents(
-    node: "ClosureNode",
+    node: "PreparedOperation",
     document: Mapping[str, Any],
     *,
     binding: "NodeBinding",
@@ -429,7 +426,7 @@ def _declared_staged_parents(
 
 
 def _staged_prerequisites(
-    node: "ClosureNode",
+    node: "PreparedOperation",
     document: Mapping[str, Any],
     *,
     binding: "NodeBinding",
@@ -527,13 +524,16 @@ def _stated_prerequisite_differences(
     return restated_parent_differences(stated_model.parent, bound_model.parent)
 
 
-def _lower_analysis(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
+def _lower_analysis(node: "PreparedOperation", *, binding: "NodeBinding") -> NodeRequest:
     document = _document(node)
     _require_unbound_inputs(document, ref=str(node.compiled.document_path))
     parents, _roles = bound_parents(node, binding=binding)
-    spec = AnalysisRunSpec.model_validate({**document, "inputs": [
-        parent.model_dump(mode="json", exclude_none=True) for parent in parents
-    ]})
+    spec = AnalysisRunSpec.model_validate(
+        {
+            **document,
+            "inputs": [parent.model_dump(mode="json", exclude_none=True) for parent in parents],
+        }
+    )
     return AnalysisNodeRequest(
         node_key=node.key.text,
         spec=spec,
@@ -560,7 +560,7 @@ def _validated_document(model: Any, document: Mapping[str, Any], *, ref: str) ->
         ) from exc
 
 
-def _lower_analysis_bundle(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
+def _lower_analysis_bundle(node: "PreparedOperation", *, binding: "NodeBinding") -> NodeRequest:
     """Lower one compiled analysis bundle into the node that drives its own plan.
 
     A bundle addresses its root inputs as the set of manifests its predicate
@@ -621,7 +621,7 @@ def _contract_unstatable_grammar(compiled: CompiledEnvelope) -> str | None:
 
 
 def _figure_input_authorities(
-    node: "ClosureNode",
+    node: "PreparedOperation",
     parents: Sequence[ParentRef],
     *,
     binding: "NodeBinding",
@@ -696,15 +696,13 @@ def _figure_input_authorities(
     return tuple(authorities)
 
 
-def _lower_figure(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
+def _lower_figure(node: "PreparedOperation", *, binding: "NodeBinding") -> NodeRequest:
     document = _document(node)
     parents, _roles = bound_parents(node, binding=binding)
     # A row-expanded figure's per-row roles are filled from the row index's
     # produced custody, which the lock names and this resolves; every other
     # figure returns None here and binds exactly as before.
-    overlay = resolve_row_custody_overlay(
-        node.compiled, repo_root=binding.environment.repo_root
-    )
+    overlay = resolve_row_custody_overlay(node.compiled, repo_root=binding.environment.repo_root)
     # A row expansion declares its roles in its own expansion request and binds
     # them from custody. The plan-edge contract is how a figure that is not an
     # expansion — a root figure — states the same thing, so the two are read
@@ -731,7 +729,7 @@ def _lower_figure(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest
     )
 
 
-def _lower_figure_composition(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
+def _lower_figure_composition(node: "PreparedOperation", *, binding: "NodeBinding") -> NodeRequest:
     """Lower one compiled figure composition into the figure node it renders as.
 
     A composition is authored figure identity, not a second kind of execution:
@@ -746,9 +744,7 @@ def _lower_figure_composition(node: "ClosureNode", *, binding: "NodeBinding") ->
     is the environment's declaration rather than a guess made here.
     """
     document = _document(node)
-    _validated_document(
-        FigureCompositionSpec, document, ref=str(node.compiled.document_path)
-    )
+    _validated_document(FigureCompositionSpec, document, ref=str(node.compiled.document_path))
     parents, _roles = bound_parents(node, binding=binding)
     return FigureNodeRequest(
         node_key=node.key.text,
@@ -759,14 +755,17 @@ def _lower_figure_composition(node: "ClosureNode", *, binding: "NodeBinding") ->
     )
 
 
-def _lower_report(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
+def _lower_report(node: "PreparedOperation", *, binding: "NodeBinding") -> NodeRequest:
     document = _document(node)
     _require_unbound_inputs(document, ref=str(node.compiled.document_path))
     parents, _roles = bound_parents(node, binding=binding)
     exact = _exact_parents(node, binding=binding)
-    spec = ReportSpec.model_validate({**document, "inputs": [
-        parent.model_dump(mode="json", exclude_none=True) for parent in parents
-    ]})
+    spec = ReportSpec.model_validate(
+        {
+            **document,
+            "inputs": [parent.model_dump(mode="json", exclude_none=True) for parent in parents],
+        }
+    )
     return ReportNodeRequest(
         node_key=node.key.text,
         spec=spec,
@@ -778,7 +777,7 @@ def _lower_report(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest
 
 #: Compiled ``schema_id`` to the lowering that produces its node request. The
 #: table is exhaustive over the executable members of
-#: :data:`~feedbax.analysis.fulfillment_derivation.COMPILED_PRODUCT_KINDS`.
+#: :data:`~feedbax.workflow.derivation.COMPILED_PRODUCT_KINDS`.
 _LOWERINGS = {
     EVALUATION_RUN_SPEC_SCHEMA_ID: _lower_evaluation,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID: _lower_evaluation_matrix,
@@ -790,21 +789,14 @@ _LOWERINGS = {
 }
 
 
-def lower_compiled_node(node: "ClosureNode", *, binding: "NodeBinding") -> NodeRequest:
+def lower_compiled_node(node: "PreparedOperation", *, binding: "NodeBinding") -> NodeRequest:
     """Return the node request one compiled document's schema identity executes.
 
-    Dispatch is on the compiled document's own ``schema_id``. A boundary node is
-    refused rather than lowered: it is produced by another entrypoint, and
-    preflight has already refused any closure that still names one, so reaching
-    here means a closure was assembled without that proof.
+    Dispatch is on the compiled document's own ``schema_id``. External
+    operations are refused at workflow preparation and reach invocation later;
+    this local lowering table therefore contains only locally realizable kinds.
     """
     compiled: CompiledEnvelope = node.compiled
-    kind = compiled.kind
-    if not kind.executable:
-        raise BoundaryNodeLoweringError(
-            f"{node.key.text} is a {kind.boundary!r} boundary node and is never executed by "
-            "artifact fulfillment; produce it through its own entrypoint and quote the receipt"
-        )
     lowering = _LOWERINGS.get(compiled.schema_id)
     if lowering is None:  # pragma: no cover - the two tables are kept exhaustive
         raise NodeLoweringError(
@@ -816,13 +808,10 @@ def lower_compiled_node(node: "ClosureNode", *, binding: "NodeBinding") -> NodeR
 
 def supported_lowerings() -> tuple[str, ...]:
     """Return every compiled ``schema_id`` this build can execute, in order."""
-    return tuple(
-        schema_id for schema_id in COMPILED_PRODUCT_KINDS if schema_id in _LOWERINGS
-    )
+    return tuple(schema_id for schema_id in COMPILED_PRODUCT_KINDS if schema_id in _LOWERINGS)
 
 
 __all__ = [
-    "BoundaryNodeLoweringError",
     "NodeLoweringError",
     "binding_role",
     "bound_parents",

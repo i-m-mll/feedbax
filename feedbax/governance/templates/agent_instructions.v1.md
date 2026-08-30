@@ -121,7 +121,7 @@ Run `feedbax --help` for the full inventory. The commands you will reach for:
 
 - `feedbax preflight-experiment-envelope <envelope> --repo-root <root>` —
   compile one authored envelope into its document and compile lock.
-- `feedbax fulfill-experiment-envelope <target> --receipt-root <root>` — fulfill
+- `feedbax execute-experiment-workflow <target> --receipt-root <root>` — execute
   one compiled target's whole dependency closure.
 - `feedbax check-project-science-surface --root <root> --policy <path>
   --baseline-ref <ref>` — the deny-by-default production-Python gate.

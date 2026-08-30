@@ -1,7 +1,7 @@
 """The closed set of Feedbax structural rules that certify an input inapplicable.
 
 An input a declaration leaves unfilled is decided on exactly one of two bases
-(:data:`~feedbax.analysis.fulfillment_plan.APPLICABILITY_BASES`): ``authored``,
+(:data:`~feedbax.workflow.plan.APPLICABILITY_BASES`): ``authored``,
 where a human stated it in the envelope, and ``compiler_rule``, where a closed
 versioned Feedbax structural rule proves that the target provides no such input.
 

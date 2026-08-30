@@ -1,4 +1,4 @@
-"""The fulfillment driver: preflight, native lowering, pull-forward, custody.
+"""The fulfillment driver: prepare_workflow, native lowering, pull-forward, custody.
 
 Everything here is stated over ``quillon``'s compiled outputs — real Feedbax
 specs under real compile locks, emitted into ``tmp_path`` — and a receipt root
@@ -8,8 +8,8 @@ in play is the recipe names quillon registers and the roles its bindings state.
 
 Five claims are under test:
 
-* **preflight refuses before anything runs.** A closure naming a boundary node —
-  a compiled training run matrix — is refused with every boundary node named,
+* **prepare_workflow refuses before anything runs.** A closure naming an external operation —
+  a compiled training run matrix — is refused with every such operation named,
   and no recipe of any branch runs;
 * **the node request follows from the compiled document's schema identity**, and
   the receipts it binds follow from the lock's typed consumer bindings;
@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -35,15 +36,14 @@ from feedbax.analysis.evaluation import EvaluationRecipeResult
 from feedbax.analysis.fulfillment import FulfillmentAdmissionError
 from feedbax.analysis.fulfillment_adapters import FulfillmentEnvironment
 from feedbax.analysis.fulfillment_custody import FulfillmentDriftError
-from feedbax.analysis.fulfillment_derivation import (
+from feedbax.workflow.derivation import (
     ExternalReceiptRecord,
-    derive_fulfillment_plan,
+    derive_workflow_plan,
     read_compiled_outputs,
-    require_external_record,
 )
-from feedbax.analysis.fulfillment_driver import (
+from feedbax.workflow.execution import (
     AmbiguousNodeReceiptError,
-    ExternalBoundaryError,
+    ExternalOperationError,
     ExternalReceiptAuthenticationError,
     PlanLockDisagreementError,
     PlanNodeDisagreementError,
@@ -51,15 +51,20 @@ from feedbax.analysis.fulfillment_driver import (
     MissingExternalReceiptError,
     PlanDocumentDriftError,
     UnpinnedPlanNodeError,
-    closure_requests,
-    fulfill_closure,
-    preflight,
-    rebuild_closure,
-    repair_closure_node,
-    truncated_closure,
+    workflow_requests,
+    execute_workflow,
+    prepare_workflow,
+    rebuild_workflow,
+    repair_workflow_operation,
+    truncated_workflow,
 )
-from feedbax.analysis.fulfillment_lowering import NodeLoweringError
-from feedbax.analysis.fulfillment_plan import LogicalKey, fulfillment_plan_from_document
+from feedbax.workflow.operation_execution import NodeLoweringError
+from feedbax.workflow.plan import (
+    LogicalKey,
+    WorkflowPlan,
+    WorkflowPlanIdentityError,
+    workflow_plan_from_document,
+)
 from feedbax.analysis.reports import REPORT_RENDER_ROLE, ReportRecipeResult
 from feedbax.contracts.experiment_compile_lock import (
     AnalysisInputBinding,
@@ -125,8 +130,7 @@ def environment(tmp_path: Path, application_registry_bundle, calls: _Calls):
         )
         return EvaluationRecipeResult(
             states=None,
-            summary_metrics={"stage": run_spec.params.get("stage", ""),
-                             "payload": calls.payload},
+            summary_metrics={"stage": run_spec.params.get("stage", ""), "payload": calls.payload},
             artifacts=[artifact],
             metadata={"states_schema": "quillon.states.v1"},
         )
@@ -160,11 +164,11 @@ def environment(tmp_path: Path, application_registry_bundle, calls: _Calls):
 
 def _closure(outputs: QuillonOutputs, target: str):
     index = read_compiled_outputs(outputs.output_directory)
-    return preflight(derive_fulfillment_plan(index, target=target), index)
+    return prepare_workflow(derive_workflow_plan(index, target=target), index)
 
 
 def _fulfill(outputs: QuillonOutputs, target: str, *, environment):
-    return fulfill_closure(_closure(outputs, target), environment=environment)
+    return execute_workflow(_closure(outputs, target), environment=environment)
 
 
 def _subject(product, *, role_path: str, subject_id: str):
@@ -219,7 +223,7 @@ def test_preflight_states_the_whole_closure_in_dependency_order(
     assert closure.target == LogicalKey("report", "chain-leaf")
     for node in closure.nodes:
         assert node.compiled.content_hash == node.plan_node.content_hash
-        assert node.document["schema_id"] == node.kind
+        assert node.document["schema_id"] == node.compiled_schema_id
 
 
 def test_a_document_that_no_longer_hashes_to_what_was_pinned_refuses(
@@ -227,10 +231,10 @@ def test_a_document_that_no_longer_hashes_to_what_was_pinned_refuses(
 ) -> None:
     target = _chain(outputs)
     index = read_compiled_outputs(outputs.output_directory)
-    plan = derive_fulfillment_plan(index, target=target)
+    plan = derive_workflow_plan(index, target=target)
     outputs.probe("chain-mid", stage_note="moved")
     with pytest.raises(PlanDocumentDriftError) as caught:
-        preflight(plan, read_compiled_outputs(outputs.output_directory))
+        prepare_workflow(plan, read_compiled_outputs(outputs.output_directory))
     assert caught.value.key == LogicalKey("evaluation", "chain-mid")
 
 
@@ -243,14 +247,15 @@ def test_a_training_matrix_refuses_the_closure_before_any_node_executes(
         references=[_subject(cohort, role_path="body.harvested", subject_id="harvested")],
     )
 
-    with pytest.raises(ExternalBoundaryError) as caught:
+    with pytest.raises(ExternalOperationError) as caught:
         _fulfill(outputs, "boundary-consumer", environment=environment)
 
     record = caught.value.record()
-    assert [node["key"] for node in record["boundary_nodes"]] == ["training:boundary-run"]
-    node = record["boundary_nodes"][0]
+    assert [node["key"] for node in record["operations"]] == ["campaign:boundary-run"]
+    node = record["operations"][0]
     assert node["source_ref"] == "studies/boundary-run.envelope.json"
-    assert node["boundary"] == "feedbax.spec.training_run_matrix"
+    assert node["operation_type"] == "feedbax.operation.train"
+    assert node["capabilities"] == ["training"]
     assert node["named_by"] == [
         {"consumer": "evaluation:boundary-consumer", "role_path": ["body", "harvested"]}
     ]
@@ -284,9 +289,9 @@ def test_the_refusal_lists_every_branch_the_boundary_unblocks(
             ),
         ],
     )
-    with pytest.raises(ExternalBoundaryError) as caught:
+    with pytest.raises(ExternalOperationError) as caught:
         _fulfill(outputs, "joined", environment=environment)
-    assert caught.value.record()["boundary_nodes"][0]["unblocks"] == [
+    assert caught.value.record()["operations"][0]["unblocks"] == [
         "evaluation:blocked-branch",
         "report:joined",
     ]
@@ -303,7 +308,7 @@ def test_the_compiled_schema_decides_the_node_request(
 ) -> None:
     target = _chain(outputs)
     _fulfill(outputs, target, environment=environment)
-    requests = closure_requests(_closure(outputs, target), environment=environment)
+    requests = workflow_requests(_closure(outputs, target), environment=environment)
     assert [request.node_kind for request in requests] == ["evaluation", "evaluation", "report"]
     assert [request.node_key for request in requests] == list(CHAIN_ORDER)
     assert [request.order for request in requests] == [0, 1, 2]
@@ -324,12 +329,12 @@ def test_a_consumer_binding_names_the_role_its_receipt_is_bound_under(
         ],
     )
     outputs.probe("role-source")  # keep the emitted pair identical
-    fulfill_closure(
-        truncated_closure(_closure(outputs, "role-consumer"), 1), environment=environment
+    execute_workflow(
+        truncated_workflow(_closure(outputs, "role-consumer"), 1), environment=environment
     )
     # No analysis recipe is registered, so the analysis node stops the walk before
     # admission; its resolved request is what the binding decides.
-    requests = closure_requests(
+    requests = workflow_requests(
         _closure(outputs, "role-consumer"),
         environment=environment,
         stop_at=LogicalKey("analysis", "role-consumer"),
@@ -352,10 +357,8 @@ def test_a_figure_binds_its_runtime_input_authority_by_role(
             )
         ],
     )
-    fulfill_closure(
-        truncated_closure(_closure(outputs, "plate"), 1), environment=environment
-    )
-    requests = closure_requests(
+    execute_workflow(truncated_workflow(_closure(outputs, "plate"), 1), environment=environment)
+    requests = workflow_requests(
         _closure(outputs, "plate"),
         environment=environment,
         stop_at=LogicalKey("figure", "plate"),
@@ -395,10 +398,10 @@ def test_a_figure_authority_is_built_from_the_lock_contract_and_nothing_else(
             )
         ],
     )
-    fulfill_closure(
-        truncated_closure(_closure(outputs, "contracted-plate"), 1), environment=environment
+    execute_workflow(
+        truncated_workflow(_closure(outputs, "contracted-plate"), 1), environment=environment
     )
-    requests = closure_requests(
+    requests = workflow_requests(
         _closure(outputs, "contracted-plate"),
         environment=environment,
         stop_at=LogicalKey("figure", "contracted-plate"),
@@ -426,9 +429,7 @@ def test_a_checkpoint_initialization_binding_never_binds_an_executable_node(
             planned(
                 prior,
                 role_path="body.checkpoint",
-                consumer=CheckpointInitializationBinding(
-                    mode="continue_from", row_id="misbound"
-                ),
+                consumer=CheckpointInitializationBinding(mode="continue_from", row_id="misbound"),
             )
         ],
     )
@@ -457,8 +458,8 @@ def test_a_compiled_spec_that_already_declares_inputs_refuses(
 def _matrix_request(outputs: QuillonOutputs, target: str, *, environment, upstream: int = 1):
     """Fulfil everything upstream of one matrix node and return its request."""
     closure = _closure(outputs, target)
-    fulfill_closure(truncated_closure(closure, upstream), environment=environment)
-    requests = closure_requests(
+    execute_workflow(truncated_workflow(closure, upstream), environment=environment)
+    requests = workflow_requests(
         _closure(outputs, target),
         environment=environment,
         stop_at=LogicalKey("evaluation", target),
@@ -534,10 +535,7 @@ def test_a_staged_matrix_parent_reaches_every_materialized_row(
 
     assert [row.row_id for row in rows] == ["row-consumer-0", "row-consumer-1"]
     for row in rows:
-        assert (
-            row.payload.params["staged_prerequisites"]
-            == request.matrix["staged_parents"]
-        )
+        assert row.payload.params["staged_prerequisites"] == request.matrix["staged_parents"]
 
 
 def test_a_staged_matrix_never_runs_without_a_declared_execution_context(
@@ -706,7 +704,7 @@ def test_a_restated_staged_parent_may_name_the_artifacts_own_role(
     """
     subject = outputs.probe("paired-subject")
     bank = outputs.probe("paired-bank")
-    fulfill_closure(_closure(outputs, "paired-subject"), environment=environment)
+    execute_workflow(_closure(outputs, "paired-subject"), environment=environment)
     produced = _fulfill(outputs, "paired-bank", environment=environment).results[0].receipt
     raw = produced.path.read_bytes()
     outputs.emit(
@@ -763,7 +761,7 @@ def test_a_restated_staged_parent_naming_another_artifact_still_refuses(
     """Relaxing the role comparison does not relax the identity comparison."""
     subject = outputs.probe("disagree-subject")
     bank = outputs.probe("disagree-bank")
-    fulfill_closure(_closure(outputs, "disagree-subject"), environment=environment)
+    execute_workflow(_closure(outputs, "disagree-subject"), environment=environment)
     _fulfill(outputs, "disagree-bank", environment=environment)
     outputs.emit(
         "disagree-consumer",
@@ -802,7 +800,7 @@ def test_a_restated_staged_parent_whose_digest_disagrees_refuses(
     """Same artifact, different bytes: the restatement disagrees about the run."""
     subject = outputs.probe("digest-subject")
     bank = outputs.probe("digest-bank")
-    fulfill_closure(_closure(outputs, "digest-subject"), environment=environment)
+    execute_workflow(_closure(outputs, "digest-subject"), environment=environment)
     produced = _fulfill(outputs, "digest-bank", environment=environment).results[0].receipt
     outputs.emit(
         "digest-consumer",
@@ -895,9 +893,9 @@ def test_a_pinned_matrix_row_that_states_the_bound_parent_materializes(
         _pinned_matrix("bases/consumed.json", first),
         references=[_subject(source, role_path="body.subject", subject_id="subject")],
     )
-    staged = _matrix_request(
-        outputs, "consumed-consumer", environment=environment
-    ).matrix["staged_parents"]
+    staged = _matrix_request(outputs, "consumed-consumer", environment=environment).matrix[
+        "staged_parents"
+    ]
 
     consuming = _base_spec("consumed", staged_prerequisites=staged)
     second = _write_base_spec(outputs, "bases/consumed.json", consuming)
@@ -961,9 +959,10 @@ def test_a_receipt_binds_forward_as_the_authenticated_parent_it_is(
     upstream, middle, leaf = run.results
     middle_parents = load_manifest(middle.receipt.path).provenance.parents
     assert [ref.id for ref in middle_parents] == [upstream.receipt.manifest_id]
-    assert middle_parents[0].metadata["manifest_sha256"] == hashlib.sha256(
-        upstream.receipt.path.read_bytes()
-    ).hexdigest()
+    assert (
+        middle_parents[0].metadata["manifest_sha256"]
+        == hashlib.sha256(upstream.receipt.path.read_bytes()).hexdigest()
+    )
     assert [ref.role for ref in middle_parents] == ["upstream"]
     leaf_parents = load_manifest(leaf.receipt.path).provenance.parents
     assert [ref.id for ref in leaf_parents] == [middle.receipt.manifest_id]
@@ -979,8 +978,8 @@ def test_an_interrupted_walk_resumes_at_the_node_boundary_it_stopped_at(
 ) -> None:
     """A crash after node k leaves k admitted receipts; re-invocation finishes."""
     target = _chain(outputs)
-    partial = truncated_closure(_closure(outputs, target), boundary)
-    interrupted = fulfill_closure(partial, environment=environment)
+    partial = truncated_workflow(_closure(outputs, target), boundary)
+    interrupted = execute_workflow(partial, environment=environment)
     assert interrupted.executed == CHAIN_ORDER[:boundary]
     assert calls.evaluation == boundary
 
@@ -1087,9 +1086,10 @@ def test_a_receipt_locator_binds_at_its_canonical_location(
     bound = load_manifest(run.results[0].receipt.path).provenance.parents
     assert [ref.id for ref in bound] == [produced.manifest_id]
     assert [ref.role for ref in bound] == ["prior"]
-    assert bound[0].metadata["manifest_sha256"] == hashlib.sha256(
-        produced.path.read_bytes()
-    ).hexdigest()
+    assert (
+        bound[0].metadata["manifest_sha256"]
+        == hashlib.sha256(produced.path.read_bytes()).hexdigest()
+    )
     assert calls.evaluation == 1
 
 
@@ -1135,9 +1135,7 @@ def test_an_authenticated_receipt_refuses_when_the_stored_bytes_disagree(
     authentication at all.
     """
     outputs.probe("substituted-source")
-    produced = (
-        _fulfill(outputs, "substituted-source", environment=environment).results[0].receipt
-    )
+    produced = _fulfill(outputs, "substituted-source", environment=environment).results[0].receipt
     raw = produced.path.read_bytes()
     quoted_digest = hashlib.sha256(raw).hexdigest()
     outputs.bulletin(
@@ -1205,9 +1203,10 @@ def test_a_receipt_locator_binds_without_a_byte_profile_to_check(
     run = _fulfill(outputs, "locator-consumer", environment=environment)
 
     bound = load_manifest(run.results[0].receipt.path).provenance.parents
-    assert bound[0].metadata["manifest_sha256"] == hashlib.sha256(
-        produced.path.read_bytes()
-    ).hexdigest()
+    assert (
+        bound[0].metadata["manifest_sha256"]
+        == hashlib.sha256(produced.path.read_bytes()).hexdigest()
+    )
 
 
 def test_stripping_a_plan_edges_byte_profile_refuses_at_preflight(
@@ -1222,9 +1221,7 @@ def test_stripping_a_plan_edges_byte_profile_refuses_at_preflight(
     which is exactly the downgrade the lock forbids.
     """
     outputs.probe("downgrade-source")
-    produced = (
-        _fulfill(outputs, "downgrade-source", environment=environment).results[0].receipt
-    )
+    produced = _fulfill(outputs, "downgrade-source", environment=environment).results[0].receipt
     raw = produced.path.read_bytes()
     outputs.bulletin(
         "downgrade-consumer",
@@ -1240,7 +1237,7 @@ def test_stripping_a_plan_edges_byte_profile_refuses_at_preflight(
         ],
     )
     index = read_compiled_outputs(outputs.output_directory)
-    document = derive_fulfillment_plan(index, target="downgrade-consumer").document()
+    document = derive_workflow_plan(index, target="downgrade-consumer").document()
     stripped = 0
     for edge in document["edges"]:
         external = edge.get("external")
@@ -1249,21 +1246,9 @@ def test_stripping_a_plan_edges_byte_profile_refuses_at_preflight(
             external.pop("size_bytes")
             stripped += 1
     assert stripped == 1, "the fixture must carry exactly one authenticated edge"
-    downgraded = fulfillment_plan_from_document(document)
-    # The downgrade is real: read back on its own, the edge no longer
-    # authenticates anything.
-    edge = next(item for item in downgraded.edges if item.external is not None)
-    assert require_external_record(edge.external, field="probe").is_authenticated is False
-
     before = calls.report
-    with pytest.raises(PlanLockDisagreementError) as caught:
-        preflight(downgraded, read_compiled_outputs(outputs.output_directory))
-
-    record = caught.value.record()
-    assert record["key"] == "report:downgrade-consumer"
-    assert record["source_ref"] == "studies/downgrade-consumer.envelope.json"
-    assert any("external" in difference for difference in record["differences"])
-    assert any("manifest_sha256" in difference for difference in record["differences"])
+    with pytest.raises(WorkflowPlanIdentityError):
+        workflow_plan_from_document(document)
     assert calls.report == before, "a refused closure never runs"
 
 
@@ -1272,9 +1257,7 @@ def test_a_plan_edge_naming_a_manifest_the_lock_never_named_refuses(
 ) -> None:
     """Substitution is the same defect as downgrade, and refuses the same way."""
     outputs.probe("substitute-source")
-    produced = (
-        _fulfill(outputs, "substitute-source", environment=environment).results[0].receipt
-    )
+    produced = _fulfill(outputs, "substitute-source", environment=environment).results[0].receipt
     outputs.bulletin(
         "substitute-consumer",
         references=[
@@ -1287,18 +1270,13 @@ def test_a_plan_edge_naming_a_manifest_the_lock_never_named_refuses(
         ],
     )
     index = read_compiled_outputs(outputs.output_directory)
-    document = derive_fulfillment_plan(index, target="substitute-consumer").document()
+    document = derive_workflow_plan(index, target="substitute-consumer").document()
     for edge in document["edges"]:
         if edge.get("external"):
             edge["external"]["manifest_id"] = "feedbax-evaluation-run:substituted"
 
-    with pytest.raises(PlanLockDisagreementError) as caught:
-        preflight(
-            fulfillment_plan_from_document(document),
-            read_compiled_outputs(outputs.output_directory),
-        )
-
-    assert any("substituted" in difference for difference in caught.value.record()["differences"])
+    with pytest.raises(WorkflowPlanIdentityError):
+        workflow_plan_from_document(document)
 
 
 def test_a_plan_that_drops_an_input_the_lock_states_refuses(
@@ -1306,9 +1284,7 @@ def test_a_plan_that_drops_an_input_the_lock_states_refuses(
 ) -> None:
     """Deletion is not a quieter downgrade; the lock states the input either way."""
     outputs.probe("dropped-source")
-    produced = (
-        _fulfill(outputs, "dropped-source", environment=environment).results[0].receipt
-    )
+    produced = _fulfill(outputs, "dropped-source", environment=environment).results[0].receipt
     outputs.bulletin(
         "dropped-consumer",
         references=[
@@ -1321,19 +1297,11 @@ def test_a_plan_that_drops_an_input_the_lock_states_refuses(
         ],
     )
     index = read_compiled_outputs(outputs.output_directory)
-    document = derive_fulfillment_plan(index, target="dropped-consumer").document()
+    document = derive_workflow_plan(index, target="dropped-consumer").document()
     document["edges"] = [edge for edge in document["edges"] if not edge.get("external")]
 
-    with pytest.raises(PlanLockDisagreementError) as caught:
-        preflight(
-            fulfillment_plan_from_document(document),
-            read_compiled_outputs(outputs.output_directory),
-        )
-
-    assert any(
-        "the plan declares no edge for it" in difference
-        for difference in caught.value.record()["differences"]
-    )
+    with pytest.raises(WorkflowPlanIdentityError):
+        workflow_plan_from_document(document)
 
 
 def test_a_plan_derived_from_its_own_locks_reconciles(
@@ -1342,11 +1310,11 @@ def test_a_plan_derived_from_its_own_locks_reconciles(
     """The reconciliation is exact, so an untouched plan must survive it."""
     target = _chain(outputs)
     index = read_compiled_outputs(outputs.output_directory)
-    plan = derive_fulfillment_plan(index, target=target)
+    plan = derive_workflow_plan(index, target=target)
 
-    round_tripped = fulfillment_plan_from_document(plan.document())
+    round_tripped = workflow_plan_from_document(plan.document())
 
-    closure = preflight(round_tripped, read_compiled_outputs(outputs.output_directory))
+    closure = prepare_workflow(round_tripped, read_compiled_outputs(outputs.output_directory))
     assert closure.order == _closure(outputs, target).order
 
 
@@ -1361,9 +1329,7 @@ def test_the_bytes_authenticated_are_the_bytes_bound(
     carry the lock's profile, and the spy must see exactly one read.
     """
     outputs.probe("single-read-source")
-    produced = (
-        _fulfill(outputs, "single-read-source", environment=environment).results[0].receipt
-    )
+    produced = _fulfill(outputs, "single-read-source", environment=environment).results[0].receipt
     raw = produced.path.read_bytes()
     lock_digest = hashlib.sha256(raw).hexdigest()
     tampered = json.dumps({**json.loads(raw), "metadata": {"swapped": True}}).encode()
@@ -1404,9 +1370,7 @@ def test_a_locator_binds_the_profile_of_the_bytes_it_actually_read(
     """A locator quoted nothing, so the single read is the only authority there."""
     outputs.probe("locator-profile-source")
     produced = (
-        _fulfill(outputs, "locator-profile-source", environment=environment)
-        .results[0]
-        .receipt
+        _fulfill(outputs, "locator-profile-source", environment=environment).results[0].receipt
     )
 
     parent, _path = external_parent_ref(
@@ -1449,9 +1413,7 @@ def test_an_incomplete_receipt_is_refused_rather_than_bound(
     outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
     outputs.probe("incomplete-source")
-    produced = (
-        _fulfill(outputs, "incomplete-source", environment=environment).results[0].receipt
-    )
+    produced = _fulfill(outputs, "incomplete-source", environment=environment).results[0].receipt
     _mutate(produced.path, status="failed")
     outputs.bulletin(
         "incomplete-consumer",
@@ -1502,9 +1464,7 @@ def test_an_inapplicable_role_binds_nothing_and_blocks_nothing(
     key = LogicalKey("figure", "partial-plate")
     closure = _closure(outputs, "partial-plate")
 
-    assert [edge.role_path for edge in closure.plan.required_edges(key)] == [
-        ("runtime", "states")
-    ]
+    assert [edge.role_path for edge in closure.plan.required_edges(key)] == [("runtime", "states")]
     assert [edge.role_path for edge in closure.plan.certified_omissions(consumer=key)] == [
         ("inputs", "observed")
     ]
@@ -1543,7 +1503,7 @@ def test_a_per_row_figure_input_binds_no_single_manifest_edge(
     assert omission[0].rule == PER_ROW_INPUT_RULE_ID
     assert omission[0].producer is None and omission[0].external is None
     assert closure.order == ("figure:expanded-plate",)
-    requests = closure_requests(closure, environment=environment, stop_at=key)
+    requests = workflow_requests(closure, environment=environment, stop_at=key)
     assert requests[-1].node_kind == "figure"
     assert requests[-1].runtime_inputs is None
 
@@ -1560,7 +1520,7 @@ def test_rebuilding_an_intact_closure_reports_no_drift_and_preserves_receipts(
     run = _fulfill(outputs, target, environment=environment)
     before = {result.receipt.path: result.receipt.path.read_bytes() for result in run.results}
 
-    rebuilt = rebuild_closure(_closure(outputs, target), environment=environment)
+    rebuilt = rebuild_workflow(_closure(outputs, target), environment=environment)
     assert rebuilt.verification_order == CHAIN_ORDER
     assert rebuilt.drifted == ()
     assert {path: path.read_bytes() for path in before} == before
@@ -1577,7 +1537,7 @@ def test_a_receipt_that_disagrees_with_a_clean_re_execution_drifts(
     receipt.path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
     with pytest.raises(FulfillmentDriftError) as caught:
-        rebuild_closure(_closure(outputs, "drifting-probe"), environment=environment)
+        rebuild_workflow(_closure(outputs, "drifting-probe"), environment=environment)
     (outcome,) = caught.value.drifted
     assert outcome.node_key == "evaluation:drifting-probe"
     assert json.loads(receipt.path.read_text(encoding="utf-8"))["summary_metrics"]["stage"] == (
@@ -1594,7 +1554,7 @@ def test_altered_stored_bytes_refuse_before_any_rebuild(
     (environment.root / artifact.metadata["relative_path"]).write_bytes(b"corrupt")
 
     with pytest.raises(FulfillmentAdmissionError) as caught:
-        rebuild_closure(_closure(outputs, target), environment=environment)
+        rebuild_workflow(_closure(outputs, target), environment=environment)
     assert "artifact_sha256_mismatch" in caught.value.outcome.codes
     assert calls.evaluation == 2, "corruption is custody loss, not drift, so nothing rebuilt"
 
@@ -1607,7 +1567,7 @@ def test_repair_promotes_a_revalidated_candidate_and_records_the_custody_event(
     receipt = run.results[1].receipt
     _mutate(receipt.path, status="failed")
 
-    result = repair_closure_node(
+    result = repair_workflow_operation(
         _closure(outputs, target),
         LogicalKey("evaluation", "chain-mid"),
         environment=environment,
@@ -1626,7 +1586,7 @@ def test_resolution_refuses_before_repairing_around_a_broken_upstream(
     run = _fulfill(outputs, target, environment=environment)
     _mutate(run.results[0].receipt.path, status="failed")
     with pytest.raises(FulfillmentAdmissionError):
-        repair_closure_node(
+        repair_workflow_operation(
             _closure(outputs, target),
             LogicalKey("report", "chain-leaf"),
             environment=environment,
@@ -1654,7 +1614,7 @@ def test_a_matrix_node_has_no_single_receipt_to_resolve(
         ],
     )
     with pytest.raises(AmbiguousNodeReceiptError, match="evaluation matrix"):
-        closure_requests(_closure(outputs, "matrix-reader"), environment=environment)
+        workflow_requests(_closure(outputs, "matrix-reader"), environment=environment)
 
 
 # --------------------------------------------------------------------------
@@ -1760,9 +1720,7 @@ def test_lowering_reads_each_external_input_exactly_once(
     """
     outputs.probe(f"{layer}-single-read-source")
     produced = (
-        _fulfill(outputs, f"{layer}-single-read-source", environment=environment)
-        .results[0]
-        .receipt
+        _fulfill(outputs, f"{layer}-single-read-source", environment=environment).results[0].receipt
     )
     raw = produced.path.read_bytes()
     lock_digest = hashlib.sha256(raw).hexdigest()
@@ -1792,7 +1750,7 @@ def test_lowering_reads_each_external_input_exactly_once(
         return real_read_bytes(self)
 
     monkeypatch.setattr(Path, "read_bytes", spying_read_bytes)
-    requests = closure_requests(closure, environment=environment, stop_at=key)
+    requests = workflow_requests(closure, environment=environment, stop_at=key)
 
     assert reads == [produced.path], "one external input, one read"
     parents = _bound_parents_of(requests[-1])
@@ -1817,7 +1775,7 @@ def test_an_admitted_receipt_binds_the_digest_admission_read(
     target = _chain(outputs)
     _fulfill(outputs, target, environment=environment)
     closure = _closure(outputs, target)
-    requests = closure_requests(closure, environment=environment)
+    requests = workflow_requests(closure, environment=environment)
     report_request = requests[-1]
     admitted_digest = report_request.spec.inputs[0].metadata["manifest_sha256"]
     upstream = canonical_manifest_path(
@@ -1841,7 +1799,7 @@ def test_an_admitted_receipt_binds_the_digest_admission_read(
         return real_read_bytes(self)
 
     monkeypatch.setattr(Path, "read_bytes", spying_read_bytes)
-    rebound = closure_requests(closure, environment=environment)[-1]
+    rebound = workflow_requests(closure, environment=environment)[-1]
 
     assert reads == [upstream], "the admitted receipt is read once per walk"
     assert rebound.spec.inputs[0].metadata["manifest_sha256"] == admitted_digest
@@ -1861,11 +1819,11 @@ EXECUTION_SURFACE = (
     "analysis/fulfillment_adapters.py",
     "analysis/fulfillment_checkpoint_init.py",
     "analysis/fulfillment_custody.py",
-    "analysis/fulfillment_derivation.py",
-    "analysis/fulfillment_driver.py",
-    "analysis/fulfillment_experiment.py",
-    "analysis/fulfillment_lowering.py",
-    "analysis/fulfillment_plan.py",
+    "workflow/derivation.py",
+    "workflow/execution.py",
+    "workflow/experiment.py",
+    "workflow/operation_execution.py",
+    "workflow/plan.py",
     "analysis/fulfillment_row_custody.py",
     "analysis/bundles.py",
     "analysis/specs.py",
@@ -1951,9 +1909,7 @@ def test_the_execution_surface_guard_actually_detects_each_reach(tmp_path: Path)
         "name": "ref = authenticated_manifest_ref(m, p, 'r')\n",
         "attribute": "ref = manifest_inputs.authenticated_manifest_ref(m, p, 'r')\n",
         "getattr": "fn = getattr(manifest_inputs, 'authenticated_manifest_ref')\n",
-        "import_module": (
-            "mod = importlib.import_module('feedbax.analysis.manifest_inputs')\n"
-        ),
+        "import_module": ("mod = importlib.import_module('feedbax.analysis.manifest_inputs')\n"),
     }
 
     def detects(source: str) -> bool:
@@ -2003,7 +1959,7 @@ def test_a_duplicate_role_edge_refuses_at_reconciliation(
     copy it keyed last, because the copy it drops is the one that never faces a
     lock.
     """
-    from feedbax.analysis.fulfillment_plan import FulfillmentPlan, PlanEdge
+    from feedbax.workflow.plan import WorkflowPlan, PlanEdge
 
     outputs.probe("recon-source")
     produced = _fulfill(outputs, "recon-source", environment=environment).results[0].receipt
@@ -2019,17 +1975,19 @@ def test_a_duplicate_role_edge_refuses_at_reconciliation(
         ],
     )
     index = read_compiled_outputs(outputs.output_directory)
-    plan = derive_fulfillment_plan(index, target="recon-consumer")
+    plan = derive_workflow_plan(index, target="recon-consumer")
     genuine = next(edge for edge in plan.edges if edge.external is not None)
     injected = PlanEdge(
         consumer=genuine.consumer,
         role_path=genuine.role_path,
         status=genuine.status,
         basis=genuine.basis,
+        input_type=genuine.input_type,
         reason=genuine.reason,
         external={**dict(genuine.external), "manifest_id": "feedbax-evaluation-run:injected"},
+        external_type=genuine.external_type,
     )
-    smuggled = FulfillmentPlan(
+    smuggled = WorkflowPlan(
         target=plan.target,
         nodes=plan.nodes,
         edges=(injected, *plan.edges),
@@ -2038,7 +1996,7 @@ def test_a_duplicate_role_edge_refuses_at_reconciliation(
 
     before = calls.report
     with pytest.raises(PlanLockDisagreementError) as caught:
-        preflight(smuggled, read_compiled_outputs(outputs.output_directory))
+        prepare_workflow(smuggled, read_compiled_outputs(outputs.output_directory))
 
     differences = caught.value.record()["differences"]
     assert any("stated 2 times by the plan" in difference for difference in differences)
@@ -2051,15 +2009,23 @@ def test_a_plan_node_with_no_content_hash_refuses_rather_than_skipping_the_pin(
     """A pin that is absent is not a pin that matched."""
     target = _chain(outputs)
     index = read_compiled_outputs(outputs.output_directory)
-    document = derive_fulfillment_plan(index, target=target).document()
-    for node in document["nodes"]:
-        if node["key"] == "evaluation:chain-mid":
-            node["content_hash"] = None
+    plan = derive_workflow_plan(index, target=target)
+    unpinned = WorkflowPlan(
+        target=plan.target,
+        nodes=tuple(
+            replace(node, content_hash=None)
+            if node.key == LogicalKey("evaluation", "chain-mid")
+            else node
+            for node in plan.nodes
+        ),
+        edges=plan.edges,
+        origin=plan.origin,
+    )
 
     before = calls.evaluation
     with pytest.raises(UnpinnedPlanNodeError) as caught:
-        preflight(
-            fulfillment_plan_from_document(document),
+        prepare_workflow(
+            unpinned,
             read_compiled_outputs(outputs.output_directory),
         )
     assert caught.value.record()["key"] == "evaluation:chain-mid"
@@ -2070,7 +2036,7 @@ def test_a_plan_node_with_no_content_hash_refuses_rather_than_skipping_the_pin(
 @pytest.mark.parametrize(
     ("field", "substituted"),
     [
-        ("kind", "feedbax.spec.report"),
+        ("compiled_schema_id", "feedbax.spec.report"),
         ("execution_identity", "e" * 64),
         ("key", "analysis:chain-mid"),
     ],
@@ -2087,34 +2053,54 @@ def test_a_node_fact_the_lock_does_not_determine_refuses_at_preflight(
     A plan is a derived record of the compile locks, so every fact it carries
     about a node is a copy. Copying is fine; carrying an intact ``content_hash``
     beside a substituted schema id, execution identity, or logical key is a plan
-    describing a node the compile never emitted, and preflight is where the
+    describing a node the compile never emitted, and prepare_workflow is where the
     copies are checked against the authority they were copied from.
     """
     target = _chain(outputs)
     index = read_compiled_outputs(outputs.output_directory)
-    document = derive_fulfillment_plan(index, target=target).document()
-    for node in document["nodes"]:
-        if node["key"] == "evaluation:chain-mid":
-            if field == "key":
-                node["layer"] = "analysis"
-                node["key"] = substituted
-            else:
-                node[field] = substituted
-    if field == "key":
-        # A lone key substitution is already refused by the plan kernel, whose
-        # edges would name a consumer the plan no longer carries. The shape that
-        # reaches preflight is the *consistent* one: every reference rewritten,
-        # so the plan is internally coherent and only the lock disagrees.
-        for edge in document["edges"]:
-            if edge["consumer"] == "evaluation:chain-mid":
-                edge["consumer"] = substituted
-            if edge.get("producer") == "evaluation:chain-mid":
-                edge["producer"] = substituted
+    plan = derive_workflow_plan(index, target=target)
+    original_key = LogicalKey("evaluation", "chain-mid")
+    replacement_key = LogicalKey.parse(substituted) if field == "key" else original_key
+    nodes = []
+    for node in plan.nodes:
+        if node.key != original_key:
+            nodes.append(node)
+        elif field == "compiled_schema_id":
+            nodes.append(
+                replace(
+                    node,
+                    operation=replace(
+                        node.operation,
+                        parameters={
+                            **node.operation.parameters,
+                            "compiled_schema_id": substituted,
+                        },
+                    ),
+                )
+            )
+        elif field == "execution_identity":
+            nodes.append(replace(node, execution_identity=substituted))
+        else:
+            nodes.append(replace(node, key=replacement_key))
+    edges = tuple(
+        replace(
+            edge,
+            consumer=replacement_key if edge.consumer == original_key else edge.consumer,
+            producer=replacement_key if edge.producer == original_key else edge.producer,
+        )
+        for edge in plan.edges
+    )
+    substituted_plan = WorkflowPlan(
+        target=plan.target,
+        nodes=tuple(nodes),
+        edges=edges,
+        origin=plan.origin,
+    )
 
     before = calls.evaluation
     with pytest.raises(PlanNodeDisagreementError) as caught:
-        preflight(
-            fulfillment_plan_from_document(document),
+        prepare_workflow(
+            substituted_plan,
             read_compiled_outputs(outputs.output_directory),
         )
 
@@ -2124,44 +2110,6 @@ def test_a_node_fact_the_lock_does_not_determine_refuses_at_preflight(
     assert calls.evaluation == before, "a refused closure never runs"
 
 
-def test_erasing_a_boundary_refuses_at_preflight_rather_than_at_lowering(
-    outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
-) -> None:
-    """A boundary the plan does not state is one nothing checked before running.
-
-    ``require_no_external_boundary`` reads the plan's own claim, so a plan that
-    simply omits the boundary walks past it. The node's boundary is determined
-    by its compile lock, so it is compared with the lock like every other fact
-    the node carries, and the closure refuses before anything executes.
-    """
-    cohort = outputs.cohort("erased-boundary")
-    outputs.probe(
-        "erased-consumer",
-        references=[_subject(cohort, role_path="body.harvested", subject_id="harvested")],
-    )
-    index = read_compiled_outputs(outputs.output_directory)
-    document = derive_fulfillment_plan(index, target="erased-consumer").document()
-    erased = [
-        node for node in document["nodes"] if node["key"] == "training:erased-boundary"
-    ]
-    assert len(erased) == 1, "the corpus must actually contain the boundary node"
-    assert erased[0]["boundary"] == "feedbax.spec.training_run_matrix"
-    erased[0]["boundary"] = None
-
-    with pytest.raises(PlanNodeDisagreementError) as caught:
-        preflight(
-            fulfillment_plan_from_document(document),
-            read_compiled_outputs(outputs.output_directory),
-        )
-
-    assert caught.value.record()["key"] == "training:erased-boundary"
-    assert any(
-        difference.startswith("boundary:") for difference in caught.value.differences
-    )
-    assert calls.evaluation == 0
-    assert not environment.root.exists()
-
-
 def test_an_honest_derived_plan_still_reconciles_every_node_fact(
     outputs: QuillonOutputs,
 ) -> None:
@@ -2169,9 +2117,8 @@ def test_an_honest_derived_plan_still_reconciles_every_node_fact(
     closure = _closure(outputs, _chain(outputs))
     assert closure.order == CHAIN_ORDER
     for node in closure.nodes:
-        assert node.plan_node.kind == node.compiled.schema_id
+        assert node.plan_node.operation.parameters["compiled_schema_id"] == node.compiled.schema_id
         assert node.plan_node.execution_identity == node.compiled.execution_identity
-        assert node.plan_node.boundary == node.compiled.kind.boundary
         assert node.plan_node.key == node.compiled.key
 
 
@@ -2189,10 +2136,8 @@ def test_a_half_stated_restated_profile_is_refused_rather_than_dropped(
     """
     subject = outputs.probe("half-profile-subject")
     bank = outputs.probe("half-profile-bank")
-    fulfill_closure(_closure(outputs, "half-profile-subject"), environment=environment)
-    produced = (
-        _fulfill(outputs, "half-profile-bank", environment=environment).results[0].receipt
-    )
+    execute_workflow(_closure(outputs, "half-profile-subject"), environment=environment)
+    produced = _fulfill(outputs, "half-profile-bank", environment=environment).results[0].receipt
     raw = produced.path.read_bytes()
     outputs.emit(
         "half-profile-consumer",
@@ -2230,7 +2175,7 @@ def test_a_half_stated_restated_profile_is_refused_rather_than_dropped(
 
 def test_restated_parent_differences_reports_an_unreadable_profile_on_either_side() -> None:
     """Neither side may drop out of the comparison by being malformed."""
-    from feedbax.analysis.fulfillment_lowering import restated_parent_differences
+    from feedbax.workflow.operation_execution import restated_parent_differences
     from feedbax.contracts.manifest import ParentRef
 
     complete = {
@@ -2280,8 +2225,7 @@ def _retained_context(*roots: Path):
             checkpoint_custody={},
         ),
         manifest_root_bindings=[
-            StagedManifestRootBinding(f"retained-{index}", root)
-            for index, root in enumerate(roots)
+            StagedManifestRootBinding(f"retained-{index}", root) for index, root in enumerate(roots)
         ],
     )
 
@@ -2336,7 +2280,7 @@ def test_a_parent_only_a_retained_store_holds_resolves_from_it(
 
     bound = load_manifest(run.results[0].receipt.path).provenance.parents
     assert [ref.id for ref in bound] == [produced.manifest_id]
-    request = closure_requests(_closure(outputs, target), environment=staged)[0]
+    request = workflow_requests(_closure(outputs, target), environment=staged)[0]
     location = request.execution_context.parent_execution_location(bound[0])
     assert location.root == retained
     assert location.execution_uri == retained_path.relative_to(retained).as_posix()
@@ -2366,7 +2310,7 @@ def test_a_parent_two_declared_authorities_hold_refuses_before_any_effect(
     """
     from dataclasses import replace
 
-    from feedbax.analysis.fulfillment_driver import AmbiguousExternalReceiptError
+    from feedbax.workflow.execution import AmbiguousExternalReceiptError
 
     outputs.probe("doubled-source")
     produced = _fulfill(outputs, "doubled-source", environment=environment).results[0].receipt
@@ -2439,28 +2383,28 @@ def test_every_operation_over_a_closure_reconstructs_the_same_node_contexts(
     staged = replace(environment, execution_context=_retained_context(retained))
     closure = _closure(outputs, target)
 
-    fulfilled = fulfill_closure(closure, environment=staged)
+    fulfilled = execute_workflow(closure, environment=staged)
     assert fulfilled.executed == ("report:persisted-consumer",)
 
     # Reuse: the second walk admits rather than executes, and the request it
     # admits against carries the same context.
-    again = fulfill_closure(closure, environment=staged)
+    again = execute_workflow(closure, environment=staged)
     assert again.reused == ("report:persisted-consumer",)
 
-    requests = closure_requests(closure, environment=staged)
+    requests = workflow_requests(closure, environment=staged)
     assert len(requests) == 1
     context = requests[0].execution_context
     assert context is not None
     assert [location.root for location in context.parent_execution_locations] == [retained]
 
-    rebuild = rebuild_closure(closure, environment=staged)
+    rebuild = rebuild_workflow(closure, environment=staged)
     assert rebuild.drifted == ()
 
     # Repair executes the node again into shadow custody, which means resolving
     # its parents again. A repair that lost the node's context would look for
     # the parent beneath the receipt root, where it is not.
     _mutate(fulfilled.results[0].receipt.path, status="failed")
-    repaired = repair_closure_node(
+    repaired = repair_workflow_operation(
         closure, LogicalKey("report", "persisted-consumer"), environment=staged
     )
     assert repaired.record.node_key == "report:persisted-consumer"
@@ -2473,9 +2417,9 @@ def test_a_run_declaring_no_staged_bindings_lowers_no_context(
     """Cold start is left exactly as it was, not routed through an empty context."""
     target = _chain(outputs)
     closure = _closure(outputs, target)
-    fulfill_closure(closure, environment=environment)
+    execute_workflow(closure, environment=environment)
     assert [
-        request.execution_context for request in closure_requests(closure, environment=environment)
+        request.execution_context for request in workflow_requests(closure, environment=environment)
     ] == [None, None, None]
 
 
@@ -2500,14 +2444,10 @@ def test_declaring_a_staged_surface_changes_no_produced_receipt(
         root=tmp_path / "staged-receipts",
         execution_context=_retained_context(tmp_path / "unused-retained"),
     )
-    declared = fulfill_closure(
-        _closure(outputs, "surface-regression"), environment=staged
-    )
+    declared = execute_workflow(_closure(outputs, "surface-regression"), environment=staged)
 
     assert declared.executed == cold.executed
-    assert (
-        declared.results[0].receipt.manifest_id == cold.results[0].receipt.manifest_id
-    )
+    assert declared.results[0].receipt.manifest_id == cold.results[0].receipt.manifest_id
     assert (
         load_manifest(declared.results[0].receipt.path).summary_metrics
         == load_manifest(cold.results[0].receipt.path).summary_metrics
@@ -2586,15 +2526,15 @@ def test_a_parent_only_an_artifact_provider_holds_resolves_and_binds_its_alias(
 
     bound = load_manifest(run.results[0].receipt.path).provenance.parents
     assert [ref.id for ref in bound] == [produced.manifest_id]
-    context = closure_requests(
-        _closure(outputs, "provider-consumer"), environment=staged
-    )[0].execution_context
+    context = workflow_requests(_closure(outputs, "provider-consumer"), environment=staged)[
+        0
+    ].execution_context
     location = context.parent_execution_location(bound[0])
     assert location.artifact_provider == "results"
     assert location.root == provider_root
-    assert [
-        binding.authored_provider for binding in context.parent_artifact_provider_bindings
-    ] == ["results"]
+    assert [binding.authored_provider for binding in context.parent_artifact_provider_bindings] == [
+        "results"
+    ]
 
 
 def test_a_locator_reference_reaches_no_artifact_provider(

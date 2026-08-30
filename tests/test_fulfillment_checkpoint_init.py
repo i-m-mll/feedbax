@@ -38,8 +38,8 @@ from feedbax.analysis.fulfillment_checkpoint_init import (
     experiment_checkpoint_initializations,
     lower_planned_checkpoint_initialization,
 )
-from feedbax.analysis.fulfillment_derivation import (
-    derive_fulfillment_plan,
+from feedbax.workflow.derivation import (
+    derive_workflow_plan,
     read_compiled_outputs,
 )
 from feedbax.contracts.experiment_compile_lock import (
@@ -115,9 +115,7 @@ def _context(root: Path):
                 )
             },
         ),
-        checkpoint_custody_bindings=(
-            StagedCheckpointCustodyRootBinding(CUSTODY_BINDING, root),
-        ),
+        checkpoint_custody_bindings=(StagedCheckpointCustodyRootBinding(CUSTODY_BINDING, root),),
     )
 
 
@@ -125,9 +123,7 @@ def _entries(outputs: QuillonOutputs, name: str, references):
     """Derive one training target's plan and read its checkpoint initializations."""
     outputs.cohort(name, references=references)
     index = read_compiled_outputs(outputs.output_directory)
-    return checkpoint_initialization_requests(
-        derive_fulfillment_plan(index, target=name), index=index
-    )
+    return checkpoint_initialization_requests(derive_workflow_plan(index, target=name), index=index)
 
 
 # --------------------------------------------------------------------------
@@ -144,7 +140,7 @@ def test_a_lock_reference_becomes_one_authenticated_request(
 
     assert len(entries) == 1
     entry = entries[0]
-    assert entry.node_key == "training:warm-cohort"
+    assert entry.node_key == "campaign:warm-cohort"
     assert entry.row_id == ROW
     assert entry.role_path == ("rows", ROW, "checkpoint_initialization")
     assert entry.mode == "continue_from"
@@ -172,9 +168,7 @@ def test_the_read_only_entrypoint_needs_no_receipt_root(
     assert entries[0].source.id == result.manifest.transaction_id
 
 
-def test_two_rows_each_carry_their_own_mode(
-    outputs: QuillonOutputs, custody_root: Path
-) -> None:
+def test_two_rows_each_carry_their_own_mode(outputs: QuillonOutputs, custody_root: Path) -> None:
     result = _write_checkpoint(custody_root)
 
     entries = _entries(
@@ -223,9 +217,7 @@ def test_the_source_authenticates_and_lowers_against_its_own_structure(
     assert plan.source == entry.source
     assert plan.fresh_paths == ()
     assert set(plan.restored_paths) == {
-        f"{slot.slot}/{leaf.path}"
-        for slot in structure.slots
-        for leaf in slot.leaves
+        f"{slot.slot}/{leaf.path}" for slot in structure.slots for leaf in slot.leaves
     }
 
 
@@ -290,9 +282,7 @@ def test_an_altered_checkpoint_manifest_refuses(
         )
 
 
-def test_an_unbound_custody_binding_refuses(
-    outputs: QuillonOutputs, custody_root: Path
-) -> None:
+def test_an_unbound_custody_binding_refuses(outputs: QuillonOutputs, custody_root: Path) -> None:
     result = _write_checkpoint(custody_root)
     entry = _entries(outputs, "unbound-cohort", [_reference(result, custody_root)])[0]
 
@@ -341,9 +331,7 @@ def test_a_source_that_is_not_a_checkpoint_refuses(
         )
 
 
-def test_two_references_for_one_row_refuse(
-    outputs: QuillonOutputs, custody_root: Path
-) -> None:
+def test_two_references_for_one_row_refuse(outputs: QuillonOutputs, custody_root: Path) -> None:
     result = _write_checkpoint(custody_root)
     first = _reference(result, custody_root)
     second = _reference(result, custody_root).model_copy(

@@ -268,22 +268,22 @@ def _dump_manifest_requests(
     return requests
 
 
-def _fulfill_experiment_envelope(args: argparse.Namespace, registries: Any) -> int:
-    """Fulfill one compiled experiment target's whole dependency closure.
+def _execute_experiment_workflow(args: argparse.Namespace, registries: Any) -> int:
+    """Execute one compiled experiment target's whole dependency closure.
 
-    Exit codes are the documented fulfillment contract: 0 fulfilled, 2 a stable
+    Exit codes are the documented workflow contract: 0 executed, 2 a stable
     typed rejection with an actionable diagnostic on stderr, 1 infrastructure
     failure.
     """
     from feedbax.analysis.fulfillment import FulfillmentAdmissionError
     from feedbax.analysis.fulfillment_adapters import FulfillmentEnvironment
     from feedbax.analysis.fulfillment_custody import FulfillmentDriftError
-    from feedbax.analysis.fulfillment_derivation import FulfillmentDerivationError
-    from feedbax.analysis.fulfillment_driver import FulfillmentDriverError
-    from feedbax.analysis.fulfillment_experiment import fulfill_experiment_envelope
-    from feedbax.analysis.fulfillment_plan import (
-        FulfillmentPlanError,
-        UnsupportedFulfillmentPlanVersionError,
+    from feedbax.workflow.derivation import WorkflowDerivationError
+    from feedbax.workflow.execution import WorkflowExecutionError
+    from feedbax.workflow.experiment import execute_experiment_workflow
+    from feedbax.workflow.plan import (
+        WorkflowPlanError,
+        UnsupportedWorkflowPlanVersionError,
     )
     from feedbax.analysis.execution_context import (
         EMPTY_STAGED_EXECUTION_CONTEXT,
@@ -309,30 +309,28 @@ def _fulfill_experiment_envelope(args: argparse.Namespace, registries: Any) -> i
         registries=registries,
         repo_root=repo_root,
         execution_context=(
-            EMPTY_STAGED_EXECUTION_CONTEXT
-            if declared_context is None
-            else declared_context
+            EMPTY_STAGED_EXECUTION_CONTEXT if declared_context is None else declared_context
         ),
         issues=tuple(args.issue or ()),
     )
     try:
-        fulfillment = fulfill_experiment_envelope(
+        fulfillment = execute_experiment_workflow(
             args.target, output_directory=out_dir, environment=environment
         )
     except (
         ExperimentEnvelopeRejection,
         FulfillmentAdmissionError,
-        FulfillmentDerivationError,
+        WorkflowDerivationError,
         FulfillmentDriftError,
-        FulfillmentDriverError,
-        FulfillmentPlanError,
+        WorkflowExecutionError,
+        WorkflowPlanError,
         StagedExecutionContextError,
-        UnsupportedFulfillmentPlanVersionError,
+        UnsupportedWorkflowPlanVersionError,
     ) as rejection:
         print(f"{type(rejection).__name__}: {rejection}", file=sys.stderr)
         return 2
     except OSError as exc:
-        print(f"fulfillment failed on infrastructure: {exc}", file=sys.stderr)
+        print(f"workflow execution failed on infrastructure: {exc}", file=sys.stderr)
         return 1
     json.dump(fulfillment.summary(), fp=sys.stdout, indent=2, sort_keys=True)
     print()
@@ -511,8 +509,7 @@ def build_parser() -> argparse.ArgumentParser:
     envelope_parser = subparsers.add_parser(
         "preflight-experiment-envelope",
         help=(
-            "Compile one authored experiment envelope with the single built-in dialect "
-            "compiler."
+            "Compile one authored experiment envelope with the single built-in dialect compiler."
         ),
     )
     envelope_parser.add_argument("envelope", help="Authored experiment envelope JSON path")
@@ -535,9 +532,9 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     fulfill_parser = subparsers.add_parser(
-        "fulfill-experiment-envelope",
+        "execute-experiment-workflow",
         help=(
-            "Fulfill one compiled experiment target's dependency closure from the compile "
+            "Execute one compiled experiment target's dependency closure from the compile "
             "locks and documents in an output directory."
         ),
     )
@@ -902,8 +899,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return harness_main(harness_argv, bootstrap_state=bootstrap_state)
     if args.command == "preflight-experiment-envelope":
         return _preflight_experiment_envelope(args)
-    if args.command == "fulfill-experiment-envelope":
-        return _fulfill_experiment_envelope(args, registries)
+    if args.command == "execute-experiment-workflow":
+        return _execute_experiment_workflow(args, registries)
     if args.command == "execute-training-run-spec":
         run_spec = validate_training_run_spec(_read_json(args.spec))
         if run_spec.graph.inline is None:

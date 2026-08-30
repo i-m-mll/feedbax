@@ -47,21 +47,21 @@ from feedbax.analysis.bundles import (
     BundleRootVerificationError,
     DuplicateBundleRootError,
 )
-from feedbax.analysis.fulfillment_derivation import (
+from feedbax.workflow.derivation import (
     COMPILED_PRODUCT_KINDS,
     UnsupportedCompiledProductError,
-    derive_fulfillment_plan,
+    derive_workflow_plan,
     read_compiled_outputs,
 )
-from feedbax.analysis.fulfillment_driver import (
+from feedbax.workflow.execution import (
     AmbiguousNodeReceiptError,
-    closure_requests,
-    fulfill_closure,
-    preflight,
-    truncated_closure,
+    workflow_requests,
+    execute_workflow,
+    prepare_workflow,
+    truncated_workflow,
 )
-from feedbax.analysis.fulfillment_lowering import NodeLoweringError, supported_lowerings
-from feedbax.analysis.fulfillment_plan import LogicalKey
+from feedbax.workflow.operation_execution import NodeLoweringError, supported_lowerings
+from feedbax.workflow.plan import LogicalKey
 from feedbax.analysis.specs import AnalysisRecipeResult
 from feedbax.contracts.analysis_bundle_composition import ANALYSIS_BUNDLE_SPEC_SCHEMA_ID
 from feedbax.contracts.experiment_compile_lock import (
@@ -145,11 +145,11 @@ def rendered(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _closure(outputs: QuillonOutputs, target: str):
     index = read_compiled_outputs(outputs.output_directory)
-    return preflight(derive_fulfillment_plan(index, target=target), index)
+    return prepare_workflow(derive_workflow_plan(index, target=target), index)
 
 
 def _fulfill(outputs: QuillonOutputs, target: str, *, environment):
-    return fulfill_closure(_closure(outputs, target), environment=environment)
+    return execute_workflow(_closure(outputs, target), environment=environment)
 
 
 def _analysis_input(product, *, role_path: str, alias: str, role: str):
@@ -162,8 +162,8 @@ def _analysis_input(product, *, role_path: str, alias: str, role: str):
 
 def _bundle_request(outputs: QuillonOutputs, target: str, *, environment):
     """Fulfil everything upstream of one bundle node and return its request."""
-    fulfill_closure(truncated_closure(_closure(outputs, target), 1), environment=environment)
-    return closure_requests(
+    execute_workflow(truncated_workflow(_closure(outputs, target), 1), environment=environment)
+    return workflow_requests(
         _closure(outputs, target),
         environment=environment,
         stop_at=LogicalKey("analysis", target),
@@ -193,8 +193,6 @@ def _bound_sheaf(outputs: QuillonOutputs, name: str, **sheaf_kwargs) -> str:
 def test_both_second_layer_products_are_planned_and_lowerable() -> None:
     assert COMPILED_PRODUCT_KINDS[ANALYSIS_BUNDLE_SPEC_SCHEMA_ID].layer == "analysis"
     assert COMPILED_PRODUCT_KINDS[FIGURE_COMPOSITION_SPEC_SCHEMA_ID].layer == "figure"
-    assert COMPILED_PRODUCT_KINDS[ANALYSIS_BUNDLE_SPEC_SCHEMA_ID].executable
-    assert COMPILED_PRODUCT_KINDS[FIGURE_COMPOSITION_SPEC_SCHEMA_ID].executable
     assert ANALYSIS_BUNDLE_SPEC_SCHEMA_ID in supported_lowerings()
     assert FIGURE_COMPOSITION_SPEC_SCHEMA_ID in supported_lowerings()
 
@@ -226,7 +224,7 @@ def test_a_schema_id_the_table_does_not_enumerate_still_refuses(
     )
     index = read_compiled_outputs(outputs.output_directory)
     with pytest.raises(UnsupportedCompiledProductError) as caught:
-        derive_fulfillment_plan(index, target="unlisted")
+        derive_workflow_plan(index, target="unlisted")
     assert ANALYSIS_BUNDLE_SPEC_SCHEMA_ID in str(caught.value)
     assert FIGURE_COMPOSITION_SPEC_SCHEMA_ID in str(caught.value)
 
@@ -260,7 +258,7 @@ def test_an_unbound_bundle_lowers_with_no_declared_root_set(
     """
     outputs.sheaf("sheaf-unbound")
 
-    request = closure_requests(
+    request = workflow_requests(
         _closure(outputs, "sheaf-unbound"),
         environment=environment,
         stop_at=LogicalKey("analysis", "sheaf-unbound"),
@@ -275,7 +273,7 @@ def test_a_declared_but_empty_root_set_is_refused_rather_than_read_as_ambient(
     outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
     outputs.sheaf("sheaf-empty")
-    request = closure_requests(
+    request = workflow_requests(
         _closure(outputs, "sheaf-empty"),
         environment=environment,
         stop_at=LogicalKey("analysis", "sheaf-empty"),
@@ -301,15 +299,11 @@ def test_a_bound_bundle_binds_by_exact_manifest_identity(
 
     assert identities is not None
     assert [identity.kind for identity in identities] == ["EvaluationRunManifest"]
-    assert [identity.id for identity in identities] == [
-        parent.id for parent in request.root_inputs
-    ]
+    assert [identity.id for identity in identities] == [parent.id for parent in request.root_inputs]
     assert all(identity.manifest_sha256 is not None for identity in identities)
     # The id-only view still exists, because bundle selection addresses
     # candidates by id, but it is explicitly not what the gate compares.
-    assert analysis_bundle_root_run_ids(request) == tuple(
-        identity.id for identity in identities
-    )
+    assert analysis_bundle_root_run_ids(request) == tuple(identity.id for identity in identities)
 
 
 def test_a_selected_root_of_another_kind_with_the_same_id_refuses(
@@ -384,8 +378,8 @@ def test_a_composition_lowers_to_the_ordinary_figure_it_renders_as(
             )
         ],
     )
-    fulfill_closure(_closure(outputs, "montage-source"), environment=environment)
-    requests = closure_requests(
+    execute_workflow(_closure(outputs, "montage-source"), environment=environment)
+    requests = workflow_requests(
         _closure(outputs, "montage-lowered"),
         environment=environment,
         stop_at=LogicalKey("figure", "montage-lowered"),
@@ -503,7 +497,7 @@ def test_a_bundle_hands_no_single_receipt_to_a_consumer(
         ],
     )
     with pytest.raises(AmbiguousNodeReceiptError, match="analysis bundle"):
-        closure_requests(_closure(outputs, "sheaf-reader"), environment=environment)
+        workflow_requests(_closure(outputs, "sheaf-reader"), environment=environment)
 
 
 def test_a_bundle_node_is_neither_admitted_nor_executed_as_one_receipt(
@@ -555,9 +549,7 @@ def test_a_bundle_runs_under_an_already_resolved_staged_context(
     target = _bound_sheaf(outputs, "sheaf-staged")
     staged = replace(
         environment,
-        execution_context=with_staged_repo_root(
-            EMPTY_STAGED_EXECUTION_CONTEXT, outputs.root
-        ),
+        execution_context=with_staged_repo_root(EMPTY_STAGED_EXECUTION_CONTEXT, outputs.root),
     )
     run = _fulfill(outputs, target, environment=staged)
     assert calls.analysis == 1
@@ -580,9 +572,7 @@ def test_a_resolved_context_and_raw_bundle_bindings_are_mutually_exclusive(
             {"name": "irrelevant", "stages": []},
             root=tmp_path,
             execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
-            artifact_provider_bindings=[
-                StagedArtifactProviderRootBinding("results", tmp_path)
-            ],
+            artifact_provider_bindings=[StagedArtifactProviderRootBinding("results", tmp_path)],
             registries=application_registry_bundle,
         )
 
@@ -617,7 +607,7 @@ def test_a_selected_root_with_no_byte_profile_refuses_against_a_bound_one(
     unprofiled = replace(identities[0], manifest_sha256=None, size_bytes=None)
 
     with pytest.raises(ValueError) as caught:
-        _require_bundle_roots(request, identities, [unprofiled], stage="preflight")
+        _require_bundle_roots(request, identities, [unprofiled], stage="prepare_workflow")
 
     message = str(caught.value)
     assert "no byte profile" in message
@@ -670,7 +660,7 @@ def test_a_pinned_root_that_cannot_be_read_refuses(
 
 
 # --------------------------------------------------------------------------
-# Cross-phase pinning: preflight and execution consume one proved read
+# Cross-phase pinning: prepare_workflow and execution consume one proved read
 # --------------------------------------------------------------------------
 
 
@@ -741,9 +731,7 @@ def test_bytes_substituted_after_the_pin_is_proved_never_reach_what_is_emitted(
     root_path = _root_receipt_path(request, root)
     original = root_path.read_bytes()
     proved_digest = hashlib.sha256(original).hexdigest()
-    tampered = json.dumps(
-        {**json.loads(original), "metadata": {"swapped": True}}
-    ).encode()
+    tampered = json.dumps({**json.loads(original), "metadata": {"swapped": True}}).encode()
     tampered_digest = hashlib.sha256(tampered).hexdigest()
     assert tampered_digest != proved_digest
 
@@ -840,13 +828,13 @@ def test_duplicate_selected_roots_refuse_before_anything_keys_them(
 
     with pytest.raises(DuplicateBundleRootError) as caught:
         _require_bundle_roots(
-            request, identities, [identities[0], identities[0]], stage="preflight"
+            request, identities, [identities[0], identities[0]], stage="prepare_workflow"
         )
     assert f"{identities[0].kind}:{identities[0].id}" in str(caught.value)
 
     with pytest.raises(DuplicateBundleRootError):
         _require_bundle_roots(
-            request, [identities[0], identities[0]], list(identities), stage="preflight"
+            request, [identities[0], identities[0]], list(identities), stage="prepare_workflow"
         )
 
 
@@ -885,9 +873,7 @@ def test_verification_refuses_two_pins_at_one_address(
     assert identities is not None
 
     with pytest.raises(DuplicateBundleRootError):
-        verify_bundle_roots(
-            [identities[0], identities[0]], root=Path(environment.root)
-        )
+        verify_bundle_roots([identities[0], identities[0]], root=Path(environment.root))
 
 
 def test_execution_performs_no_selection_of_its_own_over_a_pinned_root_set(
@@ -900,7 +886,7 @@ def test_execution_performs_no_selection_of_its_own_over_a_pinned_root_set(
     The byte-substitution tests can be satisfied by a recipe that happens to
     choke on tampered input, so they prove the outcome without proving the
     mechanism. This proves the mechanism directly. Selection is the step that
-    discarded the preflight proof and went looking for roots again; with a
+    discarded the prepare_workflow proof and went looking for roots again; with a
     verified set in hand, execution must not reach it at all.
 
     One call is expected and permitted — the predicate gate in
