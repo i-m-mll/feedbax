@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import uuid
+import hashlib
 from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
@@ -83,6 +83,19 @@ class AuthenticateLaunchResponse(BaseModel):
     reservation_id: str
 
 
+class RetryLaunchRequest(BaseModel):
+    invocation: dict[str, Any]
+    reservation_ttl_seconds: int = Field(default=300, ge=30, le=3600)
+
+
+class RetryLaunchResponse(BaseModel):
+    status: Literal["awaiting_authentication"]
+    intent_id: str
+    reservation_id: str
+    external_effect_key: str
+    expires_at: str
+
+
 class StatusResponse(BaseModel):
     status: str
     intent_id: str | None = None
@@ -93,7 +106,7 @@ class StatusResponse(BaseModel):
     internal_ip: str | None = None
     external_ip: str | None = None
     error: str | None = None
-    orphaned_instance: str | None = None
+    orphaned_resources: list[dict[str, Any]] = Field(default_factory=list)
     expected_cost: dict[str, Any] | None = None
     observed_cost: dict[str, Any] | None = None
 
@@ -146,7 +159,9 @@ async def reserve_launch(payload: LaunchRequest) -> LaunchResponse:
             status_code=422,
             detail="GCP BackendPlan must carry an authenticated effect reservation cost boundary",
         )
-    instance_name = f"feedbax-worker-{uuid.uuid4().hex[:12]}"
+    instance_name = (
+        "feedbax-worker-" + hashlib.sha256(plan.external_effect_key.encode()).hexdigest()[:12]
+    )
     parameters = {
         "project": payload.project,
         "zone": payload.zone,
@@ -234,6 +249,37 @@ async def authenticate_launch(
     )
 
 
+@router.post(
+    "/intents/{intent_id}/reservations/{reservation_id}/retry",
+    response_model=RetryLaunchResponse,
+)
+async def admit_retry(
+    intent_id: str,
+    reservation_id: str,
+    payload: RetryLaunchRequest,
+) -> RetryLaunchResponse:
+    """Admit one same-effect retry under the exact Invocation execution policy."""
+
+    try:
+        invocation = invocation_from_document(payload.invocation)
+        reservation = get_studio_controller(training_service).admit_retry(
+            intent_id,
+            invocation,
+            reservation_id,
+            ttl_seconds=payload.reservation_ttl_seconds,
+        )
+    except (ValueError, ControllerProtocolError, OperatorGateError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    assert reservation.expires_at is not None
+    return RetryLaunchResponse(
+        status="awaiting_authentication",
+        intent_id=intent_id,
+        reservation_id=reservation.reservation_id,
+        external_effect_key=reservation.external_effect_key,
+        expires_at=reservation.expires_at.isoformat(),
+    )
+
+
 @router.get("/status", response_model=StatusResponse)
 async def get_orchestration_status(
     intent_id: str | None = Query(default=None),
@@ -255,7 +301,7 @@ async def get_orchestration_status(
     status = projection.status
     if reservation is not None and reservation.status == "inert":
         status = "awaiting_authentication"
-    elif attempt is not None:
+    elif attempt is not None and status != "operator_action_required":
         status = attempt.status
     return StatusResponse(
         status=status,
@@ -269,11 +315,20 @@ async def get_orchestration_status(
         error=observation.get("error")
         if attempt is not None and attempt.status == "failed"
         else None,
-        orphaned_instance=(
-            attempt.provider_resource_handle
-            if attempt is not None and attempt.status == "unknown"
-            else None
-        ),
+        orphaned_resources=[
+            {
+                "backend_id": orphan.backend_id,
+                "provider_resource_handle": orphan.resource.provider_resource_handle,
+                "external_effect_key": orphan.resource.external_effect_key,
+                "status": orphan.status,
+                "handling_policy": (
+                    orphan.handling_policy.model_dump(mode="json")
+                    if orphan.handling_policy is not None
+                    else None
+                ),
+            }
+            for orphan in projection.orphans.values()
+        ],
         expected_cost=(
             reservation.reservation.expected_cost.model_dump(mode="json")
             if reservation is not None and reservation.reservation.expected_cost is not None

@@ -556,7 +556,18 @@ export interface OrchestrationStatusResponse {
   internal_ip: string | null;
   external_ip: string | null;
   error: string | null;
-  orphaned_instance: string | null;
+  orphaned_resources: Array<{
+    backend_id: string;
+    provider_resource_handle: string;
+    external_effect_key: string;
+    status: "detected" | "operator_action_required";
+    handling_policy: {
+      schema_id: "feedbax.orchestration.orphan_handling_policy";
+      schema_version: "feedbax.orchestration.orphan_handling_policy.v1";
+      policy_id: string;
+      action: "require-operator";
+    } | null;
+  }>;
   expected_cost: { currency: "USD"; maximum: number; basis: string } | null;
   observed_cost: { currency: "USD"; maximum: number; basis: string } | null;
 }

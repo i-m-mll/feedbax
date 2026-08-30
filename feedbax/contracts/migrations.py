@@ -428,12 +428,19 @@ from feedbax.orchestration.realization import (
 from feedbax.orchestration.controller import (
     CONTROLLER_EVENT_SCHEMA_ID,
     CONTROLLER_EVENT_SCHEMA_VERSION,
+    CONTROLLER_EVENT_SCHEMA_VERSION_V1,
     CONTROLLER_PROJECTION_SCHEMA_ID,
     CONTROLLER_PROJECTION_SCHEMA_VERSION,
+    CONTROLLER_PROJECTION_SCHEMA_VERSION_V1,
     EFFECT_RESERVATION_SCHEMA_ID,
     EFFECT_RESERVATION_SCHEMA_VERSION,
+    ORPHAN_HANDLING_POLICY_SCHEMA_ID,
+    ORPHAN_HANDLING_POLICY_SCHEMA_VERSION,
+    PROVIDER_INVENTORY_SCHEMA_ID,
+    PROVIDER_INVENTORY_SCHEMA_VERSION,
     RUN_INTENT_SCHEMA_ID,
     RUN_INTENT_SCHEMA_VERSION,
+    migrate_controller_event_v1_document,
 )
 from feedbax.orchestration.events import (
     RUN_EVENT_SCHEMA_ID,
@@ -4194,6 +4201,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.orchestration.controller.ControllerEventStore",),
             consumed_by=("durable controller projection", "Studio operations"),
             description="Append-only replay-safe controller lifecycle event.",
+            stance="migrate",
+            supported_old_versions=(CONTROLLER_EVENT_SCHEMA_VERSION_V1,),
             rejected_old_versions=(f"{CONTROLLER_EVENT_SCHEMA_ID}.v0",),
             required_tests=("tests/test_durable_controller.py",),
         ),
@@ -4205,7 +4214,33 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.orchestration.controller.project_controller_events",),
             consumed_by=("Studio status", "Studio artifact inspection"),
             description="Rebuildable query projection over controller events.",
-            rejected_old_versions=(f"{CONTROLLER_PROJECTION_SCHEMA_ID}.v0",),
+            rejected_old_versions=(
+                f"{CONTROLLER_PROJECTION_SCHEMA_ID}.v0",
+                CONTROLLER_PROJECTION_SCHEMA_VERSION_V1,
+            ),
+            notes="v1 lacks retry, inventory, and orphan projections and is rebuilt from events.",
+            required_tests=("tests/test_durable_controller.py",),
+        ),
+        _family(
+            "ProviderInventoryObservation",
+            PROVIDER_INVENTORY_SCHEMA_ID,
+            PROVIDER_INVENTORY_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.controller",
+            emitted_by=("feedbax.orchestration.controller.EffectAdapter",),
+            consumed_by=("durable controller reconciliation",),
+            description="Complete provider inventory input for effect and orphan reconciliation.",
+            rejected_old_versions=(f"{PROVIDER_INVENTORY_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_durable_controller.py",),
+        ),
+        _family(
+            "OrphanHandlingPolicy",
+            ORPHAN_HANDLING_POLICY_SCHEMA_ID,
+            ORPHAN_HANDLING_POLICY_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.controller",
+            emitted_by=("feedbax.orchestration.controller.DurableController",),
+            consumed_by=("durable controller orphan projector", "Studio status"),
+            description="Explicit replay-safe handling decision for unmatched provider resources.",
+            rejected_old_versions=(f"{ORPHAN_HANDLING_POLICY_SCHEMA_ID}.v0",),
             required_tests=("tests/test_durable_controller.py",),
         ),
         _family(
@@ -5756,6 +5791,16 @@ def _migrate_evaluation_output_preflight_evidence_v1(
 
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "ControllerEvent",
+    SchemaMigration(
+        source_version=CONTROLLER_EVENT_SCHEMA_VERSION_V1,
+        target_version=CONTROLLER_EVENT_SCHEMA_VERSION,
+        migration_id="controller-event-v1-to-v2-reconciliation-events",
+        migrate=migrate_controller_event_v1_document,
+        description="Preserve v1 lifecycle events in the v2 retry and inventory event family.",
+    ),
+)
 default_spec_registry.register_migration(
     "EvaluationBatchMergeCheckpoint",
     SchemaMigration(
