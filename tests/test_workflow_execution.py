@@ -68,7 +68,13 @@ from feedbax.workflow.plan import (
     WorkflowPlanIdentityError,
     workflow_plan_from_document,
 )
-from feedbax.analysis.reports import REPORT_RENDER_ROLE, ReportRecipeResult
+from feedbax.analysis.reports import (
+    ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_ID,
+    ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_VERSION,
+    ORDERED_FIGURE_REPORT_TYPE,
+    REPORT_RENDER_ROLE,
+    ReportRecipeResult,
+)
 from feedbax.contracts.experiment_compile_lock import (
     AnalysisInputBinding,
     AnalysisReceiptSetBinding,
@@ -79,6 +85,7 @@ from feedbax.contracts.experiment_compile_lock import (
     ReceiptLocatorReference,
     ReportParentBinding,
 )
+from feedbax.contracts.figures import FIGURE_SPEC_SCHEMA_ID
 from feedbax.contracts.manifest import (
     canonical_json_bytes,
     canonical_manifest_path,
@@ -542,6 +549,54 @@ def test_a_figure_binds_its_runtime_input_authority_by_role(
     # No contract, no authority: the input is bound as provenance and read from
     # no artifact, which is a statement an author is entitled to make.
     assert figure.runtime_input_authorities is None
+
+
+def test_an_ordered_report_binds_a_figure_under_its_authored_role(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    figure = outputs.plate("produced-figure")
+    outputs.emit(
+        "role-report",
+        {
+            "schema_id": "feedbax.spec.report",
+            "schema_version": "feedbax.spec.report.v1",
+            "report_type": ORDERED_FIGURE_REPORT_TYPE,
+            "params": {
+                "schema_id": ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_ID,
+                "schema_version": ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_VERSION,
+                "title": "Role projection",
+                "output_name": "role-projection.md",
+                "sections": [
+                    {
+                        "title": "Velocity",
+                        "figures": [
+                            {
+                                "input_role": "peak_velocity",
+                                "figure_spec_sha256": figure.content_hash,
+                                "caption": "Peak velocity",
+                            }
+                        ],
+                        "tables": [],
+                    }
+                ],
+            },
+        },
+        references=[
+            planned(
+                figure,
+                role_path="params.sections.0.figures.0",
+                consumer=ReportParentBinding(
+                    parent_kind=FIGURE_SPEC_SCHEMA_ID,
+                    parent_id="peak_velocity",
+                ),
+            )
+        ],
+    )
+
+    run = execute_workflow(_closure(outputs, "role-report"), environment=environment)
+
+    report = load_manifest(run.results[-1].receipt.path)
+    assert [parent.role for parent in report.provenance.parents] == ["peak_velocity"]
 
 
 def test_a_figure_authority_is_built_from_the_lock_contract_and_nothing_else(

@@ -4123,6 +4123,30 @@ def test_a_bound_role_carries_the_digest_of_the_figure_it_is_bound_to(
     assert entry["figure_spec_sha256"] == planned["compiled_content_hash"]
     assert entry["figure_spec_sha256"] == canonical_sha256(figure.document)
     assert entry["figure_spec_sha256"] != "a" * 64
+    assert planned["consumer"] == {
+        "consumer": "report_parent",
+        "parent_kind": "feedbax.spec.figure",
+        "parent_id": "span",
+    }
+
+
+def test_a_report_binding_refuses_a_target_without_an_authored_input_role(repo: Path) -> None:
+    from tests.fake_project_experiment import REPORT_BASE
+
+    document = json.loads((repo / REPORT_BASE).read_text())
+    document["params"]["sections"][0]["tables"] = [{"columns": ["arm"], "rows": [["near"]]}]
+    write_json(repo / REPORT_BASE, document)
+    _report_bindings(
+        repo,
+        [{**FIGURE_BINDING, "role_path": "params.sections.0.tables.0"}],
+    )
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        _compile_report(repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert excinfo.value.field == "report.bindings[0].role_path"
+    assert "no nonempty 'input_role'" in str(excinfo.value)
 
 
 def test_a_role_already_carrying_its_bound_digest_derives_no_patch(repo: Path) -> None:
