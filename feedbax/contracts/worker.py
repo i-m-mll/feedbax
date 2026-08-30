@@ -23,6 +23,12 @@ WORKER_CONTRACT_SCHEMA_VERSION = "feedbax.spec.worker.execution_program.v2"
 CONSISTENCY_PREDICATE_SCHEMA_ID = "feedbax.manifest.worker.consistency_predicate"
 CONSISTENCY_PREDICATE_SCHEMA_VERSION = "feedbax.manifest.worker.consistency_predicate.v2"
 FIXED_UPDATE_KERNEL_SIGNATURE = ("slots", "coordinate", "context")
+NATIVE_TRAINING_COLLECTION_OUTPUTS = (
+    "manifest.json",
+    "training-diagnostics.json",
+    "checkpoints",
+    "manifests",
+)
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:/@+-]*$")
 _GENERATOR_SOURCE = (

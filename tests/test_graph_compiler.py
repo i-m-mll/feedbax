@@ -6,7 +6,10 @@ import jax.numpy as jnp
 from pydantic import ValidationError
 
 from feedbax.compiler import (
+    COMPILATION_RECORD_SCHEMA_VERSION,
     CompilationRecord,
+    CompilerPhase,
+    GraphCompilationError,
     GraphDocument,
     ResolvedGraph,
     compile_graph,
@@ -91,6 +94,59 @@ def test_source_map_anchor_schema_rejects_pre_anchor_compiler_records() -> None:
         ResolvedGraph.model_validate(resolved_payload)
     with pytest.raises(ValidationError, match="migration_intentionally_absent=yes"):
         CompilationRecord.model_validate(record_payload)
+
+
+def test_compile_failure_is_a_stable_source_mapped_phase_diagnostic() -> None:
+    document = _document()
+    graph = document.graph.model_copy(
+        update={
+            "nodes": {
+                **document.graph.nodes,
+                "missing": ComponentSpec(
+                    type="tests.missing_component",
+                    input_ports=[],
+                    output_ports=["output"],
+                ),
+            }
+        }
+    )
+
+    with pytest.raises(GraphCompilationError) as caught:
+        compile_graph(
+            GraphDocument(graph=graph),
+            ComponentRegistry(load_user_components=False),
+        )
+
+    record = caught.value.record
+    diagnostic = record.diagnostics[0]
+    assert record.document_sha256 == diagnostic.source_anchor.semantic_document_sha256
+    assert diagnostic.code == "compiler.type_resolution.unresolved_component_type"
+    assert diagnostic.phase is CompilerPhase.TYPE_RESOLUTION
+    assert diagnostic.severity == "error"
+    assert diagnostic.source_anchor.authored_path == "/graph"
+    assert diagnostic.expected_condition
+    assert "tests.missing_component" in diagnostic.observed_condition
+    assert diagnostic.actionable_context["action"]
+    assert tuple(CompilerPhase) == (
+        CompilerPhase.STRUCTURAL_PARSING,
+        CompilerPhase.TYPE_RESOLUTION,
+        CompilerPhase.COMPOSITE_AND_ACAUSAL_LOWERING,
+        CompilerPhase.CONSTRAINT_SOLVING,
+        CompilerPhase.SEMANTIC_VALIDATION,
+        CompilerPhase.SCHEDULING,
+        CompilerPhase.RESOLVED_IR_EMISSION,
+    )
+
+
+def test_compilation_record_v2_rejects_after_diagnostics_schema_change() -> None:
+    compiled = compile_graph(_document(), ComponentRegistry(load_user_components=False))
+    payload = compiled.record.model_dump(mode="json")
+    payload["schema_version"] = "2"
+
+    assert COMPILATION_RECORD_SCHEMA_VERSION == "3"
+    assert compiled.record.diagnostics == ()
+    with pytest.raises(ValidationError, match="migration_intentionally_absent=yes"):
+        CompilationRecord.model_validate(payload)
 
 
 def test_compile_graph_migrates_an_explicit_older_graph_schema() -> None:

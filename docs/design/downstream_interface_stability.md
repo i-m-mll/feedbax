@@ -102,6 +102,27 @@ explicitly.
 | `analysis-authoring` | `feedbax.contracts.manifest`; `feedbax.analysis.specs`; `feedbax.analysis.bundles` | `AnalysisRunSpec`, `AnalysisRunManifest`, `analysis_run_manifest_id`; `execute_analysis_run_spec`; `AnalysisBundleSpec`, `AnalysisBundleDeltaSpec`, `authored_analysis_bundle_from_payload`, `resolve_analysis_bundle_authoring`, `execute_analysis_bundle`, `execute_staged_analysis_bundle`, `dry_run_staged_analysis_bundle`; CLI `feedbax-analysis run`, `feedbax-analysis bundle` | `feedbax.spec.analysis_run.v2` is current and `feedbax.spec.analysis_run.v1` migrates by making the historical implicit `recompute` evaluation-states policy explicit; v0 and unknown versions reject. `feedbax.spec.analysis_bundle.v6` is current and the registered chain migrates v2 through v5; older and unknown versions reject. `feedbax-analysis run` executes one serialized `AnalysisRunSpec` or `AnalysisRunDeltaSpec` with explicit run-alias catalogs and staged execution bindings, and `feedbax-analysis bundle` executes one file-authored bundle without a registered experiment package. A bundle must declare exactly one non-empty execution shape, `--exact-parents` documents must declare `schema_id` and `schema_version` explicitly, and staged bindings require an explicit execution descriptor. `execute_analysis_bundle` and `execute_staged_analysis_bundle` also accept an optional already-resolved `execution_context`, mutually exclusive with the raw descriptor and root bindings, and locate their own selected root refs beneath the manifest root they were selected from. | No external case |
 <!-- policy-guarantees:end -->
 
+## Proposed scientific compiler contract amendment
+
+This section describes candidate bytes only. It is not part of the owner-ratified
+guarantee block above and becomes stable downstream policy only through the parent-owned
+protected delivery and owner-ratification step.
+
+- Amend `graph-compiler` so `feedbax.compiler` additionally guarantees
+  `ExperimentDocument`, `CampaignDocument`, `DeclarationRef`, `ScientificSeedDomain`,
+  `ResolvedExperiment`, `CompilationFailureRecord`, `CompilerDiagnostic`, `CompilerPhase`,
+  `DiagnosticSeverity`, `GraphCompilationError`, and `resolve_experiment`. The candidate
+  schemas are `feedbax.experiment_document` v1, `feedbax.campaign_document` v1,
+  `feedbax.resolved_experiment` v1, `feedbax.graph_compilation_record` v3, and
+  `feedbax.graph_compilation_failure` v1. Earlier and unknown root or record versions
+  reject rather than being restamped.
+- Add `scientific-declarations` for `feedbax.declarations`, guaranteeing `Declaration`,
+  `DeclarationCatalog`, `DeclarationCompositionError`, `DeclarationDocument`, the public
+  facet types and constructors, `serialize_declaration`, and `load_declaration`.
+  `feedbax.declaration_document` v1 is the sole durable neutral declaration form;
+  serialization and loading require explicit protocol identity/registry authority, and
+  unsupported versions, duplicate JSON authorities, and unknown protocols reject.
+
 ## Owner-ratified envelope-layer prerequisite rows
 
 The rows `report-surface`, `evaluation-surface`, and `analysis-authoring` were

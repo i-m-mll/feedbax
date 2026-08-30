@@ -20,6 +20,10 @@ from feedbax.contracts.artifact_custody import (
     IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID,
     IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_VERSION,
     IMMUTABLE_ARTIFACT_BLOB_STORAGE_BACKEND,
+    ArtifactBlobContainmentError,
+    ArtifactBlobCustodyError,
+    ArtifactBlobIntegrityError,
+    ArtifactBlobReferenceError,
     ImmutableArtifactBlobProviderSpec,
 )
 from feedbax.contracts.manifest import ArtifactRef
@@ -66,22 +70,6 @@ def _canonicalize_trusted_system_aliases(path: Path) -> Path:
     if not stat.S_ISLNK(alias_stat.st_mode) or alias_target not in allowed_targets:
         return absolute_path
     return canonical_prefix.joinpath(*absolute_path.parts[2:])
-
-
-class ArtifactBlobCustodyError(ValueError):
-    """Base error for invalid immutable artifact custody operations."""
-
-
-class ArtifactBlobReferenceError(ArtifactBlobCustodyError):
-    """Raised when an artifact identifier or reference is invalid."""
-
-
-class ArtifactBlobIntegrityError(ArtifactBlobCustodyError):
-    """Raised when immutable artifact bytes fail identity validation."""
-
-
-class ArtifactBlobContainmentError(ArtifactBlobCustodyError):
-    """Raised when a custody path escapes or aliases the canonical store."""
 
 
 def _parse_artifact_id(artifact_id: object) -> str:

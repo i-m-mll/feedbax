@@ -6,7 +6,8 @@ import jax.random as jr
 import pytest
 
 from feedbax.component_registry import ComponentRegistry
-from feedbax.config.mapping import WhereDict
+from feedbax.compiler import GraphCompilationError
+from feedbax.runtime.mapping import WhereDict
 from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_ID,
     GRAPH_SPEC_SCHEMA_VERSION_V4,
@@ -410,8 +411,7 @@ def test_structural_component_rejects_unknown_parameter_schema_version() -> None
     )
     incompatible = spec.model_copy(update={"nodes": {"plant": node}})
 
-    with pytest.raises(
-        UnsupportedComponentMigration,
-        match="No component migration registered",
-    ):
+    with pytest.raises(GraphCompilationError, match="No component migration registered") as exc:
         spec_to_graph(incompatible, ComponentRegistry(load_user_components=False))
+
+    assert isinstance(exc.value.__cause__, UnsupportedComponentMigration)

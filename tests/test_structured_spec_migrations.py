@@ -1593,6 +1593,36 @@ def test_default_policy_matrix_covers_registered_emitted_families() -> None:
             assert policy.rejected_old_versions, family.kind
 
 
+def test_scientific_compiler_and_declaration_families_are_registered_and_fail_closed() -> None:
+    expected = {
+        "GraphDocument": ("feedbax.graph_document", "1"),
+        "ResolvedGraph": ("feedbax.resolved_graph", "2"),
+        "CompilationRecord": ("feedbax.graph_compilation_record", "3"),
+        "CompilationFailureRecord": ("feedbax.graph_compilation_failure", "1"),
+        "ExperimentDocument": ("feedbax.experiment_document", "1"),
+        "CampaignDocument": ("feedbax.campaign_document", "1"),
+        "ResolvedExperiment": ("feedbax.resolved_experiment", "1"),
+        "DeclarationDocument": ("feedbax.declaration_document", "1"),
+    }
+
+    for kind, (schema_id, version) in expected.items():
+        family = default_spec_registry.resolve(kind)
+        assert (family.identity, family.current_version) == (schema_id, version)
+        assert family.namespace == SchemaNamespaceKind.SCIENTIFIC_COMPILER
+        accepted = default_spec_registry.migrate(
+            kind,
+            {"schema_id": schema_id, "schema_version": version},
+        )
+        assert not accepted.migrated
+        rejected = family.policy.rejected_old_versions
+        assert rejected
+        with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
+            default_spec_registry.migrate(
+                kind,
+                {"schema_id": schema_id, "schema_version": rejected[0]},
+            )
+
+
 def test_checkpoint_fork_plan_schema_accepts_current_and_rejects_v0() -> None:
     family = default_spec_registry.resolve("CheckpointForkPlan")
     assert family.identity == CHECKPOINT_FORK_PLAN_SCHEMA_ID

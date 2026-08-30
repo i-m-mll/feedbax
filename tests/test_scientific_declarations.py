@@ -18,7 +18,9 @@ from feedbax.declarations import (
     RuntimeFacet,
     TrialSourceProtocol,
     facet,
+    load_declaration,
     scientific_declaration,
+    serialize_declaration,
 )
 from feedbax.training.environment import resolve_task_contracts
 
@@ -125,3 +127,39 @@ def test_operations_and_backends_resolve_against_their_own_protocols() -> None:
     assert ResolvedBackend(_declaration("backend", BackendProtocol), backend).backend is backend
     with pytest.raises(TypeError, match="kind='backend'"):
         ResolvedBackend(_declaration("operation", OperationProtocol), backend)
+
+
+def test_declaration_document_round_trip_preserves_neutral_authority() -> None:
+    declaration = _declaration("objective", ObjectiveProtocol)
+
+    raw = serialize_declaration(
+        declaration,
+        runtime_protocol_id="feedbax.objective_protocol.v1",
+    )
+    loaded = load_declaration(
+        raw,
+        runtime_protocols={"feedbax.objective_protocol.v1": ObjectiveProtocol},
+    )
+
+    assert loaded == declaration
+    assert serialize_declaration(
+        loaded,
+        runtime_protocol_id="feedbax.objective_protocol.v1",
+    ) == raw
+
+
+def test_declaration_document_rejects_unsupported_or_unstated_authority() -> None:
+    declaration = _declaration("objective", ObjectiveProtocol)
+    raw = serialize_declaration(
+        declaration,
+        runtime_protocol_id="feedbax.objective_protocol.v1",
+    )
+    unsupported = raw.replace(b'"schema_version":"1"', b'"schema_version":"0"')
+
+    with pytest.raises(DeclarationCompositionError, match="migration_intentionally_absent=yes"):
+        load_declaration(
+            unsupported,
+            runtime_protocols={"feedbax.objective_protocol.v1": ObjectiveProtocol},
+        )
+    with pytest.raises(DeclarationCompositionError, match="unknown runtime protocol"):
+        load_declaration(raw, runtime_protocols={})

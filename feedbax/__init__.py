@@ -28,7 +28,7 @@ _LAZY_EXPORTS = {
     "SimpleReaches": ("feedbax.tasks", "SimpleReaches"),
     "TaskTrialSpec": ("feedbax.tasks", "TaskTrialSpec"),
     "TrialTimeline": ("feedbax.tasks", "TrialTimeline"),
-    "WhereDict": ("feedbax.config.mapping", "WhereDict"),
+    "WhereDict": ("feedbax.runtime.mapping", "WhereDict"),
     "centreout_endpoints": ("feedbax.tasks", "centreout_endpoints"),
     "delayed_center_out_reaches_params": (
         "feedbax.tasks.presets",

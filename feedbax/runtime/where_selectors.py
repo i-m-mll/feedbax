@@ -1,4 +1,4 @@
-"""Selector and where-function conversion helpers."""
+"""Where-function conversion helpers for the scientific runtime."""
 
 from collections.abc import Callable, Iterable, Mapping, MutableSequence
 import functools

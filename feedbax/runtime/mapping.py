@@ -1,4 +1,4 @@
-"""Selector/config-facing custom mapping classes.
+"""Scientific-runtime selector mapping classes.
 
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
@@ -6,20 +6,17 @@
 
 from abc import abstractmethod
 from collections import OrderedDict
-from collections.abc import Callable, MutableMapping, Hashable
+from collections.abc import Callable, MutableMapping
 
 import dis
 import logging
 from typing import Any, Generic, TypeVar, overload
 
-import equinox as eqx
-# from equinox._pretty_print import tree_pp, bracketed
-import jax
 import jax.tree_util as jtu
 import jax.tree as jt
-from jaxtyping import Array, PyTree
+from jaxtyping import PyTree
 
-from feedbax.config.selectors import unzip2, where_func_to_attr_str_tree
+from feedbax.runtime.where_selectors import where_func_to_attr_str_tree
 
 
 logger = logging.getLogger(__name__)
@@ -243,4 +240,3 @@ class WhereDict(AbstractTransformedOrderedDict[str, Callable[[PyTree], Any], T])
     def __repr__(self) -> str:
         # now just forward to your own indent‐printer
         return self._repr_with_indent(0)
-

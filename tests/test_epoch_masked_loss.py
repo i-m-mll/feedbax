@@ -19,7 +19,7 @@ import equinox as eqx
 import jax.numpy as jnp
 import pytest
 
-from feedbax.config.mapping import WhereDict
+from feedbax.runtime.mapping import WhereDict
 from feedbax.objectives.loss import (
     EpochMaskedLoss,
     OutputJerkLoss,

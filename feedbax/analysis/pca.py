@@ -13,7 +13,7 @@ import numpy as np
 
 from feedbax.analysis.analysis import AbstractAnalysis, NoPorts
 from feedbax.analysis.types import AnalysisInputData
-from feedbax.config.selectors import attr_str_tree_to_where_func
+from feedbax.runtime.where_selectors import attr_str_tree_to_where_func
 from feedbax.config.tree import rearrange_ldict_levels
 
 

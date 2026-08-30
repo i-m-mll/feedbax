@@ -6,7 +6,7 @@ import pytest
 
 import feedbax
 import feedbax.tasks as task_api
-from feedbax.config.mapping import WhereDict
+from feedbax.runtime.mapping import WhereDict
 
 
 def test_generic_tree_and_io_helpers_are_not_package_root_exports() -> None:

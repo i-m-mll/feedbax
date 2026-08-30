@@ -14,14 +14,32 @@ from feedbax.contracts.execution_context import (
     NativeTrainingDiagnosticsInput,
     ScheduleContextDiagnostic,
 )
+from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError, ArtifactBlobProvider
 from feedbax.contracts.manifest import StrictModel, TrainingRunManifest
 from feedbax.contracts.metric_values import NumericBooleanJsonValue
 from feedbax.contracts.training import TrainingRunSpec
-from feedbax.contracts.worker import AxisCoordinateSpec, ProgressCoordinate
-from feedbax.persistence.artifact_custody import (
-    ArtifactBlobCustodyError,
-    ImmutableArtifactBlobProvider,
-)
+from feedbax.contracts.worker import ProgressCoordinate
+
+
+__all__ = [
+    "METHOD_TRAINING_TRACE_ARTIFACT_ROLE",
+    "NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID",
+    "NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION",
+    "TRAINING_DIAGNOSTICS_SCHEMA_ID",
+    "TRAINING_DIAGNOSTICS_SCHEMA_VERSION",
+    "TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V1",
+    "TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2",
+    "TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3",
+    "TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4",
+    "CheckpointTransactionDiagnostic",
+    "MethodTrainingTrace",
+    "MethodTrainingTraceLoadError",
+    "MethodTrainingTraceRecord",
+    "NativeExecutionProducerContext",
+    "NativeTrainingDiagnosticsInput",
+    "TrainingDiagnostics",
+    "load_method_training_trace",
+]
 
 
 TRAINING_DIAGNOSTICS_SCHEMA_ID = "feedbax.manifest.training_diagnostics"
@@ -146,7 +164,7 @@ class TrainingDiagnostics(StrictModel):
 
 def load_method_training_trace(
     manifest: TrainingRunManifest,
-    provider: ImmutableArtifactBlobProvider,
+    provider: ArtifactBlobProvider,
 ) -> MethodTrainingTrace:
     """Load one method trace through manifest-declared immutable provider custody."""
 

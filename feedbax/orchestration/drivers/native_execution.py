@@ -10,15 +10,8 @@ from pathlib import Path
 
 from feedbax.orchestration.bundle import ResolvedAssemblyInput, RunBundle, RunRowSpec
 from feedbax.orchestration.native_execution import is_native_training_command
+from feedbax.contracts.worker import NATIVE_TRAINING_COLLECTION_OUTPUTS
 from feedbax.training.diagnostics import NativeExecutionProducerContext
-
-
-NATIVE_TRAINING_COLLECTION_OUTPUTS = (
-    "manifest.json",
-    "training-diagnostics.json",
-    "checkpoints",
-    "manifests",
-)
 
 
 class NativeExecutionContextError(ValueError):

@@ -66,6 +66,7 @@ from feedbax.contracts.checkpoints import (
     structural_abi_content_sha256,
     structural_abi_leaf_content_projection,
 )
+from feedbax.contracts.artifact_custody import ArtifactBlobProvider
 from feedbax.contracts.manifest import (
     ArtifactRef,
     ArtifactMigrationRecord,
@@ -85,7 +86,6 @@ from feedbax.contracts.run_matrix import (
     StoppedRowStatus,
     TaskIdentityGate,
 )
-from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.contracts.strict_json import DuplicateJsonKeyError, strict_json_loads
 from feedbax.contracts.training import (
     TRAINING_RUN_SPEC_SCHEMA_ID,
@@ -931,7 +931,7 @@ def produce_checkpoint_custody_archive(
     ref: ParentRef,
     *,
     allowed_root: str | Path,
-    artifact_provider: ImmutableArtifactBlobProvider,
+    artifact_provider: ArtifactBlobProvider,
 ) -> CheckpointCustodyArchiveResult:
     """Validate and store the canonical v1 archive for one published transaction."""
     resolved = resolve_checkpoint_custody_ref(ref, allowed_root=allowed_root)
@@ -1238,7 +1238,7 @@ def isolated_checkpoint_probe(
 
 
 def materialize_checkpoint_custody_archive(
-    artifact_provider: ImmutableArtifactBlobProvider,
+    artifact_provider: ArtifactBlobProvider,
     artifact_ref: ArtifactRef,
     destination: str | Path,
     *,

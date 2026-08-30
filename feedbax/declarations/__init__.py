@@ -1,6 +1,13 @@
 """Lean public declaration boundary for Feedbax and science packages."""
 
 from .core import Declaration, DeclarationCatalog, DeclarationCompositionError, Facet
+from .document import (
+    DECLARATION_DOCUMENT_SCHEMA_ID,
+    DECLARATION_DOCUMENT_SCHEMA_VERSION,
+    DeclarationDocument,
+    load_declaration,
+    serialize_declaration,
+)
 from .science import (
     AuthoringFacet,
     BackendProtocol,
@@ -26,9 +33,12 @@ __all__ = [
     "BackendFacet",
     "BackendProtocol",
     "CompilerFacet",
+    "DECLARATION_DOCUMENT_SCHEMA_ID",
+    "DECLARATION_DOCUMENT_SCHEMA_VERSION",
     "Declaration",
     "DeclarationCatalog",
     "DeclarationCompositionError",
+    "DeclarationDocument",
     "Facet",
     "ObjectiveProtocol",
     "OperationFacet",
@@ -42,5 +52,7 @@ __all__ = [
     "StudioFacet",
     "TrialSourceProtocol",
     "facet",
+    "load_declaration",
     "scientific_declaration",
+    "serialize_declaration",
 ]
