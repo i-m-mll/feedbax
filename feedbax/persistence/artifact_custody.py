@@ -6,6 +6,7 @@ import errno
 import hashlib
 import os
 import stat
+import sys
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -21,13 +22,7 @@ from feedbax.contracts.artifact_custody import (
     IMMUTABLE_ARTIFACT_BLOB_STORAGE_BACKEND,
     ImmutableArtifactBlobProviderSpec,
 )
-from feedbax.contracts.manifest import (
-    ArtifactRef,
-    ArtifactStoreIntegrityError,
-    ArtifactStoreSecurityError,
-    _canonicalize_trusted_system_aliases,
-    store_bytes_artifact,
-)
+from feedbax.contracts.manifest import ArtifactRef
 
 
 _ARTIFACT_ID_PREFIX = "artifact://sha256/"
@@ -48,6 +43,29 @@ _RESERVED_METADATA_KEYS = frozenset(
     }
 )
 _DirectoryRecord = tuple[Path, int, os.stat_result]
+
+
+def _canonicalize_trusted_system_aliases(path: Path) -> Path:
+    absolute_path = Path(os.path.abspath(path))
+    if sys.platform != "darwin" or len(absolute_path.parts) < 2:
+        return absolute_path
+    alias_name = absolute_path.parts[1]
+    expected = {
+        "tmp": (Path("/private/tmp"), {"private/tmp", "/private/tmp"}),
+        "var": (Path("/private/var"), {"private/var", "/private/var"}),
+    }.get(alias_name)
+    if expected is None:
+        return absolute_path
+    canonical_prefix, allowed_targets = expected
+    alias_path = Path(absolute_path.anchor) / alias_name
+    try:
+        alias_stat = alias_path.lstat()
+        alias_target = os.readlink(alias_path)
+    except OSError:
+        return absolute_path
+    if not stat.S_ISLNK(alias_stat.st_mode) or alias_target not in allowed_targets:
+        return absolute_path
+    return canonical_prefix.joinpath(*absolute_path.parts[2:])
 
 
 class ArtifactBlobCustodyError(ValueError):
@@ -341,6 +359,84 @@ def _remove_private_materialization_staging_name(
     os.close(directory_descriptor)
 
 
+def _stage_blob_bytes(data: bytes, destination: Path) -> os.stat_result:
+    records = _open_directory_chain(destination.parent, create=True)
+    parent_descriptor = records[-1][1]
+    temporary_name = f"payload-{uuid.uuid4().hex}"
+    staging_descriptor: int | None = None
+    temporary_descriptor: int | None = None
+    final_descriptor: int | None = None
+    try:
+        staging_descriptor = _open_materialization_staging_container(
+            parent_descriptor=parent_descriptor
+        )
+        temporary_descriptor = os.open(
+            temporary_name,
+            _file_flags(writable=True) | os.O_CREAT | os.O_EXCL,
+            0o600,
+            dir_fd=staging_descriptor,
+        )
+        _write_file_descriptor(temporary_descriptor, data)
+        os.fsync(temporary_descriptor)
+        if _read_file_descriptor(temporary_descriptor) != data:
+            raise ArtifactBlobIntegrityError(
+                f"staged blob bytes failed verification: {destination}"
+            )
+        try:
+            _link_materialized_file(
+                temporary_name,
+                destination.name,
+                temporary_parent_descriptor=staging_descriptor,
+                parent_descriptor=parent_descriptor,
+            )
+        except FileExistsError:
+            pass
+        _remove_private_materialization_staging_name(
+            directory_descriptor=staging_descriptor,
+            temporary_name=temporary_name,
+        )
+        staging_descriptor = None
+        final_descriptor = os.open(destination.name, _file_flags(), dir_fd=parent_descriptor)
+        before = os.fstat(final_descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise ArtifactBlobIntegrityError(
+                f"canonical blob is not an unaliased regular file: {destination}"
+            )
+        stored = _read_file_descriptor(final_descriptor)
+        after = os.fstat(final_descriptor)
+        if _file_state(before) != _file_state(after) or stored != data:
+            raise ArtifactBlobIntegrityError(
+                f"canonical blob bytes do not match content identity: {destination}"
+            )
+        path_stat = os.stat(destination.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if (path_stat.st_dev, path_stat.st_ino) != (after.st_dev, after.st_ino):
+            raise ArtifactBlobIntegrityError(
+                f"canonical blob identity changed during publication: {destination}"
+            )
+        _recheck_directory_chain(records)
+        return after
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise ArtifactBlobContainmentError(
+                f"canonical blob path traverses a symlink or non-directory: {destination}"
+            ) from exc
+        raise
+    finally:
+        if temporary_descriptor is not None:
+            os.close(temporary_descriptor)
+        if final_descriptor is not None:
+            os.close(final_descriptor)
+        if staging_descriptor is not None:
+            try:
+                _remove_private_materialization_staging_name(
+                    directory_descriptor=staging_descriptor,
+                    temporary_name=temporary_name,
+                )
+            except OSError:
+                os.close(staging_descriptor)
+        _close_directory_chain(records)
+
+
 @dataclass(frozen=True, slots=True)
 class ImmutableArtifactBlobProvider:
     """Explicit local provider for suffixless immutable artifact blobs."""
@@ -374,29 +470,17 @@ class ImmutableArtifactBlobProvider:
         digest = hashlib.sha256(data).hexdigest()
         artifact_id = f"{_ARTIFACT_ID_PREFIX}{digest}"
         self._validate_store_target(self._canonical_path(digest))
-        try:
-            written = store_bytes_artifact(
-                data,
-                root=self.root,
-                role=role,
-                logical_name=logical_name,
-                media_type=media_type,
-                suffix="",
-                metadata=artifact_metadata,
-            )
-        except ArtifactStoreIntegrityError as exc:
-            raise ArtifactBlobIntegrityError(str(exc)) from exc
-        except ArtifactStoreSecurityError as exc:
-            raise ArtifactBlobContainmentError(str(exc)) from exc
-        artifact = written.model_copy(
-            update={
-                "artifact_id": artifact_id,
-                "sha256": digest,
-                "size_bytes": len(data),
-                "storage_backend": _STORAGE_BACKEND,
-                "uri": artifact_id,
-                "metadata": artifact_metadata,
-            }
+        written = _stage_blob_bytes(data, self._canonical_path(digest))
+        artifact = ArtifactRef(
+            role=role,
+            logical_name=logical_name,
+            artifact_id=artifact_id,
+            sha256=digest,
+            size_bytes=written.st_size,
+            storage_backend=_STORAGE_BACKEND,
+            uri=artifact_id,
+            media_type=media_type,
+            metadata=artifact_metadata,
         )
         stored_data = self.get_bytes(artifact)
         if stored_data != data:

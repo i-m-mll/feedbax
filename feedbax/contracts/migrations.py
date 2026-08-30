@@ -22,9 +22,6 @@ from feedbax.contracts.checkpoints import (
     CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
     CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V2,
     CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V3,
-    LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID,
-    LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION,
-    LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION_V0,
     TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_ID,
     TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2,
@@ -1015,33 +1012,6 @@ def _payload_metadata_version(payload: Mapping[str, Any]) -> str | None:
         if isinstance(version, str) and version:
             return version
     return None
-
-
-def _migrate_legacy_checkpoint_leaf_manifest_v0_payload(
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Promote the initial legacy leaf manifest shape to the current envelope."""
-    migrated = dict(payload)
-    migrated["kind"] = "LegacyCheckpointLeafManifest"
-    migrated["schema_id"] = LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID
-    leaves = migrated.pop("leaves", None)
-    if isinstance(leaves, Mapping):
-        migrated.setdefault("model", list(leaves.get("model", ())))
-        migrated.setdefault("optimizer", list(leaves.get("optimizer", ())))
-    migrated.setdefault("model", [])
-    migrated.setdefault("optimizer", [])
-    provenance = migrated.get("provenance")
-    if not isinstance(provenance, Mapping):
-        provenance = {
-            "producing_commit": migrated.pop("producing_commit", "unknown"),
-            "spec_ref": migrated.pop("spec_ref", None),
-            "spec_hash": migrated.pop("spec_hash", None),
-            "dumped_at": migrated.pop("dumped_at", "1970-01-01T00:00:00+00:00"),
-            "dumper_version": migrated.pop("dumper_version", "legacy-v0"),
-            "metadata": {"migrated_from": LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION_V0},
-        }
-    migrated["provenance"] = dict(provenance)
-    return migrated
 
 
 def _migrate_checkpoint_transaction_manifest_v1_to_v2_payload(
@@ -4246,22 +4216,6 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             required_tests=("tests/test_run_conformance.py",),
         ),
         _family(
-            "LegacyCheckpointLeafManifest",
-            LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID,
-            LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.checkpoints",
-            emitted_by=("feedbax.training.legacy_checkpoint_adoption",),
-            consumed_by=("feedbax.training.legacy_checkpoint_adoption",),
-            description=(
-                "ABI manifest for pre-custody Equinox tree_serialise_leaves "
-                "checkpoint streams, dumped from the producing commit."
-            ),
-            stance="migrate",
-            supported_old_versions=(LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION_V0,),
-            rejected_old_versions=("feedbax.manifest.legacy_checkpoint_leaf_manifest.tampered",),
-            required_tests=("tests/test_legacy_checkpoint_adoption.py",),
-        ),
-        _family(
             "TrainingSpec",
             "feedbax.spec.training",
             "feedbax.spec.training.v1",
@@ -6259,16 +6213,6 @@ default_spec_registry.register_migration(
         migration_id="training-diagnostics-v3-to-v4-failure-kind",
         migrate=_migrate_training_diagnostics_v3_to_v4_payload,
         description="Add the typed NaN-guard failure kind for failed terminal diagnostics.",
-    ),
-)
-default_spec_registry.register_migration(
-    "LegacyCheckpointLeafManifest",
-    SchemaMigration(
-        source_version=LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION_V0,
-        target_version=LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION,
-        migration_id="legacy-checkpoint-leaf-manifest-v0-to-v1",
-        migrate=_migrate_legacy_checkpoint_leaf_manifest_v0_payload,
-        description="Promote initial legacy leaf manifests to the current ABI envelope.",
     ),
 )
 default_spec_registry.register_migration(

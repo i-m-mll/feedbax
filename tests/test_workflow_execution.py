@@ -143,7 +143,6 @@ def environment(tmp_path: Path, application_registry_bundle, calls: _Calls):
             role=REPORT_RENDER_ROLE,
             logical_name="bulletin.md",
             media_type="text/markdown",
-            suffix=".md",
         )
         return ReportRecipeResult(artifacts=[artifact], summary={"inputs": len(inputs)})
 

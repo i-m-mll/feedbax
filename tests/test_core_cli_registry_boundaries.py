@@ -33,11 +33,11 @@ class _StructuralTrainingRunSpec:
         return _StructuralTrainingRunSpec()
 
 
-def _bootstrap_state(training_methods: object | None = None) -> SimpleNamespace:
+def _bootstrap_state(training_programs: object | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         bundle=SimpleNamespace(
             conformance_checks=object(),
-            training_methods=training_methods or object(),
+            training_programs=training_programs or object(),
             drivers=object(),
         ),
         provenance=(),
@@ -80,41 +80,6 @@ def test_checkpoint_binding_loader_rejects_unknown_training_method(
         feedbax_cli._load_checkpoint_fork_plan_bindings(
             str(bindings_path),
             _UnknownMethodRegistry(),  # type: ignore[arg-type]
-        )
-
-
-def test_adopt_legacy_rejects_unknown_method_before_checkpoint_io(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _install_unknown_method_boundary(monkeypatch)
-
-    with pytest.raises(ValueError, match="unknown method_ref 'tests/unknown/v1'"):
-        feedbax_cli.main(
-            [
-                "adopt-legacy-checkpoint",
-                "adopt",
-                "--manifest",
-                "missing-manifest",
-                "--model-stream",
-                "missing-model",
-                "--current-slots",
-                "missing-slots",
-                "--run-spec",
-                "run-spec.json",
-                "--checkpoint-root",
-                "checkpoint-root",
-                "--barrier",
-                "barrier",
-                "--run-id",
-                "run",
-                "--phase",
-                "phase",
-                "--program-step",
-                "0",
-                "--completed-barrier",
-                "barrier",
-                "--fresh-optimizer",
-            ]
         )
 
 

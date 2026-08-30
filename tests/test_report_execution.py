@@ -106,7 +106,6 @@ def test_report_spec_executes_registered_recipe_and_writes_markdown_render(
             role=REPORT_RENDER_ROLE,
             logical_name="dummy-report.md",
             media_type="text/markdown",
-            suffix=".md",
             metadata={"report_type": report_spec.report_type},
         )
         return ReportRecipeResult(
@@ -498,7 +497,6 @@ def test_an_authored_report_executes_against_an_already_resolved_context(
             role=REPORT_RENDER_ROLE,
             logical_name="report.md",
             media_type="text/markdown",
-            suffix=".md",
         )
         return ReportRecipeResult(artifacts=[artifact], summary={"inputs": len(inputs)})
 

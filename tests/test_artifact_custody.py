@@ -13,13 +13,8 @@ from pathlib import Path
 
 import pytest
 
-import feedbax.contracts.manifest as manifest_module
 import feedbax.persistence.artifact_custody as custody_module
-from feedbax.contracts.manifest import (
-    ArtifactRef,
-    ArtifactStoreSecurityError,
-    store_bytes_artifact,
-)
+from feedbax.contracts.manifest import ArtifactRef, store_bytes_artifact
 from feedbax.persistence import (
     ArtifactBlobContainmentError,
     ArtifactBlobCustodyError,
@@ -49,18 +44,9 @@ def _artifact_path(root: Path, digest: str) -> Path:
 
 def test_store_uses_existing_suffixless_cas_and_round_trips_exact_binary_bytes(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data = b"\x00\xffbinary\x00payload\n"
     root = tmp_path / "custody"
-    calls: list[dict[str, object]] = []
-    original_store = custody_module.store_bytes_artifact
-
-    def recording_store(data: bytes, **kwargs: object) -> ArtifactRef:
-        calls.append(kwargs)
-        return original_store(data, **kwargs)
-
-    monkeypatch.setattr(custody_module, "store_bytes_artifact", recording_store)
     provider = ImmutableArtifactBlobProvider(root)
     artifact = provider.store_bytes(
         data,
@@ -71,16 +57,6 @@ def test_store_uses_existing_suffixless_cas_and_round_trips_exact_binary_bytes(
     digest = hashlib.sha256(data).hexdigest()
     canonical_path = _artifact_path(root, digest)
 
-    assert calls == [
-        {
-            "root": provider.root,
-            "role": "opaque_payload",
-            "logical_name": "payload.bin",
-            "media_type": "application/octet-stream",
-            "suffix": "",
-            "metadata": {"purpose": "round-trip"},
-        }
-    ]
     assert artifact.artifact_id == f"artifact://sha256/{digest}"
     assert artifact.uri == artifact.artifact_id
     assert artifact.sha256 == digest
@@ -506,7 +482,7 @@ def test_shared_writer_parent_swap_cannot_write_outside_custody(
     digest = hashlib.sha256(data).hexdigest()
     canonical_parent = root / "artifacts" / "sha256" / digest[:2]
     moved_parent = tmp_path / "pinned-original-parent"
-    original_link = manifest_module._link_artifact_file
+    original_link = custody_module._link_materialized_file
     swapped = False
 
     def swap_parent_then_link(
@@ -527,9 +503,9 @@ def test_shared_writer_parent_swap_cannot_write_outside_custody(
             parent_descriptor=parent_descriptor,
         )
 
-    monkeypatch.setattr(manifest_module, "_link_artifact_file", swap_parent_then_link)
+    monkeypatch.setattr(custody_module, "_link_materialized_file", swap_parent_then_link)
 
-    with pytest.raises(ArtifactStoreSecurityError, match="identity changed"):
+    with pytest.raises(ArtifactBlobContainmentError, match="identity changed"):
         store_bytes_artifact(
             data,
             root=root,
@@ -551,21 +527,21 @@ def test_shared_writer_never_cleanup_deletes_late_foreign_replacement(
     foreign = b"foreign-replacement-must-survive"
     digest = hashlib.sha256(data).hexdigest()
     canonical_path = _artifact_path(root, digest)
-    original_recheck = manifest_module._recheck_secure_directory_chain
+    original_recheck = custody_module._recheck_directory_chain
 
     def replace_after_verification(records: object) -> None:
         original_recheck(records)  # type: ignore[arg-type]
         canonical_path.unlink()
         canonical_path.write_bytes(foreign)
-        raise ArtifactStoreSecurityError("forced failure after foreign replacement")
+        raise ArtifactBlobContainmentError("forced failure after foreign replacement")
 
     monkeypatch.setattr(
-        manifest_module,
-        "_recheck_secure_directory_chain",
+        custody_module,
+        "_recheck_directory_chain",
         replace_after_verification,
     )
 
-    with pytest.raises(ArtifactStoreSecurityError, match="forced failure"):
+    with pytest.raises(ArtifactBlobContainmentError, match="forced failure"):
         store_bytes_artifact(data, root=root, role="payload", logical_name="blob")
 
     assert canonical_path.read_bytes() == foreign
@@ -582,17 +558,16 @@ def test_shared_writer_is_atomic_and_idempotent_under_concurrent_calls(tmp_path:
             root=root,
             role=f"payload-{index}",
             logical_name=f"blob-{index}",
-            suffix=".bin",
         )
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         refs = list(executor.map(store_once, range(16)))
 
     digest = hashlib.sha256(data).hexdigest()
-    canonical_path = _artifact_path(root, digest).with_name(f"{digest}.bin")
+    canonical_path = _artifact_path(root, digest)
     assert {ref.artifact_id for ref in refs} == {f"artifact://sha256/{digest}"}
     assert canonical_path.read_bytes() == data
-    assert list(canonical_path.parent.glob(f".{digest}.bin.*.tmp")) == []
+    assert list(canonical_path.parent.glob(".feedbax-materialization-staging/*")) == []
 
 
 def test_shared_writer_preserves_replaced_staging_container(
@@ -603,9 +578,9 @@ def test_shared_writer_preserves_replaced_staging_container(
     data = b"staging-container-race"
     digest = hashlib.sha256(data).hexdigest()
     canonical_parent = root / "artifacts" / "sha256" / digest[:2]
-    staging_path = canonical_parent / ".feedbax-artifact-staging"
-    moved_staging = tmp_path / "moved-artifact-staging"
-    original_link = manifest_module._link_artifact_file
+    staging_path = canonical_parent / ".feedbax-materialization-staging"
+    moved_staging = tmp_path / "moved-blob-staging"
+    original_link = custody_module._link_materialized_file
     foreign_identity: tuple[int, int] | None = None
 
     def replace_staging_then_link(
@@ -627,7 +602,7 @@ def test_shared_writer_preserves_replaced_staging_container(
             parent_descriptor=parent_descriptor,
         )
 
-    monkeypatch.setattr(manifest_module, "_link_artifact_file", replace_staging_then_link)
+    monkeypatch.setattr(custody_module, "_link_materialized_file", replace_staging_then_link)
 
     artifact = store_bytes_artifact(data, root=root, role="payload", logical_name="blob")
 
@@ -653,14 +628,13 @@ def test_shared_writer_suffix_works_through_trusted_darwin_var_alias(tmp_path: P
         root=alias_root,
         role="payload",
         logical_name="blob.bin",
-        suffix=".bin",
     )
 
     digest = hashlib.sha256(data).hexdigest()
     assert artifact.sha256 == digest
     assert Path(artifact.uri or "").read_bytes() == data
     assert (
-        alias_root.resolve() / "artifacts" / "sha256" / digest[:2] / f"{digest}.bin"
+        alias_root.resolve() / "artifacts" / "sha256" / digest[:2] / digest
     ).read_bytes() == data
 
 

@@ -237,7 +237,6 @@ def test_authenticated_v3_wrapper_rejects_evidence_mismatch(
         role=EVALUATION_STATES_ARTIFACT_ROLE,
         logical_name="typed.states.npz",
         media_type=EVALUATION_STATES_MEDIA_TYPE,
-        suffix=".npz",
         metadata={
             "schema_id": "feedbax.manifest.evaluation_states_container",
             "schema_version": EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3,

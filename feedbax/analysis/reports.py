@@ -948,7 +948,6 @@ def _bundle_summary_recipe(
         role=REPORT_RENDER_ROLE,
         logical_name=f"{bundle_name}-{stage_name}-{report_index}.md",
         media_type="text/markdown",
-        suffix=".md",
         metadata={"bundle": bundle_name, "stage": stage_name},
     )
     return ReportRecipeResult(
@@ -998,7 +997,6 @@ def _studio_report_recipe(
         role=REPORT_RENDER_ROLE,
         logical_name=f"{job_id}-report.md",
         media_type="text/markdown",
-        suffix=".md",
         metadata={"stage_id": stage_id, "job_id": job_id},
     )
     return ReportRecipeResult(
@@ -1051,7 +1049,6 @@ def _ordered_figure_report_recipe(
         role=REPORT_RENDER_ROLE,
         logical_name=params.output_name,
         media_type=media_type,
-        suffix=output_suffix,
         metadata={
             "report_type": ORDERED_FIGURE_REPORT_TYPE,
             "params_schema_id": params.schema_id,

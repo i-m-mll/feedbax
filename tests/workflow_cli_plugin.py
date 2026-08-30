@@ -46,7 +46,6 @@ def bulletin_recipe(report_spec, root, inputs):
         role=REPORT_RENDER_ROLE,
         logical_name="bulletin.md",
         media_type="text/markdown",
-        suffix=".md",
     )
     return ReportRecipeResult(artifacts=[artifact], summary={"inputs": len(inputs)})
 

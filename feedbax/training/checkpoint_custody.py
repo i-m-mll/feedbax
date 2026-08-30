@@ -124,10 +124,6 @@ _STRUCTURAL_ABI_DIFF_FIELDS = (
     "static_repr_sha256",
 )
 _JAX_ARRAY_LEAF_TYPE = "jax.Array"
-LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT = (
-    "feedbax.training.legacy_checkpoint_adoption.adopt_legacy_checkpoint"
-)
-LEGACY_CHECKPOINT_ADOPTION_DOCS = "docs/structure.md#legacy-checkpoint-adoption"
 _RUN_CONTRACT_BINDING_ALGORITHM_V2 = "feedbax.training_checkpoint.run_contract_binding.v2"
 _RUN_CONTRACT_BINDING_ALGORITHM_V3 = "feedbax.training_checkpoint.run_contract_binding.v3"
 _RUN_CONTRACT_BINDING_ALGORITHM_V4 = "feedbax.training_checkpoint.run_contract_binding.v4"
@@ -241,8 +237,7 @@ class _FrozenDict(dict[Any, Any]):
         copied: dict[Any, Any] = {}
         memo[id(self)] = copied
         copied.update(
-            (copy.deepcopy(key, memo), copy.deepcopy(value, memo))
-            for key, value in self.items()
+            (copy.deepcopy(key, memo), copy.deepcopy(value, memo)) for key, value in self.items()
         )
         return copied
 
@@ -484,9 +479,7 @@ class CheckpointForkTransformRegistry:
     """Exact runtime registry for durable checkpoint-fork transforms."""
 
     def __init__(self) -> None:
-        self._registrations: dict[
-            tuple[str, str], CheckpointForkTransformRegistration
-        ] = {}
+        self._registrations: dict[tuple[str, str], CheckpointForkTransformRegistration] = {}
 
     def register(self, registration: CheckpointForkTransformRegistration) -> None:
         if not registration.identity:
@@ -494,8 +487,7 @@ class CheckpointForkTransformRegistry:
         if not registration.version:
             raise ValueError("checkpoint fork transform version must not be empty")
         if len(registration.implementation_sha256) != 64 or any(
-            char not in "0123456789abcdef"
-            for char in registration.implementation_sha256
+            char not in "0123456789abcdef" for char in registration.implementation_sha256
         ):
             raise ValueError("checkpoint fork transform implementation_sha256 is invalid")
         if not callable(registration.transform):
@@ -504,8 +496,7 @@ class CheckpointForkTransformRegistry:
         if key in self._registrations:
             existing = self._registrations[key]
             raise ValueError(
-                f"checkpoint fork transform {key!r} already registered "
-                f"by {existing.owner!r}"
+                f"checkpoint fork transform {key!r} already registered by {existing.owner!r}"
             )
         self._registrations[key] = registration
 
@@ -611,22 +602,6 @@ class ConcatenatedCheckpointHistories:
     histories: Mapping[str, BatchHistory[Any]]
     transaction_ids: tuple[str, ...]
     completed_training_batches: int
-
-
-@dataclass(frozen=True)
-class DetectedLegacyCheckpointLayout:
-    """Recognized pre-custody checkpoint layout evidence."""
-
-    layout_id: str
-    name: str
-    evidence: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class _LegacyCheckpointLayout:
-    layout_id: str
-    name: str
-    detect: Callable[[Path], tuple[str, ...]]
 
 
 @dataclass(frozen=True)
@@ -1237,9 +1212,7 @@ def isolated_checkpoint_probe(
         )
     before = fingerprint_checkpoint_custody_inputs(source, digest_blobs=digest_blobs)
     parent = (
-        Path(output_parent).expanduser().resolve()
-        if output_parent is not None
-        else source.parent
+        Path(output_parent).expanduser().resolve() if output_parent is not None else source.parent
     )
     parent.mkdir(parents=True, exist_ok=True)
     output_root = Path(tempfile.mkdtemp(prefix=".rehearsal-probe-", dir=parent))
@@ -1257,9 +1230,7 @@ def isolated_checkpoint_probe(
         except CheckpointCustodyMutationError:
             if body_error is None:
                 raise
-            _LOGGER.error(
-                "checkpoint probe source %s was mutated during a failed probe", source
-            )
+            _LOGGER.error("checkpoint probe source %s was mutated during a failed probe", source)
         if cleanup_error is not None:
             if body_error is None:
                 raise cleanup_error
@@ -1324,18 +1295,12 @@ def materialize_checkpoint_custody_archive(
 
         staging_name = f".{target.name}.checkpoint-archive-{uuid.uuid4().hex}"
         os.mkdir(staging_name, mode=0o700, dir_fd=parent_descriptor)
-        staging_identity = os.stat(
-            staging_name, dir_fd=parent_descriptor, follow_symlinks=False
-        )
+        staging_identity = os.stat(staging_name, dir_fd=parent_descriptor, follow_symlinks=False)
         staging_descriptor = os.open(staging_name, directory_flags, dir_fd=parent_descriptor)
         opened_identity = os.fstat(staging_descriptor)
-        current_identity = os.stat(
-            staging_name, dir_fd=parent_descriptor, follow_symlinks=False
-        )
+        current_identity = os.stat(staging_name, dir_fd=parent_descriptor, follow_symlinks=False)
         if not stat.S_ISDIR(current_identity.st_mode) or not (
-            _identity(staging_identity)
-            == _identity(opened_identity)
-            == _identity(current_identity)
+            _identity(staging_identity) == _identity(opened_identity) == _identity(current_identity)
         ):
             raise CheckpointReferenceResolutionError(
                 "checkpoint archive private staging identity changed during creation"
@@ -1369,8 +1334,7 @@ def materialize_checkpoint_custody_archive(
         if (
             latest.transaction_id != expected_parent_ref.id
             or latest.manifest_relative_path != expected_parent_ref.uri
-            or latest.manifest_sha256
-            != expected_parent_ref.metadata.get("manifest_sha256")
+            or latest.manifest_sha256 != expected_parent_ref.metadata.get("manifest_sha256")
             or latest.transaction_root_sha256 != expected_transaction_root_sha256
         ):
             raise CheckpointReferenceResolutionError(
@@ -1467,7 +1431,14 @@ def _extract_checkpoint_custody_archive(
                     or member.type != tarfile.REGTYPE
                     or member.pax_headers
                     or getattr(member, "sparse", None)
-                    or (member.mode, member.uid, member.gid, member.mtime, member.uname, member.gname)
+                    or (
+                        member.mode,
+                        member.uid,
+                        member.gid,
+                        member.mtime,
+                        member.uname,
+                        member.gname,
+                    )
                     != (0o644, 0, 0, 0, "", "")
                     or name in names
                     or name.casefold() in folded_names
@@ -1475,9 +1446,11 @@ def _extract_checkpoint_custody_archive(
                     raise CheckpointReferenceResolutionError(
                         f"checkpoint archive member is unsafe or duplicated: {name!r}"
                     )
-                expected_offset = member.offset_data + (
-                    (member.size + tarfile.BLOCKSIZE - 1) // tarfile.BLOCKSIZE
-                ) * tarfile.BLOCKSIZE
+                expected_offset = (
+                    member.offset_data
+                    + ((member.size + tarfile.BLOCKSIZE - 1) // tarfile.BLOCKSIZE)
+                    * tarfile.BLOCKSIZE
+                )
                 framing.require_member(index, member)
                 names.add(name)
                 folded_names.add(name.casefold())
@@ -1713,9 +1686,7 @@ class _SingleGzipMemberStream:
             self._pending = self._compressed[self._input_offset : end]
             self._input_offset = end
         if not self._pending:
-            raise CheckpointReferenceResolutionError(
-                "checkpoint archive gzip member is incomplete"
-            )
+            raise CheckpointReferenceResolutionError("checkpoint archive gzip member is incomplete")
         try:
             output = self._decoder.decompress(self._pending, 1024 * 1024)
         except zlib.error as exc:
@@ -1782,9 +1753,7 @@ def _open_archive_member(
                 if next_descriptor is not None:
                     os.close(next_descriptor)
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-        descriptor: int | None = os.open(
-            parts[-1], flags, 0o600, dir_fd=directory_descriptor
-        )
+        descriptor: int | None = os.open(parts[-1], flags, 0o600, dir_fd=directory_descriptor)
         try:
             identity = _identity(os.fstat(descriptor))
             current = os.stat(parts[-1], dir_fd=directory_descriptor, follow_symlinks=False)
@@ -1825,9 +1794,7 @@ def _require_external_archive_mapping(
         child_identity is not None
         and (actual_child is None or _identity(actual_child) != _identity(child_identity))
     ):
-        raise CheckpointReferenceResolutionError(
-            "checkpoint archive destination mapping changed"
-        )
+        raise CheckpointReferenceResolutionError("checkpoint archive destination mapping changed")
 
 
 def _publish_directory_no_replace(
@@ -2073,8 +2040,7 @@ def _authenticate_checkpoint_custody_bytes(
     for slot in slots_by_name.values():
         if slot.media_type != "application/x-python-pickle":
             raise CheckpointReferenceResolutionError(
-                f"checkpoint slot {slot.slot!r} has unsupported media_type "
-                f"{slot.media_type!r}"
+                f"checkpoint slot {slot.slot!r} has unsupported media_type {slot.media_type!r}"
             )
         slot_parts = _checkpoint_custody_relative_parts(
             slot.relative_path,
@@ -2086,13 +2052,9 @@ def _authenticate_checkpoint_custody_bytes(
             context=f"checkpoint slot {slot.slot!r} blob",
         )
         if len(blob_bytes) != slot.size_bytes:
-            raise CheckpointReferenceResolutionError(
-                f"checkpoint slot {slot.slot!r} size mismatch"
-            )
+            raise CheckpointReferenceResolutionError(f"checkpoint slot {slot.slot!r} size mismatch")
         if sha256_bytes(blob_bytes) != slot.sha256:
-            raise CheckpointReferenceResolutionError(
-                f"checkpoint slot {slot.slot!r} hash mismatch"
-            )
+            raise CheckpointReferenceResolutionError(f"checkpoint slot {slot.slot!r} hash mismatch")
 
     return AuthenticatedCheckpointTransaction(
         parent_ref=_immutable_model_snapshot(ref),
@@ -2100,8 +2062,7 @@ def _authenticate_checkpoint_custody_bytes(
         manifest=_immutable_model_snapshot(manifest),
         slot_names=tuple(slots_by_name),
         migration_records=tuple(
-            _immutable_model_snapshot(record)
-            for record in loaded_manifest.migration_records
+            _immutable_model_snapshot(record) for record in loaded_manifest.migration_records
         ),
     )
 
@@ -2132,15 +2093,11 @@ def _checkpoint_custody_relative_parts(
     context: str,
 ) -> tuple[str, ...]:
     if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
-        raise CheckpointReferenceResolutionError(
-            f"{context} is not a safe POSIX relative path"
-        )
+        raise CheckpointReferenceResolutionError(f"{context} is not a safe POSIX relative path")
     path = PurePosixPath(value)
     parts = tuple(value.split("/"))
     if path.is_absolute() or any(part in {"", ".", ".."} for part in parts):
-        raise CheckpointReferenceResolutionError(
-            f"{context} is not a canonical relative path"
-        )
+        raise CheckpointReferenceResolutionError(f"{context} is not a canonical relative path")
     return parts
 
 
@@ -2225,16 +2182,12 @@ def _read_checkpoint_custody_member(
         try:
             before = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
             if not stat.S_ISREG(before.st_mode):
-                raise CheckpointReferenceResolutionError(
-                    f"{context} is not a regular file"
-                )
+                raise CheckpointReferenceResolutionError(f"{context} is not a regular file")
             descriptor = os.open(name, flags, dir_fd=directory_descriptor)
         except CheckpointReferenceResolutionError:
             raise
         except OSError as exc:
-            raise CheckpointReferenceResolutionError(
-                f"{context} is unsafe or unavailable"
-            ) from exc
+            raise CheckpointReferenceResolutionError(f"{context} is unsafe or unavailable") from exc
         try:
             opened = os.fstat(descriptor)
             after_open = os.stat(
@@ -2351,8 +2304,7 @@ def _validate_checkpoint_transaction_integrity_records(
     integrity = manifest.content_integrity_digest
     if integrity.schema_id != _CONTENT_INTEGRITY_SCHEMA_ID:
         raise CheckpointReferenceResolutionError(
-            "checkpoint content integrity schema_id is unsupported: "
-            f"{integrity.schema_id!r}"
+            f"checkpoint content integrity schema_id is unsupported: {integrity.schema_id!r}"
         )
     if integrity.schema_version != _CONTENT_INTEGRITY_SCHEMA_VERSION:
         raise CheckpointReferenceResolutionError(
@@ -2700,9 +2652,7 @@ def _declared_batch_progress(
             for index in range(bindings[0].size)
         ]
         if any(value != values[0] for value in values[1:]):
-            raise CheckpointConsistencyError(
-                f"{path} mapped authorities diverged: {values!r}"
-            )
+            raise CheckpointConsistencyError(f"{path} mapped authorities diverged: {values!r}")
         return values[0]
     value = slots[authority.slot]
     for index, segment in enumerate(authority.field_path):
@@ -2850,8 +2800,11 @@ def _wrap_migrated_v5_batch_histories(
             )
         slot = declaration.get("slot")
         path = declaration.get("tree_path")
-        if not isinstance(slot, str) or not slot or not isinstance(path, str) or not path.startswith(
-            "/"
+        if (
+            not isinstance(slot, str)
+            or not slot
+            or not isinstance(path, str)
+            or not path.startswith("/")
         ):
             raise CheckpointCompatibilityError(
                 f"legacy v1 BatchHistory declaration is invalid; index={index}"
@@ -2880,8 +2833,7 @@ def _wrap_migrated_v5_batch_histories(
         missing = sorted(paths - found)
         if missing:
             raise CheckpointCompatibilityError(
-                "legacy BatchHistory migration path is missing; "
-                f"slot={slot!r} paths={missing!r}"
+                f"legacy BatchHistory migration path is missing; slot={slot!r} paths={missing!r}"
             )
         migrated[slot] = jt.unflatten(treedef, leaves)
     return migrated
@@ -3143,22 +3095,6 @@ def load_latest_checkpoint(
     )
 
 
-def detect_known_legacy_checkpoint_layout(
-    root: str | Path,
-) -> DetectedLegacyCheckpointLayout | None:
-    """Return a recognized pre-custody checkpoint layout for *root*, if any."""
-    root_path = Path(root)
-    for layout in _KNOWN_LEGACY_CHECKPOINT_LAYOUTS:
-        evidence = layout.detect(root_path)
-        if evidence:
-            return DetectedLegacyCheckpointLayout(
-                layout_id=layout.layout_id,
-                name=layout.name,
-                evidence=evidence,
-            )
-    return None
-
-
 def _load_checkpoint_from_pointer(
     root_path: Path,
     latest: CheckpointLatestPointer,
@@ -3315,16 +3251,20 @@ def checkpoint_fork_plan_sha256(plan: CheckpointForkPlan) -> str:
 def validate_checkpoint_fork_execution_dependencies(
     plan: CheckpointForkPlan,
     dependencies: Sequence[ExecutionDependency | ExecutionDependencyV6],
-    *, allow_task_identity: bool = False,
+    *,
+    allow_task_identity: bool = False,
 ) -> None:
     unsupported = [
         item.kind
         for item in dependencies
         if isinstance(item, (LineageGraftDependency, StoppedRowStatus))
-        or isinstance(item, TaskIdentityGate) and not allow_task_identity
+        or isinstance(item, TaskIdentityGate)
+        and not allow_task_identity
     ]
     if unsupported:
-        raise CheckpointCompatibilityError(f"unsupported checkpoint fork dependencies {unsupported!r}")
+        raise CheckpointCompatibilityError(
+            f"unsupported checkpoint fork dependencies {unsupported!r}"
+        )
     forks = [
         item
         for item in dependencies
@@ -3350,6 +3290,7 @@ def validate_checkpoint_fork_execution_dependencies(
         or source.source_row_id != fork.source_row_id
     ):
         raise CheckpointCompatibilityError("checkpoint fork source authority drifts")
+
     def placed(target: str | None, step: CheckpointForkTransformStep) -> list[dict[str, Any]]:
         return [
             {
@@ -3397,10 +3338,12 @@ def validate_checkpoint_fork_execution_dependencies(
 
 
 def checkpoint_fork_binding_content_sha256(values: Mapping[str, Any]) -> str:
-    return _canonical_hash({
-        slot: [item.model_dump(mode="json") for item in _leaf_content_digests(value)]
-        for slot, value in sorted(values.items())
-    })
+    return _canonical_hash(
+        {
+            slot: [item.model_dump(mode="json") for item in _leaf_content_digests(value)]
+            for slot, value in sorted(values.items())
+        }
+    )
 
 
 def derive_checkpoint_fork_compatibility_projection(
@@ -3527,7 +3470,9 @@ def rebuild_checkpoint_fork_derived_digests(
         )
         candidates[target.target_id] = candidate
         differences.extend(
-            _checkpoint_fork_compatibility_differences(target.target_id, target.compatibility, candidate)
+            _checkpoint_fork_compatibility_differences(
+                target.target_id, target.compatibility, candidate
+            )
         )
     return CheckpointForkDerivedDigestComparison(
         candidates=MappingProxyType(candidates),
@@ -3550,7 +3495,9 @@ def _replace_checkpoint_fork_compatibility_locks(
     """Accept replacement target rows only when authored plan fields are identical."""
     relocked = plan.model_copy(update={"targets": list(targets)})
     if _checkpoint_fork_authored_projection(relocked) != _checkpoint_fork_authored_projection(plan):
-        raise CheckpointCompatibilityError("checkpoint fork re-lock attempted an authored-field change")
+        raise CheckpointCompatibilityError(
+            "checkpoint fork re-lock attempted an authored-field change"
+        )
     return relocked
 
 
@@ -3573,7 +3520,9 @@ def relock_checkpoint_fork_derived_digests(
         )
     comparison = rebuild_checkpoint_fork_derived_digests(plan, bindings)
     if comparison.matches_stored_lock:
-        raise CheckpointCompatibilityError("checkpoint fork re-lock requires a derived-digest difference")
+        raise CheckpointCompatibilityError(
+            "checkpoint fork re-lock requires a derived-digest difference"
+        )
     relocked = _replace_checkpoint_fork_compatibility_locks(
         plan,
         [
@@ -3923,9 +3872,7 @@ def _fork_digest_migration_required_message(
         }
     )
     edge_text = "; ".join(f"{source} -> {target}" for source, target in edges)
-    targets = ", ".join(
-        repr(classification.target_id) for classification in classifications
-    )
+    targets = ", ".join(repr(classification.target_id) for classification in classifications)
     return (
         "checkpoint fork run-contract digest for targets "
         f"[{targets}] records an older algorithm version on a supported migration edge "
@@ -3956,9 +3903,7 @@ def _raise_for_fork_digest_classifications(
         )
     migratable = [item for item in classifications if item.is_migratable_algorithm_drift]
     if migratable:
-        raise CheckpointDigestMigrationRequired(
-            _fork_digest_migration_required_message(migratable)
-        )
+        raise CheckpointDigestMigrationRequired(_fork_digest_migration_required_message(migratable))
 
 
 @dataclass(frozen=True)
@@ -4607,9 +4552,7 @@ def fork_checkpoint_plan(
         kind="checkpoint root",
     )
     for prepared in prepared_targets:
-        transformed_source_slots = set(prepared.transformed_slots) - set(
-            prepared.target_only_slots
-        )
+        transformed_source_slots = set(prepared.transformed_slots) - set(prepared.target_only_slots)
         materializer: ResumeSlotTransform | None = None
         transform_metadata: dict[str, Any] | None = None
         if prepared.transformed_slots:
@@ -5066,7 +5009,9 @@ def fork_checkpoint_transaction(
             explicit=(
                 request.target_total
                 if request is not None and continuation_applied
-                else request.source_completed_batches if request is not None else None
+                else request.source_completed_batches
+                if request is not None
+                else None
             ),
             metadata=manifest_metadata,
             default=None if request is not None else source.manifest.completed_training_batches,
@@ -5162,7 +5107,9 @@ def fork_checkpoint_transaction(
             expected_phase_program=phase_program,
             expected_slots=validation_slots,
             expected_population_member_ids=expected_population_member_ids,
-            continuation_request=(request if request is not None and not continuation_applied else None),
+            continuation_request=(
+                request if request is not None and not continuation_applied else None
+            ),
             allow_new_lineage_override=False,
         )
         latest_path = target_root_path / LATEST_POINTER_NAME
@@ -6033,9 +5980,9 @@ def _validate_manifest_structural_abi(
             continue
         loaded_fingerprint = structural_abi_fingerprint(loaded_slots[slot.slot])
         loaded_fingerprints[slot.slot] = loaded_fingerprint
-        if _semantic_structural_abi_sha256(
-            loaded_fingerprint
-        ) != _semantic_structural_abi_sha256(slot.structural_abi_fingerprint):
+        if _semantic_structural_abi_sha256(loaded_fingerprint) != _semantic_structural_abi_sha256(
+            slot.structural_abi_fingerprint
+        ):
             diff_suffix = _format_structural_abi_diff(
                 slot.structural_abi_fingerprint,
                 loaded_fingerprint,
@@ -6071,12 +6018,9 @@ def _validate_contract_binding(
     if diffs:
         diff_text = "; ".join(_format_binding_diff(diff) for diff in diffs[:8])
         diff_suffix = f"; differing_fields={diff_text}"
-    elif (
-        manifest.run_contract_binding.algorithm_version == _RUN_CONTRACT_BINDING_ALGORITHM_V3
-        and (
-            manifest.run_contract_binding.canonical_projection is None
-            or manifest.run_contract_binding.canonical_projection_sha256 is None
-        )
+    elif manifest.run_contract_binding.algorithm_version == _RUN_CONTRACT_BINDING_ALGORITHM_V3 and (
+        manifest.run_contract_binding.canonical_projection is None
+        or manifest.run_contract_binding.canonical_projection_sha256 is None
     ):
         diff_suffix = (
             "; v3-to-v4 compatibility requires an authenticated stored canonical projection; "
@@ -6122,10 +6066,7 @@ def _contract_binding_matches(
         and expected.canonical_projection_sha256 is not None
     ):
         if recorded.algorithm_version == _RUN_CONTRACT_BINDING_ALGORITHM_V4:
-            return (
-                recorded.canonical_projection_sha256
-                == expected.canonical_projection_sha256
-            )
+            return recorded.canonical_projection_sha256 == expected.canonical_projection_sha256
         return _compatible_stored_canonical_projection(recorded, expected)
 
     if recorded.algorithm_version == _RUN_CONTRACT_BINDING_ALGORITHM_V3:
@@ -6475,7 +6416,6 @@ def _read_blob(slot: CheckpointSlotBlobRef, path: Path) -> bytes:
 def _load_latest_pointer(root: Path) -> CheckpointLatestPointer:
     path = root / LATEST_POINTER_NAME
     if not path.is_file():
-        _reject_legacy_checkpoint(root)
         raise CheckpointIntegrityError("checkpoint latest pointer is missing")
     try:
         return load_checkpoint_latest_pointer_file(path).document
@@ -6483,68 +6423,6 @@ def _load_latest_pointer(root: Path) -> CheckpointLatestPointer:
         # Keep the custody reader's established boundary contract while the
         # public loader retains its more specific typed diagnostic.
         raise CheckpointIntegrityError("checkpoint latest pointer is corrupt") from exc
-
-
-def _reject_legacy_checkpoint(root: Path) -> None:
-    layout = detect_known_legacy_checkpoint_layout(root)
-    if layout is not None:
-        raise CheckpointCompatibilityError(_legacy_checkpoint_adoption_message(layout))
-
-
-def _legacy_checkpoint_adoption_message(layout: DetectedLegacyCheckpointLayout) -> str:
-    evidence = ", ".join(layout.evidence[:3])
-    if len(layout.evidence) > 3:
-        evidence += f", ... ({len(layout.evidence)} evidence paths)"
-    return (
-        f"recognized legacy checkpoint layout {layout.name!r} ({layout.layout_id}); "
-        f"evidence: {evidence}. These checkpoints predate checkpoint custody and "
-        "cannot be loaded directly because they do not contain a schema identity, "
-        "slot manifest, or run-contract binding. Adopt them with "
-        f"`{LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT}`; required inputs include the "
-        "producing commit for the LeafManifest dump and path-mapping rules. See "
-        f"{LEGACY_CHECKPOINT_ADOPTION_DOCS}."
-    )
-
-
-def _detect_feedbax_supervised_legacy_layout(root: Path) -> tuple[str, ...]:
-    evidence: list[str] = []
-    if (root / "last_batch.txt").is_file():
-        evidence.append("last_batch.txt")
-    evidence.extend(sorted(path.name for path in root.glob("ckpt_*.eqx"))[:8])
-    return tuple(evidence)
-
-
-def _detect_rlrmp_eqx_stream_legacy_layout(root: Path) -> tuple[str, ...]:
-    try:
-        candidates = sorted(root.iterdir(), key=lambda path: path.name)
-    except OSError:
-        return ()
-
-    evidence: list[str] = []
-    for candidate in candidates:
-        if not candidate.is_dir():
-            continue
-        suffix = candidate.name.removeprefix("checkpoint_")
-        if suffix == candidate.name or not suffix.isdigit():
-            continue
-        required = ("model.eqx", "optimizer_state.eqx", "metadata.json")
-        if all((candidate / name).is_file() for name in required):
-            evidence.append(f"{candidate.name}/{{model.eqx,optimizer_state.eqx,metadata.json}}")
-    return tuple(evidence)
-
-
-_KNOWN_LEGACY_CHECKPOINT_LAYOUTS = (
-    _LegacyCheckpointLayout(
-        layout_id="feedbax_supervised_trainer_v0",
-        name="Feedbax supervised trainer legacy checkpoint",
-        detect=_detect_feedbax_supervised_legacy_layout,
-    ),
-    _LegacyCheckpointLayout(
-        layout_id="rlrmp_eqx_stream_v0",
-        name="RLRMP Equinox stream legacy checkpoint",
-        detect=_detect_rlrmp_eqx_stream_legacy_layout,
-    ),
-)
 
 
 def _load_transaction_manifest(path: Path) -> CheckpointTransactionManifest:
