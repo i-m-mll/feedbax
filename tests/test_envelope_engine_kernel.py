@@ -64,6 +64,18 @@ from feedbax.contracts.run_composition import (
     InlineIntentParent,
     authored_envelope_hash,
 )
+from feedbax.contracts.training import (
+    LossTermSpec,
+    ObjectiveSlotSpec,
+    TaskSpec,
+    TrainingConfig,
+    TrainingRunSpec,
+    WorkerExecutionSpec,
+    standard_supervised_effective_phase_spec,
+    standard_supervised_method_contract,
+    standard_supervised_method_payload,
+    standard_supervised_method_ref,
+)
 from feedbax.envelope import (
     CANONICAL_PIN_ALGORITHM,
     ChokeFinding,
@@ -96,7 +108,6 @@ from tests.fake_project_experiment import (
     write_json,
     write_repo,
 )
-from tests.test_training_method_plugin_cli import _standard_run_spec_payload
 
 TRAINING_FAMILY = "training_run_matrix"
 TRAINING_SCHEMA_ID = "feedbax.spec.training_run_matrix"
@@ -116,6 +127,45 @@ def repo(tmp_path: Path) -> Path:
 def kernel() -> Any:
     """Return the one compiler bound to the fake project's data declaration."""
     return kernel_for(PROJECT_DECLARATION)
+
+
+def _standard_run_spec_payload() -> dict[str, object]:
+    spec = TrainingRunSpec(
+        graph={
+            "inline": {
+                "nodes": {
+                    "gain": {
+                        "type": "Gain",
+                        "params": {"gain": 1.0},
+                        "input_ports": ["input"],
+                        "output_ports": ["output"],
+                    }
+                },
+                "wires": [],
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+                "input_bindings": {"input": ("gain", "input")},
+                "output_bindings": {"output": ("gain", "output")},
+            }
+        },
+        task=TaskSpec(type="ToyTask", params={"n_steps": 1}),
+        training_config=TrainingConfig(n_batches=1, batch_size=1),
+        objective=ObjectiveSlotSpec(
+            loss=LossTermSpec(
+                type="target_state",
+                label="target",
+                selector="port:gain.output",
+                target_value=[0.0],
+            )
+        ),
+        method_ref=standard_supervised_method_ref(),
+        method_payload=standard_supervised_method_payload(),
+        worker_execution=WorkerExecutionSpec(
+            method_contract=standard_supervised_method_contract(),
+            effective_phase=standard_supervised_effective_phase_spec(),
+        ),
+    )
+    return spec.model_dump(mode="json", exclude_none=True)
 
 
 def _root_envelope(root: dict[str, Any]) -> dict[str, Any]:
