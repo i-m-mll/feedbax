@@ -2,13 +2,13 @@
   "schema": "feedbax.import_cycle_baseline.v1",
   "description": "Upper bound on package-level import-cycle edges. This set may shrink, never grow. Regenerate deliberately with: uv run --no-sync python scripts/import_cycle_baseline.py --write",
   "summary": {
-    "classified_import_edges": 1629,
-    "cross_package_import_edges": 854,
-    "packages": 28,
-    "package_edges": 139,
-    "packages_in_largest_cycle": 24,
-    "mutually_dependent_package_pairs": 17,
-    "cycle_package_edges": 117,
+    "classified_import_edges": 1673,
+    "cross_package_import_edges": 888,
+    "packages": 31,
+    "package_edges": 149,
+    "packages_in_largest_cycle": 26,
+    "mutually_dependent_package_pairs": 16,
+    "cycle_package_edges": 123,
     "largest_cycle_packages": [
       "acausal",
       "analysis",
@@ -18,6 +18,7 @@
       "config",
       "contracts",
       "control",
+      "declarations",
       "execution",
       "feedbax",
       "governance",
@@ -33,7 +34,8 @@
       "runtime",
       "studio",
       "tasks",
-      "training"
+      "training",
+      "workflow"
     ]
   },
   "cycle_edges": [
@@ -98,6 +100,10 @@
       "training"
     ],
     [
+      "analysis",
+      "workflow"
+    ],
+    [
       "bin",
       "analysis"
     ],
@@ -108,10 +114,6 @@
     [
       "bin",
       "contracts"
-    ],
-    [
-      "bin",
-      "execution"
     ],
     [
       "bin",
@@ -148,6 +150,10 @@
     [
       "component_registry",
       "control"
+    ],
+    [
+      "component_registry",
+      "declarations"
     ],
     [
       "component_registry",
@@ -230,12 +236,20 @@
       "runtime"
     ],
     [
+      "declarations",
+      "contracts"
+    ],
+    [
+      "declarations",
+      "training"
+    ],
+    [
       "execution",
       "contracts"
     ],
     [
       "execution",
-      "orchestration"
+      "workflow"
     ],
     [
       "feedbax",
@@ -287,6 +301,10 @@
     ],
     [
       "integrations",
+      "orchestration"
+    ],
+    [
+      "integrations",
       "runtime"
     ],
     [
@@ -299,10 +317,6 @@
     ],
     [
       "intervene",
-      "config"
-    ],
-    [
-      "intervene",
       "mechanics"
     ],
     [
@@ -328,10 +342,6 @@
     [
       "models",
       "runtime"
-    ],
-    [
-      "objectives",
-      "config"
     ],
     [
       "objectives",
@@ -344,6 +354,10 @@
     [
       "orchestration",
       "contracts"
+    ],
+    [
+      "orchestration",
+      "execution"
     ],
     [
       "orchestration",
@@ -370,6 +384,10 @@
       "plot"
     ],
     [
+      "persistence",
+      "runtime"
+    ],
+    [
       "plot",
       "config"
     ],
@@ -384,6 +402,10 @@
     [
       "plot",
       "objectives"
+    ],
+    [
+      "plot",
+      "runtime"
     ],
     [
       "plugins",
@@ -435,6 +457,10 @@
     ],
     [
       "studio",
+      "orchestration"
+    ],
+    [
+      "studio",
       "persistence"
     ],
     [
@@ -446,8 +472,8 @@
       "training"
     ],
     [
-      "tasks",
-      "config"
+      "studio",
+      "workflow"
     ],
     [
       "tasks",
@@ -487,10 +513,6 @@
     ],
     [
       "training",
-      "persistence"
-    ],
-    [
-      "training",
       "plugins"
     ],
     [
@@ -499,11 +521,15 @@
     ],
     [
       "training",
-      "studio"
+      "tasks"
     ],
     [
-      "training",
-      "tasks"
+      "workflow",
+      "analysis"
+    ],
+    [
+      "workflow",
+      "contracts"
     ]
   ]
 }

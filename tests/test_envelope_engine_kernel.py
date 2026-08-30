@@ -3847,12 +3847,18 @@ def test_the_compiled_report_is_the_document_workflow_plans_against(
     repo: Path,
 ) -> None:
     from feedbax.workflow.derivation import COMPILED_PRODUCT_KINDS
+    from feedbax.workflow.report import lower_report_operation
 
     outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-report"), repo_root=repo)
 
     kind = COMPILED_PRODUCT_KINDS[outcome.document["schema_id"]]
     assert kind.layer == "report"
-    assert kind.executable
+    operation = lower_report_operation(
+        compiled_schema_id=kind.schema_id,
+        semantic_hash="a" * 64,
+        input_types={},
+    )
+    assert operation.type_id == "feedbax.operation.report"
 
 
 def test_a_row_slice_is_expressed_as_a_tag_over_the_same_row_index(repo: Path) -> None:

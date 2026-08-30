@@ -8,6 +8,7 @@ from typing import Any, Callable, Literal, Mapping, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from feedbax.component_registry import required_interior_domain
 from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.graph import GraphSpec, SemanticAnchor
 from feedbax.contracts.scientific_compiler_schema import (
@@ -388,6 +389,8 @@ def _require_component_types(graph: GraphSpec, component_registry: Any) -> None:
     should_resolve = getattr(component_registry, "should_resolve_component_spec", None)
     getter = getattr(component_registry, "get", None)
     for node_id, node in graph.nodes.items():
+        if required_interior_domain(node.type, component_registry) is not None:
+            continue
         if callable(resolver) and callable(should_resolve) and should_resolve(
             node.type,
             param_schema_version=node.param_schema_version,
