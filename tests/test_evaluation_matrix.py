@@ -918,7 +918,7 @@ def _run_staged_matrix(
     return result, observed
 
 
-def test_matrix_resolves_shared_local_parents_before_distinct_row_roots(
+def test_matrix_resolves_shared_local_parents_across_trial_bank_role_transition(
     tmp_path: Path,
     evaluation_registry,
 ) -> None:
@@ -937,6 +937,9 @@ def test_matrix_resolves_shared_local_parents_before_distinct_row_roots(
     bank_path = write_manifest(bank, root=parent_root, index=False)
     bank_ref = authenticated_manifest_ref(bank, bank_path, "evaluation_run")
     explicit = _staged_matrix(training_ref, bank_ref)
+    explicit.staged_parents["paired_bank"] = StagedEvaluationPrerequisite(
+        parent=bank_ref.model_copy(update={"role": "paired_trial_bank"})
+    )
     base = explicit.base.model_dump(mode="json", exclude_none=True)
     (tmp_path / "staged-base.json").write_text(json.dumps(base), encoding="utf-8")
     matrix = EvaluationRunMatrixSpec.model_validate(
@@ -970,6 +973,9 @@ def test_matrix_resolves_shared_local_parents_before_distinct_row_roots(
     ]
     assert result.metadata["staged_parents"]["training"]["parent"] == (
         training_ref.model_dump(mode="json", exclude_none=True)
+    )
+    assert result.metadata["staged_parents"]["paired_bank"]["parent"]["role"] == (
+        "paired_trial_bank"
     )
     for row in result.rows:
         assert row.result.provenance.parents == [training_ref, bank_ref]
