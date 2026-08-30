@@ -1548,9 +1548,7 @@ def test_prior_and_authority_free_root_document_lock_bytes_match_signed_base(
         document["schema"] = schema
         write_envelope(path, document)
         outcome = kernel().compile_envelope_file(path, repo_root=repo)
-        assert outcome.compile_lock["schema_version"] == (
-            EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2
-        )
+        assert outcome.compile_lock["schema_version"] == (EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2)
         assert (
             canonical_sha256(
                 {"document": outcome.document, "lock": _lock_at_version_v1(outcome.compile_lock)}
@@ -3795,10 +3793,10 @@ def test_a_schemaless_report_parent_is_refused_rather_than_admitted(repo: Path) 
     assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
 
 
-def test_the_compiled_report_is_the_document_fulfillment_plans_against(
+def test_the_compiled_report_is_the_document_workflow_plans_against(
     repo: Path,
 ) -> None:
-    from feedbax.analysis.fulfillment_derivation import COMPILED_PRODUCT_KINDS
+    from feedbax.workflow.derivation import COMPILED_PRODUCT_KINDS
 
     outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-report"), repo_root=repo)
 

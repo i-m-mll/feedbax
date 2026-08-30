@@ -16,7 +16,7 @@ because Feedbax owns the one dialect and the one compiler for it. Everything
 ``quillon`` contributes to a compiled document, it contributes as *data inside*
 native Feedbax composition deltas: dotted paths, values, recipe ids, and
 input-role strings. What ``quillon`` does register through the ordinary plugin
-bootstrap is genuine science — its recipes, in :mod:`tests.fulfillment_cli_plugin`.
+bootstrap is genuine science — its recipes, in :mod:`tests.workflow_cli_plugin`.
 
 :data:`PROJECT_DECLARATION_DOCUMENT` is the single source of truth for the
 declaration. :data:`PROJECT_DECLARATION` is that same document parsed against
@@ -58,9 +58,9 @@ PROJECT_DECLARATION_DOCUMENT: dict[str, Any] = {
 }
 
 #: The declaration document's exact tracked bytes, as a project root holds them.
-PROJECT_DECLARATION_BYTES = (
-    json.dumps(PROJECT_DECLARATION_DOCUMENT, indent=2) + "\n"
-).encode("utf-8")
+PROJECT_DECLARATION_BYTES = (json.dumps(PROJECT_DECLARATION_DOCUMENT, indent=2) + "\n").encode(
+    "utf-8"
+)
 
 #: The budget document ``quillon`` authors, kept as package data so a kernel test
 #: can load budgets without first writing a repository.
@@ -207,10 +207,10 @@ TRAINING_ENVELOPE: dict[str, Any] = {
                     "manifest_id": "baseline-0",
                     "manifest_sha256": "1f0e3dad99908345f7439f8ffabdffc4e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
                     "size_bytes": 4096,
-                    "execution_uri": "file:///custody/quillon/baseline-0"
-                }
+                    "execution_uri": "file:///custody/quillon/baseline-0",
+                },
             }
-        ]
+        ],
     },
 }
 
@@ -281,9 +281,7 @@ FIGURE_COMPOSITION_ENVELOPE: dict[str, Any] = {
         "mode": "composition",
         "delta": {
             "layer_id": "widened-overlay",
-            "patches": [
-                {"path": "assembler_params.style", "op": "add", "value": "wide"}
-            ],
+            "patches": [{"path": "assembler_params.style", "op": "add", "value": "wide"}],
         },
     },
 }
@@ -308,9 +306,7 @@ REPORT_ENVELOPE: dict[str, Any] = {
         ],
         "delta": {
             "layer_id": "widened-report",
-            "patches": [
-                {"path": "params.title", "op": "replace", "value": "Quillon widened span"}
-            ],
+            "patches": [{"path": "params.title", "op": "replace", "value": "Quillon widened span"}],
         },
     },
 }

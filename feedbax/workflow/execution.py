@@ -1,6 +1,6 @@
-"""The fulfillment driver: one plan's closure, materialized once.
+"""The local workflow executor: one finite plan materialized once.
 
-A plan (:mod:`feedbax.analysis.fulfillment_plan`) says what must exist. This
+A plan (:mod:`feedbax.workflow.plan`) says what must exist. This
 module makes it exist: it proves the closure's external boundary before anything
 runs, lowers each plan node into the feedbax node request its compiled schema
 executes, and walks the closure in dependency order, reusing every node whose
@@ -15,8 +15,8 @@ Every reuse-or-execute decision is
 the uniform per-kind validator behind
 :func:`~feedbax.analysis.fulfillment_adapters.admit_node`, and rebuild and repair
 are :mod:`feedbax.analysis.fulfillment_custody`'s. Deriving the plan is
-:mod:`feedbax.analysis.fulfillment_derivation`'s and lowering one node is
-:mod:`feedbax.analysis.fulfillment_lowering`'s. This module reimplements none of
+:mod:`feedbax.workflow.derivation`'s and lowering one node is
+:mod:`feedbax.workflow.operation_execution`'s. This module reimplements none of
 them.
 
 What it owns is the *walk*: the order nodes are reached in, which admitted
@@ -25,15 +25,13 @@ no caller-supplied lowering, payload preparation, or omission applier: those
 existed only while the engine that produced these plans lived downstream, and
 every one of them is now Feedbax code reached directly.
 
-## The external boundary
+## External operations remain visible
 
-Some producers are receipts this runner may consume but never make — a compiled
-training run matrix is exactly that, launched through its own orchestration
-entrypoint. Derivation marks such a node by setting
-:attr:`~.fulfillment_plan.PlanNode.boundary`, and :func:`preflight` refuses the
-whole closure before any node of any branch executes, naming each boundary node,
-the consumers that name it with their role paths, and the subtree its receipt
-would unblock.
+Some operations require a later invocation layer this local executor does not
+own — a compiled training run matrix is exactly that. Derivation preserves it as
+a typed operation with an ``external`` effect, and :func:`preflight` refuses the
+whole closure before any node executes, naming each unrealized operation, its
+consumers, and the subtree its result would unblock.
 
 ## Omissions are honored only under a rule this build owns
 
@@ -126,7 +124,7 @@ from feedbax.analysis.fulfillment_custody import (
     rebuild_nodes,
     repair_node,
 )
-from feedbax.analysis.fulfillment_derivation import (
+from feedbax.workflow.derivation import (
     CompiledEnvelope,
     CompiledOutputIndex,
     ExternalReceiptRecord,
@@ -140,13 +138,13 @@ from feedbax.analysis.execution_context import (
     with_staged_repo_root,
     with_staged_resolved_parents,
 )
-from feedbax.analysis.fulfillment_lowering import lower_compiled_node
+from feedbax.workflow.operation_execution import lower_compiled_node
 from feedbax.analysis.manifest_inputs import (
     canonical_staged_manifest_locator,
     is_staged_manifest_kind,
 )
-from feedbax.analysis.fulfillment_plan import (
-    FulfillmentPlan,
+from feedbax.workflow.plan import (
+    WorkflowPlan,
     LogicalKey,
     PlanEdge,
     PlanNode,
@@ -167,29 +165,34 @@ from feedbax.contracts.manifest import (
 )
 
 
-class FulfillmentDriverError(RuntimeError):
+class WorkflowExecutionError(RuntimeError):
     """Base class for the structured refusals this driver raises."""
 
 
 @dataclass(frozen=True)
-class BoundaryNode:
-    """One boundary node the closure names, and what its absence blocks."""
+class UnrealizedOperation:
+    """One operation requiring the later invocation/realization boundary."""
 
     key: LogicalKey
     source_ref: str
-    boundary: str
+    operation_type: str
+    capabilities: tuple[str, ...]
     named_by: tuple[tuple[str, tuple[str, ...]], ...]
     unblocks: tuple[str, ...]
 
     def describe(self) -> str:
         naming = ", ".join(f"{consumer} via {list(role)}" for consumer, role in self.named_by)
-        return f"{self.key.text} ({self.source_ref}, boundary {self.boundary!r}) named by {naming}"
+        return (
+            f"{self.key.text} ({self.source_ref}, operation {self.operation_type!r}, "
+            f"capabilities {list(self.capabilities)}) named by {naming}"
+        )
 
     def record(self) -> dict[str, Any]:
         return {
             **self.key.record(),
             "source_ref": self.source_ref,
-            "boundary": self.boundary,
+            "operation_type": self.operation_type,
+            "capabilities": list(self.capabilities),
             "named_by": [
                 {"consumer": consumer, "role_path": list(role)} for consumer, role in self.named_by
             ],
@@ -197,35 +200,34 @@ class BoundaryNode:
         }
 
 
-class ExternalBoundaryError(FulfillmentDriverError):
-    """The closure needs a receipt this runner may consume but never produce.
+class ExternalOperationError(WorkflowExecutionError):
+    """A local executor reached an operation that requires realization.
 
     This is a repository-state failure rather than an authoring failure: no edit
     to a declaration produces the missing receipt. It is raised by
     :func:`preflight`, before any node of any branch of the closure executes.
     """
 
-    def __init__(self, target: LogicalKey, nodes: Sequence[BoundaryNode]) -> None:
+    def __init__(self, target: LogicalKey, nodes: Sequence[UnrealizedOperation]) -> None:
         self.target = target
         self.nodes = tuple(nodes)
         listing = "; ".join(node.describe() for node in self.nodes)
         super().__init__(
-            f"fulfilling {target.text} requires {len(self.nodes)} receipt(s) this runner cannot "
-            f"produce or resolve: {listing}. A boundary node is never executed by fulfillment: "
-            "produce it through its own entrypoint, then name the produced receipt in the "
-            "declaration that consumes it, so the reference is an authenticated receipt rather "
-            "than a pending one."
+            f"workflow {target.text} contains {len(self.nodes)} external operation(s) this "
+            f"local executor cannot realize: {listing}. The finite operation remains in the "
+            "workflow; submit it through the invocation boundary instead of replacing it with "
+            "a receipt-shaped semantic node."
         )
 
     def record(self) -> dict[str, Any]:
         """Return the structured refusal, deterministic in every field."""
         return {
             "target": self.target.text,
-            "boundary_nodes": [node.record() for node in self.nodes],
+            "operations": [node.record() for node in self.nodes],
         }
 
 
-class MissingExternalReceiptError(FulfillmentDriverError):
+class MissingExternalReceiptError(WorkflowExecutionError):
     """An input the plan carries as an already-produced receipt is in no authority.
 
     The plan states that some previous run produced this reference; none of the
@@ -269,7 +271,7 @@ class MissingExternalReceiptError(FulfillmentDriverError):
         )
 
 
-class AmbiguousExternalReceiptError(FulfillmentDriverError):
+class AmbiguousExternalReceiptError(WorkflowExecutionError):
     """One already-produced receipt is held by more than one declared authority.
 
     A reference names one artifact, so it must resolve to one authority. Two
@@ -321,11 +323,11 @@ class AmbiguousExternalReceiptError(FulfillmentDriverError):
         }
 
 
-class AmbiguousNodeReceiptError(FulfillmentDriverError):
+class AmbiguousNodeReceiptError(WorkflowExecutionError):
     """One closure node did not resolve to the single receipt its consumers bind."""
 
 
-class PlanDocumentDriftError(FulfillmentDriverError):
+class PlanDocumentDriftError(WorkflowExecutionError):
     """A node's declaration no longer hashes to what the plan pinned.
 
     Plan construction and lowering read the same declarations, so this can only
@@ -344,7 +346,7 @@ class PlanDocumentDriftError(FulfillmentDriverError):
         )
 
 
-class UnpinnedPlanNodeError(FulfillmentDriverError):
+class UnpinnedPlanNodeError(WorkflowExecutionError):
     """A plan node names a compiled document without pinning its content hash.
 
     The pin is what makes the drift check a check. A node carrying none does not
@@ -358,7 +360,7 @@ class UnpinnedPlanNodeError(FulfillmentDriverError):
         self.key = key
         self.source_ref = source_ref
         super().__init__(
-            f"the fulfillment plan carries node {key.text} ({source_ref}) with no "
+            f"the workflow plan carries node {key.text} ({source_ref}) with no "
             "content_hash, so the compiled document it executes cannot be proved to be the "
             "one the plan described. Re-derive the plan from the compiled outputs it is "
             "meant to describe; a missing pin is a refusal, never a skipped check."
@@ -369,34 +371,32 @@ class UnpinnedPlanNodeError(FulfillmentDriverError):
         return {**self.key.record(), "source_ref": self.source_ref}
 
 
-class PlanNodeDisagreementError(FulfillmentDriverError):
+class PlanNodeDisagreementError(WorkflowExecutionError):
     """A plan node states facts about itself that its compile lock does not.
 
     The content hash proves which *document* a node executes. It proves nothing
     about the rest of what the node says it is, and the rest is not decoration:
     the logical key is the address every receipt, edge, and dependency is
-    resolved through; the schema id is what the node is lowered by; the boundary
-    is what makes a node one this runner must never execute; the execution
-    identity is the compile's own statement of what it built.
+    resolved through; the typed operation determines what it does and whether
+    this executor may realize it; the execution identity is the compile's own
+    statement of what it built.
 
     Every one of those was copied out of a compile lock when the plan was
     derived, and a copy is authority only until somebody checks it. So they are
     checked here, on the same footing as the plan's edges, and against the same
     authority: the lock is the sole source of what a node is, and the plan is a
     derived record of it. A node that carries an intact document pin beside a
-    substituted key, kind, boundary, or execution identity is a plan describing
+    substituted key, operation, or execution identity is a plan describing
     a node the compile never emitted.
     """
 
-    def __init__(
-        self, key: LogicalKey, source_ref: str, differences: Sequence[str]
-    ) -> None:
+    def __init__(self, key: LogicalKey, source_ref: str, differences: Sequence[str]) -> None:
         self.key = key
         self.source_ref = source_ref
         self.differences = tuple(differences)
         listing = "; ".join(self.differences)
         super().__init__(
-            f"the fulfillment plan describes node {key.text} ({source_ref}) as something its "
+            f"the workflow plan describes node {key.text} ({source_ref}) as something its "
             f"compile lock does not determine: {listing}. The compile lock is the sole "
             "authority for what a node is; a plan is a derived record of it. Re-derive the "
             "plan from the compiled outputs it is meant to describe."
@@ -412,7 +412,7 @@ class PlanNodeDisagreementError(FulfillmentDriverError):
 
 
 @dataclass(frozen=True)
-class ClosureNode:
+class PreparedOperation:
     """One node of a preflighted closure, with the compiled output it executes.
 
     ``compiled`` is the lock/document pair the plan node was derived from, read
@@ -429,9 +429,9 @@ class ClosureNode:
         return self.key.layer
 
     @property
-    def kind(self) -> str:
+    def compiled_schema_id(self) -> str:
         """The compiled document's schema identity."""
-        return self.plan_node.kind
+        return str(self.plan_node.operation.parameters["compiled_schema_id"])
 
     @property
     def document(self) -> Mapping[str, Any]:
@@ -444,16 +444,16 @@ class ClosureNode:
 
 
 @dataclass(frozen=True)
-class FulfillmentClosure:
-    """A preflighted plan: boundary proved, applicability decided.
+class PreparedWorkflow:
+    """A preflighted plan: realizability proved, applicability decided.
 
     The closure holds no receipt and no manifest id. A dependent node's identity
     is mintable only once its parents' receipts bind, so ids are resolved while
     walking, not here.
     """
 
-    plan: FulfillmentPlan
-    nodes: tuple[ClosureNode, ...]
+    plan: WorkflowPlan
+    nodes: tuple[PreparedOperation, ...]
 
     @property
     def target(self) -> LogicalKey:
@@ -464,7 +464,7 @@ class FulfillmentClosure:
         """Return the one deterministic execution order this closure has."""
         return tuple(node.key.text for node in self.nodes)
 
-    def node(self, key: LogicalKey) -> ClosureNode:
+    def node(self, key: LogicalKey) -> PreparedOperation:
         for node in self.nodes:
             if node.key == key:
                 return node
@@ -491,7 +491,7 @@ class NodeBinding:
     catch it, because both sides would then be describing the replacement.
     """
 
-    closure: FulfillmentClosure
+    closure: PreparedWorkflow
     environment: FulfillmentEnvironment
     receipts: Mapping[LogicalKey, FulfillmentReceipt] = field(default_factory=dict)
     #: Per-edge external resolutions, memoized for this binding's lifetime. One
@@ -502,7 +502,7 @@ class NodeBinding:
     )
 
     @property
-    def plan(self) -> FulfillmentPlan:
+    def plan(self) -> WorkflowPlan:
         return self.closure.plan
 
     def required_edges(self, key: LogicalKey) -> tuple[PlanEdge, ...]:
@@ -582,9 +582,7 @@ class NodeBinding:
             )
         return self.resolved_external(edge).execution_location(role)
 
-    def authenticated_parent_location(
-        self, parent: ParentRef
-    ) -> StagedParentExecutionLocation:
+    def authenticated_parent_location(self, parent: ParentRef) -> StagedParentExecutionLocation:
         """Locate one already-authenticated parent that no plan edge bound.
 
         A row-expanded figure's per-row parents come from produced custody rather
@@ -598,9 +596,7 @@ class NodeBinding:
             raise MissingExternalReceiptError(
                 parent.kind,
                 parent.id,
-                canonical_manifest_path(
-                    parent.kind, parent.id, root=Path(self.environment.root)
-                ),
+                canonical_manifest_path(parent.kind, parent.id, root=Path(self.environment.root)),
             )
         digest, size_bytes = profile
         authorities = declared_manifest_authorities(
@@ -681,7 +677,7 @@ class NodeBinding:
         return f"{edge.consumer.text} input {list(edge.role_path)}"
 
 
-class ExternalReceiptAuthenticationError(FulfillmentDriverError):
+class ExternalReceiptAuthenticationError(WorkflowExecutionError):
     """The receipt at the canonical location is not the bytes the lock quoted.
 
     A lock that authenticated a receipt named the exact bytes it read. Kind, id,
@@ -1067,7 +1063,7 @@ def external_parent_ref(
     return resolved.parent_ref(role), resolved.path
 
 
-class UncertifiedApplicabilityError(FulfillmentDriverError):
+class UncertifiedApplicabilityError(WorkflowExecutionError):
     """The closure omits an input under a structural rule that does not certify it.
 
     A ``compiler_rule`` omission is honored on the strength of the rule it
@@ -1106,7 +1102,7 @@ class UncertifiedApplicabilityError(FulfillmentDriverError):
         }
 
 
-def require_certified_applicability(plan: FulfillmentPlan) -> None:
+def require_certified_applicability(plan: WorkflowPlan) -> None:
     """Refuse a plan that omits an input under a rule that does not decide it.
 
     The plan kernel deliberately does not know what a rule *name* means, so the
@@ -1142,32 +1138,33 @@ def require_certified_applicability(plan: FulfillmentPlan) -> None:
         raise UncertifiedApplicabilityError(plan.target, failures)
 
 
-def require_no_external_boundary(plan: FulfillmentPlan) -> None:
-    """Refuse a plan that needs a receipt only another entrypoint can produce."""
-    boundary_nodes = plan.boundary_nodes()
-    if not boundary_nodes:
+def require_operations_realizable(plan: WorkflowPlan) -> None:
+    """Refuse external operations at this local pre-invocation executor."""
+    external_nodes = tuple(node for node in plan.nodes if node.operation.effect == "external")
+    if not external_nodes:
         return
     consumers = plan.consumers()
-    boundary = [
-        BoundaryNode(
+    unrealized = [
+        UnrealizedOperation(
             key=node.key,
             source_ref=node.source_ref,
-            boundary=node.boundary or "",
+            operation_type=node.operation.type_id,
+            capabilities=node.operation.capabilities,
             named_by=tuple(
                 (edge.consumer.text, edge.role_path)
                 for edge in sorted(consumers.get(node.key, ()), key=lambda item: item.sort_key)
             ),
             unblocks=plan.descendants(node.key),
         )
-        for node in boundary_nodes
+        for node in external_nodes
     ]
-    raise ExternalBoundaryError(plan.target, boundary)
+    raise ExternalOperationError(plan.target, unrealized)
 
 
-class PlanLockDisagreementError(FulfillmentDriverError):
+class PlanLockDisagreementError(WorkflowExecutionError):
     """A plan's declared inputs are not the ones its compile lock determines.
 
-    A :class:`~feedbax.analysis.fulfillment_plan.FulfillmentPlan` is a durable
+    A :class:`~feedbax.workflow.plan.WorkflowPlan` is a durable
     document. It is derived from compile locks, but it travels apart from them
     and can be edited, regenerated against different locks, or hand-written. That
     makes every authenticating fact it carries a *copy*, and a copy is authority
@@ -1186,7 +1183,7 @@ class PlanLockDisagreementError(FulfillmentDriverError):
         self.differences = tuple(differences)
         listing = "; ".join(self.differences)
         super().__init__(
-            f"the fulfillment plan declares inputs for {key.text} that {source_ref}'s compile "
+            f"the workflow plan declares inputs for {key.text} that {source_ref}'s compile "
             f"lock does not determine: {listing}. The compile lock is the sole authority for "
             "what a node's inputs are and how they are authenticated; a plan is a derived "
             "record of it. Re-derive the plan from the compiled outputs it is meant to describe."
@@ -1214,9 +1211,7 @@ def _edge_facts(edge: PlanEdge) -> dict[str, Any]:
     }
 
 
-def _duplicate_role_differences(
-    edges: Sequence[PlanEdge], *, stated_by: str
-) -> list[str]:
+def _duplicate_role_differences(edges: Sequence[PlanEdge], *, stated_by: str) -> list[str]:
     """Return one difference per role path *edges* states more than once.
 
     Comparison keys an edge by its role path, so a duplicate would collapse into
@@ -1235,7 +1230,7 @@ def _duplicate_role_differences(
     ]
 
 
-def require_plan_matches_locks(plan: FulfillmentPlan, index: CompiledOutputIndex) -> None:
+def require_plan_matches_locks(plan: WorkflowPlan, index: CompiledOutputIndex) -> None:
     """Refuse a plan whose edges are not the edges its locks determine.
 
     Every node's inputs are re-derived from its own compile lock and compared,
@@ -1262,12 +1257,8 @@ def require_plan_matches_locks(plan: FulfillmentPlan, index: CompiledOutputIndex
             lock_edges, stated_by="the lock"
         ) + _duplicate_role_differences(plan_edges, stated_by="the plan")
         if duplicates:
-            raise PlanLockDisagreementError(
-                plan_node.key, plan_node.source_ref, duplicates
-            )
-        expected: dict[tuple[str, ...], PlanEdge] = {
-            edge.role_path: edge for edge in lock_edges
-        }
+            raise PlanLockDisagreementError(plan_node.key, plan_node.source_ref, duplicates)
+        expected: dict[tuple[str, ...], PlanEdge] = {edge.role_path: edge for edge in lock_edges}
         declared = {edge.role_path: edge for edge in plan_edges}
         differences: list[str] = []
         for role_path in sorted(set(expected) | set(declared)):
@@ -1294,19 +1285,17 @@ def require_plan_matches_locks(plan: FulfillmentPlan, index: CompiledOutputIndex
                         f"{lock_facts[name]!r} and the plan declares {plan_facts[name]!r}"
                     )
         if differences:
-            raise PlanLockDisagreementError(
-                plan_node.key, plan_node.source_ref, differences
-            )
+            raise PlanLockDisagreementError(plan_node.key, plan_node.source_ref, differences)
 
 
 def _node_facts_from_lock(compiled: CompiledEnvelope) -> dict[str, Any]:
     """Return the node facts one compiled output determines, for exact comparison."""
     return {
         "key": compiled.key.text,
-        "kind": compiled.schema_id,
+        "compiled_schema_id": compiled.schema_id,
+        "semantic_hash": compiled.content_hash,
         "content_hash": compiled.content_hash,
         "execution_identity": compiled.execution_identity,
-        "boundary": compiled.kind.boundary,
     }
 
 
@@ -1314,16 +1303,14 @@ def _node_facts_from_plan(plan_node: PlanNode) -> dict[str, Any]:
     """Return the same node facts as the plan document carries them."""
     return {
         "key": plan_node.key.text,
-        "kind": plan_node.kind,
+        "compiled_schema_id": plan_node.operation.parameters.get("compiled_schema_id"),
+        "semantic_hash": plan_node.operation.parameters.get("semantic_hash"),
         "content_hash": plan_node.content_hash,
         "execution_identity": plan_node.execution_identity,
-        "boundary": plan_node.boundary,
     }
 
 
-def require_plan_node_matches_lock(
-    plan_node: PlanNode, compiled: CompiledEnvelope
-) -> None:
+def require_plan_node_matches_lock(plan_node: PlanNode, compiled: CompiledEnvelope) -> None:
     """Refuse a plan node whose own facts are not the ones its lock determines.
 
     This is the node-side counterpart of
@@ -1336,8 +1323,7 @@ def require_plan_node_matches_lock(
     expected = _node_facts_from_lock(compiled)
     declared = _node_facts_from_plan(plan_node)
     differences = [
-        f"{name}: the lock determines {expected[name]!r} and the plan declares "
-        f"{declared[name]!r}"
+        f"{name}: the lock determines {expected[name]!r} and the plan declares {declared[name]!r}"
         for name in sorted(expected)
         if expected[name] != declared[name]
     ]
@@ -1345,22 +1331,22 @@ def require_plan_node_matches_lock(
         raise PlanNodeDisagreementError(plan_node.key, plan_node.source_ref, differences)
 
 
-def preflight(plan: FulfillmentPlan, index: CompiledOutputIndex) -> FulfillmentClosure:
-    """Bind one plan's closure to its compiled outputs and prove its boundary.
+def prepare_workflow(plan: WorkflowPlan, index: CompiledOutputIndex) -> PreparedWorkflow:
+    """Bind one plan's closure and prove every operation locally realizable.
 
-    Nothing executes here and nothing is written. The boundary is proved first,
-    because a closure that cannot run at all is not made runnable by anything a
-    later check finds.
+    Nothing executes here and nothing is written. Realizability is proved first,
+    because a workflow this executor cannot run is not made runnable by anything
+    a later check finds.
 
     Every node is re-read from *index* and re-hashed. Plan derivation and
-    fulfillment read the same compiled outputs, so a hash that no longer matches
+    execution reads the same compiled outputs, so a hash that no longer matches
     means the outputs moved between them, and the node is named rather than
     executed under a plan that described something else.
 
     The node hash proves the compiled *document* is the one the plan described.
     It says nothing about the rest of what the plan asserts. The node's own
     facts — its logical key, the schema id it is lowered by, its execution
-    identity, whether it is a boundary — are copied out of the compile lock at
+    identity and typed operation — are copied out of the compile lock at
     derivation, so they are reconciled back against it here. Its edges are
     derived from the lock rather than from the document, so they are reconciled
     separately: otherwise a plan could carry an intact document hash beside an
@@ -1370,21 +1356,22 @@ def preflight(plan: FulfillmentPlan, index: CompiledOutputIndex) -> FulfillmentC
     from it.
 
     Raises:
-        ExternalBoundaryError: The closure names a boundary node.
+        ExternalOperationError: The closure names an operation this executor
+            cannot realize.
         UncertifiedApplicabilityError: An omission quotes a structural rule this
             build does not own, so nothing certified it.
         PlanDocumentDriftError: A compiled document no longer hashes to its pin.
         UnpinnedPlanNodeError: A node carries no content hash, so the document it
             executes cannot be proved to be the one the plan described.
         PlanNodeDisagreementError: A node's own facts — its logical key, schema
-            id, execution identity, or boundary — are not the ones its compile
+            id, execution identity, or operation — are not the ones its compile
             lock determines.
         PlanLockDisagreementError: A node's declared inputs are not the ones its
             compile lock determines.
     """
-    require_no_external_boundary(plan)
+    require_operations_realizable(plan)
     require_certified_applicability(plan)
-    nodes: list[ClosureNode] = []
+    nodes: list[PreparedOperation] = []
     for order, plan_node in enumerate(plan.nodes):
         compiled = index.require(plan_node.source_ref)
         if plan_node.content_hash is None:
@@ -1398,16 +1385,16 @@ def preflight(plan: FulfillmentPlan, index: CompiledOutputIndex) -> FulfillmentC
             )
         require_plan_node_matches_lock(plan_node, compiled)
         nodes.append(
-            ClosureNode(
+            PreparedOperation(
                 key=plan_node.key, plan_node=plan_node, compiled=compiled, order=order
             )
         )
     require_plan_matches_locks(plan, index)
-    return FulfillmentClosure(plan=plan, nodes=tuple(nodes))
+    return PreparedWorkflow(plan=plan, nodes=tuple(nodes))
 
 
-def fulfill_closure(
-    closure: FulfillmentClosure,
+def execute_workflow(
+    closure: PreparedWorkflow,
     *,
     environment: FulfillmentEnvironment,
 ) -> FulfillmentRun:
@@ -1431,8 +1418,8 @@ def fulfill_closure(
     return FulfillmentRun(results=tuple(results))
 
 
-def closure_requests(
-    closure: FulfillmentClosure,
+def workflow_requests(
+    closure: PreparedWorkflow,
     *,
     environment: FulfillmentEnvironment,
     stop_at: LogicalKey | None = None,
@@ -1462,8 +1449,8 @@ def closure_requests(
     return tuple(requests)
 
 
-def rebuild_closure(
-    closure: FulfillmentClosure,
+def rebuild_workflow(
+    closure: PreparedWorkflow,
     *,
     environment: FulfillmentEnvironment,
 ) -> RebuildRun:
@@ -1478,12 +1465,12 @@ def rebuild_closure(
         FulfillmentDriftError: Any node rebuilt to a different output projection.
         FulfillmentAdmissionError: Any node's stored receipt fails admission.
     """
-    requests = closure_requests(closure, environment=environment)
+    requests = workflow_requests(closure, environment=environment)
     return rebuild_nodes(requests, environment=environment)
 
 
-def repair_closure_node(
-    closure: FulfillmentClosure,
+def repair_workflow_operation(
+    closure: PreparedWorkflow,
     node_key: LogicalKey,
     *,
     environment: FulfillmentEnvironment,
@@ -1496,11 +1483,11 @@ def repair_closure_node(
     ones. The repair itself — quarantine, shadow execution, complete
     revalidation, promotion, durable repair record — is feedbax's.
     """
-    requests = closure_requests(closure, environment=environment, stop_at=node_key)
+    requests = workflow_requests(closure, environment=environment, stop_at=node_key)
     return repair_node(requests[-1], environment=environment, metadata=dict(metadata or {}))
 
 
-def truncated_closure(closure: FulfillmentClosure, count: int) -> FulfillmentClosure:
+def truncated_workflow(closure: PreparedWorkflow, count: int) -> PreparedWorkflow:
     """Return the same closure holding only its first *count* nodes.
 
     A walk that stops early is the shape an interrupted run leaves behind, and
@@ -1511,9 +1498,9 @@ def truncated_closure(closure: FulfillmentClosure, count: int) -> FulfillmentClo
 
 
 def _lowered(
-    node: ClosureNode,
+    node: PreparedOperation,
     *,
-    closure: FulfillmentClosure,
+    closure: PreparedWorkflow,
     receipts: Mapping[LogicalKey, FulfillmentReceipt],
     environment: FulfillmentEnvironment,
 ) -> NodeRequest:
@@ -1543,7 +1530,7 @@ def _producer_receipt(result: NodeFulfillment) -> FulfillmentReceipt | None:
 
 
 def _admitted_receipt(
-    node: ClosureNode,
+    node: PreparedOperation,
     request: NodeRequest,
     *,
     environment: FulfillmentEnvironment,

@@ -1,6 +1,6 @@
 """Quillon's recipes, registered through the ordinary plugin bootstrap.
 
-``python -m feedbax fulfill-experiment-envelope`` composes the application before
+``python -m feedbax execute-experiment-workflow`` composes the application before
 it walks anything, so the recipes a compiled document names have to arrive the
 same way a real project's do: as a plugin the caller imports with ``--plugin``.
 """

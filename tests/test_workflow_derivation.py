@@ -9,8 +9,8 @@ are under test:
   its own meaning says it does, and a content pin lands nowhere;
 * **a node's layer is the compiled document's own identity**, never a label an
   envelope carried, and a schema this build does not plan against refuses;
-* **a compiled training run matrix is a boundary**, so a closure that still needs
-  training refuses before anything runs;
+* **campaign authoring lowers to a typed training operation**, represented in
+  the same finite graph as its downstream evaluation;
 * **every pin a reference carries is checked**, so a stale reference or a
   document edited after its compile refuses instead of binding the wrong bytes.
 """
@@ -22,20 +22,19 @@ from pathlib import Path
 
 import pytest
 
-from feedbax.analysis.fulfillment_derivation import (
+from feedbax.workflow.derivation import (
     COMPILED_PRODUCT_KINDS,
-    TRAINING_MATRIX_BOUNDARY,
     CompiledOutputError,
     DuplicateReferenceRoleError,
     UnresolvedPlannedProductError,
     UnsupportedCompiledProductError,
-    derive_fulfillment_plan,
+    derive_workflow_plan,
     read_compiled_outputs,
 )
-from feedbax.analysis.fulfillment_plan import (
-    FULFILLMENT_PLAN_SCHEMA_VERSION,
+from feedbax.workflow.plan import (
+    WORKFLOW_PLAN_SCHEMA_VERSION,
     LogicalKey,
-    fulfillment_plan_from_document,
+    workflow_plan_from_document,
 )
 from feedbax.contracts.experiment_compile_lock import (
     AnalysisInputBinding,
@@ -65,9 +64,7 @@ def outputs(tmp_path: Path) -> QuillonOutputs:
 
 
 def _plan(outputs: QuillonOutputs, target: str):
-    return derive_fulfillment_plan(
-        read_compiled_outputs(outputs.output_directory), target=target
-    )
+    return derive_workflow_plan(read_compiled_outputs(outputs.output_directory), target=target)
 
 
 # --------------------------------------------------------------------------
@@ -95,7 +92,7 @@ def test_a_planned_product_reference_is_one_edge_to_one_node(outputs: QuillonOut
         "report:baseline-bulletin",
     ]
     assert plan.target == LogicalKey("report", "baseline-bulletin")
-    assert [node.kind for node in plan.nodes] == [
+    assert [node.operation.parameters["compiled_schema_id"] for node in plan.nodes] == [
         EVALUATION_RUN_SPEC_SCHEMA_ID,
         REPORT_SPEC_SCHEMA_ID,
     ]
@@ -103,6 +100,8 @@ def test_a_planned_product_reference_is_one_edge_to_one_node(outputs: QuillonOut
     assert edge.consumer == LogicalKey("report", "baseline-bulletin")
     assert edge.producer == LogicalKey("evaluation", "baseline")
     assert edge.role_path == ("body", "of")
+    assert edge.input_type == EVALUATION_RUN_SPEC_SCHEMA_ID
+    assert edge.producer_output == "primary"
     assert (edge.status, edge.basis, edge.external, edge.rule) == (
         "required",
         "authored",
@@ -151,8 +150,8 @@ def test_a_derived_plan_round_trips_through_its_emitted_document(
     )
     plan = _plan(outputs, "round-trip-analysis")
     document = plan.document()
-    assert document["schema_version"] == FULFILLMENT_PLAN_SCHEMA_VERSION
-    assert fulfillment_plan_from_document(document).document() == document
+    assert document["schema_version"] == WORKFLOW_PLAN_SCHEMA_VERSION
+    assert workflow_plan_from_document(document).document() == document
 
 
 def test_an_unplannable_compiled_schema_refuses_with_the_supported_set(
@@ -281,11 +280,11 @@ def test_two_references_at_one_role_refuse(outputs: QuillonOutputs) -> None:
 
 
 # --------------------------------------------------------------------------
-# Training is a boundary, not a node this runner executes
+# Campaign authoring lowers to the same finite workflow
 # --------------------------------------------------------------------------
 
 
-def test_a_compiled_training_matrix_is_derived_as_a_boundary(
+def test_a_compiled_training_matrix_is_a_typed_campaign_operation(
     outputs: QuillonOutputs,
 ) -> None:
     cohort = outputs.cohort("sweep")
@@ -300,10 +299,12 @@ def test_a_compiled_training_matrix_is_derived_as_a_boundary(
         ],
     )
     plan = _plan(outputs, "sweep-probe")
-    (boundary,) = plan.boundary_nodes()
-    assert boundary.key == LogicalKey("training", "sweep")
-    assert boundary.boundary == TRAINING_MATRIX_BOUNDARY
-    assert plan.descendants(boundary.key) == ("evaluation:sweep-probe",)
+    campaign = plan.nodes[0]
+    assert campaign.key == LogicalKey("campaign", "sweep")
+    assert campaign.operation.type_id == "feedbax.operation.train"
+    assert campaign.operation.effect == "external"
+    assert campaign.operation.capabilities == ("training",)
+    assert plan.descendants(campaign.key) == ("evaluation:sweep-probe",)
 
 
 def test_a_checkpoint_initialization_binding_is_carried_as_an_ordinary_edge(

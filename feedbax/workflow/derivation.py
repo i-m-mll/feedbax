@@ -1,9 +1,9 @@
-"""Deriving a fulfillment plan from compiled experiment outputs.
+"""Deriving a finite workflow plan from compiled experiment outputs.
 
 One compile emits two files: the compiled document, and the
 :mod:`~feedbax.contracts.experiment_compile_lock` that pins what the compile read
 and decided. This module turns a directory of such pairs into a
-:class:`~feedbax.analysis.fulfillment_plan.FulfillmentPlan`, mechanically.
+:class:`~feedbax.workflow.plan.WorkflowPlan`, mechanically.
 
 ## Nothing is inferred, and nothing is asked
 
@@ -38,16 +38,12 @@ Both sides of that table are Feedbax-owned, so it is Feedbax code: a project
 names no layer here, and a ``schema_id`` the table does not enumerate refuses
 with the supported set named.
 
-## Training is a boundary
+## Campaign operations remain semantic
 
-A compiled training run matrix is never executed by artifact fulfillment. It is
-launched through its own orchestration entrypoint, and fulfillment consumes the
-receipts that launch produced. It is therefore derived as a *boundary* node
-(:data:`TRAINING_MATRIX_BOUNDARY`), which
-:func:`~feedbax.analysis.fulfillment_driver.preflight` refuses before any node of
-any branch runs. Once training has run, the consuming envelope quotes an
-authenticated receipt instead of a planned product, and the closure no longer
-names a boundary.
+A compiled training run matrix lowers to the same plan as every other scientific
+operation. Its static ``external`` effect says this local executor cannot realize
+it; the operation remains visible and typed so the later invocation layer can
+bind it without reconstructing architecture or substituting a receipt silently.
 """
 
 from __future__ import annotations
@@ -57,14 +53,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from feedbax.analysis.fulfillment_plan import (
+from feedbax.workflow.plan import (
     EdgeDeclaration,
-    FulfillmentPlan,
+    WorkflowPlan,
     LogicalKey,
     NodeDeclaration,
     PlanNode,
-    expand_fulfillment_plan,
+    expand_workflow_plan,
 )
+from feedbax.workflow.analysis import lower_analysis_operation
+from feedbax.workflow.campaign import lower_campaign_operation
+from feedbax.workflow.evaluation import lower_evaluation_operation
+from feedbax.workflow.fulfillment import lower_fulfillment_operation
+from feedbax.workflow.report import lower_report_operation
 from feedbax.contracts.analysis_bundle_composition import ANALYSIS_BUNDLE_SPEC_SCHEMA_ID
 from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.experiment_compile_lock import (
@@ -92,10 +93,6 @@ from feedbax.contracts.strict_json import strict_json_loads
 #: own naming, restated here so a reader can find locks without a compiler.
 COMPILE_LOCK_SUFFIX = ".compile-lock.json"
 
-#: The boundary name a compiled training run matrix is derived under. It is
-#: Feedbax's own spec identity, not a project's word for "training".
-TRAINING_MATRIX_BOUNDARY = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
-
 
 @dataclass(frozen=True)
 class CompiledProductKind:
@@ -104,20 +101,12 @@ class CompiledProductKind:
     Attributes:
         schema_id: The compiled document's durable schema identity.
         layer: The Feedbax artifact layer it belongs to. This is the ``layer``
-            half of every :class:`~feedbax.analysis.fulfillment_plan.LogicalKey`
+            half of every :class:`~feedbax.workflow.plan.LogicalKey`
             derived for it.
-        boundary: When set, the node is never executed by artifact fulfillment
-            and is derived as a boundary carrying this name.
     """
 
     schema_id: str
     layer: str
-    boundary: str | None = None
-
-    @property
-    def executable(self) -> bool:
-        """Whether artifact fulfillment may execute a node of this kind."""
-        return self.boundary is None
 
 
 #: Compiled ``schema_id`` to the layer it belongs to. Both sides are
@@ -126,9 +115,7 @@ class CompiledProductKind:
 COMPILED_PRODUCT_KINDS: Mapping[str, CompiledProductKind] = {
     kind.schema_id: kind
     for kind in (
-        CompiledProductKind(
-            TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID, "training", boundary=TRAINING_MATRIX_BOUNDARY
-        ),
+        CompiledProductKind(TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID, "campaign"),
         CompiledProductKind(EVALUATION_RUN_SPEC_SCHEMA_ID, "evaluation"),
         CompiledProductKind(EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID, "evaluation"),
         CompiledProductKind(ANALYSIS_RUN_SPEC_SCHEMA_ID, "analysis"),
@@ -140,14 +127,20 @@ COMPILED_PRODUCT_KINDS: Mapping[str, CompiledProductKind] = {
 }
 
 #: Every layer a compiled product can belong to, in the union's declared order.
-EXPERIMENT_LAYERS: tuple[str, ...] = ("training", "evaluation", "analysis", "figure", "report")
+EXPERIMENT_LAYERS: tuple[str, ...] = (
+    "campaign",
+    "evaluation",
+    "analysis",
+    "figure",
+    "report",
+)
 
 
-class FulfillmentDerivationError(RuntimeError):
+class WorkflowDerivationError(RuntimeError):
     """Base class for the structured refusals plan derivation raises."""
 
 
-class UnsupportedCompiledProductError(FulfillmentDerivationError):
+class UnsupportedCompiledProductError(WorkflowDerivationError):
     """A compiled document declares a schema this build cannot plan against."""
 
     def __init__(self, schema_id: Any, *, ref: str) -> None:
@@ -161,11 +154,11 @@ class UnsupportedCompiledProductError(FulfillmentDerivationError):
         )
 
 
-class CompiledOutputError(FulfillmentDerivationError):
+class CompiledOutputError(WorkflowDerivationError):
     """A compiled output is absent, unreadable, or disagrees with its lock."""
 
 
-class UnresolvedPlannedProductError(FulfillmentDerivationError):
+class UnresolvedPlannedProductError(WorkflowDerivationError):
     """A lock names an upstream product no compiled output in the directory holds."""
 
     def __init__(self, reference: PlannedProductReference, *, consumer_ref: str) -> None:
@@ -179,7 +172,7 @@ class UnresolvedPlannedProductError(FulfillmentDerivationError):
         )
 
 
-class DuplicateReferenceRoleError(FulfillmentDerivationError):
+class DuplicateReferenceRoleError(WorkflowDerivationError):
     """One lock states two references for the same role path."""
 
     def __init__(self, role_path: str, *, ref: str) -> None:
@@ -412,31 +405,38 @@ def _edge_declaration(reference: Any, *, consumer: CompiledEnvelope) -> EdgeDecl
     role_path = _role_path_parts(str(reference.role_path))
     if isinstance(reference, PlannedProductReference):
         return EdgeDeclaration(
-            role_path=role_path, status="required", basis="authored",
+            role_path=role_path,
+            status="required",
+            basis="authored",
+            input_type=reference.product_schema_id,
             producer_ref=reference.envelope_ref,
+            producer_output="primary",
         )
     if isinstance(reference, (ReceiptLocatorReference, AuthenticatedReceiptReference)):
         return EdgeDeclaration(
-            role_path=role_path, status="required", basis="authored",
+            role_path=role_path,
+            status="required",
+            basis="authored",
+            input_type=f"feedbax.manifest.{reference.manifest_kind}",
             external=_external_record(reference),
+            external_type=f"feedbax.manifest.{reference.manifest_kind}",
         )
     if isinstance(reference, NotApplicableReference):
         return EdgeDeclaration(
             role_path=role_path,
             status="not_applicable",
             basis=reference.basis,
+            input_type=f"feedbax.omission.{reference.role_path}",
             reason=reference.reason,
             rule=reference.rule_id,
         )
-    raise UnsupportedCompiledProductError(
-        type(reference).__name__, ref=str(consumer.lock_path)
-    )
+    raise UnsupportedCompiledProductError(type(reference).__name__, ref=str(consumer.lock_path))
 
 
 def lock_edge_declarations(compiled: CompiledEnvelope) -> tuple[EdgeDeclaration, ...]:
     """Return the edges one compile lock, by itself, determines for its node.
 
-    This is the same derivation :func:`derive_fulfillment_plan` performs, exposed
+    This is the same derivation :func:`derive_workflow_plan` performs, exposed
     so a *later* stage can re-derive it and compare. A plan is a durable document
     and travels apart from the locks it was derived from; re-deriving from the
     lock is the only way to prove that what a plan says a node's inputs are is
@@ -490,13 +490,13 @@ def _check_planned_product(
         )
 
 
-def derive_fulfillment_plan(
+def derive_workflow_plan(
     index: CompiledOutputIndex,
     *,
     target: str,
     origin: Mapping[str, Any] | None = None,
-) -> FulfillmentPlan:
-    """Derive one target's fulfillment plan from the compiled outputs it reaches.
+) -> WorkflowPlan:
+    """Derive one target's finite workflow from the compiled outputs it reaches.
 
     Every node is one compiled output, addressed by its layer and its compiled
     name. Every edge is one typed lock reference. Nothing else contributes: no
@@ -505,7 +505,7 @@ def derive_fulfillment_plan(
 
     Args:
         index: The compiled outputs the closure is drawn from.
-        target: The envelope path or compiled name of the artifact to fulfill.
+        target: The envelope path or compiled name of the workflow target.
         origin: Extra provenance to record on the plan, merged under the
             compiler identity this derivation always records.
     """
@@ -513,7 +513,6 @@ def derive_fulfillment_plan(
 
     def expand(source_ref: str) -> NodeDeclaration:
         compiled = index.require(source_ref)
-        kind = compiled.kind
         edges: list[EdgeDeclaration] = []
         for reference in compiled.plan_edge_references():
             if isinstance(reference, PlannedProductReference):
@@ -522,14 +521,25 @@ def derive_fulfillment_plan(
                     raise UnresolvedPlannedProductError(reference, consumer_ref=source_ref)
                 _check_planned_product(reference, consumer=compiled, upstream=upstream)
             edges.append(_edge_declaration(reference, consumer=compiled))
+        input_types = {".".join(edge.role_path): edge.input_type for edge in edges}
+        lower_operation = {
+            "campaign": lower_campaign_operation,
+            "evaluation": lower_evaluation_operation,
+            "analysis": lower_analysis_operation,
+            "figure": lower_fulfillment_operation,
+            "report": lower_report_operation,
+        }[compiled.kind.layer]
         return NodeDeclaration(
             node=PlanNode(
                 key=compiled.key,
                 source_ref=source_ref,
-                kind=compiled.schema_id,
+                operation=lower_operation(
+                    compiled_schema_id=compiled.schema_id,
+                    semantic_hash=compiled.content_hash,
+                    input_types=input_types,
+                ),
                 content_hash=compiled.content_hash,
                 execution_identity=compiled.execution_identity,
-                boundary=kind.boundary,
                 metadata={
                     "family": compiled.family,
                     "envelope_hash": compiled.envelope_hash,
@@ -539,7 +549,7 @@ def derive_fulfillment_plan(
             edges=tuple(edges),
         )
 
-    return expand_fulfillment_plan(
+    return expand_workflow_plan(
         root.envelope_ref,
         expand=expand,
         origin={
@@ -626,17 +636,16 @@ __all__ = [
     "COMPILED_PRODUCT_KINDS",
     "COMPILE_LOCK_SUFFIX",
     "EXPERIMENT_LAYERS",
-    "TRAINING_MATRIX_BOUNDARY",
     "CompiledEnvelope",
     "CompiledOutputError",
     "CompiledOutputIndex",
     "CompiledProductKind",
     "DuplicateReferenceRoleError",
     "ExternalReceiptRecord",
-    "FulfillmentDerivationError",
+    "WorkflowDerivationError",
     "UnresolvedPlannedProductError",
     "UnsupportedCompiledProductError",
-    "derive_fulfillment_plan",
+    "derive_workflow_plan",
     "lock_edge_declarations",
     "read_compiled_envelope",
     "read_compiled_outputs",
