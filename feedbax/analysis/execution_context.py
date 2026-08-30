@@ -164,6 +164,12 @@ class _EvaluationStatesAuthorityKey:
 
 
 @dataclass(frozen=True, slots=True)
+class _ResolvedEvaluationStates:
+    states: Any
+    manifest_input: ResolvedManifestInput
+
+
+@dataclass(frozen=True, slots=True)
 class _CheckpointLookupKey:
     parent: str
     root: str
@@ -562,6 +568,21 @@ class StagedExecutionContext:
         lookup. A validated staged prerequisite may restate authenticated material
         under the executable ``evaluation_run`` role.
         """
+        return self._resolve_evaluation_states(
+            parent,
+            structure=structure,
+            prerequisite_artifact_provider=prerequisite_artifact_provider,
+            validate_staged_prerequisite=validate_staged_prerequisite,
+        ).states
+
+    def _resolve_evaluation_states(
+        self,
+        parent: ParentRef,
+        *,
+        structure: jtu.PyTreeDef | None = None,
+        prerequisite_artifact_provider: str | None = None,
+        validate_staged_prerequisite: bool = False,
+    ) -> _ResolvedEvaluationStates:
         if parent.kind != "EvaluationRunManifest" or parent.role != "evaluation_run":
             raise StagedExecutionContextError(
                 "evaluation states require an EvaluationRunManifest evaluation_run parent"
@@ -625,7 +646,7 @@ class StagedExecutionContext:
                     key,
                     reconstructed=isinstance(cached.value, _ReconstructableEvaluationStates),
                 )
-                return states
+                return _ResolvedEvaluationStates(states, resolved)
             self._memo.invalidate_evaluation_states(key)
         if location.artifact_provider is None:
             location_index = self.parent_execution_locations.index(location)
@@ -650,7 +671,7 @@ class StagedExecutionContext:
                 )
                 memo_value = _evaluation_states_memo_value(states)
                 if memo_value is None:
-                    return states
+                    return _ResolvedEvaluationStates(states, resolved)
                 self._memo.evaluation_states[key] = _MemoEntry(memo_value, (snapshot,))
                 states = _materialize_evaluation_states(memo_value)
                 self._memo.remember_evaluation_states(
@@ -658,7 +679,7 @@ class StagedExecutionContext:
                     key,
                     reconstructed=isinstance(memo_value, _ReconstructableEvaluationStates),
                 )
-                return states
+                return _ResolvedEvaluationStates(states, resolved)
             finally:
                 _require_directory_identity(
                     location.root, expected_root_identity, kind="parent execution"
@@ -705,7 +726,7 @@ class StagedExecutionContext:
                     "provider-backed evaluation_states artifact identity changed during read"
                 )
             if memo_value is None:
-                return states
+                return _ResolvedEvaluationStates(states, resolved)
             self._memo.evaluation_states[key] = _MemoEntry(memo_value, (snapshot,))
             states = _materialize_evaluation_states(memo_value)
             self._memo.remember_evaluation_states(
@@ -713,7 +734,7 @@ class StagedExecutionContext:
                 key,
                 reconstructed=isinstance(memo_value, _ReconstructableEvaluationStates),
             )
-            return states
+            return _ResolvedEvaluationStates(states, resolved)
         finally:
             _require_directory_identity(
                 Path(provider.root),

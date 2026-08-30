@@ -7,7 +7,21 @@ from feedbax.analysis import (
     EvaluationChannelEvidenceError,
     resolve_authenticated_evaluation_channels,
 )
-from feedbax.contracts.manifest import ArtifactRef, ParentRef, StagedEvaluationPrerequisite
+from feedbax.analysis.execution_context import (
+    EMPTY_STAGED_EXECUTION_CONTEXT,
+    StagedParentExecutionLocation,
+    with_staged_parent_execution_locations,
+)
+from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
+from feedbax.contracts.evaluation_states import store_evaluation_states_artifact
+from feedbax.contracts.manifest import (
+    ArtifactRef,
+    EvaluationRunManifest,
+    ParentRef,
+    SpecPayload,
+    StagedEvaluationPrerequisite,
+    write_manifest,
+)
 
 
 class _Context:
@@ -22,10 +36,7 @@ class _Context:
             metadata={"channels": records},
         )
 
-    def parent_execution_location(self, _parent):
-        return SimpleNamespace(artifact_provider="provider")
-
-    def load_evaluation_states(
+    def _resolve_evaluation_states(
         self,
         _parent,
         *,
@@ -34,10 +45,10 @@ class _Context:
     ):
         assert prerequisite_artifact_provider == "provider"
         assert validate_staged_prerequisite is True
-        return self.states
-
-    def resolve_manifest_input(self, _parent):
-        return SimpleNamespace(manifest=self.manifest)
+        return SimpleNamespace(
+            states=self.states,
+            manifest_input=SimpleNamespace(manifest=self.manifest),
+        )
 
 
 def _prerequisite():
@@ -81,6 +92,56 @@ def test_resolve_authenticated_evaluation_channels_returns_immutable_evidence():
     assert resolved.states_sha256 == "b" * 64
     with pytest.raises(TypeError):
         resolved.evidence["other"] = resolved.evidence["noise"]
+
+
+def test_authenticated_channels_reuse_trial_bank_material_authority(tmp_path):
+    array = np.arange(6, dtype=np.float64).reshape(2, 3)
+    artifact = store_evaluation_states_artifact(
+        {"channels": {"noise": array}},
+        root=tmp_path,
+        manifest_id="feedbax-evaluation-run:trial-bank",
+    )
+    artifact = artifact.model_copy(update={"uri": artifact.metadata["relative_path"]})
+    manifest = EvaluationRunManifest(
+        id="feedbax-evaluation-run:trial-bank",
+        status="completed",
+        evaluation_spec=SpecPayload(
+            kind="EvaluationRunSpec",
+            schema_id="feedbax.spec.evaluation_run",
+            schema_version="feedbax.spec.evaluation_run.v1",
+            inline={
+                "schema_version": "feedbax.spec.evaluation_run.v1",
+                "evaluation_type": "test",
+                "training_run_ids": [],
+                "inputs": [],
+                "params": {},
+            },
+        ),
+        artifacts=[artifact],
+        metadata={"channels": [_record(array)]},
+    )
+    path = write_manifest(manifest, root=tmp_path, index=False)
+    executable_parent = authenticated_manifest_ref(manifest, path, "evaluation_run")
+    staged_parent = executable_parent.model_copy(update={"role": "paired_trial_bank"})
+    context = with_staged_parent_execution_locations(
+        EMPTY_STAGED_EXECUTION_CONTEXT,
+        [
+            StagedParentExecutionLocation(
+                parent=staged_parent,
+                root=tmp_path,
+                execution_uri=path.relative_to(tmp_path).as_posix(),
+            )
+        ],
+    )
+
+    resolved = resolve_authenticated_evaluation_channels(
+        StagedEvaluationPrerequisite(parent=executable_parent),
+        execution_context=context,
+    )
+
+    assert resolved.channels["noise"] is resolved.states["channels"]["noise"]
+    assert resolved.manifest_sha256 == executable_parent.metadata["manifest_sha256"]
+    assert resolved.states_sha256 == artifact.sha256
 
 
 @pytest.mark.parametrize(
