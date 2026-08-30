@@ -67,6 +67,7 @@ from feedbax.contracts.applicability_rules import (
 from feedbax.contracts.authoring_budget import AuthoringBudgets
 from feedbax.contracts.experiment_compile_lock import (
     AnalysisInputBinding,
+    AnalysisReceiptSetBinding,
     AuthenticatedReceiptReference,
     CheckpointInitializationBinding,
     CompileLockInputs,
@@ -1667,18 +1668,30 @@ def _lower_analysis(context: LayerCompileContext) -> LoweredLayer:
         patches.append(OverridePatch(path="analysis_type", op="replace", value=authored.recipe))
     prefix = "params" if authored.target == "run" else "params_base"
     patches.extend(_params_patches(authored.params, prefix))
-    references = [
-        _reference_for(
-            context,
-            subject.ref,
-            role_path=f"inputs.{subject.alias}",
-            field=f"analysis.subjects[{index}].ref",
-            consumer_of=lambda _kind, _id, subject=subject: AnalysisInputBinding(
-                alias=subject.alias, role=subject.role
-            ),
+    references = []
+    for index, subject in enumerate(authored.subjects):
+        if subject.binding == "complete_receipt_set" and isinstance(
+            subject.ref, ReceiptReference
+        ):
+            _reject(
+                ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+                f"analysis.subjects[{index}].binding",
+                "complete_receipt_set binds a set-valued planned product; a receipt "
+                "locator or authenticated receipt names exactly one receipt",
+            )
+        references.append(
+            _reference_for(
+                context,
+                subject.ref,
+                role_path=f"inputs.{subject.alias}",
+                field=f"analysis.subjects[{index}].ref",
+                consumer_of=lambda _kind, _id, subject=subject: (
+                    AnalysisReceiptSetBinding(alias=subject.alias, role=subject.role)
+                    if subject.binding == "complete_receipt_set"
+                    else AnalysisInputBinding(alias=subject.alias, role=subject.role)
+                ),
+            )
         )
-        for index, subject in enumerate(authored.subjects)
-    ]
     # A bundle's root set is the one thing about a bundle a predicate cannot
     # pin: the predicate re-selects whatever the manifest repository holds at
     # execution time. Authoring the roots puts each one in the lock as an

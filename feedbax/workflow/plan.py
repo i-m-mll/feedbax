@@ -68,16 +68,22 @@ from feedbax.contracts.manifest import canonical_json_bytes
 
 WORKFLOW_PLAN_SCHEMA_ID = "feedbax.workflow.plan"
 WORKFLOW_PLAN_SCHEMA_VERSION_V1 = "feedbax.workflow.plan.v1"
-WORKFLOW_PLAN_SCHEMA_VERSION = WORKFLOW_PLAN_SCHEMA_VERSION_V1
+WORKFLOW_PLAN_SCHEMA_VERSION_V2 = "feedbax.workflow.plan.v2"
+WORKFLOW_PLAN_SCHEMA_VERSION = WORKFLOW_PLAN_SCHEMA_VERSION_V2
 LEGACY_FULFILLMENT_PLAN_SCHEMA_ID = "feedbax.fulfillment.plan"
 
 #: Enumerated, never inferred. A document from any other version is refused.
-WORKFLOW_PLAN_SUPPORTED_SCHEMA_VERSIONS = (WORKFLOW_PLAN_SCHEMA_VERSION_V1,)
+WORKFLOW_PLAN_SUPPORTED_SCHEMA_VERSIONS = (
+    WORKFLOW_PLAN_SCHEMA_VERSION_V1,
+    WORKFLOW_PLAN_SCHEMA_VERSION_V2,
+)
 
 #: Versions this loader accepts, mapped to the version they migrate to. Empty
 #: while v1 is the only version: an unknown version fails closed rather than
 #: being read through a compatibility shim.
-WORKFLOW_PLAN_MIGRATION_TABLE: dict[str, str] = {}
+WORKFLOW_PLAN_MIGRATION_TABLE: dict[str, str] = {
+    WORKFLOW_PLAN_SCHEMA_VERSION_V1: WORKFLOW_PLAN_SCHEMA_VERSION_V2,
+}
 
 #: The two statuses an input edge can carry, and the two bases a status may be
 #: reached on. Both are closed: a third value is a schema change, not a new
@@ -88,6 +94,7 @@ OPERATION_DETERMINISM = ("deterministic", "seeded", "nondeterministic")
 OPERATION_CACHE_POLICIES = ("content_addressed", "never")
 OPERATION_EFFECTS = ("pure", "local", "external", "publication")
 GUARD_OPERATORS = ("equals", "not_equals", "in", "not_in")
+EDGE_BINDINGS = ("single_receipt", "complete_receipt_set")
 
 # Realization belongs to the later binding/execution layers. An authoring
 # lowerer must not smuggle any of it into the operation or node metadata where
@@ -501,6 +508,7 @@ class PlanEdge:
     role_path: tuple[str, ...]
     status: str
     basis: str
+    binding: str | None = None
     input_type: str = "feedbax.artifact"
     reason: str | None = None
     producer: LogicalKey | None = None
@@ -515,6 +523,14 @@ class PlanEdge:
             raise ValueError(f"{self.status!r} is not one of {list(APPLICABILITY_STATUSES)}")
         if self.basis not in APPLICABILITY_BASES:
             raise ValueError(f"{self.basis!r} is not one of {list(APPLICABILITY_BASES)}")
+        if self.status in {"required", "guarded"} and self.binding is None:
+            object.__setattr__(self, "binding", "single_receipt")
+        if self.status in {"required", "guarded"} and self.binding not in EDGE_BINDINGS:
+            raise ValueError(f"an active input edge requires one of {list(EDGE_BINDINGS)}")
+        if self.status == "not_applicable" and self.binding is not None:
+            raise ValueError("an inapplicable input binds no receipt mode")
+        if self.external is not None and self.binding == "complete_receipt_set":
+            raise ValueError("an exact external receipt names one receipt, not a receipt set")
         if not self.input_type:
             raise ValueError("an input edge requires a non-empty type identity")
         if self.status == "not_applicable" and (
@@ -566,6 +582,7 @@ class PlanEdge:
             "role_path": list(self.role_path),
             "status": self.status,
             "basis": self.basis,
+            "binding": self.binding,
             "input_type": self.input_type,
             "reason": self.reason,
             "rule": self.rule,
@@ -578,6 +595,8 @@ class PlanEdge:
 
     @classmethod
     def from_record(cls, record: Mapping[str, Any]) -> "PlanEdge":
+        if record.get("status") in {"required", "guarded"} and "binding" not in record:
+            raise ValueError("a workflow-plan v2 active edge states its receipt binding")
         producer = record.get("producer")
         external = record.get("external")
         guard = record.get("guard")
@@ -586,6 +605,7 @@ class PlanEdge:
             role_path=tuple(record["role_path"]),
             status=record["status"],
             basis=record["basis"],
+            binding=record.get("binding"),
             input_type=record["input_type"],
             reason=record.get("reason"),
             producer=LogicalKey.parse(producer) if producer is not None else None,
@@ -735,13 +755,55 @@ class WorkflowPlan:
         """Return the versioned plan document, deterministic in every field."""
         return {
             "schema_id": WORKFLOW_PLAN_SCHEMA_ID,
-            "schema_version": WORKFLOW_PLAN_SCHEMA_VERSION_V1,
+            "schema_version": WORKFLOW_PLAN_SCHEMA_VERSION,
             "identity": self.identity,
             "target": self.target.text,
             "origin": dict(self.origin),
             "nodes": [node.record() for node in self.nodes],
             "edges": [edge.record() for edge in self.edges],
         }
+
+
+def migrate_workflow_plan_document(
+    document: Mapping[str, Any], *, field_ref: str = "workflow_plan"
+) -> dict[str, Any]:
+    """Explicitly migrate a v1 plan by making every active edge singular."""
+    version = document.get("schema_version")
+    if version == WORKFLOW_PLAN_SCHEMA_VERSION_V2:
+        return dict(document)
+    if version != WORKFLOW_PLAN_SCHEMA_VERSION_V1:
+        raise UnsupportedWorkflowPlanVersionError(
+            f"unsupported {field_ref} schema_version: {version!r}; migration table="
+            f"{WORKFLOW_PLAN_MIGRATION_TABLE!r}"
+        )
+    for index, edge in enumerate(document.get("edges", [])):
+        if isinstance(edge, Mapping) and "binding" in edge:
+            raise UnsupportedWorkflowPlanVersionError(
+                f"{field_ref} edge {index} carries v2 binding grammar under a v1 version"
+            )
+    migrated = dict(document)
+    migrated["schema_version"] = WORKFLOW_PLAN_SCHEMA_VERSION_V2
+    migrated["edges"] = [
+        {
+            **dict(edge),
+            "binding": (
+                "single_receipt"
+                if edge.get("status") in {"required", "guarded"}
+                else None
+            ),
+        }
+        for edge in document.get("edges", [])
+    ]
+    nodes = tuple(PlanNode.from_record(record) for record in migrated["nodes"])
+    edges = tuple(PlanEdge.from_record(record) for record in migrated["edges"])
+    migrated_plan = build_workflow_plan(
+        LogicalKey.parse(str(migrated["target"])),
+        nodes,
+        edges,
+        origin=migrated.get("origin") or {},
+    )
+    migrated["identity"] = migrated_plan.identity
+    return migrated
 
 
 def read_workflow_plan_document(
@@ -776,7 +838,7 @@ def read_workflow_plan_document(
             f"{list(WORKFLOW_PLAN_SUPPORTED_SCHEMA_VERSIONS)}; no migration is defined "
             f"(migration table={WORKFLOW_PLAN_MIGRATION_TABLE!r})"
         )
-    return dict(document)
+    return migrate_workflow_plan_document(document, field_ref=field_ref)
 
 
 def workflow_plan_from_document(document: Any, *, field_ref: str = "workflow_plan") -> WorkflowPlan:
@@ -957,6 +1019,7 @@ class EdgeDeclaration:
     role_path: tuple[str, ...]
     status: str = "required"
     basis: str = "authored"
+    binding: str | None = None
     input_type: str = "feedbax.artifact"
     reason: str | None = None
     producer_ref: str | None = None
@@ -972,6 +1035,7 @@ class EdgeDeclaration:
             role_path=tuple(self.role_path),
             status=self.status,
             basis=self.basis,
+            binding=self.binding,
             input_type=self.input_type,
             reason=self.reason,
             producer=producer,
@@ -1106,6 +1170,7 @@ __all__ = [
     "WORKFLOW_PLAN_SCHEMA_ID",
     "WORKFLOW_PLAN_SCHEMA_VERSION",
     "WORKFLOW_PLAN_SCHEMA_VERSION_V1",
+    "WORKFLOW_PLAN_SCHEMA_VERSION_V2",
     "WORKFLOW_PLAN_SUPPORTED_SCHEMA_VERSIONS",
     "ConflictingNodeDeclarationError",
     "DuplicateInputEdgeError",
@@ -1126,6 +1191,7 @@ __all__ = [
     "UnresolvedGuardOutcomeError",
     "UnsupportedWorkflowPlanVersionError",
     "WorkflowPlanIdentityError",
+    "migrate_workflow_plan_document",
     "WorkflowTypeMismatchError",
     "build_workflow_plan",
     "expand_workflow_plan",

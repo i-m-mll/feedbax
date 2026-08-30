@@ -254,6 +254,7 @@ from feedbax.contracts.experiment_compile_lock import (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_ID,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
 )
 from feedbax.contracts.experiment_envelope import (
     EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID,
@@ -3404,7 +3405,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Compile-time plan pinning what an envelope compile read and decided, "
                 "with compiler contract and implementation provenance recorded apart."
             ),
-            supported_old_versions=(EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,),
+            supported_old_versions=(
+                EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
+                EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
+            ),
             required_tests=("tests/test_envelope_engine_kernel.py",),
             notes=(
                 "v2 adds the optional typed artifact contract a figure runtime input "
@@ -3414,7 +3418,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "so restating the version would rename the absence instead of filling it. "
                 "A v1 lock stating a contract is refused as later grammar, and executing a "
                 "v1 root figure input reference is refused at lowering with an actionable "
-                "re-author-at-envelope-v5 diagnostic."
+                "re-author-at-envelope-v5 diagnostic. v3 adds the closed "
+                "analysis_receipt_set consumer; v1/v2 remain readable only with their "
+                "singular analysis_input grammar."
             ),
         ),
         _family(

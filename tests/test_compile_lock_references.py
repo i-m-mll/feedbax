@@ -21,8 +21,10 @@ from feedbax.contracts.experiment_compile_lock import (
     COMPILE_LOCK_PLAN_EDGE_KINDS,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
     COMPILE_LOCK_REFERENCE_KINDS,
     AnalysisInputBinding,
+    AnalysisReceiptSetBinding,
     AuthenticatedReceiptReference,
     CheckpointInitializationBinding,
     CompileLockInputs,
@@ -499,7 +501,7 @@ def _lock_with_figure_input(contract: dict[str, Any] | None) -> dict[str, Any]:
 def test_a_current_lock_carries_the_typed_figure_input_contract() -> None:
     lock = _lock_with_figure_input(_figure_contract())
 
-    assert lock["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2
+    assert lock["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3
     loaded = load_compile_lock(lock, field="lock")
     consumer = parse_compile_lock_reference(
         loaded["references"][0], field="lock#references[0]"
@@ -534,6 +536,21 @@ def test_a_prior_lock_stating_a_contract_is_refused_by_version() -> None:
 
     assert caught.value.category is (ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION)
     assert EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2 in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "version",
+    [EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1, EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2],
+)
+def test_a_pre_v3_lock_cannot_be_relabelled_as_a_receipt_set(version: str) -> None:
+    reference = _authenticated_receipt().model_copy(
+        update={
+            "consumer": AnalysisReceiptSetBinding(alias="evaluation", role="evaluation")
+        }
+    )
+    lock = {**build_compile_lock(_inputs([reference])), "schema_version": version}
+    with pytest.raises(ExperimentEnvelopeRejection, match="receipt-set binding"):
+        load_compile_lock(lock, field="lock")
 
 
 def test_a_figure_input_contract_names_the_role_its_binding_addresses() -> None:

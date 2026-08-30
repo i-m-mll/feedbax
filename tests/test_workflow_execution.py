@@ -31,8 +31,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import numpy as np
 
 from feedbax.analysis.evaluation import EvaluationRecipeResult
+from feedbax.analysis.specs import AnalysisRecipeResult
 from feedbax.analysis.fulfillment import FulfillmentAdmissionError
 from feedbax.analysis.fulfillment_adapters import FulfillmentEnvironment
 from feedbax.analysis.fulfillment_custody import FulfillmentDriftError
@@ -49,6 +51,7 @@ from feedbax.workflow.execution import (
     PlanNodeDisagreementError,
     external_parent_ref,
     MissingExternalReceiptError,
+    NodeBinding,
     PlanDocumentDriftError,
     UnpinnedPlanNodeError,
     workflow_requests,
@@ -68,6 +71,7 @@ from feedbax.workflow.plan import (
 from feedbax.analysis.reports import REPORT_RENDER_ROLE, ReportRecipeResult
 from feedbax.contracts.experiment_compile_lock import (
     AnalysisInputBinding,
+    AnalysisReceiptSetBinding,
     AuthenticatedReceiptReference,
     CheckpointInitializationBinding,
     EvaluationSubjectBinding,
@@ -90,6 +94,7 @@ from tests.fake_project_experiment.products import (
     QuillonOutputs,
     planned,
 )
+from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 DIGEST = "b" * 64
 
@@ -104,6 +109,7 @@ class _Calls:
 
     def __init__(self) -> None:
         self.evaluation = 0
+        self.analysis = 0
         self.report = 0
         self.payload = "baseline"
 
@@ -125,11 +131,11 @@ def environment(tmp_path: Path, application_registry_bundle, calls: _Calls):
         artifact = store_bytes_artifact(
             f"{calls.payload}:{run_spec.params.get('stage', '')}\n".encode(),
             root=root,
-            role="evaluation_states",
+            role="payload",
             logical_name="states.bin",
         )
         return EvaluationRecipeResult(
-            states=None,
+            states={"value": np.asarray(1, dtype=np.int32)},
             summary_metrics={"stage": run_spec.params.get("stage", ""), "payload": calls.payload},
             artifacts=[artifact],
             metadata={"states_schema": "quillon.states.v1"},
@@ -146,8 +152,16 @@ def environment(tmp_path: Path, application_registry_bundle, calls: _Calls):
         )
         return ReportRecipeResult(artifacts=[artifact], summary={"inputs": len(inputs)})
 
+    def analysis_recipe(_spec, _root, inputs, _execution_context):
+        calls.analysis += 1
+        return AnalysisRecipeResult(
+            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            data=build_toy_analysis_data(value=len(inputs)),
+        )
+
     application_registry_bundle.evaluation_recipes.register(PROBE_TYPE, evaluation_recipe)
     application_registry_bundle.evaluation_recipes.register(CONDENSE_TYPE, evaluation_recipe)
+    application_registry_bundle.analysis_recipes.register(CONDENSE_TYPE, analysis_recipe)
     application_registry_bundle.report_recipes.register(BULLETIN_TYPE, report_recipe)
     return FulfillmentEnvironment(
         root=tmp_path / "receipts",
@@ -340,6 +354,159 @@ def test_a_consumer_binding_names_the_role_its_receipt_is_bound_under(
     )
     assert [ref.role for ref in requests[-1].spec.inputs] == ["observed_states"]
     assert requests[-1].spec.inputs[0].kind == "EvaluationRunManifest"
+
+
+def test_a_matrix_receipt_set_executes_analysis_in_row_order_and_rebuilds(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
+) -> None:
+    matrix = outputs.probe_matrix("set-source", rows=2)
+    outputs.condensate(
+        "set-consumer",
+        references=[
+            planned(
+                matrix,
+                role_path="inputs.evaluation",
+                consumer=AnalysisReceiptSetBinding(
+                    alias="evaluation", role="evaluation"
+                ),
+            )
+        ],
+    )
+    closure = _closure(outputs, "set-consumer")
+
+    run = execute_workflow(closure, environment=environment)
+    produced = run.results[0].receipts
+    assert len(produced) == 2
+    assert calls.analysis == 1
+    analysis_manifest = load_manifest(run.results[-1].receipt.path)
+    assert [parent.id for parent in analysis_manifest.inputs] == [
+        receipt.manifest_id for receipt in produced
+    ]
+    assert [parent.role for parent in analysis_manifest.inputs] == [
+        "evaluation",
+        "evaluation",
+    ]
+
+    requests = workflow_requests(closure, environment=environment)
+    assert [parent.id for parent in requests[-1].spec.inputs] == [
+        receipt.manifest_id for receipt in produced
+    ]
+    with pytest.raises(FulfillmentDriftError) as rebuilt:
+        rebuild_workflow(closure, environment=environment)
+    assert [outcome.node_key for outcome in rebuilt.value.outcomes][-1] == (
+        "analysis:set-consumer"
+    )
+
+
+def test_repair_rebuilds_a_set_bound_analysis_from_all_admitted_rows(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    matrix = outputs.probe_matrix("repair-set", rows=2)
+    outputs.condensate(
+        "repair-consumer",
+        references=[
+            planned(
+                matrix,
+                role_path="inputs.evaluation",
+                consumer=AnalysisReceiptSetBinding(
+                    alias="evaluation", role="evaluation"
+                ),
+            )
+        ],
+    )
+    closure = _closure(outputs, "repair-consumer")
+    run = execute_workflow(closure, environment=environment)
+    _mutate(run.results[-1].receipt.path, status="failed")
+
+    repaired = repair_workflow_operation(closure, closure.target, environment=environment)
+    manifest = load_manifest(repaired.receipt.path)
+    assert [parent.id for parent in manifest.inputs] == [
+        receipt.manifest_id for receipt in run.results[0].receipts
+    ]
+
+
+def test_a_one_row_matrix_is_still_ambiguous_for_a_singular_edge(
+    outputs: QuillonOutputs, environment: FulfillmentEnvironment
+) -> None:
+    matrix = outputs.probe_matrix("one-row-set", rows=1)
+    outputs.condensate(
+        "singular-reader",
+        references=[
+            planned(
+                matrix,
+                role_path="inputs.evaluation",
+                consumer=AnalysisInputBinding(alias="evaluation", role="evaluation"),
+            )
+        ],
+    )
+    with pytest.raises(AmbiguousNodeReceiptError, match="cardinality is one"):
+        workflow_requests(_closure(outputs, "singular-reader"), environment=environment)
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_a_partial_or_corrupt_matrix_set_never_reaches_analysis(
+    outputs: QuillonOutputs,
+    environment: FulfillmentEnvironment,
+    calls: _Calls,
+    damage: str,
+) -> None:
+    matrix = outputs.probe_matrix(f"{damage}-set", rows=2)
+    outputs.condensate(
+        f"{damage}-consumer",
+        references=[
+            planned(
+                matrix,
+                role_path="inputs.evaluation",
+                consumer=AnalysisReceiptSetBinding(
+                    alias="evaluation", role="evaluation"
+                ),
+            )
+        ],
+    )
+    closure = _closure(outputs, f"{damage}-consumer")
+    matrix_run = execute_workflow(truncated_workflow(closure, 1), environment=environment)
+    damaged = matrix_run.results[0].receipts[1].path
+    if damage == "missing":
+        damaged.unlink()
+    else:
+        _mutate(damaged, status="failed")
+
+    with pytest.raises(FulfillmentAdmissionError):
+        workflow_requests(closure, environment=environment)
+    assert calls.analysis == 0
+
+
+@pytest.mark.parametrize("shape", ["empty", "duplicate"])
+def test_an_empty_or_duplicate_receipt_set_is_refused(
+    outputs: QuillonOutputs,
+    environment: FulfillmentEnvironment,
+    shape: str,
+) -> None:
+    matrix = outputs.probe_matrix(f"{shape}-set", rows=2)
+    outputs.condensate(
+        f"{shape}-consumer",
+        references=[
+            planned(
+                matrix,
+                role_path="inputs.evaluation",
+                consumer=AnalysisReceiptSetBinding(
+                    alias="evaluation", role="evaluation"
+                ),
+            )
+        ],
+    )
+    closure = _closure(outputs, f"{shape}-consumer")
+    matrix_run = execute_workflow(truncated_workflow(closure, 1), environment=environment)
+    result = matrix_run.results[0]
+    receipts = () if shape == "empty" else (result.receipts[0], result.receipts[0])
+    binding = NodeBinding(
+        closure=closure,
+        environment=environment,
+        fulfillments={closure.nodes[0].key: replace(result, receipts=receipts)},
+    )
+    edge = closure.plan.required_edges(closure.target)[0]
+    with pytest.raises(AmbiguousNodeReceiptError, match=shape):
+        binding.producer_receipts(edge)
 
 
 def test_a_figure_binds_its_runtime_input_authority_by_role(

@@ -114,6 +114,7 @@ from feedbax.analysis.fulfillment_adapters import (
     NodeFulfillment,
     NodeRequest,
     admit_node,
+    expand_evaluation_matrix_node,
     fulfill_node,
     receipt_exact_parent_entry,
     receipt_parent_ref,
@@ -493,7 +494,7 @@ class NodeBinding:
 
     closure: PreparedWorkflow
     environment: FulfillmentEnvironment
-    receipts: Mapping[LogicalKey, FulfillmentReceipt] = field(default_factory=dict)
+    fulfillments: Mapping[LogicalKey, NodeFulfillment] = field(default_factory=dict)
     #: Per-edge external resolutions, memoized for this binding's lifetime. One
     #: binding lowers one node, and an edge is addressed by
     #: ``(consumer, role_path)``, which the plan kernel proves is unique.
@@ -519,15 +520,59 @@ class NodeBinding:
         """
         if edge.producer is None:
             return None
-        receipt = self.receipts.get(edge.producer)
-        if receipt is None:
+        fulfillment = self.fulfillments.get(edge.producer)
+        if fulfillment is None:
             raise AmbiguousNodeReceiptError(
                 f"{edge.consumer.text} declares input {list(edge.role_path)} as the product of "
-                f"{edge.producer.text}, which resolved to no single receipt; a consumer binds "
-                "one authenticated reference per declared input, and this version does not "
-                "choose among the receipts of a multi-receipt node"
+                f"{edge.producer.text}, whose fulfillment is unavailable"
             )
-        return receipt
+        producer = self.closure.node(edge.producer)
+        if producer.compiled.kind.receipt_shape == "set":
+            raise AmbiguousNodeReceiptError(
+                f"{edge.consumer.text} declares input {list(edge.role_path)} as singular, but "
+                f"{edge.producer.text} is a {producer.compiled.kind.receipt_shape}-valued "
+                "product; cardinality never turns a set-shaped product into one receipt"
+            )
+        if len(fulfillment.receipts) != 1:
+            raise AmbiguousNodeReceiptError(
+                f"{edge.consumer.text} declares input {list(edge.role_path)} as the product of "
+                f"{edge.producer.text}, which resolved to {len(fulfillment.receipts)} receipts"
+            )
+        return fulfillment.receipts[0]
+
+    def producer_receipts(self, edge: PlanEdge) -> tuple[FulfillmentReceipt, ...]:
+        """Return one set-valued producer's complete ordered admitted receipt tuple."""
+        if edge.producer is None:
+            raise AmbiguousNodeReceiptError("a complete receipt set cannot bind an external receipt")
+        fulfillment = self.fulfillments.get(edge.producer)
+        if fulfillment is None or not fulfillment.receipts:
+            raise AmbiguousNodeReceiptError(
+                f"{edge.consumer.text} declares {list(edge.role_path)} as a complete receipt "
+                f"set from {edge.producer.text}, but that producer yielded an empty receipt set"
+            )
+        addresses = [
+            (receipt.manifest_kind, receipt.manifest_id)
+            for receipt in fulfillment.receipts
+        ]
+        duplicates = sorted(
+            f"{kind}:{manifest_id}"
+            for kind, manifest_id in set(addresses)
+            if addresses.count((kind, manifest_id)) > 1
+        )
+        if duplicates:
+            raise AmbiguousNodeReceiptError(
+                f"{edge.producer.text} produced duplicate receipt addresses {duplicates!r}; "
+                "a complete receipt set contains each authenticated manifest exactly once"
+            )
+        return fulfillment.receipts
+
+    def parent_refs(self, edge: PlanEdge, *, role: str) -> tuple[ParentRef, ...]:
+        if edge.binding == "complete_receipt_set":
+            return tuple(
+                receipt_parent_ref(receipt, role=role)
+                for receipt in self.producer_receipts(edge)
+            )
+        return (self.parent_ref(edge, role=role),)
 
     def parent_ref(self, edge: PlanEdge, *, role: str) -> ParentRef:
         """Return the authenticated reference one required edge binds.
@@ -563,6 +608,16 @@ class NodeBinding:
             execution_uri=resolved.execution_uri,
         )
 
+    def exact_parent_entries(
+        self, edge: PlanEdge, *, role: str
+    ) -> tuple[StagedExactParentEntry, ...]:
+        if edge.binding == "complete_receipt_set":
+            return tuple(
+                receipt_exact_parent_entry(receipt, role=role)
+                for receipt in self.producer_receipts(edge)
+            )
+        return (self.exact_parent_entry(edge, role=role),)
+
     def parent_location(self, edge: PlanEdge, *, role: str) -> StagedParentExecutionLocation:
         """Bind one required edge to the staged execution location it resolves at.
 
@@ -581,6 +636,23 @@ class NodeBinding:
                 execution_uri=entry.execution_uri,
             )
         return self.resolved_external(edge).execution_location(role)
+
+    def parent_locations(
+        self, edge: PlanEdge, *, role: str
+    ) -> tuple[StagedParentExecutionLocation, ...]:
+        if edge.binding == "complete_receipt_set":
+            locations = []
+            for receipt in self.producer_receipts(edge):
+                entry = receipt_exact_parent_entry(receipt, role=role)
+                locations.append(
+                    StagedParentExecutionLocation(
+                        parent=entry.parent,
+                        root=Path(self.environment.root),
+                        execution_uri=entry.execution_uri,
+                    )
+                )
+            return tuple(locations)
+        return (self.parent_location(edge, role=role),)
 
     def authenticated_parent_location(self, parent: ParentRef) -> StagedParentExecutionLocation:
         """Locate one already-authenticated parent that no plan edge bound.
@@ -1407,14 +1479,14 @@ def execute_workflow(
     node boundary it stopped at.
     """
     results: list[NodeFulfillment] = []
-    receipts: dict[LogicalKey, FulfillmentReceipt] = {}
+    fulfillments: dict[LogicalKey, NodeFulfillment] = {}
     for node in closure.nodes:
-        request = _lowered(node, closure=closure, receipts=receipts, environment=environment)
+        request = _lowered(
+            node, closure=closure, fulfillments=fulfillments, environment=environment
+        )
         result = fulfill_node(request, environment=environment)
         results.append(result)
-        receipt = _producer_receipt(result)
-        if receipt is not None:
-            receipts[node.key] = receipt
+        fulfillments[node.key] = result
     return FulfillmentRun(results=tuple(results))
 
 
@@ -1436,14 +1508,32 @@ def workflow_requests(
         stop_at: Return this node's request without admitting it. Repair is the
             one operation whose subject is expected to fail admission.
     """
+    for edge in closure.plan.edges:
+        if edge.producer is None or edge.binding != "single_receipt":
+            continue
+        producer = closure.node(edge.producer)
+        if producer.compiled.kind.receipt_shape == "set":
+            product = (
+                "evaluation matrix"
+                if producer.compiled.kind.layer == "evaluation"
+                else "analysis bundle"
+            )
+            raise AmbiguousNodeReceiptError(
+                f"node {edge.producer.text} is an {product}; resolving a singular receipt "
+                "would choose from a set-shaped product, even when its cardinality is one"
+            )
     requests: list[NodeRequest] = []
-    receipts: dict[LogicalKey, FulfillmentReceipt] = {}
+    fulfillments: dict[LogicalKey, NodeFulfillment] = {}
     for node in closure.nodes:
-        request = _lowered(node, closure=closure, receipts=receipts, environment=environment)
+        request = _lowered(
+            node, closure=closure, fulfillments=fulfillments, environment=environment
+        )
         requests.append(request)
         if stop_at is not None and node.key == stop_at:
             return tuple(requests)
-        receipts[node.key] = _admitted_receipt(node, request, environment=environment)
+        fulfillments[node.key] = _admitted_fulfillment(
+            node, request, environment=environment
+        )
     if stop_at is not None:
         raise KeyError(stop_at.text)
     return tuple(requests)
@@ -1501,10 +1591,14 @@ def _lowered(
     node: PreparedOperation,
     *,
     closure: PreparedWorkflow,
-    receipts: Mapping[LogicalKey, FulfillmentReceipt],
+    fulfillments: Mapping[LogicalKey, NodeFulfillment],
     environment: FulfillmentEnvironment,
 ) -> NodeRequest:
-    binding = NodeBinding(closure=closure, environment=environment, receipts=dict(receipts))
+    binding = NodeBinding(
+        closure=closure,
+        environment=environment,
+        fulfillments=dict(fulfillments),
+    )
     request = lower_compiled_node(node, binding=binding)
     if request.node_key != node.key.text:
         raise AmbiguousNodeReceiptError(
@@ -1515,39 +1609,56 @@ def _lowered(
     return request
 
 
-def _producer_receipt(result: NodeFulfillment) -> FulfillmentReceipt | None:
-    """Return the one receipt a node's consumers may bind, if it resolved to one.
-
-    A node that produced several — an expanded matrix, a driven analysis bundle —
-    binds nothing, and that is not an error by itself: such a node is fulfilled
-    like any other, and only a consumer that reaches for its single receipt makes
-    the ambiguity real. :meth:`NodeBinding.producer_receipt` is where that
-    refusal happens, with the consumer and the role it declared both named.
-    """
-    if len(result.receipts) == 1:
-        return result.receipts[0]
-    return None
-
-
-def _admitted_receipt(
+def _admitted_fulfillment(
     node: PreparedOperation,
     request: NodeRequest,
     *,
     environment: FulfillmentEnvironment,
-) -> FulfillmentReceipt:
-    """Admit one node's stored receipt, or refuse with its named failure."""
+) -> NodeFulfillment:
+    """Admit one node's complete stored fulfillment, preserving product order."""
     if isinstance(request, EvaluationMatrixNodeRequest):
-        raise AmbiguousNodeReceiptError(
-            f"node {node.key.text} is an evaluation matrix; resolving a single receipt for it "
-            "would mean choosing among its rows, which this version does not do"
+        rows = expand_evaluation_matrix_node(request, environment=environment)
+        if not rows:
+            raise AmbiguousNodeReceiptError(
+                f"node {node.key.text} is an evaluation matrix with no materialized rows; "
+                "a complete receipt set is non-empty"
+            )
+        receipts: list[FulfillmentReceipt] = []
+        admissions = []
+        for row in rows:
+            captured = AdmittedManifestBytes()
+            outcome = admit_node(row, environment=environment, capture=captured)
+            if not outcome.admitted or outcome.manifest_path is None:
+                raise FulfillmentAdmissionError(outcome)
+            receipts.append(
+                captured.receipt(node_kind=row.node_kind, root=Path(environment.root))
+            )
+            admissions.append(outcome)
+        return NodeFulfillment(
+            node_key=request.node_key,
+            node_kind=request.node_kind,
+            disposition="reused",
+            receipts=tuple(receipts),
+            admissions=tuple(admissions),
         )
     if isinstance(request, AnalysisBundleNodeRequest):
-        raise AmbiguousNodeReceiptError(
-            f"node {node.key.text} is an analysis bundle; resolving a single receipt for it "
-            "would mean choosing among its stage products, which this version does not do"
-        )
+        result = fulfill_node(request, environment=environment)
+        if not result.receipts:
+            raise AmbiguousNodeReceiptError(
+                f"node {node.key.text} is an analysis bundle with no stage products; "
+                "a complete receipt set is non-empty"
+            )
+        return result
     captured = AdmittedManifestBytes()
     outcome = admit_node(request, environment=environment, capture=captured)
     if not outcome.admitted or outcome.manifest_path is None:
         raise FulfillmentAdmissionError(outcome)
-    return captured.receipt(node_kind=request.node_kind, root=Path(environment.root))
+    return NodeFulfillment(
+        node_key=request.node_key,
+        node_kind=request.node_kind,
+        disposition="reused",
+        receipts=(
+            captured.receipt(node_kind=request.node_kind, root=Path(environment.root)),
+        ),
+        admissions=(outcome,),
+    )

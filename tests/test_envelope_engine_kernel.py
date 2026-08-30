@@ -26,7 +26,7 @@ from feedbax.contracts.experiment_compile_lock import (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_ID,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
-    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
     RUN_RECEIPT_ONLY_FACTS,
     CompileLockInputs,
     CompilerContract,
@@ -45,6 +45,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3,
+    EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V4,
     EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID,
     EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
@@ -53,6 +54,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1,
     REPORT_OUTPUT,
     TRAINING_OUTPUT_V6,
@@ -98,6 +100,7 @@ from feedbax.envelope.entrypoint import DECLARED_LAYERS
 from feedbax.training.run_matrix import materialize_adapted_run_matrix
 
 from tests.fake_project_experiment import (
+    ANALYSIS_BASE,
     ENVELOPE_DIRECTORY,
     OUTPUT_DIRECTORY,
     PROJECT_DECLARATION,
@@ -1134,6 +1137,65 @@ def test_a_receipt_without_a_digest_is_a_locator_not_a_fabricated_authentication
     }
 
 
+def test_v6_complete_receipt_set_lowers_to_the_v3_lock_binding(repo: Path) -> None:
+    path = envelope_path(repo, "set-summary")
+    write_envelope(
+        path,
+        {
+            "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
+            "name": "set-summary",
+            "base": ANALYSIS_BASE,
+            "analysis": {
+                "target": "run",
+                "subjects": [
+                    {
+                        "alias": "evaluation",
+                        "role": "evaluation",
+                        "binding": "complete_receipt_set",
+                        "ref": {"kind": "envelope", "alias": "widened-probe"},
+                    }
+                ],
+            },
+        },
+    )
+    outcome = kernel().compile_envelope_file(path, repo_root=repo)
+    assert outcome.compile_lock["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3
+    assert outcome.compile_lock["references"][0]["consumer"] == {
+        "consumer": "analysis_receipt_set",
+        "alias": "evaluation",
+        "role": "evaluation",
+    }
+
+
+def test_complete_receipt_set_rejects_a_single_receipt_reference(repo: Path) -> None:
+    path = envelope_path(repo, "set-receipt")
+    write_envelope(
+        path,
+        {
+            "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
+            "name": "set-receipt",
+            "base": ANALYSIS_BASE,
+            "analysis": {
+                "target": "run",
+                "subjects": [
+                    {
+                        "alias": "evaluation",
+                        "role": "evaluation",
+                        "binding": "complete_receipt_set",
+                        "ref": {
+                            "kind": "receipt",
+                            "manifest_kind": "EvaluationRunManifest",
+                            "manifest_id": "one",
+                        },
+                    }
+                ],
+            },
+        },
+    )
+    with pytest.raises(ExperimentEnvelopeRejection, match="names exactly one receipt"):
+        kernel().compile_envelope_file(path, repo_root=repo)
+
+
 def test_an_authored_receipt_with_a_digest_is_quoted_as_authenticated(
     repo: Path,
 ) -> None:
@@ -1598,7 +1660,7 @@ def test_prior_and_authority_free_root_document_lock_bytes_match_signed_base(
         document["schema"] = schema
         write_envelope(path, document)
         outcome = kernel().compile_envelope_file(path, repo_root=repo)
-        assert outcome.compile_lock["schema_version"] == (EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2)
+        assert outcome.compile_lock["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION
         assert (
             canonical_sha256(
                 {"document": outcome.document, "lock": _lock_at_version_v1(outcome.compile_lock)}
@@ -3247,7 +3309,7 @@ def test_a_current_root_figure_carries_its_input_contracts_into_the_lock(repo: P
     )
 
     assert outcome.compile_lock["compiler_contract"]["contract_version"] == (
-        EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION
+        EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V4
     )
     assert outcome.document["inputs"] == []
     assert outcome.document["input_authorities"] == []

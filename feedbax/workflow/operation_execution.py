@@ -135,6 +135,7 @@ from feedbax.analysis.manifest_inputs import restated_parent_differences
 from feedbax.contracts.experiment_compile_lock import (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
     AnalysisInputBinding,
+    AnalysisReceiptSetBinding,
     CheckpointInitializationBinding,
     EvaluationSubjectBinding,
     FigureRuntimeInputBinding,
@@ -143,6 +144,7 @@ from feedbax.contracts.experiment_compile_lock import (
 from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_FAMILY,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
 )
 from feedbax.contracts.analysis_bundle_composition import ANALYSIS_BUNDLE_SPEC_SCHEMA_ID
 from feedbax.contracts.figures import (
@@ -181,7 +183,7 @@ def binding_role(consumer: Any, *, ref: str) -> str:
     """
     if isinstance(consumer, EvaluationSubjectBinding):
         return consumer.subject_id
-    if isinstance(consumer, AnalysisInputBinding):
+    if isinstance(consumer, (AnalysisInputBinding, AnalysisReceiptSetBinding)):
         return consumer.role
     if isinstance(consumer, FigureRuntimeInputBinding):
         return consumer.input_role
@@ -243,8 +245,9 @@ def bound_parents(
         if edge.status != "required":
             continue
         role = binding_role(reference.consumer, ref=ref)
-        parents.append(binding.parent_ref(edge, role=role))
-        roles.append(role)
+        bound = binding.parent_refs(edge, role=role)
+        parents.extend(bound)
+        roles.extend(role for _ in bound)
     return tuple(parents), tuple(roles)
 
 
@@ -260,8 +263,10 @@ def _exact_parents(
         edge = edges.get(tuple(str(reference.role_path).split(".")))
         if edge is None or edge.status != "required":
             continue
-        entries.append(
-            binding.exact_parent_entry(edge, role=binding_role(reference.consumer, ref=ref))
+        entries.extend(
+            binding.exact_parent_entries(
+                edge, role=binding_role(reference.consumer, ref=ref)
+            )
         )
     if not entries:
         return None
@@ -310,8 +315,10 @@ def _node_execution_context(
         edge = edges.get(tuple(str(reference.role_path).split(".")))
         if edge is None or edge.status != "required":
             continue
-        locations.append(
-            binding.parent_location(edge, role=binding_role(reference.consumer, ref=ref))
+        locations.extend(
+            binding.parent_locations(
+                edge, role=binding_role(reference.consumer, ref=ref)
+            )
         )
     if binding.environment.execution_context is EMPTY_STAGED_EXECUTION_CONTEXT:
         # Locating the extra parents would search authorities that were never
@@ -612,9 +619,10 @@ def _contract_unstatable_grammar(compiled: CompiledEnvelope) -> str | None:
         return f"compile lock {EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1!r}"
     envelope = lock.get("envelope")
     envelope_schema = envelope.get("schema") if isinstance(envelope, Mapping) else None
-    if envelope_schema != EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5 and isinstance(
-        envelope_schema, str
-    ):
+    if envelope_schema not in (
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
+    ) and isinstance(envelope_schema, str):
         if envelope_schema.startswith(f"{EXPERIMENT_ENVELOPE_FAMILY}."):
             return f"envelope grammar {envelope_schema!r}"
     return None
