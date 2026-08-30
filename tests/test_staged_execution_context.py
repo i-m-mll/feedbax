@@ -920,6 +920,91 @@ def test_exact_immutable_parent_uses_complete_ref_location_and_preserves_ref(
         )
 
 
+def test_authenticated_training_run_uses_staged_trained_material_identity(
+    tmp_path: Path,
+) -> None:
+    manifest = TrainingRunManifest(id="feedbax-training-run:tier-a-resumed", status="completed")
+    raw = manifest.model_dump_json(indent=2).encode()
+    relative = Path("exact") / "tier-a-resumed.json"
+    path = tmp_path / relative
+    path.parent.mkdir()
+    path.write_bytes(raw)
+    executable_parent = authenticated_manifest_ref(manifest, path, "training_run")
+    staged_parent = executable_parent.model_copy(update={"role": "trained"})
+    with pytest.raises(EvaluationInputReferenceError):
+        resolve_evaluation_inputs(
+            EvaluationRunSpec(evaluation_type=_EVALUATION_TYPE, inputs=[executable_parent]),
+            manifest_root=tmp_path,
+        )
+    context = with_staged_parent_execution_locations(
+        EMPTY_STAGED_EXECUTION_CONTEXT,
+        [
+            StagedParentExecutionLocation(
+                parent=staged_parent,
+                root=tmp_path,
+                execution_uri=relative.as_posix(),
+            )
+        ],
+    )
+
+    (resolved,) = resolve_evaluation_inputs(
+        EvaluationRunSpec(evaluation_type=_EVALUATION_TYPE, inputs=[executable_parent]),
+        manifest_root=tmp_path,
+        execution_context=context,
+    )
+
+    assert resolved.ref == executable_parent
+    assert resolved.manifest == manifest
+    assert resolved.sha256 == executable_parent.metadata["manifest_sha256"]
+    assert resolved.size_bytes == executable_parent.metadata["size_bytes"]
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ["kind", "id", "digest", "size"],
+)
+def test_authenticated_training_run_refuses_staged_material_identity_drift(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    manifest = TrainingRunManifest(id="feedbax-training-run:strict-staged", status="completed")
+    raw = manifest.model_dump_json(indent=2).encode()
+    relative = Path("exact") / "strict-training.json"
+    path = tmp_path / relative
+    path.parent.mkdir()
+    path.write_bytes(raw)
+    parent = authenticated_manifest_ref(manifest, path, "training_run")
+    staged_update: dict[str, object] = {}
+    if drift == "kind":
+        staged_update["kind"] = "EvaluationRunManifest"
+    elif drift == "id":
+        staged_update["id"] = "feedbax-training-run:different"
+    else:
+        metadata = dict(parent.metadata)
+        metadata["manifest_sha256" if drift == "digest" else "size_bytes"] = (
+            "0" * 64 if drift == "digest" else len(raw) + 1
+        )
+        staged_update["metadata"] = metadata
+    staged_parent = parent.model_copy(update={"role": "trained", **staged_update})
+    context = with_staged_parent_execution_locations(
+        EMPTY_STAGED_EXECUTION_CONTEXT,
+        [
+            StagedParentExecutionLocation(
+                parent=staged_parent,
+                root=tmp_path,
+                execution_uri=relative.as_posix(),
+            )
+        ],
+    )
+
+    with pytest.raises(EvaluationInputReferenceError, match="matching material-identity"):
+        resolve_evaluation_inputs(
+            EvaluationRunSpec(evaluation_type=_EVALUATION_TYPE, inputs=[parent]),
+            manifest_root=tmp_path,
+            execution_context=context,
+        )
+
+
 def test_exact_immutable_completed_parent_preserves_valid_execution_hash(
     tmp_path: Path,
 ) -> None:
