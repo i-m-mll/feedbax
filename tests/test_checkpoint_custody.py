@@ -441,6 +441,13 @@ def test_checkpoint_transaction_derives_slots_and_loads_multi_slot_state(tmp_pat
         "rng",
     )
     assert result.latest_pointer_path.is_file()
+    assert result.checkpoint_set_path.is_file()
+    assert result.checkpoint_set.transaction.identity == result.manifest.transaction_id
+    assert result.checkpoint_set.training_program_id == run_spec.method_ref.key
+    assert result.checkpoint_set.transaction.bytes.digest == _sha256_file(result.manifest_path)
+    assert {slot.name for slot in result.checkpoint_set.slots} == {
+        slot.slot for slot in result.manifest.slots
+    }
     assert {slot.slot: slot.role for slot in result.manifest.slots} == {
         "controller": "model",
         "controller_optimizer": "optimizer",
@@ -947,6 +954,9 @@ def test_checkpoint_fork_preserves_completed_batches_independently_of_program_st
     assert forked.manifest.completed_training_batches == 3
     assert forked.manifest.completed_coordinate.program_step == 500
     assert forked.manifest.metadata["barrier_visit_ordinal"] == 0
+    assert forked.checkpoint_set_path.is_file()
+    assert forked.checkpoint_set.transaction.identity == forked.manifest.transaction_id
+    assert forked.checkpoint_set.continuation == "fork"
 
 
 @pytest.mark.parametrize("visit_ordinal", [-1, True, "0"])

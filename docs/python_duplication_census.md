@@ -379,7 +379,7 @@ endpoint. Each is parameterizable; none is obviously wrong as written.
 | 5 | `find_manifest_paths_by_id`, `iter_indexed_manifest_*`, `get_indexed_manifest_record`, `remove_manifest_from_index` | `persistence/manifest_index.py` |
 | 5 | `NetworkClamp`, `NetworkConstantInput`, `ConstantInput`, `FixedField`, `CurlField` | `intervene/intervene.py` |
 | 5 | `Subtract`, `Multiply`, `MatMul`, `Sigmoid`, `Ravel` | `runtime/components.py` |
-| 4 | `_lower_evaluation` / `_lower_analysis` / `_lower_report` / `_lower_figure_composition` | `workflow/operation_execution.py` |
+| 1 | declarative operation lowering metadata | `workflow/derivation.py` |
 | 4 | `validate_*_recipe` | `analysis/validation.py` |
 | 4 | `get_status` / `get_checkpoint` / `get_manifest` / `stop_job` | `web/worker/client.py` |
 | 4 | `*ExecutionError` exception classes | `analysis/figures.py`, `reports.py`, `evaluation.py`, `specs.py` |

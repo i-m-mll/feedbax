@@ -1,26 +1,20 @@
-"""Architecture evidence for the five layer-owned workflow lowerers."""
+"""Architecture evidence for the declarative workflow operation authority."""
 
-from feedbax.workflow.analysis import lower_analysis_operation
-from feedbax.workflow.campaign import lower_campaign_operation
-from feedbax.workflow.evaluation import lower_evaluation_operation
-from feedbax.workflow.fulfillment import lower_fulfillment_operation
-from feedbax.workflow.report import lower_report_operation
+from feedbax.workflow.derivation import OPERATION_METADATA, lower_operation
 
 
-def test_each_authoring_domain_owns_a_distinct_lowerer() -> None:
-    lowerers = (
-        lower_campaign_operation,
-        lower_evaluation_operation,
-        lower_analysis_operation,
-        lower_report_operation,
-        lower_fulfillment_operation,
-    )
+def test_operation_metadata_is_the_only_layer_specific_lowering_authority() -> None:
+    layers = ("campaign", "evaluation", "analysis", "report", "figure")
     operations = tuple(
-        lowerer(
-            compiled_schema_id=f"example.schema.{index}", semantic_hash="a" * 64, input_types={}
+        lower_operation(
+            layer,
+            compiled_schema_id=f"example.schema.{index}",
+            semantic_hash="a" * 64,
+            input_types={},
         )
-        for index, lowerer in enumerate(lowerers)
+        for index, layer in enumerate(layers)
     )
+    assert tuple(OPERATION_METADATA) == ("campaign", "evaluation", "analysis", "figure", "report")
     assert [operation.type_id for operation in operations] == [
         "feedbax.operation.train",
         "feedbax.operation.evaluate",

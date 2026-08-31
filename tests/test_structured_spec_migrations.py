@@ -1593,16 +1593,12 @@ def test_default_policy_matrix_covers_registered_emitted_families() -> None:
             assert policy.rejected_old_versions, family.kind
 
 
-def test_scientific_compiler_and_declaration_families_are_registered_and_fail_closed() -> None:
+def test_scientific_compiler_families_are_registered_and_fail_closed() -> None:
     expected = {
         "GraphDocument": ("feedbax.graph_document", "1"),
         "ResolvedGraph": ("feedbax.resolved_graph", "2"),
         "CompilationRecord": ("feedbax.graph_compilation_record", "3"),
         "CompilationFailureRecord": ("feedbax.graph_compilation_failure", "1"),
-        "ExperimentDocument": ("feedbax.experiment_document", "1"),
-        "CampaignDocument": ("feedbax.campaign_document", "1"),
-        "ResolvedExperiment": ("feedbax.resolved_experiment", "1"),
-        "DeclarationDocument": ("feedbax.declaration_document", "1"),
     }
 
     for kind, (schema_id, version) in expected.items():

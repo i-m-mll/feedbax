@@ -14,7 +14,6 @@ from feedbax.execution.records import (
     invocation_for_operation,
     invocation_from_document,
 )
-from feedbax.declarations.science import BackendProtocol
 from feedbax.orchestration.drivers.local import local_driver_registration
 from feedbax.orchestration.drivers.runpod import runpod_driver_registration
 from feedbax.orchestration.realization import (
@@ -66,9 +65,7 @@ def _sisu_invocation():
     return invocation_for_operation(
         plan,
         operation_key,
-        bound_inputs={
-            ("experiment",): {"artifact_id": "sisu-experiment", "sha256": "c" * 64}
-        },
+        bound_inputs={("experiment",): {"artifact_id": "sisu-experiment", "sha256": "c" * 64}},
         scientific_seeds={"controller": 17, "trial": 23},
         execution_policy=InvocationExecutionPolicy(timeout_seconds=120, max_attempts=2),
     )
@@ -134,7 +131,6 @@ def test_local_sisu_backend_plan_reuses_driver_capability_seam_without_effect() 
         driver_capabilities=registration.supported_capabilities,
     )
 
-    assert isinstance(backend, BackendProtocol)
     plan = backend.realize("training", (invocation, _request("local-stop")))
 
     assert plan.schema_id == BACKEND_PLAN_SCHEMA_ID

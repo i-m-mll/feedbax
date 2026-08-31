@@ -89,6 +89,7 @@ ReferenceDomain = Literal[
     "invocation",
     "attempt",
     "artifact_version",
+    "checkpoint_transaction",
     "checkpoint_set",
     "publication",
 ]
@@ -243,11 +244,12 @@ class CheckpointSet(StrictModel):
     schema_id: Literal["feedbax.checkpoint_set"] = CHECKPOINT_SET_SCHEMA_ID
     schema_version: Literal["feedbax.checkpoint_set.v1"] = CHECKPOINT_SET_SCHEMA_VERSION
     checkpoint_id: str = Field(min_length=1)
+    transaction: ExactRef
     training_program_id: str = Field(min_length=1)
     graph: ExactRef
     experiment: ExactRef
     progress: dict[str, int | float | str]
-    prng_state: BlobRef
+    prng_state: BlobRef | None = None
     slots: tuple[CheckpointSlot, ...]
     continuation: Literal["resume", "fork"]
     parent: ExactRef | None = None
@@ -265,12 +267,17 @@ class CheckpointSet(StrictModel):
             raise ValueError("a resume checkpoint must identify its exact parent checkpoint")
         if self.parent is not None and self.parent.domain != "checkpoint_set":
             raise ValueError("checkpoint parent must be an exact checkpoint_set reference")
+        if self.transaction.domain != "checkpoint_transaction":
+            raise ValueError(
+                "checkpoint transaction must be an exact checkpoint_transaction reference"
+            )
         if self.graph.domain != "semantic_ir":
             raise ValueError("checkpoint graph must be an exact semantic_ir reference")
         if self.experiment.domain != "document_revision":
             raise ValueError("checkpoint experiment must be an exact document_revision reference")
         expected = checkpoint_set_id(
             training_program_id=self.training_program_id,
+            transaction=self.transaction,
             graph=self.graph,
             experiment=self.experiment,
             progress=self.progress,

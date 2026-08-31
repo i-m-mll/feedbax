@@ -16,7 +16,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, get_args
 
 from pydantic import Field, field_validator, model_validator
 
@@ -29,6 +29,7 @@ from feedbax.orchestration.realization import (
     MachineShape,
     backend_plan_from_document,
 )
+from feedbax.orchestration.transition_authority import TransitionAuthority
 
 
 RUN_INTENT_SCHEMA_ID = "feedbax.orchestration.run_intent"
@@ -78,6 +79,11 @@ ControllerEventType = Literal[
     "provider_orphan_detected",
     "provider_orphan_handling_recorded",
 ]
+CONTROLLER_TRANSITION_AUTHORITY = TransitionAuthority(
+    domain="invocation-intent",
+    identity_field="intent_id",
+    transitions=frozenset(get_args(ControllerEventType)),
+)
 _CONTROLLER_EVENT_TYPES_V1 = frozenset(
     {
         "intent_admitted",
@@ -1000,6 +1006,8 @@ def _invalid(event: ControllerEvent, reason: str) -> None:
 
 class DurableController:
     """One controller authority over durable intent, effects, and attempts."""
+
+    transition_authority = CONTROLLER_TRANSITION_AUTHORITY
 
     def __init__(
         self,

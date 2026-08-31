@@ -3908,14 +3908,14 @@ def test_a_schemaless_report_parent_is_refused_rather_than_admitted(repo: Path) 
 def test_the_compiled_report_is_the_document_workflow_plans_against(
     repo: Path,
 ) -> None:
-    from feedbax.workflow.derivation import COMPILED_PRODUCT_KINDS
-    from feedbax.workflow.report import lower_report_operation
+    from feedbax.workflow.derivation import COMPILED_PRODUCT_KINDS, lower_operation
 
     outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-report"), repo_root=repo)
 
     kind = COMPILED_PRODUCT_KINDS[outcome.document["schema_id"]]
     assert kind.layer == "report"
-    operation = lower_report_operation(
+    operation = lower_operation(
+        "report",
         compiled_schema_id=kind.schema_id,
         semantic_hash="a" * 64,
         input_types={},

@@ -12,7 +12,6 @@ SCIENTIFIC_CORE_PACKAGES = (
     "component_registry",
     "components",
     "control",
-    "declarations",
     "execution",
     "intervene",
     "mechanics",
@@ -61,12 +60,10 @@ def test_scientific_core_has_no_platform_or_authoring_imports() -> None:
             for lineno, target in _absolute_imports(path):
                 for boundary, forbidden in FORBIDDEN_IMPORTS.items():
                     if any(
-                        target == prefix or target.startswith(f"{prefix}.")
-                        for prefix in forbidden
+                        target == prefix or target.startswith(f"{prefix}.") for prefix in forbidden
                     ):
                         violations.append(
-                            f"{path.relative_to(repo_root)}:{lineno}: "
-                            f"{boundary}: {target}"
+                            f"{path.relative_to(repo_root)}:{lineno}: {boundary}: {target}"
                         )
 
     assert violations == []

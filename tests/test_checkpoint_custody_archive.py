@@ -58,6 +58,7 @@ def test_checkpoint_custody_archive_is_canonical_and_byte_identical(tmp_path: Pa
             "archive.json",
             "checkpoint/latest.json",
             f"checkpoint/{ref.uri}",
+            f"checkpoint/{Path(ref.uri).parent.as_posix()}/checkpoint-set.json",
             *[
                 f"checkpoint/{Path(ref.uri).parent.as_posix()}/{slot.relative_path}"
                 for slot in result.manifest.slots
@@ -72,14 +73,15 @@ def test_checkpoint_custody_archive_is_canonical_and_byte_identical(tmp_path: Pa
         )
         metadata = json.load(archive.extractfile("archive.json"))
         payload_bytes = sum(member.size for member in members[1:])
-        assert {
-            member.name: archive.extractfile(member).read() for member in members[1:]
-        } == {
+        assert {member.name: archive.extractfile(member).read() for member in members[1:]} == {
             "checkpoint/latest.json": result.latest_pointer_path.read_bytes(),
             f"checkpoint/{ref.uri}": result.manifest_path.read_bytes(),
+            f"checkpoint/{Path(ref.uri).parent.as_posix()}/checkpoint-set.json": (
+                result.checkpoint_set_path.read_bytes()
+            ),
             **{
                 expected_name: _slot_blob_path(result.manifest_path, slot.slot).read_bytes()
-                for expected_name, slot in zip(expected[3:], result.manifest.slots, strict=True)
+                for expected_name, slot in zip(expected[4:], result.manifest.slots, strict=True)
             },
         }
 
@@ -223,7 +225,9 @@ def _retained_staging(tmp_path: Path, destination_name: str = "destination") -> 
 def test_materialize_checkpoint_custody_archive_round_trip(tmp_path: Path) -> None:
     result, ref, _, produced, materialized, destination = _materialize(tmp_path)
 
-    assert destination.joinpath("latest.json").read_bytes() == result.latest_pointer_path.read_bytes()
+    assert (
+        destination.joinpath("latest.json").read_bytes() == result.latest_pointer_path.read_bytes()
+    )
     assert destination.joinpath(ref.uri).read_bytes() == result.manifest_path.read_bytes()
     assert materialized.artifact_ref == produced.artifact_ref
     assert materialized.archive_evidence == produced.evidence
@@ -404,19 +408,16 @@ def test_open_archive_member_closes_unadopted_descriptor_on_validation_failure(
         return descriptor
 
     def fail_fstat(descriptor: int):
-        if (
-            failure_point == "directory-fstat"
-            and descriptor == observed.get("directory")
-        ) or (failure_point == "file-fstat" and descriptor == observed.get("file")):
+        if (failure_point == "directory-fstat" and descriptor == observed.get("directory")) or (
+            failure_point == "file-fstat" and descriptor == observed.get("file")
+        ):
             raise OSError(f"injected {failure_point} failure")
         return original_fstat(descriptor)
 
     def fail_stat(path: object, *args: object, **kwargs: object):
-        if (
-            failure_point == "directory-stat"
-            and path == "nested"
-            and "directory" in observed
-        ) or (failure_point == "file-stat" and path == "member"):
+        if (failure_point == "directory-stat" and path == "nested" and "directory" in observed) or (
+            failure_point == "file-stat" and path == "member"
+        ):
             raise OSError(f"injected {failure_point} failure")
         return original_stat(path, *args, **kwargs)
 
@@ -426,9 +427,7 @@ def test_open_archive_member_closes_unadopted_descriptor_on_validation_failure(
     monkeypatch.setattr(custody.os, "stat", fail_stat)
     try:
         with pytest.raises(OSError, match=f"injected {failure_point} failure"):
-            custody._open_archive_member(
-                staging_descriptor, ("nested", "member"), {}
-            )
+            custody._open_archive_member(staging_descriptor, ("nested", "member"), {})
         for descriptor in observed.values():
             with pytest.raises(OSError) as closed:
                 original_fstat(descriptor)
@@ -468,9 +467,7 @@ def test_materialize_closes_member_descriptor_when_fdopen_fails(
 
 
 @pytest.mark.parametrize("identity", ["parent", "transaction-root"])
-def test_materialize_rejects_expected_identity_mismatch(
-    tmp_path: Path, identity: str
-) -> None:
+def test_materialize_rejects_expected_identity_mismatch(tmp_path: Path, identity: str) -> None:
     _, ref, provider, produced, transaction_root = _produce(tmp_path)
     expected_ref = ref.model_copy(update={"id": "wrong"}) if identity == "parent" else ref
     expected_root = "0" * 64 if identity == "transaction-root" else transaction_root
@@ -520,9 +517,7 @@ def _rewritten_archive(
 @pytest.mark.parametrize(
     "mutation", ["unexpected", "duplicate", "case-collision", "link", "special", "pax"]
 )
-def test_materialize_rejects_ungoverned_or_unsafe_members(
-    tmp_path: Path, mutation: str
-) -> None:
+def test_materialize_rejects_ungoverned_or_unsafe_members(tmp_path: Path, mutation: str) -> None:
     _, ref, provider, produced, transaction_root = _produce(tmp_path)
 
     def rewrite(members: list[tuple[tarfile.TarInfo, bytes]]) -> None:
@@ -558,8 +553,10 @@ def test_materialize_rejects_ungoverned_or_unsafe_members(
 
 def test_materialize_rejects_hidden_gnu_longname_header(tmp_path: Path) -> None:
     _, ref, provider, produced, transaction_root = _produce(tmp_path)
+
     def rewrite(members: list[tuple[tarfile.TarInfo, bytes]]) -> None:
         members[1][0].name = "checkpoint/" + "long-name-" * 12
+
     rewritten = _rewritten_archive(provider, produced, rewrite)
     with pytest.raises(CheckpointReferenceResolutionError, match="unsafe"):
         materialize_checkpoint_custody_archive(
@@ -580,14 +577,12 @@ def test_materialize_rejects_stale_or_migrated_latest_pointer(
     def rewrite(members: list[tuple[tarfile.TarInfo, bytes]]) -> None:
         latest = json.loads(members[1][1])
         if mutation == "stale":
-            data = members[1][1].replace(
-                latest["transaction_id"].encode(), b"tx-" + b"0" * 32
-            )
+            data = members[1][1].replace(latest["transaction_id"].encode(), b"tx-" + b"0" * 32)
         else:
             latest["schema_version"] = TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2
-            latest["completed_coordinate"]["global_step"] = latest[
-                "completed_coordinate"
-            ].pop("program_step")
+            latest["completed_coordinate"]["global_step"] = latest["completed_coordinate"].pop(
+                "program_step"
+            )
             data = custody.canonical_json_bytes(latest)
             document = json.loads(members[0][1])
             document["expanded_payload_size_bytes"] += len(data) - len(members[1][1])
@@ -611,6 +606,7 @@ def test_materialize_rejects_unsupported_atomic_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, ref, provider, produced, transaction_root = _produce(tmp_path)
+
     def unsupported(*args: object, **kwargs: object) -> None:
         raise CheckpointReferenceResolutionError("atomic no-replace publication unsupported")
 
@@ -752,9 +748,7 @@ def test_materialize_rejects_cooperative_staging_mapping_change(
         replacement["stolen"] = stolen
         return resolved
 
-    monkeypatch.setattr(
-        custody, "resolve_checkpoint_custody_ref", resolve_then_substitute_staging
-    )
+    monkeypatch.setattr(custody, "resolve_checkpoint_custody_ref", resolve_then_substitute_staging)
     with pytest.raises(CheckpointReferenceResolutionError, match="mapping changed"):
         materialize_checkpoint_custody_archive(
             provider,
@@ -869,7 +863,11 @@ def test_materialize_retains_staging_when_open_fails_immediately_after_mkdir(
 
     def fail_first_staging_open(path: object, *args: object, **kwargs: object):
         nonlocal failed
-        if isinstance(path, str) and path.startswith(".destination.checkpoint-archive-") and not failed:
+        if (
+            isinstance(path, str)
+            and path.startswith(".destination.checkpoint-archive-")
+            and not failed
+        ):
             failed = True
             raise OSError("injected staging open failure")
         return original_open(path, *args, **kwargs)

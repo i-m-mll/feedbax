@@ -10,8 +10,7 @@ from feedbax.workflow.plan import (
     APPLICABILITY_STATUSES,
     LEGACY_FULFILLMENT_PLAN_SCHEMA_ID,
     WORKFLOW_PLAN_SCHEMA_ID,
-    WORKFLOW_PLAN_SCHEMA_VERSION_V1,
-    WORKFLOW_PLAN_SCHEMA_VERSION_V2,
+    WORKFLOW_PLAN_SCHEMA_VERSION,
     ConflictingNodeDeclarationError,
     DuplicateInputEdgeError,
     EdgeDeclaration,
@@ -29,7 +28,6 @@ from feedbax.workflow.plan import (
     WorkflowTypeMismatchError,
     build_workflow_plan,
     expand_workflow_plan,
-    migrate_workflow_plan_document,
     read_workflow_plan_document,
     workflow_plan_from_document,
 )
@@ -94,7 +92,7 @@ def test_schema_family_is_workflow_and_rejects_the_predecessor_explicitly() -> N
     node = _node("analysis", "target")
     document = build_workflow_plan(node.key, (node,), ()).document()
     assert document["schema_id"] == WORKFLOW_PLAN_SCHEMA_ID
-    assert document["schema_version"] == WORKFLOW_PLAN_SCHEMA_VERSION_V2
+    assert document["schema_version"] == WORKFLOW_PLAN_SCHEMA_VERSION
 
     document["schema_id"] = LEGACY_FULFILLMENT_PLAN_SCHEMA_ID
     with pytest.raises(UnsupportedWorkflowPlanVersionError, match="explicitly rejected"):
@@ -105,44 +103,11 @@ def test_unknown_workflow_version_fails_closed() -> None:
     node = _node("analysis", "target")
     document = build_workflow_plan(node.key, (node,), ()).document()
     document["schema_version"] = "feedbax.workflow.plan.v9"
-    with pytest.raises(UnsupportedWorkflowPlanVersionError, match="no migration"):
+    with pytest.raises(
+        UnsupportedWorkflowPlanVersionError,
+        match="migration_intentionally_absent=yes",
+    ):
         read_workflow_plan_document(document)
-
-
-def test_v1_plan_migration_makes_active_edges_singular_and_recalculates_identity() -> None:
-    producer = _node("evaluation", "source")
-    consumer = _node("analysis", "target", inputs={"inputs.source": PRODUCT})
-    document = build_workflow_plan(
-        consumer.key,
-        (producer, consumer),
-        (_producer_edge(consumer, "inputs.source", producer),),
-    ).document()
-    document["schema_version"] = WORKFLOW_PLAN_SCHEMA_VERSION_V1
-    document["edges"][0].pop("binding")
-    document["identity"] = "legacy-identity"
-
-    migrated = migrate_workflow_plan_document(document)
-    assert migrated["schema_version"] == WORKFLOW_PLAN_SCHEMA_VERSION_V2
-    assert migrated["edges"][0]["binding"] == "single_receipt"
-    assert migrated["identity"] != "legacy-identity"
-    assert workflow_plan_from_document(document).document() == migrated
-
-
-def test_v1_plan_cannot_be_relabelled_with_v2_binding_grammar() -> None:
-    node = _node("analysis", "target")
-    document = build_workflow_plan(node.key, (node,), ()).document()
-    document["schema_version"] = WORKFLOW_PLAN_SCHEMA_VERSION_V1
-    document["edges"] = [
-        {
-            "consumer": node.key.text,
-            "role_path": ["input"],
-            "status": "required",
-            "basis": "authored",
-            "binding": "complete_receipt_set",
-        }
-    ]
-    with pytest.raises(UnsupportedWorkflowPlanVersionError, match="v2 binding grammar"):
-        migrate_workflow_plan_document(document)
 
 
 def test_round_trip_preserves_identity_and_origin_does_not_change_it() -> None:

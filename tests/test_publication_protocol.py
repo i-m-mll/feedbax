@@ -143,6 +143,7 @@ def test_publication_commits_one_complete_checkpoint_set(tmp_path: Path) -> None
         blob=service.stage(b"model state"),
     )
     values = {
+        "transaction": _ref("checkpoint_transaction", "example-transaction", b"transaction"),
         "training_program_id": "example.training",
         "graph": _ref("semantic_ir", "example-graph", b"graph"),
         "experiment": _ref("document_revision", "example-experiment", b"experiment"),
@@ -211,8 +212,7 @@ def test_catalog_reads_fail_closed_when_exact_record_bytes_are_corrupted(tmp_pat
     service.publish(PublicationRequest(idempotency_key="corruption", artifacts=(record,)))
     with sqlite3.connect(catalog.path) as connection:
         connection.execute(
-            "UPDATE artifacts SET record_size_bytes = record_size_bytes + 1 "
-            "WHERE version_id = ?",
+            "UPDATE artifacts SET record_size_bytes = record_size_bytes + 1 WHERE version_id = ?",
             (record.version_id,),
         )
     with pytest.raises(PublicationConflictError, match="record integrity failed"):
