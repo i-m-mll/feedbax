@@ -36,6 +36,7 @@ from feedbax.training.checkpoint_custody import (
     CheckpointCompatibilityError,
     CheckpointForkPlanBindings,
     derive_checkpoint_fork_compatibility_projection,
+    load_checkpoint_set,
     load_latest_checkpoint,
     write_checkpoint_transaction,
 )
@@ -533,7 +534,6 @@ def test_fork_path_leaves_typed_schedule_payload_byte_identical(
         skip_fork=True,
         method_registry=application_registry_bundle.training_programs,
     )
-
     after = canonical_json_bytes(
         row.payload["method_payload"]["payload"]["optimizer"]["lr_schedule"]
     )
@@ -746,7 +746,7 @@ def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
     source_slots["controller"] = BatchHistory(
         jnp.arange(5 * 12000, dtype=jnp.float32).reshape(5, 12000)
     )
-    write_checkpoint_transaction(
+    source_write = write_checkpoint_transaction(
         tmp_path / "source",
         run_spec=source_spec,
         phase_program=source_spec.worker_execution.method_contract.phase_program,
@@ -783,6 +783,11 @@ def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
         parity_output_path=tmp_path / "parity.json",
         method_registry=application_registry_bundle.training_programs,
     )
+    target_checkpoint_set = load_checkpoint_set(
+        tmp_path / "target",
+        json.loads((tmp_path / "target" / "latest.json").read_text())["transaction_id"],
+    )
+    assert target_checkpoint_set.parent == source_write.checkpoint_set.exact_ref
 
     resumed = load_latest_checkpoint(
         tmp_path / "target",

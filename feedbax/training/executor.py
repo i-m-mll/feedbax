@@ -20,6 +20,7 @@ import jax.tree as jt
 import numpy as np
 from pydantic import ValidationError
 
+from feedbax.contracts.publication import CheckpointSet
 from feedbax.contracts.checkpoints import (
     CheckpointSegmentLineage,
     CheckpointLineageRef,
@@ -97,6 +98,7 @@ from feedbax.orchestration.schedule_eval import project_training_schedules
 from feedbax.training.checkpoint_custody import (
     CheckpointWriteResult,
     ResumeSlotTransform,
+    load_checkpoint_set,
     load_latest_checkpoint,
     write_checkpoint_transaction,
     materialize_concatenated_checkpoint_histories,
@@ -419,6 +421,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         segment_start_batch: int = 0,
         segment_batch_count: int | None = None,
         segment_parent_transaction_id: str | None = None,
+        segment_parent_checkpoint_set: CheckpointSet | None = None,
         resolved_method: ResolvedTrainingMethod[Any],
         slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
         run_event_emitter: RunEventEmitter | None = None,
@@ -432,6 +435,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         self.segment_start_batch = segment_start_batch
         self.segment_batch_count = segment_batch_count
         self.segment_parent_transaction_id = segment_parent_transaction_id
+        self.segment_parent_checkpoint_set = segment_parent_checkpoint_set
         self.resolved_method = resolved_method
         self.slot_axis_bindings = dict(slot_axis_bindings or {})
         self.run_event_emitter = run_event_emitter
@@ -503,6 +507,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
             segment_start_batch=self.segment_start_batch,
             segment_batch_count=segment_batch_count,
             segment_parent_transaction_id=self.segment_parent_transaction_id,
+            segment_parent_checkpoint_set=self.segment_parent_checkpoint_set,
             history_availability={"progress": True},
             metadata=checkpoint_metadata,
         )
@@ -833,6 +838,7 @@ def execute_training_run_spec(
     segment_start_batch = 0
     segment_batch_count: int | None = None
     segment_parent_transaction_id: str | None = None
+    segment_parent_checkpoint_set: CheckpointSet | None = None
     if resume:
         loaded = load_latest_checkpoint(
             resume_source_root,
@@ -869,6 +875,11 @@ def execute_training_run_spec(
             segment_start_batch = _same_row_resume_start_batch(loaded.manifest)
             if segment_start_batch > 0:
                 segment_parent_transaction_id = loaded.manifest.transaction_id
+        if segment_parent_transaction_id is not None:
+            segment_parent_checkpoint_set = load_checkpoint_set(
+                resume_source_root,
+                segment_parent_transaction_id,
+            )
 
     checkpoint_store = StreamingCheckpointStore(
         root=custody_root,
@@ -879,6 +890,7 @@ def execute_training_run_spec(
         segment_start_batch=segment_start_batch,
         segment_batch_count=segment_batch_count,
         segment_parent_transaction_id=segment_parent_transaction_id,
+        segment_parent_checkpoint_set=segment_parent_checkpoint_set,
         resolved_method=resolved_method,
         slot_axis_bindings=slot_axis_bindings,
         run_event_emitter=run_event_emitter,
