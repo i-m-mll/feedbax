@@ -109,19 +109,10 @@ guarantee block above and becomes stable downstream policy only through the pare
 protected delivery and owner-ratification step.
 
 - Amend `graph-compiler` so `feedbax.compiler` additionally guarantees
-  `ExperimentDocument`, `CampaignDocument`, `DeclarationRef`, `ScientificSeedDomain`,
-  `ResolvedExperiment`, `CompilationFailureRecord`, `CompilerDiagnostic`, `CompilerPhase`,
-  `DiagnosticSeverity`, `GraphCompilationError`, and `resolve_experiment`. The candidate
-  schemas are `feedbax.experiment_document` v1, `feedbax.campaign_document` v1,
-  `feedbax.resolved_experiment` v1, `feedbax.graph_compilation_record` v3, and
-  `feedbax.graph_compilation_failure` v1. Earlier and unknown root or record versions
-  reject rather than being restamped.
-- Add `scientific-declarations` for `feedbax.declarations`, guaranteeing `Declaration`,
-  `DeclarationCatalog`, `DeclarationCompositionError`, `DeclarationDocument`, the public
-  facet types and constructors, `serialize_declaration`, and `load_declaration`.
-  `feedbax.declaration_document` v1 is the sole durable neutral declaration form;
-  serialization and loading require explicit protocol identity/registry authority, and
-  unsupported versions, duplicate JSON authorities, and unknown protocols reject.
+  `CompilationFailureRecord`, `CompilerDiagnostic`, `CompilerPhase`,
+  `DiagnosticSeverity`, and `GraphCompilationError`. The candidate schemas are
+  `feedbax.graph_compilation_record` v3 and `feedbax.graph_compilation_failure` v1;
+  earlier and unknown record versions reject rather than being restamped.
 
 ## Owner-ratified envelope-layer prerequisite rows
 

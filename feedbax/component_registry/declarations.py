@@ -22,7 +22,6 @@ from feedbax.contracts.graph import (
     ParamSchema,
 )
 from feedbax.contracts.representation import RepresentationSpec
-from feedbax.declarations import Declaration
 
 if TYPE_CHECKING:
     from feedbax.contracts.graph import ParamValue
@@ -35,6 +34,22 @@ OutputPrototypeFn = Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str
 
 class MissingPrototypeInput(ValueError):
     """An output prototype needs an input prototype not yet known."""
+
+
+@dataclass(frozen=True)
+class ComponentDeclaration:
+    """Identity and capabilities owned by one component declaration."""
+
+    type_id: str
+    schema_id: str
+    schema_version: str
+    capabilities: frozenset[str]
+    owner: str
+
+    def __post_init__(self) -> None:
+        identities = (self.type_id, self.schema_id, self.schema_version, self.owner)
+        if any(not value.strip() for value in identities):
+            raise ValueError("component declaration identities and owner must be non-empty")
 
 
 @dataclass(frozen=True)
@@ -87,7 +102,7 @@ class ComponentTrainingFacet:
 class DeclaredComponent:
     """Derived component projection used after application composition."""
 
-    declaration: Declaration
+    declaration: ComponentDeclaration
     compiler: ComponentCompilerFacet
     serialization: ComponentSerializationFacet
     runtime: ComponentRuntimeFacet | None = None
@@ -240,13 +255,11 @@ def declare_component(
         capabilities.add("studio")
     if trainable_by_default:
         capabilities.add("training")
-    declaration = Declaration(
-        kind="component",
+    declaration = ComponentDeclaration(
         type_id=name,
         schema_id=f"{owner or provenance or 'local'}.component.{name}",
         schema_version=param_schema_version,
         capabilities=frozenset(capabilities),
-        runtime_protocol=object,
         owner=owner or provenance or "local",
     )
     return DeclaredComponent(

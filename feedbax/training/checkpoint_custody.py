@@ -75,6 +75,13 @@ from feedbax.contracts.manifest import (
     feedbax_version,
     sha256_bytes,
 )
+from feedbax.contracts.publication import (
+    BlobRef,
+    CheckpointSet,
+    CheckpointSlot,
+    ExactRef,
+    checkpoint_set_id,
+)
 from feedbax.contracts.run_matrix import (
     ContinuationReconciliation,
     ExecutionDependency,
@@ -110,6 +117,7 @@ from feedbax.training.worker_validation import resolve_execution_mapping
 LATEST_POINTER_NAME = "latest.json"
 TRANSACTIONS_DIR_NAME = "transactions"
 MANIFEST_NAME = "manifest.json"
+CHECKPOINT_SET_NAME = "checkpoint-set.json"
 CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID = "feedbax.archive.training_checkpoint_custody"
 CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_VERSION = "feedbax.archive.training_checkpoint_custody.v1"
 CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE = (
@@ -342,6 +350,8 @@ class CheckpointWriteResult:
     latest_pointer_path: Path
     manifest: CheckpointTransactionManifest
     latest_pointer: CheckpointLatestPointer
+    checkpoint_set_path: Path
+    checkpoint_set: CheckpointSet
 
 
 ResumeSlotTransform = Callable[[Mapping[str, Any]], Mapping[str, Any]]
@@ -362,6 +372,91 @@ def _checkpoint_coordinate(
 ) -> ProgressCoordinate:
     payload, _ = normalize_serialized_metrics(coordinate, coordinate.metrics, axes)
     return ProgressCoordinate.model_validate(payload)
+
+
+def _published_checkpoint_set(
+    *,
+    root: Path,
+    run_spec: TrainingRunSpec,
+    manifest: CheckpointTransactionManifest,
+) -> CheckpointSet:
+    """Project the internal transaction protocol into its public checkpoint identity."""
+    binding = manifest.run_contract_binding
+    projection = binding.canonical_projection
+    if projection is None or binding.graph_sha256 is None:
+        raise CheckpointCustodyError(
+            "checkpoint publication requires the current canonical run-contract projection"
+        )
+    training_run = projection["training_run_spec"]
+    graph = training_run["graph"]
+    training_run_bytes = canonical_json_bytes(_normalize_signed_zero(training_run))
+    graph_bytes = canonical_json_bytes(_normalize_signed_zero(graph))
+    graph_ref = ExactRef(
+        domain="semantic_ir",
+        identity=f"sha256:{binding.graph_sha256}",
+        bytes=BlobRef(digest=binding.graph_sha256, size_bytes=len(graph_bytes)),
+    )
+    experiment_ref = ExactRef(
+        domain="document_revision",
+        identity=f"sha256:{binding.training_run_spec_sha256}",
+        bytes=BlobRef(
+            digest=binding.training_run_spec_sha256,
+            size_bytes=len(training_run_bytes),
+        ),
+    )
+    slots = tuple(
+        CheckpointSlot(
+            name=slot.slot,
+            state_type=slot.role,
+            array_structure_id=slot.structural_abi_fingerprint.fingerprint_sha256,
+            codec_schema_id="feedbax.training.checkpoint_custody.pickle",
+            codec_schema_version="feedbax.training.checkpoint_custody.pickle.v1",
+            blob=BlobRef(digest=slot.sha256, size_bytes=slot.size_bytes),
+        )
+        for slot in manifest.slots
+    )
+    prng_slot = next(
+        (slot for slot in manifest.slots if slot.role == "prng" or slot.slot == "prng"),
+        None,
+    )
+    parent: ExactRef | None = None
+    parent_transaction_id = manifest.segment_lineage.parent_transaction_id
+    if parent_transaction_id is not None:
+        parent_path = root / TRANSACTIONS_DIR_NAME / parent_transaction_id / CHECKPOINT_SET_NAME
+        if not parent_path.is_file():
+            raise CheckpointCustodyError(
+                "continuation checkpoint parent predates native CheckpointSet publication; "
+                f"recreate the source checkpoint with this Feedbax revision: {parent_path}"
+            )
+        parent = CheckpointSet.model_validate_json(parent_path.read_bytes()).exact_ref
+    progress = {
+        key: value
+        for key, value in manifest.completed_coordinate.model_dump(mode="json").items()
+        if value is not None and isinstance(value, (int, float, str))
+    }
+    if manifest.completed_training_batches is not None:
+        progress["completed_training_batches"] = manifest.completed_training_batches
+    manifest_bytes = _durable_json_bytes(manifest.model_dump(mode="json", exclude_none=True))
+    values = {
+        "transaction": ExactRef(
+            domain="checkpoint_transaction",
+            identity=manifest.transaction_id,
+            bytes=BlobRef(digest=sha256_bytes(manifest_bytes), size_bytes=len(manifest_bytes)),
+        ),
+        "training_program_id": run_spec.method_ref.key,
+        "graph": graph_ref,
+        "experiment": experiment_ref,
+        "progress": progress,
+        "prng_state": (
+            None
+            if prng_slot is None
+            else BlobRef(digest=prng_slot.sha256, size_bytes=prng_slot.size_bytes)
+        ),
+        "slots": slots,
+        "continuation": "resume" if parent is not None else "fork",
+        "parent": parent,
+    }
+    return CheckpointSet(checkpoint_id=checkpoint_set_id(**values), **values)
 
 
 def _validate_slot_axes(
@@ -454,6 +549,8 @@ class CheckpointForkResult:
     latest_pointer_path: Path
     manifest: CheckpointTransactionManifest
     latest_pointer: CheckpointLatestPointer
+    checkpoint_set_path: Path
+    checkpoint_set: CheckpointSet
     slot_transfer_modes: Mapping[str, str]
     source_provenance_notices: tuple[CheckpointProvenanceNotice, ...] = ()
 
@@ -1001,6 +1098,31 @@ def produce_checkpoint_custody_archive(
         payload.append(
             (f"checkpoint/{PurePosixPath(manifest_name).parent / slot_name}", blob_path, blob_bytes)
         )
+    checkpoint_set_path = transaction_dir / CHECKPOINT_SET_NAME
+    checkpoint_set_bytes = _read_archive_source(
+        checkpoint_set_path,
+        context="checkpoint set",
+    )
+    try:
+        checkpoint_set = CheckpointSet.model_validate_json(checkpoint_set_bytes)
+    except ValidationError as exc:
+        raise CheckpointReferenceResolutionError(f"checkpoint set is invalid: {exc}") from exc
+    if (
+        checkpoint_set.transaction.identity != resolved.manifest.transaction_id
+        or checkpoint_set.transaction.bytes.digest != resolved.manifest_sha256
+        or checkpoint_set.transaction.bytes.size_bytes != len(manifest_bytes)
+    ):
+        raise CheckpointReferenceResolutionError(
+            "checkpoint set does not identify the authenticated transaction manifest"
+        )
+    payload.insert(
+        2,
+        (
+            f"checkpoint/{PurePosixPath(manifest_name).parent / CHECKPOINT_SET_NAME}",
+            checkpoint_set_path,
+            checkpoint_set_bytes,
+        ),
+    )
     names = [name for name, _, _ in payload]
     if len(names) != len(set(names)):
         raise CheckpointReferenceResolutionError("checkpoint archive member names are not unique")
@@ -1078,7 +1200,7 @@ class CheckpointCustodyFingerprint:
 
 
 def _is_custody_metadata_file(relative: PurePosixPath) -> bool:
-    return relative.name in (LATEST_POINTER_NAME, MANIFEST_NAME)
+    return relative.name in (LATEST_POINTER_NAME, MANIFEST_NAME, CHECKPOINT_SET_NAME)
 
 
 def fingerprint_checkpoint_custody_inputs(
@@ -1349,6 +1471,7 @@ def materialize_checkpoint_custody_archive(
         expected_names = {
             f"checkpoint/{LATEST_POINTER_NAME}",
             f"checkpoint/{_canonical_archive_relative_path(expected_parent_ref.uri, context='ParentRef uri')}",
+            f"checkpoint/{PurePosixPath(expected_parent_ref.uri).parent / CHECKPOINT_SET_NAME}",
             *(
                 f"checkpoint/{PurePosixPath(expected_parent_ref.uri).parent / _canonical_archive_relative_path(slot.relative_path, context='slot relative_path')}"
                 for slot in manifest.slots
@@ -1358,6 +1481,28 @@ def materialize_checkpoint_custody_archive(
             raise CheckpointReferenceResolutionError(
                 "checkpoint archive contains missing or unexpected governed members"
             )
+        _require_external_archive_mapping(
+            parent, parent_identity, child=staging, child_identity=staging_identity
+        )
+        checkpoint_set_path = (
+            staging / PurePosixPath(expected_parent_ref.uri).parent / CHECKPOINT_SET_NAME
+        )
+        checkpoint_set_bytes = checkpoint_set_path.read_bytes()
+        try:
+            checkpoint_set = CheckpointSet.model_validate_json(checkpoint_set_bytes)
+        except ValidationError as exc:
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint archive set is invalid: {exc}"
+            ) from exc
+        if (
+            checkpoint_set.transaction.identity != manifest.transaction_id
+            or checkpoint_set.transaction.bytes.digest != resolved.manifest_sha256
+            or checkpoint_set.transaction.bytes.size_bytes
+            != (staging / Path(*PurePosixPath(expected_parent_ref.uri).parts)).stat().st_size
+        ):
+            raise CheckpointReferenceResolutionError(
+                "checkpoint archive set does not identify its authenticated transaction manifest"
+            )
         if (
             resolved.parent_ref != expected_parent_ref
             or manifest.content_integrity_digest.transaction_root_sha256
@@ -1366,9 +1511,6 @@ def materialize_checkpoint_custody_archive(
             raise CheckpointReferenceResolutionError(
                 "checkpoint archive resolved transaction identity mismatch"
             )
-        _require_external_archive_mapping(
-            parent, parent_identity, child=staging, child_identity=staging_identity
-        )
         evidence = CheckpointCustodyArchiveEvidence(
             schema_id=document["schema_id"],
             schema_version=document["schema_version"],
@@ -3037,9 +3179,20 @@ def write_checkpoint_transaction(
         manifest_path = tmp_dir / MANIFEST_NAME
         _write_json_atomic(manifest_path, manifest.model_dump(mode="json", exclude_none=True))
         manifest_sha256 = _sha256_file(manifest_path)
+        checkpoint_set = _published_checkpoint_set(
+            root=root_path,
+            run_spec=run_spec,
+            manifest=manifest,
+        )
+        checkpoint_set_path = tmp_dir / CHECKPOINT_SET_NAME
+        _write_json_atomic(
+            checkpoint_set_path,
+            checkpoint_set.model_dump(mode="json", exclude_none=True),
+        )
 
         os.replace(tmp_dir, final_dir)
         manifest_path = final_dir / MANIFEST_NAME
+        checkpoint_set_path = final_dir / CHECKPOINT_SET_NAME
         latest_pointer = CheckpointLatestPointer(
             run_id=coordinate.run_id,
             transaction_id=transaction_id,
@@ -3062,6 +3215,8 @@ def write_checkpoint_transaction(
             latest_pointer_path=latest_path,
             manifest=manifest,
             latest_pointer=latest_pointer,
+            checkpoint_set_path=checkpoint_set_path,
+            checkpoint_set=checkpoint_set,
         )
     except Exception:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -5088,9 +5243,20 @@ def fork_checkpoint_transaction(
         manifest_path = tmp_dir / MANIFEST_NAME
         _write_json_atomic(manifest_path, manifest.model_dump(mode="json", exclude_none=True))
         manifest_sha256 = _sha256_file(manifest_path)
+        checkpoint_set = _published_checkpoint_set(
+            root=target_root_path,
+            run_spec=target_run_spec,
+            manifest=manifest,
+        )
+        checkpoint_set_path = tmp_dir / CHECKPOINT_SET_NAME
+        _write_json_atomic(
+            checkpoint_set_path,
+            checkpoint_set.model_dump(mode="json", exclude_none=True),
+        )
         os.replace(tmp_dir, final_dir)
         moved_to_final = True
         manifest_path = final_dir / MANIFEST_NAME
+        checkpoint_set_path = final_dir / CHECKPOINT_SET_NAME
         latest_pointer = CheckpointLatestPointer(
             run_id=coordinate.run_id,
             transaction_id=transaction_id,
@@ -5124,6 +5290,8 @@ def fork_checkpoint_transaction(
             latest_pointer_path=latest_path,
             manifest=manifest,
             latest_pointer=latest_pointer,
+            checkpoint_set_path=checkpoint_set_path,
+            checkpoint_set=checkpoint_set,
             slot_transfer_modes=transfer_modes,
             source_provenance_notices=source.provenance_notices,
         )
@@ -6647,10 +6815,13 @@ def _key_path_to_text(path: Any) -> str:
     return "/" + "/".join(parts)
 
 
+def _durable_json_bytes(payload: Mapping[str, Any]) -> bytes:
+    return json.dumps(payload, sort_keys=True, indent=2).encode("utf-8")
+
+
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = json.dumps(payload, sort_keys=True, indent=2).encode("utf-8")
-    _write_bytes_atomic(path, data)
+    _write_bytes_atomic(path, _durable_json_bytes(payload))
 
 
 def _write_bytes_atomic(path: Path, data: bytes) -> None:

@@ -67,23 +67,11 @@ from feedbax.contracts.manifest import canonical_json_bytes
 
 
 WORKFLOW_PLAN_SCHEMA_ID = "feedbax.workflow.plan"
-WORKFLOW_PLAN_SCHEMA_VERSION_V1 = "feedbax.workflow.plan.v1"
-WORKFLOW_PLAN_SCHEMA_VERSION_V2 = "feedbax.workflow.plan.v2"
-WORKFLOW_PLAN_SCHEMA_VERSION = WORKFLOW_PLAN_SCHEMA_VERSION_V2
+WORKFLOW_PLAN_SCHEMA_VERSION = "feedbax.workflow.plan.v2"
 LEGACY_FULFILLMENT_PLAN_SCHEMA_ID = "feedbax.fulfillment.plan"
 
 #: Enumerated, never inferred. A document from any other version is refused.
-WORKFLOW_PLAN_SUPPORTED_SCHEMA_VERSIONS = (
-    WORKFLOW_PLAN_SCHEMA_VERSION_V1,
-    WORKFLOW_PLAN_SCHEMA_VERSION_V2,
-)
-
-#: Versions this loader accepts, mapped to the version they migrate to. Empty
-#: while v1 is the only version: an unknown version fails closed rather than
-#: being read through a compatibility shim.
-WORKFLOW_PLAN_MIGRATION_TABLE: dict[str, str] = {
-    WORKFLOW_PLAN_SCHEMA_VERSION_V1: WORKFLOW_PLAN_SCHEMA_VERSION_V2,
-}
+WORKFLOW_PLAN_SUPPORTED_SCHEMA_VERSIONS = (WORKFLOW_PLAN_SCHEMA_VERSION,)
 
 #: The two statuses an input edge can carry, and the two bases a status may be
 #: reached on. Both are closed: a third value is a schema change, not a new
@@ -764,48 +752,6 @@ class WorkflowPlan:
         }
 
 
-def migrate_workflow_plan_document(
-    document: Mapping[str, Any], *, field_ref: str = "workflow_plan"
-) -> dict[str, Any]:
-    """Explicitly migrate a v1 plan by making every active edge singular."""
-    version = document.get("schema_version")
-    if version == WORKFLOW_PLAN_SCHEMA_VERSION_V2:
-        return dict(document)
-    if version != WORKFLOW_PLAN_SCHEMA_VERSION_V1:
-        raise UnsupportedWorkflowPlanVersionError(
-            f"unsupported {field_ref} schema_version: {version!r}; migration table="
-            f"{WORKFLOW_PLAN_MIGRATION_TABLE!r}"
-        )
-    for index, edge in enumerate(document.get("edges", [])):
-        if isinstance(edge, Mapping) and "binding" in edge:
-            raise UnsupportedWorkflowPlanVersionError(
-                f"{field_ref} edge {index} carries v2 binding grammar under a v1 version"
-            )
-    migrated = dict(document)
-    migrated["schema_version"] = WORKFLOW_PLAN_SCHEMA_VERSION_V2
-    migrated["edges"] = [
-        {
-            **dict(edge),
-            "binding": (
-                "single_receipt"
-                if edge.get("status") in {"required", "guarded"}
-                else None
-            ),
-        }
-        for edge in document.get("edges", [])
-    ]
-    nodes = tuple(PlanNode.from_record(record) for record in migrated["nodes"])
-    edges = tuple(PlanEdge.from_record(record) for record in migrated["edges"])
-    migrated_plan = build_workflow_plan(
-        LogicalKey.parse(str(migrated["target"])),
-        nodes,
-        edges,
-        origin=migrated.get("origin") or {},
-    )
-    migrated["identity"] = migrated_plan.identity
-    return migrated
-
-
 def read_workflow_plan_document(
     document: Any, *, field_ref: str = "workflow_plan"
 ) -> dict[str, Any]:
@@ -835,10 +781,9 @@ def read_workflow_plan_document(
     if version not in WORKFLOW_PLAN_SUPPORTED_SCHEMA_VERSIONS:
         raise UnsupportedWorkflowPlanVersionError(
             f"unsupported {field_ref} schema_version: {version!r}; supported versions are "
-            f"{list(WORKFLOW_PLAN_SUPPORTED_SCHEMA_VERSIONS)}; no migration is defined "
-            f"(migration table={WORKFLOW_PLAN_MIGRATION_TABLE!r})"
+            f"{list(WORKFLOW_PLAN_SUPPORTED_SCHEMA_VERSIONS)}; migration_intentionally_absent=yes"
         )
-    return migrate_workflow_plan_document(document, field_ref=field_ref)
+    return dict(document)
 
 
 def workflow_plan_from_document(document: Any, *, field_ref: str = "workflow_plan") -> WorkflowPlan:
@@ -1166,11 +1111,8 @@ __all__ = [
     "OPERATION_CACHE_POLICIES",
     "OPERATION_DETERMINISM",
     "OPERATION_EFFECTS",
-    "WORKFLOW_PLAN_MIGRATION_TABLE",
     "WORKFLOW_PLAN_SCHEMA_ID",
     "WORKFLOW_PLAN_SCHEMA_VERSION",
-    "WORKFLOW_PLAN_SCHEMA_VERSION_V1",
-    "WORKFLOW_PLAN_SCHEMA_VERSION_V2",
     "WORKFLOW_PLAN_SUPPORTED_SCHEMA_VERSIONS",
     "ConflictingNodeDeclarationError",
     "DuplicateInputEdgeError",
@@ -1191,7 +1133,6 @@ __all__ = [
     "UnresolvedGuardOutcomeError",
     "UnsupportedWorkflowPlanVersionError",
     "WorkflowPlanIdentityError",
-    "migrate_workflow_plan_document",
     "WorkflowTypeMismatchError",
     "build_workflow_plan",
     "expand_workflow_plan",

@@ -58,14 +58,10 @@ from feedbax.workflow.plan import (
     WorkflowPlan,
     LogicalKey,
     NodeDeclaration,
+    Operation,
     PlanNode,
     expand_workflow_plan,
 )
-from feedbax.workflow.analysis import lower_analysis_operation
-from feedbax.workflow.campaign import lower_campaign_operation
-from feedbax.workflow.evaluation import lower_evaluation_operation
-from feedbax.workflow.fulfillment import lower_fulfillment_operation
-from feedbax.workflow.report import lower_report_operation
 from feedbax.contracts.analysis_bundle_composition import ANALYSIS_BUNDLE_SPEC_SCHEMA_ID
 from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.experiment_compile_lock import (
@@ -93,6 +89,60 @@ from feedbax.contracts.strict_json import strict_json_loads
 #: The filename suffix one compile writes its lock under. It is the emitter's
 #: own naming, restated here so a reader can find locks without a compiler.
 COMPILE_LOCK_SUFFIX = ".compile-lock.json"
+
+
+@dataclass(frozen=True)
+class OperationMetadata:
+    """The operation facts that differ between compiled product layers."""
+
+    type_id: str
+    determinism: str
+    cache_policy: str
+    effect: str
+    capabilities: tuple[str, ...] = ()
+
+
+OPERATION_METADATA = {
+    "campaign": OperationMetadata(
+        "feedbax.operation.train", "seeded", "never", "external", ("training",)
+    ),
+    "evaluation": OperationMetadata(
+        "feedbax.operation.evaluate", "deterministic", "content_addressed", "pure"
+    ),
+    "analysis": OperationMetadata(
+        "feedbax.operation.analyze", "deterministic", "content_addressed", "pure"
+    ),
+    "figure": OperationMetadata(
+        "feedbax.operation.render", "deterministic", "content_addressed", "local"
+    ),
+    "report": OperationMetadata(
+        "feedbax.operation.report", "deterministic", "content_addressed", "publication"
+    ),
+}
+
+
+def lower_operation(
+    layer: str,
+    *,
+    compiled_schema_id: str,
+    semantic_hash: str,
+    input_types: Mapping[str, str],
+) -> Operation:
+    """Lower one compiled product through the declarative layer table."""
+    metadata = OPERATION_METADATA[layer]
+    return Operation(
+        type_id=metadata.type_id,
+        parameters={
+            "compiled_schema_id": compiled_schema_id,
+            "semantic_hash": semantic_hash,
+        },
+        input_types=dict(input_types),
+        output_types={"primary": compiled_schema_id},
+        determinism=metadata.determinism,
+        cache_policy=metadata.cache_policy,
+        effect=metadata.effect,
+        capabilities=metadata.capabilities,
+    )
 
 
 @dataclass(frozen=True)
@@ -547,18 +597,12 @@ def derive_workflow_plan(
                 _check_planned_product(reference, consumer=compiled, upstream=upstream)
             edges.append(_edge_declaration(reference, consumer=compiled))
         input_types = {".".join(edge.role_path): edge.input_type for edge in edges}
-        lower_operation = {
-            "campaign": lower_campaign_operation,
-            "evaluation": lower_evaluation_operation,
-            "analysis": lower_analysis_operation,
-            "figure": lower_fulfillment_operation,
-            "report": lower_report_operation,
-        }[compiled.kind.layer]
         return NodeDeclaration(
             node=PlanNode(
                 key=compiled.key,
                 source_ref=source_ref,
                 operation=lower_operation(
+                    compiled.kind.layer,
                     compiled_schema_id=compiled.schema_id,
                     semantic_hash=compiled.content_hash,
                     input_types=input_types,
@@ -672,6 +716,9 @@ __all__ = [
     "UnsupportedCompiledProductError",
     "derive_workflow_plan",
     "lock_edge_declarations",
+    "lower_operation",
+    "OPERATION_METADATA",
+    "OperationMetadata",
     "read_compiled_envelope",
     "read_compiled_outputs",
     "require_external_record",

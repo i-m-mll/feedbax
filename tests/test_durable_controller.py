@@ -25,6 +25,7 @@ from feedbax.orchestration.controller import (
     provider_inventory_observation,
     run_intent_from_document,
 )
+from feedbax.orchestration.stages import StageEngine
 from feedbax.orchestration.drivers.local import local_driver_registration
 from feedbax.orchestration.drivers.runpod import runpod_driver_registration
 from feedbax.orchestration.gcp_backend import GCP_CONTROLLER_CAPABILITIES
@@ -37,6 +38,16 @@ from feedbax.orchestration.realization import (
 from tests.test_invocation_backend_realization import _sisu_invocation
 from feedbax.web.orchestration.controller import GcpEffectAdapter, StudioController
 from feedbax.web.orchestration.gcp import InstanceInfo, InstanceStatus
+from feedbax.orchestration.transition_authority import assert_disjoint_transition_authorities
+
+
+def test_controller_and_stage_engine_own_disjoint_durable_identity_domains() -> None:
+    assert DurableController.transition_authority.identity_field == "intent_id"
+    assert StageEngine.transition_authority.identity_field == "run_set_id"
+    assert_disjoint_transition_authorities(
+        DurableController.transition_authority,
+        StageEngine.transition_authority,
+    )
 
 
 class _Clock:
