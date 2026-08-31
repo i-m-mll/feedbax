@@ -394,6 +394,24 @@ def _write_authenticated_checkpoint_tree(
     manifest_bytes = json.dumps(manifest, sort_keys=True).encode()
     manifest_path.write_bytes(manifest_bytes)
     manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    (manifest_path.parent / "checkpoint-set.json").write_text(
+        json.dumps(
+            {
+                "schema_id": "feedbax.checkpoint_set",
+                "schema_version": "feedbax.checkpoint_set.v1",
+                "transaction": {
+                    "domain": "checkpoint_transaction",
+                    "identity": parent.id,
+                    "bytes": {
+                        "digest": manifest_sha256,
+                        "size_bytes": len(manifest_bytes),
+                    },
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     (source / "latest.json").write_text(
         json.dumps(
             {
@@ -1631,4 +1649,8 @@ def test_local_driver_executes_authenticated_custody_continuation_with_parent_li
 
     assert resumed_result.checkpoint_writes[0].manifest.parent_lineage[0].transaction_id == (
         parent_ref.id
+    )
+    assert (
+        resumed_result.checkpoint_writes[0].checkpoint_set.parent
+        == parent_write.checkpoint_set.exact_ref
     )

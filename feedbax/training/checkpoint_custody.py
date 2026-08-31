@@ -376,9 +376,9 @@ def _checkpoint_coordinate(
 
 def _published_checkpoint_set(
     *,
-    root: Path,
     run_spec: TrainingRunSpec,
     manifest: CheckpointTransactionManifest,
+    parent_checkpoint_set: CheckpointSet | None = None,
 ) -> CheckpointSet:
     """Project the internal transaction protocol into its public checkpoint identity."""
     binding = manifest.run_contract_binding
@@ -419,16 +419,25 @@ def _published_checkpoint_set(
         (slot for slot in manifest.slots if slot.role == "prng" or slot.slot == "prng"),
         None,
     )
-    parent: ExactRef | None = None
     parent_transaction_id = manifest.segment_lineage.parent_transaction_id
-    if parent_transaction_id is not None:
-        parent_path = root / TRANSACTIONS_DIR_NAME / parent_transaction_id / CHECKPOINT_SET_NAME
-        if not parent_path.is_file():
-            raise CheckpointCustodyError(
-                "continuation checkpoint parent predates native CheckpointSet publication; "
-                f"recreate the source checkpoint with this Feedbax revision: {parent_path}"
-            )
-        parent = CheckpointSet.model_validate_json(parent_path.read_bytes()).exact_ref
+    if parent_transaction_id is None and parent_checkpoint_set is not None:
+        raise CheckpointCustodyError(
+            "checkpoint publication supplied a parent without transaction lineage"
+        )
+    if parent_transaction_id is not None and parent_checkpoint_set is None:
+        raise CheckpointCustodyError(
+            "continuation checkpoint requires its authenticated parent CheckpointSet"
+        )
+    if (
+        parent_checkpoint_set is not None
+        and parent_checkpoint_set.transaction.identity != parent_transaction_id
+    ):
+        raise CheckpointCustodyError(
+            "checkpoint parent publication does not match transaction lineage; "
+            f"lineage={parent_transaction_id!r} "
+            f"publication={parent_checkpoint_set.transaction.identity!r}"
+        )
+    parent = None if parent_checkpoint_set is None else parent_checkpoint_set.exact_ref
     progress = {
         key: value
         for key, value in manifest.completed_coordinate.model_dump(mode="json").items()
@@ -457,6 +466,53 @@ def _published_checkpoint_set(
         "parent": parent,
     }
     return CheckpointSet(checkpoint_id=checkpoint_set_id(**values), **values)
+
+
+def load_checkpoint_set(
+    root: str | Path,
+    transaction_id: str,
+) -> CheckpointSet:
+    """Load one native checkpoint publication bound to its exact manifest bytes."""
+    transaction_root = Path(root).expanduser().resolve() / TRANSACTIONS_DIR_NAME
+    if (
+        not transaction_id.startswith("tx-")
+        or len(transaction_id) != 35
+        or any(character not in "0123456789abcdef" for character in transaction_id[3:])
+    ):
+        raise CheckpointCustodyError(
+            f"invalid native checkpoint transaction identity: {transaction_id!r}"
+        )
+    transaction_dir = transaction_root / transaction_id
+    manifest_path = transaction_dir / MANIFEST_NAME
+    checkpoint_set_path = transaction_dir / CHECKPOINT_SET_NAME
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+        checkpoint_set_bytes = checkpoint_set_path.read_bytes()
+    except OSError as exc:
+        raise CheckpointCustodyError(
+            "native checkpoint transaction is missing its manifest or CheckpointSet; "
+            f"transaction={transaction_id!r}"
+        ) from exc
+    manifest = _load_transaction_manifest(manifest_path)
+    if manifest.transaction_id != transaction_id:
+        raise CheckpointCustodyError(
+            "native checkpoint manifest does not match its transaction directory"
+        )
+    try:
+        checkpoint_set = CheckpointSet.model_validate_json(checkpoint_set_bytes)
+    except ValidationError as exc:
+        raise CheckpointCustodyError(
+            f"native checkpoint set is invalid: {checkpoint_set_path}: {exc}"
+        ) from exc
+    if (
+        checkpoint_set.transaction.identity != transaction_id
+        or checkpoint_set.transaction.bytes.digest != sha256_bytes(manifest_bytes)
+        or checkpoint_set.transaction.bytes.size_bytes != len(manifest_bytes)
+    ):
+        raise CheckpointCustodyError(
+            "native CheckpointSet does not identify its exact transaction manifest"
+        )
+    return checkpoint_set
 
 
 def _validate_slot_axes(
@@ -1341,6 +1397,15 @@ def isolated_checkpoint_probe(
     probe = IsolatedCheckpointProbe(source_root=source, output_root=output_root)
     body_error: BaseException | None = None
     try:
+        latest = _load_latest_pointer(source)
+        load_checkpoint_set(source, latest.transaction_id)
+        source_checkpoint_set = (
+            source / TRANSACTIONS_DIR_NAME / latest.transaction_id / CHECKPOINT_SET_NAME
+        )
+        output_checkpoint_set = (
+            output_root / TRANSACTIONS_DIR_NAME / latest.transaction_id / CHECKPOINT_SET_NAME
+        )
+        _write_bytes_atomic(output_checkpoint_set, source_checkpoint_set.read_bytes())
         yield probe
     except BaseException as exc:  # re-raised below after tripwire and cleanup
         body_error = exc
@@ -3041,6 +3106,7 @@ def write_checkpoint_transaction(
     segment_start_batch: int = 0,
     segment_batch_count: int | None = None,
     segment_parent_transaction_id: str | None = None,
+    segment_parent_checkpoint_set: CheckpointSet | None = None,
     metadata: Mapping[str, Any] | None = None,
     publish_latest: bool = True,
 ) -> CheckpointWriteResult:
@@ -3180,9 +3246,9 @@ def write_checkpoint_transaction(
         _write_json_atomic(manifest_path, manifest.model_dump(mode="json", exclude_none=True))
         manifest_sha256 = _sha256_file(manifest_path)
         checkpoint_set = _published_checkpoint_set(
-            root=root_path,
             run_spec=run_spec,
             manifest=manifest,
+            parent_checkpoint_set=segment_parent_checkpoint_set,
         )
         checkpoint_set_path = tmp_dir / CHECKPOINT_SET_NAME
         _write_json_atomic(
@@ -5244,9 +5310,13 @@ def fork_checkpoint_transaction(
         _write_json_atomic(manifest_path, manifest.model_dump(mode="json", exclude_none=True))
         manifest_sha256 = _sha256_file(manifest_path)
         checkpoint_set = _published_checkpoint_set(
-            root=target_root_path,
             run_spec=target_run_spec,
             manifest=manifest,
+            parent_checkpoint_set=(
+                load_checkpoint_set(source.root, source.manifest.transaction_id)
+                if manifest.segment_lineage.parent_transaction_id is not None
+                else None
+            ),
         )
         checkpoint_set_path = tmp_dir / CHECKPOINT_SET_NAME
         _write_json_atomic(
