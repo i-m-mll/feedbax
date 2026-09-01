@@ -1,16 +1,15 @@
 """The one authoring entrypoint and its direct-dispatch contract.
 
 ``python -m feedbax preflight-experiment-envelope <envelope>`` is the single
-documented authoring command, and Feedbax compiles exactly one authored dialect:
-``feedbax.experiment_envelope.v1``. There is no compiler seam. No registry
-mediates dispatch, no plugin family carries compilers, no registration record
-binds a schema string to a callable, and nothing can be injected between an
-authored envelope and the document it compiles to.
+documented authoring command. Feedbax compiles only its explicitly supported
+authored dialects. There is no compiler seam. No registry mediates dispatch, no
+plugin family carries compilers, no registration record binds a schema string to
+a callable, and nothing can be injected between an authored envelope and the
+document it compiles to.
 
-These tests hold that line from both sides. The built-in dialect compiles with
-no plugin argument at all, and an envelope declaring any other schema is refused
-by name — the schema it stated and the one schema Feedbax supports — rather than
-being routed to something that might claim it.
+These tests hold that line from both sides. A built-in dialect compiles with no
+plugin argument at all, and an envelope declaring any other schema is refused by
+name rather than being routed to something that might claim it.
 """
 
 from __future__ import annotations
@@ -203,11 +202,11 @@ def test_a_foreign_schema_is_rejected_naming_both_schemas(
     assert not (tmp_path / fixture.OUTPUT_DIRECTORY).exists()
 
 
-def test_require_builtin_envelope_schema_accepts_only_the_one_dialect() -> None:
+def test_require_builtin_envelope_schema_accepts_only_supported_dialects() -> None:
     for supported in EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS:
         require_builtin_envelope_schema(supported)
 
-    for schema in (FOREIGN_SCHEMA, "", "feedbax.experiment_envelope.v6"):
+    for schema in (FOREIGN_SCHEMA, ""):
         with pytest.raises(ExperimentEnvelopeRejection) as caught:
             require_builtin_envelope_schema(schema)
         assert caught.value.category is (

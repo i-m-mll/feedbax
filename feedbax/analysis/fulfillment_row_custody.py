@@ -71,9 +71,9 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from feedbax.analysis.fulfillment_derivation import (
+from feedbax.workflow.derivation import (
     CompiledEnvelope,
-    FulfillmentDerivationError,
+    WorkflowDerivationError,
 )
 from feedbax.contracts.figures import FigureInputAuthority, FigureInputAuthoritySpec
 from feedbax.contracts.figure_roles import (
@@ -102,7 +102,7 @@ RESOLVED_ROW_SET_CONTRIBUTION = "resolved_row_set"
 ROW_CUSTODY_CONTRIBUTION = "row_custody"
 
 
-class RowCustodyFulfillmentError(FulfillmentDerivationError):
+class RowCustodyFulfillmentError(WorkflowDerivationError):
     """A row-expanded figure's per-row custody cannot be located or believed.
 
     Every instance names the compiled node it refuses, so the refusal points at a
@@ -249,9 +249,7 @@ def resolve_row_custody_overlay(
     _require_custody_belongs_to_cut(bindings, index, locator=locator, ref=ref)
     resolved = _resolve_inputs(record, bindings, ref=ref, custody_ref=locator.ref)
     per_row = tuple(item for item in resolved.inputs if item.binding == "per_row")
-    inputs, authorities = figure_input_binding_records(
-        record.request, per_row, authenticated=True
-    )
+    inputs, authorities = figure_input_binding_records(record.request, per_row, authenticated=True)
     return RowCustodyOverlay(
         inputs=tuple(ParentRef.model_validate(item) for item in inputs),
         authorities=tuple(FigureInputAuthority.model_validate(item) for item in authorities),
@@ -265,8 +263,7 @@ def _validated(model: type, payload: Any, *, ref: str, what: str):
         return model.model_validate(payload)
     except (ValueError, TypeError) as exc:
         raise RowCustodyFulfillmentError(
-            f"records an identity contribution {what!r} that is not a "
-            f"{model.__name__}: {exc}",
+            f"records an identity contribution {what!r} that is not a {model.__name__}: {exc}",
             ref=ref,
         ) from exc
 

@@ -53,7 +53,7 @@ def test_sweep_matrix_cross_expands_cartesian_coordinates(application_registry_b
         task_spec=task_spec,
         task_binding_spec=None,
         default_name="Cross",
-        method_registry=application_registry_bundle.training_methods,
+        method_registry=application_registry_bundle.training_programs,
         row_lowerer_registry=application_registry_bundle.row_lowerers,
     )
 
@@ -83,7 +83,7 @@ def test_studio_sweep_adapter_returns_shared_materialized_run_set(
         task_spec=task_spec,
         task_binding_spec=None,
         default_name="Fallback",
-        method_registry=application_registry_bundle.training_methods,
+        method_registry=application_registry_bundle.training_programs,
         row_lowerer_registry=application_registry_bundle.row_lowerers,
     )
 
@@ -118,7 +118,7 @@ def test_sweep_matrix_zip_rejects_mismatched_lengths(application_registry_bundle
             task_spec=task_spec,
             task_binding_spec=None,
             default_name="Zip",
-            method_registry=application_registry_bundle.training_methods,
+            method_registry=application_registry_bundle.training_programs,
             row_lowerer_registry=application_registry_bundle.row_lowerers,
         )
 
@@ -131,7 +131,11 @@ def test_sweep_matrix_groups_zip_internally_and_cross_across_groups(
     expanded = expand_sweep_matrix(
         {
             "axes": [
-                {"id": "lr", "path": "training_spec.optimizer.params.learning_rate", "values": [1e-3, 1e-4]},
+                {
+                    "id": "lr",
+                    "path": "training_spec.optimizer.params.learning_rate",
+                    "values": [1e-3, 1e-4],
+                },
                 {"id": "seed", "path": "seed", "values": [10, 20]},
                 {"id": "weight", "path": "training_spec.loss.weight", "values": [0, 1e-5, 1e-4]},
             ],
@@ -148,7 +152,7 @@ def test_sweep_matrix_groups_zip_internally_and_cross_across_groups(
         task_spec=task_spec,
         task_binding_spec=None,
         default_name="Grouped",
-        method_registry=application_registry_bundle.training_methods,
+        method_registry=application_registry_bundle.training_programs,
         row_lowerer_registry=application_registry_bundle.row_lowerers,
     )
 
@@ -186,7 +190,7 @@ def test_sweep_matrix_rejects_grouped_designs_that_omit_declared_axes(
             task_spec=task_spec,
             task_binding_spec=None,
             default_name="Grouped",
-            method_registry=application_registry_bundle.training_methods,
+            method_registry=application_registry_bundle.training_programs,
             row_lowerer_registry=application_registry_bundle.row_lowerers,
         )
 
@@ -213,7 +217,7 @@ def test_sweep_matrix_rejects_typo_axis_path_without_creating_fields(
             task_spec=task_spec,
             task_binding_spec=None,
             default_name="Typo",
-            method_registry=application_registry_bundle.training_methods,
+            method_registry=application_registry_bundle.training_programs,
             row_lowerer_registry=application_registry_bundle.row_lowerers,
         )
     assert "weigth" not in training_spec["loss"]
@@ -254,12 +258,14 @@ def test_sweep_matrix_expands_ranges_and_seeded_sampler(application_registry_bun
         task_spec=task_spec,
         task_binding_spec=None,
         default_name="Ranges",
-        method_registry=application_registry_bundle.training_methods,
+        method_registry=application_registry_bundle.training_programs,
         row_lowerer_registry=application_registry_bundle.row_lowerers,
     )
 
     assert [run.task_spec["params"]["duration"] for run in expanded.runs] == [10, 15, 20]
-    assert pytest.approx([run.training_spec["optimizer"]["params"]["learning_rate"] for run in expanded.runs]) == [
+    assert pytest.approx(
+        [run.training_spec["optimizer"]["params"]["learning_rate"] for run in expanded.runs]
+    ) == [
         1e-4,
         1e-3,
         1e-2,
@@ -293,7 +299,7 @@ def test_sweep_matrix_manual_coordinates_prune_expanded_design(application_regis
         task_spec=task_spec,
         task_binding_spec=None,
         default_name="Manual",
-        method_registry=application_registry_bundle.training_methods,
+        method_registry=application_registry_bundle.training_programs,
         row_lowerer_registry=application_registry_bundle.row_lowerers,
     )
 

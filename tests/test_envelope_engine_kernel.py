@@ -26,7 +26,7 @@ from feedbax.contracts.experiment_compile_lock import (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_ID,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
-    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
     RUN_RECEIPT_ONLY_FACTS,
     CompileLockInputs,
     CompilerContract,
@@ -45,6 +45,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3,
+    EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V4,
     EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID,
     EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
@@ -53,6 +54,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1,
     REPORT_OUTPUT,
     TRAINING_OUTPUT_V6,
@@ -63,6 +65,18 @@ from feedbax.contracts.run_composition import (
     CompositionNode,
     InlineIntentParent,
     authored_envelope_hash,
+)
+from feedbax.contracts.training import (
+    LossTermSpec,
+    ObjectiveSlotSpec,
+    TaskSpec,
+    TrainingConfig,
+    TrainingRunSpec,
+    WorkerExecutionSpec,
+    standard_supervised_effective_phase_spec,
+    standard_supervised_method_contract,
+    standard_supervised_method_payload,
+    standard_supervised_method_ref,
 )
 from feedbax.envelope import (
     CANONICAL_PIN_ALGORITHM,
@@ -86,6 +100,7 @@ from feedbax.envelope.entrypoint import DECLARED_LAYERS
 from feedbax.training.run_matrix import materialize_adapted_run_matrix
 
 from tests.fake_project_experiment import (
+    ANALYSIS_BASE,
     ENVELOPE_DIRECTORY,
     OUTPUT_DIRECTORY,
     PROJECT_DECLARATION,
@@ -96,7 +111,6 @@ from tests.fake_project_experiment import (
     write_json,
     write_repo,
 )
-from tests.test_training_method_plugin_cli import _standard_run_spec_payload
 
 TRAINING_FAMILY = "training_run_matrix"
 TRAINING_SCHEMA_ID = "feedbax.spec.training_run_matrix"
@@ -116,6 +130,45 @@ def repo(tmp_path: Path) -> Path:
 def kernel() -> Any:
     """Return the one compiler bound to the fake project's data declaration."""
     return kernel_for(PROJECT_DECLARATION)
+
+
+def _standard_run_spec_payload() -> dict[str, object]:
+    spec = TrainingRunSpec(
+        graph={
+            "inline": {
+                "nodes": {
+                    "gain": {
+                        "type": "Gain",
+                        "params": {"gain": 1.0},
+                        "input_ports": ["input"],
+                        "output_ports": ["output"],
+                    }
+                },
+                "wires": [],
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+                "input_bindings": {"input": ("gain", "input")},
+                "output_bindings": {"output": ("gain", "output")},
+            }
+        },
+        task=TaskSpec(type="ToyTask", params={"n_steps": 1}),
+        training_config=TrainingConfig(n_batches=1, batch_size=1),
+        objective=ObjectiveSlotSpec(
+            loss=LossTermSpec(
+                type="target_state",
+                label="target",
+                selector="port:gain.output",
+                target_value=[0.0],
+            )
+        ),
+        method_ref=standard_supervised_method_ref(),
+        method_payload=standard_supervised_method_payload(),
+        worker_execution=WorkerExecutionSpec(
+            method_contract=standard_supervised_method_contract(),
+            effective_phase=standard_supervised_effective_phase_spec(),
+        ),
+    )
+    return spec.model_dump(mode="json", exclude_none=True)
 
 
 def _root_envelope(root: dict[str, Any]) -> dict[str, Any]:
@@ -1084,6 +1137,65 @@ def test_a_receipt_without_a_digest_is_a_locator_not_a_fabricated_authentication
     }
 
 
+def test_v6_complete_receipt_set_lowers_to_the_v3_lock_binding(repo: Path) -> None:
+    path = envelope_path(repo, "set-summary")
+    write_envelope(
+        path,
+        {
+            "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
+            "name": "set-summary",
+            "base": ANALYSIS_BASE,
+            "analysis": {
+                "target": "run",
+                "subjects": [
+                    {
+                        "alias": "evaluation",
+                        "role": "evaluation",
+                        "binding": "complete_receipt_set",
+                        "ref": {"kind": "envelope", "alias": "widened-probe"},
+                    }
+                ],
+            },
+        },
+    )
+    outcome = kernel().compile_envelope_file(path, repo_root=repo)
+    assert outcome.compile_lock["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3
+    assert outcome.compile_lock["references"][0]["consumer"] == {
+        "consumer": "analysis_receipt_set",
+        "alias": "evaluation",
+        "role": "evaluation",
+    }
+
+
+def test_complete_receipt_set_rejects_a_single_receipt_reference(repo: Path) -> None:
+    path = envelope_path(repo, "set-receipt")
+    write_envelope(
+        path,
+        {
+            "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
+            "name": "set-receipt",
+            "base": ANALYSIS_BASE,
+            "analysis": {
+                "target": "run",
+                "subjects": [
+                    {
+                        "alias": "evaluation",
+                        "role": "evaluation",
+                        "binding": "complete_receipt_set",
+                        "ref": {
+                            "kind": "receipt",
+                            "manifest_kind": "EvaluationRunManifest",
+                            "manifest_id": "one",
+                        },
+                    }
+                ],
+            },
+        },
+    )
+    with pytest.raises(ExperimentEnvelopeRejection, match="names exactly one receipt"):
+        kernel().compile_envelope_file(path, repo_root=repo)
+
+
 def test_an_authored_receipt_with_a_digest_is_quoted_as_authenticated(
     repo: Path,
 ) -> None:
@@ -1548,9 +1660,7 @@ def test_prior_and_authority_free_root_document_lock_bytes_match_signed_base(
         document["schema"] = schema
         write_envelope(path, document)
         outcome = kernel().compile_envelope_file(path, repo_root=repo)
-        assert outcome.compile_lock["schema_version"] == (
-            EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2
-        )
+        assert outcome.compile_lock["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION
         assert (
             canonical_sha256(
                 {"document": outcome.document, "lock": _lock_at_version_v1(outcome.compile_lock)}
@@ -3199,7 +3309,7 @@ def test_a_current_root_figure_carries_its_input_contracts_into_the_lock(repo: P
     )
 
     assert outcome.compile_lock["compiler_contract"]["contract_version"] == (
-        EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION
+        EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V4
     )
     assert outcome.document["inputs"] == []
     assert outcome.document["input_authorities"] == []
@@ -3795,16 +3905,22 @@ def test_a_schemaless_report_parent_is_refused_rather_than_admitted(repo: Path) 
     assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
 
 
-def test_the_compiled_report_is_the_document_fulfillment_plans_against(
+def test_the_compiled_report_is_the_document_workflow_plans_against(
     repo: Path,
 ) -> None:
-    from feedbax.analysis.fulfillment_derivation import COMPILED_PRODUCT_KINDS
+    from feedbax.workflow.derivation import COMPILED_PRODUCT_KINDS, lower_operation
 
     outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-report"), repo_root=repo)
 
     kind = COMPILED_PRODUCT_KINDS[outcome.document["schema_id"]]
     assert kind.layer == "report"
-    assert kind.executable
+    operation = lower_operation(
+        "report",
+        compiled_schema_id=kind.schema_id,
+        semantic_hash="a" * 64,
+        input_types={},
+    )
+    assert operation.type_id == "feedbax.operation.report"
 
 
 def test_a_row_slice_is_expressed_as_a_tag_over_the_same_row_index(repo: Path) -> None:
@@ -4007,6 +4123,30 @@ def test_a_bound_role_carries_the_digest_of_the_figure_it_is_bound_to(
     assert entry["figure_spec_sha256"] == planned["compiled_content_hash"]
     assert entry["figure_spec_sha256"] == canonical_sha256(figure.document)
     assert entry["figure_spec_sha256"] != "a" * 64
+    assert planned["consumer"] == {
+        "consumer": "report_parent",
+        "parent_kind": "feedbax.spec.figure",
+        "parent_id": "span",
+    }
+
+
+def test_a_report_binding_refuses_a_target_without_an_authored_input_role(repo: Path) -> None:
+    from tests.fake_project_experiment import REPORT_BASE
+
+    document = json.loads((repo / REPORT_BASE).read_text())
+    document["params"]["sections"][0]["tables"] = [{"columns": ["arm"], "rows": [["near"]]}]
+    write_json(repo / REPORT_BASE, document)
+    _report_bindings(
+        repo,
+        [{**FIGURE_BINDING, "role_path": "params.sections.0.tables.0"}],
+    )
+
+    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
+        _compile_report(repo)
+
+    assert excinfo.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+    assert excinfo.value.field == "report.bindings[0].role_path"
+    assert "no nonempty 'input_role'" in str(excinfo.value)
 
 
 def test_a_role_already_carrying_its_bound_digest_derives_no_patch(repo: Path) -> None:

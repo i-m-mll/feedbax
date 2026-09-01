@@ -118,9 +118,10 @@ describe('pipeline collection summaries', () => {
         }],
       } as any,
       {
-        currentSpecHashes: currentDraftSpecHashesForScenario({
-          training_spec: currentTrainingSpec,
-        }),
+        currentSpecHashes: currentDraftSpecHashesForScenario(
+          { training_spec: currentTrainingSpec },
+          { schema_id: 'feedbax.spec.graph', schema_version: '5' }
+        ),
       }
     );
 
@@ -418,14 +419,14 @@ describe('pipeline collection summaries', () => {
         if (stage.id === trainStage.id) {
           return {
             ...stage,
-            execution_spec: { protocol: { compute_target: 'runpod' } },
+            metadata: { backend_realization: { execution_target: 'runpod' } },
             manifest_refs: [pendingTrain, superseded],
           };
         }
         if (stage.id === evalStage.id) {
           return {
             ...stage,
-            execution_spec: { protocol: { compute_target: 'local' } },
+            metadata: { backend_realization: { execution_target: 'local' } },
             manifest_refs: [pendingEval],
           };
         }

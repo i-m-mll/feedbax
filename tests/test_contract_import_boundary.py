@@ -187,11 +187,9 @@ def test_canonical_contract_studio_provider_and_execution_imports() -> None:
         from feedbax.contracts import manifest
         from feedbax.contracts import migrations
         from feedbax.contracts import retention_artifact_schema
-        from feedbax.execution.backends import render_modal_app
-        from feedbax.execution.models import ExecutionPlan, ExecutionSpec, LocalExecutionResult
-        from feedbax.execution.planning import default_feedbax_sources, prepare_execution_plan
+        from feedbax.execution.records import Invocation
         from feedbax.integrations import provider
-        from feedbax.execution.local import run_local_execution
+        from feedbax.orchestration.realization import Attempt, BackendPlan
         from feedbax.studio import execution as studio_execution
         from feedbax.studio import protocol as studio_protocol
         from feedbax.studio import schema as studio_schema
@@ -201,10 +199,8 @@ def test_canonical_contract_studio_provider_and_execution_imports() -> None:
             "feedbax.contracts.manifest",
             "feedbax.contracts.migrations",
             "feedbax.contracts.retention_artifact_schema",
-            "feedbax.execution.backends",
-            "feedbax.execution.models",
-            "feedbax.execution.planning",
-            "feedbax.execution.local",
+            "feedbax.execution.records",
+            "feedbax.orchestration.realization",
             "feedbax.integrations.provider",
             "feedbax.studio.execution",
             "feedbax.studio.protocol",
@@ -226,13 +222,9 @@ def test_canonical_contract_studio_provider_and_execution_imports() -> None:
             "enumerate_studio_schema_registry": (
                 studio_schema.enumerate_studio_schema_registry.__module__
             ),
-            "ExecutionPlan": ExecutionPlan.__module__,
-            "ExecutionSpec": ExecutionSpec.__module__,
-            "LocalExecutionResult": LocalExecutionResult.__module__,
-            "default_feedbax_sources": default_feedbax_sources.__module__,
-            "prepare_execution_plan": prepare_execution_plan.__module__,
-            "render_modal_app": render_modal_app.__module__,
-            "run_local_execution": run_local_execution.__module__,
+            "Invocation": Invocation.__module__,
+            "BackendPlan": BackendPlan.__module__,
+            "Attempt": Attempt.__module__,
         }
         print(json.dumps(checks, sort_keys=True))
         """
@@ -243,11 +235,9 @@ def test_canonical_contract_studio_provider_and_execution_imports() -> None:
         "feedbax.contracts.manifest",
         "feedbax.contracts.migrations",
         "feedbax.contracts.retention_artifact_schema",
-        "feedbax.execution.backends",
-        "feedbax.execution.local",
-        "feedbax.execution.models",
-        "feedbax.execution.planning",
+        "feedbax.execution.records",
         "feedbax.integrations.provider",
+        "feedbax.orchestration.realization",
         "feedbax.studio.execution",
         "feedbax.studio.protocol",
         "feedbax.studio.schema",
@@ -261,13 +251,9 @@ def test_canonical_contract_studio_provider_and_execution_imports() -> None:
     assert payload["prepare_studio_training_execution"] == "feedbax.studio.execution"
     assert payload["parse_positive_n_steps"] == "feedbax.studio.protocol"
     assert payload["enumerate_studio_schema_registry"] == "feedbax.studio.schema"
-    assert payload["ExecutionPlan"] == "feedbax.execution.models"
-    assert payload["ExecutionSpec"] == "feedbax.execution.models"
-    assert payload["LocalExecutionResult"] == "feedbax.execution.models"
-    assert payload["default_feedbax_sources"] == "feedbax.execution.planning"
-    assert payload["prepare_execution_plan"] == "feedbax.execution.planning"
-    assert payload["render_modal_app"] == "feedbax.execution.backends"
-    assert payload["run_local_execution"] == "feedbax.execution.local"
+    assert payload["Invocation"] == "feedbax.execution.records"
+    assert payload["BackendPlan"] == "feedbax.orchestration.realization"
+    assert payload["Attempt"] == "feedbax.orchestration.realization"
 
 
 def test_residual_root_compatibility_facades_are_absent() -> None:

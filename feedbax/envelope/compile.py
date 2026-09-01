@@ -67,6 +67,7 @@ from feedbax.contracts.applicability_rules import (
 from feedbax.contracts.authoring_budget import AuthoringBudgets
 from feedbax.contracts.experiment_compile_lock import (
     AnalysisInputBinding,
+    AnalysisReceiptSetBinding,
     AuthenticatedReceiptReference,
     CheckpointInitializationBinding,
     CompileLockInputs,
@@ -113,6 +114,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     LayerOutputContract,
     NotApplicableAuthoring,
     ReceiptReference,
+    ReportBindingAuthoring,
     ReportLayerAuthoring,
     CompositionTrainingRootAuthoring,
     ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
@@ -1667,18 +1669,28 @@ def _lower_analysis(context: LayerCompileContext) -> LoweredLayer:
         patches.append(OverridePatch(path="analysis_type", op="replace", value=authored.recipe))
     prefix = "params" if authored.target == "run" else "params_base"
     patches.extend(_params_patches(authored.params, prefix))
-    references = [
-        _reference_for(
-            context,
-            subject.ref,
-            role_path=f"inputs.{subject.alias}",
-            field=f"analysis.subjects[{index}].ref",
-            consumer_of=lambda _kind, _id, subject=subject: AnalysisInputBinding(
-                alias=subject.alias, role=subject.role
-            ),
+    references = []
+    for index, subject in enumerate(authored.subjects):
+        if subject.binding == "complete_receipt_set" and isinstance(subject.ref, ReceiptReference):
+            _reject(
+                ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+                f"analysis.subjects[{index}].binding",
+                "complete_receipt_set binds a set-valued planned product; a receipt "
+                "locator or authenticated receipt names exactly one receipt",
+            )
+        references.append(
+            _reference_for(
+                context,
+                subject.ref,
+                role_path=f"inputs.{subject.alias}",
+                field=f"analysis.subjects[{index}].ref",
+                consumer_of=lambda _kind, _id, subject=subject: (
+                    AnalysisReceiptSetBinding(alias=subject.alias, role=subject.role)
+                    if subject.binding == "complete_receipt_set"
+                    else AnalysisInputBinding(alias=subject.alias, role=subject.role)
+                ),
+            )
         )
-        for index, subject in enumerate(authored.subjects)
-    ]
     # A bundle's root set is the one thing about a bundle a predicate cannot
     # pin: the predicate re-selects whatever the manifest repository holds at
     # execution time. Authoring the roots puts each one in the lock as an
@@ -1788,9 +1800,7 @@ def _root_input_contract(item: FigureInputAuthoring) -> FigureRoleBindingContrac
     """
     if item.contract is None:
         return None
-    return FigureRoleBindingContract.model_validate(
-        item.contract.binding_contract(item.input_role)
-    )
+    return FigureRoleBindingContract.model_validate(item.contract.binding_contract(item.input_role))
 
 
 def _lower_figure_root(
@@ -2156,8 +2166,14 @@ def _lower_report(context: LayerCompileContext) -> LoweredLayer:
             binding.ref,
             role_path=binding.role_path,
             field=f"report.bindings[{index}].ref",
-            consumer_of=lambda kind, identifier: ReportParentBinding(
-                parent_kind=kind, parent_id=identifier
+            consumer_of=lambda kind, identifier, binding=binding, index=index: ReportParentBinding(
+                parent_kind=kind,
+                parent_id=_report_parent_input_role(
+                    context,
+                    binding,
+                    fallback=identifier,
+                    field=f"report.bindings[{index}]",
+                ),
             ),
         )
         for index, binding in enumerate(authored.bindings)
@@ -2169,6 +2185,46 @@ def _lower_report(context: LayerCompileContext) -> LoweredLayer:
         deltas=_one_delta(context, derived, authored.delta),
         references=references,
     )
+
+
+def _report_parent_input_role(
+    context: LayerCompileContext,
+    binding: ReportBindingAuthoring,
+    *,
+    fallback: str,
+    field: str,
+) -> str:
+    """Return the consumer role a report binding contributes to its parent edge.
+
+    Feedbax-owned ordered reports name each included figure by ``input_role`` in
+    their pinned params. That role, rather than the producer envelope's name,
+    is the only name the report recipe accepts for the authenticated parent.
+    Other report types own their params and therefore retain their explicit
+    binding identifier without Feedbax trying to interpret their content.
+    """
+    document = context.parent.pinned.document
+    if str(document.get("report_type")) not in REPORT_BINDING_STATE_REPORT_TYPES:
+        return fallback
+    params_model = REPORT_OUTPUT.params_model(document)
+    node = _resolve_role_node(document, binding.role_path)
+    if not isinstance(node, Mapping):
+        # A path absent from the inherited document is an opaque lock-only
+        # binding. It supplies no ordered-report node to project and remains the
+        # report recipe's own vocabulary, exactly as an unowned report type is.
+        return fallback
+    node_model = _role_node_model(params_model, binding.role_path, field=field)
+    input_role = node.get(REPORT_INPUT_ROLE_FIELD)
+    if not isinstance(input_role, str) or not input_role.strip():
+        _reject(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            f"{field}.role_path",
+            f"{binding.role_path!r} targets {node_model.__name__}, which states no nonempty "
+            f"{REPORT_INPUT_ROLE_FIELD!r}; the compiler cannot derive the input role for a "
+            "report parent the ordered report can consume",
+            correct_home="bind an included figure entry with an authored input_role, or state "
+            "the role not_applicable",
+        )
+    return input_role
 
 
 def _paths_overlap(left: str, right: str) -> bool:

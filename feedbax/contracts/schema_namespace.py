@@ -8,6 +8,8 @@ families must use one of these namespaces instead of inventing flat
 - ``feedbax.manifest.*`` for durable execution, artifact, provider, and manifest
   records.
 - ``feedbax.orchestration.*`` for durable run-orchestration control documents.
+- the fixed compiler-root identities declared in
+  ``feedbax.contracts.scientific_compiler_schema``.
 - ``feedbax.run_event`` for the canonical training-run event stream envelope.
 - ``feedbax.component.<component>.params`` for globally named component
   parameter payload schemas.
@@ -22,6 +24,23 @@ from __future__ import annotations
 
 from enum import Enum
 
+from feedbax.contracts.scientific_compiler_schema import (
+    COMPILATION_FAILURE_SCHEMA_ID,
+    COMPILATION_RECORD_SCHEMA_ID,
+    GRAPH_DOCUMENT_SCHEMA_ID,
+    RESOLVED_GRAPH_SCHEMA_ID,
+)
+
+
+_SCIENTIFIC_COMPILER_SCHEMA_IDS = frozenset(
+    {
+        COMPILATION_FAILURE_SCHEMA_ID,
+        COMPILATION_RECORD_SCHEMA_ID,
+        GRAPH_DOCUMENT_SCHEMA_ID,
+        RESOLVED_GRAPH_SCHEMA_ID,
+    }
+)
+
 
 class SchemaNamespaceError(ValueError):
     """Raised when a Feedbax schema identity violates the taxonomy."""
@@ -35,6 +54,7 @@ class SchemaNamespaceKind(str, Enum):
     ORCHESTRATION = "orchestration"
     RUN_EVENT = "run_event"
     COMPONENT_PARAMS = "component_params"
+    SCIENTIFIC_COMPILER = "scientific_compiler"
     EXTERNAL = "external"
 
 
@@ -50,6 +70,8 @@ def classify_schema_identity(schema_id: str) -> SchemaNamespaceKind:
         return SchemaNamespaceKind.MANIFEST
     if schema_id.startswith("feedbax.orchestration."):
         return SchemaNamespaceKind.ORCHESTRATION
+    if schema_id in _SCIENTIFIC_COMPILER_SCHEMA_IDS:
+        return SchemaNamespaceKind.SCIENTIFIC_COMPILER
     if schema_id == "feedbax.run_event":
         return SchemaNamespaceKind.RUN_EVENT
     if schema_id.startswith("feedbax.component.") and schema_id.endswith(".params"):
@@ -59,7 +81,7 @@ def classify_schema_identity(schema_id: str) -> SchemaNamespaceKind:
             "Feedbax schema identity must use a governed namespace: "
             f"schema_id={schema_id!r}, expected_prefixes=('feedbax.spec.', "
             "'feedbax.manifest.', 'feedbax.orchestration.', 'feedbax.run_event', "
-            "'feedbax.component.<component>.params')"
+            "'feedbax.component.<component>.params', registered scientific compiler roots)"
         )
     return SchemaNamespaceKind.EXTERNAL
 

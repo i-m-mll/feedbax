@@ -21,9 +21,9 @@ Backend:
 - `GraphSpec` v3 (`feedbax/contracts/graph.py`) is recursive: composite
   interiors live in a sibling `subgraphs: Dict[str, GraphSpec]` keyed by node
   id — never a field on `ComponentSpec`. `WireSpec` is directed and carries no
-  dtype; port typing lives on `ComponentMeta.port_types`.
+  dtype; port typing lives on `DeclaredComponent.compiler.port_types`.
 - The "requires a subgraph" rule is general and enforced at four layers
-  (`spec_to_graph`, `studio/schema.py::_missing_subgraph_issues`,
+  (`compile_graph`, `studio/schema.py::_missing_subgraph_issues`,
   `prototypes.py`, `integrations/provider.py`): `is_composite and builder is
   None` ⇒ hard error when no interior exists. But the rule cannot distinguish
   "needs a causal GraphSpec interior" from "needs a different formalism
@@ -38,7 +38,7 @@ Backend:
   diffrax+optimistix stepping harness.
 - **The crux gap**: `AcausalSystem` is registered in the component registry
   (palette-visible, `is_composite=True`) but has no builder and no
-  `spec_to_graph` path; the acausal element classes (`Mass`, `LinearSpring`,
+  `compile_graph` path; the acausal element classes (`Mass`, `LinearSpring`,
   `Ground`, …) are not registered at all. Ditto
   `AnalyticalMusculoskeletalPlant` (registered, no builder;
   `_DISPLAY_ONLY_MESSAGES`). CDE templates are display-only because their
@@ -106,7 +106,7 @@ class DomainMeta(BaseModel):
     compiler_id: str             # entry in the domain-compiler registry
 ```
 
-`ComponentMeta` gains two fields:
+The `DeclaredComponent` compiler facet carries two fields:
 
 - `domain: str` — where this component may be *placed* (replaces the
   hardcoded frontend `CONTEXT_*` tables). Acausal elements declare
@@ -167,7 +167,7 @@ objects become the *compiled* form, built from specs by the domain compiler.
 
 Registry work: register every acausal element (`Mass`, `LinearSpring`,
 `LinearDamper`, `Ground`, `ForceSource`, `PrescribedMotion`, sensors,
-`Inertia`, `TorsionalSpring`, `GearRatio`, …) as `ComponentMeta` with
+`Inertia`, `TorsionalSpring`, `GearRatio`, …) as component declarations with
 `domain="feedbax.domain.acausal"`, param schemas, and **conserving-port**
 declarations (port kind: `conserving` vs `signal`, with across/through
 variable names and physical domain — an extension of `PortTypeSpec`).
@@ -178,7 +178,7 @@ Each domain registers a compiler: `interior spec → Component` (acausal:
 specs → elements/connections → `assemble_system` → `AcausalSystem`). Two
 integration points:
 
-1. **Build time (worker)**: `spec_to_graph` dispatches on `interior_domain`
+1. **Build time (worker)**: `compile_graph` dispatches on `interior_domain`
    through the domain-compiler registry instead of literal type strings. The
    worker always compiles from the spec — the graph is the model; no cached
    artifact is ever trusted.
@@ -303,7 +303,7 @@ up (`getSubgraphContext` never returns it). A `Network` interior is an
 ordinary causal graph, so an *exclusive* filter is semantically wrong (it
 would forbid nesting a `Subgraph`, `Constant`, etc.). Decision: delete it
 with the other hardcoded tables. If soft guidance proves wanted later, add an
-optional `suggested_categories: list[str]` hint to `ComponentMeta` for
+optional `suggested_categories: list[str]` hint to the component Studio facet for
 composite types that floats categories to the top of the palette without
 hiding anything — registry-driven, never exclusive.
 
@@ -435,19 +435,19 @@ compile report shows `stale`, not `ok`.
   palette switches + canvas tint; drop causal component → rejected with
   named rule; edit interior → badge goes `stale`; compile → `ok`; reload →
   badge/positions/viewport survive; parent pip reflects child error.
-- Worker: `spec_to_graph` on a graph containing an acausal node produces a
+- Worker: `compile_graph` on a graph containing an acausal node produces a
   running `AcausalSystem`; missing interior → domain-specific hard error.
 
 ## 11. Phasing
 
 - **A — Domain plumbing** (unblocks everything): `DomainMeta` registry +
-  `/api/domains`; `domain`/`interior_domain` on `ComponentMeta`; frontend
+  `/api/domains`; `domain`/`interior_domain` on the component compiler facet; frontend
   `DomainContext` consuming registry (delete the five hardcoded tables);
   compatibility-matrix enforcement (closes `a8efe7e`); generalized
   missing-interior errors keyed on `interior_domain`.
 - **B — Acausal end-to-end**: `AcausalGraphSpec` family + GraphSpec v4;
   register acausal elements + adapters; domain compiler
-  (spec → assemble_system → AcausalSystem) wired into `spec_to_graph`;
+  (spec → assemble_system → AcausalSystem) wired into `compile_graph`;
   compile endpoint + report cache; undirected edge renderer + conserving
   ports; status pips + diagnostics panel + balance meter; structured
   diagnostic transport.

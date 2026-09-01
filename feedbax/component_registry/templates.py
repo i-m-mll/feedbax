@@ -15,11 +15,11 @@ from feedbax.contracts.graphs.mechanics_templates import (
     two_link_arm_6muscle_template_graph,
 )
 
-from .meta import ComponentMeta, _template_ui_state
+from .declarations import DeclaredComponent, _template_ui_state, declare_component
 
 
 class _Registry(Protocol):
-    def register(self, meta: ComponentMeta) -> None: ...
+    def register(self, meta: DeclaredComponent) -> None: ...
 
 
 def register_builtin_graph_templates(registry: _Registry) -> None:
@@ -34,31 +34,31 @@ def register_builtin_graph_templates(registry: _Registry) -> None:
         out_nonlinearity="tanh",
     )
     registry.register(
-        ComponentMeta(
+        declare_component(
             name=network_meta.name,
             category=network_meta.category,
             description=network_meta.description,
             param_schema=[],
             input_ports=list(network_graph.input_ports),
             output_ports=list(network_graph.output_ports),
-            icon='CircuitBoard',
+            icon="CircuitBoard",
             is_composite=True,
             port_types=PortTypeSpec(
                 inputs={
-                    'input': PortType(dtype='vector'),
-                    'feedback': PortType(dtype='vector'),
+                    "input": PortType(dtype="vector"),
+                    "feedback": PortType(dtype="vector"),
                 },
                 outputs={
-                    'output': PortType(dtype='vector'),
-                    'hidden': PortType(dtype='vector'),
+                    "output": PortType(dtype="vector"),
+                    "hidden": PortType(dtype="vector"),
                 },
             ),
             template_graph=network_graph,
             template_ui_state=_template_ui_state(
                 {
-                    'input_mux': (80, 160),
-                    'cell': (280, 160),
-                    'readout': (500, 160),
+                    "input_mux": (80, 160),
+                    "cell": (280, 160),
+                    "readout": (500, 160),
                 }
             ),
             template_id=network_meta.id,
@@ -69,7 +69,7 @@ def register_builtin_graph_templates(registry: _Registry) -> None:
 
     msd_graph = mass_spring_damper_template_graph()
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="MassSpringDamper",
             category="Templates",
             description="Executable mechanics mass-spring-damper template.",
@@ -95,7 +95,7 @@ def register_builtin_graph_templates(registry: _Registry) -> None:
 
     muscle_graph = point_mass_with_muscles_template_graph()
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="PointMassWithMuscles",
             category="Templates",
             description="Executable mechanics point mass with one antagonistic muscle pair.",
@@ -124,12 +124,11 @@ def register_builtin_graph_templates(registry: _Registry) -> None:
 
     arm_graph = two_link_arm_6muscle_template_graph()
     registry.register(
-        ComponentMeta(
+        declare_component(
             name="TwoLinkArm6Muscle",
             category="Templates",
             description=(
-                "Editable planar multibody two-link arm with six rigid-tendon "
-                "muscle paths."
+                "Editable planar multibody two-link arm with six rigid-tendon muscle paths."
             ),
             param_schema=[],
             input_ports=["excitation"],
@@ -172,29 +171,29 @@ def register_builtin_graph_templates(registry: _Registry) -> None:
     feedback_meta = metadata["feedbax.templates.simple_feedback"]
     feedback_graph = simple_feedback_template_graph()
     registry.register(
-        ComponentMeta(
+        declare_component(
             name=feedback_meta.name,
             category=feedback_meta.category,
             description=feedback_meta.description,
             param_schema=[],
             input_ports=list(feedback_graph.input_ports),
             output_ports=list(feedback_graph.output_ports),
-            icon='Radar',
+            icon="Radar",
             is_composite=True,
             port_types=PortTypeSpec(
-                inputs={'input': PortType(dtype='vector')},
-                outputs={'effector': PortType(dtype='state')},
+                inputs={"input": PortType(dtype="vector")},
+                outputs={"effector": PortType(dtype="state")},
             ),
             template_graph=feedback_graph,
             template_ui_state=_template_ui_state(
                 {
-                    'feedback': (120, 260),
-                    'feedback_ravel': (120, 110),
-                    'input_mux': (340, 180),
-                    'cell': (520, 180),
-                    'readout': (700, 180),
-                    'efferent': (880, 180),
-                    'mechanics': (1060, 180),
+                    "feedback": (120, 260),
+                    "feedback_ravel": (120, 110),
+                    "input_mux": (340, 180),
+                    "cell": (520, 180),
+                    "readout": (700, 180),
+                    "efferent": (880, 180),
+                    "mechanics": (1060, 180),
                 },
             ),
             template_id=feedback_meta.id,

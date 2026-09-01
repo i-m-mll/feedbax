@@ -10,7 +10,8 @@ from feedbax.contracts.training import (
     MethodPayloadEnvelope,
     MethodRefSpec,
     OptimizerSpec,
-    TrainingMethodDescriptor,
+    DeclaredTrainingProgram,
+    declare_training_program,
 )
 from feedbax.contracts.worker import (
     EffectivePhaseSpec,
@@ -19,7 +20,7 @@ from feedbax.contracts.worker import (
     toy_minimax_method_contract,
 )
 from feedbax.plugins import (
-    TRAINING_METHODS,
+    TRAINING_PROGRAMS,
     FamilyRequirement,
     PluginDeclaration,
     PluginRegistration,
@@ -91,9 +92,9 @@ def _update_kernels(_payload: CheckpointMinimaxPayload):
     }
 
 
-def checkpoint_minimax_method_descriptor() -> TrainingMethodDescriptor[CheckpointMinimaxPayload]:
+def checkpoint_minimax_method_program() -> DeclaredTrainingProgram[CheckpointMinimaxPayload]:
     """Return the typed descriptor for the checkpoint minimax test method."""
-    return TrainingMethodDescriptor(
+    return declare_training_program(
         method_ref=METHOD_REF,
         payload_schema_id=PAYLOAD_SCHEMA_ID,
         payload_schema_version=PAYLOAD_SCHEMA_VERSION,
@@ -107,8 +108,8 @@ def checkpoint_minimax_method_descriptor() -> TrainingMethodDescriptor[Checkpoin
 
 
 def _register(context) -> None:
-    context.registry(TRAINING_METHODS).register_descriptor(
-        checkpoint_minimax_method_descriptor()
+    context.registry(TRAINING_PROGRAMS).register_program(
+        checkpoint_minimax_method_program()
     )
 
 
@@ -117,7 +118,7 @@ PLUGIN_REGISTRATION = PluginRegistration(
         "tests.checkpoint_minimax",
         "1.0",
         1,
-        families=(FamilyRequirement("training_methods"),),
+        families=(FamilyRequirement("training_programs"),),
     ),
     _register,
 )

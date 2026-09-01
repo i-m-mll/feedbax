@@ -10,8 +10,8 @@ import jax_cookbook.tree as jtree
 from jax_cookbook import is_module
 from jaxtyping import PRNGKeyArray, PyTree
 
-from feedbax.config.utils import get_unique_label
 from feedbax.runtime.batch import BatchInfo
+from feedbax.runtime.naming import get_unique_label
 
 if TYPE_CHECKING:
     from feedbax.tasks import AbstractTask

@@ -17,7 +17,7 @@ from feedbax.contracts.graph import (
     validate_subgraph_domain,
 )
 from feedbax.component_registry import format_missing_interior_message, required_interior_domain
-from feedbax.component_registry.meta import MissingPrototypeInput
+from feedbax.component_registry.declarations import MissingPrototypeInput
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.state_feedback import state_feedback_output_prototype

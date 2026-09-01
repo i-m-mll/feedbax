@@ -131,12 +131,10 @@ const graph: GraphSpec = {
 
 const scenario: StudioScenarioSpec = {
   id: 'scenario:train',
-  schema_version: 'feedbax.spec.studio.scenario.v2',
+  schema_version: 'feedbax.spec.studio.scenario.v3',
   label: 'Training scenario',
   stage_id: 'stage:train',
   parent_scenario_id: null,
-  graph,
-  graph_ui_state: null,
   training_spec: null,
   task_spec: {
     type: 'ReachingTask',

@@ -8,7 +8,7 @@ the two claims under test are:
 * a compile *produces* a structural omission by naming a rule, and the rule — not
   the call site — supplies both the id the lock quotes and the reason it states;
 * fulfillment *certifies* one before honoring it, and a closure quoting a rule
-  this build does not own is refused at preflight rather than executed around;
+  this build does not own is refused at prepare_workflow rather than executed around;
 * certification *evaluates* the rule rather than looking its id up. The one rule
   this build owns decides a figure input slot, so quoting it over a report,
   analysis, or evaluation prerequisite — or over a nested path, or with a reason
@@ -22,13 +22,13 @@ from pathlib import Path
 
 import pytest
 
-from feedbax.analysis.fulfillment_derivation import (
-    derive_fulfillment_plan,
+from feedbax.workflow.derivation import (
+    derive_workflow_plan,
     read_compiled_outputs,
 )
-from feedbax.analysis.fulfillment_driver import (
+from feedbax.workflow.execution import (
     UncertifiedApplicabilityError,
-    preflight,
+    prepare_workflow,
     require_certified_applicability,
 )
 from feedbax.contracts.applicability_rules import (
@@ -197,9 +197,7 @@ def test_a_known_rule_certifies_nothing_outside_the_layer_it_decides(layer: str)
     assert f"this consumer is a {layer!r} node" in str(caught.value)
 
 
-@pytest.mark.parametrize(
-    "role_path", [("body", "appendix"), ("subjects", "0", "ref"), ("inputs",)]
-)
+@pytest.mark.parametrize("role_path", [("body", "appendix"), ("subjects", "0", "ref"), ("inputs",)])
 def test_a_known_rule_certifies_nothing_outside_the_slot_it_decides(
     role_path: tuple[str, ...],
 ) -> None:
@@ -246,10 +244,10 @@ def test_preflight_refuses_a_report_prerequisite_omitted_under_the_figure_rule(
         ],
     )
     index = read_compiled_outputs(outputs.output_directory)
-    plan = derive_fulfillment_plan(index, target="smuggled-bulletin")
+    plan = derive_workflow_plan(index, target="smuggled-bulletin")
 
     with pytest.raises(UncertifiedApplicabilityError) as caught:
-        preflight(plan, index)
+        prepare_workflow(plan, index)
 
     record = caught.value.record()
     assert record["target"] == "report:smuggled-bulletin"
@@ -274,10 +272,10 @@ def test_preflight_refuses_a_figure_omission_whose_reason_is_not_the_rules(
         ],
     )
     index = read_compiled_outputs(outputs.output_directory)
-    plan = derive_fulfillment_plan(index, target="restated-plate")
+    plan = derive_workflow_plan(index, target="restated-plate")
 
     with pytest.raises(UncertifiedApplicabilityError) as caught:
-        preflight(plan, index)
+        prepare_workflow(plan, index)
 
     assert "states one fixed reason" in caught.value.record()["uncertified"][0]["detail"]
 
@@ -297,10 +295,10 @@ def test_preflight_refuses_a_closure_that_omits_under_an_unowned_rule(
         ],
     )
     index = read_compiled_outputs(outputs.output_directory)
-    plan = derive_fulfillment_plan(index, target="foreign-plate")
+    plan = derive_workflow_plan(index, target="foreign-plate")
 
     with pytest.raises(UncertifiedApplicabilityError) as caught:
-        preflight(plan, index)
+        prepare_workflow(plan, index)
 
     record = caught.value.record()
     assert record["target"] == "figure:foreign-plate"
@@ -316,10 +314,10 @@ def test_preflight_admits_a_closure_that_omits_under_an_owned_rule(
         references=[certify_not_applicable("inputs.observed", PER_ROW_FIGURE_INPUT_RULE)],
     )
     index = read_compiled_outputs(outputs.output_directory)
-    plan = derive_fulfillment_plan(index, target="owned-plate")
+    plan = derive_workflow_plan(index, target="owned-plate")
 
     require_certified_applicability(plan)
-    closure = preflight(plan, index)
+    closure = prepare_workflow(plan, index)
 
     assert closure.order == ("figure:owned-plate",)
 
@@ -344,10 +342,10 @@ def test_every_uncertified_decision_is_named_at_once(outputs: QuillonOutputs) ->
         ],
     )
     index = read_compiled_outputs(outputs.output_directory)
-    plan = derive_fulfillment_plan(index, target="two-foreign")
+    plan = derive_workflow_plan(index, target="two-foreign")
 
     with pytest.raises(UncertifiedApplicabilityError) as caught:
-        preflight(plan, index)
+        prepare_workflow(plan, index)
 
     assert [item["role_path"] for item in caught.value.record()["uncertified"]] == [
         ["inputs", "expected"],
@@ -372,7 +370,7 @@ def test_an_authored_omission_needs_no_rule(outputs: QuillonOutputs) -> None:
         ],
     )
     index = read_compiled_outputs(outputs.output_directory)
-    plan = derive_fulfillment_plan(index, target="authored-plate")
+    plan = derive_workflow_plan(index, target="authored-plate")
 
     require_certified_applicability(plan)
 

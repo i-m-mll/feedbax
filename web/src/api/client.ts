@@ -1,5 +1,5 @@
-import type { GraphMetadata, GraphSpec, GraphUIState } from '@/types/graph';
-import type { ComponentDefinition } from '@/types/components';
+import type { GraphMetadata, GraphSpec } from "@/types/graph";
+import type { ComponentDefinition } from "@/types/components";
 import {
   DomainCompileReportSchema,
   parseContract,
@@ -10,7 +10,8 @@ import {
   type PenzaiInspectorPayload,
   type PenzaiNodeRequest,
   type SelectionSpec,
-} from '@/generated/studioContracts';
+  type WorkspaceDocument,
+} from "@/generated/studioContracts";
 import type {
   StudioPipelineMaterializationResult,
   StudioSchemaRegistry,
@@ -18,10 +19,9 @@ import type {
   StudioEvaluationLocalRunResult,
   StudioEvaluationMatrixPreview,
   StudioEvaluationStagingResult,
-  StudioTrainingLocalRunResult,
   StudioTrainingExecutionPreparation,
   StudioWorkspaceSpec,
-} from '@/types/workspace';
+} from "@/types/workspace";
 // Note: analysis_pages in the API uses snake_case wire format (graph_spec, eval_params).
 // See analysisAPI.ts for the conversion to camelCase AnalysisPageSpec.
 import type {
@@ -32,39 +32,51 @@ import type {
   TrainingConfig,
   LossValidationResult,
   TrainingProgress,
-} from '@/types/training';
-import type { TrajectorySnapshot } from '@/stores/trainingStore';
-import type { TrajectoryDataset, TrajectoryMetadata, TrajectoryData } from '@/types/trajectory';
+} from "@/types/training";
+import type { TrajectorySnapshot } from "@/stores/trainingStore";
+import type {
+  TrajectoryDataset,
+  TrajectoryMetadata,
+  TrajectoryData,
+} from "@/types/trajectory";
 import type {
   StatisticsResponse,
   TimeseriesResponse,
   HistogramResponse,
   ScatterResponse,
   DiagnosticsResponse,
-} from '@/types/statistics';
-import { asApiRequestError, requestJson } from '@/api/request';
+} from "@/types/statistics";
+import { asApiRequestError, requestJson } from "@/api/request";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return requestJson(path, options) as Promise<T>;
 }
 
-function parseContractResponse<K extends import('@/generated/studioContracts').ContractName>(
+function parseContractResponse<
+  K extends import("@/generated/studioContracts").ContractName,
+>(
   name: K,
   path: string,
   value: unknown,
-): import('@/generated/studioContracts').ContractTypeMap[K] {
+): import("@/generated/studioContracts").ContractTypeMap[K] {
   try {
     return parseContract(name, value);
   } catch (error) {
-    throw asApiRequestError(error, path, `${name} response did not match the Studio contract.`);
+    throw asApiRequestError(
+      error,
+      path,
+      `${name} response did not match the Studio contract.`,
+    );
   }
 }
 
-function parseContractArray<K extends import('@/generated/studioContracts').ContractName>(
+function parseContractArray<
+  K extends import("@/generated/studioContracts").ContractName,
+>(
   name: K,
   path: string,
   value: unknown,
-): import('@/generated/studioContracts').ContractTypeMap[K][] {
+): import("@/generated/studioContracts").ContractTypeMap[K][] {
   if (!Array.isArray(value)) {
     throw asApiRequestError(
       new Error(`${name} response expected an array`),
@@ -76,19 +88,25 @@ function parseContractArray<K extends import('@/generated/studioContracts').Cont
 }
 
 export async function fetchComponents(): Promise<ComponentDefinition[]> {
-  const response = parseContract('ComponentListResponse', await requestJson('/api/components'));
+  const response = parseContract(
+    "ComponentListResponse",
+    await requestJson("/api/components"),
+  );
   return response.data.components as unknown as ComponentDefinition[];
 }
 
 export async function fetchDomains(): Promise<DomainMeta[]> {
-  const response = parseContract('DomainListResponse', await requestJson('/api/domains'));
+  const response = parseContract(
+    "DomainListResponse",
+    await requestJson("/api/domains"),
+  );
   return response.data.domains;
 }
 
 export async function fetchPenzaiBuilders(): Promise<PenzaiBuilderInfo[]> {
   const response = parseContract(
-    'PenzaiBuilderListResponse',
-    await requestJson('/api/penzai/builders'),
+    "PenzaiBuilderListResponse",
+    await requestJson("/api/penzai/builders"),
   );
   return response.data.builders;
 }
@@ -99,11 +117,11 @@ export async function compilePenzaiNode(
 ): Promise<DomainCompileReport> {
   const path = graphId
     ? `/api/graphs/${encodeURIComponent(graphId)}/nodes/penzai/compile`
-    : '/api/penzai/compile';
+    : "/api/penzai/compile";
   return parseContract(
-    'DomainCompileReport',
+    "DomainCompileReport",
     await requestJson(path, {
-      method: 'POST',
+      method: "POST",
       body: JSON.stringify(payload),
     }),
   );
@@ -113,9 +131,9 @@ export async function inspectPenzaiNode(
   payload: PenzaiNodeRequest,
 ): Promise<PenzaiInspectorPayload> {
   const response = parseContract(
-    'PenzaiInspectorResponse',
-    await requestJson('/api/penzai/inspect', {
-      method: 'POST',
+    "PenzaiInspectorResponse",
+    await requestJson("/api/penzai/inspect", {
+      method: "POST",
       body: JSON.stringify(payload),
     }),
   );
@@ -123,7 +141,10 @@ export async function inspectPenzaiNode(
 }
 
 export async function fetchGraphs() {
-  const response = parseContract('GraphListResponse', await requestJson('/api/graphs'));
+  const response = parseContract(
+    "GraphListResponse",
+    await requestJson("/api/graphs"),
+  );
   return response.data;
 }
 
@@ -138,23 +159,14 @@ export interface DemoTrainingData {
 
 export async function fetchGraph(graphId: string) {
   const response = parseContract(
-    'GraphDetailResponse',
+    "GraphDetailResponse",
     await requestJson(`/api/graphs/${graphId}`),
   );
   return response.data as unknown as {
     graph: GraphSpec;
-    ui_state: GraphUIState | null;
+    workspace_document: WorkspaceDocument;
     demo_training_data: DemoTrainingData | null;
     metadata: GraphMetadata | null;
-    analysis_pages: Array<{
-      id: string;
-      name: string;
-      graph_spec: Record<string, unknown>;
-      eval_params: Record<string, unknown>;
-      viewport: { x: number; y: number; zoom: number };
-      eval_run_id: string | null;
-    }> | null;
-    active_analysis_page_id: string | null;
     workspace: StudioWorkspaceSpec | null;
     compile_reports: Record<string, DomainCompileReport> | null;
   };
@@ -166,26 +178,35 @@ export async function compileGraphNode(
   interior: AcausalGraphSpec,
 ): Promise<DomainCompileReport> {
   try {
-    return DomainCompileReportSchema.parse(await requestJson(`/api/graphs/${graphId}/nodes/compile`, {
-      method: 'POST',
-      body: JSON.stringify({ node_path: nodePath, interior }),
-    }));
+    return DomainCompileReportSchema.parse(
+      await requestJson(`/api/graphs/${graphId}/nodes/compile`, {
+        method: "POST",
+        body: JSON.stringify({ node_path: nodePath, interior }),
+      }),
+    );
   } catch (error) {
-    throw asApiRequestError(error, `/api/graphs/${graphId}/nodes/compile`, 'DomainCompileReport response did not match the Studio contract.');
+    throw asApiRequestError(
+      error,
+      `/api/graphs/${graphId}/nodes/compile`,
+      "DomainCompileReport response did not match the Studio contract.",
+    );
   }
 }
 
 export async function createGraph(
   graph: GraphSpec,
-  uiState: GraphUIState | null,
+  workspaceDocument?: WorkspaceDocument | null,
   workspace?: StudioWorkspaceSpec | null,
 ) {
-  const payload: Record<string, unknown> = { graph, ui_state: uiState };
-  if (workspace !== undefined) payload.workspace = workspace;
+  const payload: Record<string, unknown> = { graph };
+  if (workspaceDocument !== undefined)
+    payload.workspace_document = workspaceDocument;
+  if (workspace !== undefined)
+    payload.workspace = semanticWorkspaceForSave(workspace);
   const response = parseContract(
-    'GraphCreateResponse',
+    "GraphCreateResponse",
     await requestJson(`/api/graphs`, {
-      method: 'POST',
+      method: "POST",
       body: JSON.stringify(payload),
     }),
   );
@@ -195,29 +216,28 @@ export async function createGraph(
 export async function updateGraph(
   graphId: string,
   graph: GraphSpec | null,
-  uiState: GraphUIState | null,
-  analysisPages?: unknown[] | null,
-  activeAnalysisPageId?: string | null,
+  workspaceDocument?: WorkspaceDocument | null,
   workspace?: StudioWorkspaceSpec | null,
   expectedSaveRevision?: number | null,
 ) {
   const payload: Record<string, unknown> = {};
   if (graph !== null && graph !== undefined) payload.graph = graph;
-  if (uiState !== null && uiState !== undefined) payload.ui_state = uiState;
-  if (analysisPages !== undefined) payload.analysis_pages = analysisPages;
-  if (activeAnalysisPageId !== undefined) payload.active_analysis_page_id = activeAnalysisPageId;
-  if (workspace !== undefined) payload.workspace = workspace;
+  if (workspaceDocument !== null && workspaceDocument !== undefined) {
+    payload.workspace_document = workspaceDocument;
+  }
+  if (workspace !== undefined)
+    payload.workspace = semanticWorkspaceForSave(workspace);
   if (expectedSaveRevision !== undefined && expectedSaveRevision !== null) {
     payload.expected_save_revision = expectedSaveRevision;
   }
   const headers: Record<string, string> = {};
   if (expectedSaveRevision !== undefined && expectedSaveRevision !== null) {
-    headers['If-Match'] = String(expectedSaveRevision);
+    headers["If-Match"] = String(expectedSaveRevision);
   }
   const response = parseContract(
-    'GraphUpdateResponse',
+    "GraphUpdateResponse",
     await requestJson(`/api/graphs/${graphId}`, {
-      method: 'PUT',
+      method: "PUT",
       headers,
       body: JSON.stringify(payload),
     }),
@@ -225,37 +245,43 @@ export async function updateGraph(
   return response.data;
 }
 
+function semanticWorkspaceForSave(
+  workspace: StudioWorkspaceSpec | null,
+): Record<string, unknown> | null {
+  if (!workspace) return null;
+  const { ui_state: _workspaceUiState, ...semanticWorkspace } = workspace;
+  return {
+    ...semanticWorkspace,
+    stages: workspace.stages.map(({ ui_state: _uiState, ...stage }) => stage),
+    scenarios: Object.fromEntries(
+      Object.entries(workspace.scenarios).map(([id, scenario]) => {
+        const { ui_state: _uiState, ...semanticScenario } = scenario;
+        return [id, semanticScenario];
+      }),
+    ),
+  };
+}
+
 export async function prepareStudioTrainingExecution(payload: {
   workspace: StudioWorkspaceSpec;
+  graph: GraphSpec;
   stage_id?: string | null;
-  backend?: 'local' | 'ssh' | 'runpod' | 'modal';
+  backend?: "local" | "gcp" | "runpod";
   job_id?: string | null;
   local_cwd?: string | null;
-  queue_target?: 'local' | 'gcp' | 'runpod' | 'manual' | null;
+  backend_realization?: Record<string, unknown> | null;
+  queue_target?: "local" | "gcp" | "runpod" | "manual" | null;
   queue_manifest_ids?: string[];
   issues?: string[];
   metadata?: Record<string, unknown>;
 }) {
-  return request<StudioTrainingExecutionPreparation>('/api/provider/studio/training/plan', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function runStudioTrainingLocalExecution(payload: {
-  workspace: StudioWorkspaceSpec;
-  stage_id?: string | null;
-  job_id?: string | null;
-  local_cwd?: string | null;
-  root?: string | null;
-  timeout?: number | null;
-  issues?: string[];
-  metadata?: Record<string, unknown>;
-}) {
-  return request<StudioTrainingLocalRunResult>('/api/provider/studio/training/run-local', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  return request<StudioTrainingExecutionPreparation>(
+    "/api/provider/studio/training/plan",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export async function previewStudioEvaluationMatrix(payload: {
@@ -266,16 +292,19 @@ export async function previewStudioEvaluationMatrix(payload: {
   eval_params?: Record<string, unknown>;
   condition_matrix?: Record<string, unknown>;
   checkpoint_policy?: StudioEvaluationCheckpointPolicy;
-  reprocess?: 'missing' | 'missing_failed' | 'all' | 'stale';
+  reprocess?: "missing" | "missing_failed" | "all" | "stale";
   job_id?: string | null;
   root?: string | null;
   issues?: string[];
   metadata?: Record<string, unknown>;
 }) {
-  return request<StudioEvaluationMatrixPreview>('/api/provider/studio/evaluation/preview', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  return request<StudioEvaluationMatrixPreview>(
+    "/api/provider/studio/evaluation/preview",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export async function stageStudioEvaluationMatrix(payload: {
@@ -286,16 +315,19 @@ export async function stageStudioEvaluationMatrix(payload: {
   eval_params?: Record<string, unknown>;
   condition_matrix?: Record<string, unknown>;
   checkpoint_policy?: StudioEvaluationCheckpointPolicy;
-  reprocess?: 'missing' | 'missing_failed' | 'all' | 'stale';
+  reprocess?: "missing" | "missing_failed" | "all" | "stale";
   job_id?: string | null;
   root?: string | null;
   issues?: string[];
   metadata?: Record<string, unknown>;
 }) {
-  return request<StudioEvaluationStagingResult>('/api/provider/studio/evaluation/stage', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  return request<StudioEvaluationStagingResult>(
+    "/api/provider/studio/evaluation/stage",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export async function runStudioEvaluationLocalExecution(payload: {
@@ -306,37 +338,43 @@ export async function runStudioEvaluationLocalExecution(payload: {
   eval_params?: Record<string, unknown>;
   condition_matrix?: Record<string, unknown>;
   checkpoint_policy?: StudioEvaluationCheckpointPolicy;
-  reprocess?: 'missing' | 'missing_failed' | 'all' | 'stale';
+  reprocess?: "missing" | "missing_failed" | "all" | "stale";
   job_id?: string | null;
   root?: string | null;
   timeout?: number | null;
   issues?: string[];
   metadata?: Record<string, unknown>;
 }) {
-  return request<StudioEvaluationLocalRunResult>('/api/provider/studio/evaluation/run-local', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  return request<StudioEvaluationLocalRunResult>(
+    "/api/provider/studio/evaluation/run-local",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export async function materializeStudioPipeline(payload: {
   workspace: StudioWorkspaceSpec;
-  stages?: Array<'eval' | 'analysis' | 'report'>;
+  stages?: Array<"eval" | "analysis" | "report">;
   job_id?: string | null;
   root?: string | null;
   issues?: string[];
   metadata?: Record<string, unknown>;
 }) {
-  return request<StudioPipelineMaterializationResult>('/api/provider/studio/pipeline/materialize', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  return request<StudioPipelineMaterializationResult>(
+    "/api/provider/studio/pipeline/materialize",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export interface SampledTaskTrialCue {
   label: string;
   step: number;
-  kind: 'epoch' | 'event' | string;
+  kind: "epoch" | "event" | string;
 }
 
 export interface SampledTaskTrial {
@@ -350,7 +388,7 @@ export interface SampledTaskTrial {
 }
 
 export interface SampledTaskTrialsResponse {
-  schema_version: 'feedbax.execution.sampled_task_trials.v1';
+  schema_version: "feedbax.execution.sampled_task_trials.v1";
   task_type: string;
   seed: number;
   count: number;
@@ -362,31 +400,36 @@ export async function sampleTaskTrials(payload: {
   seed: number;
   count: number;
 }) {
-  return request<SampledTaskTrialsResponse>('/api/execution/task-trials/sample', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  return request<SampledTaskTrialsResponse>(
+    "/api/execution/task-trials/sample",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export async function fetchStudioSchemaRegistry(payload: {
   workspace: StudioWorkspaceSpec;
+  graph: GraphSpec;
   scenario_id?: string | null;
-  runtime_introspection?: boolean | { enabled: boolean; max_targets?: number } | null;
+  runtime_introspection?:
+    boolean | { enabled: boolean; max_targets?: number } | null;
 }) {
-  return request<StudioSchemaRegistry>('/api/provider/studio/schemas', {
-    method: 'POST',
+  return request<StudioSchemaRegistry>("/api/provider/studio/schemas", {
+    method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
-export async function exportGraph(graphId: string, format: 'json' | 'python') {
-  const response = parseContract('GraphExportResponse', await requestJson(
-    `/api/graphs/${graphId}/export`,
-    {
-      method: 'POST',
+export async function exportGraph(graphId: string, format: "json" | "python") {
+  const response = parseContract(
+    "GraphExportResponse",
+    await requestJson(`/api/graphs/${graphId}/export`, {
+      method: "POST",
       body: JSON.stringify({ format }),
-    },
-  ));
+    }),
+  );
   return response.data;
 }
 
@@ -396,47 +439,52 @@ export async function startTraining(
   taskSpec: TaskSpec,
   graphSpec?: GraphSpec,
   trainingConfig?: TrainingConfig,
-  taskBindingSpec?: StudioWorkspaceSpec['scenarios'][string]['task_binding_spec'],
+  taskBindingSpec?: StudioWorkspaceSpec["scenarios"][string]["task_binding_spec"],
 ) {
-  const response = parseContract('TrainingStartResponse', await requestJson('/api/training', {
-    method: 'POST',
-    body: JSON.stringify({
-      graph_id: graphId,
-      training_spec: trainingSpec,
-      task_spec: taskSpec,
-      ...(taskBindingSpec !== undefined && taskBindingSpec !== null
-        ? { task_binding_spec: taskBindingSpec }
-        : {}),
-      ...(graphSpec !== undefined ? { graph_spec: graphSpec } : {}),
-      ...(trainingConfig !== undefined ? { training_config: trainingConfig } : {}),
+  const response = parseContract(
+    "TrainingStartResponse",
+    await requestJson("/api/training", {
+      method: "POST",
+      body: JSON.stringify({
+        graph_id: graphId,
+        training_spec: trainingSpec,
+        task_spec: taskSpec,
+        ...(taskBindingSpec !== undefined && taskBindingSpec !== null
+          ? { task_binding_spec: taskBindingSpec }
+          : {}),
+        ...(graphSpec !== undefined ? { graph_spec: graphSpec } : {}),
+        ...(trainingConfig !== undefined
+          ? { training_config: trainingConfig }
+          : {}),
+      }),
     }),
-  }));
+  );
   return response.data;
 }
 
 export async function stopTraining(jobId: string) {
   const response = parseContract(
-    'SuccessResponse',
-    await requestJson(`/api/training/${jobId}`, { method: 'DELETE' }),
+    "SuccessResponse",
+    await requestJson(`/api/training/${jobId}`, { method: "DELETE" }),
   );
   return response.data;
 }
 
 export async function connectWorker(url: string, authToken: string | null) {
-  const response = parseContract('WorkerConnectEnvelope', await requestJson(
-    '/api/training/worker/connect',
-    {
-      method: 'POST',
+  const response = parseContract(
+    "WorkerConnectEnvelope",
+    await requestJson("/api/training/worker/connect", {
+      method: "POST",
       body: JSON.stringify({ url, auth_token: authToken }),
-    },
-  ));
+    }),
+  );
   return response.data;
 }
 
 export async function fetchWorkerStatus() {
   const response = parseContract(
-    'WorkerStatusEnvelope',
-    await requestJson('/api/training/worker/status'),
+    "WorkerStatusEnvelope",
+    await requestJson("/api/training/worker/status"),
   );
   return response.data;
 }
@@ -445,33 +493,40 @@ export async function fetchWorkerStatus() {
 
 export async function fetchProbes(graphId: string): Promise<ProbeInfo[]> {
   const path = `/api/training/probes/${graphId}`;
-  return parseContractArray('ProbeResponse', path, await requestJson(path));
+  return parseContractArray("ProbeResponse", path, await requestJson(path));
 }
 
 export async function validateLossSpec(
   graphId: string,
-  lossSpec: LossTermSpec
+  lossSpec: LossTermSpec,
 ): Promise<LossValidationResult> {
-  const path = '/api/training/loss/validate';
-  return parseContractResponse('ValidateLossResponse', path, await requestJson(path, {
-    method: 'POST',
-    body: JSON.stringify({ graph_id: graphId, loss_spec: lossSpec }),
-  }));
+  const path = "/api/training/loss/validate";
+  return parseContractResponse(
+    "ValidateLossResponse",
+    path,
+    await requestJson(path, {
+      method: "POST",
+      body: JSON.stringify({ graph_id: graphId, loss_spec: lossSpec }),
+    }),
+  );
 }
 
 export async function resolveSelector(
   graphId: string,
-  selector: string
+  selector: string,
 ): Promise<Record<string, unknown>> {
-  return request<Record<string, unknown>>('/api/training/loss/resolve-selector', {
-    method: 'POST',
-    body: JSON.stringify({ graph_id: graphId, selector }),
-  });
+  return request<Record<string, unknown>>(
+    "/api/training/loss/resolve-selector",
+    {
+      method: "POST",
+      body: JSON.stringify({ graph_id: graphId, selector }),
+    },
+  );
 }
 
 export async function fetchCheckpoint(jobId: string) {
   return request<{ batch: number; loss: number; weights_available: boolean }>(
-    `/api/training/${jobId}/checkpoint`
+    `/api/training/${jobId}/checkpoint`,
   );
 }
 
@@ -480,7 +535,7 @@ export async function downloadCheckpoint(jobId: string): Promise<void> {
   if (!response.ok) throw new Error(`Download failed: ${response.status}`);
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
+  const a = document.createElement("a");
   a.href = url;
   a.download = `feedbax_checkpoint_${jobId}.eqx`;
   document.body.appendChild(a); // Firefox requires an attached element
@@ -493,70 +548,133 @@ export async function downloadCheckpoint(jobId: string): Promise<void> {
 
 export interface OrchestrationStatusResponse {
   status: string;
+  intent_id: string | null;
+  reservation_id: string | null;
+  attempt_id: string | null;
   instance_name: string | null;
   worker_url: string | null;
   internal_ip: string | null;
   external_ip: string | null;
   error: string | null;
-  orphaned_instance: string | null;
-  worker_health_failures: number;
+  orphaned_resources: Array<{
+    backend_id: string;
+    provider_resource_handle: string;
+    external_effect_key: string;
+    status: "detected" | "operator_action_required";
+    handling_policy: {
+      schema_id: "feedbax.orchestration.orphan_handling_policy";
+      schema_version: "feedbax.orchestration.orphan_handling_policy.v1";
+      policy_id: string;
+      action: "require-operator";
+    } | null;
+  }>;
+  expected_cost: { currency: "USD"; maximum: number; basis: string } | null;
+  observed_cost: { currency: "USD"; maximum: number; basis: string } | null;
 }
 
 export interface FeedbaxInstallSpec {
-  schema_version?: 'feedbax.orchestration.install.v1';
-  source?: 'git';
-  repository?: 'https://github.com/mlll-io/feedbax.git';
+  schema_version?: "feedbax.orchestration.install.v1";
+  source?: "git";
+  repository?: "https://github.com/mlll-io/feedbax.git";
   ref?: string;
   extras?: string[];
 }
 
 export interface LaunchInstanceRequest {
+  invocation: Record<string, unknown>;
+  backend_plan: Record<string, unknown>;
   project: string;
   zone: string;
   machine_type?: string;
   preemptible?: boolean;
   worker_port?: number;
-  auth_token?: string | null;
-  ts_auth_key?: string | null;
+  worker_auth_token?: string | null;
+  tailscale_auth_key?: string | null;
   install_spec?: FeedbaxInstallSpec;
-  confirm_billable_launch: boolean;
-  confirmation_token: string;
-  max_hourly_cost_usd: number;
+  reservation_ttl_seconds?: number;
 }
 
 export async function launchInstance(params: LaunchInstanceRequest) {
-  return request<{ status: string; instance_name: string | null; worker_url: string | null }>(
-    '/api/orchestration/launch',
-    {
-      method: 'POST',
-      body: JSON.stringify(params),
-    }
+  return request<{
+    status: "awaiting_authentication";
+    intent_id: string;
+    reservation_id: string;
+    expires_at: string;
+    instance_name: string;
+    cost_estimate: {
+      currency: "USD";
+      hourly_estimate: number;
+      machine_type: string;
+      preemptible: boolean;
+      basis: string;
+    };
+    expected_cost: { currency: "USD"; maximum: number; basis: string };
+  }>("/api/orchestration/launch", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
+export async function authenticateInstanceReservation(
+  intentId: string,
+  reservationId: string,
+  params: {
+    operator_identity: string;
+    authentication_id: string;
+    confirmation_token: string;
+    max_cost_usd: number;
+  },
+) {
+  return request<{
+    status: "authenticated";
+    intent_id: string;
+    reservation_id: string;
+  }>(
+    `/api/orchestration/intents/${encodeURIComponent(intentId)}/reservations/${encodeURIComponent(reservationId)}/authenticate`,
+    { method: "POST", body: JSON.stringify(params) },
   );
 }
 
-export async function fetchOrchestrationStatus(): Promise<OrchestrationStatusResponse> {
-  return request<OrchestrationStatusResponse>('/api/orchestration/status');
+export async function fetchOrchestrationStatus(
+  intentId?: string | null,
+): Promise<OrchestrationStatusResponse> {
+  const query = intentId ? `?intent_id=${encodeURIComponent(intentId)}` : "";
+  return request<OrchestrationStatusResponse>(
+    `/api/orchestration/status${query}`,
+  );
 }
 
-export async function terminateInstance() {
-  return request<{ ok: boolean }>('/api/orchestration/instance', { method: 'DELETE' });
+export async function terminateInstance(intentId?: string | null) {
+  const query = intentId ? `?intent_id=${encodeURIComponent(intentId)}` : "";
+  return request<{ ok: boolean }>(`/api/orchestration/instance${query}`, {
+    method: "DELETE",
+  });
 }
 
 // --- Trajectory API ---
 
 export async function fetchTrajectoryDatasets(): Promise<TrajectoryDataset[]> {
-  const path = '/api/trajectories/datasets';
-  return parseContractArray('DatasetInfo', path, await requestJson(path));
+  const path = "/api/trajectories/datasets";
+  return parseContractArray("DatasetInfo", path, await requestJson(path));
 }
 
-export async function fetchTrajectoryMetadata(dataset: string): Promise<TrajectoryMetadata> {
+export async function fetchTrajectoryMetadata(
+  dataset: string,
+): Promise<TrajectoryMetadata> {
   const path = `/api/trajectories/${encodeURIComponent(dataset)}/metadata`;
-  return parseContractResponse('TrajectoryMetadata', path, await requestJson(path));
+  return parseContractResponse(
+    "TrajectoryMetadata",
+    path,
+    await requestJson(path),
+  );
 }
 
-export async function fetchTrajectory(dataset: string, index: number): Promise<TrajectoryData> {
+export async function fetchTrajectory(
+  dataset: string,
+  index: number,
+): Promise<TrajectoryData> {
   const path = `/api/trajectories/${encodeURIComponent(dataset)}/${index}`;
-  return parseContractResponse('TrajectoryData', path, await requestJson(path));
+  return parseContractResponse("TrajectoryData", path, await requestJson(path));
 }
 
 export async function filterTrajectories(
@@ -564,10 +682,12 @@ export async function filterTrajectories(
   filters: { body_idx?: number; task_type?: number },
 ): Promise<{ indices: number[]; count: number }> {
   const params = new URLSearchParams();
-  if (filters.body_idx !== undefined) params.set('body_idx', String(filters.body_idx));
-  if (filters.task_type !== undefined) params.set('task_type', String(filters.task_type));
+  if (filters.body_idx !== undefined)
+    params.set("body_idx", String(filters.body_idx));
+  if (filters.task_type !== undefined)
+    params.set("task_type", String(filters.task_type));
   const path = `/api/trajectories/${encodeURIComponent(dataset)}/filter?${params}`;
-  return parseContractResponse('FilterResult', path, await requestJson(path));
+  return parseContractResponse("FilterResult", path, await requestJson(path));
 }
 
 // --- Statistics API ---
@@ -578,7 +698,11 @@ export async function fetchStatsSummary(
 ): Promise<StatisticsResponse> {
   const params = new URLSearchParams({ group_by: groupBy });
   const path = `/api/trajectories/${encodeURIComponent(dataset)}/stats/summary?${params}`;
-  return parseContractResponse('StatisticsResponse', path, await requestJson(path));
+  return parseContractResponse(
+    "StatisticsResponse",
+    path,
+    await requestJson(path),
+  );
 }
 
 export async function fetchStatsTimeseries(
@@ -588,7 +712,11 @@ export async function fetchStatsTimeseries(
 ): Promise<TimeseriesResponse> {
   const params = new URLSearchParams({ metric, group_by: groupBy });
   const path = `/api/trajectories/${encodeURIComponent(dataset)}/stats/timeseries?${params}`;
-  return parseContractResponse('TimeseriesResponse', path, await requestJson(path));
+  return parseContractResponse(
+    "TimeseriesResponse",
+    path,
+    await requestJson(path),
+  );
 }
 
 export async function fetchStatsHistogram(
@@ -598,9 +726,13 @@ export async function fetchStatsHistogram(
   bins?: number,
 ): Promise<HistogramResponse> {
   const params = new URLSearchParams({ metric, group_by: groupBy });
-  if (bins !== undefined) params.set('bins', String(bins));
+  if (bins !== undefined) params.set("bins", String(bins));
   const path = `/api/trajectories/${encodeURIComponent(dataset)}/stats/histogram?${params}`;
-  return parseContractResponse('HistogramResponse', path, await requestJson(path));
+  return parseContractResponse(
+    "HistogramResponse",
+    path,
+    await requestJson(path),
+  );
 }
 
 export async function fetchStatsScatter(
@@ -610,12 +742,20 @@ export async function fetchStatsScatter(
 ): Promise<ScatterResponse> {
   const params = new URLSearchParams({ x_metric: xMetric, y_metric: yMetric });
   const path = `/api/trajectories/${encodeURIComponent(dataset)}/stats/scatter?${params}`;
-  return parseContractResponse('ScatterResponse', path, await requestJson(path));
+  return parseContractResponse(
+    "ScatterResponse",
+    path,
+    await requestJson(path),
+  );
 }
 
 export async function fetchStatsDiagnostics(
   dataset: string,
 ): Promise<DiagnosticsResponse> {
   const path = `/api/trajectories/${encodeURIComponent(dataset)}/stats/diagnostics`;
-  return parseContractResponse('DiagnosticsResponse', path, await requestJson(path));
+  return parseContractResponse(
+    "DiagnosticsResponse",
+    path,
+    await requestJson(path),
+  );
 }

@@ -11,13 +11,12 @@ references into
 :class:`~feedbax.contracts.checkpoint_initialization.CheckpointInitializationRequest`
 objects, and the only thing that authenticates the checkpoints they name.
 
-## Why this is not artifact fulfillment
+## Why this is not a local artifact operation
 
-Training is a boundary: :mod:`feedbax.analysis.fulfillment_driver` consumes the
-receipts a training launch produced and never produces them, so a closure that
-still names a compiled training matrix is refused before anything runs. A
-checkpoint initialization is therefore never lowered into an executable node —
-:func:`~feedbax.analysis.fulfillment_lowering.binding_role` refuses exactly that
+Training is an external workflow operation: :mod:`feedbax.workflow.execution`
+does not launch it, so a plan that names one is refused before anything runs.
+A checkpoint initialization is therefore never lowered into a local operation —
+:func:`~feedbax.workflow.operation_execution.binding_role` refuses exactly that
 — and is instead read off the plan here, by the orchestration entrypoint that
 launches the rows. Reaching a checkpoint initialization from any layer other
 than training is refused for the same reason: a checkpoint initializes a
@@ -47,12 +46,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from feedbax.analysis.fulfillment_derivation import (
+from feedbax.workflow.derivation import (
     CompiledEnvelope,
     CompiledOutputIndex,
-    FulfillmentDerivationError,
+    WorkflowDerivationError,
 )
-from feedbax.analysis.fulfillment_experiment import plan_experiment_envelope
+from feedbax.workflow.experiment import plan_experiment_workflow
 from feedbax.contracts.checkpoint_initialization import (
     CheckpointInitializationPlan,
     CheckpointInitializationRequest,
@@ -78,7 +77,7 @@ from feedbax.training.checkpoint_custody import (
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from feedbax.analysis.execution_context import StagedExecutionContext
-    from feedbax.analysis.fulfillment_plan import FulfillmentPlan
+    from feedbax.workflow.plan import WorkflowPlan
 
 #: The manifest kind a checkpoint initialization source names. A checkpoint is
 #: held by its transaction manifest, not by the run manifest of the job that
@@ -91,10 +90,10 @@ CHECKPOINT_SOURCE_MANIFEST_KIND = "TrainingCheckpointTransactionManifest"
 CHECKPOINT_CUSTODY_ROLE = "training_checkpoint_custody"
 
 #: The layer a checkpoint initialization may be declared on.
-CHECKPOINT_INITIALIZATION_LAYER = "training"
+CHECKPOINT_INITIALIZATION_LAYER = "campaign"
 
 
-class CheckpointInitializationWiringError(FulfillmentDerivationError):
+class CheckpointInitializationWiringError(WorkflowDerivationError):
     """An authored checkpoint initialization cannot be wired into a request."""
 
 
@@ -186,8 +185,8 @@ def compiled_checkpoint_initializations(
         if compiled.kind.layer != CHECKPOINT_INITIALIZATION_LAYER:
             raise CheckpointInitializationWiringError(
                 f"{ref} initializes row {consumer.row_id!r} from a checkpoint on a "
-                f"{compiled.kind.layer!r} layer product. A checkpoint initializes a training "
-                "row, so only a training layer product declares one."
+                f"{compiled.kind.layer!r} layer product. A checkpoint initializes a campaign "
+                "row, so only a campaign layer product declares one."
             )
         if not isinstance(reference, AuthenticatedReceiptReference):
             raise CheckpointInitializationWiringError(
@@ -242,13 +241,13 @@ def compiled_checkpoint_initializations(
 
 
 def checkpoint_initialization_requests(
-    plan: "FulfillmentPlan", *, index: CompiledOutputIndex
+    plan: "WorkflowPlan", *, index: CompiledOutputIndex
 ) -> tuple[PlannedCheckpointInitialization, ...]:
     """Return every checkpoint initialization one plan's closure states, in order.
 
-    The plan is read, not executed: a training node is a boundary that
-    fulfillment never runs, and this is the surface its launch entrypoint reads
-    its warm starts and continuations from.
+    The plan is read, not executed: training is an external operation that the
+    local workflow executor never runs, and this is the surface its invocation
+    entrypoint reads its warm starts and continuations from.
     """
     entries: list[PlannedCheckpointInitialization] = []
     for node in plan.nodes:
@@ -266,11 +265,11 @@ def experiment_checkpoint_initializations(
     """Read one compiled target's checkpoint initializations from its outputs.
 
     This is the read-only counterpart of
-    :func:`~feedbax.analysis.fulfillment_experiment.plan_experiment_envelope` for
+    :func:`~feedbax.workflow.experiment.plan_experiment_workflow` for
     a launch entrypoint: nothing executes, nothing is written, and no receipt
     root is needed to learn which rows start from which checkpoints.
     """
-    plan, index = plan_experiment_envelope(target, output_directory=output_directory)
+    plan, index = plan_experiment_workflow(target, output_directory=output_directory)
     return checkpoint_initialization_requests(plan, index=index)
 
 

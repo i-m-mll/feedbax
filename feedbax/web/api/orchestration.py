@@ -1,36 +1,26 @@
-"""REST endpoints for GCP cloud instance orchestration.
+"""Studio operations over the durable controller protocol."""
 
-Endpoints
----------
-POST /api/orchestration/launch
-    Start creating a GCP instance; returns immediately with ``status="creating"``.
-
-GET /api/orchestration/status
-    Return the current orchestration state, refreshing from GCP if active.
-
-DELETE /api/orchestration/instance
-    Terminate the running instance and disconnect the TrainingService.
-"""
 from __future__ import annotations
 
-import uuid
-from typing import Literal, Optional
+import hashlib
+from typing import Any, Literal
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from pydantic import BaseModel, Field
 
-from feedbax.web.orchestration.gcp import InstanceConfig
-from feedbax.web.orchestration.manager import orchestration_manager
+from feedbax.execution.records import invocation_from_document
+from feedbax.orchestration.controller import ControllerProtocolError, OperatorGateError
+from feedbax.orchestration.realization import backend_plan_from_document
+from feedbax.web.orchestration.controller import get_studio_controller
 from feedbax.web.orchestration.startup_script import (
     DEFAULT_FEEDBAX_REF,
     DEFAULT_FEEDBAX_REPOSITORY,
     INSTALL_SPEC_SCHEMA_VERSION,
-    FeedbaxInstallSpec,
 )
 from feedbax.web.services.training_service import training_service
 
-router = APIRouter()
 
+router = APIRouter()
 _BILLABLE_CONFIRMATION_TOKEN = "launch-billable-gcp-worker"
 _MACHINE_TYPE_ESTIMATES_USD = {
     "n1-standard-4": 0.20,
@@ -38,12 +28,6 @@ _MACHINE_TYPE_ESTIMATES_USD = {
     "n2-standard-4": 0.22,
     "n2-standard-8": 0.44,
 }
-_PREEMPTIBLE_DISCOUNT = 0.30
-
-
-# ---------------------------------------------------------------------------
-# Request / response models
-# ---------------------------------------------------------------------------
 
 
 class LaunchCostEstimate(BaseModel):
@@ -57,64 +41,74 @@ class LaunchCostEstimate(BaseModel):
 class InstallSpecRequest(BaseModel):
     schema_version: Literal["feedbax.orchestration.install.v1"] = INSTALL_SPEC_SCHEMA_VERSION
     source: Literal["git"] = "git"
-    repository: Literal["https://github.com/mlll-io/feedbax.git"] = (
-        DEFAULT_FEEDBAX_REPOSITORY
-    )
+    repository: Literal["https://github.com/mlll-io/feedbax.git"] = DEFAULT_FEEDBAX_REPOSITORY
     ref: str = DEFAULT_FEEDBAX_REF
     extras: tuple[str, ...] = ()
 
-    @field_validator("ref")
-    @classmethod
-    def _validate_ref(cls, value: str) -> str:
-        FeedbaxInstallSpec(ref=value)
-        return value
-
-    @field_validator("extras")
-    @classmethod
-    def _validate_extras(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        FeedbaxInstallSpec(extras=value)
-        return value
-
-    def to_domain(self) -> FeedbaxInstallSpec:
-        return FeedbaxInstallSpec(
-            schema_version=self.schema_version,
-            source=self.source,
-            repository=self.repository,
-            ref=self.ref,
-            extras=self.extras,
-        )
-
 
 class LaunchRequest(BaseModel):
+    invocation: dict[str, Any]
+    backend_plan: dict[str, Any]
     project: str
     zone: str
     machine_type: str = "n1-standard-4"
     preemptible: bool = True
     worker_port: int = 8765
-    auth_token: Optional[str] = None
-    ts_auth_key: Optional[str] = None
+    worker_auth_token: str | None = None
+    tailscale_auth_key: str | None = None
     install_spec: InstallSpecRequest = Field(default_factory=InstallSpecRequest)
-    confirm_billable_launch: bool = False
-    confirmation_token: Optional[str] = None
-    max_hourly_cost_usd: Optional[float] = None
+    reservation_ttl_seconds: int = Field(default=300, ge=30, le=3600)
 
 
 class LaunchResponse(BaseModel):
-    status: str
-    instance_name: Optional[str] = None
-    worker_url: Optional[str] = None
-    cost_estimate: Optional[LaunchCostEstimate] = None
+    status: Literal["awaiting_authentication"]
+    intent_id: str
+    reservation_id: str
+    expires_at: str
+    instance_name: str
+    cost_estimate: LaunchCostEstimate
+    expected_cost: dict[str, Any]
+
+
+class AuthenticateLaunchRequest(BaseModel):
+    operator_identity: str = Field(min_length=1)
+    authentication_id: str = Field(min_length=1)
+    confirmation_token: str
+    max_cost_usd: float = Field(ge=0)
+
+
+class AuthenticateLaunchResponse(BaseModel):
+    status: Literal["authenticated"]
+    intent_id: str
+    reservation_id: str
+
+
+class RetryLaunchRequest(BaseModel):
+    invocation: dict[str, Any]
+    reservation_ttl_seconds: int = Field(default=300, ge=30, le=3600)
+
+
+class RetryLaunchResponse(BaseModel):
+    status: Literal["awaiting_authentication"]
+    intent_id: str
+    reservation_id: str
+    external_effect_key: str
+    expires_at: str
 
 
 class StatusResponse(BaseModel):
     status: str
-    instance_name: Optional[str] = None
-    worker_url: Optional[str] = None
-    internal_ip: Optional[str] = None
-    external_ip: Optional[str] = None
-    error: Optional[str] = None
-    orphaned_instance: Optional[str] = None
-    worker_health_failures: int = 0
+    intent_id: str | None = None
+    reservation_id: str | None = None
+    attempt_id: str | None = None
+    instance_name: str | None = None
+    worker_url: str | None = None
+    internal_ip: str | None = None
+    external_ip: str | None = None
+    error: str | None = None
+    orphaned_resources: list[dict[str, Any]] = Field(default_factory=list)
+    expected_cost: dict[str, Any] | None = None
+    observed_cost: dict[str, Any] | None = None
 
 
 class TerminateResponse(BaseModel):
@@ -125,9 +119,8 @@ class OrchestrationTarget(BaseModel):
     id: Literal["local", "gcp", "runpod", "manual"]
     label: str
     billable: bool
-    launch_mode: Literal["local", "web-orchestration", "execution-plan", "manual-export"]
+    launch_mode: Literal["local", "durable-controller", "execution-plan", "manual-export"]
     available: bool
-    confirmation_token: Optional[str] = None
     notes: list[str] = Field(default_factory=list)
 
 
@@ -135,161 +128,243 @@ class OrchestrationTargetsResponse(BaseModel):
     targets: list[OrchestrationTarget]
 
 
-# ---------------------------------------------------------------------------
-# Background launch helper
-# ---------------------------------------------------------------------------
-
-
-async def _launch_background(config: InstanceConfig, instance_name: str) -> None:
-    """Background coroutine that drives the full instance launch sequence."""
-    await orchestration_manager.launch(
-        config,
-        training_service,
-        instance_name,
-        reserved=True,
-    )
-
-
-def _estimate_launch_cost(payload: LaunchRequest) -> LaunchCostEstimate:
-    """Return a deterministic launch cost surface for confirmation."""
-    base = _MACHINE_TYPE_ESTIMATES_USD.get(payload.machine_type)
+def _estimate_launch_cost(machine_type: str, preemptible: bool) -> LaunchCostEstimate:
+    base = _MACHINE_TYPE_ESTIMATES_USD.get(machine_type)
     basis = "static machine-type estimate"
     if base is None:
-        base = 0.05
-        basis = "fallback vCPU estimate"
-        pieces = payload.machine_type.rsplit("-", 1)
-        if len(pieces) == 2 and pieces[1].isdigit():
-            base *= int(pieces[1])
-        else:
-            base *= 4
-    hourly = base * (_PREEMPTIBLE_DISCOUNT if payload.preemptible else 1.0)
+        pieces = machine_type.rsplit("-", 1)
+        base = 0.05 * (int(pieces[1]) if len(pieces) == 2 and pieces[1].isdigit() else 4)
+        basis = "vCPU-name estimate"
+    hourly = base * (0.30 if preemptible else 1.0)
     return LaunchCostEstimate(
         hourly_estimate=round(hourly, 4),
-        machine_type=payload.machine_type,
-        preemptible=payload.preemptible,
+        machine_type=machine_type,
+        preemptible=preemptible,
         basis=basis,
     )
 
 
-def _require_launch_confirmation(payload: LaunchRequest) -> LaunchCostEstimate:
-    """Reject billable launches unless the caller acknowledged cost and cap."""
-    estimate = _estimate_launch_cost(payload)
-    if (
-        not payload.confirm_billable_launch
-        or payload.confirmation_token != _BILLABLE_CONFIRMATION_TOKEN
+@router.post("/launch", response_model=LaunchResponse)
+async def reserve_launch(payload: LaunchRequest) -> LaunchResponse:
+    """Create an inert, exact reservation without contacting GCP."""
+    try:
+        invocation = invocation_from_document(payload.invocation)
+        plan = backend_plan_from_document(payload.backend_plan)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if plan.expected_cost is None or plan.billable_confirmation_class != (
+        "authenticated-effect-reservation"
     ):
         raise HTTPException(
-            status_code=412,
-            detail={
-                "error": "billable_launch_confirmation_required",
-                "required_confirmation_token": _BILLABLE_CONFIRMATION_TOKEN,
-                "cost_estimate": estimate.model_dump(),
+            status_code=422,
+            detail="GCP BackendPlan must carry an authenticated effect reservation cost boundary",
+        )
+    instance_name = (
+        "feedbax-worker-" + hashlib.sha256(plan.external_effect_key.encode()).hexdigest()[:12]
+    )
+    parameters = {
+        "project": payload.project,
+        "zone": payload.zone,
+        "machine_type": payload.machine_type,
+        "preemptible": payload.preemptible,
+        "worker_port": payload.worker_port,
+        "instance_name": instance_name,
+        "install_spec": payload.install_spec.model_dump(mode="json"),
+        "startup_timeout_seconds": min(plan.timeout_seconds, 900),
+        "worker_health_timeout_seconds": min(plan.timeout_seconds, 900),
+        "poll_interval_seconds": 2.0,
+    }
+    try:
+        intent, reservation = get_studio_controller(training_service).reserve_cloud_launch(
+            invocation,
+            plan,
+            parameters=parameters,
+            ttl_seconds=payload.reservation_ttl_seconds,
+            secrets={
+                key: value
+                for key, value in {
+                    "worker_auth_token": payload.worker_auth_token,
+                    "tailscale_auth_key": payload.tailscale_auth_key,
+                }.items()
+                if value is not None
             },
         )
-    if payload.max_hourly_cost_usd is None:
-        raise HTTPException(
-            status_code=412,
-            detail={
-                "error": "max_hourly_cost_usd_required",
-                "cost_estimate": estimate.model_dump(),
-            },
-        )
-    if payload.max_hourly_cost_usd < estimate.hourly_estimate:
-        raise HTTPException(
-            status_code=412,
-            detail={
-                "error": "max_hourly_cost_usd_below_estimate",
-                "cost_estimate": estimate.model_dump(),
-                "max_hourly_cost_usd": payload.max_hourly_cost_usd,
-            },
-        )
-    return estimate
-
-
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
-
-
-@router.post("/launch", response_model=LaunchResponse)
-async def launch_instance(payload: LaunchRequest, background_tasks: BackgroundTasks):
-    """Create a GCP compute instance and start the Feedbax worker.
-
-    The endpoint returns immediately with ``status="creating"`` while the
-    instance is being provisioned in the background.  Poll
-    ``GET /api/orchestration/status`` to track progress.
-
-    Body:
-        project: GCP project ID.
-        zone: GCP zone, e.g. ``"us-central1-a"``.
-        machine_type: GCP machine type (default ``"n1-standard-4"``).
-        preemptible: Use a preemptible/spot instance (default ``true``).
-        worker_port: Port the worker will bind to (default ``8765``).
-        auth_token: Optional bearer token for the worker.
-        ts_auth_key: Optional Tailscale auth key.
-    """
-    cost_estimate = _require_launch_confirmation(payload)
-
-    config = InstanceConfig(
-        project=payload.project,
-        zone=payload.zone,
-        machine_type=payload.machine_type,
-        preemptible=payload.preemptible,
-        worker_port=payload.worker_port,
-        auth_token=payload.auth_token,
-        ts_auth_key=payload.ts_auth_key,
-        install_spec=payload.install_spec.to_domain(),
+    except (ValueError, ControllerProtocolError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    assert reservation.expires_at is not None
+    return LaunchResponse(
+        status="awaiting_authentication",
+        intent_id=intent.intent_id,
+        reservation_id=reservation.reservation_id,
+        expires_at=reservation.expires_at.isoformat(),
+        instance_name=instance_name,
+        cost_estimate=_estimate_launch_cost(payload.machine_type, payload.preemptible),
+        expected_cost=plan.expected_cost.model_dump(mode="json"),
     )
 
-    short_id = uuid.uuid4().hex[:6]
-    instance_name = f"feedbax-worker-{short_id}"
+
+@router.post(
+    "/intents/{intent_id}/reservations/{reservation_id}/authenticate",
+    response_model=AuthenticateLaunchResponse,
+)
+async def authenticate_launch(
+    intent_id: str,
+    reservation_id: str,
+    payload: AuthenticateLaunchRequest,
+    background_tasks: BackgroundTasks,
+) -> AuthenticateLaunchResponse:
+    """Authenticate one named reservation, then schedule its single dispatch."""
+    controller = get_studio_controller(training_service)
+    projection = controller.status(intent_id)
+    try:
+        reserved = projection.reservations[reservation_id]
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Effect reservation not found") from exc
+    if payload.confirmation_token != _BILLABLE_CONFIRMATION_TOKEN:
+        raise HTTPException(status_code=412, detail="Billable launch confirmation is required")
+    expected_cost = reserved.reservation.expected_cost
+    if expected_cost is None or payload.max_cost_usd < expected_cost.maximum:
+        raise HTTPException(status_code=412, detail="Cost cap is below the exact reserved cost")
+    try:
+        controller.controller.authenticate_reservation(
+            intent_id,
+            reservation_id,
+            operator_identity=payload.operator_identity,
+            authentication_id=payload.authentication_id,
+            evidence={
+                "confirmation_class": "authenticated-effect-reservation",
+                "maximum_cost_usd": payload.max_cost_usd,
+            },
+        )
+    except (OperatorGateError, ControllerProtocolError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    background_tasks.add_task(
+        controller.controller.dispatch,
+        intent_id,
+        reservation_id,
+        controller.gcp,
+    )
+    return AuthenticateLaunchResponse(
+        status="authenticated", intent_id=intent_id, reservation_id=reservation_id
+    )
+
+
+@router.post(
+    "/intents/{intent_id}/reservations/{reservation_id}/retry",
+    response_model=RetryLaunchResponse,
+)
+async def admit_retry(
+    intent_id: str,
+    reservation_id: str,
+    payload: RetryLaunchRequest,
+) -> RetryLaunchResponse:
+    """Admit one same-effect retry under the exact Invocation execution policy."""
 
     try:
-        await orchestration_manager.reserve_launch(config, instance_name)
-    except RuntimeError as exc:
+        invocation = invocation_from_document(payload.invocation)
+        reservation = get_studio_controller(training_service).admit_retry(
+            intent_id,
+            invocation,
+            reservation_id,
+            ttl_seconds=payload.reservation_ttl_seconds,
+        )
+    except (ValueError, ControllerProtocolError, OperatorGateError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-    background_tasks.add_task(_launch_background, config, instance_name)
-
-    return LaunchResponse(
-        status="creating",
-        instance_name=instance_name,
-        cost_estimate=cost_estimate,
+    assert reservation.expires_at is not None
+    return RetryLaunchResponse(
+        status="awaiting_authentication",
+        intent_id=intent_id,
+        reservation_id=reservation.reservation_id,
+        external_effect_key=reservation.external_effect_key,
+        expires_at=reservation.expires_at.isoformat(),
     )
 
 
 @router.get("/status", response_model=StatusResponse)
-async def get_orchestration_status():
-    """Return the current orchestration state.
-
-    When an instance is active (status in ``creating``, ``connecting``, or
-    ``running``), also refreshes from GCP to detect preemption.
-    """
-    state = orchestration_manager.state
-
-    if state.instance is not None and state.status in ("creating", "connecting", "running"):
-        try:
-            state = await orchestration_manager.refresh_status()
-        except Exception:
-            # Refresh failed — return cached state.
-            pass
-
-    instance = state.instance
+async def get_orchestration_status(
+    intent_id: str | None = Query(default=None),
+    refresh: bool = Query(default=True),
+) -> StatusResponse:
+    controller = get_studio_controller(training_service)
+    intent_id = intent_id or controller.latest_intent_id()
+    if intent_id is None:
+        return StatusResponse(status="idle")
+    try:
+        projection = (
+            await controller.refresh(intent_id) if refresh else controller.status(intent_id)
+        )
+    except ControllerProtocolError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    reservation = next(reversed(projection.reservations.values()), None)
+    attempt = next(reversed(projection.attempts.values()), None)
+    observation = attempt.observations[-1] if attempt is not None and attempt.observations else {}
+    status = projection.status
+    if reservation is not None and reservation.status == "inert":
+        status = "awaiting_authentication"
+    elif attempt is not None and status != "operator_action_required":
+        status = attempt.status
     return StatusResponse(
-        status=state.status,
-        instance_name=instance.name if instance else None,
-        worker_url=state.worker_url,
-        internal_ip=instance.internal_ip if instance else None,
-        external_ip=instance.external_ip if instance else None,
-        error=state.error,
-        orphaned_instance=state.orphaned_instance,
-        worker_health_failures=state.worker_health_failures,
+        status=status,
+        intent_id=intent_id,
+        reservation_id=reservation.reservation.reservation_id if reservation else None,
+        attempt_id=attempt.attempt_id if attempt else None,
+        instance_name=attempt.provider_resource_handle if attempt else None,
+        worker_url=attempt.worker_identity if attempt else None,
+        internal_ip=observation.get("internal_ip"),
+        external_ip=observation.get("external_ip"),
+        error=observation.get("error")
+        if attempt is not None and attempt.status == "failed"
+        else None,
+        orphaned_resources=[
+            {
+                "backend_id": orphan.backend_id,
+                "provider_resource_handle": orphan.resource.provider_resource_handle,
+                "external_effect_key": orphan.resource.external_effect_key,
+                "status": orphan.status,
+                "handling_policy": (
+                    orphan.handling_policy.model_dump(mode="json")
+                    if orphan.handling_policy is not None
+                    else None
+                ),
+            }
+            for orphan in projection.orphans.values()
+        ],
+        expected_cost=(
+            reservation.reservation.expected_cost.model_dump(mode="json")
+            if reservation is not None and reservation.reservation.expected_cost is not None
+            else None
+        ),
+        observed_cost=(
+            reservation.observed_cost.model_dump(mode="json")
+            if reservation is not None and reservation.observed_cost is not None
+            else None
+        ),
     )
 
 
+@router.get("/intents/{intent_id}/artifacts")
+async def inspect_artifacts(intent_id: str) -> dict[str, Any]:
+    return {
+        "intent_id": intent_id,
+        "artifact_refs": list(get_studio_controller(training_service).inspect_artifacts(intent_id)),
+    }
+
+
+@router.delete("/instance", response_model=TerminateResponse)
+async def terminate_instance(intent_id: str | None = Query(default=None)) -> TerminateResponse:
+    controller = get_studio_controller(training_service)
+    intent_id = intent_id or controller.latest_intent_id()
+    if intent_id is None:
+        return TerminateResponse(ok=True)
+    try:
+        await controller.terminate(intent_id)
+    except (ControllerProtocolError, RuntimeError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return TerminateResponse(ok=True)
+
+
 @router.get("/targets", response_model=OrchestrationTargetsResponse)
-async def list_orchestration_targets():
-    """Return execution targets available to Studio queue orchestration."""
+async def list_orchestration_targets() -> OrchestrationTargetsResponse:
     return OrchestrationTargetsResponse(
         targets=[
             OrchestrationTarget(
@@ -298,16 +373,15 @@ async def list_orchestration_targets():
                 billable=False,
                 launch_mode="local",
                 available=True,
-                notes=["Uses the existing local Studio execution path."],
+                notes=["Uses StageEngine through the durable controller."],
             ),
             OrchestrationTarget(
                 id="gcp",
                 label="GCP",
                 billable=True,
-                launch_mode="web-orchestration",
+                launch_mode="durable-controller",
                 available=True,
-                confirmation_token=_BILLABLE_CONFIRMATION_TOKEN,
-                notes=["Uses the existing GCP VM orchestration launch endpoint."],
+                notes=["Requires authentication of one exact inert reservation."],
             ),
             OrchestrationTarget(
                 id="runpod",
@@ -315,14 +389,7 @@ async def list_orchestration_targets():
                 billable=True,
                 launch_mode="execution-plan",
                 available=True,
-                confirmation_token="confirm-runpod-queue-launch",
-                notes=[
-                    "Queue launch prepares a RunPod ExecutionPlan with repository script commands.",
-                    (
-                        "Real pod acquisition is handled by feedbax-orchestrate launch "
-                        "--assembly-request <path> --driver runpod."
-                    ),
-                ],
+                notes=["Uses the same reservation-bound controller protocol."],
             ),
             OrchestrationTarget(
                 id="manual",
@@ -330,25 +397,7 @@ async def list_orchestration_targets():
                 billable=False,
                 launch_mode="manual-export",
                 available=True,
-                notes=["Exports operator instructions without starting compute."],
+                notes=["Exports an inert plan without starting compute."],
             ),
         ]
     )
-
-
-@router.delete("/instance", response_model=TerminateResponse)
-async def terminate_instance():
-    """Terminate the current GCP instance and disconnect the TrainingService.
-
-    If no instance is running, returns ``ok=true`` without error.
-    """
-    state = orchestration_manager.state
-    if state.instance is None:
-        return TerminateResponse(ok=True)
-
-    try:
-        await orchestration_manager.terminate(training_service)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    return TerminateResponse(ok=True)

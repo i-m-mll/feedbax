@@ -199,6 +199,14 @@ def test_executor_resume_probe_isolates_source(tmp_path: Path) -> None:
     published_before = authenticate_published_checkpoint_custody(source_root)
 
     with isolated_checkpoint_probe(source_root) as probe:
+        source_checkpoint_set = (
+            source_root
+            / "transactions"
+            / published_before.manifest.transaction_id
+            / "checkpoint-set.json"
+        )
+        copied_checkpoint_set = probe.output_root / source_checkpoint_set.relative_to(source_root)
+        assert copied_checkpoint_set.read_bytes() == source_checkpoint_set.read_bytes()
         resumed = execute_training_run_spec(
             spec,
             preparation=_valid_materialized_preparation(spec),
@@ -213,6 +221,7 @@ def test_executor_resume_probe_isolates_source(tmp_path: Path) -> None:
         # namespace, not the source.
         assert resumed.checkpoint_writes
         assert (probe.output_root / "latest.json").is_file()
+        assert resumed.checkpoint_writes[-1].checkpoint_set.parent is not None
 
     after = fingerprint_checkpoint_custody_inputs(source_root, digest_blobs=True)
     assert after == before

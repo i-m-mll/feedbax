@@ -165,7 +165,6 @@ def store_evaluation_states_artifact(
         role=EVALUATION_STATES_ARTIFACT_ROLE,
         logical_name=f"{safe_manifest_key(manifest_id)}.states.npz",
         media_type=EVALUATION_STATES_MEDIA_TYPE,
-        suffix=".npz",
         metadata={
             "schema_id": payload.schema_id,
             "schema_version": payload.schema_version,

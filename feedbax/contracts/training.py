@@ -37,7 +37,7 @@ from feedbax.contracts.worker import (
 
 if TYPE_CHECKING:
     from feedbax.training.preparation import ExecutionPreparationProvider
-    from feedbax.training.run_matrix import TrainingRowLowerer
+    from feedbax.training.row_lowering import TrainingRowLowererRegistration
 
 
 TRAINING_RUN_SPEC_SCHEMA_ID = "feedbax.spec.training_run"
@@ -687,35 +687,137 @@ class TrainingMethodScheduleProjector(Generic[PayloadT]):
 
 
 @dataclass(frozen=True)
-class TrainingMethodDescriptor(Generic[PayloadT]):
-    """Atomic runtime extension surface for one typed training method.
-
-    Descriptor hooks are runtime-only. They do not alter ``TrainingRunSpec`` or
-    any other durable schema.
-    """
+class TrainingProgramDeclaration(Generic[PayloadT]):
+    """Neutral identity and canonical payload schema for one training program."""
 
     method_ref: str
     payload_schema_id: str
     payload_schema_version: str
     payload_model: type[PayloadT]
+    rejected_payload_versions: tuple[str, ...] = ()
+    owner: str = "feedbax"
+    package: str | None = None
+
+
+@dataclass(frozen=True)
+class TrainingProgramRuntimeFacet(Generic[PayloadT]):
+    """Runtime-owned method contract and numerical kernel factories."""
+
     contract_compiler: Callable[[PayloadT], MethodContractSpec]
     update_kernels_factory: Callable[[PayloadT], Mapping[str, Callable[..., Mapping[str, Any]]]]
     guard_predicates_factory: Callable[
         [PayloadT], Mapping[str, Callable[..., Mapping[str, Any]]]
     ] = lambda _payload: {}
-    preparation_provider: ExecutionPreparationProvider | None = None
-    row_compiler: TrainingRowLowerer | None = None
-    authoring_hook: TrainingMethodAuthoringHook[PayloadT] | None = None
-    metadata_projector: TrainingMethodMetadataProjector[PayloadT] | None = None
-    schedule_projector: TrainingMethodScheduleProjector[PayloadT] | None = None
-    optimizer_spec_projector: TrainingMethodOptimizerSpecProjector[PayloadT] | None = None
-    optimizer_step_extractor: TrainingMethodOptimizerStepExtractor[PayloadT] | None = None
-    rejected_payload_versions: tuple[str, ...] = ()
-    owner: str = "feedbax"
-    package: str | None = None
+
+
+@dataclass(frozen=True)
+class TrainingProgramAuthoringFacet(Generic[PayloadT]):
+    """Optional authoring operations paid for only by authorable programs."""
+
+    hook: TrainingMethodAuthoringHook[PayloadT]
+
+
+@dataclass(frozen=True)
+class TrainingProgramPreparationFacet:
+    """Runtime preparation supplied independently of method semantics."""
+
+    provider: ExecutionPreparationProvider
+
+
+@dataclass(frozen=True)
+class TrainingProgramRowLoweringFacet:
+    """Authored-row compilers derived into the application lowering view."""
+
+    registrations: tuple[TrainingRowLowererRegistration, ...]
+
+
+@dataclass(frozen=True)
+class TrainingProgramProjectionFacet(Generic[PayloadT]):
+    """Optional manifest, schedule, and optimizer projections."""
+
+    metadata: TrainingMethodMetadataProjector[PayloadT] | None = None
+    schedule: TrainingMethodScheduleProjector[PayloadT] | None = None
+    optimizer_spec: TrainingMethodOptimizerSpecProjector[PayloadT] | None = None
+    optimizer_step: TrainingMethodOptimizerStepExtractor[PayloadT] | None = None
+
+
+@dataclass(frozen=True)
+class DeclaredTrainingProgram(Generic[PayloadT]):
+    """Application-root projection of one declaration and its selected facets."""
+
+    declaration: TrainingProgramDeclaration[PayloadT]
+    runtime: TrainingProgramRuntimeFacet[PayloadT]
+    preparation: TrainingProgramPreparationFacet | None = None
+    row_lowering: TrainingProgramRowLoweringFacet | None = None
+    authoring: TrainingProgramAuthoringFacet[PayloadT] | None = None
+    projection: TrainingProgramProjectionFacet[PayloadT] | None = None
+
+    @property
+    def method_ref(self) -> str:
+        return self.declaration.method_ref
+
+    @property
+    def payload_schema_id(self) -> str:
+        return self.declaration.payload_schema_id
+
+    @property
+    def payload_schema_version(self) -> str:
+        return self.declaration.payload_schema_version
+
+    @property
+    def payload_model(self) -> type[PayloadT]:
+        return self.declaration.payload_model
+
+    @property
+    def rejected_payload_versions(self) -> tuple[str, ...]:
+        return self.declaration.rejected_payload_versions
+
+    @property
+    def owner(self) -> str:
+        return self.declaration.owner
+
+    @property
+    def package(self) -> str | None:
+        return self.declaration.package
+
+    @property
+    def contract_compiler(self):
+        return self.runtime.contract_compiler
+
+    @property
+    def update_kernels_factory(self):
+        return self.runtime.update_kernels_factory
+
+    @property
+    def guard_predicates_factory(self):
+        return self.runtime.guard_predicates_factory
+
+    @property
+    def preparation_provider(self):
+        return self.preparation.provider if self.preparation is not None else None
+
+    @property
+    def authoring_hook(self):
+        return self.authoring.hook if self.authoring is not None else None
+
+    @property
+    def metadata_projector(self):
+        return self.projection.metadata if self.projection is not None else None
+
+    @property
+    def schedule_projector(self):
+        return self.projection.schedule if self.projection is not None else None
+
+    @property
+    def optimizer_spec_projector(self):
+        return self.projection.optimizer_spec if self.projection is not None else None
+
+    @property
+    def optimizer_step_extractor(self):
+        return self.projection.optimizer_step if self.projection is not None else None
 
     def registration(self) -> TrainingMethodRegistration:
-        """Derive the single low-level registry row for this descriptor."""
+        """Derive the runtime registry row from neutral and runtime facets."""
         return TrainingMethodRegistration(
             method_ref=self.method_ref,
             payload_schema_id=self.payload_schema_id,
@@ -728,15 +830,115 @@ class TrainingMethodDescriptor(Generic[PayloadT]):
             rejected_payload_versions=self.rejected_payload_versions,
             owner=self.owner,
             package=self.package,
-            requires_execution_preparation=self.preparation_provider is not None,
+            requires_execution_preparation=self.preparation is not None,
         )
+
+
+def declare_training_program(
+    *,
+    method_ref: str,
+    payload_schema_id: str,
+    payload_schema_version: str,
+    payload_model: type[PayloadT],
+    contract_compiler: Callable[[PayloadT], MethodContractSpec],
+    update_kernels_factory: Callable[[PayloadT], Mapping[str, Callable[..., Mapping[str, Any]]]],
+    guard_predicates_factory: Callable[
+        [PayloadT], Mapping[str, Callable[..., Mapping[str, Any]]]
+    ] = lambda _payload: {},
+    preparation_provider: ExecutionPreparationProvider | None = None,
+    row_lowerers: Sequence[TrainingRowLowererRegistration] = (),
+    authoring_hook: TrainingMethodAuthoringHook[PayloadT] | None = None,
+    metadata_projector: TrainingMethodMetadataProjector[PayloadT] | None = None,
+    schedule_projector: TrainingMethodScheduleProjector[PayloadT] | None = None,
+    optimizer_spec_projector: TrainingMethodOptimizerSpecProjector[PayloadT] | None = None,
+    optimizer_step_extractor: TrainingMethodOptimizerStepExtractor[PayloadT] | None = None,
+    rejected_payload_versions: tuple[str, ...] = (),
+    owner: str = "feedbax",
+    package: str | None = None,
+) -> DeclaredTrainingProgram[PayloadT]:
+    """Compose a training program from the facets its application needs."""
+    projection = None
+    if any(
+        value is not None
+        for value in (
+            metadata_projector,
+            schedule_projector,
+            optimizer_spec_projector,
+            optimizer_step_extractor,
+        )
+    ):
+        projection = TrainingProgramProjectionFacet(
+            metadata_projector,
+            schedule_projector,
+            optimizer_spec_projector,
+            optimizer_step_extractor,
+        )
+    return DeclaredTrainingProgram(
+        declaration=TrainingProgramDeclaration(
+            method_ref=method_ref,
+            payload_schema_id=payload_schema_id,
+            payload_schema_version=payload_schema_version,
+            payload_model=payload_model,
+            rejected_payload_versions=rejected_payload_versions,
+            owner=owner,
+            package=package,
+        ),
+        runtime=TrainingProgramRuntimeFacet(
+            contract_compiler,
+            update_kernels_factory,
+            guard_predicates_factory,
+        ),
+        preparation=(
+            TrainingProgramPreparationFacet(preparation_provider)
+            if preparation_provider is not None
+            else None
+        ),
+        row_lowering=(
+            TrainingProgramRowLoweringFacet(tuple(row_lowerers)) if row_lowerers else None
+        ),
+        authoring=(TrainingProgramAuthoringFacet(authoring_hook) if authoring_hook else None),
+        projection=projection,
+    )
+
+
+def evolve_training_program(
+    program: DeclaredTrainingProgram[PayloadT],
+    **changes: Any,
+) -> DeclaredTrainingProgram[PayloadT]:
+    """Create a revised declaration while preserving its unmodified facets."""
+    values = {
+        "method_ref": program.method_ref,
+        "payload_schema_id": program.payload_schema_id,
+        "payload_schema_version": program.payload_schema_version,
+        "payload_model": program.payload_model,
+        "contract_compiler": program.contract_compiler,
+        "update_kernels_factory": program.update_kernels_factory,
+        "guard_predicates_factory": program.guard_predicates_factory,
+        "preparation_provider": program.preparation_provider,
+        "row_lowerers": (
+            program.row_lowering.registrations if program.row_lowering is not None else ()
+        ),
+        "authoring_hook": program.authoring_hook,
+        "metadata_projector": program.metadata_projector,
+        "schedule_projector": program.schedule_projector,
+        "optimizer_spec_projector": program.optimizer_spec_projector,
+        "optimizer_step_extractor": program.optimizer_step_extractor,
+        "rejected_payload_versions": program.rejected_payload_versions,
+        "owner": program.owner,
+        "package": program.package,
+    }
+    unknown = sorted(set(changes) - set(values))
+    if unknown:
+        raise TypeError(f"unknown training-program declaration fields={unknown!r}")
+    values.update(changes)
+    return declare_training_program(**values)
 
 
 @dataclass(frozen=True)
 class ResolvedTrainingMethod(Generic[PayloadT]):
     """Typed, identity-checked runtime projection of one method request."""
 
-    descriptor: TrainingMethodDescriptor[PayloadT] | None
+    program: DeclaredTrainingProgram[PayloadT] | None
     registration: TrainingMethodRegistration
     payload: PayloadT
     contract: MethodContractSpec
@@ -799,13 +1001,13 @@ class TrainingManifestMetadataProjectionRegistration:
         )
 
 
-class TrainingMethodRegistry:
+class TrainingProgramRegistry:
     """Registry for method payloads and independent manifest projection governance."""
 
     def __init__(self) -> None:
         self._sealed = False
         self._registrations: dict[str, TrainingMethodRegistration] = {}
-        self._descriptors: dict[str, TrainingMethodDescriptor[Any]] = {}
+        self._programs: dict[str, DeclaredTrainingProgram[Any]] = {}
         self._metadata_projection_registrations: dict[
             tuple[str, str, str], TrainingManifestMetadataProjectionRegistration
         ] = {}
@@ -826,70 +1028,77 @@ class TrainingMethodRegistry:
             )
         self._registrations[registration.method_ref] = registration
 
-    def register_descriptor(self, descriptor: TrainingMethodDescriptor[Any]) -> None:
-        """Atomically register one descriptor and its derived low-level row."""
+    def register_program(self, program: DeclaredTrainingProgram[Any]) -> None:
+        """Atomically register one declaration and its runtime projection."""
         self._require_mutable()
         required = {
-            "method_ref": descriptor.method_ref,
-            "payload_schema_id": descriptor.payload_schema_id,
-            "payload_schema_version": descriptor.payload_schema_version,
-            "owner": descriptor.owner,
+            "method_ref": program.method_ref,
+            "payload_schema_id": program.payload_schema_id,
+            "payload_schema_version": program.payload_schema_version,
+            "owner": program.owner,
         }
         missing = [name for name, value in required.items() if not value]
         if missing:
-            raise ValueError(f"training method descriptor has empty fields={missing!r}")
-        if descriptor.method_ref in self._descriptors:
-            raise ValueError(
-                f"training method descriptor already registered: {descriptor.method_ref!r}"
-            )
-        if not issubclass(descriptor.payload_model, BaseModel):
-            raise TypeError("training method descriptor payload_model must extend BaseModel")
+            raise ValueError(f"training program declaration has empty fields={missing!r}")
+        if program.method_ref in self._programs:
+            raise ValueError(f"training program already registered: {program.method_ref!r}")
+        if not issubclass(program.payload_model, BaseModel):
+            raise TypeError("training program payload_model must extend BaseModel")
         hooks = {
-            "contract_compiler": descriptor.contract_compiler,
-            "update_kernels_factory": descriptor.update_kernels_factory,
-            "guard_predicates_factory": descriptor.guard_predicates_factory,
-            "preparation_provider": descriptor.preparation_provider,
-            "row_compiler": descriptor.row_compiler,
-            "optimizer_spec_projector": descriptor.optimizer_spec_projector,
-            "optimizer_step_extractor": descriptor.optimizer_step_extractor,
+            "contract_compiler": program.contract_compiler,
+            "update_kernels_factory": program.update_kernels_factory,
+            "guard_predicates_factory": program.guard_predicates_factory,
+            "preparation_provider": program.preparation_provider,
+            "optimizer_spec_projector": program.optimizer_spec_projector,
+            "optimizer_step_extractor": program.optimizer_step_extractor,
         }
         invalid_hooks = [
             name for name, hook in hooks.items() if hook is not None and not callable(hook)
         ]
         if invalid_hooks:
-            raise TypeError(f"training method descriptor has non-callable hooks={invalid_hooks!r}")
-        if descriptor.authoring_hook is not None:
-            if not isinstance(descriptor.authoring_hook, TrainingMethodAuthoringHook):
+            raise TypeError(f"training program has non-callable facets={invalid_hooks!r}")
+        if program.row_lowering is not None:
+            from feedbax.training.row_lowering import TrainingRowLowererRegistration
+
+            if not program.row_lowering.registrations or any(
+                not isinstance(registration, TrainingRowLowererRegistration)
+                for registration in program.row_lowering.registrations
+            ):
                 raise TypeError(
-                    "training method descriptor authoring_hook must be a "
-                    "TrainingMethodAuthoringHook"
+                    "training-program row-lowering facet must contain "
+                    "TrainingRowLowererRegistration values"
                 )
-            descriptor.authoring_hook.validate_structure()
-        if descriptor.metadata_projector is not None:
-            if not isinstance(descriptor.metadata_projector, TrainingMethodMetadataProjector):
+        if program.authoring_hook is not None:
+            if not isinstance(program.authoring_hook, TrainingMethodAuthoringHook):
                 raise TypeError(
-                    "training method descriptor metadata_projector must be a "
+                    "training-program authoring facet must contain a TrainingMethodAuthoringHook"
+                )
+            program.authoring_hook.validate_structure()
+        if program.metadata_projector is not None:
+            if not isinstance(program.metadata_projector, TrainingMethodMetadataProjector):
+                raise TypeError(
+                    "training-program projection facet metadata must be a "
                     "TrainingMethodMetadataProjector"
                 )
-            descriptor.metadata_projector.validate_structure()
-        if descriptor.schedule_projector is not None:
-            if not isinstance(descriptor.schedule_projector, TrainingMethodScheduleProjector):
+            program.metadata_projector.validate_structure()
+        if program.schedule_projector is not None:
+            if not isinstance(program.schedule_projector, TrainingMethodScheduleProjector):
                 raise TypeError(
-                    "training method descriptor schedule_projector must be a "
+                    "training-program projection facet schedule must be a "
                     "TrainingMethodScheduleProjector"
                 )
-            descriptor.schedule_projector.validate_structure()
-        self.register(descriptor.registration())
-        self._descriptors[descriptor.method_ref] = descriptor
+            program.schedule_projector.validate_structure()
+        self.register(program.registration())
+        self._programs[program.method_ref] = program
 
-    def descriptor_keys(self) -> tuple[str, ...]:
-        """Return method refs backed by atomic descriptors."""
-        return tuple(sorted(self._descriptors))
+    def program_keys(self) -> tuple[str, ...]:
+        """Return method refs backed by composed declarations."""
+        return tuple(sorted(self._programs))
 
-    def descriptor(self, method_ref: MethodRefSpec | str) -> TrainingMethodDescriptor[Any] | None:
-        """Return the descriptor for a method ref, if its row is descriptor-backed."""
+    def program(self, method_ref: MethodRefSpec | str) -> DeclaredTrainingProgram[Any] | None:
+        """Return the composed program for a method ref, when declared."""
         key = method_ref.key if isinstance(method_ref, MethodRefSpec) else method_ref
-        return self._descriptors.get(key)
+        return self._programs.get(key)
 
     def available_keys(self) -> tuple[str, ...]:
         """Return method refs known to this registry."""
@@ -986,8 +1195,8 @@ class TrainingMethodRegistry:
                 "registry must match /method_payload/schema_version; found "
                 f"{contract.method_payload_schema_version!r}, expected {envelope.schema_version!r}"
             )
-        descriptor = self.descriptor(method_key)
-        if worker_execution is not None and descriptor is not None:
+        program = self.program(method_key)
+        if worker_execution is not None and program is not None:
             if worker_execution.method_contract != contract:
                 raise ValueError(
                     "/worker_execution/method_contract must exactly match the payload-compiled "
@@ -1008,7 +1217,7 @@ class TrainingMethodRegistry:
         )
         if (
             worker_execution is not None
-            and descriptor is not None
+            and program is not None
             and worker_execution.effective_phase != effective_phase
         ):
             raise ValueError(
@@ -1016,7 +1225,7 @@ class TrainingMethodRegistry:
                 f"effective phase for method_ref {method_key!r}"
             )
         return ResolvedTrainingMethod(
-            descriptor=descriptor,
+            program=program,
             registration=registration,
             payload=payload,
             contract=contract,
@@ -1239,11 +1448,11 @@ def standard_supervised_update_kernels(
     return {"feedbax.training.standard_supervised.gradient_update": gradient_update}
 
 
-def standard_supervised_method_descriptor() -> TrainingMethodDescriptor[
+def standard_supervised_training_program() -> DeclaredTrainingProgram[
     StandardSupervisedMethodPayload
 ]:
-    """Return the atomic descriptor for Feedbax's standard supervised method."""
-    return TrainingMethodDescriptor(
+    """Return Feedbax's standard supervised training-program declaration."""
+    return declare_training_program(
         method_ref=STANDARD_SUPERVISED_METHOD_REF,
         payload_schema_id=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
         payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
@@ -1298,10 +1507,10 @@ def _standard_supervised_optimizer_step(
     return step
 
 
-def default_training_method_registry() -> TrainingMethodRegistry:
+def default_training_program_registry() -> TrainingProgramRegistry:
     """Return the default method-ref keyed payload registry."""
-    registry = TrainingMethodRegistry()
-    registry.register_descriptor(standard_supervised_method_descriptor())
+    registry = TrainingProgramRegistry()
+    registry.register_program(standard_supervised_training_program())
     return registry
 
 
@@ -1369,7 +1578,7 @@ class TrainingRunSpec(TrainingRunContractModel):
 
 
 def resolve_training_run_spec(
-    spec: TrainingRunSpec, registry: TrainingMethodRegistry
+    spec: TrainingRunSpec, registry: TrainingProgramRegistry
 ) -> ResolvedTrainingMethod[Any]:
     """Resolve registry-owned training semantics after structural parsing."""
     return registry.resolve_execution(
@@ -1380,7 +1589,7 @@ def resolve_training_run_spec(
 
 
 def validate_training_run_spec_semantics(
-    spec: TrainingRunSpec, registry: TrainingMethodRegistry
+    spec: TrainingRunSpec, registry: TrainingProgramRegistry
 ) -> TrainingRunSpec:
     """Validate registry-owned semantics at an explicit post-bootstrap boundary."""
     resolve_training_run_spec(spec, registry)

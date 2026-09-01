@@ -30,12 +30,13 @@ from feedbax.contracts.training import (
     TrainingConfig,
     TrainingRunSpec,
     WorkerExecutionSpec,
+    evolve_training_program,
     standard_supervised_effective_phase_spec,
     standard_supervised_method_contract,
-    standard_supervised_method_descriptor,
+    standard_supervised_training_program,
     standard_supervised_method_payload,
     standard_supervised_method_ref,
-    default_training_method_registry,
+    default_training_program_registry,
 )
 from feedbax.orchestration import (
     AssemblyCompilerRegistry,
@@ -67,7 +68,7 @@ from feedbax.orchestration.conformance import CheckRegistry, pass_check
 from feedbax.orchestration.drivers.runpod import RunPodOrchestrationDriver
 from feedbax.orchestration.stages import PreflightFailed
 from feedbax.plugins import (
-    TRAINING_METHODS,
+    TRAINING_PROGRAMS,
     BootstrapState,
     FamilyRequirement,
     PluginDeclaration,
@@ -218,9 +219,9 @@ def _register_orchestration_plugin_method(registry: Any) -> None:
             "method_payload_schema_version": _PLUGIN_SCHEMA_VERSION,
         }
     )
-    registry.register_descriptor(
-        replace(
-            standard_supervised_method_descriptor(),
+    registry.register_program(
+        evolve_training_program(
+            standard_supervised_training_program(),
             method_ref=_PLUGIN_METHOD_REF,
             payload_schema_id=_PLUGIN_SCHEMA_ID,
             payload_schema_version=_PLUGIN_SCHEMA_VERSION,
@@ -330,7 +331,7 @@ def _matrix_request(
         orchestration_root=str(tmp_path / "orchestration"),
     )
     registry = AssemblyCompilerRegistry()
-    method_registry = default_training_method_registry()
+    method_registry = default_training_program_registry()
     register_training_run_matrix_compiler(
         registry,
         method_registry=method_registry,
@@ -361,9 +362,9 @@ def test_preflight_loads_non_builtin_training_method_entry_point_before_matrix_a
             "tests.orchestration_method",
             "1",
             1,
-            families=(FamilyRequirement("training_methods"),),
+            families=(FamilyRequirement("training_programs"),),
         ),
-        lambda context: _register_orchestration_plugin_method(context.registry(TRAINING_METHODS)),
+        lambda context: _register_orchestration_plugin_method(context.registry(TRAINING_PROGRAMS)),
     )
     monkeypatch.setattr(
         plugin_bootstrap,
@@ -920,7 +921,7 @@ def test_runpod_driver_is_constructed_from_typed_deployment_policy(tmp_path: Pat
         bundle,
         driver_registry=registries.drivers,
         input_provider_bindings=bindings,
-        training_method_registry=default_training_method_registry(),
+        training_method_registry=default_training_program_registry(),
     )
 
     assert isinstance(driver, RunPodOrchestrationDriver)

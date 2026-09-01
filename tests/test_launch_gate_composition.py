@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -13,8 +12,9 @@ import pytest
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.training import (
     StandardSupervisedMethodPayload,
-    TrainingMethodRegistry,
-    standard_supervised_method_descriptor,
+    TrainingProgramRegistry,
+    evolve_training_program,
+    standard_supervised_training_program,
 )
 from feedbax.contracts.worker import AxisCoordinateSpec, MethodTrainingDiagnosticsSpec
 from feedbax.orchestration.drivers.runpod import (
@@ -258,16 +258,16 @@ def test_provider_free_continuation_preflight_matches_two_realized_updates(
     def optimizer_step(_payload, runtime):
         return int(runtime["optimizer"][-1].count)
 
-    descriptor = replace(
-        standard_supervised_method_descriptor(),
+    descriptor = evolve_training_program(
+        standard_supervised_training_program(),
         contract_compiler=lambda _payload: contract,
         optimizer_step_extractor=optimizer_step,
         update_kernels_factory=lambda _payload: {
             "feedbax.training.standard_supervised.gradient_update": kernel
         },
     )
-    registry = TrainingMethodRegistry()
-    registry.register_descriptor(descriptor)
+    registry = TrainingProgramRegistry()
+    registry.register_program(descriptor)
     checkpoint_root = tmp_path / "checkpoint-custody"
     template_optimizer = _write_mapped_schedule_checkpoint(spec, checkpoint_root)
     source_manifest = load_checkpoint_custody_documents(checkpoint_root).manifest.document

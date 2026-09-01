@@ -110,7 +110,7 @@ from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.runtime.state_feedback import StateFeedbackSelector
 
 
-__all__ = ["graph_to_spec", "prototypes_from_task_bindings", "spec_to_graph"]
+__all__ = ["graph_to_spec", "prototypes_from_task_bindings"]
 
 
 def _merge_params(
@@ -960,7 +960,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             continue
 
         if isinstance(component, PenzaiSubgraph):
-            # Persist builder_name for round-tripping through spec_to_graph.
+            # Persist builder_name for round-tripping through compile_graph.
             # Legacy objects without builder_name get "__unknown__" so deserialization
             # produces a clear error rather than a crash.  Bug: bc551f7
             builder_name = getattr(component, "builder_name", None) or "__unknown__"
@@ -1098,12 +1098,12 @@ def graph_to_spec(graph: Any) -> GraphSpec:
     )
 
 
-def spec_to_graph(
+def _instantiate_graph(
     spec: GraphSpec,
     component_registry: Any,
     input_prototypes: Mapping[tuple[str, str], Any] | None = None,
 ) -> Graph:
-    """Instantiate a Graph-like object from GraphSpec."""
+    """Instantiate a resolved graph for the graph compiler."""
     execution_registry = component_registry
     metadata_registry = component_registry
     migration = migrate_graph_spec(spec)
@@ -1205,7 +1205,7 @@ def spec_to_graph(
                 expected_domain=required_domain,
                 node_name=node_name,
                 node_type=node_type,
-                consumer="spec_to_graph",
+                consumer="compile_graph",
             )
             if required_domain != CAUSAL_DOMAIN_ID:
                 domain = builtin_domain_registry().get(required_domain)
@@ -1235,18 +1235,18 @@ def spec_to_graph(
                 subgraph,
                 node_name=node_name,
                 node_type=node_type,
-                consumer="spec_to_graph",
+                consumer="compile_graph",
             )
-            nodes[node_name] = spec_to_graph(causal_subgraph, metadata_registry)
+            nodes[node_name] = _instantiate_graph(causal_subgraph, metadata_registry)
             continue
         if spec.subgraphs and node_name in spec.subgraphs:
             causal_subgraph = require_causal_subgraph(
                 spec.subgraphs[node_name],
                 node_name=node_name,
                 node_type=node_type,
-                consumer="spec_to_graph",
+                consumer="compile_graph",
             )
-            nodes[node_name] = spec_to_graph(causal_subgraph, metadata_registry)
+            nodes[node_name] = _instantiate_graph(causal_subgraph, metadata_registry)
             continue
         delta_A_declaration = authored_array_values.get(node_name, {}).get(("delta_A",))
         if node_type == "StructuralLinearStateSpace" and delta_A_declaration is not None:

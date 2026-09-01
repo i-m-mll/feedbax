@@ -1,6 +1,4 @@
 import type {
-  GraphSpec,
-  GraphUIState,
   RetainedObservableSpec,
   RetentionPolicySpec,
 } from '@/types/graph';
@@ -487,12 +485,10 @@ export interface AnalysisPageWire {
 
 export interface StudioScenarioSpec {
   id: string;
-  schema_version: 'feedbax.spec.studio.scenario.v2' | string;
+  schema_version: 'feedbax.spec.studio.scenario.v3' | string;
   label: string;
   stage_id?: string | null;
   parent_scenario_id?: string | null;
-  graph?: GraphSpec | null;
-  graph_ui_state?: GraphUIState | null;
   training_spec?: TrainingSpec | null;
   task_spec?: TaskSpec | null;
   task_binding_spec?: StudioTaskBindingSpec | null;
@@ -509,6 +505,7 @@ export interface StudioScenarioSpec {
 
 export interface StudioStageSpec {
   id: string;
+  schema_version?: 'feedbax.spec.studio.stage.v2' | string;
   kind: StudioStageKind;
   label: string;
   status: StudioStageStatus;
@@ -526,7 +523,7 @@ export interface StudioStageSpec {
 
 export interface StudioWorkspaceSpec {
   id: string;
-  schema_version: 'feedbax.studio.workspace.v1' | string;
+  schema_version: 'feedbax.spec.studio.workspace.v2' | string;
   label: string;
   active_stage_id?: string | null;
   stages: StudioStageSpec[];
@@ -539,66 +536,38 @@ export interface StudioWorkspaceSpec {
   metadata: Record<string, unknown>;
 }
 
-export interface ExecutionPlanStep {
-  id: string;
-  title: string;
-  command?: string | null;
-  description: string;
-  critical: boolean;
-  metadata: Record<string, unknown>;
+export interface Invocation {
+  schema_id: 'feedbax.spec.invocation';
+  schema_version: 'feedbax.spec.invocation.v1';
+  invocation_id: string;
+  workflow_plan_id: string;
+  operation_key: string;
+  operation: Record<string, unknown>;
+  inputs: Array<Record<string, unknown>>;
+  requested_outputs: Array<Record<string, unknown>>;
+  scientific_seeds: Record<string, number>;
+  capabilities: string[];
+  execution_policy: Record<string, unknown>;
+  publication_policy_ref?: string | null;
 }
 
-export interface ExecutionArtifactRoute {
-  role: string;
-  source: string;
-  destination?: string | null;
-  tracked: boolean;
-  description: string;
-}
-
-export interface ExecutionPlan {
-  kind: 'ExecutionPlan';
-  schema_version: string;
-  job_id: string;
-  backend: string;
-  command: string;
-  run_directory: string;
-  bootstrap: ExecutionPlanStep[];
-  health_checks: Array<Record<string, unknown>>;
-  launch: ExecutionPlanStep;
-  monitor: ExecutionPlanStep[];
-  artifact_routes: ExecutionArtifactRoute[];
-  cloud_payload: Record<string, unknown>;
-  reproducibility: Record<string, unknown>;
-  warnings: string[];
+export interface BackendPlan {
+  schema_id: 'feedbax.orchestration.backend_plan';
+  schema_version: 'feedbax.orchestration.backend_plan.v1';
+  backend_plan_id: string;
+  invocation_id: string;
+  backend_id: string;
+  configuration: Record<string, unknown>;
+  [key: string]: unknown;
 }
 
 export interface StudioTrainingExecutionPreparation {
   workspace: StudioWorkspaceSpec;
+  graph: import('@/types/graph').GraphSpec;
   stage_id: string;
   scenario_id: string;
-  execution_spec: Record<string, unknown>;
-  plan: ExecutionPlan;
-}
-
-export interface LocalExecutionResult {
-  job_id: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'stale';
-  return_code: number;
-  stdout_path: string;
-  stderr_path: string;
-  manifest_path: string;
-  manifest_payload: Record<string, unknown>;
-  plan: ExecutionPlan;
-}
-
-export interface StudioTrainingLocalRunResult {
-  workspace: StudioWorkspaceSpec;
-  stage_id: string;
-  scenario_id: string;
-  execution_spec: Record<string, unknown>;
-  result: LocalExecutionResult;
-  snapshot_dir: string;
+  invocation: Invocation;
+  backend_plan: BackendPlan;
 }
 
 export type EvalCheckpointPolicyMode = 'last' | 'best-by-metric' | 'every-k';

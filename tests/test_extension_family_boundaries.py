@@ -9,14 +9,14 @@ import pytest
 
 from feedbax.analysis.evaluation_compaction import EvaluationBatchFragment
 from feedbax.contracts.training import (
+    TrainingProgramAuthoringFacet,
     TrainingMethodAuthoringContribution,
     TrainingMethodAuthoringHook,
-    standard_supervised_method_descriptor,
+    standard_supervised_training_program,
 )
 from feedbax.plugins import (
     EVALUATION_PRODUCT_UNION_FINALIZERS,
-    ROW_LOWERERS,
-    TRAINING_METHODS,
+    TRAINING_PROGRAMS,
     BootstrapError,
     BootstrapErrorCode,
     FamilyRequirement,
@@ -25,7 +25,6 @@ from feedbax.plugins import (
     bootstrap_application,
     new_registration_context,
 )
-from feedbax.training import training_method_row_lowerer_registration
 
 
 def _authoring_contribution(_payload: object) -> TrainingMethodAuthoringContribution:
@@ -37,14 +36,18 @@ def _projection(_payload: object) -> dict[str, object]:
 
 
 def _descriptor_plugin() -> PluginRegistration:
+    baseline = standard_supervised_training_program()
     descriptor = replace(
-        standard_supervised_method_descriptor(),
-        method_ref="tests/external_authoring/v1",
-        payload_schema_id="tests.spec.external_authoring",
-        payload_schema_version="tests.spec.external_authoring.v1",
-        owner="tests.external",
-        package="tests",
-        authoring_hook=TrainingMethodAuthoringHook(
+        baseline,
+        declaration=replace(
+            baseline.declaration,
+            method_ref="tests/external_authoring/v1",
+            payload_schema_id="tests.spec.external_authoring",
+            payload_schema_version="tests.spec.external_authoring.v1",
+            owner="tests.external",
+            package="tests",
+        ),
+        authoring=TrainingProgramAuthoringFacet(TrainingMethodAuthoringHook(
             lowerer_id="tests.external_authoring",
             lowerer_version="tests.external_authoring.v1",
             compile=_authoring_contribution,
@@ -52,25 +55,19 @@ def _descriptor_plugin() -> PluginRegistration:
             task=_projection,
             objective=_projection,
             domain=_projection,
-        ),
+        )),
     )
 
     def register(context) -> None:
-        methods = context.registry(TRAINING_METHODS)
-        methods.register_descriptor(descriptor)
-        context.registry(ROW_LOWERERS).register(
-            training_method_row_lowerer_registration(descriptor, methods)
-        )
+        methods = context.registry(TRAINING_PROGRAMS)
+        methods.register_program(descriptor)
 
     return PluginRegistration(
         PluginDeclaration(
             "tests.external_descriptor",
             "1",
             1,
-            families=(
-                FamilyRequirement(TRAINING_METHODS.family),
-                FamilyRequirement(ROW_LOWERERS.family),
-            ),
+            families=(FamilyRequirement(TRAINING_PROGRAMS.family),),
         ),
         register,
     )
@@ -84,8 +81,8 @@ def test_external_plugin_uses_public_descriptor_row_lowerer_helper() -> None:
         )
     )
 
-    assert state.registry(TRAINING_METHODS).descriptor("tests/external_authoring/v1") is not None
-    assert state.registry(ROW_LOWERERS).available_keys() == (
+    assert state.registry(TRAINING_PROGRAMS).program("tests/external_authoring/v1") is not None
+    assert state.bundle.row_lowerers.available_keys() == (
         (
             "tests.spec.external_authoring",
             "tests.spec.external_authoring.v1",

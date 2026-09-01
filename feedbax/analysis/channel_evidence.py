@@ -10,8 +10,10 @@ from typing import Any
 
 import numpy as np
 
-from feedbax.analysis.evaluation import resolve_staged_evaluation_prerequisite
-from feedbax.analysis.execution_context import StagedExecutionContext
+from feedbax.analysis.execution_context import (
+    EvaluationStatesResolver,
+    resolve_evaluation_states,
+)
 from feedbax.contracts.evaluation_states import EVALUATION_STATES_ARTIFACT_ROLE
 from feedbax.contracts.manifest import StagedEvaluationPrerequisite
 from feedbax.contracts.validation import validate_sha256
@@ -48,19 +50,23 @@ class AuthenticatedEvaluationChannels:
 def resolve_authenticated_evaluation_channels(
     prerequisite: StagedEvaluationPrerequisite | Mapping[str, Any],
     *,
-    execution_context: StagedExecutionContext,
+    execution_context: EvaluationStatesResolver,
 ) -> AuthenticatedEvaluationChannels:
     """Load custody-authenticated states and verify their per-channel evidence."""
     declared = StagedEvaluationPrerequisite.model_validate(prerequisite)
-    states = resolve_staged_evaluation_prerequisite(
-        declared, execution_context=execution_context
+    prerequisite_result = resolve_evaluation_states(
+        declared.parent,
+        execution_context=execution_context,
+        prerequisite_artifact_provider=declared.artifact_provider,
+        validate_staged_prerequisite=True,
     )
+    states = prerequisite_result.states
     cache_lookup = getattr(execution_context, "_cached_authenticated_channels", None)
     if cache_lookup is not None:
         cached = cache_lookup(states)
         if cached is not None:
             return cached
-    resolved = execution_context.resolve_manifest_input(declared.parent)
+    resolved = prerequisite_result.manifest_input
     artifacts = [
         item
         for item in resolved.manifest.artifacts

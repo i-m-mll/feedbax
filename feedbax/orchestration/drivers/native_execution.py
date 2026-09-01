@@ -10,15 +10,8 @@ from pathlib import Path
 
 from feedbax.orchestration.bundle import ResolvedAssemblyInput, RunBundle, RunRowSpec
 from feedbax.orchestration.native_execution import is_native_training_command
+from feedbax.contracts.worker import NATIVE_TRAINING_COLLECTION_OUTPUTS
 from feedbax.training.diagnostics import NativeExecutionProducerContext
-
-
-NATIVE_TRAINING_COLLECTION_OUTPUTS = (
-    "manifest.json",
-    "training-diagnostics.json",
-    "checkpoints",
-    "manifests",
-)
 
 
 class NativeExecutionContextError(ValueError):
@@ -202,7 +195,29 @@ def authenticate_checkpoint(root_descriptor):
     ):
         raise RuntimeError("checkpoint transaction manifest differs from custody authority")
     transaction_parts = manifest_parts[:-1]
-    expected_files = {"latest.json", "/".join(manifest_parts)}
+    checkpoint_set_parts = (*transaction_parts, "checkpoint-set.json")
+    checkpoint_set_bytes, _ = read_regular(
+        root_descriptor, checkpoint_set_parts
+    )
+    checkpoint_set = json.loads(checkpoint_set_bytes)
+    checkpoint_transaction = checkpoint_set.get("transaction", {})
+    checkpoint_transaction_bytes = checkpoint_transaction.get("bytes", {})
+    if (
+        checkpoint_set.get("schema_id") != "feedbax.checkpoint_set"
+        or checkpoint_set.get("schema_version") != "feedbax.checkpoint_set.v1"
+        or checkpoint_transaction.get("domain") != "checkpoint_transaction"
+        or checkpoint_transaction.get("identity") != parent_ref["id"]
+        or checkpoint_transaction_bytes.get("digest") != manifest_sha
+        or checkpoint_transaction_bytes.get("size_bytes") != len(manifest_bytes)
+    ):
+        raise RuntimeError(
+            "checkpoint set does not identify the authenticated transaction manifest"
+        )
+    expected_files = {
+        "latest.json",
+        "/".join(manifest_parts),
+        "/".join(checkpoint_set_parts),
+    }
     for slot in manifest.get("slots", []):
         relative_parts = safe_parts(slot["relative_path"], "checkpoint slot path")
         slot_parts = (*transaction_parts, *relative_parts)

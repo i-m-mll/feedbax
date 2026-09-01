@@ -28,7 +28,8 @@ from feedbax.models.networks import (
 )
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 from feedbax.contracts.graphs import builders as graph_builders
-from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
+from feedbax.contracts.graphs.serialization import graph_to_spec
+from tests.graph_compiler_test_support import spec_to_graph
 
 
 def _floating_leaf_dtypes(tree) -> set[jnp.dtype]:

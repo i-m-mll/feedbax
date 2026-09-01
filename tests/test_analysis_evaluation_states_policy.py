@@ -259,7 +259,6 @@ def _artifact_with_mutated_container_storage(root: Path, artifact):
         role=artifact.role,
         logical_name=artifact.logical_name,
         media_type=artifact.media_type,
-        suffix=".npz",
         metadata=metadata,
     )
 

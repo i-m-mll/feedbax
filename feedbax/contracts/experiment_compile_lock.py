@@ -113,7 +113,8 @@ from feedbax.contracts.manifest import StrictModel
 EXPERIMENT_COMPILE_LOCK_SCHEMA_ID = "feedbax.spec.experiment_compile_lock"
 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v1"
 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v2"
-EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2
+EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v3"
+EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3
 
 #: The only lock versions read. Enumerated, never inferred. v1 remains readable
 #: as exactly the grammar it names: a lock recorded before figure runtime input
@@ -123,6 +124,7 @@ EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_
 EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
 )
 
 #: Versions this loader accepts, mapped to the version they migrate to. Empty:
@@ -237,6 +239,20 @@ class AnalysisInputBinding(StrictModel):
         return self
 
 
+class AnalysisReceiptSetBinding(StrictModel):
+    """The referenced product fills one analysis input with every receipt it produced."""
+
+    consumer: Literal["analysis_receipt_set"] = "analysis_receipt_set"
+    alias: str
+    role: str
+
+    @model_validator(mode="after")
+    def _validate(self) -> "AnalysisReceiptSetBinding":
+        _require_nonempty(self.alias, "analysis_receipt_set alias")
+        _require_nonempty(self.role, "analysis_receipt_set role")
+        return self
+
+
 class FigureRuntimeInputBinding(StrictModel):
     """The referenced product satisfies one figure runtime input authority.
 
@@ -275,9 +291,10 @@ class FigureRuntimeInputBinding(StrictModel):
 class ReportParentBinding(StrictModel):
     """The referenced product is one exact parent of a report.
 
-    ``parent_kind`` and ``parent_id`` are the two fields a
-    :class:`~feedbax.contracts.manifest.ParentRef` identifies a parent by, stated
-    at compile time before the parent exists.
+    ``parent_kind`` states the referenced product kind and ``parent_id`` is the
+    authored report-input role under which its authenticated receipt is bound.
+    The receipt supplies the real parent kind and manifest id at fulfillment;
+    the compiler must never substitute the product name for this consumer role.
     """
 
     consumer: Literal["report_parent"] = "report_parent"
@@ -287,7 +304,7 @@ class ReportParentBinding(StrictModel):
     @model_validator(mode="after")
     def _validate(self) -> "ReportParentBinding":
         _require_nonempty(self.parent_kind, "report_parent parent_kind")
-        _require_nonempty(self.parent_id, "report_parent parent_id")
+        _require_nonempty(self.parent_id, "report_parent input role")
         return self
 
 
@@ -309,6 +326,7 @@ class CheckpointInitializationBinding(StrictModel):
 CompileLockConsumerBinding: TypeAlias = Annotated[
     EvaluationSubjectBinding
     | AnalysisInputBinding
+    | AnalysisReceiptSetBinding
     | FigureRuntimeInputBinding
     | ReportParentBinding
     | CheckpointInitializationBinding,
@@ -335,9 +353,7 @@ class ContentPinReference(StrictModel):
         _require_nonempty(self.ref, "content_pin ref")
         _require_digest(self.content_hash, "content_pin content_hash")
         if self.pin_algorithm != CANONICAL_PIN_ALGORITHM:
-            raise ValueError(
-                f"content_pin pin_algorithm must be {CANONICAL_PIN_ALGORITHM!r}"
-            )
+            raise ValueError(f"content_pin pin_algorithm must be {CANONICAL_PIN_ALGORITHM!r}")
         return self
 
 
@@ -556,9 +572,7 @@ class RowProvenanceReference(StrictModel):
         _require_nonempty(self.source_ref, "row_provenance source_ref")
         _require_digest(self.source_content_hash, "row_provenance source_content_hash")
         if self.pin_algorithm != CANONICAL_PIN_ALGORITHM:
-            raise ValueError(
-                f"row_provenance pin_algorithm must be {CANONICAL_PIN_ALGORITHM!r}"
-            )
+            raise ValueError(f"row_provenance pin_algorithm must be {CANONICAL_PIN_ALGORITHM!r}")
         return self
 
 
@@ -607,9 +621,7 @@ class CompilerContract:
 
     def __post_init__(self) -> None:
         if not self.contract_id.strip() or not self.contract_version.strip():
-            raise CompileLockError(
-                "compiler contract must declare a nonempty id and version"
-            )
+            raise CompileLockError("compiler contract must declare a nonempty id and version")
         if not self.contract_version.startswith(f"{self.contract_id}."):
             raise CompileLockError(
                 f"compiler contract version {self.contract_version!r} does not extend "
@@ -951,9 +963,7 @@ def _validate_lock_assertions(lock: Mapping[str, Any], field: str) -> None:
             record, ("path", "expected", "actual", "owner_ref"), locator, "a checked assertion"
         )
         _lock_text(record["path"], f"{locator}.path", "a checked assertion path")
-        _lock_text(
-            record["owner_ref"], f"{locator}.owner_ref", "a checked assertion owner_ref"
-        )
+        _lock_text(record["owner_ref"], f"{locator}.owner_ref", "a checked assertion owner_ref")
 
 
 def _validate_lock_provenance(lock: Mapping[str, Any], field: str) -> None:
@@ -999,8 +1009,7 @@ def _validate_lock_provenance(lock: Mapping[str, Any], field: str) -> None:
     if not contract_version.startswith(f"{contract_id}."):
         _lock_reject(
             f"{field}#compiler_contract.contract_version",
-            f"contract version {contract_version!r} does not extend contract id "
-            f"{contract_id!r}",
+            f"contract version {contract_version!r} does not extend contract id {contract_id!r}",
         )
 
     implementation = _lock_mapping(
@@ -1043,9 +1052,7 @@ def _validate_lock_execution_identity(lock: Mapping[str, Any], field: str) -> No
     what = "a compile lock's execution identity"
     identity = _lock_mapping(lock["execution_identity"], f"{field}#execution_identity", what)
     _lock_keys(identity, ("sha256", "inputs"), f"{field}#execution_identity", what)
-    _lock_digest(
-        identity["sha256"], f"{field}#execution_identity.sha256", f"{what} sha256"
-    )
+    _lock_digest(identity["sha256"], f"{field}#execution_identity.sha256", f"{what} sha256")
     inputs = _lock_sequence(
         identity["inputs"], f"{field}#execution_identity.inputs", f"{what} inputs"
     )
@@ -1060,9 +1067,7 @@ def _validate_lock_execution_identity(lock: Mapping[str, Any], field: str) -> No
             f"{what} names the facts it was built from; expected {expected_inputs!r}, "
             f"found {list(inputs)!r}",
         )
-    preimage: dict[str, Any] = {
-        "compiled_document": lock["compiled_document"]["content_hash"]
-    }
+    preimage: dict[str, Any] = {"compiled_document": lock["compiled_document"]["content_hash"]}
     for key in sorted(contributions):
         preimage[key] = canonical_sha256(contributions[key])
     expected_sha256 = canonical_sha256(preimage)
@@ -1156,6 +1161,22 @@ def _refuse_v1_figure_input_contract(references: Sequence[Any], *, field: str) -
         )
 
 
+def _refuse_pre_v3_analysis_receipt_set(references: Sequence[Any], *, field: str) -> None:
+    """Refuse a v1/v2 lock edited to carry the v3 receipt-set discriminator."""
+    for index, reference in enumerate(references):
+        if not isinstance(reference, Mapping):
+            continue
+        consumer = reference.get("consumer")
+        if isinstance(consumer, Mapping) and consumer.get("consumer") == "analysis_receipt_set":
+            raise ExperimentEnvelopeRejection(
+                ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+                "an analysis receipt-set binding is "
+                f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3!r} grammar, but this lock "
+                "declares an earlier version; a version names exactly one grammar",
+                field=f"{field}#references[{index}]#consumer.consumer",
+            )
+
+
 def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
     """Read one compile lock, failing closed on an unsupported version.
 
@@ -1209,6 +1230,11 @@ def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
         parse_compile_lock_reference(reference, field=f"{field}#references[{index}]")
     if version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1:
         _refuse_v1_figure_input_contract(references, field=field)
+    if version in (
+        EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
+        EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
+    ):
+        _refuse_pre_v3_analysis_receipt_set(references, field=field)
     provenance = lock.get("row_provenance", [])
     if not isinstance(provenance, Sequence) or isinstance(provenance, (str, bytes)):
         raise ExperimentEnvelopeRejection(
@@ -1231,8 +1257,9 @@ def compile_lock_plan_edges(lock: Mapping[str, Any], *, field: str) -> tuple[Any
     return tuple(
         parsed
         for index, reference in enumerate(lock.get("references", []))
-        if (parsed := parse_compile_lock_reference(reference, field=f"{field}#references[{index}]"))
-        .kind
+        if (
+            parsed := parse_compile_lock_reference(reference, field=f"{field}#references[{index}]")
+        ).kind
         in COMPILE_LOCK_PLAN_EDGE_KINDS
     )
 
@@ -1247,9 +1274,11 @@ __all__ = [
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2",
+    "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3",
     "EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS",
     "RUN_RECEIPT_ONLY_FACTS",
     "AnalysisInputBinding",
+    "AnalysisReceiptSetBinding",
     "AuthenticatedReceiptReference",
     "CheckpointInitializationBinding",
     "CompileLockConsumerBinding",

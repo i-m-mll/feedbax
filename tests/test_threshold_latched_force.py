@@ -12,8 +12,10 @@ import jax.random as jr
 import pytest
 
 from feedbax.component_registry import ComponentRegistry
+from feedbax.compiler import GraphCompilationError
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBindingSpec
-from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
+from feedbax.contracts.graphs.serialization import graph_to_spec
+from tests.graph_compiler_test_support import spec_to_graph
 from feedbax.contracts.migrations import UnsupportedComponentMigration
 from feedbax.intervene import (
     PlanarTargetRelativeSelector,
@@ -461,8 +463,13 @@ def test_v1_fixed_selector_migrates_to_v2() -> None:
 def test_unknown_parameter_schema_version_is_rejected_without_a_migration() -> None:
     registry = ComponentRegistry(load_user_components=False)
 
-    with pytest.raises(UnsupportedComponentMigration, match="No component migration registered"):
+    with pytest.raises(GraphCompilationError, match="No component migration registered") as exc:
         spec_to_graph(
             _graph_spec(param_schema_version="feedbax.component.threshold_latched_force.v0"),
             component_registry=registry,
         )
+
+    assert isinstance(exc.value.__cause__, UnsupportedComponentMigration)
+    diagnostic = exc.value.record.diagnostics[0]
+    assert diagnostic.code == "compiler.type_resolution.unresolved_component_type"
+    assert diagnostic.actionable_context["exception_type"] == "UnsupportedComponentMigration"

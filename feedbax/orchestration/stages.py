@@ -111,6 +111,7 @@ from feedbax.orchestration.state import (
     dependency_skip_observed,
     utc_now,
 )
+from feedbax.orchestration.transition_authority import TransitionAuthority
 from feedbax.training.checkpoint_custody import (
     authenticate_published_checkpoint_custody,
 )
@@ -150,6 +151,11 @@ STAGE_ORDER = (
     STAGE_CERTIFY,
     STAGE_TEARDOWN,
     STAGE_REGISTER,
+)
+STAGE_TRANSITION_AUTHORITY = TransitionAuthority(
+    domain="run-set-stage",
+    identity_field="run_set_id",
+    transitions=frozenset(STAGE_ORDER),
 )
 
 RETRY_LIMITS = {
@@ -342,6 +348,8 @@ class _ScopedSignalSupervisor:
 
 class StageEngine:
     """Execute a run bundle through the orchestration stage sequence."""
+
+    transition_authority = STAGE_TRANSITION_AUTHORITY
 
     def __init__(
         self,

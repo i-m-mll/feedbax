@@ -6,16 +6,11 @@ records that describe specs, executions, lineage, and large output artifacts.
 
 from __future__ import annotations
 
-import errno
 import hashlib
 import json
 import os
-import stat
 import subprocess
-import sys
-import time
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,15 +64,11 @@ ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_ID = (
 ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_VERSION = (
     "feedbax.manifest.analysis_bundle_composition_provenance.v1"
 )
-ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_ID = (
-    "feedbax.manifest.analysis_composition_provenance"
-)
+ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_ID = "feedbax.manifest.analysis_composition_provenance"
 ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_VERSION = (
     "feedbax.manifest.analysis_composition_provenance.v1"
 )
-ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID = (
-    "feedbax.manifest.analysis_evaluation_state_source"
-)
+ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID = "feedbax.manifest.analysis_evaluation_state_source"
 ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1 = (
     "feedbax.manifest.analysis_evaluation_state_source.v1"
 )
@@ -102,12 +93,8 @@ TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION = (
 )
 TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY = "manifest_metadata_projection"
 TRAINING_RUN_CERTIFICATION_SCHEMA_ID = "feedbax.manifest.training_run_certification"
-TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION = (
-    "feedbax.manifest.training_run_certification.v1"
-)
-TRAINING_RUN_CERTIFICATION_REJECTED_VERSIONS = (
-    "feedbax.manifest.training_run_certification.v0",
-)
+TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION = "feedbax.manifest.training_run_certification.v1"
+TRAINING_RUN_CERTIFICATION_REJECTED_VERSIONS = ("feedbax.manifest.training_run_certification.v0",)
 TRAINING_RUN_CERTIFICATION_MIGRATION_TABLE = {
     "absent + status=completed": "project completed with declared checkpoint_custody prefix",
     "absent + status=cancelled": "project cancelled with declared checkpoint_custody prefix",
@@ -115,19 +102,17 @@ TRAINING_RUN_CERTIFICATION_MIGRATION_TABLE = {
     "absent + nonterminal status": "reject; no terminal certification exists",
 }
 STAGED_EVALUATION_PREREQUISITE_SCHEMA_ID = "feedbax.spec.staged_evaluation_prerequisite"
-STAGED_EVALUATION_PREREQUISITE_SCHEMA_VERSION = (
-    "feedbax.spec.staged_evaluation_prerequisite.v1"
-)
+STAGED_EVALUATION_PREREQUISITE_SCHEMA_VERSION = "feedbax.spec.staged_evaluation_prerequisite.v1"
 AUTHENTICATED_MANIFEST_REF_SCHEMA_ID = "feedbax.ref.authenticated_manifest"
 AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION = "feedbax.ref.authenticated_manifest.v1"
 
 _AUTHENTICATED_MANIFEST_REF_PROFILE_DISCRIMINATORS = frozenset(
     {"ref_schema_id", "ref_schema_version"}
 )
-_AUTHENTICATED_MANIFEST_REF_PROFILE_KEYS = (
-    _AUTHENTICATED_MANIFEST_REF_PROFILE_DISCRIMINATORS
-    | {"manifest_sha256", "size_bytes"}
-)
+_AUTHENTICATED_MANIFEST_REF_PROFILE_KEYS = _AUTHENTICATED_MANIFEST_REF_PROFILE_DISCRIMINATORS | {
+    "manifest_sha256",
+    "size_bytes",
+}
 
 ManifestStatus = Literal["pending", "running", "completed", "failed", "cancelled", "stale"]
 
@@ -269,16 +254,12 @@ def authenticated_manifest_ref_profile(ref: ParentRef) -> tuple[str, int] | None
     an unauthenticated manifest reference.
     """
 
-    discriminators = _AUTHENTICATED_MANIFEST_REF_PROFILE_DISCRIMINATORS.intersection(
-        ref.metadata
-    )
+    discriminators = _AUTHENTICATED_MANIFEST_REF_PROFILE_DISCRIMINATORS.intersection(ref.metadata)
     if not discriminators:
         return None
     present = _AUTHENTICATED_MANIFEST_REF_PROFILE_KEYS.intersection(ref.metadata)
     if present != _AUTHENTICATED_MANIFEST_REF_PROFILE_KEYS:
-        missing = ", ".join(
-            sorted(_AUTHENTICATED_MANIFEST_REF_PROFILE_KEYS - present)
-        )
+        missing = ", ".join(sorted(_AUTHENTICATED_MANIFEST_REF_PROFILE_KEYS - present))
         raise ValueError(f"Authenticated manifest ref {ref.id!r} is incomplete: {missing}")
     schema_id = ref.metadata["ref_schema_id"]
     schema_version = ref.metadata["ref_schema_version"]
@@ -317,8 +298,7 @@ class StagedEvaluationPrerequisite(StrictModel):
             raise ValueError(f"unsupported staged prerequisite schema_id: {self.schema_id!r}")
         if self.schema_version != STAGED_EVALUATION_PREREQUISITE_SCHEMA_VERSION:
             raise ValueError(
-                "unsupported staged prerequisite schema_version: "
-                f"{self.schema_version!r}"
+                f"unsupported staged prerequisite schema_version: {self.schema_version!r}"
             )
         return self
 
@@ -752,8 +732,7 @@ class TrainingRunCertification(StrictModel):
     @model_validator(mode="after")
     def _validate_certified_artifacts(self) -> "TrainingRunCertification":
         serialized = [
-            artifact.model_dump_json(exclude_none=False)
-            for artifact in self.certified_artifacts
+            artifact.model_dump_json(exclude_none=False) for artifact in self.certified_artifacts
         ]
         if len(set(serialized)) != len(serialized):
             raise ValueError("certified_artifacts must not contain duplicate refs")
@@ -768,11 +747,7 @@ class TrainingRunCertification(StrictModel):
                 or len(digest) != 64
                 or any(character not in "0123456789abcdef" for character in digest)
             ):
-                label = (
-                    artifact.logical_name
-                    if isinstance(artifact, ArtifactRef)
-                    else artifact.id
-                )
+                label = artifact.logical_name if isinstance(artifact, ArtifactRef) else artifact.id
                 raise ValueError(
                     f"certified artifact {label!r} requires an exact lowercase SHA-256"
                 )
@@ -1053,8 +1028,7 @@ def verify_evaluation_manifest_provenance(
     if not isinstance(staged, dict):
         raise ValueError("evaluation staged prerequisites must be a mapping")
     staged_refs = tuple(
-        StagedEvaluationPrerequisite.model_validate(value).parent
-        for value in staged.values()
+        StagedEvaluationPrerequisite.model_validate(value).parent for value in staged.values()
     )
     source_refs = (*run_spec.inputs, *staged_refs)
     if tuple(manifest.provenance.parents) != source_refs:
@@ -1243,12 +1217,12 @@ class AnalysisRunSpec(StrictModel):
 class AnalysisEvaluationStateSource(StrictModel):
     """Queryable provenance for evaluation states consumed by one analysis."""
 
-    schema_id: Literal[
-        "feedbax.manifest.analysis_evaluation_state_source"
-    ] = ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID
-    schema_version: Literal[
-        "feedbax.manifest.analysis_evaluation_state_source.v2"
-    ] = ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION
+    schema_id: Literal["feedbax.manifest.analysis_evaluation_state_source"] = (
+        ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.manifest.analysis_evaluation_state_source.v2"] = (
+        ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION
+    )
     source_kind: Literal["evaluation_cache", "durable", "analysis_time_recompute"]
     requested_evaluation_manifest_id: str
     evaluation_manifest_authority: Optional[ParentRef] = None
@@ -1286,8 +1260,7 @@ class AnalysisEvaluationStateSource(StrictModel):
             )
             if missing:
                 raise ValueError(
-                    "durable analysis evaluation-state source is missing evidence: "
-                    f"{missing}"
+                    f"durable analysis evaluation-state source is missing evidence: {missing}"
                 )
             assert self.evaluation_manifest_authority is not None
             if authenticated_manifest_ref_profile(self.evaluation_manifest_authority) is None:
@@ -1305,9 +1278,7 @@ class AnalysisEvaluationStateSource(StrictModel):
                     "evaluation authority"
                 )
             if (
-                authenticated_manifest_ref_profile(
-                    self.resulting_evaluation_manifest_authority
-                )
+                authenticated_manifest_ref_profile(self.resulting_evaluation_manifest_authority)
                 is None
             ):
                 raise ValueError(
@@ -1333,9 +1304,9 @@ AnalysisEvaluationStateResolutionCode = Literal[
 class AnalysisEvaluationStateResolutionDiagnostic(StrictModel):
     """Stable actionable diagnostic for failed evaluation-state resolution."""
 
-    schema_id: Literal[
-        "feedbax.manifest.analysis_evaluation_state_resolution_diagnostic"
-    ] = ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_ID
+    schema_id: Literal["feedbax.manifest.analysis_evaluation_state_resolution_diagnostic"] = (
+        ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_ID
+    )
     schema_version: Literal[
         "feedbax.manifest.analysis_evaluation_state_resolution_diagnostic.v1"
     ] = ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_VERSION
@@ -1352,9 +1323,9 @@ class AnalysisRunManifest(BaseManifest):
     analysis_spec: SpecPayload
     inputs: list[ParentRef] = Field(default_factory=list)
     evaluation_state_sources: list[AnalysisEvaluationStateSource] = Field(default_factory=list)
-    evaluation_state_resolution_diagnostics: list[
-        AnalysisEvaluationStateResolutionDiagnostic
-    ] = Field(default_factory=list)
+    evaluation_state_resolution_diagnostics: list[AnalysisEvaluationStateResolutionDiagnostic] = (
+        Field(default_factory=list)
+    )
     regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(default_factory=list)
     produced_data: list[AnalysisDataProduct] = Field(default_factory=list)
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
@@ -1797,188 +1768,11 @@ def collect_git_provenance(cwd: Path | str | None = None) -> Provenance:
     )
 
 
-def _artifact_path(root: Path, digest: str, suffix: str = "") -> Path:
-    return root / "artifacts" / "sha256" / digest[:2] / f"{digest}{suffix}"
-
-
-class ArtifactStoreSecurityError(RuntimeError):
-    """Raised when the local artifact store cannot preserve secure CAS semantics."""
-
-
-class ArtifactStoreIntegrityError(ArtifactStoreSecurityError):
-    """Raised when existing content-addressed bytes do not match their identity."""
-
-
-def _require_secure_artifact_store_capabilities() -> None:
-    required_constants = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
-    missing = [name for name in required_constants if not getattr(os, name, 0)]
-    dir_fd_functions = (os.open, os.mkdir, os.link, os.stat, os.unlink)
-    supports_dir_fd = getattr(os, "supports_dir_fd", set())
-    missing.extend(
-        function.__name__ for function in dir_fd_functions if function not in supports_dir_fd
-    )
-    supports_follow_symlinks = getattr(os, "supports_follow_symlinks", set())
-    if os.stat not in supports_follow_symlinks:
-        missing.append("stat(follow_symlinks=False)")
-    if os.link not in supports_follow_symlinks:
-        missing.append("link(follow_symlinks=False)")
-    if missing:
-        raise ArtifactStoreSecurityError(
-            "secure artifact storage requires descriptor-relative no-follow filesystem "
-            "operations; unavailable: " + ", ".join(sorted(set(missing)))
-        )
-
-
-def _secure_directory_flags() -> int:
-    _require_secure_artifact_store_capabilities()
-    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-
-
-def _secure_file_flags(*, writable: bool = False) -> int:
-    flags = os.O_RDWR if writable else os.O_RDONLY
-    return flags | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
-
-
-def _canonicalize_trusted_system_aliases(path: Path) -> Path:
-    """Canonicalize only Darwin's fixed first-level /tmp and /var aliases."""
-    absolute_path = Path(os.path.abspath(path))
-    if sys.platform != "darwin" or len(absolute_path.parts) < 2:
-        return absolute_path
-    alias_name = absolute_path.parts[1]
-    expected = {
-        "tmp": (Path("/private/tmp"), {"private/tmp", "/private/tmp"}),
-        "var": (Path("/private/var"), {"private/var", "/private/var"}),
-    }.get(alias_name)
-    if expected is None:
-        return absolute_path
-    canonical_prefix, allowed_targets = expected
-    alias_path = Path(absolute_path.anchor) / alias_name
-    try:
-        alias_stat = alias_path.lstat()
-        alias_target = os.readlink(alias_path)
-    except OSError:
-        return absolute_path
-    if not stat.S_ISLNK(alias_stat.st_mode) or alias_target not in allowed_targets:
-        return absolute_path
-    return canonical_prefix.joinpath(*absolute_path.parts[2:])
-
-
-def _open_secure_directory_chain(
-    directory: Path,
-    *,
-    create: bool,
-) -> list[tuple[Path, int, os.stat_result]]:
-    absolute_directory = _canonicalize_trusted_system_aliases(directory)
-    anchor = Path(absolute_directory.anchor)
-    if not anchor.anchor:
-        raise ArtifactStoreSecurityError(
-            f"artifact store directory must resolve to an absolute path: {directory}"
-        )
-
-    records: list[tuple[Path, int, os.stat_result]] = []
-    flags = _secure_directory_flags()
-    try:
-        descriptor = os.open(anchor, flags)
-        anchor_stat = os.fstat(descriptor)
-        if not stat.S_ISDIR(anchor_stat.st_mode):
-            raise ArtifactStoreSecurityError(f"artifact store anchor is not a directory: {anchor}")
-        records.append((anchor, descriptor, anchor_stat))
-        current_path = anchor
-        for component in absolute_directory.parts[1:]:
-            current_path = current_path / component
-            try:
-                next_descriptor = os.open(component, flags, dir_fd=records[-1][1])
-            except FileNotFoundError:
-                if not create:
-                    raise
-                try:
-                    os.mkdir(component, mode=0o777, dir_fd=records[-1][1])
-                except FileExistsError:
-                    pass
-                next_descriptor = os.open(component, flags, dir_fd=records[-1][1])
-            next_stat = os.fstat(next_descriptor)
-            if not stat.S_ISDIR(next_stat.st_mode):
-                os.close(next_descriptor)
-                raise ArtifactStoreSecurityError(
-                    f"artifact store component is not a directory: {current_path}"
-                )
-            records.append((current_path, next_descriptor, next_stat))
-    except OSError as exc:
-        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
-            error = ArtifactStoreSecurityError(
-                f"artifact store directory traverses a symlink or non-directory: {directory}"
-            )
-            for _, descriptor, _ in reversed(records):
-                os.close(descriptor)
-            raise error from exc
-        for _, descriptor, _ in reversed(records):
-            os.close(descriptor)
-        raise
-    except Exception:
-        for _, descriptor, _ in reversed(records):
-            os.close(descriptor)
-        raise
-    return records
-
-
-def _recheck_secure_directory_chain(
-    records: list[tuple[Path, int, os.stat_result]],
-) -> None:
-    for path, descriptor, initial_stat in records:
-        descriptor_stat = os.fstat(descriptor)
-        try:
-            path_stat = os.stat(path, follow_symlinks=False)
-        except FileNotFoundError as exc:
-            raise ArtifactStoreSecurityError(
-                f"artifact store directory disappeared during write: {path}"
-            ) from exc
-        expected_identity = (initial_stat.st_dev, initial_stat.st_ino)
-        if (
-            not stat.S_ISDIR(path_stat.st_mode)
-            or (descriptor_stat.st_dev, descriptor_stat.st_ino) != expected_identity
-            or (path_stat.st_dev, path_stat.st_ino) != expected_identity
-        ):
-            raise ArtifactStoreSecurityError(
-                f"artifact store directory identity changed during write: {path}"
-            )
-
-
-def _close_secure_directory_chain(
-    records: list[tuple[Path, int, os.stat_result]],
-) -> None:
-    for _, descriptor, _ in reversed(records):
-        os.close(descriptor)
+def _artifact_path(root: Path, digest: str) -> Path:
+    return root / "artifacts" / "sha256" / digest[:2] / digest
 
 
 _ARTIFACT_STREAM_CHUNK_BYTES = 1024 * 1024
-
-
-def _write_all_bytes(file_descriptor: int, data: bytes) -> None:
-    remaining = memoryview(data)
-    while remaining:
-        written = os.write(file_descriptor, remaining)
-        if written <= 0:
-            raise ArtifactStoreSecurityError("artifact store write made no progress")
-        remaining = remaining[written:]
-
-
-def _read_all_bytes(file_descriptor: int) -> bytes:
-    os.lseek(file_descriptor, 0, os.SEEK_SET)
-    chunks: list[bytes] = []
-    while chunk := os.read(file_descriptor, _ARTIFACT_STREAM_CHUNK_BYTES):
-        chunks.append(chunk)
-    return b"".join(chunks)
-
-
-def _descriptor_content_identity(file_descriptor: int) -> tuple[str, int]:
-    """Return the streamed ``(sha256, size_bytes)`` identity of a descriptor."""
-    os.lseek(file_descriptor, 0, os.SEEK_SET)
-    digest = hashlib.sha256()
-    size_bytes = 0
-    while chunk := os.read(file_descriptor, _ARTIFACT_STREAM_CHUNK_BYTES):
-        digest.update(chunk)
-        size_bytes += len(chunk)
-    return digest.hexdigest(), size_bytes
 
 
 def _file_content_identity(path: Path) -> tuple[str, int]:
@@ -1990,261 +1784,6 @@ def _file_content_identity(path: Path) -> tuple[str, int]:
             digest.update(chunk)
             size_bytes += len(chunk)
     return digest.hexdigest(), size_bytes
-
-
-def _write_file_payload(
-    file_descriptor: int,
-    source: Path,
-    *,
-    expected_identity: tuple[str, int],
-) -> None:
-    """Stream a source file into a descriptor and refuse a source that diverged.
-
-    The source is hashed again from the same read that produces the written
-    bytes, so a source mutated between naming and copying fails closed instead
-    of publishing bytes that do not match the recorded content identity.
-    """
-    digest = hashlib.sha256()
-    size_bytes = 0
-    with Path(source).open("rb") as stream:
-        while chunk := stream.read(_ARTIFACT_STREAM_CHUNK_BYTES):
-            _write_all_bytes(file_descriptor, chunk)
-            digest.update(chunk)
-            size_bytes += len(chunk)
-    if (digest.hexdigest(), size_bytes) != expected_identity:
-        raise ArtifactStoreIntegrityError(f"artifact source bytes changed during store: {source}")
-
-
-def _link_artifact_file(
-    temporary_name: str,
-    final_name: str,
-    *,
-    temporary_parent_descriptor: int,
-    parent_descriptor: int,
-) -> None:
-    os.link(
-        temporary_name,
-        final_name,
-        src_dir_fd=temporary_parent_descriptor,
-        dst_dir_fd=parent_descriptor,
-        follow_symlinks=False,
-    )
-
-
-def _open_artifact_staging_container(
-    *,
-    parent_descriptor: int,
-) -> int:
-    """Open the fixed descriptor-pinned private staging container.
-
-    POSIX has no conditional unlink-by-inode operation. Keeping the temporary
-    name inside an owned mode-0700 container gives this operation exclusive
-    name mutation. The public container name is never removed, so a replacement
-    cannot be deleted during cleanup.
-    """
-    directory_name = ".feedbax-artifact-staging"
-    try:
-        os.mkdir(directory_name, mode=0o700, dir_fd=parent_descriptor)
-    except FileExistsError:
-        pass
-    directory_descriptor: int | None = None
-    try:
-        directory_descriptor = os.open(
-            directory_name,
-            _secure_directory_flags(),
-            dir_fd=parent_descriptor,
-        )
-        descriptor_stat = os.fstat(directory_descriptor)
-        path_stat = os.stat(
-            directory_name,
-            dir_fd=parent_descriptor,
-            follow_symlinks=False,
-        )
-        if (
-            not stat.S_ISDIR(descriptor_stat.st_mode)
-            or descriptor_stat.st_uid != os.geteuid()
-            or stat.S_IMODE(descriptor_stat.st_mode) & 0o077
-            or (descriptor_stat.st_dev, descriptor_stat.st_ino)
-            != (path_stat.st_dev, path_stat.st_ino)
-        ):
-            raise ArtifactStoreSecurityError(
-                "artifact staging container must be owned, mode-0700, and stable"
-            )
-        return directory_descriptor
-    except Exception:
-        if directory_descriptor is not None:
-            os.close(directory_descriptor)
-        raise
-
-
-def _remove_private_artifact_staging_name(
-    *,
-    directory_descriptor: int,
-    temporary_name: str,
-) -> None:
-    """Remove one unguessable name from the pinned private container."""
-    try:
-        os.unlink(temporary_name, dir_fd=directory_descriptor)
-    except FileNotFoundError:
-        pass
-    os.close(directory_descriptor)
-
-
-def _secure_store_artifact_payload(
-    *,
-    destination: Path,
-    write_payload: Callable[[int], None],
-    verify_descriptor: Callable[[int], bool],
-) -> os.stat_result:
-    """Publish one verified payload at a canonical content-addressed name.
-
-    ``write_payload`` writes the intended bytes into a private staging
-    descriptor. ``verify_descriptor`` re-reads a descriptor and reports whether
-    its bytes match the intended content identity; it is applied to the staged
-    bytes and again to the published canonical file, including when the
-    canonical name already existed. Any mismatch fails closed with
-    :class:`ArtifactStoreIntegrityError` and never overwrites the existing name.
-    """
-    records = _open_secure_directory_chain(destination.parent, create=True)
-    parent_descriptor = records[-1][1]
-    final_name = destination.name
-    temporary_name = f"payload-{uuid.uuid4().hex}"
-    staging_descriptor: int | None = None
-    temporary_descriptor: int | None = None
-    final_descriptor: int | None = None
-    try:
-        staging_descriptor = _open_artifact_staging_container(parent_descriptor=parent_descriptor)
-        temporary_descriptor = os.open(
-            temporary_name,
-            _secure_file_flags(writable=True) | os.O_CREAT | os.O_EXCL,
-            0o666,
-            dir_fd=staging_descriptor,
-        )
-        write_payload(temporary_descriptor)
-        os.fsync(temporary_descriptor)
-        if not verify_descriptor(temporary_descriptor):
-            raise ArtifactStoreIntegrityError(
-                f"artifact temporary bytes failed verification: {destination}"
-            )
-
-        try:
-            _link_artifact_file(
-                temporary_name,
-                final_name,
-                temporary_parent_descriptor=staging_descriptor,
-                parent_descriptor=parent_descriptor,
-            )
-        except FileExistsError:
-            pass
-        _remove_private_artifact_staging_name(
-            directory_descriptor=staging_descriptor,
-            temporary_name=temporary_name,
-        )
-        staging_descriptor = None
-
-        for attempt in range(101):
-            final_descriptor = os.open(
-                final_name,
-                _secure_file_flags(),
-                dir_fd=parent_descriptor,
-            )
-            final_stat_before = os.fstat(final_descriptor)
-            if not stat.S_ISREG(final_stat_before.st_mode) or final_stat_before.st_nlink == 1:
-                break
-            os.close(final_descriptor)
-            final_descriptor = None
-            if attempt == 100:
-                raise ArtifactStoreIntegrityError(
-                    f"canonical artifact has mutable hard-link aliases: {destination}"
-                )
-            time.sleep(0.001)
-        if final_descriptor is None:  # pragma: no cover - loop either opens or raises.
-            raise ArtifactStoreIntegrityError(
-                f"canonical artifact could not be opened securely: {destination}"
-            )
-        if not stat.S_ISREG(final_stat_before.st_mode):
-            raise ArtifactStoreIntegrityError(
-                f"canonical artifact is not a regular file: {destination}"
-            )
-        stored_matches = verify_descriptor(final_descriptor)
-        final_stat_after = os.fstat(final_descriptor)
-        if (
-            (final_stat_before.st_dev, final_stat_before.st_ino)
-            != (final_stat_after.st_dev, final_stat_after.st_ino)
-            or final_stat_before.st_size != final_stat_after.st_size
-            or not stored_matches
-        ):
-            raise ArtifactStoreIntegrityError(
-                f"canonical artifact bytes do not match content identity: {destination}"
-            )
-        path_stat = os.stat(final_name, dir_fd=parent_descriptor, follow_symlinks=False)
-        if (path_stat.st_dev, path_stat.st_ino) != (
-            final_stat_after.st_dev,
-            final_stat_after.st_ino,
-        ):
-            raise ArtifactStoreIntegrityError(
-                f"canonical artifact identity changed during write: {destination}"
-            )
-        _recheck_secure_directory_chain(records)
-        return final_stat_after
-    except OSError as exc:
-        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
-            raise ArtifactStoreSecurityError(
-                f"canonical artifact path traverses a symlink or non-directory: {destination}"
-            ) from exc
-        raise
-    finally:
-        if temporary_descriptor is not None:
-            os.close(temporary_descriptor)
-        if final_descriptor is not None:
-            os.close(final_descriptor)
-        if staging_descriptor is not None:
-            try:
-                _remove_private_artifact_staging_name(
-                    directory_descriptor=staging_descriptor,
-                    temporary_name=temporary_name,
-                )
-            except OSError:
-                # Preserve an exceptional private orphan for diagnosis. Never
-                # widen cleanup to a public canonical name.
-                os.close(staging_descriptor)
-        _close_secure_directory_chain(records)
-
-
-def _secure_store_bytes_artifact(
-    data: bytes,
-    *,
-    destination: Path,
-) -> os.stat_result:
-    """Publish in-memory bytes, byte-comparing the staged and canonical files."""
-    return _secure_store_artifact_payload(
-        destination=destination,
-        write_payload=lambda descriptor: _write_all_bytes(descriptor, data),
-        verify_descriptor=lambda descriptor: _read_all_bytes(descriptor) == data,
-    )
-
-
-def _secure_store_file_artifact(
-    source: Path,
-    *,
-    destination: Path,
-    expected_identity: tuple[str, int],
-) -> os.stat_result:
-    """Publish a source file's bytes, verifying them against a content identity.
-
-    The source is streamed rather than buffered, so large artifacts do not have
-    to fit in memory. Both the staged copy and the published canonical file are
-    re-read and compared against ``expected_identity`` (digest and size).
-    """
-    return _secure_store_artifact_payload(
-        destination=destination,
-        write_payload=lambda descriptor: _write_file_payload(
-            descriptor, source, expected_identity=expected_identity
-        ),
-        verify_descriptor=lambda descriptor: (
-            _descriptor_content_identity(descriptor) == expected_identity
-        ),
-    )
 
 
 DEFAULT_ARTIFACT_MEDIA_TYPE = "application/octet-stream"
@@ -2294,32 +1833,26 @@ def store_artifact(
     content identity before the reference is returned, so the returned digest and
     size always describe the bytes actually stored. A source that changes during
     the copy, or a canonical destination that already holds different bytes,
-    fails closed with :class:`ArtifactStoreIntegrityError` without overwriting
-    the existing canonical file.
+    fails closed without overwriting the existing canonical file.
     """
     source = Path(source_path)
     if not source.exists():
         raise FileNotFoundError(source)
     root_path = Path(root) if root is not None else default_manifest_root()
     expected_identity = _file_content_identity(source)
-    digest, _ = expected_identity
-    dest = _artifact_path(root_path, digest, source.suffix)
-    artifact_stat = _secure_store_file_artifact(
-        source,
-        destination=Path(os.path.abspath(dest)),
-        expected_identity=expected_identity,
-    )
+    data = source.read_bytes()
+    if (sha256_bytes(data), len(data)) != expected_identity:
+        from feedbax.persistence.artifact_custody import ArtifactBlobIntegrityError
+
+        raise ArtifactBlobIntegrityError(f"artifact source bytes changed during store: {source}")
     artifact_metadata = dict(metadata or {})
     artifact_metadata.setdefault("original_uri", str(source))
-    artifact_metadata.setdefault("relative_path", str(dest.relative_to(root_path)))
-    return ArtifactRef(
+    return store_bytes_artifact(
+        data,
+        root=root_path,
         role=role,
         logical_name=logical_name or source.name,
-        artifact_id=f"artifact://sha256/{digest}",
-        sha256=digest,
         media_type=media_type,
-        size_bytes=artifact_stat.st_size,
-        uri=str(dest),
         metadata=artifact_metadata,
     )
 
@@ -2336,9 +1869,7 @@ def store_json_artifact(
 
     The serialized bytes are published through the same verified byte store as
     :func:`store_bytes_artifact`, so the canonical file is read back and compared
-    against the serialized payload — including when the canonical name already
-    exists. A canonical destination holding different bytes fails closed with
-    :class:`ArtifactStoreIntegrityError`.
+    against the serialized payload, including when the canonical name already exists.
     """
     data = json.dumps(value, indent=2, sort_keys=True).encode() + b"\n"
     return store_bytes_artifact(
@@ -2347,7 +1878,6 @@ def store_json_artifact(
         role=role,
         logical_name=logical_name,
         media_type="application/json",
-        suffix=".json",
         metadata=metadata,
     )
 
@@ -2359,33 +1889,30 @@ def store_bytes_artifact(
     role: str,
     logical_name: str,
     media_type: str = "application/octet-stream",
-    suffix: str = "",
     metadata: Optional[dict[str, Any]] = None,
 ) -> ArtifactRef:
     """Atomically write opaque bytes into the local content-addressed store.
 
     The canonical name is published only after the exact temporary bytes are
     flushed and verified. Platforms without descriptor-relative, no-follow
-    operations fail closed with :class:`ArtifactStoreSecurityError`.
+    operations fail closed at the common BlobStore boundary.
     """
     if not isinstance(data, bytes):
         raise TypeError("artifact data must be bytes")
-    if not isinstance(suffix, str) or "\0" in suffix or Path(f"x{suffix}").name != f"x{suffix}":
-        raise ValueError("artifact suffix must not contain path components")
+    from feedbax.persistence.publication import LocalBlobStore
+
     root_path = Path(root) if root is not None else default_manifest_root()
-    digest = sha256_bytes(data)
-    dest = _artifact_path(root_path, digest, suffix)
-    destination = Path(os.path.abspath(dest))
-    artifact_stat = _secure_store_bytes_artifact(data, destination=destination)
+    blob = LocalBlobStore(Path(root_path).absolute()).stage(data)
+    dest = _artifact_path(root_path, blob.digest)
     artifact_metadata = dict(metadata or {})
     artifact_metadata.setdefault("relative_path", str(dest.relative_to(root_path)))
     return ArtifactRef(
         role=role,
         logical_name=logical_name,
-        artifact_id=f"artifact://sha256/{digest}",
-        sha256=digest,
+        artifact_id=f"artifact://sha256/{blob.digest}",
+        sha256=blob.digest,
         media_type=media_type,
-        size_bytes=artifact_stat.st_size,
+        size_bytes=blob.size_bytes,
         uri=str(dest),
         metadata=artifact_metadata,
     )
@@ -2796,8 +2323,7 @@ def spec_identity_preimage(spec: BaseModel) -> dict[str, Any]:
 def evaluation_run_manifest_id(spec: EvaluationRunSpec) -> str:
     """Return deterministic run identity for an evaluation spec."""
     dependency_identities = [
-        ref.metadata.get("material_dependency_identity_sha256")
-        for ref in spec.inputs
+        ref.metadata.get("material_dependency_identity_sha256") for ref in spec.inputs
     ]
     if any(identity is not None for identity in dependency_identities):
         from feedbax.contracts.material_dependencies import (
@@ -2815,18 +2341,14 @@ def evaluation_run_manifest_id(spec: EvaluationRunSpec) -> str:
                 "every evaluation input must carry an exact "
                 "material_dependency_identity_sha256 when dependency-scoped identity is used"
             )
-        declarations = [
-            ref.metadata.get("material_dependencies")
-            for ref in spec.inputs
-        ]
+        declarations = [ref.metadata.get("material_dependencies") for ref in spec.inputs]
         if not all(isinstance(declaration, dict) for declaration in declarations):
             raise ValueError(
                 "dependency-scoped evaluation identity requires every input to retain "
                 "its versioned material_dependencies declaration"
             )
         validated_declarations = [
-            MaterialDependencySet.model_validate(declaration)
-            for declaration in declarations
+            MaterialDependencySet.model_validate(declaration) for declaration in declarations
         ]
         for identity, declaration in zip(
             dependency_identities,

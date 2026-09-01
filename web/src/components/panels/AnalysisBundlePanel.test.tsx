@@ -52,7 +52,6 @@ afterEach(() => {
     useWorkspaceStore.setState({
       workspace: null,
       lastTrainingExecutionPreparation: null,
-      lastTrainingLocalRunResult: null,
       lastPipelineMaterializationResult: null,
     });
   });
@@ -61,10 +60,10 @@ afterEach(() => {
 function dryRunResponse(bundleName: string, runIds: string[]) {
   return {
     schema_id: 'feedbax.spec.studio.api_transport',
-    schema_version: 'feedbax.spec.studio.api_transport.v2',
+    schema_version: 'feedbax.spec.studio.api_transport.v3',
     data: {
       schema_id: 'feedbax.spec.studio.api_transport',
-      schema_version: 'feedbax.spec.studio.api_transport.v2',
+      schema_version: 'feedbax.spec.studio.api_transport.v3',
       dry_run: {
         bundle_name: bundleName,
         match_preview: {

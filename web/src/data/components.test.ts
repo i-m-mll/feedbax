@@ -10,10 +10,10 @@ describe('component registry fallback', () => {
   it('parses representation contracts from component catalog responses', () => {
     const response = parseContract('ComponentListResponse', {
       schema_id: 'feedbax.spec.studio.api_transport',
-      schema_version: 'feedbax.spec.studio.api_transport.v2',
+      schema_version: 'feedbax.spec.studio.api_transport.v3',
       data: {
         schema_id: 'feedbax.spec.studio.api_transport',
-        schema_version: 'feedbax.spec.studio.api_transport.v2',
+        schema_version: 'feedbax.spec.studio.api_transport.v3',
         components: [
           {
             name: 'RepresentedGain',

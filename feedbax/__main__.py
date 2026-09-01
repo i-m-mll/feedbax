@@ -30,7 +30,7 @@ from feedbax.contracts.project_experiment import (
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.run_matrix import ExecutionDependency
 from feedbax.contracts.training import (
-    TrainingMethodRegistry,
+    TrainingProgramRegistry,
     TrainingRunSpec,
     resolve_training_run_spec,
     validate_training_run_spec_semantics,
@@ -40,7 +40,6 @@ from feedbax.governance.science_surface import (
     run_cli as run_science_surface_cli,
 )
 from feedbax.plugins.composition import compose_application
-from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.orchestration.events import RunEventEmitter
 from feedbax.training.executor import (
     execute_training_run_spec,
@@ -68,14 +67,6 @@ from feedbax.training.checkpoint_custody import (
     relock_checkpoint_fork_plan_file,
     validate_checkpoint_fork_execution_dependencies,
 )
-from feedbax.training.legacy_checkpoint_adoption import (
-    ManifestDumpRequest,
-    PathMappingRule,
-    adopt_legacy_checkpoint,
-    dump_leaf_manifests_via_worktrees,
-    load_leaf_manifest,
-    load_path_mapping_registry,
-)
 
 
 def _read_json(path: str) -> dict[str, Any]:
@@ -89,7 +80,7 @@ def _read_pickle(path: str) -> Any:
 
 def _load_checkpoint_fork_plan_bindings(
     path: str,
-    training_method_registry: TrainingMethodRegistry,
+    training_method_registry: TrainingProgramRegistry,
 ) -> CheckpointForkPlanBindings:
     manifest_path = Path(path).resolve()
     payload = _read_json(str(manifest_path))
@@ -142,23 +133,6 @@ def _load_run_contract_historical_evidence(
             evidence_refs=tuple(item.get("evidence_refs", ())),
         )
     return evidence
-
-
-def _load_path_mapping(
-    path: str | None,
-) -> tuple[tuple[PathMappingRule, ...], tuple[PathMappingRule, ...]]:
-    if path is None:
-        return (), ()
-    payload = _read_json(path)
-    if isinstance(payload, list):
-        rules = tuple(PathMappingRule(**item) for item in payload)
-        return rules, rules
-    if "schema_id" in payload or "rules" in payload:
-        registry = load_path_mapping_registry(path)
-        return registry.rules_for("model"), registry.rules_for("optimizer")
-    model_rules = tuple(PathMappingRule(**item) for item in payload.get("model", ()))
-    optimizer_rules = tuple(PathMappingRule(**item) for item in payload.get("optimizer", ()))
-    return model_rules, optimizer_rules
 
 
 def _load_callable(ref: str | None):
@@ -232,58 +206,22 @@ def _console_progress_printer(started_at: float):
     return print_progress
 
 
-def _dump_manifest_requests(
-    specs: Sequence[str],
-    *,
-    commit: str,
-    output: str | None,
-    batch: Sequence[str] | None = None,
-) -> list[ManifestDumpRequest]:
-    if not specs and not batch:
-        raise ValueError("dump-manifest requires at least one --spec")
-    if specs and not commit:
-        raise ValueError("dump-manifest requires --commit")
-    if output is not None and len(specs) != 1:
-        raise ValueError("--output may only be used with one --spec")
-    requests: list[ManifestDumpRequest] = []
-    for spec in specs:
-        spec_path = Path(spec)
-        output_path = (
-            Path(output)
-            if output is not None
-            else spec_path.with_suffix(spec_path.suffix + ".leaf_manifest.json")
-        )
-        requests.append(
-            ManifestDumpRequest(commit=commit, spec_path=spec_path, output_path=output_path)
-        )
-    for raw_batch in batch or ():
-        payload = json.loads(raw_batch)
-        requests.append(
-            ManifestDumpRequest(
-                commit=str(payload["commit"]),
-                spec_path=Path(payload["spec"]),
-                output_path=Path(payload["output"]),
-            )
-        )
-    return requests
+def _execute_experiment_workflow(args: argparse.Namespace, registries: Any) -> int:
+    """Execute one compiled experiment target's whole dependency closure.
 
-
-def _fulfill_experiment_envelope(args: argparse.Namespace, registries: Any) -> int:
-    """Fulfill one compiled experiment target's whole dependency closure.
-
-    Exit codes are the documented fulfillment contract: 0 fulfilled, 2 a stable
+    Exit codes are the documented workflow contract: 0 executed, 2 a stable
     typed rejection with an actionable diagnostic on stderr, 1 infrastructure
     failure.
     """
     from feedbax.analysis.fulfillment import FulfillmentAdmissionError
     from feedbax.analysis.fulfillment_adapters import FulfillmentEnvironment
     from feedbax.analysis.fulfillment_custody import FulfillmentDriftError
-    from feedbax.analysis.fulfillment_derivation import FulfillmentDerivationError
-    from feedbax.analysis.fulfillment_driver import FulfillmentDriverError
-    from feedbax.analysis.fulfillment_experiment import fulfill_experiment_envelope
-    from feedbax.analysis.fulfillment_plan import (
-        FulfillmentPlanError,
-        UnsupportedFulfillmentPlanVersionError,
+    from feedbax.workflow.derivation import WorkflowDerivationError
+    from feedbax.workflow.execution import WorkflowExecutionError
+    from feedbax.workflow.experiment import execute_experiment_workflow
+    from feedbax.workflow.plan import (
+        WorkflowPlanError,
+        UnsupportedWorkflowPlanVersionError,
     )
     from feedbax.analysis.execution_context import (
         EMPTY_STAGED_EXECUTION_CONTEXT,
@@ -309,30 +247,28 @@ def _fulfill_experiment_envelope(args: argparse.Namespace, registries: Any) -> i
         registries=registries,
         repo_root=repo_root,
         execution_context=(
-            EMPTY_STAGED_EXECUTION_CONTEXT
-            if declared_context is None
-            else declared_context
+            EMPTY_STAGED_EXECUTION_CONTEXT if declared_context is None else declared_context
         ),
         issues=tuple(args.issue or ()),
     )
     try:
-        fulfillment = fulfill_experiment_envelope(
+        fulfillment = execute_experiment_workflow(
             args.target, output_directory=out_dir, environment=environment
         )
     except (
         ExperimentEnvelopeRejection,
         FulfillmentAdmissionError,
-        FulfillmentDerivationError,
+        WorkflowDerivationError,
         FulfillmentDriftError,
-        FulfillmentDriverError,
-        FulfillmentPlanError,
+        WorkflowExecutionError,
+        WorkflowPlanError,
         StagedExecutionContextError,
-        UnsupportedFulfillmentPlanVersionError,
+        UnsupportedWorkflowPlanVersionError,
     ) as rejection:
         print(f"{type(rejection).__name__}: {rejection}", file=sys.stderr)
         return 2
     except OSError as exc:
-        print(f"fulfillment failed on infrastructure: {exc}", file=sys.stderr)
+        print(f"workflow execution failed on infrastructure: {exc}", file=sys.stderr)
         return 1
     json.dump(fulfillment.summary(), fp=sys.stdout, indent=2, sort_keys=True)
     print()
@@ -511,8 +447,7 @@ def build_parser() -> argparse.ArgumentParser:
     envelope_parser = subparsers.add_parser(
         "preflight-experiment-envelope",
         help=(
-            "Compile one authored experiment envelope with the single built-in dialect "
-            "compiler."
+            "Compile one authored experiment envelope with the single built-in dialect compiler."
         ),
     )
     envelope_parser.add_argument("envelope", help="Authored experiment envelope JSON path")
@@ -535,9 +470,9 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     fulfill_parser = subparsers.add_parser(
-        "fulfill-experiment-envelope",
+        "execute-experiment-workflow",
         help=(
-            "Fulfill one compiled experiment target's dependency closure from the compile "
+            "Execute one compiled experiment target's dependency closure from the compile "
             "locks and documents in an output directory."
         ),
     )
@@ -577,91 +512,6 @@ def build_parser() -> argparse.ArgumentParser:
     # root stays what it is — output and admission custody, and one candidate
     # manifest authority — and is never read as an inferred provider root.
     add_staged_input_arguments(fulfill_parser)
-    adopt_root = subparsers.add_parser(
-        "adopt-legacy-checkpoint",
-        help="Dump or adopt legacy Equinox tree_serialise_leaves checkpoint streams.",
-    )
-    adopt_subparsers = adopt_root.add_subparsers(dest="adopt_command", required=True)
-    dump_parser = adopt_subparsers.add_parser(
-        "dump-manifest",
-        help=(
-            "Create a producing-commit worktree and run a downstream builder hook "
-            "there to emit a LeafManifest JSON file."
-        ),
-    )
-    dump_parser.add_argument("--commit", help="Producing Git commit")
-    dump_parser.add_argument(
-        "--spec",
-        action="append",
-        help="Run spec/config path to pass to the producing-commit builder hook",
-    )
-    dump_parser.add_argument("--repo", default=".", help="Repository root for git worktree")
-    dump_parser.add_argument(
-        "--builder",
-        required=True,
-        help="Old-checkout Python hook as module:function; returns model and optimizer templates",
-    )
-    dump_parser.add_argument("--output", help="Output manifest path for a single --spec")
-    dump_parser.add_argument(
-        "--batch",
-        action="append",
-        help="JSON object with commit, spec, and output fields; may be repeated.",
-    )
-    dump_parser.add_argument(
-        "--skip-uv-sync",
-        action="store_true",
-        help="Reuse the producing checkout environment instead of running uv sync.",
-    )
-    adopt_parser = adopt_subparsers.add_parser(
-        "adopt",
-        help=(
-            "Adopt manifest-verified legacy model/optimizer .eqx streams into "
-            "current checkpoint custody."
-        ),
-    )
-    adopt_parser.add_argument("--manifest", required=True, help="LeafManifest JSON path")
-    adopt_parser.add_argument("--model-stream", required=True, help="Legacy model.eqx path")
-    adopt_parser.add_argument("--optimizer-stream", help="Legacy optimizer_state.eqx path")
-    adopt_parser.add_argument(
-        "--fresh-optimizer",
-        action="store_true",
-        help="Keep the current optimizer template instead of adopting optimizer_state.eqx.",
-    )
-    adopt_parser.add_argument(
-        "--current-slots",
-        required=True,
-        help="Pickle containing current checkpoint slot templates keyed by slot name",
-    )
-    adopt_parser.add_argument("--run-spec", required=True, help="Current TrainingRunSpec JSON")
-    adopt_parser.add_argument("--checkpoint-root", required=True, help="Custody root to write")
-    adopt_parser.add_argument("--barrier", required=True, help="Checkpoint barrier name")
-    adopt_parser.add_argument("--run-id", required=True, help="Run id for checkpoint metadata")
-    adopt_parser.add_argument("--phase", required=True, help="Completed phase name")
-    adopt_parser.add_argument(
-        "--program-step",
-        required=True,
-        type=int,
-        help="Cumulative phase-program step recorded on the adopted coordinate",
-    )
-    adopt_parser.add_argument("--completed-barrier", required=True)
-    adopt_parser.add_argument("--model-slot", default="model")
-    adopt_parser.add_argument("--optimizer-slot", default="optimizer")
-    adopt_parser.add_argument("--path-mapping", help="Optional path mapping registry JSON")
-    adopt_parser.add_argument(
-        "--plugin",
-        action="append",
-        help=(
-            "Import a module that registers Feedbax training methods before "
-            "TrainingRunSpec validation; may be repeated."
-        ),
-    )
-    adopt_parser.add_argument(
-        "--resume-slot-transform",
-        help=(
-            "Optional current-environment module:function that transforms loaded slots "
-            "before strict round-trip validation, for downstream optimizer resize hooks."
-        ),
-    )
     checkpoint_root = subparsers.add_parser(
         "checkpoint",
         help="Checkpoint custody maintenance commands.",
@@ -902,11 +752,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         return harness_main(harness_argv, bootstrap_state=bootstrap_state)
     if args.command == "preflight-experiment-envelope":
         return _preflight_experiment_envelope(args)
-    if args.command == "fulfill-experiment-envelope":
-        return _fulfill_experiment_envelope(args, registries)
+    if args.command == "execute-experiment-workflow":
+        return _execute_experiment_workflow(args, registries)
     if args.command == "execute-training-run-spec":
         run_spec = validate_training_run_spec(_read_json(args.spec))
-        resolved_method = resolve_training_run_spec(run_spec, registries.training_methods)
+        if run_spec.graph.inline is None:
+            raise ValueError("execute-training-run-spec requires an inline graph document")
+        from feedbax.compiler import DocumentRoot, GraphDocument, compile_graph
+        from feedbax.contracts.authored_canonical import canonical_sha256
+
+        executable_graph = compile_graph(
+            GraphDocument(
+                graph=run_spec.graph.inline,
+                trial_root=DocumentRoot(
+                    schema_id="feedbax.spec.training.task",
+                    schema_version="1",
+                    content_sha256=canonical_sha256(run_spec.task.model_dump(mode="json")),
+                ),
+                objective_root=DocumentRoot(
+                    schema_id=run_spec.objective.schema_id or "feedbax.objective_slot",
+                    schema_version=run_spec.objective.schema_version or "1",
+                    content_sha256=canonical_sha256(
+                        run_spec.objective.model_dump(mode="json", exclude_none=True)
+                    ),
+                ),
+            ),
+            registries.components,
+        )
+        resolved_method = resolve_training_run_spec(run_spec, registries.training_programs)
         method_registration = resolved_method.registration
         preparation_registration = registries.execution_preparations.get(run_spec.method_ref.key)
         mapping_levels, _slot_axis_bindings = resolve_execution_mapping(run_spec.worker_execution)
@@ -931,6 +804,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             prepared = registries.execution_preparations.prepare(
                 ExecutionPreparationRequest(
                     run_spec=run_spec,
+                    executable_graph=executable_graph,
                     method_payload=resolved_method.payload,
                     method_contract=resolved_method.contract,
                     effective_phase=resolved_method.effective_phase,
@@ -943,6 +817,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     prepared = materialize_execution_preparation(
                         ExecutionPreparationRequest(
                             run_spec=run_spec,
+                            executable_graph=executable_graph,
                             method_payload=resolved_method.payload,
                             method_contract=resolved_method.contract,
                             effective_phase=resolved_method.effective_phase,
@@ -980,7 +855,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     initial_slots=initial_slots,
                     manifest_root=args.manifest_root,
                     checkpoint_root=args.checkpoint_root,
-                    registry=registries.training_methods,
+                    registry=registries.training_programs,
                     training_spec_payload=training_payload,
                     training_spec_payload_kind=args.training_payload_kind,
                     training_spec_payload_schema_id=args.training_payload_schema_id,
@@ -1040,7 +915,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         projection_custody = prepare_training_manifest_metadata_projection(
             metadata_projection,
-            registry=registries.training_methods,
+            registry=registries.training_programs,
             run_spec=run_spec,
             training_spec_payload=training_payload,
             training_spec_payload_kind=args.training_payload_kind,
@@ -1056,86 +931,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         json.dump(output, fp=sys.stdout, indent=2, sort_keys=True)
         print()
         return 0
-    if args.command == "adopt-legacy-checkpoint":
-        if args.adopt_command == "dump-manifest":
-            results = dump_leaf_manifests_via_worktrees(
-                _dump_manifest_requests(
-                    args.spec or (),
-                    commit=args.commit or "",
-                    output=args.output,
-                    batch=args.batch,
-                ),
-                repo=args.repo,
-                builder=args.builder,
-                run_uv_sync=not args.skip_uv_sync,
-            )
-            json.dump(
-                {
-                    "manifests": [
-                        {
-                            "commit": result.commit,
-                            "spec": str(result.spec_path),
-                            "output": str(result.output_path),
-                        }
-                        for result in results
-                    ]
-                },
-                fp=sys.stdout,
-                indent=2,
-                sort_keys=True,
-            )
-            print()
-            return 0
-        if args.adopt_command == "adopt":
-            run_spec = validate_training_run_spec_semantics(
-                TrainingRunSpec.model_validate(_read_json(args.run_spec)),
-                registries.training_methods,
-            )
-            phase_program = run_spec.worker_execution.method_contract.phase_program
-            model_mapping, optimizer_mapping = _load_path_mapping(args.path_mapping)
-            result = adopt_legacy_checkpoint(
-                checkpoint_root=args.checkpoint_root,
-                run_spec=run_spec,
-                phase_program=phase_program,
-                barrier_name=args.barrier,
-                coordinate=ProgressCoordinate(
-                    run_id=args.run_id,
-                    phase=args.phase,
-                    program_step=args.program_step,
-                    completed_barrier=args.completed_barrier,
-                ),
-                current_slots=_read_pickle(args.current_slots),
-                leaf_manifest=load_leaf_manifest(args.manifest),
-                model_stream=args.model_stream,
-                optimizer_stream=args.optimizer_stream,
-                model_slot=args.model_slot,
-                optimizer_slot=args.optimizer_slot,
-                fresh_optimizer=args.fresh_optimizer,
-                model_mapping_rules=model_mapping,
-                optimizer_mapping_rules=optimizer_mapping,
-                resume_slot_transform=_load_callable(args.resume_slot_transform),
-            )
-            json.dump(
-                {
-                    "transaction_id": result.write.manifest.transaction_id,
-                    "manifest_path": str(result.write.manifest_path),
-                    "latest_pointer_path": str(result.write.latest_pointer_path),
-                    "model_assigned_paths": list(result.model_report.assigned_paths),
-                    "optimizer_assigned_paths": (
-                        list(result.optimizer_report.assigned_paths)
-                        if result.optimizer_report is not None
-                        else []
-                    ),
-                    "model_static_paths": [
-                        report.__dict__ for report in result.model_report.static_paths
-                    ],
-                },
-                fp=sys.stdout,
-                indent=2,
-                sort_keys=True,
-            )
-            print()
-            return 0
     if args.command == "checkpoint":
         if args.checkpoint_command == "fork-plan":
             plan = CheckpointForkPlan.model_validate(
@@ -1150,7 +945,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             validate_checkpoint_fork_execution_dependencies(plan, dependencies)
             bindings = _load_checkpoint_fork_plan_bindings(
                 args.bindings,
-                registries.training_methods,
+                registries.training_programs,
             )
             results = fork_checkpoint_plan(plan, bindings)
             json.dump(
@@ -1171,7 +966,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.checkpoint_command == "relock":
             bindings = _load_checkpoint_fork_plan_bindings(
                 args.bindings,
-                registries.training_methods,
+                registries.training_programs,
             )
             evidence = _load_run_contract_historical_evidence(args.historical_evidence)
             if args.write:
@@ -1232,7 +1027,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     spec_path, checkpoint_root = _parse_checkpoint_fork_target(raw_target)
                     run_spec = validate_training_run_spec_semantics(
                         TrainingRunSpec.model_validate(_read_json(str(spec_path))),
-                        registries.training_methods,
+                        registries.training_programs,
                     )
                     phase_program = run_spec.worker_execution.method_contract.phase_program
                     result = fork_checkpoint_transaction(

@@ -40,7 +40,7 @@ from equinox import AbstractVar, Module, field
 from jax_cookbook import is_module, is_none, is_type
 from jaxtyping import Array, ArrayLike, Float, Int, PRNGKeyArray, PyTree, Shaped
 
-from feedbax.config.mapping import WhereDict
+from feedbax.runtime.mapping import WhereDict
 from feedbax.tasks._tree import tree_call
 from feedbax.runtime.graph import Component, Graph, RolloutStepHook, init_state_from_component
 from feedbax.runtime.iteration import run_component
@@ -824,7 +824,7 @@ class AbstractTask(Module):
         return trial_specs
 
     # ------------------------------------------------------------------
-    # TaskProtocol-compatible interface
+    # Authoring convenience projected into separate trial and objective contracts.
     # ------------------------------------------------------------------
 
     def sample_trial(
@@ -832,7 +832,7 @@ class AbstractTask(Module):
         key: PRNGKeyArray,
         batch_info: Optional[BatchInfo] = None,
     ) -> TaskTrialSpec:
-        """Generate a training trial specification (TaskProtocol-compatible).
+        """Generate a training trial specification for the trial-source contract.
 
         Delegates to :meth:`get_train_trial_with_intervenor_params`, which
         includes intervention parameter sampling and input dependency
@@ -849,7 +849,7 @@ class AbstractTask(Module):
         return self.get_train_trial_with_intervenor_params(key, batch_info)
 
     def episode_length(self, trial_spec: TaskTrialSpec) -> int:
-        """Return the number of timesteps in a trial (TaskProtocol-compatible).
+        """Return the number of timesteps in a produced trial.
 
         Prefers ``trial_spec.timeline.n_steps`` when available; otherwise
         infers the length from the leading dimension of the input arrays.
@@ -861,7 +861,6 @@ class AbstractTask(Module):
         Returns:
             The number of timesteps.
         """
-        # Bug: c19f563 — canonical episode-length query for TaskProtocol
         return infer_n_steps(trial_spec.inputs, trial_spec.timeline)
 
     def compute_loss(
@@ -870,7 +869,7 @@ class AbstractTask(Module):
         trial_spec: TaskTrialSpec,
         model: Component,
     ) -> TermTree:
-        """Compute training loss from a completed trajectory (TaskProtocol-compatible).
+        """Compute training loss through the separate objective contract.
 
         Delegates to ``self.loss_func``.
 

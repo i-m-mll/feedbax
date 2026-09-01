@@ -65,7 +65,7 @@ from feedbax.orchestration.revision import resolve_feedbax_revision
 def _assembly_registry():
     registries = new_application_registry_bundle(local_component_source=None)
     return build_default_assembly_registry(
-        method_registry=registries.training_methods,
+        method_registry=registries.training_programs,
         row_lowerer_registry=registries.row_lowerers,
         evaluation_registry=registries.evaluation_recipes,
     )

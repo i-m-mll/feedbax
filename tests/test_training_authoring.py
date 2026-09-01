@@ -36,9 +36,11 @@ from feedbax.contracts.training import (
     TrainingConfig,
     TrainingMethodAuthoringContribution,
     TrainingMethodAuthoringHook,
-    TrainingMethodDescriptor,
+    DeclaredTrainingProgram,
+    declare_training_program,
+    evolve_training_program,
     TrainingMethodRegistration,
-    TrainingMethodRegistry,
+    TrainingProgramRegistry,
     TrainingRunSpec,
     WorkerExecutionSpec,
     standard_supervised_method_contract,
@@ -52,8 +54,7 @@ from feedbax.training.authoring import (
     training_method_authoring_implementation_sha256,
 )
 from feedbax.plugins import (
-    ROW_LOWERERS,
-    TRAINING_METHODS,
+    TRAINING_PROGRAMS,
     BootstrapError,
     BootstrapErrorCode,
     FamilyRequirement,
@@ -62,7 +63,6 @@ from feedbax.plugins import (
     bootstrap_application,
     new_registration_context,
 )
-from feedbax.training.authoring import training_method_row_lowerer_registration
 from feedbax.training.row_lowering import (
     training_row_lowerer_implementation_sha256,
 )
@@ -196,28 +196,15 @@ def _projectors(calls: dict[str, int] | None = None) -> dict[str, object]:
 
 @pytest.fixture
 def authoring_registry():
-    registry = TrainingMethodRegistry()
+    registry = TrainingProgramRegistry()
     default_result = object()
     holder: dict[str, Any] = {
         "authoring_calls": 0,
-        "row_compiler_calls": 0,
         "mutate_payload": False,
         "return_value": default_result,
         "contract": _method_contract(),
         "projector_calls": {},
     }
-
-    def low_level_lower(_row: AuthoredTrainingRow) -> TrainingRowLoweringResult:
-        holder["row_compiler_calls"] += 1
-        return TrainingRowLoweringResult(
-            execution_payload={"adapter": "low-level-only"},
-            lowerer_identities=[
-                RowLowererIdentity(
-                    lowerer_id="example.typed_method.low_level",
-                    lowerer_version="example.typed_method.low_level.v1",
-                )
-            ],
-        )
 
     def author(payload: TypedPayload) -> TrainingMethodAuthoringContribution:
         holder["authoring_calls"] += 1
@@ -226,15 +213,14 @@ def authoring_registry():
         result = holder["return_value"]
         return _contribution() if result is default_result else result
 
-    registry.register_descriptor(
-        TrainingMethodDescriptor(
+    registry.register_program(
+        declare_training_program(
             method_ref=METHOD_REF,
             payload_schema_id=PAYLOAD_SCHEMA_ID,
             payload_schema_version=PAYLOAD_SCHEMA_VERSION,
             payload_model=TypedPayload,
             contract_compiler=lambda _payload: holder["contract"].model_copy(deep=True),
             update_kernels_factory=standard_supervised_update_kernels,
-            row_compiler=low_level_lower,
             authoring_hook=TrainingMethodAuthoringHook(
                 lowerer_id="example.typed_method.authoring",
                 lowerer_version="example.typed_method.authoring.v1",
@@ -320,7 +306,6 @@ def test_compile_authoring_projects_once_and_returns_canonical_contracts(
         "domain": 1,
     }
     assert holder["authoring_calls"] == 1
-    assert holder["row_compiler_calls"] == 0
     assert row.model_dump(mode="python") == before
     assert compiled.run_spec.schema_version == "feedbax.spec.training_run.v4"
     assert compiled.worker_execution == holder["worker"]
@@ -373,7 +358,6 @@ def test_compile_authoring_carries_one_mapping_level_without_row_compiler(
     assert [(level.axis, level.role, level.size) for level in levels] == [
         ("ensemble", "replicate", 5)
     ]
-    assert holder["row_compiler_calls"] == 0
 
 
 def test_compile_authoring_preserves_empty_mapping_as_scalar(authoring_registry) -> None:
@@ -388,7 +372,6 @@ def test_compile_authoring_preserves_empty_mapping_as_scalar(authoring_registry)
 
     assert compiled.worker_execution.mapping_levels == []
     assert resolve_execution_mapping(compiled.worker_execution) == ((), {})
-    assert holder["row_compiler_calls"] == 0
 
 
 def test_compile_authoring_leaves_mapping_validation_to_worker_contract(
@@ -411,7 +394,6 @@ def test_compile_authoring_leaves_mapping_validation_to_worker_contract(
 
     with pytest.raises(WorkerContractValidationError, match="exactly one mapping level"):
         resolve_execution_mapping(compiled.worker_execution)
-    assert holder["row_compiler_calls"] == 0
 
 
 def test_compile_authoring_owns_scientific_policies_only(authoring_registry) -> None:
@@ -478,7 +460,7 @@ def test_compiler_result_is_consumed_as_an_ordinary_row_lowerer(
 
 
 def test_authoring_rejects_missing_schema_low_level_and_missing_hook() -> None:
-    low_level = TrainingMethodRegistry()
+    low_level = TrainingProgramRegistry()
     low_level.register(
         TrainingMethodRegistration(
             method_ref=METHOD_REF,
@@ -496,50 +478,36 @@ def test_authoring_rejects_missing_schema_low_level_and_missing_hook() -> None:
             registry=low_level,
         )
 
-    row_compiler_only = TrainingMethodRegistry()
-    row_compiler_calls = 0
-
-    def low_level_row_compiler(_row: AuthoredTrainingRow) -> TrainingRowLoweringResult:
-        nonlocal row_compiler_calls
-        row_compiler_calls += 1
-        return TrainingRowLoweringResult(
-            execution_payload={"adapter": True},
-            lowerer_identities=[
-                RowLowererIdentity(lowerer_id="example.low", lowerer_version="example.low.v1")
-            ],
-        )
-
-    row_compiler_only.register_descriptor(
-        TrainingMethodDescriptor(
+    program_without_hook = TrainingProgramRegistry()
+    program_without_hook.register_program(
+        declare_training_program(
             method_ref=METHOD_REF,
             payload_schema_id=PAYLOAD_SCHEMA_ID,
             payload_schema_version=PAYLOAD_SCHEMA_VERSION,
             payload_model=TypedPayload,
             contract_compiler=lambda _payload: _method_contract(),
             update_kernels_factory=standard_supervised_update_kernels,
-            row_compiler=low_level_row_compiler,
         )
     )
     with pytest.raises(TrainingMethodAuthoringError, match="has no authoring_hook"):
         compile_training_method_authoring(
             _authored_row(),
             method_ref=METHOD_REF,
-            registry=row_compiler_only,
+            registry=program_without_hook,
         )
-    assert row_compiler_calls == 0
 
 
 def test_authoring_rejects_projector_and_reserved_domain_errors(
     authoring_registry,
 ) -> None:
     registry, _holder = authoring_registry
-    descriptor = registry.descriptor(METHOD_REF)
+    descriptor = registry.program(METHOD_REF)
     assert descriptor is not None and descriptor.authoring_hook is not None
 
-    def install(**updates: object) -> TrainingMethodRegistry:
-        candidate = TrainingMethodRegistry()
-        candidate.register_descriptor(
-            replace(
+    def install(**updates: object) -> TrainingProgramRegistry:
+        candidate = TrainingProgramRegistry()
+        candidate.register_program(
+            evolve_training_program(
                 descriptor,
                 authoring_hook=replace(descriptor.authoring_hook, **updates),
             )
@@ -575,7 +543,6 @@ def test_authoring_rejects_hook_mutation_and_untyped_contribution(
             registry=registry,
         )
     assert holder["authoring_calls"] == 1
-    assert holder["row_compiler_calls"] == 0
 
     holder["mutate_payload"] = False
     holder["return_value"] = {
@@ -589,7 +556,6 @@ def test_authoring_rejects_hook_mutation_and_untyped_contribution(
             registry=registry,
         )
     assert holder["authoring_calls"] == 2
-    assert holder["row_compiler_calls"] == 0
 
 
 def test_invalid_contribution_fails_before_matrix_materialization_writes(
@@ -682,9 +648,9 @@ def test_authoring_rejects_reserved_duplicate_hook_identity_before_callback() ->
         calls += 1
         return _contribution()
 
-    registry = TrainingMethodRegistry()
-    registry.register_descriptor(
-        TrainingMethodDescriptor(
+    registry = TrainingProgramRegistry()
+    registry.register_program(
+        declare_training_program(
             method_ref=METHOD_REF,
             payload_schema_id=PAYLOAD_SCHEMA_ID,
             payload_schema_version=PAYLOAD_SCHEMA_VERSION,
@@ -723,7 +689,7 @@ def test_authoring_hook_rejects_empty_identity(field: str) -> None:
     }
     values[field] = ""
     hook = TrainingMethodAuthoringHook(**values)
-    descriptor = TrainingMethodDescriptor(
+    descriptor = declare_training_program(
         method_ref=METHOD_REF,
         payload_schema_id=PAYLOAD_SCHEMA_ID,
         payload_schema_version=PAYLOAD_SCHEMA_VERSION,
@@ -734,7 +700,7 @@ def test_authoring_hook_rejects_empty_identity(field: str) -> None:
     )
 
     with pytest.raises(ValueError, match="identity must not be empty"):
-        TrainingMethodRegistry().register_descriptor(descriptor)
+        TrainingProgramRegistry().register_program(descriptor)
 
 
 def test_authoring_identity_and_canonical_payload_are_deterministic(
@@ -759,25 +725,19 @@ def test_authoring_identity_and_canonical_payload_are_deterministic(
 
 
 def _descriptor_registration(
-    plugin_id: str, *descriptors: TrainingMethodDescriptor[Any]
+    plugin_id: str, *descriptors: DeclaredTrainingProgram[Any]
 ) -> PluginRegistration:
     def register(context) -> None:
-        methods = context.registry(TRAINING_METHODS)
-        lowerers = context.registry(ROW_LOWERERS)
+        methods = context.registry(TRAINING_PROGRAMS)
         for descriptor in descriptors:
-            methods.register_descriptor(descriptor)
-            if descriptor.authoring_hook is not None:
-                lowerers.register(training_method_row_lowerer_registration(descriptor, methods))
+            methods.register_program(descriptor)
 
     return PluginRegistration(
         PluginDeclaration(
             plugin_id,
             "1",
             1,
-            families=(
-                FamilyRequirement("training_methods"),
-                FamilyRequirement("row_lowerers"),
-            ),
+            families=(FamilyRequirement("training_programs"),),
         ),
         register,
     )
@@ -793,7 +753,7 @@ def _bootstrap_descriptors(*registrations: PluginRegistration):
 
 
 def _derived_authority(
-    descriptor: TrainingMethodDescriptor[Any],
+    descriptor: DeclaredTrainingProgram[Any],
 ) -> dict[str, Any]:
     return TrainingRowLowererRef(
         lowerer_id="example.typed_method.authoring",
@@ -806,7 +766,7 @@ def test_plugin_registers_authoring_lowerer_and_isolated_replay_is_deterministic
     authoring_registry,
 ) -> None:
     source_registry, _holder = authoring_registry
-    descriptor = source_registry.descriptor(METHOD_REF)
+    descriptor = source_registry.program(METHOD_REF)
     assert descriptor is not None
     first = _bootstrap_descriptors(_descriptor_registration("tests.typed.first", descriptor))
     second = _bootstrap_descriptors(_descriptor_registration("tests.typed.second", descriptor))
@@ -825,11 +785,11 @@ def test_plugin_registers_authoring_lowerer_and_isolated_replay_is_deterministic
 
 def test_plugin_skips_descriptor_without_authoring_hook(authoring_registry) -> None:
     source_registry, _holder = authoring_registry
-    descriptor = source_registry.descriptor(METHOD_REF)
+    descriptor = source_registry.program(METHOD_REF)
     assert descriptor is not None
     state = _bootstrap_descriptors(
         _descriptor_registration(
-            "tests.typed.no_authoring", replace(descriptor, authoring_hook=None)
+            "tests.typed.no_authoring", replace(descriptor, authoring=None)
         )
     )
 
@@ -838,12 +798,15 @@ def test_plugin_skips_descriptor_without_authoring_hook(authoring_registry) -> N
 
 def test_plugin_derivation_preserves_explicit_conflicts(authoring_registry) -> None:
     source_registry, _holder = authoring_registry
-    descriptor = source_registry.descriptor(METHOD_REF)
+    descriptor = source_registry.program(METHOD_REF)
     assert descriptor is not None
     with pytest.raises(BootstrapError) as excinfo:
         _bootstrap_descriptors(
             _descriptor_registration("tests.typed", descriptor),
-            _descriptor_registration("tests.other", replace(descriptor, owner="other")),
+            _descriptor_registration(
+                "tests.other",
+                replace(descriptor, declaration=replace(descriptor.declaration, owner="other")),
+            ),
         )
     assert excinfo.value.code is BootstrapErrorCode.NAMESPACE_COLLISION
 
@@ -852,9 +815,9 @@ def test_descriptor_authoring_digest_binds_projector_implementation(
     authoring_registry,
 ) -> None:
     source_registry, _holder = authoring_registry
-    descriptor = source_registry.descriptor(METHOD_REF)
+    descriptor = source_registry.program(METHOD_REF)
     assert descriptor is not None and descriptor.authoring_hook is not None
-    drifted = replace(
+    drifted = evolve_training_program(
         descriptor,
         authoring_hook=replace(descriptor.authoring_hook, graph=Path.exists),
     )
@@ -879,9 +842,9 @@ def test_distinct_methods_cannot_alias_one_derived_lowerer_authority(
     authoring_registry,
 ) -> None:
     source_registry, _holder = authoring_registry
-    descriptor = source_registry.descriptor(METHOD_REF)
+    descriptor = source_registry.program(METHOD_REF)
     assert descriptor is not None
-    other = replace(descriptor, method_ref="example/other/v1")
+    other = evolve_training_program(descriptor, method_ref="example/other/v1")
 
     with pytest.raises(BootstrapError) as excinfo:
         _bootstrap_descriptors(
@@ -895,7 +858,7 @@ def test_default_matrix_compiler_reaches_descriptor_authoring(
     tmp_path,
 ) -> None:
     source_registry, _holder = authoring_registry
-    descriptor = source_registry.descriptor(METHOD_REF)
+    descriptor = source_registry.program(METHOD_REF)
     assert descriptor is not None
     state = _bootstrap_descriptors(_descriptor_registration("tests.typed", descriptor))
     payload = {
@@ -914,7 +877,7 @@ def test_default_matrix_compiler_reaches_descriptor_authoring(
     )
 
     compiled = TrainingRunMatrixCompiler(
-        method_registry=state.bundle.training_methods,
+        method_registry=state.bundle.training_programs,
         allow_inline_base=True,
         row_validator=lambda payload, _row_id: TrainingRunSpec.model_validate(payload),
         row_lowerer=state.bundle.row_lowerers.lower,
@@ -965,7 +928,7 @@ def test_descriptor_authoring_rejects_dispatch_schema_mismatch(
     observed: str,
 ) -> None:
     registry, _holder = authoring_registry
-    descriptor = registry.descriptor(METHOD_REF)
+    descriptor = registry.program(METHOD_REF)
     assert descriptor is not None
     payload = {
         "schema_id": PAYLOAD_SCHEMA_ID,
@@ -978,7 +941,7 @@ def test_descriptor_authoring_rejects_dispatch_schema_mismatch(
 
     with pytest.raises(
         TrainingMethodAuthoringError,
-        match=rf"{field} does not match bound descriptor authority",
+        match=rf"{field} does not match bound training-program authority",
     ):
         compile_training_method_authoring(
             _authored_row(payload),
@@ -997,12 +960,12 @@ from feedbax.contracts.training import (
     TrainingConfig,
     TrainingMethodAuthoringContribution,
     TrainingMethodAuthoringHook,
-    TrainingMethodDescriptor,
+    DeclaredTrainingProgram,
+    declare_training_program,
     standard_supervised_method_contract,
     standard_supervised_update_kernels,
 )
-from feedbax.plugins import FamilyRequirement, PluginDeclaration, PluginRegistration, ROW_LOWERERS, TRAINING_METHODS
-from feedbax.training.authoring import training_method_row_lowerer_registration
+from feedbax.plugins import FamilyRequirement, PluginDeclaration, PluginRegistration, TRAINING_PROGRAMS
 
 
 class Payload(BaseModel):
@@ -1012,7 +975,7 @@ class Payload(BaseModel):
     value: int
 
 
-DESCRIPTOR = TrainingMethodDescriptor(
+DESCRIPTOR = declare_training_program(
         method_ref="tests/fresh/v1",
         payload_schema_id="tests.spec.fresh_method",
         payload_schema_version="tests.spec.fresh_method.v1",
@@ -1035,18 +998,15 @@ DESCRIPTOR = TrainingMethodDescriptor(
     )
 
 def register(context):
-    methods = context.registry(TRAINING_METHODS)
-    methods.register_descriptor(DESCRIPTOR)
-    context.registry(ROW_LOWERERS).register(
-        training_method_row_lowerer_registration(DESCRIPTOR, methods)
-    )
+    methods = context.registry(TRAINING_PROGRAMS)
+    methods.register_program(DESCRIPTOR)
 
 PLUGIN_REGISTRATION = PluginRegistration(
     PluginDeclaration(
         "tests.fresh",
         "1",
         1,
-        families=(FamilyRequirement("training_methods"), FamilyRequirement("row_lowerers")),
+        families=(FamilyRequirement("training_programs"),),
     ),
     register,
 )
@@ -1072,7 +1032,7 @@ state = asyncio.run(bootstrap_application(
     registrations=sources,
 ))
 print(json.dumps({
-    "methods": state.bundle.training_methods.descriptor_keys(),
+    "methods": state.bundle.training_programs.program_keys(),
     "lowerers": state.bundle.row_lowerers.available_keys(),
 }, sort_keys=True))
 """

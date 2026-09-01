@@ -208,6 +208,7 @@ class StudioSchemaEnumerationRequest(StudioSchemaModel):
     """HTTP request for static Studio schema enumeration."""
 
     workspace: StudioWorkspaceSpec | dict[str, Any]
+    graph: GraphSpec
     scenario_id: Optional[str] = None
     runtime_introspection: RuntimeIntrospectionOptions | bool | None = None
 
@@ -222,6 +223,7 @@ def enumerate_studio_schema_registry(
     workspace: StudioWorkspaceSpec | dict[str, Any],
     scenario_id: Optional[str] = None,
     *,
+    graph: GraphSpec,
     runtime_introspection: RuntimeIntrospectionOptions | bool | dict[str, Any] | None = None,
     runtime_introspector: Optional[RuntimeSchemaIntrospector] = None,
     component_registry: Any,
@@ -303,46 +305,35 @@ def enumerate_studio_schema_registry(
         )
         return registry
 
-    schema_graph: Optional[GraphSpec] = None
     task_binding_spec = scenario.task_binding_spec
-    if scenario.graph is None:
-        registry.issues.append(
-            SchemaValidationIssue(
-                type="missing_graph",
-                message=f"Scenario {scenario.id!r} does not have a graph",
-                location={"path": f"/scenarios/{scenario.id}/graph"},
-            )
-        )
-    else:
-        authoring_graph = normalize_graph_for_studio_authoring(
-            scenario.graph,
+    authoring_graph = normalize_graph_for_studio_authoring(
+        graph,
+        component_registry=component_registry,
+    )
+    task_binding_spec = normalize_task_binding_spec_for_studio_authoring(
+        task_binding_spec,
+        authoring_graph,
+    )
+    schema_graph = _normalize_derived_dimensions_for_schema(
+        authoring_graph,
+        task_binding_spec,
+    )
+    registry.ports = _enumerate_graph_ports(
+        schema_graph, task_binding_spec, component_registry=component_registry
+    )
+    registry.selector_targets.extend(_port_selector_targets(registry.ports))
+    registry.selector_targets.extend(
+        _graph_structural_selector_targets(schema_graph, component_registry=component_registry)
+    )
+    registry.selector_targets.extend(_graph_probe_selector_targets(schema_graph))
+    registry.issues.extend(
+        validate_graph_connection_schema(
+            schema_graph,
+            "/graph",
+            task_binding_spec,
             component_registry=component_registry,
         )
-        task_binding_spec = normalize_task_binding_spec_for_studio_authoring(
-            task_binding_spec,
-            authoring_graph,
-        )
-        schema_graph = authoring_graph
-        schema_graph = _normalize_derived_dimensions_for_schema(
-            schema_graph,
-            task_binding_spec,
-        )
-        registry.ports = _enumerate_graph_ports(
-            schema_graph, task_binding_spec, component_registry=component_registry
-        )
-        registry.selector_targets.extend(_port_selector_targets(registry.ports))
-        registry.selector_targets.extend(
-            _graph_structural_selector_targets(schema_graph, component_registry=component_registry)
-        )
-        registry.selector_targets.extend(_graph_probe_selector_targets(schema_graph))
-        registry.issues.extend(
-            validate_graph_connection_schema(
-                schema_graph,
-                f"/scenarios/{scenario.id}/graph",
-                task_binding_spec,
-                component_registry=component_registry,
-            )
-        )
+    )
 
     if task_binding_spec is None:
         registry.issues.append(
@@ -377,14 +368,13 @@ def enumerate_studio_schema_registry(
     )
     registry.selector_targets.extend(_known_state_hint_targets())
     registry.selector_targets = _dedupe_selector_targets(registry.selector_targets)
-    if scenario.graph is not None:
-        registry.issues.extend(
-            validate_intervention_schema(
-                scenario.graph,
-                registry.selector_targets,
-                f"/scenarios/{scenario.id}/graph",
-            )
+    registry.issues.extend(
+        validate_intervention_schema(
+            graph,
+            registry.selector_targets,
+            "/graph",
         )
+    )
     return registry
 
 

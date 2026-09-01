@@ -270,7 +270,6 @@ beyond local names.
 | NCD | Helper | Locations |
 | ---: | --- | --- |
 | 0.043 | `with_caller_logger` (+ its inner `wrapper`, 0.051) | `plot/utils.py:34`, `training/support.py:44` |
-| 0.045 | `_key_path_to_text` | `training/checkpoint_custody.py:6753`, `training/legacy_checkpoint_adoption.py:745` |
 | 0.052 | `_atomic_write_json` | `analysis/evaluation_compaction.py:943`, `analysis/evaluation_product_union.py:512` |
 | 0.054 | `capsule_identities` | `contracts/studio_training.py:138`, `training/spec_storage.py:263`, and at 0.154 `analysis/evaluation_orchestration.py:262` |
 | 0.057 | `_validate_dotted_path` | `contracts/matrix_core.py:675`, `contracts/run_matrix.py:1170` |
@@ -314,8 +313,8 @@ deliberate. `contracts/run_composition.py` carries a fifth instance internally,
 `CompositionNode` and `CompositionNodeV2` at 0.083.
 
 The same shape recurs beyond this family: `_validate_schema_identity` exists
-five times (`contracts/checkpoints.py` ×2, `contracts/figures.py`,
-`contracts/manifest.py`, `training/legacy_checkpoint_adoption.py`), and a
+across `contracts/checkpoints.py`, `contracts/figures.py`, and
+`contracts/manifest.py`, and a
 ten-member cluster of `_validate_mode`/`_validate_payload`/`_validate_origin`/
 `_validate_metric`/`_validate_location`/`validate_provider` Pydantic
 `model_validator`s spans `contracts/worker.py`, `contracts/training.py`,
@@ -380,7 +379,7 @@ endpoint. Each is parameterizable; none is obviously wrong as written.
 | 5 | `find_manifest_paths_by_id`, `iter_indexed_manifest_*`, `get_indexed_manifest_record`, `remove_manifest_from_index` | `persistence/manifest_index.py` |
 | 5 | `NetworkClamp`, `NetworkConstantInput`, `ConstantInput`, `FixedField`, `CurlField` | `intervene/intervene.py` |
 | 5 | `Subtract`, `Multiply`, `MatMul`, `Sigmoid`, `Ravel` | `runtime/components.py` |
-| 4 | `_lower_evaluation` / `_lower_analysis` / `_lower_report` / `_lower_figure_composition` | `analysis/fulfillment_lowering.py` |
+| 1 | declarative operation lowering metadata | `workflow/derivation.py` |
 | 4 | `validate_*_recipe` | `analysis/validation.py` |
 | 4 | `get_status` / `get_checkpoint` / `get_manifest` / `stop_job` | `web/worker/client.py` |
 | 4 | `*ExecutionError` exception classes | `analysis/figures.py`, `reports.py`, `evaluation.py`, `specs.py` |

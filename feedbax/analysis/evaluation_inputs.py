@@ -21,7 +21,10 @@ from feedbax.analysis.execution_context import (
     StagedExecutionContext,
     StagedExecutionContextError,
 )
-from feedbax.analysis.manifest_inputs import is_authenticated_manifest_ref
+from feedbax.analysis.manifest_inputs import (
+    is_authenticated_manifest_ref,
+    restated_parent_differences,
+)
 from feedbax.contracts.manifest import EvaluationRunSpec, ParentRef, TrainingRunManifest
 from feedbax.contracts.strict_json import DuplicateJsonKeyError, strict_json_loads
 
@@ -149,12 +152,22 @@ def resolve_evaluation_inputs(
     except ValueError as exc:
         raise EvaluationInputReferenceError(str(exc)) from exc
     if authenticated and execution_context.parent_execution_locations:
+        locations = tuple(
+            location
+            for location in execution_context.parent_execution_locations
+            if not restated_parent_differences(ref, location.parent)
+        )
+        if len(locations) != 1:
+            raise EvaluationInputReferenceError(
+                "authenticated evaluation input requires exactly one matching material-identity "
+                "staged execution authority"
+            )
+        location = locations[0]
         try:
-            resolved = execution_context.resolve_manifest_input(ref)
-            location = execution_context.parent_execution_location(ref)
+            resolved = execution_context.resolve_manifest_input(location.parent)
         except (StagedExecutionContextError, ValueError) as exc:
             raise EvaluationInputReferenceError(
-                "authenticated evaluation input requires its matching complete-ParentRef "
+                "authenticated evaluation input requires its matching material-identity "
                 "staged execution authority"
             ) from exc
         if not isinstance(resolved.manifest, TrainingRunManifest):

@@ -310,7 +310,7 @@ def project_training_schedules(
                 "schedule projection lineage contradicts continuation; "
                 f"lineage={actual_lineage!r}, continuation={expected_lineage!r}"
             )
-    descriptor = resolved_method.descriptor
+    descriptor = resolved_method.program
     if descriptor is None or descriptor.schedule_projector is None:
         raise ValueError(
             f"training method {run_spec.method_ref.key!r} has no complete schedule projector"

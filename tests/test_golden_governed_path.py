@@ -144,9 +144,9 @@ def _write_plugin(path: Path) -> None:
         import jax.numpy as jnp
         from pydantic import BaseModel
         from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowLoweringResult
-        from feedbax.contracts.training import ScheduleProjection, TrainingMethodDescriptor, TrainingMethodScheduleProjector, standard_supervised_method_contract, standard_supervised_update_kernels
-        from feedbax.plugins import EXECUTION_PREPARATIONS, FamilyRequirement, PluginDeclaration, PluginRegistration, ROW_LOWERERS, TRAINING_METHODS
-        from feedbax.training.preparation import ExecutionPreparationRegistration, ExecutionPreparationResult
+        from feedbax.contracts.training import ScheduleProjection, DeclaredTrainingProgram, TrainingMethodScheduleProjector, declare_training_program, standard_supervised_method_contract, standard_supervised_update_kernels
+        from feedbax.plugins import FamilyRequirement, PluginDeclaration, PluginRegistration, TRAINING_PROGRAMS
+        from feedbax.training.preparation import ExecutionPreparationResult
         from feedbax.training.row_lowering import TrainingRowLowererRegistration, training_row_lowerer_implementation_sha256
 
         class Payload(BaseModel):
@@ -175,17 +175,15 @@ def _write_plugin(path: Path) -> None:
         LOWER_SHA256 = training_row_lowerer_implementation_sha256(lower)
 
         def register(context):
-            descriptor = TrainingMethodDescriptor(method_ref={METHOD_REF!r}, payload_schema_id={METHOD_SCHEMA!r}, payload_schema_version={METHOD_VERSION!r}, payload_model=Payload, contract_compiler=compile_contract, update_kernels_factory=kernels, preparation_provider=prepare, schedule_projector=TrainingMethodScheduleProjector(projector_id="tests.golden.schedule_projection", projector_version="tests.golden.schedule_projection.v1", projector=project_schedules), optimizer_spec_projector=lambda payload: payload.optimizer, owner="golden", package="tests.golden")
-            context.registry(TRAINING_METHODS).register_descriptor(descriptor)
-            context.registry(EXECUTION_PREPARATIONS).register(ExecutionPreparationRegistration(method_ref=descriptor.method_ref, provider=descriptor.preparation_provider, owner=descriptor.owner))
-            context.registry(ROW_LOWERERS).register(TrainingRowLowererRegistration(authored_schema_id={AUTHORED_SCHEMA!r}, authored_schema_version={AUTHORED_VERSION!r}, lowerer_id={LOWERER_ID!r}, lowerer_version={LOWERER_VERSION!r}, implementation_sha256=LOWER_SHA256, lower=lower, owner="golden"))
+            descriptor = declare_training_program(method_ref={METHOD_REF!r}, payload_schema_id={METHOD_SCHEMA!r}, payload_schema_version={METHOD_VERSION!r}, payload_model=Payload, contract_compiler=compile_contract, update_kernels_factory=kernels, preparation_provider=prepare, row_lowerers=(TrainingRowLowererRegistration(authored_schema_id={AUTHORED_SCHEMA!r}, authored_schema_version={AUTHORED_VERSION!r}, lowerer_id={LOWERER_ID!r}, lowerer_version={LOWERER_VERSION!r}, implementation_sha256=LOWER_SHA256, lower=lower, owner="golden"),), schedule_projector=TrainingMethodScheduleProjector(projector_id="tests.golden.schedule_projection", projector_version="tests.golden.schedule_projection.v1", projector=project_schedules), optimizer_spec_projector=lambda payload: payload.optimizer, owner="golden", package="tests.golden")
+            context.registry(TRAINING_PROGRAMS).register_program(descriptor)
 
         PLUGIN_REGISTRATION = PluginRegistration(
             PluginDeclaration(
                 "tests.golden",
                 "1.0",
                 1,
-                families=(FamilyRequirement("training_methods"), FamilyRequirement("execution_preparations"), FamilyRequirement("row_lowerers")),
+                families=(FamilyRequirement("training_programs"),),
             ),
             register,
         )

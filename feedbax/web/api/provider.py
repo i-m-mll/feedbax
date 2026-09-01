@@ -17,8 +17,6 @@ from feedbax.integrations.provider import (
     registry_snapshot,
     validate_spec,
 )
-from feedbax.execution.models import ExecutionPlan, ExecutionSpec
-from feedbax.execution.planning import prepare_execution_plan
 from feedbax.studio.schema import (
     StudioSchemaEnumerationRequest,
     StudioSchemaRegistry,
@@ -33,15 +31,12 @@ from feedbax.studio.execution import (
     StudioEvaluationStagingResult,
     StudioPipelineMaterializationRequest,
     StudioPipelineMaterializationResult,
-    StudioTrainingLocalRunRequest,
-    StudioTrainingLocalRunResult,
     StudioTrainingExecutionPreparation,
     StudioTrainingExecutionRequest,
     materialize_studio_pipeline,
     prepare_studio_training_execution,
     preview_studio_evaluation_matrix,
     run_studio_evaluation_local_execution,
-    run_studio_training_local_execution,
     stage_studio_evaluation_matrix,
 )
 
@@ -89,16 +84,11 @@ async def validate_provider_spec(
             payload.spec,
             graph_spec=payload.graph_spec,
             component_registry=request.app.state.bootstrap_state.bundle.components,
-            training_method_registry=request.app.state.bootstrap_state.bundle.training_methods,
+            training_method_registry=request.app.state.bootstrap_state.bundle.training_programs,
             analysis_registry=request.app.state.bootstrap_state.bundle.analysis_recipes,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@router.post("/execution/plan", response_model=ExecutionPlan)
-async def prepare_provider_execution_plan(payload: ExecutionSpec) -> ExecutionPlan:
-    return prepare_execution_plan(payload)
 
 
 @router.post(
@@ -111,23 +101,6 @@ async def prepare_studio_training_plan(
 ) -> StudioTrainingExecutionPreparation:
     try:
         return prepare_studio_training_execution(
-            payload,
-            registry_bundle=request.app.state.bootstrap_state.bundle,
-        )
-    except StudioExecutionPreparationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@router.post(
-    "/studio/training/run-local",
-    response_model=StudioTrainingLocalRunResult,
-)
-async def run_studio_training_local(
-    payload: StudioTrainingLocalRunRequest,
-    request: Request,
-) -> StudioTrainingLocalRunResult:
-    try:
-        return run_studio_training_local_execution(
             payload,
             registry_bundle=request.app.state.bootstrap_state.bundle,
         )
@@ -206,6 +179,7 @@ async def enumerate_studio_schemas(
     return enumerate_studio_schema_registry(
         payload.workspace,
         payload.scenario_id,
+        graph=payload.graph,
         runtime_introspection=payload.runtime_introspection,
         component_registry=request.app.state.bootstrap_state.bundle.components,
     )

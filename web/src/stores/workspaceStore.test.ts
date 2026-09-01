@@ -65,7 +65,6 @@ beforeEach(() => {
   useWorkspaceStore.setState({
     workspace: null,
     lastTrainingExecutionPreparation: null,
-    lastTrainingLocalRunResult: null,
     lastPipelineMaterializationResult: null,
   });
 });
@@ -196,7 +195,7 @@ describe('buildWorkspaceSnapshot', () => {
       projectName: 'Workspace test',
     });
 
-    expect(workspace.schema_version).toBe('feedbax.studio.workspace.v1');
+    expect(workspace.schema_version).toBe('feedbax.spec.studio.workspace.v2');
     expect(workspace.active_stage_id).toBe('stage:train');
     expect(workspace.stages.map((stage) => stage.kind)).toEqual([
       'train',
@@ -219,7 +218,8 @@ describe('buildWorkspaceSnapshot', () => {
       bindings: [],
     });
     expect(scenario.objective_spec).toEqual(objectiveSpecFromLossSpec(trainingSpec.loss));
-    expect(scenario.graph).toEqual(graph);
+    expect(scenario).not.toHaveProperty('graph');
+    expect(scenario).not.toHaveProperty('graph_ui_state');
   });
 
   it('persists nested graph edits and analysis pages in one workspace snapshot', () => {
@@ -308,15 +308,8 @@ describe('buildWorkspaceSnapshot', () => {
 
     const trainStage = workspace.stages.find((stage) => stage.kind === 'train')!;
     const trainScenario = workspace.scenarios[trainStage.scenario_id!];
-    expect(trainScenario.graph?.subgraphs?.network.nodes.gain).toMatchObject({
-      type: 'Gain',
-      params: { gain: 2 },
-    });
-    expect(
-      trainScenario.graph_ui_state?.subgraph_states?.network?.node_states.gain
-    ).toMatchObject({
-      position: { x: 480, y: 120 },
-    });
+    expect(trainScenario).not.toHaveProperty('graph');
+    expect(trainScenario).not.toHaveProperty('graph_ui_state');
 
     const analysisStage = workspace.stages.find((stage) => stage.kind === 'analysis')!;
     const analysisSpec = workspace.scenarios[analysisStage.scenario_id!]
@@ -373,7 +366,7 @@ describe('buildWorkspaceSnapshot', () => {
     const trainStage = workspace.stages.find((stage) => stage.kind === 'train')!;
     const scenario = workspace.scenarios[trainStage.scenario_id!];
 
-    expect(scenario.graph?.wires).toEqual([]);
+    expect(scenario).not.toHaveProperty('graph');
     expect(scenario.task_binding_spec?.bindings).toEqual([
       {
         id: 'task:inputs->network:input',
@@ -483,7 +476,7 @@ describe('buildWorkspaceSnapshot', () => {
         { id: 'intervene', bindable: false },
       ],
     });
-    expect(scenario.graph?.output_ports).toEqual(['effector']);
+    expect(scenario).not.toHaveProperty('graph');
   });
 
   it('switches active stages and exposes active stage/scenario selectors', () => {
@@ -616,7 +609,7 @@ describe('buildWorkspaceSnapshot', () => {
     const projectedEvalObjective = evalProjection.objective_spec as StudioObjectiveSpec;
 
     expect(trainObjective.terms[0].label).toBe('Train endpoint loss');
-    expect(evalProjection.graph).toBe(trainScenario.graph);
+    expect(evalProjection).not.toHaveProperty('graph');
     expect(evalProjection.task_spec?.params.target_radius).toBe(0.08);
     expect(evalProjection.biomechanics_spec).toEqual({
       schema_id: 'feedbax.spec.studio.biomechanics',
@@ -860,7 +853,7 @@ describe('buildWorkspaceSnapshot', () => {
     });
   });
 
-  it('normalizes task binding specs when restoring workspace snapshots', () => {
+  it('preserves semantic task bindings without consulting a shadow graph', () => {
     const workspace = buildWorkspaceSnapshot({
       workspace: null,
       graph: {
@@ -914,15 +907,8 @@ describe('buildWorkspaceSnapshot', () => {
     useWorkspaceStore.getState().setWorkspace(workspace);
 
     const restored = getTrainingScenario(useWorkspaceStore.getState().workspace)!;
-    expect(restored.task_binding_spec?.exposed_data.map((data) => data.id)).toEqual([
-      'target_position',
-      'hold',
-      'target_on',
-      'movement_target',
-      'inits',
-      'intervene',
-    ]);
-    expect(restored.task_binding_spec?.bindings).toEqual([]);
+    expect(restored.task_binding_spec?.exposed_data.map((data) => data.id)).toEqual(['inputs']);
+    expect(restored.task_binding_spec?.bindings).toHaveLength(1);
   });
 
   it('normalizes runtime graph aliases without synthesizing network subgraphs', () => {
@@ -951,14 +937,7 @@ describe('buildWorkspaceSnapshot', () => {
     useWorkspaceStore.getState().setWorkspace(workspace);
 
     const restored = getTrainingScenario(useWorkspaceStore.getState().workspace)!;
-    expect(restored.graph?.nodes.network).toMatchObject({
-      type: 'SimpleStagedNetwork',
-      params: { input_size: 4, hidden_size: 100, output_size: 2 },
-      input_ports: ['target'],
-    });
-    expect(restored.graph?.subgraphs?.network).toBeUndefined();
-    expect(restored.graph?.input_ports).toEqual(['input']);
-    expect(restored.graph?.input_bindings).toEqual({ input: ['network', 'target'] });
+    expect(restored).not.toHaveProperty('graph');
   });
 
   it('retargets active scenario task bindings when a model node is renamed', () => {
@@ -1108,7 +1087,7 @@ describe('buildWorkspaceSnapshot', () => {
     expect(updatedEvalStage?.metadata.dirty).toBe(true);
   });
 
-  it('stores prepared execution plans without dropping workspace state', () => {
+  it('stores prepared invocations and backend plans without dropping workspace state', () => {
     const workspace = buildWorkspaceSnapshot({
       workspace: null,
       graph,
@@ -1127,9 +1106,9 @@ describe('buildWorkspaceSnapshot', () => {
               status: 'ready' as const,
               artifact_refs: [
                 {
-                  kind: 'ExecutionPlan',
-                  id: 'execution-plan:studio-plan',
-                  role: 'execution_plan',
+                  kind: 'BackendPlan',
+                  id: 'backend-plan:studio-plan',
+                  role: 'backend_plan',
                   provider: 'feedbax',
                   uri: '/tmp/feedbax_runs/studio-plan/execution-plan.json',
                   media_type: 'application/json',
@@ -1144,121 +1123,37 @@ describe('buildWorkspaceSnapshot', () => {
     useWorkspaceStore.getState().setWorkspace(workspace);
     useWorkspaceStore.getState().setTrainingExecutionPreparation({
       workspace: prepared,
-      stage_id: 'stage:train',
-      scenario_id: 'scenario:train',
-      execution_spec: { job_id: 'studio-plan' },
-      plan: {
-        kind: 'ExecutionPlan',
-        schema_version: 'feedbax.execution.v1',
-        job_id: 'studio-plan',
-        backend: 'local',
-        command: 'feedbax-provider validate training training-spec.json',
-        run_directory: '/tmp/feedbax_runs/studio-plan',
-        bootstrap: [],
-        health_checks: [],
-        launch: {
-          id: 'launch',
-          title: 'Launch execution',
-          command: null,
-          description: '',
-          critical: true,
-          metadata: {},
-        },
-        monitor: [],
-        artifact_routes: [],
-        cloud_payload: {},
-        reproducibility: {},
-        warnings: [],
-      },
-    });
-
-    const state = useWorkspaceStore.getState();
-    expect(state.lastTrainingExecutionPreparation?.plan.job_id).toBe('studio-plan');
-    expect(state.workspace?.stages.find((stage) => stage.kind === 'train')?.status).toBe('ready');
-  });
-
-  it('stores local execution results and returned workspace refs', () => {
-    const workspace = buildWorkspaceSnapshot({
-      workspace: null,
       graph,
-      uiState,
-      trainingSpec,
-      taskSpec,
-      analysisSnapshot: null,
-      projectName: 'Workspace test',
-    });
-    const completed = {
-      ...workspace,
-      stages: workspace.stages.map((stage) =>
-        stage.kind === 'train'
-          ? {
-              ...stage,
-              status: 'completed' as const,
-              manifest_refs: [
-                {
-                  kind: 'TrainingRunManifest',
-                  id: 'feedbax-training-run:studio-run',
-                  role: 'training_run',
-                  provider: 'feedbax',
-                  uri: '/tmp/feedbax_runs/manifests/training_runs/studio-run.json',
-                  metadata: {},
-                },
-              ],
-            }
-          : stage
-      ),
-    };
-
-    useWorkspaceStore.getState().setWorkspace(workspace);
-    useWorkspaceStore.getState().setTrainingLocalRunResult({
-      workspace: completed,
       stage_id: 'stage:train',
       scenario_id: 'scenario:train',
-      execution_spec: { job_id: 'studio-run' },
-      snapshot_dir: '/tmp/feedbax_runs/executions/studio-run/inputs',
-      result: {
-        job_id: 'studio-run',
-        status: 'completed',
-        return_code: 0,
-        stdout_path: '/tmp/feedbax_runs/executions/studio-run/stdout.log',
-        stderr_path: '/tmp/feedbax_runs/executions/studio-run/stderr.log',
-        manifest_path: '/tmp/feedbax_runs/manifests/training_runs/studio-run.json',
-        manifest_payload: { kind: 'TrainingRunManifest' },
-        plan: {
-          kind: 'ExecutionPlan',
-          schema_version: 'feedbax.execution.v1',
-          job_id: 'studio-run',
-          backend: 'local',
-          command: 'python -m feedbax.bin.provider validate training training-spec.json',
-          run_directory: '/tmp/feedbax_runs/studio-run',
-          bootstrap: [],
-          health_checks: [],
-          launch: {
-            id: 'launch',
-            title: 'Launch execution',
-            command: null,
-            description: '',
-            critical: true,
-            metadata: {},
-          },
-          monitor: [],
-          artifact_routes: [],
-          cloud_payload: {},
-          reproducibility: {},
-          warnings: [],
-        },
+      invocation: {
+        schema_id: 'feedbax.spec.invocation',
+        schema_version: 'feedbax.spec.invocation.v1',
+        invocation_id: 'a'.repeat(64),
+        workflow_plan_id: 'b'.repeat(64),
+        operation_key: 'campaign:studio',
+        operation: {},
+        inputs: [],
+        requested_outputs: [],
+        scientific_seeds: {},
+        capabilities: ['training'],
+        execution_policy: { timeout_seconds: 60, max_attempts: 1 },
+      },
+      backend_plan: {
+        schema_id: 'feedbax.orchestration.backend_plan',
+        schema_version: 'feedbax.orchestration.backend_plan.v1',
+        backend_plan_id: 'c'.repeat(64),
+        invocation_id: 'a'.repeat(64),
+        backend_id: 'local',
+        configuration: { job_id: 'studio-plan' },
       },
     });
 
     const state = useWorkspaceStore.getState();
-    expect(state.lastTrainingLocalRunResult?.result.status).toBe('completed');
-    expect(state.workspace?.stages.find((stage) => stage.kind === 'train')?.status).toBe(
-      'completed'
+    expect(state.lastTrainingExecutionPreparation?.backend_plan.configuration.job_id).toBe(
+      'studio-plan'
     );
-    expect(
-      state.workspace?.stages.find((stage) => stage.kind === 'train')?.manifest_refs[0]
-        .role
-    ).toBe('training_run');
+    expect(state.workspace?.stages.find((stage) => stage.kind === 'train')?.status).toBe('ready');
   });
 
   it('stores pipeline materialization results and downstream stage refs', () => {

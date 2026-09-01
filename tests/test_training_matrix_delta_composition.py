@@ -111,7 +111,7 @@ def test_matrix_level_delta_flattens_and_compiles_without_restating_parent(
             resolved_inputs=(),
             training_row_lowering_context=None,
         ),
-        method_registry=application_registry_bundle.training_methods,
+        method_registry=application_registry_bundle.training_programs,
         allow_inline_base=True,
         row_validator=lambda _payload, _row_id: None,
         row_lowerer=application_registry_bundle.row_lowerers.lower,
@@ -289,7 +289,7 @@ def test_assembly_dispatch_retains_delta_artifact_and_authored_identity(
     registry = AssemblyCompilerRegistry()
     register_training_run_matrix_compiler(
         registry,
-        method_registry=application_registry_bundle.training_methods,
+        method_registry=application_registry_bundle.training_programs,
         allow_inline_base=True,
         row_validator=lambda _payload, _row_id: None,
         row_lowerer=application_registry_bundle.row_lowerers.lower,
@@ -344,16 +344,14 @@ def test_public_emitter_and_schema_discovery_preserve_delta_authority(
         custody_root=tmp_path / "custody",
         materializer_commit="abc",
         dependency_lock_path=lock,
-        method_registry=application_registry_bundle.training_methods,
+        method_registry=application_registry_bundle.training_programs,
         allow_inline_base=True,
         row_validator=lambda _payload, _row_id: None,
         row_lowerer=application_registry_bundle.row_lowerers.lower,
     )
 
     assert json.loads(authored_path.read_text(encoding="utf-8")) == (
-        TrainingRunMatrixDeltaSpec.model_validate(child).model_dump(
-            mode="json", exclude_none=True
-        )
+        TrainingRunMatrixDeltaSpec.model_validate(child).model_dump(mode="json", exclude_none=True)
     )
     assert storage.intent_hash == training_matrix_delta_envelope_hash(
         TrainingRunMatrixDeltaSpec.model_validate(child)

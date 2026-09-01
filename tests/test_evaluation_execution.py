@@ -324,7 +324,6 @@ def test_evaluation_states_unknown_container_version_rejected(tmp_path: Path):
         role=EVALUATION_STATES_ARTIFACT_ROLE,
         logical_name="bad-version.states.npz",
         media_type=EVALUATION_STATES_MEDIA_TYPE,
-        suffix=".npz",
         metadata={
             "schema_id": "feedbax.manifest.evaluation_states_container",
             "schema_version": "feedbax.manifest.evaluation_states_container.v0",

@@ -9,6 +9,7 @@ to interact with environments and tasks.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -99,12 +100,8 @@ class EnvironmentProtocol(Protocol):
 
 
 @runtime_checkable
-class TaskProtocol(Protocol):
-    """Task interface for trainers.
-
-    Describes the contract that a task object must fulfill so that a training
-    loop can run without knowing the concrete task type.
-    """
+class TrialSourceProtocol(Protocol):
+    """Resolved trial production without objective ownership."""
 
     def sample_trial(
         self,
@@ -134,6 +131,11 @@ class TaskProtocol(Protocol):
         """
         ...
 
+
+@runtime_checkable
+class ObjectiveProtocol(Protocol):
+    """Resolved objective computation without trial-production ownership."""
+
     def compute_loss(
         self,
         states: PyTree,
@@ -152,3 +154,20 @@ class TaskProtocol(Protocol):
             A TermTree containing scalar loss values and their components.
         """
         ...
+
+
+@dataclass(frozen=True)
+class ResolvedTaskContracts:
+    """Authoring convenience pairing two independently resolved contracts."""
+
+    trials: TrialSourceProtocol
+    objective: ObjectiveProtocol
+
+
+def resolve_task_contracts(task: Any) -> ResolvedTaskContracts:
+    """Project a convenient task object into distinct runtime contracts."""
+    if not isinstance(task, TrialSourceProtocol):
+        raise TypeError("task does not satisfy TrialSourceProtocol")
+    if not isinstance(task, ObjectiveProtocol):
+        raise TypeError("task does not satisfy ObjectiveProtocol")
+    return ResolvedTaskContracts(trials=task, objective=task)

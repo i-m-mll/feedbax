@@ -48,9 +48,9 @@ from equinox import AbstractVar, Module
 from jax_cookbook.misc import moving_avg, softmin
 from jaxtyping import Array, ArrayLike, Float, PyTree
 
-from feedbax.config.mapping import WhereDict
 from feedbax.runtime.graph import Component
-from feedbax.config.utils import get_unique_label
+from feedbax.runtime.mapping import WhereDict
+from feedbax.runtime.naming import get_unique_label
 from feedbax.runtime.state import State
 
 if TYPE_CHECKING:

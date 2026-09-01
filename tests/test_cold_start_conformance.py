@@ -11,7 +11,7 @@ entire cold start through that installation and nothing else:
 2. tens of lines of hand-authored content — one science plugin, one base spec,
    one envelope varying it — and nothing else;
 3. ``feedbax preflight-experiment-envelope`` to compile, the public planning
-   API to derive the plan, and ``feedbax fulfill-experiment-envelope`` to run it;
+   API to derive the plan, and ``feedbax execute-experiment-workflow`` to run it;
 4. ``feedbax check-project-science-surface`` to prove the project grew no
    machinery, read from a ratified baseline ref rather than the working tree.
 
@@ -686,9 +686,9 @@ def test_one_cycle_compiles_plans_and_fulfils_through_the_installed_cli(
             "-c",
             (
                 "import json, sys; "
-                "from feedbax.analysis.fulfillment_experiment import "
-                "plan_experiment_envelope; "
-                "plan, index = plan_experiment_envelope("
+                "from feedbax.workflow.experiment import "
+                "plan_experiment_workflow; "
+                "plan, index = plan_experiment_workflow("
                 "sys.argv[1], output_directory=sys.argv[2]); "
                 "print(json.dumps({'target': plan.target.text, "
                 "'envelopes': len(index.envelopes)}))"
@@ -704,7 +704,7 @@ def test_one_cycle_compiles_plans_and_fulfils_through_the_installed_cli(
     }
 
     fulfil = [
-        "fulfill-experiment-envelope",
+        "execute-experiment-workflow",
         "wide-tally",
         "--out-dir",
         output_directory,
@@ -737,7 +737,7 @@ def test_an_unknown_target_is_a_stable_refusal_rather_than_a_crash(
 ) -> None:
     refused = authored.cli(
         [
-            "fulfill-experiment-envelope",
+            "execute-experiment-workflow",
             "no-such-artifact",
             "--out-dir",
             str(authored.declaration["output_directory"]),

@@ -48,7 +48,6 @@ def _write_run_tree(root: Path) -> dict[str, str]:
         root=root,
         role="evaluation_states",
         logical_name="states.npz",
-        suffix=".npz",
         metadata={
             "schema_id": "feedbax.manifest.evaluation_states_container",
             "schema_version": "feedbax.manifest.evaluation_states_container.v1",
@@ -77,7 +76,6 @@ def _write_run_tree(root: Path) -> dict[str, str]:
         role="data_product",
         logical_name="analysis.json",
         media_type="application/json",
-        suffix=".json",
     )
     analysis = AnalysisRunManifest(
         id="feedbax-analysis-run:packet-source",
@@ -101,7 +99,6 @@ def _write_run_tree(root: Path) -> dict[str, str]:
         role="report_render",
         logical_name="report.md",
         media_type="text/markdown",
-        suffix=".md",
     )
     report = ReportManifest(
         id="feedbax-report:packet-source",

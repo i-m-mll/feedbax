@@ -31,6 +31,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3,
+    EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V4,
     EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID,
     EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
     EXPERIMENT_ENVELOPE_FAMILY,
@@ -41,6 +42,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+    EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
     EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS,
     LAYER_OUTPUT_CONTRACTS,
     ROOT_TRAINING_AUTHORITY_SCHEMA_ID,
@@ -85,6 +87,18 @@ def _parse(document: dict[str, Any]) -> Any:
 
 
 def _minimal(**layer: Any) -> dict[str, Any]:
+    analysis = layer.get("analysis")
+    if isinstance(analysis, dict) and isinstance(analysis.get("subjects"), list):
+        layer = {
+            **layer,
+            "analysis": {
+                **analysis,
+                "subjects": [
+                    {**subject, "binding": subject.get("binding", "single_receipt")}
+                    for subject in analysis["subjects"]
+                ],
+            },
+        }
     return {
         "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
         "name": "probe",
@@ -115,29 +129,32 @@ _ROLE_CONTRACT: dict[str, Any] = {
 # -- the family and its version boundary ----------------------------------
 
 
-def test_the_dialect_is_one_family_at_five_enumerated_versions() -> None:
+def test_the_dialect_is_one_family_at_six_enumerated_versions() -> None:
     assert EXPERIMENT_ENVELOPE_FAMILY == "feedbax.experiment_envelope"
     assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1 == "feedbax.experiment_envelope.v1"
     assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2 == "feedbax.experiment_envelope.v2"
     assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3 == "feedbax.experiment_envelope.v3"
     assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4 == "feedbax.experiment_envelope.v4"
     assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5 == "feedbax.experiment_envelope.v5"
-    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5
+    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6 == "feedbax.experiment_envelope.v6"
+    assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6
     assert EXPERIMENT_ENVELOPE_SUPPORTED_SCHEMA_VERSIONS == (
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
     )
     assert EXPERIMENT_ENVELOPE_MIGRATION_TABLE == {
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V3: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+        EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
     }
     assert EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION == (
-        "feedbax.experiment_envelope.compiler.v4"
+        "feedbax.experiment_envelope.compiler.v5"
     )
     assert EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1 == (
         "feedbax.experiment_envelope.compiler.v1"
@@ -161,6 +178,9 @@ def test_the_dialect_is_one_family_at_five_enumerated_versions() -> None:
         EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3
     )
     assert compiler_contract_version_for_schema(EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5) == (
+        EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V4
+    )
+    assert compiler_contract_version_for_schema(EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6) == (
         EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION
     )
 
@@ -169,7 +189,7 @@ def test_the_dialect_is_one_family_at_five_enumerated_versions() -> None:
     "schema",
     [
         "feedbax.experiment_envelope.v0",
-        "feedbax.experiment_envelope.v6",
+        "feedbax.experiment_envelope.v7",
         "quillon.study.v1",
         None,
     ],
@@ -281,14 +301,14 @@ def test_the_v1_to_current_migration_is_explicit_and_semantics_preserving() -> N
 
     migrated = migrate_experiment_envelope_payload(document)
 
-    assert migrated["schema"] == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5
+    assert migrated["schema"] == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6
     assert {key: value for key, value in migrated.items() if key != "schema"} == {
         key: value for key, value in document.items() if key != "schema"
     }
     # The migration changes the authored bytes, which is exactly why a compile
     # never applies it: the original document still parses, as itself.
     assert _parse(document).schema_ == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V1
-    assert _parse(migrated).schema_ == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5
+    assert _parse(migrated).schema_ == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6
 
 
 def test_the_v2_to_current_migration_only_restates_schema() -> None:
@@ -297,7 +317,7 @@ def test_the_v2_to_current_migration_only_restates_schema() -> None:
 
     migrated = migrate_experiment_envelope_payload(document)
 
-    assert migrated == {**document, "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5}
+    assert migrated == {**document, "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6}
 
 
 def test_the_v3_to_current_migration_only_restates_schema() -> None:
@@ -306,12 +326,12 @@ def test_the_v3_to_current_migration_only_restates_schema() -> None:
 
     migrated = migrate_experiment_envelope_payload(document)
 
-    assert migrated == {**document, "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5}
+    assert migrated == {**document, "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6}
 
 
 def test_migrating_an_unsupported_version_refuses_rather_than_guessing() -> None:
     document = _minimal(training={"rows_mode": "append", "tags": {"add": ["probe"]}})
-    document["schema"] = "feedbax.experiment_envelope.v6"
+    document["schema"] = "feedbax.experiment_envelope.v7"
 
     with pytest.raises(ExperimentEnvelopeRejection) as caught:
         migrate_experiment_envelope_payload(document)
@@ -323,6 +343,55 @@ def test_migrating_a_current_document_is_a_no_op() -> None:
     document = _minimal(training={"rows_mode": "append", "tags": {"add": ["probe"]}})
 
     assert migrate_experiment_envelope_payload(document) == document
+
+
+def test_v6_requires_analysis_binding_and_older_grammars_reject_it() -> None:
+    document = _minimal(
+        analysis={
+            "subjects": [
+                {
+                    "alias": "evaluation",
+                    "role": "evaluation",
+                    "ref": {"kind": "envelope", "alias": "matrix"},
+                }
+            ]
+        }
+    )
+    document["analysis"]["subjects"][0].pop("binding")
+    with pytest.raises(ExperimentEnvelopeRejection, match="explicit receipt binding"):
+        _parse(document)
+
+    older = {
+        **document,
+        "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+        "analysis": {
+            **document["analysis"],
+            "subjects": [
+                {**document["analysis"]["subjects"][0], "binding": "single_receipt"}
+            ],
+        },
+    }
+    with pytest.raises(ExperimentEnvelopeRejection, match="is .*v6.* grammar"):
+        _parse(older)
+
+
+def test_migration_makes_every_old_analysis_subject_explicitly_singular() -> None:
+    document = {
+        "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5,
+        "name": "analysis",
+        "analysis": {
+            "subjects": [
+                {
+                    "alias": "evaluation",
+                    "role": "evaluation",
+                    "ref": {"kind": "envelope", "alias": "matrix"},
+                }
+            ]
+        },
+    }
+    migrated = migrate_experiment_envelope_payload(document)
+    assert migrated["schema"] == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6
+    assert migrated["analysis"]["subjects"][0]["binding"] == "single_receipt"
 
 
 def _composition_root() -> dict[str, Any]:
@@ -1259,9 +1328,7 @@ class TestFigureMode:
             )
 
     def test_a_binding_without_its_key_addresses_nothing(self) -> None:
-        with pytest.raises(
-            ExperimentEnvelopeRejection, match="binding and binding_key together"
-        ):
+        with pytest.raises(ExperimentEnvelopeRejection, match="binding and binding_key together"):
             _parse(
                 _minimal(
                     figure={
@@ -1329,7 +1396,7 @@ class TestFigureMode:
 
 
 def test_the_report_layer_output_is_the_top_level_report_spec() -> None:
-    from feedbax.analysis.fulfillment_derivation import COMPILED_PRODUCT_KINDS
+    from feedbax.workflow.derivation import COMPILED_PRODUCT_KINDS
     from feedbax.contracts.experiment_envelope_dialect import REPORT_OUTPUT
     from feedbax.contracts.manifest import (
         REPORT_SPEC_SCHEMA_ID,
@@ -1670,9 +1737,7 @@ def _root_figure(
 def test_a_root_figure_input_states_a_ref_and_its_artifact_contract() -> None:
     envelope = _parse(
         _root_figure(
-            inputs=[
-                {"input_role": "summary", "ref": _ROOT_REF, "contract": _ROOT_CONTRACT}
-            ]
+            inputs=[{"input_role": "summary", "ref": _ROOT_REF, "contract": _ROOT_CONTRACT}]
         )
     )
 
@@ -1712,9 +1777,7 @@ def test_a_current_root_figure_contract_states_its_payload_name_explicitly() -> 
     contract = {key: value for key, value in _ROOT_CONTRACT.items() if key != "payload_name"}
     with pytest.raises(ExperimentEnvelopeRejection) as caught:
         _parse(
-            _root_figure(
-                inputs=[{"input_role": "summary", "ref": _ROOT_REF, "contract": contract}]
-            )
+            _root_figure(inputs=[{"input_role": "summary", "ref": _ROOT_REF, "contract": contract}])
         )
 
     assert caught.value.category is ExperimentEnvelopeRejectionCategory.MISSING_FIELD
@@ -1734,9 +1797,7 @@ def test_a_prior_grammar_stating_a_root_input_contract_is_refused_by_version() -
         _parse(
             _root_figure(
                 schema=EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
-                inputs=[
-                    {"input_role": "summary", "ref": _ROOT_REF, "contract": _ROOT_CONTRACT}
-                ],
+                inputs=[{"input_role": "summary", "ref": _ROOT_REF, "contract": _ROOT_CONTRACT}],
             )
         )
 
@@ -1774,9 +1835,7 @@ def test_a_prior_grammar_pinning_a_payload_schema_is_refused_by_version() -> Non
     assert EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5 in str(caught.value)
 
 
-@pytest.mark.parametrize(
-    "half", ["payload_schema_id", "payload_schema_version"]
-)
+@pytest.mark.parametrize("half", ["payload_schema_id", "payload_schema_version"])
 def test_a_figure_input_contract_pins_a_payload_schema_whole_or_not_at_all(half: str) -> None:
     with pytest.raises(ExperimentEnvelopeRejection, match="together or states neither"):
         _parse(
@@ -1832,7 +1891,7 @@ def test_a_non_root_v4_envelope_migrates_by_restating_its_version() -> None:
 
     migrated = migrate_experiment_envelope_payload(document)
 
-    assert migrated == {**document, "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5}
+    assert migrated == {**document, "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6}
 
 
 def test_a_row_expansion_v4_envelope_migrates_by_restating_its_version() -> None:
@@ -1855,4 +1914,4 @@ def test_a_row_expansion_v4_envelope_migrates_by_restating_its_version() -> None
 
     migrated = migrate_experiment_envelope_payload(document)
 
-    assert migrated == {**document, "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5}
+    assert migrated == {**document, "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6}

@@ -7,7 +7,7 @@ import numpy as np
 import equinox as eqx
 from equinox.nn import StateIndex
 
-from feedbax.config.mapping import WhereDict
+from feedbax.runtime.mapping import WhereDict
 from feedbax.runtime.graph import (
     Component,
     Graph,

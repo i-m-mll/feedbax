@@ -108,13 +108,6 @@ const pendingTrainingRun: TrainingRun = {
   scenarioId: 'scenario:train',
   planned: true,
   checkpointAvailable: false,
-  legacyCheckpoint: {
-    layout_id: 'rlrmp_eqx_stream_v0',
-    layout_name: 'RLRMP Equinox stream legacy checkpoint',
-    message: 'Checkpoint predates checkpoint custody; adoption required before Studio can load it.',
-    docs: 'docs/structure.md#legacy-checkpoint-adoption',
-    adoption_entrypoint: 'feedbax.training.legacy_checkpoint_adoption.adopt_legacy_checkpoint',
-  },
   sourceIssue: '9aa8ff2',
   provenanceId: 'feedbax-training-run:pending',
 };
@@ -133,7 +126,6 @@ beforeEach(() => {
   useWorkspaceStore.setState({
     workspace,
     lastTrainingExecutionPreparation: null,
-    lastTrainingLocalRunResult: null,
     lastPipelineMaterializationResult: null,
   });
   useRunStore.setState({
@@ -330,10 +322,6 @@ describe('useRunStore stage collection ownership', () => {
         scenario_id: 'scenario:train',
         source_issue: '9aa8ff2',
         provenance_id: pendingTrainingRun.id,
-        legacy_checkpoint: expect.objectContaining({
-          layout_id: 'rlrmp_eqx_stream_v0',
-          docs: 'docs/structure.md#legacy-checkpoint-adoption',
-        }),
         final_validation_loss: 0.25,
       }),
     });
@@ -346,10 +334,6 @@ describe('useRunStore stage collection ownership', () => {
       batchSize: 8,
       rampDurationSteps: 80,
       checkpointAvailable: false,
-      legacyCheckpoint: expect.objectContaining({
-        layout_id: 'rlrmp_eqx_stream_v0',
-        docs: 'docs/structure.md#legacy-checkpoint-adoption',
-      }),
       sourceIssue: '9aa8ff2',
       provenanceId: pendingTrainingRun.id,
       uri: pendingTrainingRun.uri,
@@ -365,10 +349,6 @@ describe('useRunStore stage collection ownership', () => {
       stageId: 'stage:train',
       scenarioId: 'scenario:train',
       checkpointAvailable: false,
-      legacyCheckpoint: expect.objectContaining({
-        layout_id: 'rlrmp_eqx_stream_v0',
-        adoption_entrypoint: 'feedbax.training.legacy_checkpoint_adoption.adopt_legacy_checkpoint',
-      }),
       sourceIssue: '9aa8ff2',
       provenanceId: pendingTrainingRun.id,
       uri: pendingTrainingRun.uri,

@@ -78,11 +78,11 @@ def test_graph_ui_state_accepts_payloads_without_assembly_view():
 def test_create_graph_persists_default_workspace(tmp_path):
     service = GraphService(storage_dir=tmp_path)
 
-    record = service.create_graph(_graph(), _ui_state())
+    record = service.create_graph(_graph())
 
     workspace = record.project.workspace
     assert workspace is not None
-    assert workspace.schema_version == "feedbax.spec.studio.workspace.v1"
+    assert workspace.schema_version == "feedbax.spec.studio.workspace.v2"
     assert workspace.active_stage_id == "stage:train"
     assert [stage.kind for stage in workspace.stages] == [
         "train",
@@ -93,8 +93,8 @@ def test_create_graph_persists_default_workspace(tmp_path):
 
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
     train_scenario = workspace.scenarios[train_stage.scenario_id]
-    assert train_scenario.graph == record.project.graph
-    assert train_scenario.graph_ui_state == record.project.ui_state
+    assert "graph" not in train_scenario.model_fields_set
+    assert record.project.workspace_document.graph_ui_state == _ui_state()
 
     reloaded = service.get_graph(record.graph_id)
     assert reloaded.project.workspace == workspace
@@ -113,7 +113,6 @@ def test_studio_save_load_materializes_dynamic_ports_with_explicit_registry(tmp_
 
     record = service.create_graph(
         graph,
-        _ui_state(),
         component_registry=registry,
     )
     reloaded = service.get_graph(
@@ -128,7 +127,8 @@ def test_studio_save_load_materializes_dynamic_ports_with_explicit_registry(tmp_
         stage for stage in reloaded.project.workspace.stages if stage.kind == "train"
     )
     scenario = reloaded.project.workspace.scenarios[train_stage.scenario_id]
-    assert scenario.graph.nodes["mux"].input_ports == node.input_ports
+    assert "graph" not in scenario.model_fields_set
+    assert "/graph/nodes/mux" in reloaded.project.workspace_document.semantic_anchors
 
 
 def test_studio_save_load_preserves_read_only_array_value_envelopes(tmp_path):
@@ -153,16 +153,11 @@ def test_studio_save_load_preserves_read_only_array_value_envelopes(tmp_path):
         }
     )
 
-    record = service.create_graph(graph, _ui_state())
+    record = service.create_graph(graph)
     reloaded = service.get_graph(record.graph_id)
 
     assert reloaded.project.graph.nodes["fixture"].params["nested"]["matrix"] == declaration
-    assert (
-        reloaded.project.workspace.scenarios["scenario:train"]
-        .graph.nodes["fixture"]
-        .params["nested"]["matrix"]
-        == declaration
-    )
+    assert "graph" not in reloaded.project.workspace.scenarios["scenario:train"].model_fields_set
 
 
 def test_legacy_project_load_materializes_workspace(tmp_path):
@@ -217,10 +212,7 @@ def test_legacy_project_load_does_not_generate_network_subgraph(tmp_path):
     assert record.project.graph.input_bindings == {"input": ("network", "target")}
     assert record.project.graph.subgraphs is None
     train_stage = next(stage for stage in record.project.workspace.stages if stage.kind == "train")
-    train_graph = record.project.workspace.scenarios[train_stage.scenario_id].graph
-    assert train_graph is not None
-    assert train_graph.nodes["network"].type == "SimpleStagedNetwork"
-    assert train_graph.subgraphs is None
+    assert "graph" not in record.project.workspace.scenarios[train_stage.scenario_id].model_fields_set
 
 
 def test_project_load_migrates_workspace_task_binding_spec(tmp_path):
@@ -235,12 +227,14 @@ def test_project_load_migrates_workspace_task_binding_spec(tmp_path):
             "schema_version": "feedbax.spec.studio.workspace.v1",
             "label": "Legacy bindings",
             "active_stage_id": "stage:train",
+            "ui_state": {"top_pane": {"kind": "model"}},
             "stages": [
                 {
                     "id": "stage:train",
                     "kind": "train",
                     "label": "Train",
                     "scenario_id": "scenario:train",
+                    "ui_state": {"collapsed": True},
                 }
             ],
             "scenarios": {
@@ -250,6 +244,7 @@ def test_project_load_migrates_workspace_task_binding_spec(tmp_path):
                     "label": "Train",
                     "stage_id": "stage:train",
                     "graph": graph.model_dump(),
+                    "ui_state": {"workspace_view_state": {"mode": "model"}},
                     "task_binding_spec": {
                         "schema_version": "feedbax.studio.task_bindings.v1",
                         "exposed_outputs": [],
@@ -279,11 +274,23 @@ def test_project_load_migrates_workspace_task_binding_spec(tmp_path):
     assert scenario.task_binding_spec is not None
     assert scenario.task_binding_spec.schema_version == "feedbax.spec.studio.task_bindings.v2"
     assert scenario.task_binding_spec.bindings[0].source_data_id == "inputs"
+    assert record.project.workspace_document.workspace_ui_state == {
+        "top_pane": {"kind": "model"}
+    }
+    assert record.project.workspace_document.stage_ui_state == {
+        "stage:train": {"collapsed": True}
+    }
+    assert record.project.workspace_document.scenario_ui_state == {
+        "scenario:train": {"workspace_view_state": {"mode": "model"}}
+    }
+    assert "ui_state" not in record.project.workspace.model_dump()
+    assert "ui_state" not in record.project.workspace.stages[0].model_dump()
+    assert "ui_state" not in scenario.model_dump()
 
 
 def test_update_graph_preserves_explicit_workspace_extensions(tmp_path):
     service = GraphService(storage_dir=tmp_path)
-    record = service.create_graph(_graph(), _ui_state())
+    record = service.create_graph(_graph())
     workspace = record.project.workspace
     assert workspace is not None
     workspace.stages.append(
@@ -297,8 +304,7 @@ def test_update_graph_preserves_explicit_workspace_extensions(tmp_path):
 
     updated = service.update_graph(
         record.graph_id,
-        None,
-        None,
+        _graph(),
         workspace=StudioWorkspaceSpec.model_validate(workspace.model_dump()),
     )
 
@@ -310,33 +316,55 @@ def test_update_graph_preserves_explicit_workspace_extensions(tmp_path):
 
 def test_update_graph_bumps_and_checks_save_revision(tmp_path):
     service = GraphService(storage_dir=tmp_path)
-    record = service.create_graph(_graph(), _ui_state())
+    record = service.create_graph(_graph())
 
     assert record.project.metadata.save_revision == 0
 
     updated = service.update_graph(
         record.graph_id,
         _graph(),
-        _ui_state(),
         expected_save_revision=0,
         require_save_revision=True,
     )
 
     assert updated.project.metadata.save_revision == 1
     assert updated.project.graph.metadata is not None
-    assert updated.project.graph.metadata.save_revision == 1
+    assert updated.project.graph.metadata.save_revision == 0
 
     with pytest.raises(GraphSaveConflictError) as exc_info:
         service.update_graph(
             record.graph_id,
             _graph(),
-            _ui_state(),
             expected_save_revision=0,
             require_save_revision=True,
         )
 
     assert exc_info.value.current_revision == 1
     assert exc_info.value.expected_revision == 0
+
+
+def test_workspace_only_save_preserves_semantic_graph_revision(tmp_path) -> None:
+    service = GraphService(storage_dir=tmp_path)
+    record = service.create_graph(_graph())
+    original_root = record.project.workspace_document.semantic_root
+    moved_document = record.project.workspace_document.model_copy(
+        update={
+            "graph_ui_state": GraphUIState(
+                viewport={"x": 400, "y": 240, "zoom": 0.75}
+            )
+        }
+    )
+
+    updated = service.update_graph(
+        record.graph_id,
+        _graph(),
+        workspace_document=moved_document,
+        expected_save_revision=0,
+        require_save_revision=True,
+    )
+
+    assert updated.project.workspace_document.semantic_root == original_root
+    assert updated.project.graph == record.project.graph
 
 
 def test_legacy_project_load_defaults_save_revision_and_updates(tmp_path):
@@ -361,7 +389,6 @@ def test_legacy_project_load_defaults_save_revision_and_updates(tmp_path):
     updated = service.update_graph(
         graph_id,
         _graph(),
-        _ui_state(),
         expected_save_revision=0,
         require_save_revision=True,
     )
@@ -371,13 +398,14 @@ def test_legacy_project_load_defaults_save_revision_and_updates(tmp_path):
 
 def test_graph_update_api_rejects_stale_and_missing_revisions(tmp_path, monkeypatch):
     service = GraphService(storage_dir=tmp_path)
-    record = service.create_graph(_graph(), _ui_state())
+    record = service.create_graph(_graph())
     monkeypatch.setattr(graphs_api, "service", service)
     client = TestClient(create_app())
+    workspace_document = record.project.workspace_document.model_dump(mode="json")
 
     missing = client.put(
         f"/api/graphs/{record.graph_id}",
-        json={"graph": _graph().model_dump(), "ui_state": _ui_state().model_dump()},
+        json={"graph": _graph().model_dump(), "workspace_document": workspace_document},
     )
     assert missing.status_code == 409
     assert missing.json()["detail"]["current_save_revision"] == 0
@@ -385,7 +413,7 @@ def test_graph_update_api_rejects_stale_and_missing_revisions(tmp_path, monkeypa
     ok = client.put(
         f"/api/graphs/{record.graph_id}",
         headers={"If-Match": "0"},
-        json={"graph": _graph().model_dump(), "ui_state": _ui_state().model_dump()},
+        json={"graph": _graph().model_dump(), "workspace_document": workspace_document},
     )
     assert ok.status_code == 200
     assert ok.json()["data"]["metadata"]["save_revision"] == 1
@@ -393,7 +421,7 @@ def test_graph_update_api_rejects_stale_and_missing_revisions(tmp_path, monkeypa
     stale = client.put(
         f"/api/graphs/{record.graph_id}",
         headers={"If-Match": "0"},
-        json={"graph": _graph().model_dump(), "ui_state": _ui_state().model_dump()},
+        json={"graph": _graph().model_dump(), "workspace_document": workspace_document},
     )
     assert stale.status_code == 409
     assert stale.json()["detail"]["expected_save_revision"] == 0
@@ -402,15 +430,16 @@ def test_graph_update_api_rejects_stale_and_missing_revisions(tmp_path, monkeypa
 
 def test_beacon_update_uses_payload_save_revision(tmp_path, monkeypatch):
     service = GraphService(storage_dir=tmp_path)
-    record = service.create_graph(_graph(), _ui_state())
+    record = service.create_graph(_graph())
     monkeypatch.setattr(graphs_api, "service", service)
     client = TestClient(create_app())
+    workspace_document = record.project.workspace_document.model_dump(mode="json")
 
     stale = client.post(
         f"/api/graphs/{record.graph_id}/beacon",
         json={
             "graph": _graph().model_dump(),
-            "ui_state": _ui_state().model_dump(),
+            "workspace_document": workspace_document,
             "expected_save_revision": 1,
         },
     )
@@ -420,7 +449,7 @@ def test_beacon_update_uses_payload_save_revision(tmp_path, monkeypatch):
         f"/api/graphs/{record.graph_id}/beacon",
         json={
             "graph": _graph().model_dump(),
-            "ui_state": _ui_state().model_dump(),
+            "workspace_document": workspace_document,
             "expected_save_revision": 0,
         },
     )

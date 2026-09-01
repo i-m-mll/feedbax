@@ -23,14 +23,6 @@ from feedbax.integrations.provider import (
     registry_snapshot,
     validate_spec,
 )
-from feedbax.execution.backends import write_modal_app
-from feedbax.execution.models import ExecutionSpec
-from feedbax.execution.planning import (
-    load_execution_spec,
-    prepare_execution_plan,
-    write_execution_plan,
-)
-from feedbax.execution.local import run_local_execution
 from feedbax.plugins.composition import compose_application
 
 
@@ -76,25 +68,6 @@ def main(argv: list[str] | None = None) -> int:
         "root", nargs="?", help="Manifest root; defaults to FEEDBAX_RUNS_DIR or cwd"
     )
 
-    plan_parser = subparsers.add_parser("execution-plan", help="Prepare an execution plan")
-    plan_parser.add_argument("path", help="ExecutionSpec JSON path")
-    plan_parser.add_argument("--output", help="Optional path to write the plan JSON")
-
-    local_parser = subparsers.add_parser(
-        "run-local", help="Run an explicitly local ExecutionSpec and emit a manifest"
-    )
-    local_parser.add_argument("path", help="ExecutionSpec JSON path")
-    local_parser.add_argument("--root", help="Manifest root; defaults to FEEDBAX_RUNS_DIR")
-    local_parser.add_argument("--timeout", type=float, help="Optional command timeout in seconds")
-
-    modal_parser = subparsers.add_parser("modal-app", help="Render a Modal app from a spec")
-    modal_parser.add_argument("path", help="Modal ExecutionSpec JSON path")
-    modal_parser.add_argument(
-        "--output",
-        required=True,
-        help="Path to write the generated Modal app",
-    )
-
     staleness_parser = subparsers.add_parser(
         "staleness", help="Report stale contract identities in a composed spec"
     )
@@ -130,30 +103,13 @@ def main(argv: list[str] | None = None) -> int:
             _read_json(args.path),
             graph_spec=graph_spec,
             component_registry=registries.components,
-            training_method_registry=registries.training_methods,
+            training_method_registry=registries.training_programs,
             analysis_registry=registries.analysis_recipes,
         )
         _write_json(result)
         return 0 if result.valid else 1
     if args.command == "rebuild-index":
         _write_json({"index_path": str(rebuild_manifest_index(args.root))})
-        return 0
-    if args.command == "execution-plan":
-        spec = load_execution_spec(args.path)
-        plan = prepare_execution_plan(spec)
-        if args.output:
-            write_execution_plan(plan, args.output)
-        _write_json(plan)
-        return 0
-    if args.command == "run-local":
-        spec = ExecutionSpec.model_validate(_read_json(args.path))
-        result = run_local_execution(spec, root=args.root, timeout=args.timeout)
-        _write_json(result)
-        return 0 if result.return_code == 0 else result.return_code
-    if args.command == "modal-app":
-        spec = load_execution_spec(args.path)
-        output = write_modal_app(spec, args.output)
-        _write_json({"path": str(output)})
         return 0
     if args.command == "staleness":
         report = _composition_staleness_report(args.path)

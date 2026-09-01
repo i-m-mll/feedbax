@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import numpy as np
 from jaxtyping import Array, Float, PyTree, Shaped
 
-from feedbax.config.selectors import where_func_to_attr_str_tree
+from feedbax.runtime.where_selectors import where_func_to_attr_str_tree
 from feedbax.models.feedback import SimpleFeedbackState
 
 if TYPE_CHECKING:

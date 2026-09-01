@@ -31,6 +31,7 @@ from feedbax.persistence.artifact_custody import (
     open_immutable_artifact_blob_provider,
 )
 from feedbax.training.checkpoint_custody import (
+    CHECKPOINT_SET_NAME,
     materialize_checkpoint_custody_archive,
     publish_directory_no_replace,
 )
@@ -789,7 +790,12 @@ def _artifact_ref(resolved: ResolvedAssemblyInput) -> ArtifactRef:
 def _expected_files(uri: str | None, slots: Sequence[object]) -> set[str]:
     assert uri is not None
     parent = PurePosixPath(uri).parent
-    return {"latest.json", uri, *(str(parent / slot.relative_path) for slot in slots)}
+    return {
+        "latest.json",
+        uri,
+        str(parent / CHECKPOINT_SET_NAME),
+        *(str(parent / slot.relative_path) for slot in slots),
+    }
 
 
 def _file_manifest(root: Path, destination: Path, expected: set[str]) -> tuple[StagedInputFile, ...]:

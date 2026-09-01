@@ -72,7 +72,7 @@ persists into save state. The comment at `:2042-2047` cites Bug `5e8895e`, but
 that fix only addressed a registry-load race; the unconditional synthesis
 still fires. CLAUDE.md is explicit: "Absence of a subgraph is an error, not a
 condition to work around" and "No background construction." The backend build
-path (`feedbax/web/worker/execution.py` → `spec_to_graph`) honors the policy;
+path (`feedbax/web/worker/execution.py` → `compile_graph`) honors the policy;
 the frontend does not.
 
 Related: the frontend renders subgraph presence from `params._subgraph`
@@ -103,7 +103,7 @@ trust-corrosive finding in the report.
 ### 2.3 `param_schema_version` silently dropped on every normalize pass
 
 `normalize_graph_for_studio_authoring` strips `param_schema_version` on every
-create/update/load, even though `spec_to_graph` gates migration behavior on
+create/update/load, even though `compile_graph` gates migration behavior on
 it. The migration infrastructure itself is well-built (explicit
 `GRAPH_SPEC_SCHEMA_VERSION` v3, migration registry, hard error on unsupported
 versions) — this one pass undermines it. Looks like an oversight, not a
@@ -520,6 +520,6 @@ truth (no `useNodesState` dual-state); WS reconnect backoff; orchestration
 polling cleanup; nodeTypes hoisting; undo snapshot gating to drag-end; canvas
 selection surviving tab switches; subgraph breadcrumbs; multi-select
 move/delete; modal Escape consistency except AddLossTermModal; icon-button
-tooltip coverage outside the three named gaps; backend `spec_to_graph`
+tooltip coverage outside the three named gaps; backend `compile_graph`
 raising on missing subgraphs; graph-spec migration registry (v3, versioned,
 fail-closed).

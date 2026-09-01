@@ -44,11 +44,11 @@ from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, MECHANICS_DOMAIN_ID
 from feedbax.contracts.graph import ParamSchema
 from feedbax.contracts.representation import RepresentationSpec
 
-from .meta import ComponentMeta
+from .declarations import DeclaredComponent, declare_component
 
 
 class _Registry(Protocol):
-    def register(self, meta: ComponentMeta) -> None: ...
+    def register(self, meta: DeclaredComponent) -> None: ...
 
 
 _POSITIVE_PARAMS = {
@@ -152,10 +152,10 @@ def _element_meta(
     domain: str = ACAUSAL_DOMAIN_ID,
     representation: RepresentationSpec | None = None,
     param_schema: list[ParamSchema] | None = None,
-) -> ComponentMeta:
+) -> DeclaredComponent:
     probe = element_type("__probe__")
     port_names = sorted(probe.ports)
-    return ComponentMeta(
+    return declare_component(
         name=name or element_type.__name__,
         category=category,
         description=(inspect.getdoc(element_type) or f"{element_type.__name__} acausal element."),
@@ -181,7 +181,9 @@ def _literal_binding(value: Any, *, dim: int | None = None) -> dict[str, Any]:
     return binding
 
 
-def _param_binding(path: str, *, expected_type: str | None = None, dim: int | None = None) -> dict[str, Any]:
+def _param_binding(
+    path: str, *, expected_type: str | None = None, dim: int | None = None
+) -> dict[str, Any]:
     binding: dict[str, Any] = {"kind": "param_path", "path": path}
     if expected_type is not None:
         binding["expected_type"] = expected_type
@@ -315,9 +317,9 @@ def _multibody_representation(element_type: type[AcausalElement]) -> Representat
     return None
 
 
-def _adapter_metas() -> tuple[ComponentMeta, ...]:
+def _adapter_metas() -> tuple[DeclaredComponent, ...]:
     return (
-        ComponentMeta(
+        declare_component(
             name="ActuationInput",
             category="Boundary",
             description="Causal signal input to an acausal conserving source.",
@@ -346,7 +348,7 @@ def _adapter_metas() -> tuple[ComponentMeta, ...]:
             domain=ACAUSAL_DOMAIN_ID,
             builder=None,
         ),
-        ComponentMeta(
+        declare_component(
             name="SensorOutput",
             category="Boundary",
             description="Acausal measurement exposed as a causal signal output.",
@@ -379,7 +381,7 @@ def _adapter_metas() -> tuple[ComponentMeta, ...]:
             domain=ACAUSAL_DOMAIN_ID,
             builder=None,
         ),
-        ComponentMeta(
+        declare_component(
             name="BoundaryPort",
             category="Boundary",
             description="Named conserving port exposed by a nested acausal composite.",

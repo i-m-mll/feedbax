@@ -109,7 +109,8 @@ from feedbax.contracts.row_index import (
     RowSelectionErrorCode,
     expand_row_selector,
 )
-from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
+from feedbax.compiler import GraphDocument, compile_graph
+from feedbax.contracts.graphs.serialization import graph_to_spec
 from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
 from feedbax.contracts.manifest import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
@@ -167,9 +168,7 @@ from feedbax.plugins import (
     EVALUATION_BATCH_CONSUMERS,
     EVALUATION_PRODUCT_UNION_FINALIZERS,
     EVALUATION_RECIPES,
-    EXECUTION_PREPARATIONS,
-    ROW_LOWERERS,
-    TRAINING_METHODS,
+    TRAINING_PROGRAMS,
     BootstrapError,
     BootstrapErrorCode,
     FamilyRequirement,
@@ -298,14 +297,14 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
         # package lifecycle below proves the callback behavior through public
         # consumers rather than by calling resolved callbacks directly.
         if (
-            state.registry(TRAINING_METHODS).descriptor("feedbax_external_conformance/training/v1")
+            state.registry(TRAINING_PROGRAMS).program("feedbax_external_conformance/training/v1")
             is None
         ):
             raise AssertionError("external training descriptor was not registered")
-        if not state.registry(ROW_LOWERERS).available_keys():
+        if not state.bundle.row_lowerers.available_keys():
             raise AssertionError("external row lowerer was not registered")
         if (
-            state.registry(EXECUTION_PREPARATIONS).get("feedbax_external_conformance/training/v1")
+            state.bundle.execution_preparations.get("feedbax_external_conformance/training/v1")
             is None
         ):
             raise AssertionError("external execution preparation was not registered")
@@ -342,7 +341,7 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
             schema_version="feedbax_external_conformance.training.v1",
             payload={"gain": 3},
         )
-        resolved = state.registry(TRAINING_METHODS).resolve_execution(method_ref, payload)
+        resolved = state.registry(TRAINING_PROGRAMS).resolve_execution(method_ref, payload)
         if resolved.contract.method_ref != "feedbax_external_conformance/training/v1":
             raise AssertionError("external training resolution lost its method authority")
         authored_payload = {"gain": 3}
@@ -354,14 +353,18 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
             axis_coordinates={},
         )
         compiled = compile_training_method_authoring(
-            row, method_ref=method_ref, registry=state.registry(TRAINING_METHODS)
+            row, method_ref=method_ref, registry=state.registry(TRAINING_PROGRAMS)
         )
         if compiled.run_spec.metadata != {"fixture_gain": 3}:
             raise AssertionError("external training authoring did not invoke its typed hook")
-        lowerer = state.registry(ROW_LOWERERS)
+        lowerer = state.bundle.row_lowerers
         from .plugin import FIXTURE_LOWERER_IMPLEMENTATION_SHA256
 
-        registration = next(iter(lowerer.available_keys()))
+        registration = next(
+            key
+            for key in lowerer.available_keys()
+            if key[2] == "feedbax_external_conformance.lowerer"
+        )
         lowerer_payload = {
             "gain": 4,
             "schema_id": registration[0],
@@ -384,7 +387,7 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
         )
         if lowered is None or lowered.execution_payload != {"fixture_lowered_gain": 4}:
             raise AssertionError("external row lowerer was not invoked")
-        prepared = state.registry(EXECUTION_PREPARATIONS).prepare(
+        prepared = state.bundle.execution_preparations.prepare(
             ExecutionPreparationRequest(
                 run_spec=compiled.run_spec,
                 method_payload=resolved.payload,
@@ -703,12 +706,7 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
                 COMPONENTS.family: (EXTERNAL_DYNAMIC_COMPONENT,),
                 DRIVERS.family: ("fixture:driver",),
                 FIXTURE_RECORDS.family: ("foundation",),
-                TRAINING_METHODS.family: ("feedbax_external_conformance/training/v1",),
-                ROW_LOWERERS.family: (
-                    "('feedbax_external_conformance.training', 'v1', "
-                    "'feedbax_external_conformance.lowerer', 'v1')",
-                ),
-                EXECUTION_PREPARATIONS.family: ("feedbax_external_conformance/training/v1",),
+                TRAINING_PROGRAMS.family: ("feedbax_external_conformance/training/v1",),
                 ANALYSIS_RECIPES.family: ("feedbax_external_conformance.analysis",),
                 EVALUATION_RECIPES.family: ("feedbax_external_conformance.evaluation",),
                 EVALUATION_BATCH_CONSUMERS.family: ("feedbax_external_conformance.consumer@v1",),
@@ -724,9 +722,7 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
                 COMPONENTS.family: "1",
                 DRIVERS.family: "1",
                 FIXTURE_RECORDS.family: "1",
-                TRAINING_METHODS.family: "1",
-                ROW_LOWERERS.family: "1",
-                EXECUTION_PREPARATIONS.family: "1",
+                TRAINING_PROGRAMS.family: "1",
                 ANALYSIS_RECIPES.family: "1",
                 EVALUATION_RECIPES.family: "1",
                 EVALUATION_BATCH_CONSUMERS.family: "1",
@@ -942,7 +938,7 @@ def check_dynamic_component_ports(*, entry_points: Iterable[object] | None = Non
     if node.output_ports != ["output"]:
         raise AssertionError("external fixed output was not materialized")
 
-    graph = spec_to_graph(graph_spec, component_registry=registry)
+    graph = compile_graph(GraphDocument(graph=graph_spec), registry).graph
     runtime_node = graph.nodes["external"]
     if tuple(runtime_node.input_ports) != tuple(node.input_ports):
         raise AssertionError("runtime dynamic port order drifted from the materialized schema")
@@ -967,7 +963,7 @@ def check_dynamic_component_ports(*, entry_points: Iterable[object] | None = Non
         }
     )
     try:
-        spec_to_graph(invalid, component_registry=registry)
+        compile_graph(GraphDocument(graph=invalid), registry)
     except ValueError as exc:
         if "dynamic port layout mismatch" not in str(exc):
             raise
@@ -1153,7 +1149,10 @@ def check_component_param_array_values() -> bool:
             )
         }
     )
-    runtime = spec_to_graph(graph_spec, ComponentRegistry(load_user_components=False))
+    runtime = compile_graph(
+        GraphDocument(graph=graph_spec),
+        ComponentRegistry(load_user_components=False),
+    ).graph
     if runtime.nodes["plant"].initial_delta_A != ((0.0, 0.5), (0.0, 0.0)):
         raise AssertionError("GraphSpec did not materialize sparse component params")
     if graph_to_spec(runtime).nodes["plant"].params["delta_A"] != sparse.model_dump(mode="json"):

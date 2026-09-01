@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState, type DragEvent } from 'react
 import clsx from 'clsx';
 import {
   Activity,
-  AlertTriangle,
   BarChart3,
   Check,
   CheckCircle2,
@@ -82,7 +81,7 @@ import {
 } from '@/utils/pipelineCollections';
 import {
   executionBackendForTarget,
-  stageExecutionSpecWithProtocolPatch,
+  stageMetadataWithExecutionTarget,
   stageExecutionTarget,
   trainingProtocolSnapshot,
   trainingSpecWithProtocolPatch,
@@ -165,6 +164,7 @@ export function TrainCollectionPanel() {
     (state) => state.updateActiveScenarioTrainingSpec
   );
   const markDirty = useGraphStore((state) => state.markDirty);
+  const rootGraph = useGraphStore((state) => state.graph);
   const trainingProgress = useTrainingStore((state) => state.progress);
   const trainingJobId = useTrainingStore((state) => state.jobId);
   const lossHistory = useTrainingStore((state) => state.lossHistory);
@@ -224,8 +224,8 @@ export function TrainCollectionPanel() {
   const metrics = useMemo(() => scenarioMetricSpecs(workspace), [workspace]);
   const lineage = useMemo(() => buildLineageProjection(workspace), [workspace]);
   const currentSpecHashes = useMemo(
-    () => currentDraftSpecHashesForScenario(trainScenario),
-    [trainScenario]
+    () => currentDraftSpecHashesForScenario(trainScenario, rootGraph),
+    [rootGraph, trainScenario]
   );
   const rows = useMemo(
     () =>
@@ -339,9 +339,9 @@ export function TrainCollectionPanel() {
       progressBindingsForRuns(
         rows,
         trainingProgress,
-        trainingJobId ?? lastTrainingExecutionPreparation?.plan.job_id ?? null
+        trainingJobId ?? lastTrainingExecutionPreparation?.invocation.invocation_id ?? null
       ),
-    [lastTrainingExecutionPreparation?.plan.job_id, rows, trainingJobId, trainingProgress]
+    [lastTrainingExecutionPreparation?.invocation.invocation_id, rows, trainingJobId, trainingProgress]
   );
 
   useEffect(() => {
@@ -510,6 +510,7 @@ export function TrainCollectionPanel() {
       setWorkspace(nextWorkspace);
       const preparation = await prepareStudioTrainingExecution({
         workspace: nextWorkspace,
+        graph: useGraphStore.getState().capturePersistedGraph().graph,
         stage_id: stageId,
         backend: 'local',
         issues: ['3a6d02e'],
@@ -756,6 +757,7 @@ export function TrainCollectionPanel() {
     try {
       const preparation = await prepareStudioTrainingExecution({
         workspace,
+        graph: useGraphStore.getState().capturePersistedGraph().graph,
         stage_id: trainItem.stageId,
         backend,
         queue_target: launchTarget,
@@ -802,9 +804,7 @@ export function TrainCollectionPanel() {
       updateStageDraft(
         trainStage.id,
         {
-          execution_spec: stageExecutionSpecWithProtocolPatch(trainStage, {
-            compute_target: target,
-          }),
+          metadata: stageMetadataWithExecutionTarget(trainStage, target),
         },
         'training_compute_target_changed'
       );
@@ -1277,9 +1277,7 @@ export function EvaluateCollectionPanel() {
       updateStageDraft(
         evalStage.id,
         {
-          execution_spec: stageExecutionSpecWithProtocolPatch(evalStage, {
-            compute_target: target,
-          }),
+          metadata: stageMetadataWithExecutionTarget(evalStage, target),
         },
         'evaluation_compute_target_changed'
       );
@@ -1550,7 +1548,6 @@ function workspaceWithTrainingSnapshot(
   manifest: Record<string, unknown>,
   axisCoordinates: Record<string, unknown>
 ): StudioWorkspaceSpec {
-  const graphSpec = specPayloadInlineValue(manifest, 'graph_spec');
   const trainingSpec = specPayloadInlineValue(manifest, 'training_spec');
   const taskSpec = specPayloadInlineValue(manifest, 'task_spec');
   const taskBindingSpec = specPayloadInlineValue(manifest, 'task_binding_spec');
@@ -1566,7 +1563,6 @@ function workspaceWithTrainingSnapshot(
         id === scenarioId
           ? {
               ...scenario,
-              graph: (graphSpec ?? scenario.graph) as typeof scenario.graph,
               training_spec: trainingSpec as unknown as typeof scenario.training_spec,
               task_spec: taskSpec as unknown as typeof scenario.task_spec,
               task_binding_spec:
@@ -3050,16 +3046,11 @@ function TrainingRunRow({
         : row.status === 'pending'
           ? 'Pending'
           : 'Not recorded');
-  const checkpoint = row.legacyCheckpoint
-    ? 'Adoption required'
-    : row.checkpointAvailable && row.warmupBatches !== null
+  const checkpoint = row.checkpointAvailable && row.warmupBatches !== null
       ? row.warmupBatches.toLocaleString()
       : row.checkpointAvailable
         ? 'Available'
         : 'None';
-  const checkpointTitle = row.legacyCheckpoint
-    ? `${row.legacyCheckpoint.message} Docs: ${row.legacyCheckpoint.docs ?? 'docs/structure.md#legacy-checkpoint-adoption'}`
-    : checkpoint;
   const complete = row.status === 'completed';
 
   return (
@@ -3142,12 +3133,8 @@ function TrainingRunRow({
         />
       ))}
       <div className="flex items-center gap-1 text-slate-600">
-        {row.legacyCheckpoint ? (
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600" />
-        ) : (
-          !row.checkpointAvailable && <XCircle className="h-3.5 w-3.5 shrink-0 text-red-500" />
-        )}
-        <span className="truncate" title={checkpointTitle}>{checkpoint}</span>
+        {!row.checkpointAvailable && <XCircle className="h-3.5 w-3.5 shrink-0 text-red-500" />}
+        <span className="truncate" title={checkpoint}>{checkpoint}</span>
       </div>
       <div className="flex items-center gap-1">
         <button
@@ -3377,8 +3364,8 @@ function RunDetailPane({
       </div>
       <button
         type="button"
-        disabled={Boolean(run.legacyCheckpoint) || !run.checkpointAvailable || !run.uri}
-        title={run.legacyCheckpoint?.message ?? 'Checkpoint'}
+        disabled={!run.checkpointAvailable || !run.uri}
+        title="Checkpoint"
         onClick={() => onDownloadCheckpoint(run)}
         className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
       >
@@ -3600,7 +3587,7 @@ function ExecutionTarget({
       id: 'runpod',
       icon: Activity,
       title: 'RunPod',
-      detail: 'GPU pod execution plan',
+      detail: 'Inert GPU backend plan',
     },
     {
       id: 'manual',

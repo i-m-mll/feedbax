@@ -9,14 +9,11 @@ from pydantic import ValidationError
 
 from feedbax.bin.studio_pipeline import main as studio_pipeline_main
 from feedbax.studio.execution import (
-    STUDIO_TRAINING_CONTRACT_FILES,
     StudioPipelineMaterializationRequest,
     StudioExecutionPreparationError,
     StudioEvaluationCheckpointPolicy,
     StudioEvaluationMatrixRequest,
-    StudioTrainingLocalRunRequest,
     StudioTrainingExecutionRequest,
-    _build_execution_spec,
     _build_pending_training_manifest,
     _write_pending_training_manifest,
     _write_pending_training_manifest_for_matrix_row,
@@ -24,7 +21,6 @@ from feedbax.studio.execution import (
     prepare_studio_training_execution,
     preview_studio_evaluation_matrix,
     run_studio_evaluation_local_execution,
-    run_studio_training_local_execution,
     stage_studio_evaluation_matrix,
 )
 from feedbax.analysis.evaluation import (
@@ -35,6 +31,11 @@ from feedbax.analysis.specs import (
 )
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.plugins.bootstrap import BootstrapState
+from feedbax.orchestration.realization import (
+    BackendRealizationRequest,
+    ExpectedCost,
+    MachineShape,
+)
 from feedbax.contracts.manifest import (
     CheckpointSelectionManifest,
     EvaluationRunManifest,
@@ -90,7 +91,7 @@ def _graph() -> GraphSpec:
 
 
 def _workspace():
-    workspace = build_default_studio_workspace(label="Studio execution", graph=_graph())
+    workspace = build_default_studio_workspace(label="Studio execution")
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.training_spec = {
@@ -151,6 +152,45 @@ def _workspace():
         )
     )
     return workspace
+
+
+def _runpod_realization(job_id: str) -> BackendRealizationRequest:
+    """Build an inert paid-capable realization for Studio preparation tests."""
+    return BackendRealizationRequest(
+        adapter_id="feedbax.orchestration.runpod",
+        adapter_version="1",
+        capability_variant="engine-acquired",
+        code_bundle_id="git:feedbax@test",
+        environment_bundle_id="uv-lock:sha256:" + "3" * 64,
+        command=("uv", "run", "feedbax-worker", "train"),
+        machine=MachineShape(accelerator_type="NVIDIA A40", accelerator_count=1),
+        network_requirements=("egress:https",),
+        secret_names=("runpod_api_key",),
+        timeout_seconds=3600,
+        retry_classification="same-plan",
+        expected_cost=ExpectedCost(maximum=2, basis="test-only ceiling"),
+        billable_confirmation_class="authenticated-effect-reservation",
+        configuration={"job_id": job_id},
+        external_effect_key=f"studio:{job_id}",
+    )
+
+
+def _staged_training_workspace(
+    workspace,
+    *,
+    job_id: str,
+    registry_bundle,
+):
+    """Stage a training invocation without executing its local backend plan."""
+    return prepare_studio_training_execution(
+        StudioTrainingExecutionRequest(
+            workspace=workspace,
+            graph=_graph(),
+            backend="local",
+            job_id=job_id,
+        ),
+        registry_bundle=registry_bundle,
+    ).workspace
 
 
 def _workspace_with_analysis_type(analysis_type: str):
@@ -222,9 +262,10 @@ def studio_default_analysis_recipe(registry_bundle):
     yield
 
 
-def test_prepare_studio_training_execution_lowers_workspace_to_provider_plan(registry_bundle):
+def test_prepare_studio_training_execution_binds_invocation_and_backend_plan(registry_bundle):
     request = StudioTrainingExecutionRequest(
         workspace=_workspace(),
+        graph=_graph(),
         job_id="studio-plan",
         local_cwd="/tmp/feedbax-studio",
         issues=["ddd3758"],
@@ -234,57 +275,72 @@ def test_prepare_studio_training_execution_lowers_workspace_to_provider_plan(reg
 
     assert prepared.stage_id == "stage:train"
     assert prepared.scenario_id == "scenario:train"
-    assert prepared.execution_spec.kind == "training"
-    assert prepared.execution_spec.backend == "local"
-    assert prepared.execution_spec.issues == ["ddd3758"]
-    assert prepared.execution_spec.metadata["studio"]["workspace_id"] == prepared.workspace.id
-    assert prepared.execution_spec.metadata["studio"]["training_spec"]["n_batches"] == 25
-    task_binding_spec = prepared.execution_spec.metadata["studio"]["task_binding_spec"]
-    assert task_binding_spec["schema_version"] == "feedbax.spec.studio.task_bindings.v2"
-    assert task_binding_spec["exposed_data"][0]["id"] == "inputs"
-    assert "exposed_outputs" not in task_binding_spec
-    assert (
-        task_binding_spec["bindings"][0]["source_data_id"],
-        task_binding_spec["bindings"][0]["target_node_id"],
-        task_binding_spec["bindings"][0]["target_port"],
-    ) == ("inputs", "network", "input")
-    assert (
-        "source_output_id"
-        not in prepared.execution_spec.metadata["studio"]["task_binding_spec"]["bindings"][0]
-    )
-    assert (
-        prepared.execution_spec.metadata["command_contract"]["expected_files"]
-        == prepared.execution_spec.artifact_policy.tracked_paths
-    )
-    assert (
-        prepared.execution_spec.metadata["command_contract"]["expected_files"][-2]
-        == "task-binding-spec.json"
-    )
-    assert (
-        prepared.execution_spec.metadata["command_contract"]["current_command_role"]
-        == "materialize_mvp_training_result"
-    )
-    assert (
-        prepared.execution_spec.metadata["command_contract"]["future_command_role"]
-        == "launch_training_runner"
-    )
-    assert set(prepared.execution_spec.metadata["studio"]["graph_spec"]["nodes"]) == {"network"}
-    assert prepared.plan.job_id == "studio-plan"
-    assert prepared.plan.run_directory == "/tmp/feedbax-studio/feedbax_runs/studio-plan"
-    assert any(route.uri == "training-spec.json" for route in prepared.plan.artifact_routes)
-    assert any("real JAX training runner" in warning for warning in prepared.plan.warnings)
+    assert prepared.invocation.operation["type_id"] == "feedbax.operation.train"
+    assert prepared.invocation.capabilities == ("training",)
+    assert prepared.backend_plan.backend_id == "local"
+    assert prepared.backend_plan.configuration["job_id"] == "studio-plan"
+    assert prepared.backend_plan.configuration["cwd"] == "/tmp/feedbax-studio"
 
     train_stage = next(stage for stage in prepared.workspace.stages if stage.kind == "train")
     assert train_stage.status == "ready"
     assert train_stage.validation.valid is True
-    assert train_stage.execution_spec["job_id"] == "studio-plan"
-    assert train_stage.artifact_refs[0].role == "execution_plan"
-    assert train_stage.manifest_refs[0].kind == "ExecutionPlan"
+    assert train_stage.execution_spec["schema_id"] == "feedbax.spec.invocation"
+    assert "backend_id" not in train_stage.execution_spec
+    assert train_stage.artifact_refs[0].role == "backend_plan"
+    assert train_stage.manifest_refs[0].kind == "BackendPlan"
 
     future_stage = next(
         stage for stage in prepared.workspace.stages if stage.id == "stage:future-report-packaging"
     )
     assert future_stage.metadata["later_product_surface"]["keep"] is True
+
+
+def test_prepare_studio_gcp_execution_emits_inert_paid_backend_plan(registry_bundle):
+    request = StudioTrainingExecutionRequest(
+        workspace=_workspace(),
+        graph=_graph(),
+        backend="gcp",
+        job_id="studio-gcp-plan",
+        backend_realization=BackendRealizationRequest(
+            adapter_id="feedbax.orchestration.gcp-controller",
+            adapter_version="1",
+            capability_variant="controller-acquired",
+            code_bundle_id="git:feedbax@signed-revision",
+            environment_bundle_id="uv-lock:" + "d" * 64,
+            command=("feedbax", "worker"),
+            machine=MachineShape(cpu_count=4, memory_gib=15),
+            network_requirements=("egress:https",),
+            secret_names=("gcp_application_credentials",),
+            timeout_seconds=300,
+            retry_classification="same-plan",
+            expected_cost=ExpectedCost(maximum=1.0, basis="one-hour operator ceiling"),
+            billable_confirmation_class="authenticated-effect-reservation",
+            external_effect_key="studio-gcp-plan-effect",
+            configuration={
+                "job_id": "studio-gcp-plan",
+                "project": "inert-project",
+                "zone": "northamerica-northeast1-a",
+                "machine_type": "n1-standard-4",
+                "preemptible": True,
+                "worker_port": 8765,
+                "install_spec": {
+                    "schema_version": "feedbax.orchestration.install.v1",
+                    "source": "git",
+                    "repository": "https://github.com/mlll-io/feedbax.git",
+                    "ref": "develop",
+                    "extras": [],
+                },
+            },
+        ),
+    )
+
+    prepared = prepare_studio_training_execution(request, registry_bundle=registry_bundle)
+
+    assert prepared.backend_plan.backend_id == "gcp"
+    assert prepared.backend_plan.driver_capability_variant == "controller-acquired"
+    assert prepared.backend_plan.expected_cost.maximum == 1.0
+    assert prepared.backend_plan.invocation_id == prepared.invocation.invocation_id
+    assert "provider_resource_handle" not in prepared.backend_plan.model_dump(mode="json")
 
 
 def test_studio_training_plan_endpoint_returns_updated_workspace(studio_client):
@@ -294,6 +350,7 @@ def test_studio_training_plan_endpoint_returns_updated_workspace(studio_client):
         "/api/provider/studio/training/plan",
         json={
             "workspace": _workspace().model_dump(mode="json", exclude_none=True),
+            "graph": _graph().model_dump(mode="json", exclude_none=True),
             "job_id": "http-studio-plan",
             "issues": ["ddd3758"],
         },
@@ -301,13 +358,13 @@ def test_studio_training_plan_endpoint_returns_updated_workspace(studio_client):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["plan"]["job_id"] == "http-studio-plan"
-    assert payload["execution_spec"]["metadata"]["studio"]["stage_id"] == "stage:train"
+    assert payload["backend_plan"]["configuration"]["job_id"] == "http-studio-plan"
+    assert payload["invocation"]["operation_key"].startswith("campaign:")
     train_stage = next(
         stage for stage in payload["workspace"]["stages"] if stage["kind"] == "train"
     )
     assert train_stage["status"] == "ready"
-    assert train_stage["artifact_refs"][0]["role"] == "execution_plan"
+    assert train_stage["artifact_refs"][0]["role"] == "backend_plan"
 
 
 def test_prepare_studio_training_execution_writes_idempotent_pending_manifest(
@@ -318,6 +375,7 @@ def test_prepare_studio_training_execution_writes_idempotent_pending_manifest(
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     request = StudioTrainingExecutionRequest(
         workspace=_workspace(),
+        graph=_graph(),
         job_id="studio-plan",
         local_cwd="/tmp/feedbax-studio",
         issues=["9aa8ff2"],
@@ -359,7 +417,7 @@ def test_prepare_studio_training_execution_expands_sweep_matrix_to_pending_run_s
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     workspace = _workspace()
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
-    train_stage.execution_spec = {"protocol": {"compute_target": "runpod"}}
+    train_stage.metadata = {"backend_realization": {"execution_target": "runpod"}}
     train_stage.selection_spec["matrix"] = {
         "name": "Loss weight sweep",
         "axes": [
@@ -374,6 +432,7 @@ def test_prepare_studio_training_execution_expands_sweep_matrix_to_pending_run_s
     }
     request = StudioTrainingExecutionRequest(
         workspace=workspace,
+        graph=_graph(),
         job_id="studio-plan",
         local_cwd="/tmp/feedbax-studio",
         issues=["c199a9c"],
@@ -422,7 +481,7 @@ def test_prepare_studio_training_execution_uses_queue_subset_target_not_stale_st
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     workspace = _workspace()
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
-    train_stage.execution_spec = {"protocol": {"compute_target": "gcp"}}
+    train_stage.metadata = {"backend_realization": {"execution_target": "gcp"}}
     runpod_ref = StudioManifestRef(
         kind="TrainingRunManifest",
         id="train:runpod",
@@ -451,8 +510,10 @@ def test_prepare_studio_training_execution_uses_queue_subset_target_not_stale_st
     prepared = prepare_studio_training_execution(
         StudioTrainingExecutionRequest(
             workspace=workspace,
+            graph=_graph(),
             backend="runpod",
             job_id="studio-plan",
+            backend_realization=_runpod_realization("studio-plan"),
             queue_target="runpod",
             queue_manifest_ids=["train:runpod"],
             issues=["12e49a2"],
@@ -464,7 +525,7 @@ def test_prepare_studio_training_execution_uses_queue_subset_target_not_stale_st
         stage for stage in prepared.workspace.stages if stage.kind == "train"
     )
     staged_summary = prepared_train_stage.metadata["last_staged_training"]
-    assert prepared.plan.backend == "runpod"
+    assert prepared.backend_plan.backend_id == "runpod"
     assert staged_summary["source"] == "queue_manifest_subset"
     assert staged_summary["execution_target"] == "runpod"
     assert staged_summary["manifest_ids"] == ["train:runpod"]
@@ -479,7 +540,7 @@ def test_prepare_studio_training_execution_rejects_queue_subset_target_mismatch(
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     workspace = _workspace()
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
-    train_stage.execution_spec = {"protocol": {"compute_target": "gcp"}}
+    train_stage.metadata = {"backend_realization": {"execution_target": "gcp"}}
     train_stage.manifest_refs = [
         StudioManifestRef(
             kind="TrainingRunManifest",
@@ -497,8 +558,10 @@ def test_prepare_studio_training_execution_rejects_queue_subset_target_mismatch(
         prepare_studio_training_execution(
             StudioTrainingExecutionRequest(
                 workspace=workspace,
+                graph=_graph(),
                 backend="runpod",
                 job_id="studio-plan",
+                backend_realization=_runpod_realization("studio-plan"),
                 queue_target="runpod",
                 queue_manifest_ids=["train:gcp"],
                 issues=["12e49a2"],
@@ -530,6 +593,7 @@ def test_prepare_studio_training_execution_rejects_invalid_expanded_sweep_run(
     }
     request = StudioTrainingExecutionRequest(
         workspace=workspace,
+        graph=_graph(),
         job_id="studio-plan",
         local_cwd="/tmp/feedbax-studio",
         issues=["c199a9c"],
@@ -550,6 +614,7 @@ def test_prepare_studio_training_execution_restages_cancelled_deterministic_mani
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     request = StudioTrainingExecutionRequest(
         workspace=_workspace(),
+        graph=_graph(),
         job_id="studio-plan",
         local_cwd="/tmp/feedbax-studio",
         issues=["9aa8ff2"],
@@ -588,6 +653,7 @@ def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempot
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     training_request = StudioTrainingExecutionRequest(
         workspace=_workspace(),
+        graph=_graph(),
         job_id="studio-plan",
         issues=["717e8fb"],
     )
@@ -666,7 +732,9 @@ def test_studio_evaluation_preview_filters_stale_manifests_explicitly(
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     prepared_training = prepare_studio_training_execution(
-        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan"),
+        StudioTrainingExecutionRequest(
+            workspace=_workspace(), graph=_graph(), job_id="studio-plan"
+        ),
         registry_bundle=registry_bundle,
     )
     train_stage = next(
@@ -725,7 +793,9 @@ def test_studio_evaluation_run_local_reprocesses_stale_manifest(
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     prepared_training = prepare_studio_training_execution(
-        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan"),
+        StudioTrainingExecutionRequest(
+            workspace=_workspace(), graph=_graph(), job_id="studio-plan"
+        ),
         registry_bundle=registry_bundle,
     )
     train_stage = next(
@@ -795,7 +865,9 @@ def test_studio_evaluation_run_local_preserves_skipped_failed_status(
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     prepared_training = prepare_studio_training_execution(
-        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan"),
+        StudioTrainingExecutionRequest(
+            workspace=_workspace(), graph=_graph(), job_id="studio-plan"
+        ),
         registry_bundle=registry_bundle,
     )
     train_stage = next(
@@ -850,7 +922,9 @@ def test_studio_evaluation_endpoints_preview_stage_and_run_local(
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     prepared_training = prepare_studio_training_execution(
-        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan"),
+        StudioTrainingExecutionRequest(
+            workspace=_workspace(), graph=_graph(), job_id="studio-plan"
+        ),
         registry_bundle=registry_bundle,
     )
     train_stage = next(
@@ -898,12 +972,15 @@ def test_studio_evaluation_endpoints_preview_stage_and_run_local(
 
 
 def test_studio_training_plan_endpoint_rejects_missing_training_spec(studio_client):
-    workspace = build_default_studio_workspace(label="Missing spec", graph=_graph())
+    workspace = build_default_studio_workspace(label="Missing spec")
     client = studio_client
 
     response = client.post(
         "/api/provider/studio/training/plan",
-        json={"workspace": workspace.model_dump(mode="json", exclude_none=True)},
+        json={
+            "workspace": workspace.model_dump(mode="json", exclude_none=True),
+            "graph": _graph().model_dump(mode="json", exclude_none=True),
+        },
     )
 
     assert response.status_code == 422
@@ -952,108 +1029,6 @@ def test_task_binding_spec_rejects_source_output_id():
         )
 
 
-def test_run_studio_training_local_execution_materializes_snapshot_and_refs(
-    tmp_path: Path,
-    registry_bundle,
-):
-    result = run_studio_training_local_execution(
-        StudioTrainingLocalRunRequest(
-            workspace=_workspace(),
-            job_id="studio-local-run",
-            root=str(tmp_path),
-            issues=["ff19bc8"],
-        ),
-        registry_bundle=registry_bundle,
-    )
-
-    snapshot_dir = Path(result.snapshot_dir)
-    assert (snapshot_dir / "execution-spec.json").exists()
-    assert (snapshot_dir / "workspace-snapshot.json").exists()
-    assert (snapshot_dir / "graph-spec.json").exists()
-    assert (snapshot_dir / "training-spec.json").exists()
-    assert (snapshot_dir / "task-spec.json").exists()
-    assert (snapshot_dir / "task-binding-spec.json").exists()
-    assert (snapshot_dir / "artifacts" / "training-summary.json").exists()
-    execution_spec = json.loads((snapshot_dir / "execution-spec.json").read_text())
-    task_binding_spec = json.loads((snapshot_dir / "task-binding-spec.json").read_text())
-    workspace_snapshot = json.loads((snapshot_dir / "workspace-snapshot.json").read_text())
-    assert (
-        execution_spec["metadata"]["studio"]["task_binding_spec"]
-        == task_binding_spec
-        == workspace_snapshot["scenarios"]["scenario:train"]["task_binding_spec"]
-    )
-    assert task_binding_spec["schema_version"] == "feedbax.spec.studio.task_bindings.v2"
-    assert task_binding_spec["exposed_data"][0]["id"] == "inputs"
-    assert "exposed_outputs" not in task_binding_spec
-    assert task_binding_spec["bindings"][0]["source_data_id"] == "inputs"
-    assert "source_output_id" not in task_binding_spec["bindings"][0]
-    assert result.result.status == "completed"
-    assert result.result.return_code == 0
-    assert Path(result.result.manifest_path).exists()
-    assert result.result.manifest_payload["kind"] == "TrainingRunManifest"
-    assert result.result.manifest_payload["training_spec"]["inline"]["n_batches"] == 25
-    assert result.result.manifest_payload["task_spec"]["inline"]["type"] == "ReachingTask"
-    assert (
-        result.result.manifest_payload["task_binding_spec"]["inline"]["bindings"][0]["target_port"]
-        == "input"
-    )
-    assert (
-        result.result.manifest_payload["provenance"]["metadata"]["execution_metadata"]["studio"][
-            "task_binding_spec"
-        ]
-        == task_binding_spec
-    )
-
-    train_stage = next(stage for stage in result.workspace.stages if stage.kind == "train")
-    assert train_stage.status == "completed"
-    assert any(ref.role == "training_run" for ref in train_stage.manifest_refs)
-    assert any(ref.role == "training_result" for ref in train_stage.artifact_refs)
-    assert any(ref.role == "execution_stdout" for ref in train_stage.artifact_refs)
-    assert any(ref.role == "execution_input_snapshot" for ref in train_stage.artifact_refs)
-    training_collection = next(
-        collection
-        for collection in train_stage.output_collections
-        if collection.kind == "training_runs"
-    )
-    assert training_collection.item_refs[0].role == "training_run"
-    workspace_training_collection = next(
-        collection
-        for collection in result.workspace.collections
-        if collection.kind == "training_runs"
-    )
-    assert workspace_training_collection.item_refs[0].role == "training_run"
-
-    future_stage = next(
-        stage for stage in result.workspace.stages if stage.id == "stage:future-report-packaging"
-    )
-    assert future_stage.metadata["later_product_surface"]["keep"] is True
-
-
-def test_studio_training_run_local_endpoint_returns_execution_result(tmp_path: Path, studio_client):
-    client = studio_client
-
-    response = client.post(
-        "/api/provider/studio/training/run-local",
-        json={
-            "workspace": _workspace().model_dump(mode="json", exclude_none=True),
-            "job_id": "http-studio-local-run",
-            "root": str(tmp_path),
-            "issues": ["ff19bc8"],
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["result"]["status"] == "completed"
-    assert payload["result"]["return_code"] == 0
-    assert payload["snapshot_dir"].endswith("inputs")
-    train_stage = next(
-        stage for stage in payload["workspace"]["stages"] if stage["kind"] == "train"
-    )
-    assert train_stage["status"] == "completed"
-    assert any(ref["role"] == "training_run" for ref in train_stage["manifest_refs"])
-
-
 def test_studio_pipeline_materialize_training_writes_validation_only_artifact(
     tmp_path: Path,
 ) -> None:
@@ -1066,7 +1041,7 @@ def test_studio_pipeline_materialize_training_writes_validation_only_artifact(
     binding_path = tmp_path / "task-binding-spec.json"
     output_path = tmp_path / "artifacts" / "training-summary.json"
     graph_path.write_text(
-        scenario.graph.model_dump_json(indent=2, exclude_none=True) + "\n",
+        _graph().model_dump_json(indent=2, exclude_none=True) + "\n",
         encoding="utf-8",
     )
     training_path.write_text(json.dumps(scenario.training_spec), encoding="utf-8")
@@ -1103,20 +1078,16 @@ def test_studio_pipeline_materialize_training_writes_validation_only_artifact(
 def test_materialize_studio_pipeline_requires_registered_eval_recipe(
     tmp_path: Path, registry_bundle
 ):
-    training = run_studio_training_local_execution(
-        StudioTrainingLocalRunRequest(
-            workspace=_workspace(),
-            job_id="studio-pipeline-train-unregistered",
-            root=str(tmp_path),
-            issues=["d30d4c2"],
-        ),
+    workspace = _staged_training_workspace(
+        _workspace(),
+        job_id="studio-pipeline-train-unregistered",
         registry_bundle=registry_bundle,
     )
 
     with pytest.raises(ValueError, match="feedbax\\.studio\\.default_eval.*not registered"):
         materialize_studio_pipeline(
             StudioPipelineMaterializationRequest(
-                workspace=training.workspace,
+                workspace=workspace,
                 job_id="studio-pipeline-unregistered",
                 root=str(tmp_path),
                 issues=["d30d4c2"],
@@ -1130,13 +1101,9 @@ def test_materialize_studio_pipeline_requires_explicit_analysis_type(
     studio_default_eval_recipe,
     registry_bundle,
 ):
-    training = run_studio_training_local_execution(
-        StudioTrainingLocalRunRequest(
-            workspace=_workspace(),
-            job_id="studio-pipeline-train-no-analysis-type",
-            root=str(tmp_path),
-            issues=["d30d4c2"],
-        ),
+    workspace = _staged_training_workspace(
+        _workspace(),
+        job_id="studio-pipeline-train-no-analysis-type",
         registry_bundle=registry_bundle,
     )
 
@@ -1146,7 +1113,7 @@ def test_materialize_studio_pipeline_requires_explicit_analysis_type(
     ):
         materialize_studio_pipeline(
             StudioPipelineMaterializationRequest(
-                workspace=training.workspace,
+                workspace=workspace,
                 job_id="studio-pipeline-no-analysis-type",
                 root=str(tmp_path),
                 issues=["d30d4c2"],
@@ -1161,19 +1128,15 @@ def test_materialize_studio_pipeline_consumes_stage_collections(
     studio_default_analysis_recipe,
     registry_bundle,
 ):
-    training = run_studio_training_local_execution(
-        StudioTrainingLocalRunRequest(
-            workspace=_workspace_with_analysis_type("feedbax.analysis.activity"),
-            job_id="studio-pipeline-train",
-            root=str(tmp_path),
-            issues=["d30d4c2"],
-        ),
+    workspace = _staged_training_workspace(
+        _workspace_with_analysis_type("feedbax.analysis.activity"),
+        job_id="studio-pipeline-train",
         registry_bundle=registry_bundle,
     )
 
     materialized = materialize_studio_pipeline(
         StudioPipelineMaterializationRequest(
-            workspace=training.workspace,
+            workspace=workspace,
             job_id="studio-pipeline",
             root=str(tmp_path),
             issues=["d30d4c2"],
@@ -1260,19 +1223,15 @@ def test_materialize_studio_pipeline_carries_authored_evaluation_states_policy(
         **(scenario.analysis_spec or {}),
         "evaluation_states_policy": "require_durable",
     }
-    training = run_studio_training_local_execution(
-        StudioTrainingLocalRunRequest(
-            workspace=workspace,
-            job_id="studio-policy-train",
-            root=str(tmp_path),
-            issues=["b594b56"],
-        ),
+    workspace = _staged_training_workspace(
+        workspace,
+        job_id="studio-policy-train",
         registry_bundle=registry_bundle,
     )
 
     materialized = materialize_studio_pipeline(
         StudioPipelineMaterializationRequest(
-            workspace=training.workspace,
+            workspace=workspace,
             job_id="studio-policy",
             root=str(tmp_path),
             issues=["b594b56"],
@@ -1299,20 +1258,16 @@ def test_materialize_studio_pipeline_endpoint_returns_updated_workspace(
     registry_bundle,
     studio_client,
 ):
-    training = run_studio_training_local_execution(
-        StudioTrainingLocalRunRequest(
-            workspace=_workspace_with_analysis_type("feedbax.analysis.activity"),
-            job_id="http-studio-pipeline-train",
-            root=str(tmp_path),
-            issues=["d30d4c2"],
-        ),
+    workspace = _staged_training_workspace(
+        _workspace_with_analysis_type("feedbax.analysis.activity"),
+        job_id="http-studio-pipeline-train",
         registry_bundle=registry_bundle,
     )
 
     response = studio_client.post(
         "/api/provider/studio/pipeline/materialize",
         json={
-            "workspace": training.workspace.model_dump(mode="json", exclude_none=True),
+            "workspace": workspace.model_dump(mode="json", exclude_none=True),
             "job_id": "http-studio-pipeline",
             "root": str(tmp_path),
             "issues": ["d30d4c2"],
@@ -1341,7 +1296,7 @@ def _matrix_row_for_scenario(
     stage = next(stage for stage in workspace.stages if stage.kind == "train")
     scenario = workspace.scenarios[stage.scenario_id]
     envelope = {
-        "graph_spec": scenario.graph.model_dump(mode="json", exclude_none=True),
+        "graph_spec": _graph().model_dump(mode="json", exclude_none=True),
         "training_spec": scenario.training_spec,
         "task_spec": scenario.task_spec,
         "task_binding_spec": scenario.task_binding_spec.model_dump(mode="json", exclude_none=True),
@@ -1372,35 +1327,15 @@ def _single_run_emitter_kwargs(workspace) -> dict:
         "workspace": workspace,
         "stage": stage,
         "scenario_id": stage.scenario_id,
-        "graph_spec": scenario.graph.model_dump(mode="json", exclude_none=True),
+        "graph_spec": _graph().model_dump(mode="json", exclude_none=True),
         "training_spec": scenario.training_spec,
         "task_spec": scenario.task_spec,
         "task_binding_spec": scenario.task_binding_spec.model_dump(mode="json", exclude_none=True),
-        "request": StudioTrainingExecutionRequest(workspace=workspace, job_id="job-shared"),
+        "request": StudioTrainingExecutionRequest(
+            workspace=workspace, graph=_graph(), job_id="job-shared"
+        ),
         "execution_target": "local",
     }
-
-
-def test_studio_training_contract_files_are_declared_once(registry_bundle):
-    """The command contract and the artifact policy read one declared file list."""
-    workspace = _workspace()
-    stage = next(stage for stage in workspace.stages if stage.kind == "train")
-    spec = _build_execution_spec(
-        request=StudioTrainingExecutionRequest(workspace=workspace, job_id="contract-files"),
-        workspace=workspace,
-        stage=stage,
-        job_id="contract-files",
-    )
-
-    declared = list(STUDIO_TRAINING_CONTRACT_FILES)
-    assert spec.metadata["command_contract"]["expected_files"] == declared
-    assert spec.artifact_policy.tracked_paths == declared
-    # Distinct list objects, so mutating one emitted spec cannot corrupt the other
-    # call site or the module constant.
-    assert (
-        spec.metadata["command_contract"]["expected_files"]
-        is not spec.artifact_policy.tracked_paths
-    )
 
 
 def test_pending_training_manifest_paths_emit_through_one_builder(tmp_path: Path, monkeypatch):
@@ -1422,7 +1357,9 @@ def test_pending_training_manifest_paths_emit_through_one_builder(tmp_path: Path
         stage=next(stage for stage in workspace.stages if stage.kind == "train"),
         scenario_id="scenario:train",
         run_set_id="run-set-shared",
-        request=StudioTrainingExecutionRequest(workspace=workspace, job_id="job-shared"),
+        request=StudioTrainingExecutionRequest(
+            workspace=workspace, graph=_graph(), job_id="job-shared"
+        ),
         root=tmp_path,
         execution_target="local",
     )
@@ -1455,7 +1392,9 @@ def test_single_run_and_matrix_row_pending_manifests_agree_except_on_run_identit
         stage=next(stage for stage in workspace.stages if stage.kind == "train"),
         scenario_id="scenario:train",
         run_set_id="run-set-parity",
-        request=StudioTrainingExecutionRequest(workspace=workspace, job_id="job-shared"),
+        request=StudioTrainingExecutionRequest(
+            workspace=workspace, graph=_graph(), job_id="job-shared"
+        ),
         root=tmp_path,
         execution_target="local",
     )
@@ -1500,7 +1439,9 @@ def test_pending_matrix_manifest_reuses_existing_before_deriving_row_specs(tmp_p
         stage=stage,
         scenario_id="scenario:train",
         run_set_id="run-set-reuse",
-        request=StudioTrainingExecutionRequest(workspace=workspace, job_id="job-reuse"),
+        request=StudioTrainingExecutionRequest(
+            workspace=workspace, graph=_graph(), job_id="job-reuse"
+        ),
         root=tmp_path,
         execution_target="local",
     )
@@ -1528,7 +1469,9 @@ def test_pending_matrix_manifest_restages_cancelled_run(tmp_path: Path):
         stage=stage,
         scenario_id="scenario:train",
         run_set_id="run-set-restage",
-        request=StudioTrainingExecutionRequest(workspace=workspace, job_id="job-restage"),
+        request=StudioTrainingExecutionRequest(
+            workspace=workspace, graph=_graph(), job_id="job-restage"
+        ),
         root=tmp_path,
         execution_target="local",
     )

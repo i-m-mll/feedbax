@@ -526,7 +526,6 @@ class MatrixMaterializerHarness:
                 role="materialization_note",
                 logical_name="materialization.md",
                 media_type="text/markdown",
-                suffix=".md",
                 metadata={"source": source, "escape_hatch_reason": escape_hatch_reason},
             )
         return HarnessResult(

@@ -71,13 +71,20 @@ from feedbax.objectives.spec import (
     objective_schema_models,
     validate_objective_spec as _validate_objective_spec,
 )
-from feedbax.execution.models import ExecutionPlan, ExecutionSpec, LocalExecutionResult
+from feedbax.execution.records import Invocation
+from feedbax.orchestration.controller import (
+    ControllerEvent,
+    ControllerProjection,
+    EffectReservation,
+    OrphanHandlingPolicy,
+    ProviderInventoryObservation,
+    RunIntent,
+)
+from feedbax.orchestration.realization import Attempt, BackendPlan
 from feedbax.studio.protocol import parse_positive_n_steps, task_n_steps_values
 from feedbax.studio.execution import (
     StudioPipelineMaterializationRequest,
     StudioPipelineMaterializationResult,
-    StudioTrainingLocalRunRequest,
-    StudioTrainingLocalRunResult,
     StudioTrainingExecutionPreparation,
     StudioTrainingExecutionRequest,
 )
@@ -109,7 +116,7 @@ from feedbax.contracts.training import (
     LrScheduleSpec,
     TaskSpec,
     TrainingRunSpec,
-    TrainingMethodRegistry,
+    TrainingProgramRegistry,
     TrainingSpec,
     validate_training_run_spec_semantics,
 )
@@ -295,13 +302,17 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "CheckpointCandidateRef": CheckpointCandidateRef,
         "CheckpointScoreSummary": CheckpointScoreSummary,
         "CheckpointSelectionGroup": CheckpointSelectionGroup,
-        "ExecutionSpec": ExecutionSpec,
-        "ExecutionPlan": ExecutionPlan,
-        "LocalExecutionResult": LocalExecutionResult,
+        "Invocation": Invocation,
+        "BackendPlan": BackendPlan,
+        "Attempt": Attempt,
+        "RunIntent": RunIntent,
+        "EffectReservation": EffectReservation,
+        "ControllerEvent": ControllerEvent,
+        "ControllerProjection": ControllerProjection,
+        "ProviderInventoryObservation": ProviderInventoryObservation,
+        "OrphanHandlingPolicy": OrphanHandlingPolicy,
         "StudioTrainingExecutionRequest": StudioTrainingExecutionRequest,
         "StudioTrainingExecutionPreparation": StudioTrainingExecutionPreparation,
-        "StudioTrainingLocalRunRequest": StudioTrainingLocalRunRequest,
-        "StudioTrainingLocalRunResult": StudioTrainingLocalRunResult,
         "StudioPipelineMaterializationRequest": StudioPipelineMaterializationRequest,
         "StudioPipelineMaterializationResult": StudioPipelineMaterializationResult,
         "WorkspaceReplayProduct": WorkspaceReplayProduct,
@@ -763,72 +774,18 @@ def provider_manifest() -> ProviderManifest:
             selected_node_kinds=["feedbax.report"],
             custody_expectations=["artifact_id fields are optional and local URIs remain valid"],
         ),
-        "prepare_execution_plan": CapabilitySpec(
-            input_schema="ExecutionSpec",
-            output_schema="ExecutionPlan",
-            description="Prepare a deterministic local, SSH, RunPod, or Modal execution plan.",
-            action="validate",
-            compatibility_predicates=["execution spec is provider-owned and backend-supported"],
-            artifact_roles=[
-                "execution_plan",
-                "execution_log",
-                "training_run_spec",
-                "training_run_manifest",
-                "tracked_spec",
-                "bulk_output",
-            ],
-        ),
-        "run_local_execution": CapabilitySpec(
-            input_schema="ExecutionSpec",
-            output_schema="LocalExecutionResult",
-            requires_review=True,
-            description="Run an explicitly local execution and emit a durable manifest.",
-            action="execute",
-            compatibility_predicates=["execution spec backend is local"],
-            mutates_state=True,
-            may_launch_compute=True,
-            artifact_roles=[
-                "execution_plan",
-                "execution_log",
-                "execution_stdout",
-                "execution_stderr",
-                "manifest",
-                "training_run_manifest",
-            ],
-            custody_expectations=[
-                "Local outputs remain usable without Mandible.",
-                "Mandible may ingest emitted manifest and artifacts later.",
-            ],
-        ),
         "prepare_studio_training_execution": CapabilitySpec(
             input_schema="StudioTrainingExecutionRequest",
             output_schema="StudioTrainingExecutionPreparation",
-            description="Lower a Studio train-stage scenario into a provider execution plan.",
+            description=(
+                "Bind a Studio train-stage scenario to a provider-neutral Invocation and "
+                "one inert BackendPlan."
+            ),
             transports=["python", "http"],
             action="validate",
             compatibility_predicates=["selected Studio train stage has graph and training specs"],
-            artifact_roles=["execution_plan"],
+            artifact_roles=["invocation", "backend_plan"],
             selected_node_kinds=["feedbax.studio_stage.train"],
-        ),
-        "run_studio_training_local_execution": CapabilitySpec(
-            input_schema="StudioTrainingLocalRunRequest",
-            output_schema="StudioTrainingLocalRunResult",
-            requires_review=True,
-            description=(
-                "Run a Studio train-stage scenario through the local provider execution "
-                "boundary and return updated workspace lineage refs."
-            ),
-            transports=["python", "http"],
-            action="execute",
-            compatibility_predicates=["prepared Studio train stage validates through Feedbax"],
-            mutates_state=True,
-            may_launch_compute=True,
-            artifact_roles=["training_checkpoint", "training_history", "manifest"],
-            selected_node_kinds=["feedbax.studio_stage.train"],
-            custody_expectations=[
-                "Studio stores Feedbax-local refs in the workspace.",
-                "Mandible custody hints must not be required to reopen locally.",
-            ],
         ),
         "materialize_studio_pipeline": CapabilitySpec(
             input_schema="StudioPipelineMaterializationRequest",
@@ -905,7 +862,8 @@ def provider_manifest() -> ProviderManifest:
             "regeneration_spec",
             "analysis_data_product",
             "manifest",
-            "execution_plan",
+            "invocation",
+            "backend_plan",
             "execution_log",
         ],
         schemas=_schemas(),
@@ -1439,7 +1397,7 @@ def validate_training_spec(
 def validate_training_run_spec(
     payload: dict[str, Any] | TrainingRunSpec,
     *,
-    method_registry: TrainingMethodRegistry,
+    method_registry: TrainingProgramRegistry,
 ) -> ProviderValidationResult:
     """Validate the public governed training-run request contract."""
     try:
@@ -2292,7 +2250,7 @@ def validate_spec(
     *,
     graph_spec: Optional[dict[str, Any]] = None,
     component_registry: Any,
-    training_method_registry: TrainingMethodRegistry,
+    training_method_registry: TrainingProgramRegistry,
     analysis_registry: Any,
 ) -> ProviderValidationResult:
     if kind == "graph":

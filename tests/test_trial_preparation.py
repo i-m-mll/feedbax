@@ -2,7 +2,7 @@ import equinox as eqx
 import jax.numpy as jnp
 from equinox.nn import StateIndex
 
-from feedbax.config.mapping import WhereDict
+from feedbax.runtime.mapping import WhereDict
 from feedbax.contracts.graph import StudioTaskBindingSpec
 from feedbax.runtime.graph import Component, Graph, init_state_from_component
 from feedbax.runtime.task_bindings import (

@@ -55,21 +55,20 @@ hardlinks are created on the target filesystem. Sync the source checkpoint as
 the durable transfer unit; ordinary `rsync` without `-H` re-duplicates
 hardlinked fork trees.
 
-### Legacy checkpoint adoption
+### Artifact publication
 
-Pre-custody checkpoints cannot be loaded directly by checkpoint custody. Known
-legacy layouts include supervised trainer roots with `last_batch.txt` or
-`ckpt_*.eqx`, and Equinox stream roots with
-`checkpoint_N/model.eqx`, `optimizer_state.eqx`, and `metadata.json`.
+`feedbax.contracts.publication` is the storage-neutral authority for blob,
+artifact-version, provenance, publication, and checkpoint-set records. Every
+portable reference includes an identity, SHA-256 digest, and byte size. The local
+`BlobStore` keeps one suffixless content-addressed file per digest; logical names
+and media types live in artifact records rather than filesystem aliases.
 
-Adopt those roots with
-`feedbax.training.legacy_checkpoint_adoption.adopt_legacy_checkpoint`. The
-adoption inputs are the producing commit used to dump the old LeafManifest, the
-legacy stream root, and path-mapping rules that map old leaf paths onto the
-current model and optimizer slots. The adoption tool verifies the stream,
-writes checkpoint-custody manifests, runs a strict round trip, and publishes the
-new custody root. Studio reports recognized legacy roots as adoption-required
-rather than treating them as ordinary load failures.
+Publication stages and verifies immutable blobs first, then commits the artifact,
+checkpoint, provenance, and receipt rows in one transaction. Replaying the same
+idempotency key and canonical request returns the committed receipt; reusing a key
+for different bytes fails closed. The durable catalog accepts only
+`feedbax.publication.v1`; unsupported versions are rejected before the current
+tables are created or changed.
 
 ## Interventions
 

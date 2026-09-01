@@ -12,7 +12,7 @@ The claims under test are:
   input's closed artifact contract — artifact role, provider, media type, decoded
   payload identity, and an explicit payload name — and the compile carries that
   contract into the compile lock, at
-  ``feedbax.spec.experiment_compile_lock.v2``, without moving anything into the
+  ``feedbax.spec.experiment_compile_lock.v3``, without moving anything into the
   figure's own scientific identity;
 * fulfillment builds the runtime
   :class:`~feedbax.contracts.figures.FigureInputRoleAuthority` from that contract
@@ -49,13 +49,13 @@ from feedbax.analysis.figures import (
     resolve_figure_inputs,
 )
 from feedbax.analysis.fulfillment_adapters import FulfillmentEnvironment
-from feedbax.analysis.fulfillment_derivation import (
-    derive_fulfillment_plan,
+from feedbax.workflow.derivation import (
+    derive_workflow_plan,
     read_compiled_outputs,
 )
-from feedbax.analysis.fulfillment_driver import closure_requests, preflight
-from feedbax.analysis.fulfillment_lowering import NodeLoweringError
-from feedbax.analysis.fulfillment_plan import LogicalKey
+from feedbax.workflow.execution import workflow_requests, prepare_workflow
+from feedbax.workflow.operation_execution import NodeLoweringError
+from feedbax.workflow.plan import LogicalKey
 from feedbax.contracts.experiment_envelope import ExperimentEnvelopeRejection
 from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4,
@@ -271,10 +271,10 @@ def _receipt_root(environment: FulfillmentEnvironment, raw: bytes) -> None:
 
 def _figure_request(repo: Path, environment: FulfillmentEnvironment):
     index = read_compiled_outputs(repo / "compiled")
-    plan = derive_fulfillment_plan(index, target=FIGURE_NAME)
-    closure = preflight(plan, index)
+    plan = derive_workflow_plan(index, target=FIGURE_NAME)
+    closure = prepare_workflow(plan, index)
     key = LogicalKey("figure", FIGURE_NAME)
-    return closure_requests(closure, environment=environment, stop_at=key)[-1]
+    return workflow_requests(closure, environment=environment, stop_at=key)[-1]
 
 
 def _execution_context(
@@ -312,7 +312,7 @@ def test_the_compile_records_each_root_input_contract_in_the_lock(
 
     lock = _compile(repo)
 
-    assert lock["schema_version"] == "feedbax.spec.experiment_compile_lock.v2"
+    assert lock["schema_version"] == "feedbax.spec.experiment_compile_lock.v3"
     assert lock["envelope"]["schema"] == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5
     assert lock["compiler_contract"]["contract_version"] == (
         "feedbax.experiment_envelope.compiler.v4"
@@ -345,9 +345,7 @@ def test_the_compiled_figure_keeps_its_inputs_out_of_its_own_identity(
     _compile(repo)
 
     document = json.loads(
-        next((repo / "compiled").glob(f"{FIGURE_NAME}.*figure*.json")).read_text(
-            encoding="utf-8"
-        )
+        next((repo / "compiled").glob(f"{FIGURE_NAME}.*figure*.json")).read_text(encoding="utf-8")
     )
 
     assert document["schema_version"] == "feedbax.spec.figure.v2"
@@ -378,9 +376,9 @@ def test_lowering_authorizes_the_exact_parent_it_bound(
     assert [item.input_role for item in authorities] == list(ROOT_INPUTS)
     # The authority addresses one exact declared parent, by the role the lock
     # bound it under, and resolves back to it rather than to a second copy.
-    assert [
-        item.resolve_parent(request.runtime_inputs) for item in authorities
-    ] == list(request.runtime_inputs)
+    assert [item.resolve_parent(request.runtime_inputs) for item in authorities] == list(
+        request.runtime_inputs
+    )
 
 
 def test_the_authority_carries_the_whole_declared_selector(
@@ -413,9 +411,7 @@ def test_a_grammar_that_could_not_state_a_contract_is_refused_by_name(
 ) -> None:
     """The legacy state is a refusal before effects, not an unbound render."""
     raw, _locations = produced
-    _author(
-        repo, produced, schema=EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4, contracts=False
-    )
+    _author(repo, produced, schema=EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V4, contracts=False)
     _compile(repo)
     _receipt_root(environment, raw)
 
@@ -506,9 +502,7 @@ def test_every_selector_disagreement_refuses_before_render_effects(
     first = request.runtime_input_authorities[0]
     mutated = first.model_copy(
         update={
-            "artifact_payloads": [
-                first.artifact_payloads[0].model_copy(update={field: value})
-            ]
+            "artifact_payloads": [first.artifact_payloads[0].model_copy(update={field: value})]
         },
         deep=True,
     )

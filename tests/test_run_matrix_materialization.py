@@ -27,7 +27,7 @@ from feedbax.contracts.training import (
     TrainingConfig,
     TrainingRunSpec,
     WorkerExecutionSpec,
-    default_training_method_registry,
+    default_training_program_registry,
     standard_supervised_effective_phase_spec,
     standard_supervised_method_contract,
     standard_supervised_method_payload,
@@ -116,7 +116,7 @@ def test_matrix_v5_object_materializes_without_v6_reinterpretation(tmp_path: Pat
     materialized = materialize_run_matrix(
         legacy,
         repo_root=tmp_path,
-        method_registry=default_training_method_registry(),
+        method_registry=default_training_program_registry(),
     )
 
     assert materialized.run_set_manifest.metadata["matrix_schema_version"] == (
@@ -313,13 +313,13 @@ def test_materialize_explicit_rows_plans_stable_ids_and_writes_deterministic_byt
     materialized = materialize_run_matrix(
         _matrix(_training_run_payload()),
         repo_root=tmp_path,
-        method_registry=application_registry_bundle.training_methods,
+        method_registry=application_registry_bundle.training_programs,
         row_lowerer=application_registry_bundle.row_lowerers.lower,
     )
     second = materialize_run_matrix(
         _matrix(_training_run_payload()),
         repo_root=tmp_path,
-        method_registry=application_registry_bundle.training_methods,
+        method_registry=application_registry_bundle.training_programs,
         row_lowerer=application_registry_bundle.row_lowerers.lower,
     )
 
@@ -360,7 +360,7 @@ def test_materialize_explicit_row_override_failure_names_row_and_violation(
         materialize_run_matrix(
             matrix,
             repo_root=tmp_path,
-            method_registry=application_registry_bundle.training_methods,
+            method_registry=application_registry_bundle.training_programs,
             row_lowerer=application_registry_bundle.row_lowerers.lower,
         )
 
@@ -393,7 +393,7 @@ def test_materialize_sweep_mode_uses_shared_axes_and_coordinates(
     materialized = materialize_run_matrix(
         payload,
         repo_root=tmp_path,
-        method_registry=application_registry_bundle.training_methods,
+        method_registry=application_registry_bundle.training_programs,
         row_lowerer=application_registry_bundle.row_lowerers.lower,
     )
 
@@ -441,7 +441,7 @@ def test_derivations_and_base_ref_sha_pin_are_fail_closed(
     materialized = materialize_run_matrix(
         payload,
         repo_root=tmp_path,
-        method_registry=application_registry_bundle.training_methods,
+        method_registry=application_registry_bundle.training_programs,
         row_lowerer=application_registry_bundle.row_lowerers.lower,
     )
     assert materialized.rows[0].payload["metadata"]["derived_learning_rate"] == 0.04
@@ -451,7 +451,7 @@ def test_derivations_and_base_ref_sha_pin_are_fail_closed(
         materialize_run_matrix(
             payload,
             repo_root=tmp_path,
-            method_registry=application_registry_bundle.training_methods,
+            method_registry=application_registry_bundle.training_programs,
             row_lowerer=application_registry_bundle.row_lowerers.lower,
         )
 
@@ -496,7 +496,7 @@ def test_derivations_use_each_delta_applied_row_and_preserve_authored_fields(
     materialized = materialize_run_matrix(
         payload,
         repo_root=tmp_path,
-        method_registry=application_registry_bundle.training_methods,
+        method_registry=application_registry_bundle.training_programs,
         row_lowerer=application_registry_bundle.row_lowerers.lower,
     )
 
@@ -511,7 +511,7 @@ def test_derivations_use_each_delta_applied_row_and_preserve_authored_fields(
         materialize_run_matrix(
             payload,
             repo_root=tmp_path,
-            method_registry=application_registry_bundle.training_methods,
+            method_registry=application_registry_bundle.training_programs,
             row_lowerer=application_registry_bundle.row_lowerers.lower,
         )
 
@@ -521,7 +521,7 @@ def test_derivations_use_each_delta_applied_row_and_preserve_authored_fields(
         materialize_run_matrix(
             payload,
             repo_root=tmp_path,
-            method_registry=application_registry_bundle.training_methods,
+            method_registry=application_registry_bundle.training_programs,
             row_lowerer=application_registry_bundle.row_lowerers.lower,
         )
 
@@ -546,7 +546,7 @@ def test_v1_pretty_json_ref_verifies_legacy_raw_pin_then_materializes(
     materialized = materialize_run_matrix(
         legacy,
         repo_root=tmp_path,
-        method_registry=application_registry_bundle.training_methods,
+        method_registry=application_registry_bundle.training_programs,
         row_lowerer=application_registry_bundle.row_lowerers.lower,
     )
 
@@ -560,12 +560,12 @@ def test_spec_lock_render_includes_legacy_lr_phrase(
     materialized = materialize_run_matrix(
         matrix,
         repo_root=tmp_path,
-        method_registry=application_registry_bundle.training_methods,
+        method_registry=application_registry_bundle.training_programs,
         row_lowerer=application_registry_bundle.row_lowerers.lower,
     )
 
     rendered = render_spec_lock_table(
-        matrix, materialized, method_registry=application_registry_bundle.training_methods
+        matrix, materialized, method_registry=application_registry_bundle.training_programs
     )
 
     assert "LR continuation schedule: continue" in rendered
@@ -588,7 +588,7 @@ def test_spec_lock_renders_resolved_windows_for_every_active_schedule(
     materialized = materialize_run_matrix(
         matrix,
         repo_root=tmp_path,
-        method_registry=application_registry_bundle.training_methods,
+        method_registry=application_registry_bundle.training_programs,
         row_lowerer=application_registry_bundle.row_lowerers.lower,
     )
     lineages = {
@@ -604,7 +604,7 @@ def test_spec_lock_renders_resolved_windows_for_every_active_schedule(
         matrix,
         materialized,
         segment_lineages=lineages,
-        method_registry=application_registry_bundle.training_methods,
+        method_registry=application_registry_bundle.training_programs,
     )
 
     assert "lr_hi LR schedule: batches 12,000 -> 13,000" in rendered
