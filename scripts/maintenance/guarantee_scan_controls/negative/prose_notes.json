@@ -1,5 +1,0 @@
-{
-  "notes": "We looked at whether GraphSpec and ReportSpec would be the right shape here, and decided against both.",
-  "description": "The reviewer mentioned ComponentRegistry in passing during the walkthrough.",
-  "summary": "Nothing in this file loads feedbax.spec.graph.v5 or anything else."
-}
