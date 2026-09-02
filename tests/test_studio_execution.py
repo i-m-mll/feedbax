@@ -642,7 +642,8 @@ def test_prepare_studio_training_execution_restages_cancelled_deterministic_mani
     assert "supersedes" not in restaged_manifest.metadata
     assert "superseded_by" not in restaged_ref.metadata
     assert "supersedes" not in restaged_ref.metadata
-    assert restaged_ref.metadata["spec_hashes"]["training_spec"].startswith("fnv1a:")
+    assert restaged_ref.metadata["spec_hashes"]["pin"] == "fnv1a32-canonical_json_v2"
+    assert len(restaged_ref.metadata["spec_hashes"]["hashes"]["training_spec"]) == 8
 
 
 def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempotent(
@@ -720,7 +721,8 @@ def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempot
         == EvaluationRunSpec.model_validate(eval_manifest.evaluation_spec.inline).inputs
     )
     assert first.manifest_refs[0].metadata["parent_refs"][0]["id"] == training_ref.id
-    assert first.manifest_refs[0].metadata["spec_hashes"]["evaluation_spec"].startswith("fnv1a:")
+    assert first.manifest_refs[0].metadata["spec_hashes"]["pin"] == "fnv1a32-canonical_json_v2"
+    assert len(first.manifest_refs[0].metadata["spec_hashes"]["hashes"]["evaluation_spec"]) == 8
     assert eval_manifest.provenance.metadata["checkpoint_policy"]["mode"] == "best-by-metric"
     assert checkpoint_manifest.metadata["checkpoint_policy"]["metric"] == "final_validation_loss"
 

@@ -1,5 +1,9 @@
 import { create } from 'zustand';
 import type { StudioWorkspaceSpec } from '@/types/workspace';
+import {
+  admitStudioDraftHashes,
+  type StudioDraftHashes,
+} from '@/utils/studioDraftHash';
 
 export type SelectionSyncMode = 'linked' | 'decoupled';
 export type SnapshotSpecKey =
@@ -24,7 +28,7 @@ export interface FrozenSnapshotProjection {
   runStatus: string;
   manifestId: string | null;
   manifestHash: string | null;
-  specHashes: Partial<Record<SnapshotSpecKey, string | null>>;
+  specHashes: StudioDraftHashes;
   snapshot: SnapshotSpecPayload;
 }
 
@@ -55,24 +59,6 @@ function snapshotSpecPayload(value: unknown): SnapshotSpecPayload {
     else if (isRecord(payload)) snapshot[key] = payload;
   }
   return snapshot;
-}
-
-function snapshotSpecHashes(value: unknown): FrozenSnapshotProjection['specHashes'] {
-  if (!isRecord(value)) return {};
-  const hashes: FrozenSnapshotProjection['specHashes'] = {};
-  const keys: SnapshotSpecKey[] = [
-    'graph_spec',
-    'training_spec',
-    'task_spec',
-    'task_binding_spec',
-    'evaluation_spec',
-  ];
-  for (const key of keys) {
-    const hash = value[key];
-    if (hash === null) hashes[key] = null;
-    else if (typeof hash === 'string') hashes[key] = hash;
-  }
-  return hashes;
 }
 
 export function frozenSnapshotProvenanceMetadata(
@@ -125,7 +111,7 @@ export function frozenSnapshotProjectionFromWorkspace(
     runStatus: provenance.run_status,
     manifestId: nullableString(provenance.manifest_id),
     manifestHash: nullableString(provenance.manifest_hash),
-    specHashes: snapshotSpecHashes(provenance.spec_hashes),
+    specHashes: admitStudioDraftHashes(provenance.spec_hashes ?? {}),
     snapshot: snapshotSpecPayload(provenance.snapshot),
   };
 }
