@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from feedbax.models.networks import LeakyRNNCell
-from feedbax.contracts.graphs.materialization import (
+from feedbax.compiler.materialization import (
     UnsupportedArtifactSchemaError,
     materialize_array_store,
     materialize_model_artifact,

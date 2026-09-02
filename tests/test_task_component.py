@@ -17,7 +17,7 @@ from feedbax.runtime.graph import (
 )
 from feedbax.intervene import InterventionSpec, TimeSeriesParam
 from feedbax.objectives.loss import AbstractLoss
-from feedbax.contracts.graphs.builders import build_component
+from feedbax.compiler.builders import build_component
 from feedbax.tasks.presets import delayed_center_out_reaches_params
 
 from feedbax.tasks import (

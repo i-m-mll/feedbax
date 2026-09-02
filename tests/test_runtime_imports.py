@@ -34,12 +34,12 @@ def test_domain_modules_use_canonical_package_homes() -> None:
     canonical_modules = [
         "feedbax.components.equinox",
         "feedbax.components.penzai",
-        "feedbax.contracts.graphs.builders",
-        "feedbax.contracts.graphs.materialization",
-        "feedbax.contracts.graphs.normalization",
-        "feedbax.contracts.graphs.prototypes",
-        "feedbax.contracts.graphs.serialization",
-        "feedbax.contracts.graphs.templates",
+        "feedbax.compiler.builders",
+        "feedbax.compiler.materialization",
+        "feedbax.compiler.normalization",
+        "feedbax.compiler.prototypes",
+        "feedbax.compiler.serialization",
+        "feedbax.compiler.templates",
         "feedbax.contracts.schema_namespace",
         "feedbax.mechanics.dynamics",
         "feedbax.models.cde",
@@ -48,9 +48,10 @@ def test_domain_modules_use_canonical_package_homes() -> None:
         "feedbax.runtime.filters",
         "feedbax.runtime.noise",
     ]
-    old_root_modules = [
+    obsolete_modules = [
         "feedbax.artifact_materialize",
         "feedbax.bodies",
+        "feedbax.contracts.graphs",
         "feedbax.dynamics",
         "feedbax.eqx_components",
         "feedbax.filters",
@@ -69,12 +70,12 @@ def test_domain_modules_use_canonical_package_homes() -> None:
     loaded = [importlib.import_module(module_name).__name__ for module_name in canonical_modules]
     rejected = [
         module_name
-        for module_name in old_root_modules
+        for module_name in obsolete_modules
         if importlib.util.find_spec(module_name) is None
     ]
 
     assert loaded == canonical_modules
-    assert rejected == old_root_modules
+    assert rejected == obsolete_modules
 
 
 def test_runtime_graph_primitives_build_and_execute_minimal_graph() -> None:

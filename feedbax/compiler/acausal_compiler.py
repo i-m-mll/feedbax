@@ -65,7 +65,7 @@ from feedbax.contracts.domain import (
     report_status_for_diagnostics,
 )
 from feedbax.contracts.graph import ComponentSpec
-from feedbax.contracts.graphs.builders import build_component
+from feedbax.compiler.builders import build_component
 
 
 _ELEMENT_BUILDERS: dict[str, Type[AcausalElement]] = {

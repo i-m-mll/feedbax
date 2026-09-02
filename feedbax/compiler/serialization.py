@@ -25,12 +25,12 @@ from feedbax.runtime.parameter_constraints import (
     apply_parameter_constraints,
     normalize_parameter_constraints,
 )
-from feedbax.contracts.graphs.builders import (
+from feedbax.compiler.builders import (
     _unsupported_component_message,
     build_component,
 )
-from feedbax.contracts.graphs.domain_compilers import get_domain_compiler
-from feedbax.contracts.graphs.prototypes import (
+from feedbax.compiler.domain_compilers import get_domain_compiler
+from feedbax.compiler.prototypes import (
     normalize_derived_dimensions,
     normalize_stateful_prototypes,
     prototypes_from_task_bindings,
@@ -207,6 +207,7 @@ def _instantiate_graph(
     component_bindings: dict[str, ComponentBinding] = {}
     resolved_nodes: dict[str, ComponentSpec] = {}
     for node_name, node_spec in spec.nodes.items():
+        node_params, lowering_metadata = _split_lowering_metadata(node_spec)
         if component_registry.should_resolve_component_spec(
             node_spec.type,
             param_schema_version=node_spec.param_schema_version,
@@ -229,13 +230,13 @@ def _instantiate_graph(
                 else frozenset()
             )
             build_context = {
-                key: value for key, value in node_spec.params.items() if key in context_fields
+                key: value for key, value in node_params.items() if key in context_fields
             }
             resolution = component_registry.resolve_component_spec(
                 node_spec.type,
                 {
                     key: value
-                    for key, value in node_spec.params.items()
+                    for key, value in node_params.items()
                     if key not in context_fields
                 },
                 param_schema_version=node_spec.param_schema_version,
@@ -243,7 +244,11 @@ def _instantiate_graph(
             resolved_nodes[node_name] = node_spec.model_copy(
                 update={
                     "type": resolution.type_id,
-                    "params": {**resolution.params, **build_context},
+                    "params": {
+                        **resolution.params,
+                        **build_context,
+                        **lowering_metadata,
+                    },
                     "param_schema_version": resolution.param_schema_version,
                 }
             )
@@ -270,7 +275,7 @@ def _instantiate_graph(
     nodes: dict[str, Component] = {}
     for node_name, node_spec in spec.nodes.items():
         node_type = node_spec.type
-        node_params = dict(node_spec.params)
+        node_params, _ = _split_lowering_metadata(node_spec)
         resolve_component_spec = getattr(metadata_registry, "resolve_component_spec", None)
         should_resolve_component_spec = getattr(
             metadata_registry,
@@ -450,6 +455,16 @@ def _instantiate_graph(
         component_bindings=component_bindings,
     )
     return apply_parameter_constraints(graph)
+
+
+def _split_lowering_metadata(
+    node_spec: ComponentSpec,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    params = dict(node_spec.params)
+    if node_spec.type != "Sum" or "channel_adapter" not in params:
+        return params, {}
+    lowering_metadata = {"channel_adapter": params.pop("channel_adapter")}
+    return params, lowering_metadata
 
 
 def _validate_dynamic_component_ports(

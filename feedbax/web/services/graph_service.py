@@ -8,10 +8,10 @@ import uuid
 
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.domain import DomainCompileReport
-from feedbax.contracts.graphs.acausal_compiler import compile_acausal_authoring_report
-from feedbax.contracts.graphs.penzai_compiler import compile_penzai_authoring_report
+from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
+from feedbax.compiler.penzai_compiler import compile_penzai_authoring_report
 from feedbax.web.config import GRAPHS_DIR, ensure_dirs
-from feedbax.contracts.graphs.normalization import (
+from feedbax.compiler.normalization import (
     normalize_graph_for_studio_authoring,
     normalize_project_for_studio_authoring,
     normalize_workspace_for_studio_authoring,

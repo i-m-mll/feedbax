@@ -20,8 +20,8 @@ from feedbax.contracts.graph import (
     SemanticAnchor,
     WorkspaceDocument,
 )
-from feedbax.contracts.graphs.acausal_compiler import compile_acausal_authoring_report
-from feedbax.contracts.graphs.mechanics_templates import two_link_arm_6muscle_template_graph
+from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
+from feedbax.compiler.mechanics_templates import two_link_arm_6muscle_template_graph
 from feedbax.web.app import create_app
 from feedbax.web.services.graph_service import GraphService
 
@@ -420,7 +420,7 @@ def test_graph_service_persists_report_and_derives_stale_status(tmp_path: Path) 
 def test_internal_compile_exception_becomes_error_report(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import feedbax.contracts.graphs.acausal_compiler as compiler
+    import feedbax.compiler.acausal_compiler as compiler
 
     def fail_flatten(*args: object, **kwargs: object) -> object:
         raise RuntimeError("boom during structural compile")

@@ -53,7 +53,7 @@ from feedbax.studio.schema import (
     validate_graph_connection_schema,
     validate_task_binding_schema,
 )
-from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
+from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
 from feedbax.web.app import create_app
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.contracts.graph import (

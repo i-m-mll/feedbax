@@ -32,9 +32,9 @@ import pytest
 
 from feedbax.component_registry import ComponentRegistry, required_interior_domain
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
-from feedbax.contracts.graphs.serialization import graph_to_spec
+from feedbax.compiler.serialization import graph_to_spec
 from tests.graph_compiler_test_support import spec_to_graph
-from feedbax.contracts.graphs.templates import network_template_graph
+from feedbax.compiler.templates import network_template_graph
 from feedbax.runtime.graph import Graph
 from feedbax.web.worker.diagnostics import GraphCompilationError
 from feedbax.web.worker.execution import compile_training_run

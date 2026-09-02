@@ -503,7 +503,7 @@ class ComponentRegistry:
         node_path: str,
     ) -> list[TemplateBuilderIssue]:
         if isinstance(graph, AcausalGraphSpec):
-            from feedbax.contracts.graphs.acausal_compiler import (
+            from feedbax.compiler.acausal_compiler import (
                 compile_acausal_authoring_report,
             )
 

@@ -19,9 +19,9 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
-from feedbax.contracts.graphs.builders import build_component
-from feedbax.contracts.graphs.acausal_compiler import compile_acausal_graph
-from feedbax.contracts.graphs.serialization import graph_to_spec
+from feedbax.compiler.builders import build_component
+from feedbax.compiler.acausal_compiler import compile_acausal_graph
+from feedbax.compiler.serialization import graph_to_spec
 from tests.graph_compiler_test_support import spec_to_graph
 from feedbax.mechanics.muscle_config import default_6muscle_2link_moment_arms
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant

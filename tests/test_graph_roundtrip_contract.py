@@ -9,7 +9,7 @@ import pytest
 
 from feedbax.component_registry import ComponentRegistry, required_interior_domain
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParamSchema
-from feedbax.contracts.graphs.serialization import graph_to_spec
+from feedbax.compiler.serialization import graph_to_spec
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.models.networks import PopulationStructure, SimpleStagedNetwork

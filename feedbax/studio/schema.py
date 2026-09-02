@@ -24,11 +24,11 @@ from feedbax.studio.protocol import (
     task_data_surface,
     task_data_uses_protocol_path,
 )
-from feedbax.contracts.graphs.normalization import (
+from feedbax.compiler.normalization import (
     normalize_graph_for_studio_authoring,
     normalize_task_binding_spec_for_studio_authoring,
 )
-from feedbax.contracts.graphs.prototypes import (
+from feedbax.compiler.prototypes import (
     DerivedDimensionConflict,
     DerivedDimensionError,
     normalize_derived_dimensions,

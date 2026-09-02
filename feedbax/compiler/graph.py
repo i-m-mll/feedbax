@@ -21,11 +21,11 @@ from feedbax.contracts.scientific_compiler_schema import (
     RESOLVED_GRAPH_SCHEMA_ID,
     RESOLVED_GRAPH_SCHEMA_VERSION,
 )
-from feedbax.contracts.graphs.prototypes import (
+from feedbax.compiler.prototypes import (
     normalize_derived_dimensions,
     normalize_stateful_prototypes,
 )
-from feedbax.contracts.graphs.serialization import _instantiate_graph
+from feedbax.compiler.serialization import _instantiate_graph
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 
@@ -407,6 +407,9 @@ def _require_component_types(graph: GraphSpec, component_registry: Any) -> None:
                 f"node {node_id!r} names unregistered component type {node.type!r}. "
                 f"Known component types: {known!r}"
             )
+    for subgraph in (graph.subgraphs or {}).values():
+        if isinstance(subgraph, GraphSpec):
+            _require_component_types(subgraph, component_registry)
 
 
 def compile_graph(
