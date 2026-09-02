@@ -101,6 +101,7 @@ from feedbax.orchestration.state import (
     EmergencyProviderIdentity,
     EmergencyRunSetRecord,
     PreflightCheckEntry,
+    ProcessIdentity,
     PrimaryStatePersistenceError,
     RegistrationHistory,
     RegistrationHistoryEntry,
@@ -2676,10 +2677,17 @@ class StageEngine:
         outputs = self.driver.launch_row(self.bundle, row, state)
         output_status = outputs.get("status")
         status = "failed" if output_status == "failed" else "launched"
+        identity_payload = outputs.get("process_identity")
+        process_identity = (
+            ProcessIdentity.model_validate(identity_payload)
+            if isinstance(identity_payload, Mapping)
+            else None
+        )
         row_state = state.rows[row.row_id].model_copy(
             update={
                 "status": status,
                 "pid": outputs.get("pid"),
+                "process_identity": process_identity,
                 "started_at": utc_now(),
                 "completed_at": utc_now() if status == "failed" else None,
                 "error": outputs.get("detail") if status == "failed" else None,
@@ -2777,6 +2785,7 @@ class StageEngine:
                 update={
                     "status": status,
                     "pid": probe.pid or row_state.pid,
+                    "process_identity": probe.process_identity or row_state.process_identity,
                     "event_seq_high_water_mark": high_water,
                     "last_event_type": last_type,
                     "event_discrepancies": [dict(item) for item in reconciled.discrepancies],

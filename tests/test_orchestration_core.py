@@ -180,6 +180,8 @@ from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_VERSION_V2,
     RUN_SET_STATE_SCHEMA_VERSION_V3,
     RUN_SET_STATE_SCHEMA_VERSION_V4,
+    RUN_SET_STATE_SCHEMA_VERSION_V5,
+    ProcessIdentity,
     RowState,
     RunSetState,
     RunSetStateStore,
@@ -1455,6 +1457,21 @@ def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> N
             store.load()
         with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
             default_spec_registry.migrate("RunSetState", stale_state)
+    legacy_pid_state = old.model_dump(mode="json")
+    legacy_pid_state["schema_version"] = RUN_SET_STATE_SCHEMA_VERSION_V5
+    legacy_pid_state["rows"]["row"]["pid"] = 4242
+    store.path.write_text(json.dumps(legacy_pid_state), encoding="utf-8")
+
+    admitted = store.load()
+    migrated = default_spec_registry.migrate("RunSetState", legacy_pid_state)
+
+    assert admitted.schema_version == RUN_SET_STATE_SCHEMA_VERSION
+    assert admitted.rows["row"].pid == 4242
+    assert admitted.rows["row"].process_identity is None
+    assert migrated.payload["rows"]["row"]["process_identity"] is None
+    assert migrated.migration_records[0].migration_id == (
+        "run-set-state-v5-to-v6-non-authoritative-pids"
+    )
     old_payload = _bundle(tmp_path).model_dump(mode="json")
     for old_version in (
         RUN_BUNDLE_SCHEMA_VERSION_V1,
@@ -3462,9 +3479,17 @@ def test_failed_local_teardown_terminates_orphaned_worker_process_group(
     assert child_pid_path.is_file()
     assert driver._processes["failed"].poll() == 0
     assert _process_group_alive(launch["pid"])
+    identity = ProcessIdentity.model_validate(launch["process_identity"])
     failed = state.model_copy(
         update={
-            "rows": {"failed": RowState(status="failed", error="leader exited")},
+            "rows": {
+                "failed": RowState(
+                    status="failed",
+                    pid=identity.pid,
+                    process_identity=identity,
+                    error="leader exited",
+                )
+            },
             "stages": {
                 "STAGE_INPUTS": StageState(status="completed"),
                 "COLLECT": StageState(status="failed"),
@@ -4473,7 +4498,9 @@ def test_register_binds_certificate_to_run_rows_and_certify_path(
         engine._stage_register(state)
 
 
-def test_local_driver_adopts_live_started_pid_without_spawning(tmp_path: Path) -> None:
+def test_local_driver_refuses_unrelated_live_pid_without_spawning_or_signaling(
+    tmp_path: Path,
+) -> None:
     marker = tmp_path / "spawned.txt"
     compiled_row = _compiled_row(
         "row-a",
@@ -4498,13 +4525,88 @@ def test_local_driver_adopts_live_started_pid_without_spawning(tmp_path: Path) -
             row,
             RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()}),
         )
+        assert process.poll() is None
     finally:
         process.terminate()
         process.wait(timeout=5)
 
     assert outputs["pid"] == process.pid
-    assert outputs["adopted"] is True
+    assert outputs["status"] == "failed"
+    assert outputs["event_discrepancies"][0]["code"] == "unverified_process_identity"
     assert not marker.exists()
+
+
+def test_local_driver_recovers_and_stops_exact_owned_process_group(tmp_path: Path) -> None:
+    bundle = _bundle(
+        tmp_path,
+        rows=[
+            _compiled_row(
+                "row-a",
+                command=[sys.executable, "-c", "import time; time.sleep(30)"],
+            )
+        ],
+    )
+    row = bundle.row("row-a")
+    initial = RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()})
+    launcher = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+    launcher.provision(bundle, initial)
+    launched = launcher.launch_row(bundle, row, initial)
+    identity = ProcessIdentity.model_validate(launched["process_identity"])
+    recovered_state = initial.with_row(
+        row.row_id,
+        RowState(status="launched", pid=identity.pid, process_identity=identity),
+    )
+    recovered = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+
+    adopted = recovered.launch_row(bundle, row, recovered_state)
+    stopped = recovered.stop_row(bundle, row, recovered_state)
+
+    assert adopted["adopted"] is True
+    assert adopted["process_identity"] == identity.model_dump(mode="json")
+    assert stopped["status"] == "stopped"
+    launcher._processes[row.row_id].wait(timeout=5)
+    assert not _process_group_alive(identity.process_group_id)
+
+
+def test_local_driver_refuses_replaced_pid_without_signaling_either_process(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(
+        tmp_path,
+        rows=[
+            _compiled_row(
+                "row-a",
+                command=[sys.executable, "-c", "import time; time.sleep(30)"],
+            )
+        ],
+    )
+    row = bundle.row("row-a")
+    initial = RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()})
+    launcher = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+    launcher.provision(bundle, initial)
+    launched = launcher.launch_row(bundle, row, initial)
+    identity = ProcessIdentity.model_validate(launched["process_identity"])
+    owned_state = initial.with_row(
+        row.row_id,
+        RowState(status="launched", pid=identity.pid, process_identity=identity),
+    )
+    unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    pid_path = bundle.run_set_dir / "sentinels" / "row-a.pid"
+    pid_path.write_text(f"{unrelated.pid}\n", encoding="utf-8")
+    try:
+        recovered = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+        outputs = recovered.launch_row(bundle, row, owned_state)
+
+        assert outputs["status"] == "failed"
+        assert "PID does not match" in outputs["detail"]
+        assert unrelated.poll() is None
+        assert launcher._processes[row.row_id].poll() is None
+    finally:
+        unrelated.terminate()
+        unrelated.wait(timeout=5)
+        pid_path.write_text(f"{identity.pid}\n", encoding="utf-8")
+        launcher.stop_row(bundle, row, owned_state)
+        launcher._processes[row.row_id].wait(timeout=5)
 
 
 def _launch_row_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:

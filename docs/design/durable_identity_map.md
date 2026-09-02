@@ -291,7 +291,7 @@ Pins source snapshots, dependency locks, staged roots, bundles, and realized env
 
 - In-repo assertions:
 
-  - `feedbax/orchestration/repo_snapshot.py:seal_repo_snapshot` (`2c14d51f770660d4`)
+  - `feedbax/orchestration/repo_snapshot.py:seal_repo_snapshot` (`145887a22be17d26`)
   - `feedbax/orchestration/repo_realization.py:seal_local_repo_realizations` (`d575c425b2336698`)
   - `tests/test_repo_snapshot.py:test_snapshot_is_immutable_after_seal_and_distinguishes_dirty_bytes` (`612d1f66c3048a0b`)
 
@@ -341,7 +341,7 @@ The `downstream-authored-raw-sha256` rows are deliberately separate. Those produ
 
 ## Drift guard
 
-The companion inventory currently contains 305 annotated hash/digest/fingerprint/pin field candidates from `feedbax/`. It records every exact class field and a domain-routing hint in `docs/design/durable_identity_field_inventory.v1.json`.
+The companion inventory currently contains 306 annotated hash/digest/fingerprint/pin field candidates from `feedbax/`. It records every exact class field and a domain-routing hint in `docs/design/durable_identity_field_inventory.v1.json`.
 
 `uv run --no-sync python scripts/check_durable_identity_map.py --check` fails when:
 
