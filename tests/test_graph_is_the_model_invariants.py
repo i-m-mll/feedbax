@@ -720,13 +720,6 @@ def test_composite_with_a_subgraph_does_not_require_unused_outer_params() -> Non
     assert graph.nodes["plant"].nodes["scale"].gain == 3.0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Params present in the spec but unknown to the builder are silently "
-        "dropped instead of rejected — new finding, not in 8378254"
-    ),
-)
 def test_unrecognized_component_param_is_not_silently_dropped() -> None:
     """A spec param that reaches nothing in the built model must be rejected."""
     spec = GraphSpec(
@@ -748,7 +741,7 @@ def test_unrecognized_component_param_is_not_silently_dropped() -> None:
         output_bindings={"y": ("lin", "output")},
     )
 
-    # Observed today: the graph builds and the built Linear has no trace of
-    # ``nonexistent_param`` — the spec and the model disagree, silently.
+    # The strict declaration owns the accepted vocabulary, so an unknown field
+    # cannot disappear between the authored spec and the runtime model.
     with pytest.raises(REFUSALS):
         spec_to_graph(spec, _registry())
