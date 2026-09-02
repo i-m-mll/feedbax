@@ -7,22 +7,8 @@ import { BottomShelf } from '@/components/layout/BottomShelf';
 import { Divider } from '@/components/layout/Divider';
 import { useAppShortcuts } from '@/hooks/useShortcuts';
 import { useGraphStore } from '@/stores/graphStore';
-import { useAnalysisStore } from '@/stores/analysisStore';
-import { useTrainingStore } from '@/stores/trainingStore';
 import { persistLocalProjectTabs } from '@/stores/projectsStore';
-import {
-  buildWorkspaceDocumentSnapshot,
-  buildWorkspaceSnapshot,
-  useWorkspaceStore,
-} from '@/stores/workspaceStore';
-import {
-  fetchGraph,
-  semanticWorkspaceForSave,
-  studioPersistenceDocument,
-  updateGraph,
-} from '@/api/client';
-import { isHttpConflict } from '@/api/request';
-import { summarizeSaveConflict } from '@/utils/saveConflict';
+import { startStudioPersistence } from '@/services/studioPersistence';
 import {
   useLayoutStore,
   BOTTOM_COLLAPSED_HEIGHT,
@@ -32,16 +18,14 @@ import {
   DIVIDER_HEIGHT,
 } from '@/stores/layoutStore';
 
-const AUTO_SAVE_DELAY_MS = 800;
 const PROJECT_CHANNEL_NAME = 'feedbax:studio-project-presence';
 
 export default function App() {
   useAppShortcuts();
 
-  // Debounced auto-save: 800ms after the last dirty change, save to backend.
-  // Only fires when a graphId exists (i.e., graph was already saved at least once).
-  const isDirty = useGraphStore((s) => s.isDirty);
   const graphId = useGraphStore((s) => s.graphId);
+
+  useEffect(() => startStudioPersistence(), []);
 
   useEffect(() => {
     if (!graphId || typeof BroadcastChannel === 'undefined') return;
@@ -73,152 +57,16 @@ export default function App() {
     return () => channel.close();
   }, [graphId]);
 
-  // Lifted timer ref so the pagehide handler can cancel a pending debounce.
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Guard against concurrent in-flight saves; re-arm after completion if still dirty.
-  const savingRef = useRef(false);
-
-  useEffect(() => {
-    if (!isDirty || !graphId) return;
-
-    const doSave = async () => {
-      if (savingRef.current) return;
-      savingRef.current = true;
-      const graphStore = useGraphStore.getState();
-      const { graph, uiState } = graphStore.capturePersistedGraph();
-      const currentWorkspaceDocument = useWorkspaceStore.getState().workspaceDocument;
-      if (!currentWorkspaceDocument) {
-        toast.error('Auto-save stopped: the semantic workspace anchor is missing.');
-        savingRef.current = false;
-        return;
-      }
-      const workspace = buildWorkspaceSnapshot({
-        workspace: useWorkspaceStore.getState().workspace,
-        graph,
-        uiState,
-        trainingSpec: useTrainingStore.getState().trainingSpec,
-        taskSpec: useTrainingStore.getState().taskSpec,
-        analysisSnapshot: useAnalysisStore.getState().captureSnapshot(),
-        graphStackPath: graphStore.captureGraphStackPath(),
-      });
-      const workspaceDocument = buildWorkspaceDocumentSnapshot(
-        currentWorkspaceDocument,
-        uiState,
-        useAnalysisStore.getState().captureSnapshot(),
-        workspace,
-      );
-      useWorkspaceStore.getState().setWorkspace(workspace);
-      let saveConflict = false;
-      try {
-        const response = await updateGraph(
-          graphId,
-          graph,
-          workspaceDocument,
-          workspace,
-          graphStore.saveRevision,
-        );
-        graphStore.markSaved(graphId, response.metadata.save_revision);
-      } catch (e) {
-        persistLocalProjectTabs();
-        if (isHttpConflict(e)) {
-          saveConflict = true;
-          const server = await fetchGraph(graphId).catch(() => null);
-          const message = server
-            ? summarizeSaveConflict({
-                expectedRevision: graphStore.saveRevision,
-                serverMetadata: server.metadata,
-                local: {
-                  graph,
-                  uiState: workspaceDocument.graph_ui_state,
-                  workspace,
-                  analysisPages: workspaceDocument.analysis_pages,
-                  activeAnalysisPageId: workspaceDocument.active_analysis_page_id ?? null,
-                },
-                server: {
-                  graph: server.graph,
-                  uiState: server.workspace_document.graph_ui_state,
-                  workspace: server.workspace,
-                  analysisPages: server.workspace_document.analysis_pages,
-                  activeAnalysisPageId:
-                    server.workspace_document.active_analysis_page_id ?? null,
-                },
-              })
-            : 'Save conflict: project changed elsewhere, but the server copy could not be fetched. Your local edits are still unsaved.';
-          toast.error(message, { id: 'autosave-conflict', duration: 12000 });
-        } else {
-          toast.error('Auto-save failed — changes not saved', { id: 'autosave-error' });
-        }
-      } finally {
-        savingRef.current = false;
-        // If a new edit arrived while the PUT was in-flight, re-arm the timer.
-        if (!saveConflict && useGraphStore.getState().isDirty) {
-          timerRef.current = setTimeout(doSave, AUTO_SAVE_DELAY_MS);
-        }
-      }
-    };
-
-    timerRef.current = setTimeout(doSave, AUTO_SAVE_DELAY_MS);
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, [isDirty, graphId]);
-
-  // Flush unsaved changes on page unload via sendBeacon (more reliable than beforeunload).
+  // Local tab custody is synchronous. Network writes remain serialized through
+  // the persistence coordinator and resume from this local draft after reload.
   useEffect(() => {
     const handlePageHide = (event: PageTransitionEvent) => {
-      if (event.persisted) return; // page going into bfcache, not unloading
+      if (event.persisted) return;
       persistLocalProjectTabs();
-      const graphStore = useGraphStore.getState();
-      const { isDirty: dirty, graphId: gid } = graphStore;
-      if (!dirty || !gid) return;
-      const { graph: rootGraph, uiState: rootUiState } = graphStore.capturePersistedGraph();
-      const currentWorkspaceDocument = useWorkspaceStore.getState().workspaceDocument;
-      if (!currentWorkspaceDocument) return;
-      const workspace = buildWorkspaceSnapshot({
-        workspace: useWorkspaceStore.getState().workspace,
-        graph: rootGraph,
-        uiState: rootUiState,
-        trainingSpec: useTrainingStore.getState().trainingSpec,
-        taskSpec: useTrainingStore.getState().taskSpec,
-        analysisSnapshot: useAnalysisStore.getState().captureSnapshot(),
-        graphStackPath: graphStore.captureGraphStackPath(),
-      });
-      const workspaceDocument = buildWorkspaceDocumentSnapshot(
-        currentWorkspaceDocument,
-        rootUiState,
-        useAnalysisStore.getState().captureSnapshot(),
-        workspace,
-      );
-      useWorkspaceStore.getState().setWorkspace(workspace);
-      // Cancel pending debounce timer
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-      const beaconPayload = studioPersistenceDocument({
-        graph: rootGraph,
-        workspace_document: workspaceDocument,
-        expected_save_revision: graphStore.saveRevision,
-      });
-      beaconPayload.workspace = semanticWorkspaceForSave(workspace);
-      const body = new Blob(
-        [JSON.stringify(beaconPayload)],
-        { type: 'application/json' }
-      );
-      const sent = navigator.sendBeacon(`/api/graphs/${gid}/beacon`, body);
-      if (!sent) {
-        // Fallback: keepalive fetch (fire-and-forget)
-        fetch(`/api/graphs/${gid}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(beaconPayload),
-          keepalive: true,
-        }).catch(() => {});
-      }
     };
     window.addEventListener('pagehide', handlePageHide);
     return () => window.removeEventListener('pagehide', handlePageHide);
-  }, []); // empty deps — reads from store at event time
+  }, []);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [availableHeight, setAvailableHeight] = useState(0);

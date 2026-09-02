@@ -17,7 +17,7 @@ import type {
   AnalysisClassDef,
   AnalysisSnapshot,
 } from '@/types/analysis';
-import { fetchGraph, updateGraph } from '@/api/client';
+import { fetchGraph } from '@/api/client';
 import { asApiRequestError, requestJson } from '@/api/request';
 import { parseContract } from '@/generated/studioContracts';
 
@@ -46,19 +46,6 @@ function pageFromWire(wire: AnalysisPageWire): AnalysisPageSpec {
     viewport: wire.viewport,
     evalRunId: wire.eval_run_id ?? null,
     expandedFieldPaths: wire.expanded_field_paths ?? [],
-  };
-}
-
-/** Convert a frontend camelCase page to the backend wire format. */
-function pageToWire(page: AnalysisPageSpec): AnalysisPageWire {
-  return {
-    id: page.id,
-    name: page.name,
-    graph_spec: page.graphSpec as unknown as Record<string, unknown>,
-    eval_params: page.evalParams,
-    viewport: page.viewport,
-    eval_run_id: page.evalRunId,
-    expanded_field_paths: page.expandedFieldPaths ?? [],
   };
 }
 
@@ -119,28 +106,4 @@ export async function fetchAnalysisPages(
     pages,
     activePageId: pages[0].id,
   };
-}
-
-/**
- * Save analysis pages for a project via the graph update endpoint.
- * Replaces the analysis view inside the versioned WorkspaceDocument.
- */
-export async function saveAnalysisPages(
-  graphId: string,
-  snapshot: AnalysisSnapshot,
-  expectedSaveRevision?: number | null,
-): Promise<void> {
-  const wirePages = snapshot.pages.map(pageToWire);
-  const current = await fetchGraph(graphId);
-  await updateGraph(
-    graphId,
-    null,
-    {
-      ...current.workspace_document,
-      analysis_pages: wirePages,
-      active_analysis_page_id: snapshot.activePageId,
-    },
-    undefined,
-    expectedSaveRevision,
-  );
 }

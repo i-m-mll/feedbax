@@ -3,9 +3,10 @@ import {
   previewStudioEvaluationMatrix,
   runStudioEvaluationLocalExecution,
   sampleTaskTrials,
+  buildStudioPersistenceDocument,
+  persistStudioDocument,
   semanticWorkspaceForSave,
   stageStudioEvaluationMatrix,
-  updateGraph,
 } from '@/api/client';
 import type { GraphMetadata, GraphSpec, GraphUIState } from '@/types/graph';
 import type { WorkspaceDocument } from '@/generated/studioContracts';
@@ -82,7 +83,9 @@ describe('graph API save concurrency', () => {
       validation: { errors: [], warnings: [] },
       metadata: {},
     } as any;
-    const response = await updateGraph('graph-1', graph, workspaceDocument, workspace, 4);
+    const document = buildStudioPersistenceDocument({ graph, workspaceDocument, workspace });
+    document.expected_save_revision = 4;
+    const response = await persistStudioDocument('graph-1', document);
 
     expect(response.metadata.save_revision).toBe(5);
     expect(fetchMock).toHaveBeenCalledTimes(1);

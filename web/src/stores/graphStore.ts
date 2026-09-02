@@ -1505,8 +1505,11 @@ export interface GraphSnapshot {
   uiState: GraphUIState;
   graphId: string | null;
   saveRevision: number | null;
+  localRevision: number;
   isDirty: boolean;
   lastSavedAt: string | null;
+  saveStatus: 'idle' | 'saving' | 'error' | 'conflict';
+  saveError: string | null;
   graphStack: GraphLayer[];
   currentGraphLabel: string;
   currentContext: string;
@@ -1527,6 +1530,7 @@ export interface PersistableGraphSnapshot {
 interface GraphStoreState {
   graphId: string | null;
   saveRevision: number | null;
+  localRevision: number;
   graph: GraphSpec;
   uiState: GraphUIState;
   nodes: Node<GraphNodeData | TapNodeData>[];
@@ -1540,6 +1544,8 @@ interface GraphStoreState {
   currentContext: string;
   isDirty: boolean;
   lastSavedAt: string | null;
+  saveStatus: 'idle' | 'saving' | 'error' | 'conflict';
+  saveError: string | null;
   lastSubgraphError: string | null;
   past: GraphHistoryEntry[];
   future: GraphHistoryEntry[];
@@ -1557,7 +1563,13 @@ interface GraphStoreState {
   capturePersistedGraph: () => PersistableGraphSnapshot;
   captureGraphStackPath: () => string[];
   restoreSnapshot: (snapshot: GraphSnapshot) => void;
-  markSaved: (graphId: string, saveRevision?: number | null) => void;
+  markSaveStarted: () => void;
+  acknowledgeSave: (
+    capturedLocalRevision: number,
+    graphId: string,
+    saveRevision: number,
+  ) => void;
+  markSaveFailed: (status: 'error' | 'conflict', message: string) => void;
   markDirty: () => void;
   resetGraph: () => void;
   undo: () => void;
@@ -1687,12 +1699,18 @@ export const graphStoreSlices = {
   }),
   registryPersistence: (state: GraphStoreState) => ({
     graphId: state.graphId,
+    saveRevision: state.saveRevision,
+    localRevision: state.localRevision,
     isDirty: state.isDirty,
     lastSavedAt: state.lastSavedAt,
+    saveStatus: state.saveStatus,
+    saveError: state.saveError,
     hydrateGraph: state.hydrateGraph,
     capturePersistedGraph: state.capturePersistedGraph,
     restoreSnapshot: state.restoreSnapshot,
-    markSaved: state.markSaved,
+    markSaveStarted: state.markSaveStarted,
+    acknowledgeSave: state.acknowledgeSave,
+    markSaveFailed: state.markSaveFailed,
     markDirty: state.markDirty,
     setCompositeTypes: state.setCompositeTypes,
     setComponentRegistry: state.setComponentRegistry,
@@ -1702,7 +1720,9 @@ export const graphStoreSlices = {
 
 const initial = createInitialGraph();
 
-function capturePersistedGraphFromState(state: GraphStoreState): PersistableGraphSnapshot {
+function capturePersistedGraphFromState(
+  state: Pick<GraphStoreState, 'graph' | 'uiState' | 'graphStack' | 'edgeStyle'>,
+): PersistableGraphSnapshot {
   if (state.graphStack.length === 0) {
     return {
       graph: state.graph as GraphSpec,
@@ -1776,6 +1796,12 @@ function capturePersistedGraphFromState(state: GraphStoreState): PersistableGrap
     uiState: childUi,
     graphStackPath: captureGraphStackPathFromState(state),
   };
+}
+
+export function capturePersistedGraphFromSnapshot(
+  snapshot: GraphSnapshot,
+): PersistableGraphSnapshot {
+  return capturePersistedGraphFromState(snapshot);
 }
 
 function captureGraphStackPathFromState(state: Pick<GraphStoreState, 'graphStack'>): string[] {
@@ -1935,8 +1961,11 @@ export function createGraphSnapshotFromPersistedGraph({
     uiState: restored.uiState,
     graphId,
     saveRevision: saveRevision ?? null,
+    localRevision: 0,
     isDirty: false,
     lastSavedAt: null,
+    saveStatus: 'idle',
+    saveError: null,
     graphStack: restored.graphStack,
     currentGraphLabel: restored.currentGraphLabel,
     currentContext: restored.currentContext,
@@ -1949,9 +1978,28 @@ export function createGraphSnapshotFromPersistedGraph({
   };
 }
 
-export const useGraphStore = create<GraphStoreState>((set, get) => ({
+export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
+  const set: typeof baseSet = (partial, replace) => {
+    baseSet((state) => {
+      const patch = typeof partial === 'function' ? partial(state) : partial;
+      if (patch === state || !patch || typeof patch !== 'object') return patch;
+      if (
+        'isDirty' in patch &&
+        patch.isDirty === true
+      ) {
+        return {
+          ...patch,
+          localRevision: state.localRevision + 1,
+        };
+      }
+      return patch;
+    }, replace as false);
+  };
+
+  return {
   graphId: null,
   saveRevision: null,
+  localRevision: 0,
   graph: initial.graph,
   uiState: initial.uiState,
   nodes: buildNodes(initial.graph, initial.uiState),
@@ -1965,6 +2013,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   currentContext: 'top-level',
   isDirty: false,
   lastSavedAt: null,
+  saveStatus: 'idle',
+  saveError: null,
   lastSubgraphError: null,
   past: [],
   future: [],
@@ -1985,9 +2035,10 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       edgeStyle,
       componentRegistry: get()._componentRegistry,
     });
-    set({
+    baseSet({
       graphId: graphId ?? null,
       saveRevision,
+      localRevision: 0,
       graph: restored.graph,
       uiState: restored.uiState,
       nodes: restored.nodes,
@@ -1996,6 +2047,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       currentGraphLabel: restored.currentGraphLabel,
       currentContext: restored.currentContext,
       isDirty: false,
+      saveStatus: 'idle',
+      saveError: null,
       lastSubgraphError: null,
       past: [],
       future: [],
@@ -2011,9 +2064,10 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     const { edgeStyle } = snapshot;
     const graph = normalizeGraphForStudioAuthoring(snapshot.graph);
     const normalized = normalizeUiState(graph, snapshot.uiState, edgeStyle);
-    set({
+    baseSet({
       graphId: snapshot.graphId,
       saveRevision: snapshot.saveRevision ?? null,
+      localRevision: snapshot.localRevision ?? 0,
       graph,
       uiState: normalized,
       nodes: buildNodes(graph, normalized),
@@ -2024,6 +2078,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       currentContext: snapshot.currentContext,
       isDirty: snapshot.isDirty,
       lastSavedAt: snapshot.lastSavedAt,
+      saveStatus: snapshot.saveStatus ?? 'idle',
+      saveError: snapshot.saveError ?? null,
       lastSubgraphError: null,
       past: snapshot.past,
       future: snapshot.future,
@@ -2033,22 +2089,37 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       pendingStateMerge: snapshot.pendingStateMerge,
     });
   },
-  markSaved: (graphId, saveRevision) => {
-    set({
-      graphId,
-      ...(saveRevision !== undefined ? { saveRevision } : {}),
-      isDirty: false,
-      lastSavedAt: new Date().toISOString(),
+  markSaveStarted: () => set({ saveStatus: 'saving', saveError: null }),
+  acknowledgeSave: (capturedLocalRevision, graphId, saveRevision) => {
+    baseSet((state) => {
+      const isCurrent = state.localRevision === capturedLocalRevision;
+      return {
+        graphId,
+        saveRevision,
+        localRevision: state.localRevision,
+        isDirty: isCurrent ? false : state.isDirty,
+        lastSavedAt: isCurrent ? new Date().toISOString() : state.lastSavedAt,
+        saveStatus: 'idle',
+        saveError: null,
+      };
     });
   },
+  markSaveFailed: (saveStatus, saveError) =>
+    baseSet((state) => ({
+      isDirty: true,
+      localRevision: state.localRevision,
+      saveStatus,
+      saveError,
+    })),
   markDirty: () => {
     set({ isDirty: true });
   },
   resetGraph: () => {
     const fresh = createInitialGraph();
-    set({
+    baseSet({
       graphId: null,
       saveRevision: null,
+      localRevision: 0,
       graph: fresh.graph,
       uiState: fresh.uiState,
       nodes: buildNodes(fresh.graph, fresh.uiState),
@@ -2058,6 +2129,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       currentContext: 'top-level',
       isDirty: false,
       lastSavedAt: null,
+      saveStatus: 'idle',
+      saveError: null,
       lastSubgraphError: null,
       past: [],
       future: [],
@@ -4157,4 +4230,5 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       };
     });
   },
-}));
+  };
+});
