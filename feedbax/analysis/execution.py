@@ -1,160 +1,21 @@
+"""Manifest-canonical analysis execution."""
+
 import shutil
-import sys
-from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import ModuleType
-from typing import TYPE_CHECKING, Any, List, Literal, Optional, Union
+from typing import Any, Literal
 
-import equinox as eqx
-import feedbax
-import jax
-import jax.tree as jt
 import jax_cookbook.tree as jtree
-import optax
-import plotly
 import plotly.graph_objects as go
-from equinox import Module
-from jax_cookbook import LDict, is_module, is_none, is_type
-from jax_cookbook._func import wrap_to_accept_var_kwargs
 from jax_cookbook.progress import piter
 from jaxtyping import PyTree
-from rich.prompt import Prompt
-from sqlalchemy.orm import Session
 
 from feedbax.analysis._dependencies import compute_dependency_results
-from feedbax.analysis.analysis import (
-    AbstractAnalysis,
-    get_validation_trial_specs,
-    logger,
-)
-from feedbax.analysis.context import AnalysisRunContext, parent_ref_from_evaluation_manifest
-from feedbax.analysis.evaluation import (
-    EvaluationStatesCacheCorruption,
-    load_evaluation_states_cache,
-    write_evaluation_states_cache,
-)
-from feedbax.plot.color_setup import (
-    ColorConfig,
-    ColorscaleSpec,
-    GENERIC_COLOR_CONFIG,
-    setup_colors,
-)
-
-# Access project paths and string constants
+from feedbax.analysis.analysis import AbstractAnalysis, logger
+from feedbax.analysis.context import AnalysisRunContext
+from feedbax.analysis.types import AnalysisInputData
 from feedbax.config import PATHS
 from feedbax.config.yaml import get_yaml_loader
-from feedbax.config.defaults import REPLICATE_CRITERION
-
-# `cast_hps` is needed to convert dictionaries (e.g. `where`) back into the expected objects
-from feedbax.config.hyperparams import (
-    config_to_hps,
-    flatten_hps,
-    use_train_hps_when_none,
-)
-from feedbax.contracts.manifest import AnalysisRunSpec, evaluation_states_cache_path
-from feedbax.training.support import log_version_info
-from feedbax.plugins.registry import ExperimentRegistry
-from feedbax.config.tree import _hash_pytree, tree_level_labels
-from feedbax.analysis.types import AnalysisInputData
-from feedbax.config.namespace import TreeNamespace, namespace_to_dict
-
-if TYPE_CHECKING:
-    from feedbax.persistence.database import EvaluationRecord, ModelRecord
-
-STATES_CACHE_SUBDIR = "states"
-
-
-@dataclass(frozen=True)
-class AnalysisModelLoadConfig:
-    """Caller-supplied model-loading defaults for legacy analysis execution."""
-
-    training_module_name: str | Callable[[str], str]
-    sweep_label: str
-    sweep_values: Callable[[TreeNamespace], Sequence[Any]]
-    params_query: Callable[[TreeNamespace, Any, str], dict[str, Any]]
-    noise_stds: Callable[[TreeNamespace], dict[str, Any]] | None = None
-    surgeries: Callable[[TreeNamespace], dict[tuple[str, ...], Any]] | None = None
-    exclude_underperformers_by: str | None = REPLICATE_CRITERION
-
-    def resolve_training_module_name(self, module_key: str) -> str:
-        if callable(self.training_module_name):
-            return self.training_module_name(module_key)
-        return self.training_module_name
-
-
-@dataclass(frozen=True)
-class AnalysisSetupMetadataConfig:
-    """Caller-supplied metadata extraction for evaluation setup records."""
-
-    condition_metadata: Callable[[TreeNamespace], dict[str, Any] | None] | None = None
-    eval_setup_params: Callable[[TreeNamespace], dict[str, Any] | None] | None = None
-
-
-def query_and_load_model(
-    db_session: Session,
-    setup_task_model_pair: Callable,
-    params_query: dict[str, Any],
-    noise_stds: Optional[dict[Literal["feedback", "motor"] | str, Optional[float]]] = None,
-    surgeries: Optional[dict[tuple, Any]] = None,
-    tree_inclusions: Optional[dict[type, Optional[Any | Sequence | Callable]]] = None,
-    exclude_underperformers_by: Optional[str] = None,
-    exclude_method: Literal["nan", "remove", "best-only"] = "nan",
-    return_task: bool = False,
-):
-    """Load models through the optional legacy database-backed analysis path."""
-    from feedbax.analysis.setup import query_and_load_model as _query_and_load_model
-
-    return _query_and_load_model(
-        db_session,
-        setup_task_model_pair,
-        params_query,
-        noise_stds,
-        surgeries,
-        tree_inclusions,
-        exclude_underperformers_by,
-        exclude_method,
-        return_task,
-    )
-
-
-def _required_model_load_config(
-    module_key: str,
-    analysis_module: ModuleType,
-) -> AnalysisModelLoadConfig:
-    config = getattr(analysis_module, "MODEL_LOAD_CONFIG", None)
-    if not isinstance(config, AnalysisModelLoadConfig):
-        raise ValueError(
-            f"Analysis module {module_key!r} must define MODEL_LOAD_CONFIG as "
-            "feedbax.analysis.execution.AnalysisModelLoadConfig; Feedbax no "
-            "longer derives training-module or sweep defaults from module names."
-        )
-    return config
-
-
-def _analysis_color_config(analysis_module: ModuleType) -> ColorConfig:
-    config = getattr(analysis_module, "COLOR_CONFIG", GENERIC_COLOR_CONFIG)
-    if not isinstance(config, ColorConfig):
-        raise ValueError("Analysis module COLOR_CONFIG must be a feedbax ColorConfig")
-    return config
-
-
-def _analysis_color_specs(analysis_module: ModuleType) -> dict[str, ColorscaleSpec]:
-    specs = getattr(analysis_module, "COLOR_SPECS", {})
-    if not isinstance(specs, dict):
-        raise ValueError("Analysis module COLOR_SPECS must be a dict of ColorscaleSpec values")
-    if not all(isinstance(value, ColorscaleSpec) for value in specs.values()):
-        raise ValueError("Analysis module COLOR_SPECS values must be ColorscaleSpec instances")
-    return specs
-
-
-def _analysis_setup_metadata_config(analysis_module: ModuleType) -> AnalysisSetupMetadataConfig:
-    config = getattr(analysis_module, "SETUP_METADATA_CONFIG", AnalysisSetupMetadataConfig())
-    if not isinstance(config, AnalysisSetupMetadataConfig):
-        raise ValueError(
-            "Analysis module SETUP_METADATA_CONFIG must be an AnalysisSetupMetadataConfig"
-        )
-    return config
 
 
 @dataclass
@@ -169,25 +30,25 @@ class FigDumpManager:
         return self.root / Path(module_key.replace(".", "/"))
 
     def prepare_module_dir(self, module_key: str, module_config: dict) -> Path:
-        d = self.module_dir(module_key)
-        if self.clear_existing in ("module", "all") and d.exists():
-            shutil.rmtree(d)
-        d.mkdir(parents=True, exist_ok=True)
+        directory = self.module_dir(module_key)
+        if self.clear_existing in ("module", "all") and directory.exists():
+            shutil.rmtree(directory)
+        directory.mkdir(parents=True, exist_ok=True)
         yaml = get_yaml_loader(typ="safe")
-        with open(d / "module.yml", "w") as f:
-            yaml.dump(module_config, f)
-        return d
+        with open(directory / "module.yml", "w") as file:
+            yaml.dump(module_config, file)
+        return directory
 
     def prepare_run_dir(self, module_key: str, run_params: dict) -> Path:
-        i = self._counters.get(module_key, 0) + 1
-        self._counters[module_key] = i
+        ordinal = self._counters.get(module_key, 0) + 1
+        self._counters[module_key] = ordinal
         module_dir = self.module_dir(module_key)
-        i_str = f"{i:03d}"
-        dump_dir = module_dir / i_str
+        ordinal_text = f"{ordinal:03d}"
+        dump_dir = module_dir / ordinal_text
         dump_dir.mkdir(parents=True, exist_ok=True)
         yaml = get_yaml_loader(typ="safe")
-        with open(module_dir / f"{i_str}.yml", "w") as f:
-            yaml.dump(run_params, f)
+        with open(module_dir / f"{ordinal_text}.yml", "w") as file:
+            yaml.dump(run_params, file)
         return dump_dir
 
     def clear_all_figures(self) -> None:
@@ -195,346 +56,21 @@ class FigDumpManager:
         if self.root.exists():
             shutil.rmtree(self.root)
             self.root.mkdir(parents=True, exist_ok=True)
-            logger.info(f"Deleted all existing dump figures in {self.root}")
-
-
-# Pre-setup can be either granular dict or combined function
-PreSetupSpec = Union[
-    dict[str, Optional[Callable]],  # Runtime validation will check keys are 'task'/'models'
-    Callable[[Module, LDict[float, Module]], tuple[Module, LDict[float, Module]]],
-]
-
-# Post-eval can be either granular dict or combined function
-PostEvalSpec = Union[
-    # Runtime validation will check keys are 'models'/'tasks'/'states'
-    dict[str, Optional[Callable]],
-    Callable[[LDict[float, Module], LDict, PyTree], tuple[LDict[float, Module], LDict, PyTree]],
-]
-
-
-class AnalysisModuleTransformSpec(Module):
-    """Specifies transformations to apply at different stages of analysis execution.
-
-    Attributes
-    ----------
-    pre_setup : Optional[PreSetupSpec]
-        Transform applied to task_base and models_base before setup_eval_tasks_and_models.
-        Can be either:
-        - dict with 'task' and/or 'models' keys mapping to transform functions
-        - single function taking (task, models) and returning (task, models)
-        Useful for operations like selecting best replicates to save computation.
-    post_eval : Optional[PostEvalSpec]
-        Transform applied to models, tasks, and/or states after evaluation completes.
-        Can be either:
-        - dict with 'models', 'tasks', and/or 'states' keys mapping to transform functions
-        - single function taking (models, tasks, states) and returning (models, tasks, states)
-        Useful for post-processing results while preserving intermediate data.
-    """
-
-    pre_setup: Optional[PreSetupSpec] = None
-    post_eval: Optional[PostEvalSpec] = None
-
-
-# Also allow plain dict for convenience
-TransformsSpec = Union[
-    AnalysisModuleTransformSpec,  # Structured (better static typing)
-    dict[str, Any],  # Dict (convenience) - runtime validation will check keys
-]
-
-
-def validate_and_convert_transforms(
-    transforms_spec: Optional[TransformsSpec],
-) -> AnalysisModuleTransformSpec:
-    """Convert and validate transforms specification to canonical form."""
-    if transforms_spec is None:
-        return AnalysisModuleTransformSpec()
-
-    if isinstance(transforms_spec, dict):
-        # Validate top-level keys
-        valid_keys = {"pre_setup", "post_eval"}
-        invalid_keys = set(transforms_spec.keys()) - valid_keys
-        if invalid_keys:
-            raise ValueError(
-                f"Invalid transform keys: {invalid_keys}. Valid keys are: {valid_keys}"
-            )
-
-        pre_setup = transforms_spec.get("pre_setup")
-        post_eval = transforms_spec.get("post_eval")
-
-        # Validate pre_setup if present
-        if pre_setup is not None and isinstance(pre_setup, dict):
-            valid_pre_keys = {"task", "models"}
-            invalid_pre_keys = set(pre_setup.keys()) - valid_pre_keys
-            if invalid_pre_keys:
-                raise ValueError(
-                    f"Invalid pre_setup keys: {invalid_pre_keys}. Valid keys are: {valid_pre_keys}"
-                )
-
-        # Validate post_eval if present
-        if post_eval is not None and isinstance(post_eval, dict):
-            valid_post_keys = {"models", "tasks", "states"}
-            invalid_post_keys = set(post_eval.keys()) - valid_post_keys
-            if invalid_post_keys:
-                raise ValueError(
-                    f"Invalid post_eval keys: {invalid_post_keys}. "
-                    f"Valid keys are: {valid_post_keys}"
-                )
-
-        return AnalysisModuleTransformSpec(pre_setup=pre_setup, post_eval=post_eval)
-
-    elif isinstance(transforms_spec, AnalysisModuleTransformSpec):
-        return transforms_spec
-
-    else:
-        raise ValueError(
-            f"transforms_spec must be dict or AnalysisModuleTransformSpec, "
-            f"got {type(transforms_spec)}"
-        )
-
-
-def load_trained_models_and_aux_objects(
-    model_load_config: AnalysisModelLoadConfig,
-    training_module_name: str,
-    hps: TreeNamespace,
-    db_session: Session,
-    registry,
-):
-    """Given the analysis config, load the trained models and related objects (e.g. train tasks)."""
-    # Load training module from registered packages
-    training_module = registry.get_training_module(training_module_name)
-    sweep_values = model_load_config.sweep_values(hps)
-    if len(sweep_values) == 0:
-        raise ValueError("MODEL_LOAD_CONFIG.sweep_values returned no model groups")
-
-    pairs, model_info, replicate_info, n_replicates_included, hps_train_dict = jtree.unzip(
-        LDict.of(model_load_config.sweep_label)(
-            {
-                sweep_value: query_and_load_model(
-                    db_session,
-                    training_module.setup_task_model_pair,
-                    params_query=model_load_config.params_query(
-                        hps, sweep_value, training_module_name
-                    ),
-                    noise_stds=(
-                        model_load_config.noise_stds(hps)
-                        if model_load_config.noise_stds is not None
-                        else None
-                    ),
-                    surgeries=(
-                        model_load_config.surgeries(hps)
-                        if model_load_config.surgeries is not None
-                        else None
-                    ),
-                    exclude_underperformers_by=model_load_config.exclude_underperformers_by,
-                    return_task=True,
-                )
-                for sweep_value in sweep_values
-            }
-        )
-    )
-
-    tasks_train, models = jtree.unzip(pairs)
-
-    return models, model_info, replicate_info, tasks_train, n_replicates_included, hps_train_dict
-
-
-def setup_eval_for_module(
-    module_key: str,
-    hps: TreeNamespace,
-    db_session: Session,
-    version_info: dict[str, str],
-    registry: ExperimentRegistry,
-):
-    """Given the analysis module, set up the evaluation(s).
-
-    1. Construct the task-model pairs to evaluate, to produce the state needed for the analyses.
-    2. Add an evaluation record to the database.
-    """
-    from feedbax.persistence.database import add_evaluation, fill_hps_with_train_params
-
-    # Load analysis module from registered packages
-    analysis_module: ModuleType = registry.get_analysis_module(module_key)
-
-    model_load_config = _required_model_load_config(module_key, analysis_module)
-    training_module_name = model_load_config.resolve_training_module_name(module_key)
-
-    models_base, model_info, replicate_info, tasks_train, n_replicates_included, hps_train_dict = (
-        load_trained_models_and_aux_objects(
-            model_load_config,
-            training_module_name,
-            hps,
-            db_session,
-            registry,
-        )
-    )
-
-    # Fill-in any missing training hyper-parameters **out-of-place** and switch to
-    # the enriched version from here onward. Use training hps from database records.
-    # Take the first entry from hps_train_dict as representative training hyperparameters
-    hps_train_representative = jt.leaves(hps_train_dict, is_leaf=is_type(TreeNamespace))[0]
-    hps_filled = fill_hps_with_train_params(hps, hps_train_representative)
-    hps = hps_filled  #  use the enriched version for everything below
-
-    # Evaluation variants are derived from caller-supplied task configuration below, so one
-    # representative training task supplies the base model-compatible task structure.
-    task_base = jt.leaves(tasks_train, is_leaf=is_module)[0]
-
-    #! TODO: This should be generalized once we move `n_steps` to `task` (in YAML config)
-    task_base = eqx.tree_at(
-        lambda task: task.n_steps,
-        task_base,
-        hps.task.n_steps,
-    )
-
-    # Load and validate transforms once
-    transforms_raw = getattr(analysis_module, "TRANSFORMS", None)
-    transforms = validate_and_convert_transforms(transforms_raw)
-
-    # Construct common inputs needed by transforms and analyses
-    # Note: We construct trial_specs for all task variants here
-    #! Note that modifying `n_steps` may not work here yet, because of the way that `n_steps` is
-    #! baked into the model's `Iterator`. Here, only the task will be modified.
-    task_variants_dict = namespace_to_dict(hps.task.variants)
-    task_variants = LDict.of("task_variant")(
-        {
-            variant_key: eqx.tree_at(
-                lambda task: [getattr(task, name) for name in variant_params.keys()],
-                task_base,
-                [value for value in variant_params.values()],
-            )
-            for variant_key, variant_params in task_variants_dict.items()
-        }
-    )
-
-    metadata_config = _analysis_setup_metadata_config(analysis_module)
-    condition_metadata = (
-        metadata_config.condition_metadata(hps)
-        if metadata_config.condition_metadata is not None
-        else None
-    )
-    eval_setup_params = (
-        metadata_config.eval_setup_params(hps)
-        if metadata_config.eval_setup_params is not None
-        else None
-    )
-
-    # Add evaluation record to the database, including setup metadata
-    eval_info = add_evaluation(
-        db_session,
-        expt_name=module_key,
-        models=model_info,
-        # ? Could move the flattening/conversion to `database`?
-        #! TODO: Could exclude train parameters, since
-        eval_parameters=namespace_to_dict(flatten_hps(hps)),
-        version_info=version_info,
-        condition_metadata=condition_metadata,
-        task_variants=task_variants_dict,
-        eval_setup_params=eval_setup_params,
-    )
-
-    trial_specs = jt.map(get_validation_trial_specs, task_variants, is_leaf=is_module)
-
-    colors, colorscales = setup_colors(
-        hps,
-        _analysis_color_specs(analysis_module),
-        color_config=_analysis_color_config(analysis_module),
-    )
-
-    common_inputs = dict(
-        hps_common=hps,
-        colors=colors,
-        colorscales=colorscales,
-        replicate_info=replicate_info,
-        trial_specs=trial_specs,
-    )
-
-    def setup_per_task_variant(task, models_base, hps, variant_key, **kwargs):
-        # Apply pre-setup transformations if present
-        if transforms.pre_setup is not None:
-            if isinstance(transforms.pre_setup, dict):
-                # Granular transforms - apply to task and/or models separately
-                if "task" in transforms.pre_setup and transforms.pre_setup["task"] is not None:
-                    func = wrap_to_accept_var_kwargs(transforms.pre_setup["task"])
-                    task = func(task, common_inputs)
-                if "models" in transforms.pre_setup and transforms.pre_setup["models"] is not None:
-                    func = wrap_to_accept_var_kwargs(transforms.pre_setup["models"])
-                    models_base = func(models_base, common_inputs)
-            else:
-                # Combined function - pass task and models as tuple
-                func = wrap_to_accept_var_kwargs(transforms.pre_setup)
-                task, models_base = func((task, models_base), common_inputs)
-
-        tasks, models, hps, extras = analysis_module.setup_eval_tasks_and_models(
-            task, models_base, hps
-        )
-
-        def _promote_variant_params(hps_task, variant_key):
-            hps_variant = hps_task | getattr(hps_task.variants, variant_key)
-            del hps_variant.variants
-            return hps_variant
-
-        hps = jt.map(
-            lambda hps: eqx.tree_at(
-                lambda hps: hps.task,
-                hps,
-                _promote_variant_params(hps.task, variant_key),
-            ),
-            hps,
-            is_leaf=is_type(TreeNamespace),
-        )
-
-        return tasks, models, hps, extras
-
-    # Outer level is task variants, inner is the structure returned by `setup_fn`
-    # i.e. "task variants" are a way to evaluate different sets of conditions
-    all_tasks, all_models, all_hps, all_extras = jtree.unzip(
-        LDict.of("task_variant")(
-            {
-                variant_key: setup_per_task_variant(
-                    task_variant,
-                    models_base,
-                    hps,
-                    variant_key,
-                )
-                for variant_key, task_variant in task_variants.items()
-            }
-        )
-    )
-
-    data = AnalysisInputData(
-        hps=all_hps,
-        tasks=all_tasks,
-        models=all_models,
-        states=None,  # Empty prior to evaluation
-        extras=all_extras,
-    )
-
-    return (
-        analysis_module,
-        data,
-        common_inputs,  # includes replicate_info, trial_specs, colors, etc.
-        transforms,  # validated transforms
-        model_info,
-        eval_info,
-    )
+            logger.info("Deleted all existing dump figures in %s", self.root)
 
 
 def perform_all_analyses(
-    db_session: Session | None,
     analyses: dict[str, AbstractAnalysis],
     data: AnalysisInputData,
-    model_info: "ModelRecord | None",
-    eval_info: "EvaluationRecord | None",
     *,
-    analysis_context: AnalysisRunContext | None = None,
-    fig_dump_path: Optional[Path] = None,
-    fig_dump_formats: List[str] = ["html"],
-    custom_dependencies: Optional[dict[str, AbstractAnalysis]] = None,
-    requested_outputs: Optional[set[str]] = None,
-    **kwargs,
+    analysis_context: AnalysisRunContext,
+    fig_dump_path: Path | None = None,
+    fig_dump_formats: list[str] = ["html"],
+    custom_dependencies: dict[str, AbstractAnalysis] | None = None,
+    requested_outputs: set[str] | None = None,
+    **kwargs: Any,
 ) -> tuple[PyTree[AbstractAnalysis], PyTree[Any], PyTree[go.Figure]]:
-    """Given a list or dict of instances of `AbstractAnalysis`, perform all analyses and save any figures."""
-
+    """Run analyses and save their outputs through the canonical manifest context."""
     if not analyses:
         logger.warning("No analyses given to perform; nothing returned")
         return None, None, None
@@ -544,10 +80,6 @@ def perform_all_analyses(
             "All analyses defined in given analysis module must be instances of `AbstractAnalysis`"
         )
 
-    if not any(analyses):
-        raise ValueError("No analyses given to perform")
-
-    # Phase 1: Compute all analysis nodes (dependencies + leaves)
     logger.info("Computing results for analyses and their dependencies")
     all_dependency_results = compute_dependency_results(
         analyses,
@@ -558,81 +90,52 @@ def perform_all_analyses(
         **kwargs,
     )
 
-    # When requested_outputs is set, filter analyses to match what was computed.
-    # compute_dependency_results already restricted its internal analyses_list,
-    # but we need the same restriction here for the figure-generation loop.
     if requested_outputs is not None:
-        analyses = {k: v for k, v in analyses.items() if k in requested_outputs}
+        analyses = {key: value for key, value in analyses.items() if key in requested_outputs}
 
-    # Phase 2: Keep results & generate figures for leaf analyses only
-    def finish_analysis(analysis_key: str, analysis: AbstractAnalysis, inputs: dict):
-        # Get the computed result for this analysis (computed in phase 1)
+    def finish_analysis(
+        analysis_key: str,
+        analysis: AbstractAnalysis,
+        inputs: dict[str, Any],
+    ) -> tuple[AbstractAnalysis, Any, PyTree[go.Figure] | None]:
         result = inputs.pop("result")
-
-        # Check if make_figs is overridden before attempting figure generation
         if "make_figs" not in analysis.__class__.__dict__:
             logger.debug(
-                f"Skipping figure generation for {analysis_key} (no make_figs implementation)"
+                "Skipping figure generation for %s (no make_figs implementation)",
+                analysis_key,
             )
-            figs = None
+            figures = None
         else:
-            logger.debug(f"Making figures: {analysis_key}")
-            figs = analysis._make_figs_with_ops(data, result, **inputs)
-
-            if analysis_context is not None:
-                analysis.save_outputs(
-                    analysis_context,
-                    result,
-                    figs,
-                    data.hps,
-                    dump_path=fig_dump_path,
-                    dump_formats=fig_dump_formats,
-                    label=analysis_key,
-                    **inputs,
-                )
-            else:
-                if db_session is None or eval_info is None:
-                    raise ValueError(
-                        "perform_all_analyses requires analysis_context or both "
-                        "db_session and eval_info for figure output."
-                    )
-                analysis.save_figs(
-                    db_session,
-                    eval_info,
-                    result,
-                    figs,
-                    data.hps,
-                    model_info,
-                    dump_path=fig_dump_path,
-                    dump_formats=fig_dump_formats,
-                    label=analysis_key,
-                    **inputs,
-                )
-
-        return analysis, result, figs
+            logger.debug("Making figures: %s", analysis_key)
+            figures = analysis._make_figs_with_ops(data, result, **inputs)
+            analysis.save_outputs(
+                analysis_context,
+                result,
+                figures,
+                data.hps,
+                dump_path=fig_dump_path,
+                dump_formats=fig_dump_formats,
+                label=analysis_key,
+                **inputs,
+            )
+        return analysis, result, figures
 
     logger.info("Making and saving figures for analyses")
-    all_analyses, all_results, all_figs = jtree.unzip(
+    all_analyses, all_results, all_figures = jtree.unzip(
         {
             analysis_key: finish_analysis(analysis_key, analysis, dependencies)
             for (analysis_key, analysis), dependencies in piter(
                 zip(analyses.items(), all_dependency_results),
                 total=len(analyses),
                 description="Making and saving figures",
-                right=lambda p, i: p[0][0],  # analysis key on rhs of progress bar
+                right=lambda progress, _index: progress[0][0],
                 eta_halflife=10.0,
             )
         }
     )
 
-    if analysis_context is not None:
-        analysis_context.finalize(
-            summary_metrics={
-                "analysis_count": len(analyses),
-            }
-        )
-
-    return all_analyses, all_results, all_figs
+    analysis_context.finalize(summary_metrics={"analysis_count": len(analyses)})
+    return all_analyses, all_results, all_figures
 
 
 def run_analyses_with_context(
@@ -640,19 +143,16 @@ def run_analyses_with_context(
     data: AnalysisInputData,
     context: AnalysisRunContext,
     *,
-    fig_dump_path: Optional[Path] = None,
+    fig_dump_path: Path | None = None,
     fig_dump_formats: list[str] = ["html"],
-    custom_dependencies: Optional[dict[str, AbstractAnalysis]] = None,
-    requested_outputs: Optional[set[str]] = None,
-    **common_inputs,
+    custom_dependencies: dict[str, AbstractAnalysis] | None = None,
+    requested_outputs: set[str] | None = None,
+    **common_inputs: Any,
 ) -> tuple[PyTree[AbstractAnalysis], PyTree[Any], PyTree[go.Figure]]:
-    """Run analyses and write outputs through ``AnalysisRunContext`` with no Studio DB."""
+    """Run analyses and write outputs through ``AnalysisRunContext``."""
     return perform_all_analyses(
-        None,
         analyses,
         data,
-        None,
-        None,
         analysis_context=context,
         fig_dump_path=fig_dump_path,
         fig_dump_formats=fig_dump_formats,
@@ -660,417 +160,3 @@ def run_analyses_with_context(
         requested_outputs=requested_outputs,
         **common_inputs,
     )
-
-
-def check_records_for_analysis(
-    module_key: str,
-    module_config: dict,
-    registry: ExperimentRegistry,
-):
-    from feedbax.persistence.database import db_session, get_model_record
-
-    hps = config_to_hps(module_config, config_type="analysis")
-    analysis_module: ModuleType = registry.get_analysis_module(module_key)
-    model_load_config = _required_model_load_config(module_key, analysis_module)
-    training_module_name = model_load_config.resolve_training_module_name(module_key)
-
-    with db_session(autocommit=False) as db:
-        for sweep_value in model_load_config.sweep_values(hps):
-            params_query = model_load_config.params_query(hps, sweep_value, training_module_name)
-            model_info = get_model_record(
-                db,
-                postprocessed=True,
-                exclude_defunct=True,
-                explain_on_miss=True,
-                **params_query,
-            )
-            # if model_info.is_path_defunct:
-            #     try:
-            #         raw_model_info = get_model_record(
-            #             db,
-            #             postprocessed=False,
-            #             exclude_defunct=True,
-            #             **params_query,
-            #         )
-            #         if raw_model_info is not None:
-            #             model_info = process_model_post_training(
-            #                 db,
-            #                 raw_model_info,
-            #                 2,
-            #                 process_all=True,
-            #                 save_figures=False,
-            #             )
-            #     except Exception as e:
-            #         raise e
-            if model_info is None:
-                raise ValueError(
-                    f"No trained model found for {module_key} with parameters {params_query}"
-                )
-    return True
-
-
-def run_evaluation(
-    analysis_module: ModuleType,
-    data: AnalysisInputData,
-    common_inputs: dict,
-    transforms: AnalysisModuleTransformSpec,
-    eval_info: "EvaluationRecord",
-    *,
-    no_pickle: bool = False,
-    states_pkl_dir: Path | None = None,
-    evaluation_manifest_id: str | None = None,
-    manifest_root: Path | None = None,
-    memory_warn_gb: float = 24.0,
-    key,
-) -> AnalysisInputData:
-    """Run the evaluation phase: compute states for all task/model combinations.
-
-    This is the expensive step that evaluates models on tasks to produce state
-    trajectories.  The result is an ``AnalysisInputData`` with ``states``
-    populated.  It can be cached and reused across multiple analysis runs.
-
-    Args:
-        analysis_module: The loaded analysis module (must expose ``eval_fn``).
-        data: ``AnalysisInputData`` with ``states=None`` (pre-evaluation).
-        common_inputs: Shared inputs (hps, colors, replicate_info, etc.).
-        transforms: Validated transforms spec (``post_eval`` applied here).
-        eval_info: Database evaluation record (used for pickle hash).
-        no_pickle: If ``True``, skip pickle load/save.
-        states_pkl_dir: Directory for legacy state pickle cache.  Defaults to
-            ``PATHS.cache / "states"`` when ``evaluation_manifest_id`` is not
-            supplied.
-        evaluation_manifest_id: Optional manifest-canonical cache identity for
-            evaluated states.
-        manifest_root: Manifest root used for manifest-canonical state cache.
-        memory_warn_gb: Warn if estimated state memory exceeds this threshold.
-        key: JAX PRNG key for stochastic evaluation.
-
-    Returns:
-        ``AnalysisInputData`` with ``states`` populated (and post-eval
-        transforms applied).
-    """
-    if evaluation_manifest_id is not None:
-        states_pickle_path = evaluation_states_cache_path(
-            evaluation_manifest_id,
-            root=manifest_root,
-        )
-        states_pkl_dir = states_pickle_path.parent
-    elif states_pkl_dir is None:
-        states_pkl_dir = PATHS.cache / STATES_CACHE_SUBDIR
-    states_pkl_dir.mkdir(parents=True, exist_ok=True)
-
-    def evaluate_all_states(all_tasks, all_models, all_hps):
-        return jt.map(
-            lambda task, models, hps: jt.map(
-                lambda model: analysis_module.eval_fn(key, hps, model, task),
-                models,
-                is_leaf=is_module,
-            ),
-            all_tasks,
-            all_models,
-            all_hps,
-            is_leaf=is_module,
-        )
-
-    def _compute_states_and_log_memory_estimate():
-        states_shapes = eqx.filter_eval_shape(
-            evaluate_all_states, data.tasks, data.models, data.hps
-        )
-        logger.info(
-            f"Evaluated states PyTree structure: {tree_level_labels(states_shapes, is_leaf=is_module)}"
-        )
-
-        memory_estimate_gb = jtree.struct_bytes(states_shapes) / 1e9
-        logger.info(f"{memory_estimate_gb:.2f} GB of memory estimated to store all states.")
-
-        if memory_estimate_gb > memory_warn_gb:
-            logger.warning(
-                f"Estimated memory usage ({memory_estimate_gb:.2f} GB) exceeds the warning threshold "
-                f"({memory_warn_gb:.2f} GB). Consider reducing the number of evaluations or model sizes. "
-                f"State shapes PyTree written to {PATHS.logs / 'states_shapes.txt'}."
-            )
-
-            with open(PATHS.logs / "states_shapes.txt", "w") as f:
-                f.write(eqx.tree_pformat(states_shapes))
-
-            print("\n")
-            while True:
-                proceed = (
-                    Prompt.ask("Proceed with the evaluation and analysis? (y/n): ").strip().lower()
-                )
-
-                if proceed == "y":
-                    print("\n")
-                    break
-                elif proceed == "n":
-                    logger.info("Evaluation cancelled by user.")
-                    sys.exit()
-                else:
-                    print("Invalid input; please enter 'y' or 'n'.")
-
-        computed_states = evaluate_all_states(data.tasks, data.models, data.hps)
-        logger.info("All states evaluated.")
-        return computed_states
-
-    if evaluation_manifest_id is None:
-        key_hash = _hash_pytree(key)
-        states_pickle_path = states_pkl_dir / f"{eval_info.hash}_{key_hash}.pkl"
-        states_cache_manifest_id = f"legacy-evaluation:{eval_info.hash}:{key_hash}"
-    else:
-        states_cache_manifest_id = evaluation_manifest_id
-
-    loaded_from_pickle = False
-    if not no_pickle and states_pickle_path.exists():
-        logger.info(f"Loading states from {states_pickle_path}...")
-        try:
-            states = load_evaluation_states_cache(
-                states_pickle_path,
-                manifest_id=states_cache_manifest_id,
-            )
-            logger.debug(
-                "Loaded pickled states with PyTree structure: "
-                f"{tree_level_labels(states, is_leaf=is_module)}"
-            )
-            loaded_from_pickle = True
-        except EvaluationStatesCacheCorruption as e:
-            logger.error(f"Failed to load pickled states: {e}")
-            logger.info("Computing states from scratch instead...")
-            states = _compute_states_and_log_memory_estimate()
-    else:
-        if no_pickle and states_pickle_path.exists():
-            logger.info(f"Ignoring pickle file at {states_pickle_path} due to --no-pickle flag.")
-        states = _compute_states_and_log_memory_estimate()
-
-    # Save states if we didn't use --no-pickle and we didn't successfully load from pickle
-    if not no_pickle and not loaded_from_pickle:
-        write_evaluation_states_cache(
-            states_pickle_path,
-            manifest_id=states_cache_manifest_id,
-            states=states,
-        )
-        logger.info(f"Saved evaluated states to {states_pickle_path}")
-
-    # Apply post-eval transformations if present
-    if transforms.post_eval is not None:
-        if isinstance(transforms.post_eval, dict):
-            if "models" in transforms.post_eval and transforms.post_eval["models"] is not None:
-                func = wrap_to_accept_var_kwargs(transforms.post_eval["models"])
-                data = eqx.tree_at(
-                    lambda data: data.models,
-                    data,
-                    func(data.models, common_inputs),
-                    is_leaf=is_none,
-                )
-            if "tasks" in transforms.post_eval and transforms.post_eval["tasks"] is not None:
-                func = wrap_to_accept_var_kwargs(transforms.post_eval["tasks"])
-                data = eqx.tree_at(
-                    lambda data: data.tasks,
-                    data,
-                    func(data.tasks, common_inputs),
-                    is_leaf=is_none,
-                )
-            if "states" in transforms.post_eval and transforms.post_eval["states"] is not None:
-                func = wrap_to_accept_var_kwargs(transforms.post_eval["states"])
-                states = func(states, common_inputs)
-        else:
-            func = wrap_to_accept_var_kwargs(transforms.post_eval)
-            transformed_models, transformed_tasks, transformed_states = func(
-                (data.models, data.tasks, states), common_inputs
-            )
-            data = eqx.tree_at(lambda data: data.models, data, transformed_models, is_leaf=is_none)
-            data = eqx.tree_at(lambda data: data.tasks, data, transformed_tasks, is_leaf=is_none)
-            states = transformed_states
-
-    data = eqx.tree_at(lambda data: data.states, data, states, is_leaf=is_none)
-
-    return data
-
-
-def run_analyses(
-    db_session: Session,
-    analysis_module: ModuleType,
-    data: AnalysisInputData,
-    common_inputs: dict,
-    model_info: "ModelRecord",
-    eval_info: "EvaluationRecord",
-    *,
-    fig_dump_path: Optional[Path] = None,
-    fig_dump_formats: list[str] = ["html", "webp", "svg"],
-    analysis_context: AnalysisRunContext | None = None,
-    requested_outputs: Optional[set[str]] = None,
-) -> tuple[PyTree[AbstractAnalysis], PyTree[Any], PyTree[go.Figure]]:
-    """Run the analysis phase on already-evaluated data.
-
-    This is the cheap(er) step that computes analysis results and generates
-    figures from the state trajectories produced by :func:`run_evaluation`.
-
-    Args:
-        db_session: Active SQLAlchemy session for saving figure records.
-        analysis_module: The loaded analysis module (must expose ``ANALYSES``).
-        data: ``AnalysisInputData`` with ``states`` populated.
-        common_inputs: Shared inputs (hps, colors, replicate_info, etc.).
-        model_info: Database model record.
-        eval_info: Database evaluation record.
-        fig_dump_path: Directory for dumping figures.
-        fig_dump_formats: Format list for figure dumps.
-        requested_outputs: If provided, only run analyses whose keys appear in
-            this set (plus their transitive dependencies).
-
-    Returns:
-        Tuple of ``(all_analyses, all_results, all_figs)``.
-    """
-    return perform_all_analyses(
-        db_session,
-        analysis_module.ANALYSES,
-        data,
-        model_info,
-        eval_info,
-        analysis_context=analysis_context,
-        fig_dump_path=fig_dump_path,
-        fig_dump_formats=fig_dump_formats,
-        custom_dependencies=getattr(analysis_module, "DEPENDENCIES", {}),
-        requested_outputs=requested_outputs,
-        **common_inputs,
-    )
-
-
-def run_analysis_module(
-    module_key: str,
-    module_config: dict,
-    *,
-    fig_dump_dir: str | Path | None = None,
-    fig_dump_formats: list[str] = ["html", "webp", "svg"],
-    no_pickle: bool = False,
-    states_pkl_dir: Path | None = PATHS.cache / "states",
-    evaluation_manifest_id: str | None = None,
-    manifest_root: Path | None = None,
-    eval_only: bool = False,
-    memory_warn_gb: float = 24.0,
-    requested_outputs: Optional[set[str]] = None,
-    registry: ExperimentRegistry,
-    key,
-):
-    """Run a single analysis module using provided hyperparameters.
-
-    This is a convenience wrapper that calls :func:`run_evaluation` followed by
-    :func:`run_analyses`.  For finer control (e.g. caching evaluation results
-    across multiple analysis runs), call those functions directly.
-
-    Args:
-        module_key: Analysis module key (e.g., ``'part2.plant_perts'``).
-        module_config: Resolved config returned by ``config.load_config(...)``.
-        fig_dump_dir: If provided, passed to ``analysis.save_figs(..., dump_path=...)``.
-        fig_dump_formats: Format list for figure dumps.
-        no_pickle: Skip pickle load/save for state cache.
-        states_pkl_dir: Directory for state pickle cache.
-        evaluation_manifest_id: Optional manifest-canonical cache identity.
-        manifest_root: Manifest root used for manifest-canonical state cache.
-        eval_only: If ``True``, return after evaluation without running analyses.
-        memory_warn_gb: Warn if estimated state memory exceeds this threshold.
-        requested_outputs: If provided, only run analyses whose keys appear in
-            this set (plus their transitive dependencies).
-        key: JAX PRNG key for stochastic evaluation.
-    """
-    from feedbax.persistence.database import check_model_files, get_db_session
-
-    version_info = log_version_info(
-        jax,
-        eqx,
-        optax,
-        plotly,
-        git_modules=(feedbax,),
-    )
-
-    if fig_dump_dir is None:
-        fig_dump_dir = PATHS.figures_dump
-    assert fig_dump_dir is not None
-
-    # Ensure the directory for state pickles exists
-    if states_pkl_dir is None:
-        states_pkl_dir = PATHS.cache / STATES_CACHE_SUBDIR
-    assert states_pkl_dir is not None
-    states_pkl_dir.mkdir(parents=True, exist_ok=True)
-
-    # Start a database session for loading trained models, and saving evaluation/figure records
-    #! TODO: Switch to context manager
-    db_session = get_db_session()
-    check_model_files(db_session)  # Ensure we don't try to load any models whose files don't exist
-
-    # Use the provided config (hyperparameters) for the analysis module
-    hps = config_to_hps(module_config, config_type="analysis")
-    # Establish a provisional common namespace (needed for querying the DB); this
-    # will be superseded after we load the model records and fill in any missing
-    # hyper-parameters.
-    provisional_hps_common = use_train_hps_when_none(hps)
-
-    (
-        analysis_module,
-        data,
-        common_inputs,
-        transforms,
-        model_info,
-        eval_info,
-    ) = setup_eval_for_module(
-        module_key,
-        provisional_hps_common,
-        db_session,
-        version_info,
-        registry,
-    )
-
-    # Phase 1: Evaluation — compute state trajectories
-    data = run_evaluation(
-        analysis_module,
-        data,
-        common_inputs,
-        transforms,
-        eval_info,
-        no_pickle=no_pickle,
-        states_pkl_dir=states_pkl_dir,
-        evaluation_manifest_id=evaluation_manifest_id,
-        manifest_root=manifest_root,
-        memory_warn_gb=memory_warn_gb,
-        key=key,
-    )
-
-    if eval_only:
-        logger.info("Eval-only requested; skipping analyses and returning.")
-        return data, common_inputs, None, None, None
-
-    # Phase 2: Analysis — compute results and generate figures
-    analysis_context = None
-    if evaluation_manifest_id is not None:
-        eval_ref = parent_ref_from_evaluation_manifest(evaluation_manifest_id)
-        analysis_params = {}
-        if requested_outputs is not None:
-            analysis_params["requested_outputs"] = sorted(requested_outputs)
-        analysis_context = AnalysisRunContext(
-            spec=AnalysisRunSpec(
-                analysis_type=module_key,
-                inputs=[eval_ref],
-                params=analysis_params,
-            ),
-            root=manifest_root,
-            db_session=db_session,
-            eval_info=eval_info,
-            model_info=model_info,
-            fig_dump_path=Path(fig_dump_dir),
-            fig_dump_formats=fig_dump_formats,
-        )
-
-    all_analyses, all_results, all_figs = run_analyses(
-        db_session,
-        analysis_module,
-        data,
-        common_inputs,
-        model_info,
-        eval_info,
-        fig_dump_path=Path(fig_dump_dir),
-        fig_dump_formats=fig_dump_formats,
-        analysis_context=analysis_context,
-        requested_outputs=requested_outputs,
-    )
-
-    db_session.close()
-
-    return data, common_inputs, all_analyses, all_results, all_figs

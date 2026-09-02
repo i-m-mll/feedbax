@@ -7,16 +7,12 @@ pkg_console_levels:
   jax: WARNING
   matplotlib: WARNING
   kaleido: ERROR
-  sqlalchemy: WARNING
-  alembic: WARNING
   dill: WARNING
   choreographer: WARNING
 pkgs_own_files: 
   jax: DEBUG
   matplotlib: DEBUG
   kaleido: DEBUG
-  sqlalchemy: DEBUG
-  alembic: DEBUG
   dill: DEBUG
   choreographer: DEBUG
 max_bytes: 1000000
