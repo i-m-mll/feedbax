@@ -31,6 +31,10 @@ names, environment variables, or directory scans, and do not add a second
 configuration source: commands take an explicit project root and read that one
 file.
 
+`feedbax init` also maintains one root-anchored `.gitignore` entry for the
+declared `output_directory`. Compiled output is reproducible custody, not
+project source; keep that rule when editing other ignore entries.
+
 ### 3. The experiment model
 
 Science is authored as **envelopes**: small documents that vary a

@@ -337,13 +337,9 @@ def resolve_analysis_run_authoring(
         resolved_payload = resolve_run_aliases(flattened.payload, run_alias_catalogs)
         flattened = flattened.model_copy(update={"payload": resolved_payload})
         return AnalysisRunSpec.model_validate(resolved_payload), flattened
-    # AnalysisRunSpec documents shipped before the family stamped a version, so a
-    # versionless document is admitted as current; every declared version still
-    # migrates or fails closed through the shared path.
     result = migrate_authored_document(
         "AnalysisRunSpec",
         raw,
-        versionless="accept_as_current",
         path="analysis_spec",
     )
     return AnalysisRunSpec.model_validate(

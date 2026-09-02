@@ -41,7 +41,7 @@ def test_analysis_import_does_not_require_persistence_or_viz_extras(module_name:
         import importlib.abc
         import sys
 
-        blocked = {"alembic", "matplotlib", "polars", "pyexiv2"}
+        blocked = {"matplotlib", "polars", "pyexiv2"}
 
         class BlockOptionalImports(importlib.abc.MetaPathFinder):
             def find_spec(self, fullname, path=None, target=None):

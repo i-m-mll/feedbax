@@ -275,9 +275,7 @@ class BundleStageSpec(StrictModel):
     def _require_durable_figure_identity(cls, value: Any) -> Any:
         if isinstance(value, Mapping) and isinstance(value.get("figure"), Mapping):
             figure = value["figure"]
-            missing = [
-                field for field in ("schema_id", "schema_version") if field not in figure
-            ]
+            missing = [field for field in ("schema_id", "schema_version") if field not in figure]
             if missing:
                 raise ValueError(
                     "bundle figure authoring must explicitly declare " + ", ".join(missing)
@@ -424,7 +422,6 @@ def resolve_analysis_bundle_authoring(
     migrated = migrate_authored_document(
         "AnalysisBundleSpec",
         bundle,
-        versionless="reject",
         path="analysis_bundle_spec",
     )
     return AnalysisBundleSpec.model_validate(migrated.payload), None
@@ -605,7 +602,6 @@ def authored_analysis_bundle_from_payload(
     migrated = migrate_authored_document(
         "AnalysisBundleSpec",
         data,
-        versionless="reject",
         path="analysis_bundle_spec",
     )
     return AnalysisBundleSpec.model_validate(migrated.payload)
@@ -766,9 +762,7 @@ class BundleRootVerificationError(BundleRootError):
     """A pinned bundle root is absent, unreadable, or not the bytes that were pinned."""
 
 
-def require_unique_root_addresses(
-    manifests: Sequence[Any], *, what: str
-) -> None:
+def require_unique_root_addresses(manifests: Sequence[Any], *, what: str) -> None:
     """Refuse a root set that names one ``(kind, id)`` more than once."""
     seen: dict[tuple[str, str], int] = {}
     for manifest in manifests:
@@ -1056,9 +1050,7 @@ def _manifest_ref(
             id=parsed.id,
             role=role,
             uri=None,
-            metadata=authenticated_manifest_ref_metadata(
-                hashlib.sha256(raw).hexdigest(), len(raw)
-            ),
+            metadata=authenticated_manifest_ref_metadata(hashlib.sha256(raw).hexdigest(), len(raw)),
         )
     return authenticated_manifest_ref_from_read(
         path, expected_kind=manifest.kind, expected_id=manifest.id, role=role
@@ -1649,9 +1641,7 @@ def _preflight_per_input_prerequisites(
     the binding would silently attach to both, and the check that decided the
     binding was legitimate would have seen a set of one.
     """
-    require_unique_root_addresses(
-        matched_manifests, what="the bundle's prerequisite input set"
-    )
+    require_unique_root_addresses(matched_manifests, what="the bundle's prerequisite input set")
     counts_by_id: dict[str, int] = {}
     for manifest in matched_manifests:
         counts_by_id[str(manifest.id)] = counts_by_id.get(str(manifest.id), 0) + 1

@@ -173,7 +173,9 @@ def _parse_header(raw: str, source: str) -> dict[str, str]:
     for line in lines:
         key, sep, value = line.partition("=")
         if not sep or not value.strip():
-            raise AgentInstructionsError(f"{source}: managed block header line is malformed: {line!r}")
+            raise AgentInstructionsError(
+                f"{source}: managed block header line is malformed: {line!r}"
+            )
         header[key] = value.strip()
     return header
 
@@ -197,8 +199,7 @@ def parse_block(text: str, *, source: str = "<text>") -> ParsedBlock | None:
         )
     if starts != ends:
         raise AgentInstructionsError(
-            f"{source}: managed block markers are unpaired "
-            f"({starts} start, {ends} end)"
+            f"{source}: managed block markers are unpaired ({starts} start, {ends} end)"
         )
     if text.index(BLOCK_END_MARKER) < text.index(BLOCK_START_MARKER):
         raise AgentInstructionsError(
@@ -219,8 +220,7 @@ def parse_block(text: str, *, source: str = "<text>") -> ParsedBlock | None:
         template_version = int(header["template"])
     except ValueError as exc:
         raise AgentInstructionsError(
-            f"{source}: managed block template version is not an integer: "
-            f"{header['template']!r}"
+            f"{source}: managed block template version is not an integer: {header['template']!r}"
         ) from exc
     return ParsedBlock(
         schema=header["schema"],
@@ -270,12 +270,15 @@ def apply_block(text: str, *, source: str = "<text>") -> str:
     return text[: block.start] + render_block() + text[block.end :]
 
 
-def write_atomic(path: Path, text: str) -> None:
-    """Write *text* to *path* atomically, creating parent directories."""
+def write_atomic(path: Path, content: str | bytes) -> None:
+    """Write text or exact bytes to *path* atomically, creating parent directories."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.parent / f".{path.name}.feedbax-tmp"
     try:
-        temporary.write_text(text, encoding="utf-8")
+        if isinstance(content, str):
+            temporary.write_text(content, encoding="utf-8")
+        else:
+            temporary.write_bytes(content)
         os.replace(temporary, path)
     finally:
         if temporary.exists():  # pragma: no cover - only on a failed replace
@@ -490,9 +493,7 @@ _STATUS_DETAILS: dict[BlockStatus, str] = {
         "the managed block is newer than this Feedbax; upgrade Feedbax rather than "
         "downgrading the block"
     ),
-    BlockStatus.MISSING: (
-        "no managed block is installed; run `feedbax instructions install`"
-    ),
+    BlockStatus.MISSING: ("no managed block is installed; run `feedbax instructions install`"),
     BlockStatus.MALFORMED: "the managed block markers are not safe to rewrite",
 }
 

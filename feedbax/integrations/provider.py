@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pkgutil
 from datetime import datetime
 from typing import Any, Literal, Optional
 
@@ -962,8 +961,7 @@ def loss_registry_snapshot() -> RegistrySnapshot:
 
 
 def analysis_registry_snapshot(registry: Any) -> RegistrySnapshot:
-    entries: list[RegistryEntry] = []
-    entries.extend(
+    entries = [
         RegistryEntry(
             type_id=analysis_type,
             name=analysis_type,
@@ -971,19 +969,7 @@ def analysis_registry_snapshot(registry: Any) -> RegistrySnapshot:
             description="Registered executable AnalysisRunSpec recipe.",
         )
         for analysis_type in registry.keys()
-    )
-    for module_info in pkgutil.iter_modules(analysis_pkg.__path__):
-        if module_info.name.startswith("_"):
-            continue
-        entries.append(
-            RegistryEntry(
-                type_id=f"feedbax.analysis.{module_info.name}",
-                name=module_info.name,
-                category="Analysis module",
-                import_path=f"feedbax.analysis.{module_info.name}",
-                description="Importable Feedbax analysis module.",
-            )
-        )
+    ]
     return RegistrySnapshot(kind="analyses", entries=entries)
 
 

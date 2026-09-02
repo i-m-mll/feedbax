@@ -14,7 +14,7 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 POLICY_ID = "feedbax.downstream-interface-stability.v1"
-POLICY_SCHEMA = "feedbax.external_conformance.policy_manifest.v1"
+POLICY_SCHEMA = "feedbax.external_conformance.policy_manifest.v2"
 RATIFIED_STATUS = "Owner-ratified"
 RATIFICATION_EVIDENCE = (
     "Base policy: protected `develop` merge "
@@ -37,7 +37,8 @@ FIGURE_API_END = "<!-- figure-api-inventory:end -->"
 INSTRUCTION_FILES = (ROOT / "AGENTS.md", ROOT / "CLAUDE.md")
 POLICY_DOCUMENT = ROOT / "docs" / "design" / "downstream_interface_stability.md"
 FIXTURE_ROOT = ROOT / "external" / "feedbax_conformance_fixture"
-POLICY_MANIFEST = FIXTURE_ROOT / "src" / "feedbax_external_conformance" / "policy_manifest.v1.json"
+sys.path.insert(0, str(FIXTURE_ROOT / "src"))
+POLICY_MANIFEST = FIXTURE_ROOT / "src" / "feedbax_external_conformance" / "policy_manifest.v2.json"
 DRIVER_POLICY_SCHEMAS = {
     "current": [
         "feedbax.orchestration.driver-capabilities version 3",
@@ -60,7 +61,6 @@ DRIVER_POLICY_SCHEMAS = {
 # external conformance case. Adding a row here is a deliberate statement that no
 # external case covers it, never a way to skip evidence.
 RATIFIED_NON_EXTERNAL_ROWS = {
-    "terminal-certification",
     "report-surface",
     "evaluation-surface",
     "analysis-authoring",
@@ -113,6 +113,37 @@ def _document_rows(text: str) -> dict[str, tuple[str, ...]]:
         columns = tuple(column.strip() for column in line.strip().strip("|").split("|"))
         rows[match.group(1)] = tuple(re.findall(r"`([^`]+)`", columns[-1]))
     return rows
+
+
+def _document_public_apis() -> dict[str, dict[str, object]]:
+    block = _marked_block(POLICY_DOCUMENT, GUARANTEE_START, GUARANTEE_END)
+    public_apis: dict[str, dict[str, object]] = {}
+    for line in block.splitlines():
+        match = re.match(r"\| `([^`]+)` \|", line)
+        if match is None or match.group(1) in {"plugin-bootstrap", "figure-composition"}:
+            continue
+        columns = [column.strip() for column in line.strip().strip("|").split("|")]
+        namespaces = re.findall(r"`([^`]+)`", columns[1])
+        name_groups: list[list[str]] = []
+        cli: list[str] = []
+        for segment in columns[2].split(";"):
+            tokens = re.findall(r"`([^`]+)`", segment)
+            if segment.strip().startswith("CLI "):
+                cli.extend(tokens)
+            elif tokens:
+                name_groups.append(tokens)
+        if len(name_groups) == 1:
+            name_groups *= len(namespaces)
+        if len(name_groups) != len(namespaces):
+            raise ValueError(f"policy document cannot align public API for {match.group(1)!r}")
+        public_apis[match.group(1)] = {
+            "namespaces": [
+                {"namespace": namespace, "public_names": names}
+                for namespace, names in zip(namespaces, name_groups, strict=True)
+            ],
+            "cli": cli,
+        }
+    return public_apis
 
 
 def _unique_strings(values: object, *, field: str) -> tuple[str, ...]:
@@ -224,6 +255,11 @@ def _check_plugin_api(row: dict[str, object], document: str) -> None:
     plugin_api = _validated_plugin_api(row)
     if _document_plugin_api(document) != plugin_api:
         raise ValueError("policy document plugin API inventory drifted from the manifest")
+    public_api = row.get("public_api")
+    if not isinstance(public_api, dict) or public_api.get("namespaces") != plugin_api["namespaces"]:
+        raise ValueError("plugin public API and family inventory disagree")
+    if public_api.get("cli") != []:
+        raise ValueError("plugin bootstrap declares an unexpected CLI")
 
     declared_by_namespace = {
         value["namespace"]: tuple(value["public_names"]) for value in plugin_api["namespaces"]
@@ -322,6 +358,78 @@ def _check_figure_api(row: dict[str, object], document: str) -> None:
     for statement in _unique_strings(semantics, field="figure semantics"):
         if statement not in document:
             raise ValueError(f"policy document omits figure semantic {statement!r}")
+
+
+def _check_public_apis(rows: dict[str, dict[str, object]], project: dict[str, object]) -> None:
+    documented = _document_public_apis()
+    scripts = set(project["project"].get("scripts", {}))
+    for row_id, row in rows.items():
+        public_api = row.get("public_api")
+        if not isinstance(public_api, dict) or set(public_api) != {"namespaces", "cli"}:
+            raise ValueError(f"policy row {row_id!r} has no exact public_api authority")
+        namespaces = public_api["namespaces"]
+        if not isinstance(namespaces, list) or not namespaces:
+            raise ValueError(f"policy row {row_id!r} has no public namespace")
+        seen: set[str] = set()
+        for index, entry in enumerate(namespaces):
+            if not isinstance(entry, dict) or set(entry) != {"namespace", "public_names"}:
+                raise ValueError(f"policy row {row_id!r} namespace {index} has an invalid shape")
+            namespace = entry["namespace"]
+            if not isinstance(namespace, str) or not namespace or namespace in seen:
+                raise ValueError(f"policy row {row_id!r} has an invalid or duplicate namespace")
+            seen.add(namespace)
+            names = _unique_strings(entry["public_names"], field=f"{row_id} {namespace}")
+            module = importlib.import_module(namespace)
+            missing = [name for name in names if not hasattr(module, name)]
+            if missing:
+                raise ValueError(f"policy row {row_id!r} has unavailable imports {missing!r}")
+        cli = _unique_strings(public_api["cli"], field=f"{row_id} CLI")
+        unknown_scripts = sorted({command.split()[0] for command in cli} - scripts)
+        if unknown_scripts:
+            raise ValueError(f"policy row {row_id!r} has unknown console scripts {unknown_scripts!r}")
+        if row_id not in {"plugin-bootstrap", "figure-composition"} and documented[row_id] != public_api:
+            raise ValueError(f"policy document public API differs for {row_id!r}")
+
+
+def _check_boundary_obligations(payload: dict[str, object]) -> None:
+    obligations = payload.get("boundary_obligations")
+    if not isinstance(obligations, list):
+        raise ValueError("policy manifest omits boundary_obligations")
+    by_id = {value.get("obligation_id"): value for value in obligations if isinstance(value, dict)}
+    if len(by_id) != len(obligations):
+        raise ValueError("policy boundary obligations have invalid or duplicate identities")
+
+    from feedbax.contracts.manifest import MANIFEST_KIND_DIRECTORIES
+
+    layout = by_id.get("manifest-kind-directory-layout")
+    if layout is None or layout.get("mapping") != MANIFEST_KIND_DIRECTORIES:
+        raise ValueError("manifest kind-directory obligation drifted from its runtime authority")
+    if layout.get("unknown") != "reject":
+        raise ValueError("unknown manifest kinds must reject")
+
+    exits = by_id.get("experiment-envelope-exit-codes")
+    if exits is None or exits.get("outcomes") != {
+        "accepted": 0,
+        "infrastructure_failure": 1,
+        "rejected": 2,
+    }:
+        raise ValueError("experiment-envelope exit-code contract drifted")
+
+    shape = by_id.get("graph-component-type-shape")
+    if shape is None or (
+        shape.get("schema_id"),
+        shape.get("schema_version"),
+        shape.get("json_pointer_pattern"),
+    ) != ("feedbax.spec.graph", "feedbax.spec.graph.v5", "/graph/components/*/type"):
+        raise ValueError("graph component discriminator shape contract drifted")
+
+    for obligation_id, obligation in by_id.items():
+        evidence = obligation.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            raise ValueError(f"boundary obligation {obligation_id!r} has no focused evidence")
+        missing = [path for path in evidence if not isinstance(path, str) or not (ROOT / path).is_file()]
+        if missing:
+            raise ValueError(f"boundary obligation {obligation_id!r} has missing evidence {missing!r}")
 
 
 def check_policy() -> None:
@@ -425,6 +533,8 @@ def check_policy() -> None:
         raise ValueError("driver policy schema and migration mapping drifted")
     _check_plugin_api(manifest_rows["plugin-bootstrap"], document)
     _check_figure_api(manifest_rows["figure-composition"], document)
+    _check_public_apis(manifest_rows, project)
+    _check_boundary_obligations(payload)
     for row_id in (
         "orchestration-lifecycle",
         "custody-persistence",

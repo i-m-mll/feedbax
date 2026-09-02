@@ -1,10 +1,11 @@
 """``feedbax init``: the deterministic, transactional cold start for a project.
 
-A project that uses Feedbax needs seven things and no more: a declaration of its
+A project that uses Feedbax needs eight things and no more: a declaration of its
 layout, the budgets that bound how large an authored envelope may be, a
-deny-by-default authorization for its production Python, a minimal installable
-package to put science in, and one agent instruction file reachable under both
-conventional names. This module creates exactly those, and nothing else.
+root-anchored ignore rule for reproducible compiler output, a deny-by-default
+authorization for its production Python, a minimal installable package to put
+science in, and one agent instruction file reachable under both conventional
+names. This module creates exactly those, and nothing else.
 
 What it deliberately does *not* create is the point. No example envelope, no
 fake base, no placeholder science, no project-local compiler or wrapper CLI, no
@@ -148,7 +149,7 @@ class ProjectInitError(Exception):
 
 @dataclass(frozen=True)
 class EntryOutcome:
-    """What one of the seven entries is, or would be, after this run."""
+    """What one of the eight entries is, or would be, after this run."""
 
     path: str
     action: str
@@ -310,10 +311,11 @@ def derive_package_name(project: str) -> str:
 
 @dataclass
 class _PlannedWrite:
-    """One file this run would create, with the bytes it would create it from."""
+    """One file this run would write and the bytes to restore on failure."""
 
     path: Path
-    text: str
+    content: str | bytes
+    previous_bytes: bytes | None = None
 
 
 @dataclass
@@ -327,6 +329,10 @@ class _Plan:
     def create(self, relative: str, path: Path, text: str) -> None:
         self.writes.append(_PlannedWrite(path, text))
         self.record(EntryOutcome(relative, "created"))
+
+    def update(self, relative: str, path: Path, content: bytes, previous_bytes: bytes) -> None:
+        self.writes.append(_PlannedWrite(path, content, previous_bytes))
+        self.record(EntryOutcome(relative, "updated", "added the compiler-output rule"))
 
 
 def _plan_durable(
@@ -357,6 +363,47 @@ def _validate_declaration(root: Path) -> Callable[[Path], str | None]:
         return None
 
     return validate
+
+
+def _output_ignore_rule(output_directory: str) -> str:
+    """Return one literal root-anchored Git ignore rule for compiler output."""
+    escaped = "".join(f"\\{char}" if char in "\\*?[] " else char for char in output_directory)
+    return f"/{escaped}/"
+
+
+def _plan_output_ignore(plan: _Plan, root: Path, output_directory: str) -> None:
+    """Install the declared compiler-output rule without rewriting other rules."""
+    relative = ".gitignore"
+    path = root / relative
+    rule = _output_ignore_rule(output_directory)
+    if not path.exists():
+        plan.create(relative, path, f"{rule}\n")
+        return
+    if path.is_symlink():
+        plan.record(
+            EntryOutcome(
+                relative,
+                "conflict",
+                "is a symlink; replace it with a project-owned file before initialization",
+            )
+        )
+        return
+    try:
+        previous_bytes = path.read_bytes()
+    except OSError as exc:
+        plan.record(EntryOutcome(relative, "conflict", f"is not readable: {exc}"))
+        return
+    rule_bytes = rule.encode("utf-8")
+    if rule_bytes in previous_bytes.splitlines():
+        plan.record(EntryOutcome(relative, "validated", "compiler-output rule already present"))
+        return
+    separator = b"" if not previous_bytes or previous_bytes.endswith(b"\n") else b"\n"
+    plan.update(
+        relative,
+        path,
+        previous_bytes + separator + rule_bytes + b"\n",
+        previous_bytes,
+    )
 
 
 def _validate_budget(path: Path) -> str | None:
@@ -429,6 +476,13 @@ def plan_init(
         text=_json_text(default_declaration_document(project_name)),
         validate=_validate_declaration(root_path),
     )
+    output_directory = DEFAULT_OUTPUT_DIRECTORY
+    if declaration_path.exists():
+        try:
+            output_directory = load_project_declaration(root_path).output_directory
+        except ProjectExperimentDeclarationError:
+            pass
+    _plan_output_ignore(plan, root_path, output_directory)
     _plan_durable(
         plan,
         relative=DEFAULT_BUDGET_REF,
@@ -529,14 +583,19 @@ def initialize(
         for name in AGENT_FILE_NAMES
         if not (root_path / name).exists() and not (root_path / name).is_symlink()
     ]
-    created: list[Path] = []
+    written: list[_PlannedWrite] = []
     try:
         for planned in plan.writes:
-            write_atomic(planned.path, planned.text)
-            created.append(planned.path)
+            write_atomic(planned.path, planned.content)
+            written.append(planned)
         install_agent_instructions(root_path)
     except Exception:
-        for path in (*reversed(created), *absent_before):
+        for planned in reversed(written):
+            if planned.previous_bytes is None:
+                planned.path.unlink(missing_ok=True)
+            else:
+                write_atomic(planned.path, planned.previous_bytes)
+        for path in absent_before:
             path.unlink(missing_ok=True)
         raise
     return report
@@ -555,10 +614,11 @@ def created_entry_paths(report: InitReport) -> tuple[str, ...]:
     return tuple(outcome.path for outcome in report.outcomes if outcome.action == "created")
 
 
-#: The seven entries a fresh ``feedbax init`` is responsible for, in report
+#: The eight entries a fresh ``feedbax init`` is responsible for, in report
 #: order. Tests assert against this rather than against prose.
 INIT_ENTRIES: tuple[str, ...] = (
     PROJECT_DECLARATION_FILENAME,
+    ".gitignore",
     DEFAULT_BUDGET_REF,
     DEFAULT_POLICY_REF,
     "pyproject.toml",

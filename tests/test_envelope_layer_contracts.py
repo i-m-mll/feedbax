@@ -1071,7 +1071,7 @@ class TestRatifiedEnvelopePolicyRows:
                 / "feedbax_conformance_fixture"
                 / "src"
                 / "feedbax_external_conformance"
-                / "policy_manifest.v1.json"
+                / "policy_manifest.v2.json"
             ).read_text(encoding="utf-8")
         )
         rows = {row["row_id"]: row for row in manifest["guaranteed_rows"]}

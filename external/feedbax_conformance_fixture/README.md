@@ -74,10 +74,13 @@ numeric protocol roles, shipped v12 lacks
 `figure_composition_public_contract`, and shipped v13 lacks
 `figure_role_reference_public_contract`.
 
-The versioned `policy_manifest.v1.json` maps each externally exercised policy row
-to real case IDs. It marks terminal certification and the three envelope-layer
-rows (`report-surface`, `evaluation-surface`, `analysis-authoring`) as
-non-external-covered rather than inventing a case for them.
+The versioned `policy_manifest.v2.json` maps each policy row's exact public API,
+schema behavior, structural and command obligations, and externally exercised
+cases to real case IDs. V1 lacked those authorities and is rejected rather than
+completed from prose. V2 marks the three envelope-layer rows (`report-surface`,
+`evaluation-surface`, `analysis-authoring`) as non-external-covered rather than
+inventing a case for them. Nested terminal certification stays in the training
+lifecycle contract with focused in-repo migration and rejection evidence.
 
 The required `current` and `minimum` protocol role members are both the strict
 numeric value `1`. Version 1 retains its v2 normalization-before-rejection
