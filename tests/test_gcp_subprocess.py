@@ -178,7 +178,7 @@ def test_cleanup_failure_does_not_replace_original_error(monkeypatch):
             _FakeProcess(stderr=b"provider failed", returncode=7),
             None,
             RuntimeError,
-            r"gcloud compute failed \(exit 7\):\nprovider failed",
+            r"gcloud command failed \(exit 7\); inspect provider logs",
         ),
         (_FakeProcess(stdout=b"not-json"), None, json.JSONDecodeError, None),
     ],

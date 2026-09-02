@@ -23,6 +23,7 @@ from feedbax.contracts.studio_api import (
 from feedbax.web.services.graph_service import GraphService
 from feedbax.objectives.service import loss_service
 from feedbax.web.services.training_service import RunStateCorruptionError, training_service
+from feedbax.web.worker.transport import WorkerConfigurationError, WorkerTransportError
 
 logger = logging.getLogger(__name__)
 
@@ -45,18 +46,24 @@ async def connect_worker(payload: WorkerConnectRequest) -> WorkerConnectEnvelope
     """Configure the Studio backend to use a remote training worker.
 
     Body:
-        url: Base URL of the remote worker, e.g. ``http://100.x.x.x:8765``.
-        auth_token: Optional bearer token required by the worker.
+        url: Exact worker origin. Remote origins must be present in the
+            server-side ``FEEDBAX_WORKER_ALLOWED_ORIGINS`` JSON allowlist.
+        auth_token: Required bearer token for non-loopback workers.
     """
-    training_service.connect_remote(payload.url, payload.auth_token)
-    return WorkerConnectEnvelope(data=WorkerConnectResponse(ok=True, url=payload.url))
+    try:
+        training_service.connect_remote(payload.url, payload.auth_token)
+    except WorkerConfigurationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return WorkerConnectEnvelope(
+        data=WorkerConnectResponse(ok=True, url=training_service.worker_url() or "")
+    )
 
 
 @router.get("/worker/status", response_model=WorkerStatusEnvelope)
 async def get_worker_status() -> WorkerStatusEnvelope:
     """Return the current worker configuration (local vs remote, URL, health)."""
     mode = training_service.worker_mode()
-    url = training_service._base_url
+    url = training_service.worker_url()
     connected = False
     if url is not None:
         connected = await training_service.worker_connected()
@@ -154,7 +161,12 @@ async def download_checkpoint(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
     except RuntimeError as exc:
         os.unlink(dest)
-        raise HTTPException(status_code=503, detail=str(exc))
+        detail = (
+            str(exc)
+            if isinstance(exc, WorkerTransportError)
+            else "Training worker checkpoint is unavailable"
+        )
+        raise HTTPException(status_code=503, detail=detail) from exc
     return FileResponse(
         dest,
         media_type="application/octet-stream",

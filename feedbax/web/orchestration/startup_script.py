@@ -28,16 +28,11 @@ class FeedbaxInstallSpec:
 
     def __post_init__(self) -> None:
         if self.schema_version != INSTALL_SPEC_SCHEMA_VERSION:
-            raise ValueError(
-                f"unsupported install spec schema_version {self.schema_version!r}"
-            )
+            raise ValueError(f"unsupported install spec schema_version {self.schema_version!r}")
         if self.source != "git":
             raise ValueError("install spec source must be 'git'")
         if self.repository != DEFAULT_FEEDBAX_REPOSITORY:
-            raise ValueError(
-                "install spec repository must be "
-                f"{DEFAULT_FEEDBAX_REPOSITORY!r}"
-            )
+            raise ValueError(f"install spec repository must be {DEFAULT_FEEDBAX_REPOSITORY!r}")
         if not _SAFE_REF.fullmatch(self.ref):
             raise ValueError(
                 "install spec ref may contain only letters, numbers, '.', '_', '/', "
@@ -87,22 +82,19 @@ set -euo pipefail
 python -m pip install --upgrade {feedbax_target}
 python -m pip install --upgrade uvicorn httpx fastapi 2>&1 | tail -5
 
-# Install and start Tailscale (if TS_AUTH_KEY is set)
-if [[ -n "${{TS_AUTH_KEY:-}}" ]]; then
-  curl -fsSL https://tailscale.com/install.sh | sh
-  tailscale up --authkey="${{TS_AUTH_KEY}}" --hostname="feedbax-worker-$(hostname)" 2>&1
-fi
-
-worker_port_arg="$(printf '%q' "${{WORKER_PORT:-8765}}")"
-auth_token_arg=""
-if [[ -n "${{AUTH_TOKEN:-}}" ]]; then
-  auth_token_arg=" --auth-token $(printf '%q' "$AUTH_TOKEN")"
-fi
-
-cat >/usr/local/bin/feedbax-worker-start <<WORKER
+cat >/usr/local/bin/feedbax-worker-start <<'WORKER'
 #!/bin/bash
 set -euo pipefail
-exec python -m feedbax.web.worker --host 0.0.0.0 --port ${{worker_port_arg}}${{auth_token_arg}}
+metadata_url="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
+auth_token="$(curl -fsS -H 'Metadata-Flavor: Google' "$metadata_url/AUTH_TOKEN")"
+worker_port="$(curl -fsS -H 'Metadata-Flavor: Google' "$metadata_url/WORKER_PORT")"
+if [[ -z "$auth_token" ]]; then
+  echo 'Feedbax worker credential metadata is missing' >&2
+  exit 1
+fi
+export FEEDBAX_WORKER_AUTH_TOKEN="$auth_token"
+unset auth_token
+exec python -m feedbax.web.worker --host 0.0.0.0 --port "$worker_port"
 WORKER
 chmod 0755 /usr/local/bin/feedbax-worker-start
 
