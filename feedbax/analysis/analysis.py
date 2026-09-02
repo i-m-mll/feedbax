@@ -38,13 +38,10 @@ from jax_cookbook import (
 )
 from jax_cookbook._func import wrap_to_accept_var_kwargs
 from jax_cookbook._vmap import AxisSpec, expand_axes_spec
-from jax_cookbook.progress import piter
 from jaxtyping import Array, ArrayLike, PyTree
-from sqlalchemy.orm import Session
 
 from feedbax.config import PATHS, STRINGS
 from feedbax.config.namespace import TreeNamespace
-from feedbax.config.yaml import get_yaml_loader
 from feedbax.config.utils import deep_merge
 from feedbax.analysis.support import (
     camel_to_snake,
@@ -112,7 +109,6 @@ if TYPE_CHECKING:
     from typing import ClassVar as AbstractClassVar
 
     from feedbax.analysis.context import AnalysisRunContext
-    from feedbax.persistence.database import EvaluationRecord
 else:
     from equinox import AbstractClassVar  # noqa: F401
 
@@ -889,72 +885,6 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         Returns a dictionary mapping dependency name to a dictionary of kwargs.
         """
         return {}
-
-    def save_figs(
-        self,
-        db_session: Session,
-        eval_info: "EvaluationRecord",
-        result,
-        figs: PyTree[go.Figure],
-        hps: PyTree[TreeNamespace],  # dict level: variant
-        model_info=None,
-        dump_path: Optional[Path] = None,
-        dump_formats: Sequence[str] = ("html",),
-        label: Optional[str] = None,
-        **dependencies,
-    ) -> None:
-        """
-        Save to disk and record in the database each figure in a PyTree of figures, for this analysis.
-        """
-        from feedbax.persistence.database import add_evaluation_figure
-        from feedbax.plot.lifecycle import close_figure
-        from feedbax.plot.utils import savefig
-
-        if dump_path is not None:
-            dump_path = Path(dump_path)
-            dump_path.mkdir(exist_ok=True, parents=True)
-
-        figure_records = self._figure_output_records(result, figs, hps, dependencies)
-        for i, _path, fig, params in piter(
-            figure_records,
-            description="Saving figures",
-            total=len(figure_records),
-            eta_halflife=1.0,
-        ):
-            add_evaluation_figure(
-                db_session,
-                eval_info,
-                fig,
-                camel_to_snake(self.name),
-                model_records=model_info,
-                **params,
-            )
-
-            # Additionally dump to specified path if provided
-            if dump_path is not None:
-                # Create a unique filename using label (if provided), class name and hash
-                if label is not None:
-                    filename = f"{label}_{self.name}_{i}"
-                else:
-                    filename = f"{self.name}_{self.md5_str}_{i}"
-
-                try:
-                    savefig(fig, filename, dump_path, dump_formats, metadata=params)
-
-                    # Save parameters as YAML
-                    yaml = get_yaml_loader(typ="safe")
-                    params_path = dump_path / f"{filename}.yaml"
-                    try:
-                        with open(params_path, "w") as f:
-                            yaml.dump(params, f)
-                    except Exception as e:
-                        logger.error(
-                            f"Error saving fig dump parameters to {params_path}: {e}",
-                            exc_info=True,
-                        )
-                        raise e
-                finally:
-                    close_figure(fig)
 
     def save_outputs(
         self,

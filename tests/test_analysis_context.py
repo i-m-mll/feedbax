@@ -3,10 +3,6 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from types import SimpleNamespace
-
-import jax
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -17,9 +13,7 @@ from feedbax.analysis.context import (
 )
 from feedbax.analysis.analysis import IdentityNode, SinglePort
 from feedbax.analysis.execution import (
-    AnalysisModuleTransformSpec,
     run_analyses_with_context,
-    run_evaluation,
 )
 from feedbax.analysis.materialization import (
     AnalysisArtifactGroup,
@@ -44,7 +38,6 @@ from feedbax.persistence.artifact_custody import (
     ArtifactBlobIntegrityError,
     ImmutableArtifactBlobProvider,
 )
-from feedbax.analysis.types import AnalysisInputData
 from tests.analysis_fixtures import (
     ARTIFACT_PRODUCER_CALLS,
     ToyAnalysis,
@@ -171,36 +164,6 @@ def test_analysis_md5_identity_includes_dependency_wiring() -> None:
     right = IdentityNode(inputs=SinglePort(input="right_dependency"))
 
     assert left.md5_str != right.md5_str
-
-
-def test_legacy_evaluation_state_cache_key_includes_prng_key(tmp_path: Path) -> None:
-    def eval_fn(key, hps, model, task):
-        del hps, model, task
-        return jnp.asarray(key[1])
-
-    data = AnalysisInputData(
-        models={"toy": jnp.asarray(1)},
-        tasks={"toy": jnp.asarray(1)},
-        states=None,
-        hps={"toy": SimpleNamespace()},
-        extras={},
-    )
-
-    values = []
-    for seed in (0, 1):
-        result = run_evaluation(
-            SimpleNamespace(eval_fn=eval_fn),
-            data,
-            common_inputs={},
-            transforms=AnalysisModuleTransformSpec(),
-            eval_info=SimpleNamespace(hash="same-eval-hash"),
-            states_pkl_dir=tmp_path,
-            key=jax.random.PRNGKey(seed),
-        )
-        values.append(int(result.states["toy"]))
-
-    assert values == [0, 1]
-    assert len(list(tmp_path.glob("same-eval-hash_*.pkl"))) == 2
 
 
 def test_requested_outputs_empty_intersection_raises_clear_error(

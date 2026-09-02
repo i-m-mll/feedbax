@@ -24,17 +24,12 @@ OPTIONAL_NAMESPACE_IMPORT_ALLOWLIST = {
     ("feedbax.analysis", "plotly"): "analysis extra module imports plotly at module import time",
     ("feedbax.analysis", "pyperclip"): "analysis extra module imports pyperclip at module import time",
     ("feedbax.analysis", "scikit-learn"): "analysis extra module imports sklearn at module import time",
-    ("feedbax.analysis", "sqlalchemy"): "analysis extra module imports sqlalchemy at module import time",
     ("feedbax.bin.analysis", "plotly"): "analysis CLI belongs to the analysis extra",
-    ("feedbax.persistence", "alembic"): "persistence extra module imports alembic at module import time",
     ("feedbax.persistence", "matplotlib"): (
         "persistence extra module imports matplotlib at module import time"
     ),
     ("feedbax.persistence", "plotly"): "persistence extra module imports plotly at module import time",
     ("feedbax.persistence", "pyexiv2"): "persistence extra module imports pyexiv2 at module import time",
-    ("feedbax.persistence", "sqlalchemy"): (
-        "persistence extra module imports sqlalchemy at module import time"
-    ),
     ("feedbax.plot", "matplotlib"): "viz extra module imports matplotlib at module import time",
     ("feedbax.plot", "pandas"): "viz extra module imports pandas at module import time",
     ("feedbax.plot", "plotly"): "viz extra module imports plotly at module import time",
@@ -45,7 +40,6 @@ OPTIONAL_NAMESPACE_IMPORT_ALLOWLIST = {
     ("feedbax.plot", "seaborn"): "viz extra module imports seaborn at module import time",
     ("feedbax.web", "fastapi"): "web extra module imports fastapi at module import time",
     ("feedbax.web", "httpx"): "web extra module imports httpx at module import time",
-    ("feedbax.web", "sqlalchemy"): "web extra module imports sqlalchemy at module import time",
     ("feedbax.web", "starlette"): "web extra module imports starlette at module import time",
     ("feedbax.web", "uvicorn"): "web extra module imports uvicorn at module import time",
 }
