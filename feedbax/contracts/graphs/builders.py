@@ -12,6 +12,7 @@ import jax.random as jr
 from feedbax.models.feedback import FeedbackChannels
 from feedbax.runtime.channel import Channel, ChannelSpec
 from feedbax.runtime.components import (
+    Activation,
     Constant,
     Damper,
     DelayLine,
@@ -298,44 +299,36 @@ def _build_linear_state_space(params: Mapping[str, Any]) -> LinearStateSpace:
 
 
 def _noise_params(params: Mapping[str, Any]) -> dict[str, Any]:
-    nested = params.get("noise")
-    noise_params = dict(nested) if isinstance(nested, Mapping) else {}
-    model = str(
-        noise_params.get(
-            "model",
-            noise_params.get("type", params.get("noise_model", "additive_gaussian")),
+    noncanonical = sorted(
+        set(params)
+        & {
+            "noise",
+            "std",
+            "additive_std",
+            "signal_dependent_std",
+        }
+    )
+    if noncanonical:
+        raise ValueError(
+            "Use canonical Channel noise parameters noise_model, noise_std, "
+            "additive_noise_std, and signal_dependent_noise_std; unsupported: "
+            + ", ".join(noncanonical)
         )
-    )
-    if model in {"gaussian", "additive", "normal"}:
-        model = "additive_gaussian"
-    elif model in {"signal_dependent", "multiplicative_gaussian"}:
-        model = "signal_dependent_gaussian"
-    elif model in {"command", "motor_command"}:
-        model = "signal_dependent_plus_additive"
-
-    noise_std = noise_params.get("std", params.get("noise_std", 0.0))
-    additive_std = noise_params.get(
-        "additive_std",
-        noise_params.get("additive_noise_std", params.get("additive_noise_std", noise_std)),
-    )
+    model = str(params.get("noise_model", "additive_gaussian"))
+    noise_std = params.get("noise_std", 0.0)
+    additive_std = params.get("additive_noise_std", noise_std)
     if model == "additive_gaussian" and noise_std not in (None, 0, 0.0):
         additive_std = noise_std
-    signal_dependent_std = noise_params.get(
-        "signal_dependent_std",
-        noise_params.get(
-            "signal_dependent_noise_std",
-            params.get("signal_dependent_noise_std", 0.0),
-        ),
-    )
+    signal_dependent_std = params.get("signal_dependent_noise_std", 0.0)
     add_noise_default = model != "none"
-    add_noise = bool(noise_params.get("add_noise", params.get("add_noise", add_noise_default)))
+    add_noise = bool(params.get("add_noise", add_noise_default))
     return {
         "model": model,
         "add_noise": add_noise,
         "additive_std": float(additive_std or 0.0),
         "signal_dependent_std": float(signal_dependent_std or 0.0),
-        "role": noise_params.get("role", params.get("noise_role")),
-        "timing": noise_params.get("timing", params.get("noise_timing")),
+        "role": params.get("noise_role"),
+        "timing": params.get("noise_timing"),
     }
 
 
@@ -620,6 +613,11 @@ def _build_sigmoid(params: Mapping[str, Any]) -> Sigmoid:
     return Sigmoid()
 
 
+def _build_activation(params: Mapping[str, Any]) -> Activation:
+    activation_name = str(params.get("activation", "identity"))
+    return Activation(activation_name, resolve_nonlinearity(activation_name))
+
+
 def _build_elementwise_affine_modulator(
     params: Mapping[str, Any],
 ) -> ElementwiseAffineModulator:
@@ -631,6 +629,7 @@ def _build_elementwise_affine_modulator(
         baseline=params.get("baseline", 1.0),
         gain_init=params.get("gain_init", 0.0),
         bias_init=params.get("bias_init", 0.0),
+        trainable=bool(params.get("trainable", True)),
     )
 
 
@@ -748,6 +747,10 @@ def _build_vanilla_rnn(params: Mapping[str, Any]) -> VanillaRNN:
         activation_name=activation_name,
         nonlinearity=resolve_nonlinearity(activation_name),
         use_bias=bool(params.get("use_bias", True)),
+        use_noise=bool(params.get("use_noise", False)),
+        noise_strength=float(params.get("noise_strength", 0.01)),
+        dt=float(params.get("dt", 1.0)),
+        tau=float(params.get("tau", 1.0)),
         dtype=dtype,
         key=jr.PRNGKey(0),
     )
@@ -794,6 +797,7 @@ def _build_rigid_tendon_hill_muscle_thelen(
         tau_deactivation=float(params.get("tau_deactivation", 0.05)),
         dt=float(params.get("dt", 0.01)),
         initial_activation=float(params.get("initial_activation", 0.001)),
+        n_muscles=int(params.get("n_muscles", 6)),
     )
 
 
@@ -898,6 +902,7 @@ def _build_affine_value_composer(params: Mapping[str, Any]) -> AffineValueCompos
 
 
 _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
+    "Activation": _build_activation,
     "Gain": _build_gain,
     "Input": _build_input,
     "Sum": _build_sum,

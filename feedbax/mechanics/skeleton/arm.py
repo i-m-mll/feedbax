@@ -77,6 +77,10 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
         # otherwise their initialization is a side effect
         self._a
 
+    def to_params(self) -> dict[str, list[float]]:
+        """Return the authored GraphSpec parameters represented by this arm."""
+        return {"link_lengths": [float(value) for value in self.l]}
+
     @jax.named_scope("fbx.TwoLinkArm")
     def vector_field(
         self,

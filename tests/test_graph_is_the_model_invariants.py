@@ -568,37 +568,34 @@ def test_unknown_activation_name_is_not_silently_relu() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "The 'LeakyRNNCell' vocabulary name aliases to VanillaRNN and drops "
-        "dt/tau/use_noise, yielding a non-leaky alpha=1 cell — see 8378254 item 5"
-    ),
-)
 def test_leaky_rnn_cell_vocabulary_builds_a_leaky_cell() -> None:
-    """Selecting a leaky cell must produce a leaky cell, or be rejected."""
-    try:
-        spec = network_template_graph(
-            {
-                "input_size": 3,
-                "hidden_size": 4,
-                "out_size": 2,
-                "hidden_type": "LeakyRNNCell",
-                "dt": 0.05,
-                "tau": 0.5,
-            }
-        )
-        graph = spec_to_graph(spec, _registry())
-    except REFUSALS:
-        return  # Removing the unreachable alias is a conformant outcome.
-
-    cell = graph.nodes["cell"].cell
-    # Observed today: cell.dt == 1.0 and cell.tau == 1.0, so alpha == 1.0 and
-    # the cell has no leak at all.
-    assert float(cell.dt) / float(cell.tau) < 1.0, (
-        f"LeakyRNNCell built with dt={float(cell.dt)}, tau={float(cell.tau)} "
-        "(alpha=1 means non-leaky)"
+    """The leaky vocabulary carries its dynamics through a GraphSpec round trip."""
+    spec = network_template_graph(
+        {
+            "input_size": 3,
+            "hidden_size": 4,
+            "out_size": 2,
+            "hidden_type": "LeakyRNNCell",
+            "activation": "relu",
+            "use_bias": False,
+            "dt": 0.05,
+            "tau": 0.5,
+            "use_noise": True,
+            "noise_strength": 0.03,
+        }
     )
+    first = spec_to_graph(spec, _registry())
+    second = spec_to_graph(graph_to_spec(first), _registry())
+
+    for graph in (first, second):
+        cell = graph.nodes["cell"].cell
+        assert float(cell.dt) == pytest.approx(0.05)
+        assert float(cell.tau) == pytest.approx(0.5)
+        assert cell.use_bias is False
+        assert cell.nonlinearity is jax.nn.relu
+        assert cell.use_noise is True
+        assert float(cell.noise_strength) == pytest.approx(0.03)
+        assert float(cell.alpha) == pytest.approx(0.1)
 
 
 @pytest.mark.xfail(
