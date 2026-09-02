@@ -38,13 +38,15 @@ from feedbax.contracts.evaluation_product_union import (
     EvaluationCompactProductUnion,
     EvaluationCompactProductUnionSource,
 )
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
-    AnalysisRunManifest,
     ParentRef,
-    evaluation_states_cache_path,
     sha256_bytes,
+)
+from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
+    evaluation_states_cache_path,
 )
 from feedbax.contracts.migrations import migrate_structured_spec_payload
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider

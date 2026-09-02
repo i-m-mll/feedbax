@@ -8,6 +8,8 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, cast
 
+from pydantic import BaseModel
+
 from feedbax.contracts.component import (
     ComponentDefinition,
     ComponentIdentity,
@@ -33,7 +35,13 @@ from feedbax.contracts.representation import (
 )
 
 from .builtins import register_builtin_components
-from .declarations import ComponentBuilder, DeclaredComponent, OutputPrototypeFn, declare_component
+from .declarations import (
+    ComponentBuilder,
+    ComponentParamExtractor,
+    DeclaredComponent,
+    OutputPrototypeFn,
+    declare_component,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -102,9 +110,6 @@ class ComponentRegistry:
     def _register_builtins(self) -> None:
         with _registration_provenance("feedbax"):
             register_builtin_components(self)
-        from feedbax.contracts.graphs.builders import register_builtin_component_builders
-
-        register_builtin_component_builders(self)
 
     def register_template_pack(
         self,
@@ -143,7 +148,13 @@ class ComponentRegistry:
         *,
         category: str = "Custom",
         description: str = "",
-        param_schema: Iterable[ParamSchema | dict[str, Any]] = (),
+        param_schema: Iterable[ParamSchema | dict[str, Any]] | None = None,
+        param_model: type[BaseModel] | None = None,
+        runtime_type: type[Any] | None = None,
+        attribute_paths: Mapping[str, str] | None = None,
+        build_context_fields: Iterable[str] = (),
+        extractor: ComponentParamExtractor | None = None,
+        override_reason: str | None = None,
         input_ports: Iterable[str] = (),
         output_ports: Iterable[str] = (),
         icon: str = "box",
@@ -175,14 +186,21 @@ class ComponentRegistry:
             dynamic_port_policy = DynamicPortPolicy.model_validate(dynamic_port_policy)
         if representation is not None and not isinstance(representation, RepresentationSpec):
             representation = RepresentationSpec.model_validate(representation)
+        if param_schema is not None and param_model is not None:
+            raise ValueError(f"Component {name!r} cannot supply both param_model and param_schema")
         meta = declare_component(
             name=name,
             category=category,
             description=description,
-            param_schema=[
-                schema if isinstance(schema, ParamSchema) else ParamSchema(**schema)
-                for schema in param_schema
-            ],
+            param_schema=(
+                [
+                    schema if isinstance(schema, ParamSchema) else ParamSchema(**schema)
+                    for schema in param_schema
+                ]
+                if param_schema is not None
+                else None
+            ),
+            param_model=param_model,
             input_ports=list(input_ports),
             output_ports=list(output_ports),
             icon=icon,
@@ -196,6 +214,11 @@ class ComponentRegistry:
             template_id=template_id,
             template_kind=template_kind,
             builder=builder,
+            runtime_type=runtime_type,
+            attribute_paths=attribute_paths,
+            build_context_fields=tuple(build_context_fields),
+            extractor=extractor,
+            override_reason=override_reason or "downstream registered constructor",
             output_prototype_fn=output_prototype_fn,
             provenance=provenance or _current_provenance(),
             owner=owner,
@@ -238,11 +261,16 @@ class ComponentRegistry:
                 owner=owner,
             )
         else:
-            if meta.builder is not None:
+            if meta.params.builder is not None or meta.params.runtime_type is not None:
                 raise ValueError(f"component builder already registered: {name!r}")
             from .declarations import ComponentRuntimeFacet
 
-            meta = replace(meta, runtime=ComponentRuntimeFacet(builder))
+            params = replace(
+                meta.params,
+                builder=builder,
+                override_reason="separately registered constructor",
+            )
+            meta = replace(meta, params=params, runtime=ComponentRuntimeFacet(params.build))
             self._components[name] = meta
             self._validate_representation(meta)
             registered = self.get(name)
@@ -293,9 +321,17 @@ class ComponentRegistry:
     ) -> ComponentResolution:
         meta = self._components.get(type_id)
         if meta is not None and self._accepts_param_schema(meta, param_schema_version):
+            context = {
+                name: value
+                for name, value in params.items()
+                if name in meta.params.build_context_fields
+            }
+            validated = meta.params.require(
+                {name: value for name, value in params.items() if name not in context}
+            )
             return ComponentResolution(
                 type_id=type_id,
-                params=dict(params),
+                params={**validated.model_dump(mode="python"), **context},
                 param_schema_version=param_schema_version or meta.param_schema_version,
                 meta=deepcopy(meta),
             )
@@ -336,9 +372,10 @@ class ComponentRegistry:
                 f"target_param_schema_version={migrated_version!r}, "
                 f"supported={migrated_meta.supported_param_schema_versions!r}"
             )
+        validated = migrated_meta.params.require(migrated_params)
         return ComponentResolution(
             type_id=migrated_type,
-            params=migrated_params,
+            params=validated.model_dump(mode="python"),
             param_schema_version=migrated_version or migrated_meta.param_schema_version,
             meta=deepcopy(migrated_meta),
             migrations=(self._migration_info(migration),),
@@ -372,9 +409,52 @@ class ComponentRegistry:
         meta = self._components.get(name)
         if meta is None or meta.dynamic_port_policy is None:
             return None
-        effective_params = deepcopy(meta.default_params)
-        effective_params.update(deepcopy(dict(params)))
+        effective_params = meta.params.require(params).model_dump(mode="python")
         return derive_dynamic_port_layout(meta.dynamic_port_policy, effective_params)
+
+    def serialize_component(
+        self,
+        component: Any,
+        *,
+        type_id: str | None = None,
+        param_schema_version: str | None = None,
+    ) -> tuple[str, dict[str, Any], str]:
+        """Serialize one runtime leaf through the declaration that owns it."""
+
+        if type_id is not None:
+            meta = self._components.get(type_id)
+            if meta is None:
+                raise ValueError(f"Unknown bound component type {type_id!r}")
+            if param_schema_version != meta.param_schema_version:
+                raise UnsupportedComponentMigration(
+                    "Runtime component binding has unsupported parameter schema version: "
+                    f"type={type_id!r}, bound={param_schema_version!r}, "
+                    f"current={meta.param_schema_version!r}"
+                )
+        else:
+            matches = [
+                candidate
+                for candidate in self._components.values()
+                if candidate.params.runtime_type is not None
+                and type(component) is candidate.params.runtime_type
+            ]
+            if len(matches) != 1:
+                names = sorted(candidate.name for candidate in matches)
+                raise ValueError(
+                    "Programmatic graph component reverse resolution must match exactly one "
+                    f"registered runtime type; runtime={type(component).__name__!r}, "
+                    f"matches={names!r}"
+                )
+            meta = matches[0]
+        return meta.name, meta.params.dump(component), meta.param_schema_version
+
+    def component_classification(self) -> dict[str, str]:
+        """Return the registry-wide parameter-contract classification."""
+
+        return {
+            name: ("subgraph" if meta.is_composite else meta.params.classification)
+            for name, meta in sorted(self._components.items())
+        }
 
     def names(self) -> List[str]:
         return sorted(self._components)
@@ -383,8 +463,7 @@ class ComponentRegistry:
         return sorted(
             name
             for name, meta in self._components.items()
-            if meta.builder is not None
-            and not getattr(meta.builder, "_feedbax_unsupported_builder", False)
+            if meta.params.classification != "unsupported"
         )
 
     def list_all(self) -> List[ComponentDefinition]:
@@ -424,7 +503,7 @@ class ComponentRegistry:
         node_path: str,
     ) -> list[TemplateBuilderIssue]:
         if isinstance(graph, AcausalGraphSpec):
-            from feedbax.contracts.graphs.acausal_compiler import (
+            from feedbax.compiler.acausal_compiler import (
                 compile_acausal_authoring_report,
             )
 

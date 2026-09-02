@@ -11,7 +11,11 @@ from feedbax import __main__ as feedbax_main
 from feedbax.analysis import evaluation
 from feedbax.analysis import harness
 from feedbax.analysis.evaluation import EvaluationRecipeResult
-from feedbax.contracts.manifest import canonical_json_bytes, load_manifest, sha256_bytes
+from feedbax.contracts.base import (
+    canonical_json_bytes,
+    sha256_bytes,
+)
+from feedbax.contracts.manifest import load_manifest
 from feedbax.plugins import (
     EVALUATION_RECIPES,
     BootstrapError,

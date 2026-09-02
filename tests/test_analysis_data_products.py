@@ -6,14 +6,16 @@ import pytest
 
 from feedbax.analysis.context import AnalysisRunContext
 from feedbax.contracts.graph import AnalysisDataProductRequirement
+from feedbax.contracts.base import (
+    ArtifactRef,
+    ParentRef,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
     AnalysisDataProduct,
     AnalysisRunManifest,
     AnalysisRunSpec,
-    ArtifactRef,
-    ParentRef,
     load_manifest,
     spec_payload,
     write_manifest,

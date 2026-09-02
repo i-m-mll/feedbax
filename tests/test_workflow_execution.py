@@ -86,12 +86,14 @@ from feedbax.contracts.experiment_compile_lock import (
     ReportParentBinding,
 )
 from feedbax.contracts.figures import FIGURE_SPEC_SCHEMA_ID
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     canonical_json_bytes,
+    sha256_bytes,
+)
+from feedbax.contracts.artifact_store import store_bytes_artifact
+from feedbax.contracts.manifest import (
     canonical_manifest_path,
     load_manifest,
-    sha256_bytes,
-    store_bytes_artifact,
 )
 
 from tests.fake_project_experiment.products import (
@@ -2402,7 +2404,7 @@ def test_a_half_stated_restated_profile_is_refused_rather_than_dropped(
 def test_restated_parent_differences_reports_an_unreadable_profile_on_either_side() -> None:
     """Neither side may drop out of the comparison by being malformed."""
     from feedbax.workflow.operation_execution import restated_parent_differences
-    from feedbax.contracts.manifest import ParentRef
+    from feedbax.contracts.base import ParentRef
 
     complete = {
         "ref_schema_id": "feedbax.ref.authenticated_manifest",

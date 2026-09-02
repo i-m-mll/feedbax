@@ -23,11 +23,11 @@ from feedbax.analysis.specs import (
     execute_analysis_run_spec,
 )
 from feedbax.contracts.figures import FigureSpec
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
     EvaluationRunManifest,
-    ParentRef,
     ReportSpec,
     TrainingRunManifest,
     canonical_manifest_path,

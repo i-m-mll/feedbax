@@ -48,13 +48,15 @@ from feedbax.contracts.figures import (
     FigureInputRoleAuthority,
     FigureSpec,
 )
+from feedbax.contracts.base import (
+    ParentRef,
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     AnalysisDataProduct,
     AnalysisRunManifest,
     AnalysisRunSpec,
-    ParentRef,
-    canonical_json_bytes,
-    sha256_bytes,
     spec_payload,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry

@@ -5,7 +5,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from feedbax.contracts.manifest import ParentRef
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.selection import (
     SELECTION_SPEC_SCHEMA_VERSION,

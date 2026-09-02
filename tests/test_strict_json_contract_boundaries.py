@@ -49,10 +49,12 @@ from feedbax.contracts.evaluation_states import (
 )
 from feedbax.contracts.experiment_envelope import ExperimentEnvelopeRejection
 from feedbax.contracts.extraction import SourceBinding, load_expression_context
-from feedbax.contracts.manifest import (
-    TrainingRunManifest,
+from feedbax.contracts.base import (
     canonical_json_bytes,
     sha256_bytes,
+)
+from feedbax.contracts.manifest import (
+    TrainingRunManifest,
     write_manifest,
 )
 from feedbax.contracts.manifest_packet import (

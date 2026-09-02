@@ -4,12 +4,12 @@ from typing import Protocol
 
 from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
-from feedbax.contracts.graphs.templates import (
+from feedbax.compiler.templates import (
     BUILTIN_GRAPH_TEMPLATES,
     recurrent_controller_template_graph,
     simple_feedback_template_graph,
 )
-from feedbax.contracts.graphs.mechanics_templates import (
+from feedbax.compiler.mechanics_templates import (
     mass_spring_damper_template_graph,
     point_mass_with_muscles_template_graph,
     two_link_arm_6muscle_template_graph,

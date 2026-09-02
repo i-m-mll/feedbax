@@ -10,7 +10,7 @@ import pytest
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParameterConstraintSpec
 from feedbax.contracts.migrations import UnsupportedSpecVersion
 from feedbax.runtime.graph import Graph
-from feedbax.contracts.graphs.templates import (
+from feedbax.compiler.templates import (
     network_template_graph,
     recurrent_controller_template_graph,
 )
@@ -27,8 +27,8 @@ from feedbax.models.networks import (
     population_structure_from_spec,
 )
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
-from feedbax.contracts.graphs import builders as graph_builders
-from feedbax.contracts.graphs.serialization import graph_to_spec
+from feedbax.compiler import builders as graph_builders
+from feedbax.compiler.serialization import graph_to_spec
 from tests.graph_compiler_test_support import spec_to_graph
 
 

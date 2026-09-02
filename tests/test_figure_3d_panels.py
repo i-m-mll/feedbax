@@ -26,9 +26,9 @@ from feedbax.contracts.figures import (
     TraceFamilyIndex,
     TraceFamilyRange,
 )
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
-    ParentRef,
     safe_manifest_key,
     spec_payload,
     write_manifest,

@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from feedbax.contracts.graph import GraphSpec
-from feedbax.contracts.graphs.builders import build_component
+from feedbax.compiler.builders import build_component
 from feedbax.contracts.training import TaskSpec
 from feedbax.tasks import TaskTrialSpec
 

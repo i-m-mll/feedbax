@@ -20,7 +20,12 @@ from feedbax.contracts.artifact_schema import (
     read_npz_array_store,
     validate_role_address,
 )
-from feedbax.contracts.manifest import SCHEMA_VERSION, ModelArtifactManifest, load_manifest, sha256_file
+from feedbax.contracts.base import sha256_file
+from feedbax.contracts.manifest import (
+    SCHEMA_VERSION,
+    ModelArtifactManifest,
+    load_manifest,
+)
 
 
 class UnsupportedArtifactSchemaError(ArtifactSchemaError):

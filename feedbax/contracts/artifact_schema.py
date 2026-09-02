@@ -16,7 +16,12 @@ from typing import Any, Literal
 import numpy as np
 from pydantic import Field, field_validator
 
-from feedbax.contracts.manifest import ArrayStoreRef, StrictModel, sha256_bytes, sha256_file
+from feedbax.contracts.base import (
+    ArrayStoreRef,
+    StrictModel,
+    sha256_bytes,
+    sha256_file,
+)
 from feedbax.contracts.strict_json import strict_json_loads
 
 

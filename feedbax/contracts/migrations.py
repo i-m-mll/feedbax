@@ -265,6 +265,7 @@ from feedbax.contracts.experiment_compile_lock import (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
 )
 from feedbax.contracts.experiment_envelope import (
     EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID,
@@ -310,6 +311,11 @@ from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_VERSION_V2,
     REPRESENTATION_SCHEMA_VERSION_V1,
     REPRESENTATION_SCHEMA_VERSION_V0,
+)
+from feedbax.contracts.base import (
+    ArtifactMigrationRecord,
+    canonical_json_bytes,
+    sha256_bytes,
 )
 from feedbax.contracts.manifest import (
     ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_ID,
@@ -361,9 +367,6 @@ from feedbax.contracts.manifest import (
     REGENERATION_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SET_SCHEMA_VERSION,
     TRAINING_RUN_SET_SCHEMA_VERSION_V1,
-    ArtifactMigrationRecord,
-    canonical_json_bytes,
-    sha256_bytes,
 )
 from feedbax.contracts.manifest import (
     SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION,
@@ -3421,6 +3424,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             supported_old_versions=(
                 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
                 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
+                EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
             ),
             required_tests=("tests/test_envelope_engine_kernel.py",),
             notes=(
@@ -3433,7 +3437,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "v1 root figure input reference is refused at lowering with an actionable "
                 "re-author-at-envelope-v5 diagnostic. v3 adds the closed "
                 "analysis_receipt_set consumer; v1/v2 remain readable only with their "
-                "singular analysis_input grammar."
+                "singular analysis_input grammar. v4 adds the governed_parent compile-time "
+                "input, carrying the exact typed parent and artifact byte/schema identity; "
+                "v1/v2/v3 remain readable but cannot be relabelled to carry that reference."
             ),
         ),
         _family(

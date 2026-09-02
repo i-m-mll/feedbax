@@ -19,9 +19,9 @@ import pytest
 from feedbax.contracts.authored_canonical import CANONICAL_PIN_ALGORITHM
 from feedbax.contracts.experiment_compile_lock import (
     COMPILE_LOCK_PLAN_EDGE_KINDS,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
-    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
     COMPILE_LOCK_REFERENCE_KINDS,
     AnalysisInputBinding,
     AnalysisReceiptSetBinding,
@@ -33,6 +33,7 @@ from feedbax.contracts.experiment_compile_lock import (
     ContentPinReference,
     EvaluationSubjectBinding,
     FigureRuntimeInputBinding,
+    GovernedParentReference,
     NotApplicableReference,
     PlannedProductReference,
     ReceiptLocatorReference,
@@ -44,6 +45,7 @@ from feedbax.contracts.experiment_compile_lock import (
     parse_compile_lock_reference,
     parse_row_provenance_reference,
 )
+from feedbax.contracts.run_composition import ResolvedOutputParent
 from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeRejection,
     ExperimentEnvelopeRejectionCategory,
@@ -56,6 +58,17 @@ DIGEST_C = "c" * 64
 
 def _content_pin() -> ContentPinReference:
     return ContentPinReference(ref="bases/baseline.survey.json", content_hash=DIGEST_A)
+
+
+def _governed_parent() -> GovernedParentReference:
+    return GovernedParentReference(
+        parent=ResolvedOutputParent(ref="artifact-blob:parent", resolved_root_hash=DIGEST_A),
+        role="training.base",
+        artifact_id="artifact-version:parent",
+        artifact_sha256=DIGEST_B,
+        schema_id="quillon.training",
+        schema_version="quillon.training.v1",
+    )
 
 
 def _planned_product() -> PlannedProductReference:
@@ -108,9 +121,7 @@ def _row_provenance() -> RowProvenanceReference:
     )
 
 
-def _inputs(
-    references: list[Any], row_provenance: list[Any] | None = None
-) -> CompileLockInputs:
+def _inputs(references: list[Any], row_provenance: list[Any] | None = None) -> CompileLockInputs:
     return CompileLockInputs(
         envelope_ref="studies/widened.envelope.json",
         envelope_document={"schema": "quillon.study.v1", "name": "widened"},
@@ -128,9 +139,10 @@ def _inputs(
 # -- the union is closed and complete ------------------------------------
 
 
-def test_reference_kinds_are_exactly_the_five_declared_members() -> None:
+def test_reference_kinds_are_exactly_the_six_declared_members() -> None:
     assert COMPILE_LOCK_REFERENCE_KINDS == (
         "content_pin",
+        "governed_parent",
         "planned_product",
         "receipt_locator",
         "authenticated_receipt",
@@ -141,6 +153,7 @@ def test_reference_kinds_are_exactly_the_five_declared_members() -> None:
 def test_every_member_round_trips_through_a_lock() -> None:
     references = [
         _content_pin(),
+        _governed_parent(),
         _planned_product(),
         _receipt_locator(),
         _authenticated_receipt(),
@@ -192,9 +205,12 @@ def test_a_references_block_that_is_not_a_list_is_refused_by_the_reader() -> Non
 # -- content pins are inputs, not plan edges ------------------------------
 
 
-def test_a_content_pin_is_not_a_plan_edge_and_every_other_kind_is() -> None:
+def test_compile_time_inputs_are_not_plan_edges() -> None:
     assert "content_pin" not in COMPILE_LOCK_PLAN_EDGE_KINDS
-    assert COMPILE_LOCK_PLAN_EDGE_KINDS == frozenset(COMPILE_LOCK_REFERENCE_KINDS[1:])
+    assert "governed_parent" not in COMPILE_LOCK_PLAN_EDGE_KINDS
+    assert COMPILE_LOCK_PLAN_EDGE_KINDS == frozenset(
+        {"planned_product", "receipt_locator", "authenticated_receipt", "not_applicable"}
+    )
 
 
 def test_plan_edges_skip_content_pins_in_declaration_order() -> None:
@@ -345,9 +361,12 @@ def test_a_third_applicability_basis_does_not_exist() -> None:
 )
 def test_every_consumer_binding_is_accepted_on_a_planned_product(binding: Any) -> None:
     reference = _planned_product().model_copy(update={"consumer": binding})
-    assert parse_compile_lock_reference(
-        reference.model_dump(mode="json"), field="references[0]"
-    ).consumer == binding
+    assert (
+        parse_compile_lock_reference(
+            reference.model_dump(mode="json"), field="references[0]"
+        ).consumer
+        == binding
+    )
 
 
 def test_an_unknown_consumer_is_refused() -> None:
@@ -397,8 +416,9 @@ def test_row_provenance_states_the_row_key_and_the_pinned_document_it_resolved_i
             "pin_algorithm": CANONICAL_PIN_ALGORITHM,
         }
     ]
-    assert load_compile_lock(lock, field="widened.compile-lock.json")["row_provenance"] == (
-        lock["row_provenance"]
+    assert (
+        load_compile_lock(lock, field="widened.compile-lock.json")["row_provenance"]
+        == (lock["row_provenance"])
     )
 
 
@@ -501,7 +521,7 @@ def _lock_with_figure_input(contract: dict[str, Any] | None) -> dict[str, Any]:
 def test_a_current_lock_carries_the_typed_figure_input_contract() -> None:
     lock = _lock_with_figure_input(_figure_contract())
 
-    assert lock["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3
+    assert lock["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION
     loaded = load_compile_lock(lock, field="lock")
     consumer = parse_compile_lock_reference(
         loaded["references"][0], field="lock#references[0]"
@@ -544,9 +564,7 @@ def test_a_prior_lock_stating_a_contract_is_refused_by_version() -> None:
 )
 def test_a_pre_v3_lock_cannot_be_relabelled_as_a_receipt_set(version: str) -> None:
     reference = _authenticated_receipt().model_copy(
-        update={
-            "consumer": AnalysisReceiptSetBinding(alias="evaluation", role="evaluation")
-        }
+        update={"consumer": AnalysisReceiptSetBinding(alias="evaluation", role="evaluation")}
     )
     lock = {**build_compile_lock(_inputs([reference])), "schema_version": version}
     with pytest.raises(ExperimentEnvelopeRejection, match="receipt-set binding"):

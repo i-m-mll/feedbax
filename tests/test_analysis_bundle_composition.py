@@ -32,14 +32,16 @@ from feedbax.contracts.analysis_bundle_composition import (
     analysis_bundle_delta_envelope_hash,
     flatten_analysis_bundle_delta,
 )
+from feedbax.contracts.base import (
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_ID,
     ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
     ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_ID,
     ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_VERSION,
     TrainingRunManifest,
-    canonical_json_bytes,
-    sha256_bytes,
     write_manifest,
 )
 from feedbax.contracts.migrations import migrate_structured_spec_payload

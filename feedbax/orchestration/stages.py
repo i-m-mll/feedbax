@@ -18,14 +18,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.strict_json import (
     StrictJsonError,
     strict_json_loads,
     strict_model_validate_json,
 )
-
 from feedbax.contracts.manifest import (
-    ParentRef,
     TrainingRunManifest,
     load_manifest_bytes,
 )

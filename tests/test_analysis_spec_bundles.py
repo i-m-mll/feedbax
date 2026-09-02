@@ -49,19 +49,21 @@ from feedbax.analysis.materialization import ContextMaterializer
 from feedbax.analysis.manifest_inputs import authenticated_manifest_ref, resolve_manifest_input
 from feedbax.contracts.expressions import Compare
 from feedbax.contracts.figures import FigureSpec
+from feedbax.contracts.base import (
+    ParentRef,
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     AnalysisRunSpec,
     EvaluationRunManifest,
     EvaluationRunSpec,
-    ParentRef,
     TrainingRunManifest,
     analysis_run_manifest_id,
     evaluation_states_cache_path,
     load_manifest,
     spec_payload,
     write_manifest,
-    canonical_json_bytes,
-    sha256_bytes,
 )
 from feedbax.contracts.selection import TopKByMetricPerGroup
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider

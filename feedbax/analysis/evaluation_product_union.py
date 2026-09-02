@@ -21,18 +21,20 @@ from feedbax.contracts.evaluation_product_union import (
     EvaluationCompactProductUnionSource,
     EvaluationCompactProductUnionSourceEvidence,
 )
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+    ArtifactRef,
+    ParentRef,
+    canonical_json_bytes,
+    sha256_bytes,
+)
+from feedbax.contracts.manifest import (
     AnalysisDataProduct,
     AnalysisRunManifest,
     AnalysisRunSpec,
-    ArtifactRef,
-    ParentRef,
     analysis_run_manifest_id,
-    canonical_json_bytes,
     safe_manifest_key,
-    sha256_bytes,
 )
 from feedbax.contracts.migrations import migrate_structured_spec_payload
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider

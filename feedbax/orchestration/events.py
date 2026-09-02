@@ -17,9 +17,8 @@ from typing import Any, Literal, Self, TextIO
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
-
-from feedbax.contracts.manifest import StrictModel
 from feedbax.contracts.metric_values import NumericBooleanJsonValue
 from feedbax.contracts.worker import MaterializedSlotAxisBinding, ProgressCoordinate
 

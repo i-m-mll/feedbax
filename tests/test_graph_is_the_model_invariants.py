@@ -31,9 +31,9 @@ import pytest
 
 from feedbax.component_registry import ComponentRegistry, required_interior_domain
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
-from feedbax.contracts.graphs.serialization import graph_to_spec
+from feedbax.compiler.serialization import graph_to_spec
 from tests.graph_compiler_test_support import spec_to_graph
-from feedbax.contracts.graphs.templates import network_template_graph
+from feedbax.compiler.templates import network_template_graph
 from feedbax.runtime.graph import Graph
 from feedbax.web.worker.diagnostics import GraphCompilationError
 from feedbax.web.worker.execution import compile_training_run
@@ -109,7 +109,8 @@ def test_causal_composite_builds_from_subgraph_not_outer_params() -> None:
         out_port="force_2d",
     )
 
-    graph = spec_to_graph(spec, _registry())
+    registry = _registry()
+    graph = spec_to_graph(spec, registry)
     built = graph.nodes["plant"]
 
     assert isinstance(built, Graph)
@@ -119,6 +120,11 @@ def test_causal_composite_builds_from_subgraph_not_outer_params() -> None:
     assert built.output_ports == ("force_2d",)
     # No muscle machinery was constructed from the outer params.
     assert not any("Muscle" in type(node).__name__ for node in built.nodes.values())
+
+    serialized = graph_to_spec(graph, registry)
+    assert serialized.nodes["plant"].params == {}
+    assert serialized.subgraphs is not None
+    assert serialized.subgraphs["plant"].nodes["scale"].params == {"gain": 7.0}
 
 
 def test_editing_the_subgraph_changes_the_built_artifact() -> None:
@@ -638,13 +644,6 @@ def test_missing_task_workspace_is_not_silently_hardcoded() -> None:
     assert exc_info.value.diagnostics[0].code == "worker.missing_task_workspace"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "A composite node with a populated subgraph still requires outer params "
-        "that are never used to construct anything — new finding, not in 8378254"
-    ),
-)
 def test_composite_with_a_subgraph_does_not_require_unused_outer_params() -> None:
     """If the interior is authoritative, the outer params cannot gate the build."""
     interior = _gain_interior(3.0, in_port="excitation", out_port="torques")
@@ -664,13 +663,6 @@ def test_composite_with_a_subgraph_does_not_require_unused_outer_params() -> Non
     assert graph.nodes["plant"].nodes["scale"].gain == 3.0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Params present in the spec but unknown to the builder are silently "
-        "dropped instead of rejected — new finding, not in 8378254"
-    ),
-)
 def test_unrecognized_component_param_is_not_silently_dropped() -> None:
     """A spec param that reaches nothing in the built model must be rejected."""
     spec = GraphSpec(
@@ -692,7 +684,7 @@ def test_unrecognized_component_param_is_not_silently_dropped() -> None:
         output_bindings={"y": ("lin", "output")},
     )
 
-    # Observed today: the graph builds and the built Linear has no trace of
-    # ``nonexistent_param`` — the spec and the model disagree, silently.
+    # The strict declaration owns the accepted vocabulary, so an unknown field
+    # cannot disappear between the authored spec and the runtime model.
     with pytest.raises(REFUSALS):
         spec_to_graph(spec, _registry())

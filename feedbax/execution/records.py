@@ -8,7 +8,10 @@ from typing import Any, Literal
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
-from feedbax.contracts.manifest import StrictModel, canonical_json_bytes
+from feedbax.contracts.base import (
+    StrictModel,
+    canonical_json_bytes,
+)
 from feedbax.workflow.plan import LogicalKey, WorkflowPlan
 
 

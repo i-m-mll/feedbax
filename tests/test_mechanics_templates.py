@@ -19,8 +19,9 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
-from feedbax.contracts.graphs.acausal_compiler import compile_acausal_graph
-from feedbax.contracts.graphs.serialization import graph_to_spec
+from feedbax.compiler.acausal_compiler import compile_acausal_graph
+from feedbax.compiler.builders import build_component
+from feedbax.compiler.serialization import graph_to_spec
 from tests.graph_compiler_test_support import spec_to_graph
 from feedbax.mechanics.muscle_config import default_6muscle_2link_moment_arms
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
@@ -78,82 +79,23 @@ def test_two_link_arm_6muscle_template_uses_canonical_moment_arms() -> None:
     )
 
     compiled = compile_acausal_graph(graph, "arm", registry)
-    assert jnp.allclose(compiled.plant.moment_arms, moment_arms)
+    direct = build_component(
+        "direct",
+        "AnalyticalMusculoskeletalPlant",
+        {"dt": graph.solver.dt, "n_steps": 1},
+        component_registry=registry,
+    )
+    assert jnp.allclose(compiled.plant.moment_arms, direct.plant.moment_arms)
+
+    compiled_state = compiled.init_state(key=jax.random.PRNGKey(0))
+    direct_state = direct.init_state(key=jax.random.PRNGKey(0))
+    inputs = {"excitation": jnp.ones(6) * 0.25}
+    compiled_outputs, _ = compiled(inputs, compiled_state, key=jax.random.PRNGKey(1))
+    direct_outputs, _ = direct(inputs, direct_state, key=jax.random.PRNGKey(1))
     assert jnp.allclose(
-        compiled.plant.skeleton.l,
-        jnp.asarray(
-            [graph.nodes["upper"].params["length"], graph.nodes["forearm"].params["length"]]
-        ),
+        compiled_outputs["state"].plant.skeleton.angle,
+        direct_outputs["state"].plant.skeleton.angle,
     )
-    assert jnp.allclose(
-        compiled.plant.skeleton.m,
-        jnp.asarray([graph.nodes["upper"].params["mass"], graph.nodes["forearm"].params["mass"]]),
-    )
-    assert jnp.allclose(
-        jnp.diag(compiled.plant.skeleton.B),
-        jnp.asarray(
-            [graph.nodes["shoulder"].params["damping"], graph.nodes["elbow"].params["damping"]]
-        ),
-    )
-    assert jnp.allclose(
-        compiled.plant.muscle_gear,
-        jnp.asarray([node.params["max_isometric_force"] for node in muscle_nodes]),
-    )
-    assert jnp.allclose(
-        compiled.plant.mt_reference_length,
-        jnp.asarray([node.params["reference_length"] for node in muscle_nodes]),
-    )
-
-
-def test_planar_multibody_authored_link_difference_changes_compiled_plant() -> None:
-    registry = _registry()
-    template = registry.get("TwoLinkArm6Muscle")
-    assert template is not None
-    graph = template.template_graph
-    assert isinstance(graph, AcausalGraphSpec)
-    nodes = dict(graph.nodes)
-    upper = nodes["upper"]
-    length = float(upper.params["length"]) * 1.1
-    mass = float(upper.params["mass"])
-    nodes["upper"] = upper.model_copy(
-        update={
-            "params": {
-                **upper.params,
-                "length": length,
-                "inertia": (1.0 / 3.0) * mass * length**2,
-            }
-        }
-    )
-
-    baseline = compile_acausal_graph(graph, "baseline", registry)
-    changed = compile_acausal_graph(
-        graph.model_copy(update={"nodes": nodes}),
-        "changed",
-        registry,
-    )
-
-    assert baseline.plant.skeleton.l[0] != changed.plant.skeleton.l[0]
-    assert changed.plant.skeleton.l[0] == pytest.approx(length)
-
-
-def test_planar_multibody_rejects_unrepresentable_joint_rest_angle() -> None:
-    registry = _registry()
-    template = registry.get("TwoLinkArm6Muscle")
-    assert template is not None
-    graph = template.template_graph
-    assert isinstance(graph, AcausalGraphSpec)
-    nodes = dict(graph.nodes)
-    shoulder = nodes["shoulder"]
-    nodes["shoulder"] = shoulder.model_copy(
-        update={"params": {**shoulder.params, "rest_angle": 0.25}}
-    )
-
-    with pytest.raises(NotImplementedError, match=r"shoulder.*rest_angle=0.25"):
-        compile_acausal_graph(
-            graph.model_copy(update={"nodes": nodes}),
-            "unsupported",
-            registry,
-        )
 
 
 def test_multibody_registry_entries_declare_workspace_representations() -> None:

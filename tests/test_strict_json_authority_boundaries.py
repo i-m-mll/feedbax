@@ -28,12 +28,14 @@ from feedbax.analysis.evaluation_inputs import (
     EvaluationInputResolutionError,
     resolve_evaluation_inputs,
 )
+from feedbax.contracts.base import (
+    ParentRef,
+    Provenance,
+)
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
-    ParentRef,
     EvaluationRunSpec,
-    Provenance,
     TrainingRunManifest,
     load_manifest_bytes,
     spec_payload,

@@ -19,15 +19,17 @@ from typing import Any
 from pydantic import Field, model_validator
 
 from feedbax.contracts._parent_delta import _flatten_content_pinned_parent_deltas
+from feedbax.contracts.base import (
+    StrictModel,
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_ID,
     EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
     EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
-    StrictModel,
-    canonical_json_bytes,
-    sha256_bytes,
 )
 from feedbax.contracts.matrix_core import ContentPinnedJsonBase, load_content_pinned_json_base
 from feedbax.contracts.migrations import default_spec_registry

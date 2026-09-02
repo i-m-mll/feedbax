@@ -25,14 +25,18 @@ from feedbax.contracts.descriptors import (
     SelectorRoleIdentity,
     VariableDescriptor,
 )
-from feedbax.contracts.manifest import (
-    AnalysisDataProduct,
-    AnalysisRunManifest,
-    AnalysisRunSpec,
+from feedbax.contracts.base import (
     ArrayStoreRef,
     ArtifactRef,
     ArtifactMigrationRecord,
     ArtifactValidationRecord,
+    feedbax_version,
+    utc_now,
+)
+from feedbax.contracts.manifest import (
+    AnalysisDataProduct,
+    AnalysisRunManifest,
+    AnalysisRunSpec,
     CheckpointCandidateRef,
     CheckpointScoreSummary,
     CheckpointScorerIdentity,
@@ -52,9 +56,7 @@ from feedbax.contracts.manifest import (
     SCHEMA_VERSION,
     TrainingRunManifest,
     TrainingRunSetManifest,
-    feedbax_version,
     load_graph_spec_from_manifest,
-    utc_now,
 )
 from feedbax.contracts.parameter_contracts import (
     AnalysisBundleParams,
@@ -1058,7 +1060,7 @@ def _schema_issues_to_provider(
 def validate_graph_spec(
     payload: dict[str, Any] | GraphSpec, *, component_registry: Any
 ) -> ProviderValidationResult:
-    from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
+    from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
 
     migration_records: list[ArtifactMigrationRecord] = []
     try:

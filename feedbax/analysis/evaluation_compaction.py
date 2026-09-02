@@ -21,20 +21,22 @@ from feedbax.contracts.evaluation_lifecycle import (
     EvaluationLifecycleRowOutcome,
     EvaluationMatrixBatchUnit,
 )
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
-    AnalysisRunManifest,
-    AnalysisRunSpec,
     ArtifactRef,
     EntrypointRef,
     ParentRef,
     Provenance,
     canonical_json_bytes,
+    sha256_bytes,
+)
+from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
+    AnalysisRunSpec,
     evaluation_states_cache_path,
     load_manifest,
     safe_manifest_key,
-    sha256_bytes,
     spec_payload,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider

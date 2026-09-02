@@ -25,6 +25,7 @@ from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeCompileRequest,
     ExperimentEnvelopeCompileResult,
     ExperimentEnvelopeCompilerError,
+    ExperimentEnvelopeParentAuthority,
 )
 from feedbax.contracts.experiment_envelope_dialect import ExperimentEnvelopeLayer
 from feedbax.contracts.project_experiment import ProjectExperimentDeclaration
@@ -53,12 +54,17 @@ def load_project_budgets(declaration: ProjectExperimentDeclaration) -> Authoring
     return AuthoringBudgets.from_document(document, field=field, declared_layers=DECLARED_LAYERS)
 
 
-def kernel_for(declaration: ProjectExperimentDeclaration) -> EnvelopeKernel:
+def kernel_for(
+    declaration: ProjectExperimentDeclaration,
+    *,
+    parent_authorities: tuple[ExperimentEnvelopeParentAuthority, ...] = (),
+) -> EnvelopeKernel:
     """Return the one compiler bound to one project's data declaration."""
     return EnvelopeKernel(
         declaration=declaration,
         budgets=load_project_budgets(declaration),
         implementation=EXPERIMENT_ENVELOPE_IMPLEMENTATION,
+        parent_authorities=parent_authorities,
     )
 
 
@@ -79,7 +85,7 @@ def compile_experiment_envelope(
             "compiling an experiment envelope needs the declaration of the project whose "
             "envelope directory holds it; resolve it before dispatch"
         )
-    kernel = kernel_for(declaration)
+    kernel = kernel_for(declaration, parent_authorities=request.parent_authorities)
     kernel.refuse_duplicate_output_addresses(request.repo_root, out_dir=request.out_dir)
     outcome = kernel.compile_envelope_file(request.envelope_path, repo_root=request.repo_root)
     paths = kernel.write_outputs(outcome, request.out_dir)

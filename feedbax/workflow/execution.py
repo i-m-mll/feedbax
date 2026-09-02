@@ -156,11 +156,13 @@ from feedbax.contracts.applicability_rules import (
     UnknownStructuralApplicabilityRuleError,
     certify_structural_applicability,
 )
-from feedbax.contracts.manifest import (
-    AnyManifest,
+from feedbax.contracts.base import (
     ParentRef,
     authenticated_manifest_ref_metadata,
     authenticated_manifest_ref_profile,
+)
+from feedbax.contracts.manifest import (
+    AnyManifest,
     canonical_manifest_path,
     load_manifest_bytes,
 )

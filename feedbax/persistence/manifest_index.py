@@ -6,7 +6,14 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from feedbax.contracts.manifest import ArtifactRef, BaseManifest, default_manifest_root, load_manifest
+from feedbax.contracts.base import (
+    ArtifactRef,
+    default_manifest_root,
+)
+from feedbax.contracts.manifest import (
+    BaseManifest,
+    load_manifest,
+)
 
 
 def default_index_path(root: Path | str | None = None) -> Path:

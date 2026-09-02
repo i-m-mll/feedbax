@@ -23,7 +23,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from feedbax.contracts.manifest import canonical_json_bytes, sha256_bytes
+from feedbax.contracts.base import (
+    canonical_json_bytes,
+    sha256_bytes,
+)
 
 #: The name recorded beside every content hash the engine writes. A pin that does
 #: not name its algorithm cannot be re-verified; a pin naming an algorithm the

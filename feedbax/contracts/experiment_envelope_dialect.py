@@ -106,7 +106,8 @@ from feedbax.contracts.figures import (
     TraceFamily,
 )
 from feedbax.contracts.graph import AnalysisInputRequirement
-from feedbax.contracts.manifest import EvaluationStatesConsumptionPolicy, StrictModel
+from feedbax.contracts.base import StrictModel
+from feedbax.contracts.manifest import EvaluationStatesConsumptionPolicy
 from feedbax.contracts.matrix_core import ContentPinnedJsonBase, RowDerivation
 from feedbax.contracts.parameter_contracts import (
     ANALYSIS_BUNDLE_PARAMS_SCHEMA,

@@ -181,7 +181,12 @@ class Activation(Component):
     activation_name: str = field(static=True)
     activation: Callable = field(static=True)
 
-    def __init__(self, activation_name: str, activation: Callable):
+    def __init__(self, activation_name: str, activation: Callable | None = None):
+        if activation is None:
+            try:
+                activation = NAMED_ACTIVATIONS[activation_name]
+            except KeyError as exc:
+                raise ValueError(f"Unknown activation {activation_name!r}") from exc
         self.activation_name = activation_name
         self.activation = activation
 

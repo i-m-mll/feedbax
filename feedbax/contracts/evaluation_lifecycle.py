@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import Field, JsonValue, model_validator
 
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
     ArtifactRef,

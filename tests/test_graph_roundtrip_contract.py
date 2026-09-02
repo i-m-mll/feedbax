@@ -9,12 +9,10 @@ import pytest
 
 from feedbax.component_registry import ComponentRegistry, required_interior_domain
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParamSchema
-from feedbax.contracts.graphs.serialization import graph_to_spec
+from feedbax.compiler.serialization import graph_to_spec
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.models.networks import PopulationStructure, SimpleStagedNetwork
-from feedbax.runtime.channel import Channel
-from feedbax.runtime.components import Activation, Linear
 from feedbax.runtime.graph import Graph
 from tests.graph_compiler_test_support import spec_to_graph
 
@@ -73,10 +71,12 @@ _NONE_VALUES: dict[tuple[str, str], Any] = {
     ("Channel", "input_shape"): [3],
     ("Channel", "noise_role"): "motor_command",
     ("Channel", "noise_timing"): "post_controller",
+    ("DelayLine", "input_shape"): [3],
     ("DelayedReaches", "n_control_stages"): 49,
     ("DelayedReaches", "go_cue_event_name"): "go",
     ("DynamicsMatrixPerturb", "mass"): 1.25,
     ("FeedbackChannels", "input_shape"): [[3], [3]],
+    ("FirstOrderFilter", "input_shape"): [3],
     ("LinearStateSpace", "B_w"): [[0.1], [0.2], [0.3], [0.4]],
     ("StructuralLinearStateSpace", "B_w"): [[0.1], [0.2], [0.3], [0.4]],
     ("StateFeedbackSelector", "expected_state_dim"): 4,
@@ -199,7 +199,9 @@ def _single_node_spec(
         }
     )
     prototype_shape = (2,)
-    if component_type == "Channel" and isinstance(params.get("input_shape"), list):
+    if component_type in {"Channel", "DelayLine", "FirstOrderFilter"} and isinstance(
+        params.get("input_shape"), list
+    ):
         prototype_shape = tuple(int(dim) for dim in params["input_shape"])
     prototypes = {("node", port): jnp.zeros(prototype_shape) for port in input_ports}
     return spec, prototypes
@@ -325,7 +327,7 @@ def test_channel_rejects_noncanonical_noise_spellings(params: dict[str, Any]) ->
         spec_to_graph(spec, registry)
 
 
-def test_simple_staged_network_expansion_preserves_authored_semantics() -> None:
+def test_opaque_programmatic_composite_is_not_guessed() -> None:
     population = PopulationStructure.from_indices(
         input_only_indices=[0],
         readout_only_indices=[1],
@@ -347,28 +349,8 @@ def test_simple_staged_network_expansion_preserves_authored_semantics() -> None:
     )
     graph = Graph(nodes={"net": network})
 
-    serialized = graph_to_spec(graph)
-    assert set(serialized.nodes) == {
-        "net_input_mux",
-        "net_encoder",
-        "net_cell",
-        "net_hidden_activation",
-        "net_hidden_noise",
-        "net_readout",
-    }
-    restored = spec_to_graph(serialized, ComponentRegistry(load_user_components=False))
-    encoder = restored.nodes["net_encoder"]
-    activation = restored.nodes["net_hidden_activation"]
-    noise = restored.nodes["net_hidden_noise"]
-    readout = restored.nodes["net_readout"]
-    assert isinstance(encoder, Linear)
-    assert (encoder.input_size, encoder.output_size) == (5, 3)
-    assert encoder.layer.weight.dtype == jnp.float16
-    assert isinstance(activation, Activation)
-    assert activation.activation_name == "relu"
-    assert isinstance(noise, Channel)
-    assert float(noise.noise_func.std) == pytest.approx(0.2)
-    assert isinstance(readout, Linear)
-    assert readout.activation_name == "sigmoid"
-    assert readout.layer.weight.dtype == jnp.float16
-    assert len(restored.parameter_constraints) == 2
+    with pytest.raises(
+        ValueError,
+        match="Programmatic graph component reverse resolution must match exactly one",
+    ):
+        graph_to_spec(graph)

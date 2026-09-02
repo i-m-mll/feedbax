@@ -16,9 +16,9 @@ from feedbax.analysis.evaluation_inputs import (
     EvaluationInputAmbiguityError,
     resolve_evaluation_inputs,
 )
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.manifest import (
     EvaluationRunSpec,
-    ParentRef,
     TrainingRunManifest,
 )
 

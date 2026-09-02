@@ -27,15 +27,19 @@ if TYPE_CHECKING:
     from feedbax.plugins.application import ApplicationRegistryBundle
 
 from feedbax.analysis.rendering import render_markdown_note
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     ArtifactRef,
     ParentRef,
-    RegenerationCommand,
-    RegenerationSpec,
     canonical_json_bytes,
     sha256_bytes,
+)
+from feedbax.contracts.artifact_store import (
     store_bytes_artifact,
     store_json_artifact,
+)
+from feedbax.contracts.manifest import (
+    RegenerationCommand,
+    RegenerationSpec,
     write_manifest,
 )
 
@@ -84,8 +88,8 @@ def _execute_evaluation_batch_partition(
         EvaluationLifecycleRowOutcome,
         EvaluationMatrixBatchUnit,
     )
-    from feedbax.contracts.manifest import ArtifactRef
-    from feedbax.contracts.manifest import (
+    from feedbax.contracts.base import ArtifactRef
+    from feedbax.contracts.base import (
         AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
         AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
         ParentRef,
@@ -799,7 +803,7 @@ def main(
                     publish_evaluation_compaction_products,
                     reclaim_evaluation_batch_caches,
                 )
-                from feedbax.contracts.manifest import ArtifactRef
+                from feedbax.contracts.base import ArtifactRef
 
                 prior_states: dict[str, ArtifactRef] = {}
                 reclamations = []

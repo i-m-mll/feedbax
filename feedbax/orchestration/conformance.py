@@ -20,9 +20,12 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
-
-from feedbax.contracts.manifest import StrictModel, TrainingRunManifest, load_manifest
+from feedbax.contracts.manifest import (
+    TrainingRunManifest,
+    load_manifest,
+)
 from feedbax.contracts.evaluation_lifecycle import EvaluationLifecycleEvidence
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.spec_storage import canonicalize_immutable_input_identities

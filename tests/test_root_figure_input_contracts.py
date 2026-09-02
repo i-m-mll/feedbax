@@ -12,7 +12,7 @@ The claims under test are:
   input's closed artifact contract — artifact role, provider, media type, decoded
   payload identity, and an explicit payload name — and the compile carries that
   contract into the compile lock, at
-  ``feedbax.spec.experiment_compile_lock.v3``, without moving anything into the
+  current compile-lock grammar, without moving anything into the
   figure's own scientific identity;
 * fulfillment builds the runtime
   :class:`~feedbax.contracts.figures.FigureInputRoleAuthority` from that contract
@@ -64,10 +64,12 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
 )
 from feedbax.contracts.figures import FigureInputRoleAuthority
-from feedbax.contracts.manifest import (
-    AnalysisRunManifest,
+from feedbax.contracts.base import (
     canonical_json_bytes,
     sha256_bytes,
+)
+from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
     spec_payload,
 )
 from feedbax.contracts.authored_canonical import canonical_sha256
@@ -312,7 +314,7 @@ def test_the_compile_records_each_root_input_contract_in_the_lock(
 
     lock = _compile(repo)
 
-    assert lock["schema_version"] == "feedbax.spec.experiment_compile_lock.v3"
+    assert lock["schema_version"] == "feedbax.spec.experiment_compile_lock.v4"
     assert lock["envelope"]["schema"] == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5
     assert lock["compiler_contract"]["contract_version"] == (
         "feedbax.experiment_envelope.compiler.v4"

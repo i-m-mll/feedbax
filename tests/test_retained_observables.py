@@ -8,7 +8,11 @@ from pathlib import Path
 import jax.numpy as jnp
 import pytest
 
-from feedbax.contracts.manifest import Provenance, load_manifest, write_training_run_manifest
+from feedbax.contracts.base import Provenance
+from feedbax.contracts.manifest import (
+    load_manifest,
+    write_training_run_manifest,
+)
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.integrations.provider import provider_manifest, validate_graph_spec, validate_training_spec
 from feedbax.contracts.retention_artifact_schema import (

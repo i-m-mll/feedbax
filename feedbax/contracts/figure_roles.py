@@ -55,7 +55,7 @@ from feedbax.contracts.figures import (
     FIGURE_INPUT_AUTHORITY_SCHEMA_VERSION,
     FigureSpec,
 )
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     ParentRef,
     StrictModel,
     authenticated_manifest_ref_metadata,

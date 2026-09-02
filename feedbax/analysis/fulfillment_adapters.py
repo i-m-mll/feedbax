@@ -81,14 +81,16 @@ from feedbax.analysis.reports import (
 )
 from feedbax.analysis.specs import execute_analysis_run_spec
 from feedbax.contracts.figures import FigureInputAuthoritySpec
+from feedbax.contracts.base import (
+    ParentRef,
+    Provenance,
+    authenticated_manifest_ref_metadata,
+    authenticated_manifest_ref_profile,
+)
 from feedbax.contracts.manifest import (
     AnalysisRunSpec,
     EvaluationRunSpec,
-    ParentRef,
-    Provenance,
     ReportSpec,
-    authenticated_manifest_ref_metadata,
-    authenticated_manifest_ref_profile,
     canonical_manifest_path,
 )
 

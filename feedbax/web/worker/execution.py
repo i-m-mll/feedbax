@@ -49,7 +49,7 @@ from feedbax.contracts.training import (
     standard_supervised_method_payload,
     standard_supervised_method_ref,
 )
-from feedbax.contracts.graphs.serialization import prototypes_from_task_bindings
+from feedbax.compiler.serialization import prototypes_from_task_bindings
 from feedbax.objectives import ObjectiveExecutionRequirements
 from feedbax.objectives.service import LossService, LoweredObjective
 from feedbax.training.executor import execute_training_run_spec

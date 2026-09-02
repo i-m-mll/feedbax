@@ -33,7 +33,7 @@ from typing import Annotated, Any, Literal, Protocol, TypeAlias
 
 from pydantic import Field, JsonValue, model_validator
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 
 
 PATH_EXPRESSION_SCHEMA_ID = "feedbax.spec.path_expression"

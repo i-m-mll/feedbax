@@ -51,11 +51,14 @@ Everything one compile resolved about a *different* document is recorded in
 ``references``, and every entry is one member of :data:`CompileLockReference`.
 The union is closed because the downstream plan is derived from it mechanically:
 a free-form mapping would make "is this an edge?" a question about string keys
-rather than about the record's own kind. The five kinds answer five genuinely
+rather than about the record's own kind. The six kinds answer six genuinely
 different questions:
 
 * :class:`ContentPinReference` — bytes this compile *read*. It is a compile-time
   input and is never a plan edge; nothing runs because of it.
+* :class:`GovernedParentReference` — immutable external parent bytes this
+  compile authenticated, with their complete semantic and artifact identity.
+  It is compile-time input and never a plan edge.
 * :class:`PlannedProductReference` — a product another envelope will compile to,
   pinned by the upstream envelope and by the content hash of what it compiles
   into. This is the ordinary pre-run edge.
@@ -108,13 +111,15 @@ from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeRejectionCategory,
 )
 from feedbax.contracts.figure_roles import FigureRoleBindingContract
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
+from feedbax.contracts.run_composition import AuthoredIntentParent, ResolvedOutputParent
 
 EXPERIMENT_COMPILE_LOCK_SCHEMA_ID = "feedbax.spec.experiment_compile_lock"
 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v1"
 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v2"
 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v3"
-EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3
+EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v4"
+EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4
 
 #: The only lock versions read. Enumerated, never inferred. v1 remains readable
 #: as exactly the grammar it names: a lock recorded before figure runtime input
@@ -125,6 +130,7 @@ EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
 )
 
 #: Versions this loader accepts, mapped to the version they migrate to. Empty:
@@ -357,6 +363,32 @@ class ContentPinReference(StrictModel):
         return self
 
 
+class GovernedParentReference(StrictModel):
+    """Exact governed parent artifact bytes consumed during compilation."""
+
+    kind: Literal["governed_parent"] = "governed_parent"
+    parent: AuthoredIntentParent | ResolvedOutputParent
+    role: str
+    artifact_id: str
+    artifact_sha256: str
+    schema_id: str
+    schema_version: str
+
+    @model_validator(mode="after")
+    def _validate(self) -> "GovernedParentReference":
+        _require_nonempty(self.role, "governed_parent role")
+        _require_nonempty(self.artifact_id, "governed_parent artifact_id")
+        _require_digest(self.artifact_sha256, "governed_parent artifact_sha256")
+        _require_nonempty(self.schema_id, "governed_parent schema_id")
+        _require_nonempty(self.schema_version, "governed_parent schema_version")
+        if not self.schema_version.startswith(f"{self.schema_id}."):
+            raise ValueError(
+                f"governed_parent schema_version {self.schema_version!r} does not extend "
+                f"schema id {self.schema_id!r}"
+            )
+        return self
+
+
 class PlannedProductReference(StrictModel):
     """A product another envelope compiles to, pinned before anything runs.
 
@@ -477,6 +509,7 @@ class NotApplicableReference(StrictModel):
 #: The only reference records a compile lock stores. Closed by construction.
 CompileLockReference: TypeAlias = Annotated[
     ContentPinReference
+    | GovernedParentReference
     | PlannedProductReference
     | ReceiptLocatorReference
     | AuthenticatedReceiptReference
@@ -488,6 +521,7 @@ _REFERENCE_ADAPTER: TypeAdapter[Any] = TypeAdapter(CompileLockReference)
 
 _REFERENCE_MEMBERS = (
     ContentPinReference,
+    GovernedParentReference,
     PlannedProductReference,
     ReceiptLocatorReference,
     AuthenticatedReceiptReference,
@@ -497,15 +531,16 @@ _REFERENCE_MEMBERS = (
 #: Every reference kind, in the order the union declares them.
 COMPILE_LOCK_REFERENCE_KINDS: tuple[str, ...] = (
     "content_pin",
+    "governed_parent",
     "planned_product",
     "receipt_locator",
     "authenticated_receipt",
     "not_applicable",
 )
 
-#: Reference kinds that are plan edges. A content pin is an input, not an edge.
+#: Reference kinds that are plan edges. Compile-time inputs are not edges.
 COMPILE_LOCK_PLAN_EDGE_KINDS: frozenset[str] = frozenset(
-    kind for kind in COMPILE_LOCK_REFERENCE_KINDS if kind != "content_pin"
+    {"planned_product", "receipt_locator", "authenticated_receipt", "not_applicable"}
 )
 
 
@@ -1177,6 +1212,19 @@ def _refuse_pre_v3_analysis_receipt_set(references: Sequence[Any], *, field: str
             )
 
 
+def _refuse_pre_v4_governed_parent(references: Sequence[Any], *, field: str) -> None:
+    """Refuse an older lock edited to carry the v4 governed-parent input."""
+    for index, reference in enumerate(references):
+        if isinstance(reference, Mapping) and reference.get("kind") == "governed_parent":
+            raise ExperimentEnvelopeRejection(
+                ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+                "a governed compile-time parent reference is "
+                f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4!r} grammar, but this lock "
+                "declares an earlier version; a version names exactly one grammar",
+                field=f"{field}#references[{index}]#kind",
+            )
+
+
 def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
     """Read one compile lock, failing closed on an unsupported version.
 
@@ -1235,6 +1283,12 @@ def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
         EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
     ):
         _refuse_pre_v3_analysis_receipt_set(references, field=field)
+    if version in (
+        EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
+        EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
+        EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+    ):
+        _refuse_pre_v4_governed_parent(references, field=field)
     provenance = lock.get("row_provenance", [])
     if not isinstance(provenance, Sequence) or isinstance(provenance, (str, bytes)):
         raise ExperimentEnvelopeRejection(
@@ -1251,7 +1305,7 @@ def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
 def compile_lock_plan_edges(lock: Mapping[str, Any], *, field: str) -> tuple[Any, ...]:
     """Return the lock's references that are plan edges, typed and in order.
 
-    Content pins are compile-time inputs and are filtered out by kind, so the
+    Compile-time inputs are filtered out by kind, so the
     plan lane never has to decide what an edge is by looking at fields.
     """
     return tuple(
@@ -1275,6 +1329,8 @@ __all__ = [
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3",
+    "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4",
+    "GovernedParentReference",
     "EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS",
     "RUN_RECEIPT_ONLY_FACTS",
     "AnalysisInputBinding",
