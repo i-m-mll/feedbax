@@ -9,18 +9,18 @@ from feedbax.runtime.channel import Channel
 from feedbax.runtime.components import DelayLine, Linear
 from feedbax.runtime.filters import FirstOrderFilter
 from feedbax.runtime.graph import Graph, Wire, init_state_from_component
-from feedbax.contracts.graphs.templates import (
+from feedbax.compiler.templates import (
     network_template_graph,
     recurrent_graph_input_initializer,
     recurrent_node_output_initializer,
     recurrent_controller_template_graph,
     simple_feedback_template_graph,
 )
-from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
+from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
 from feedbax.models.networks import LeakyRNNCell, SimpleStagedNetwork, VanillaRNN
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
-from feedbax.contracts.graphs.prototypes import infer_node_input_prototypes
-from feedbax.contracts.graphs.serialization import graph_to_spec
+from feedbax.compiler.prototypes import infer_node_input_prototypes
+from feedbax.compiler.serialization import graph_to_spec
 from tests.graph_compiler_test_support import spec_to_graph
 from feedbax.component_registry import ComponentRegistry
 

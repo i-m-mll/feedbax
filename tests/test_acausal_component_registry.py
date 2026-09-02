@@ -44,8 +44,8 @@ from feedbax.contracts.component import (
 )
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
-from feedbax.contracts.graphs.builders import build_component
-from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
+from feedbax.compiler.builders import build_component
+from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.web.app import create_app
 

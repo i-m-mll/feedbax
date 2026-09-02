@@ -110,8 +110,8 @@ from feedbax.contracts.row_index import (
     expand_row_selector,
 )
 from feedbax.compiler import GraphDocument, compile_graph
-from feedbax.contracts.graphs.serialization import graph_to_spec
-from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
+from feedbax.compiler.serialization import graph_to_spec
+from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
 from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,

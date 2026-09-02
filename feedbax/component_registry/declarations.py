@@ -372,7 +372,7 @@ class ComponentParamContract:
         }
         for source, (target, adapter) in self.constructor.context_adapters.items():
             if adapter == "array_prototype":
-                from feedbax.contracts.graphs.prototypes import array_proto_from_shape
+                from feedbax.compiler.prototypes import array_proto_from_shape
 
                 constructor_values[target] = array_proto_from_shape(values.get(source))
         for target, (group_type, names) in self.constructor.groups.items():

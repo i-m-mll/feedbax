@@ -20,8 +20,8 @@ from feedbax.component_registry import (
 from feedbax.runtime.channel import Channel
 from feedbax.runtime.components import Gain
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
-from feedbax.contracts.graphs.builders import build_component
-from feedbax.contracts.graphs.serialization import graph_to_spec
+from feedbax.compiler.builders import build_component
+from feedbax.compiler.serialization import graph_to_spec
 from feedbax.models.cde import CDENetwork
 from feedbax.runtime.graph import Component, Graph
 from tests.graph_compiler_test_support import spec_to_graph

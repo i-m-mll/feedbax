@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
-from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
+from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
 
 
 def test_normalization_preserves_param_schema_version() -> None:

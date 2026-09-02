@@ -10,13 +10,13 @@ import jax.tree as jt
 
 from feedbax.contracts.component import DynamicPortPolicy, PortType, PortTypeSpec
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, PENZAI_DOMAIN_ID
-from feedbax.contracts.graphs.mechanics_templates import point_mass_template_graph
+from feedbax.compiler.mechanics_templates import point_mass_template_graph
 from feedbax.contracts.array_values import (
     ARRAY_VALUE_SCHEMA_ID,
     ARRAY_VALUE_SCHEMA_VERSION,
     SparseCooArrayValueSpec,
 )
-from feedbax.contracts.graphs.penzai_compiler import penzai_builder_options
+from feedbax.compiler.penzai_compiler import penzai_builder_options
 from feedbax.contracts.migrations import ComponentMigration
 from feedbax.contracts.representation import RepresentationSpec
 from feedbax.control.affine import AffineFeedbackController, affine_feedback_output_prototype
@@ -1292,7 +1292,7 @@ def rate_limiter_output_prototype(
 
 
 def register_builtin_components(registry: _Registry) -> None:
-    from feedbax.contracts.graphs import builders as _builders
+    from feedbax.compiler import builders as _builders
 
     registry.register(
         declare_component(

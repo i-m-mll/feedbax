@@ -9,12 +9,12 @@ import logging
 import os
 
 _LAZY_EXPORTS = {
-    "BUILTIN_GRAPH_TEMPLATES": ("feedbax.contracts.graphs.templates", "BUILTIN_GRAPH_TEMPLATES"),
+    "BUILTIN_GRAPH_TEMPLATES": ("feedbax.compiler.templates", "BUILTIN_GRAPH_TEMPLATES"),
     "CDENetwork": ("feedbax.models.cde", "CDENetwork"),
     "CDENetworkState": ("feedbax.models.cde", "CDENetworkState"),
     "Component": ("feedbax.runtime.graph", "Component"),
     "Graph": ("feedbax.runtime.graph", "Graph"),
-    "GraphTemplateMetadata": ("feedbax.contracts.graphs.templates", "GraphTemplateMetadata"),
+    "GraphTemplateMetadata": ("feedbax.compiler.templates", "GraphTemplateMetadata"),
     "LoweredContribution": ("feedbax.lowering", "LoweredContribution"),
     "LowererExecutionError": ("feedbax.lowering", "LowererExecutionError"),
     "LowererRegistration": ("feedbax.lowering", "LowererRegistration"),
@@ -43,16 +43,16 @@ _LAZY_EXPORTS = {
     "is_intervenor": ("feedbax.intervene", "is_intervenor"),
     "is_termtree": ("feedbax.objectives.loss", "is_termtree"),
     "init_state_from_component": ("feedbax.runtime.graph", "init_state_from_component"),
-    "network_template_graph": ("feedbax.contracts.graphs.templates", "network_template_graph"),
+    "network_template_graph": ("feedbax.compiler.templates", "network_template_graph"),
     "pos_only_states": ("feedbax.tasks", "_pos_only_states"),
     "prepare_trial": ("feedbax.tasks", "prepare_trial"),
     "recurrent_controller_template_graph": (
-        "feedbax.contracts.graphs.templates",
+        "feedbax.compiler.templates",
         "recurrent_controller_template_graph",
     ),
     "select": ("feedbax.runtime.selectors", "select"),
     "simple_feedback_template_graph": (
-        "feedbax.contracts.graphs.templates",
+        "feedbax.compiler.templates",
         "simple_feedback_template_graph",
     ),
 }

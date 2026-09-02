@@ -35,13 +35,13 @@ from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
-from feedbax.contracts.graphs.serialization import (
+from feedbax.compiler.serialization import (
     graph_to_spec,
     prototypes_from_task_bindings,
 )
 from tests.graph_compiler_test_support import spec_to_graph
-from feedbax.contracts.graphs.prototypes import output_prototypes_for_node
-from feedbax.contracts.graphs.prototypes import infer_node_input_prototypes
+from feedbax.compiler.prototypes import output_prototypes_for_node
+from feedbax.compiler.prototypes import infer_node_input_prototypes
 from feedbax.runtime.state import CartesianState
 
 

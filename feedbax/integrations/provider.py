@@ -1064,7 +1064,7 @@ def _schema_issues_to_provider(
 def validate_graph_spec(
     payload: dict[str, Any] | GraphSpec, *, component_registry: Any
 ) -> ProviderValidationResult:
-    from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
+    from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
 
     migration_records: list[ArtifactMigrationRecord] = []
     try:
