@@ -63,6 +63,9 @@ from feedbax.contracts.graph import (
 )
 
 
+STUDIO_ANALYSIS_TYPE = "tests.studio.analysis"
+
+
 @pytest.fixture(autouse=True)
 def _isolated_manifest_root(
     tmp_path: Path,
@@ -258,7 +261,7 @@ def studio_default_analysis_recipe(registry_bundle):
             common_inputs={"studio": spec.params.get("stage_id")},
         )
 
-    registry_bundle.analysis_recipes.register("feedbax.analysis.activity", recipe)
+    registry_bundle.analysis_recipes.register(STUDIO_ANALYSIS_TYPE, recipe)
     yield
 
 
@@ -1129,7 +1132,7 @@ def test_materialize_studio_pipeline_consumes_stage_collections(
     registry_bundle,
 ):
     workspace = _staged_training_workspace(
-        _workspace_with_analysis_type("feedbax.analysis.activity"),
+        _workspace_with_analysis_type(STUDIO_ANALYSIS_TYPE),
         job_id="studio-pipeline-train",
         registry_bundle=registry_bundle,
     )
@@ -1195,7 +1198,7 @@ def test_materialize_studio_pipeline_consumes_stage_collections(
     assert "cache/states" in eval_manifest["metadata"]["cache"]["states_path"]
     assert analysis_manifest["status"] == "completed"
     assert analysis_manifest["analysis_spec"]["inline"]["analysis_type"] == (
-        "feedbax.analysis.activity"
+        STUDIO_ANALYSIS_TYPE
     )
     assert analysis_manifest["inputs"][0]["id"] == eval_manifest["id"]
     assert analysis_manifest["provenance"]["parents"][0]["id"] == eval_manifest["id"]
@@ -1216,7 +1219,7 @@ def test_materialize_studio_pipeline_carries_authored_evaluation_states_policy(
     studio_default_analysis_recipe,
     registry_bundle,
 ) -> None:
-    workspace = _workspace_with_analysis_type("feedbax.analysis.activity")
+    workspace = _workspace_with_analysis_type(STUDIO_ANALYSIS_TYPE)
     analysis_stage = next(stage for stage in workspace.stages if stage.kind == "analysis")
     scenario = workspace.scenarios[analysis_stage.scenario_id]
     scenario.analysis_spec = {
@@ -1259,7 +1262,7 @@ def test_materialize_studio_pipeline_endpoint_returns_updated_workspace(
     studio_client,
 ):
     workspace = _staged_training_workspace(
-        _workspace_with_analysis_type("feedbax.analysis.activity"),
+        _workspace_with_analysis_type(STUDIO_ANALYSIS_TYPE),
         job_id="http-studio-pipeline-train",
         registry_bundle=registry_bundle,
     )

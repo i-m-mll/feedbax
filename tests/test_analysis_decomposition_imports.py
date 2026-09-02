@@ -1,15 +1,7 @@
 """Import-boundary checks for the decomposed analysis module."""
 
-import importlib
-
 from feedbax.analysis import fig_ops, inputs, result_cache
 from feedbax.analysis import analysis as legacy_analysis
-
-
-def test_activity_module_imports() -> None:
-    module = importlib.import_module("feedbax.analysis.activity")
-
-    assert module.__name__ == "feedbax.analysis.activity"
 
 
 def test_analysis_module_reexports_input_dsl_types() -> None:

@@ -93,11 +93,6 @@ notebook = [
     "plotly>=6.0.0",
     "ruamel-yaml>=0.18.0",
 ]
-plotlyviewer = [
-    "pyqt5>=5.15.11",
-    "pyqtwebengine>=5.15.7",
-    "ruamel-yaml>=0.18.0",
-]
 mjx = [
     "mujoco>=3.0.0",
     "mujoco-mjx>=0.1.0",
@@ -119,8 +114,6 @@ all = [
     "polars>=1.24.0",
     "pyexiv2>=2.15.3",
     "pyperclip>=1.9.0",
-    "pyqt5>=5.15.11",
-    "pyqtwebengine>=5.15.7",
     "rich>=13.9.4",
     "ruamel-yaml>=0.18.0",
     "scikit-learn>=1.6.1",

@@ -34,6 +34,7 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.persistence.manifest_index import rebuild_manifest_index
 from feedbax.integrations.provider import (
+    analysis_registry_snapshot,
     component_registry_snapshot,
     provider_manifest,
     validate_analysis_spec,
@@ -853,6 +854,13 @@ def test_component_registry_snapshot_wraps_existing_registry(application_registr
     assert gain.identity.stable
     assert gain.identity.owner == "feedbax"
     assert gain.migrations == []
+
+
+def test_analysis_registry_snapshot_lists_only_registered_recipes() -> None:
+    snapshot = analysis_registry_snapshot({"tests.registered.analysis": object()})
+
+    assert snapshot.kind == "analyses"
+    assert [entry.type_id for entry in snapshot.entries] == ["tests.registered.analysis"]
 
 
 def test_validation_functions_accept_small_vertical_slice_specs(
