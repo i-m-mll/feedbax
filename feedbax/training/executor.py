@@ -20,6 +20,8 @@ import jax.tree as jt
 import numpy as np
 from pydantic import ValidationError
 
+from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
+
 from feedbax.contracts.publication import CheckpointSet
 from feedbax.contracts.checkpoints import (
     CheckpointSegmentLineage,
@@ -1582,6 +1584,7 @@ def prepare_training_manifest_metadata_projection(
             )
         try:
             projected = projector.project(resolved_method.payload)
+            # Trusted internal round-trip of canonical bytes produced from the model.
             canonical_values = json.loads(
                 training_spec_canonical_bytes(projected.model_dump(mode="json", exclude_none=True))
             )
@@ -1662,6 +1665,7 @@ def prepare_training_manifest_metadata_projection(
             projection,
             path="/manifest_metadata_projection",
         )
+        # Trusted internal round-trip of canonical bytes produced from the admitted mapping.
         canonical_values = json.loads(training_spec_canonical_bytes(values))
     except (TypeError, ValueError, ValidationError) as exc:
         raise TrainingRunExecutorError(
@@ -1817,8 +1821,8 @@ def _validate_execution_payload_binding(
             f"expected={ref.sha256}, observed={custody_sha256}, uri={ref.uri!r}"
         )
     try:
-        custody_payload = json.loads(custody_bytes)
-    except json.JSONDecodeError as exc:
+        custody_payload = strict_json_loads(custody_bytes)
+    except (json.JSONDecodeError, StrictJsonError) as exc:
         raise TrainingRunExecutorError(
             "/execution_context/execution/payload custody bytes are not valid JSON"
         ) from exc
@@ -3518,4 +3522,4 @@ def _preflight_manifest_emission(
 
 def load_training_run_spec(path: Path | str) -> TrainingRunSpec:
     """Load a TrainingRunSpec JSON file."""
-    return TrainingRunSpec.model_validate(json.loads(Path(path).read_text(encoding="utf-8")))
+    return TrainingRunSpec.model_validate(strict_json_loads(Path(path).read_text(encoding="utf-8")))

@@ -19,6 +19,13 @@ import jax.tree_util as jtu
 import numpy as np
 from pydantic import BaseModel, ValidationError
 
+from feedbax._secure_fs import (
+    SecurePathRigor,
+    close_descriptors,
+    open_directory_chain,
+    open_existing_file,
+    open_existing_path,
+)
 from feedbax.analysis.manifest_inputs import (
     ResolvedManifestInput,
     canonical_staged_manifest_locator,
@@ -208,9 +215,7 @@ def resolve_evaluation_states(
         )
     )
     if not isinstance(result, ResolvedEvaluationStates):
-        raise TypeError(
-            "evaluation-state resolver returned no authenticated manifest authority"
-        )
+        raise TypeError("evaluation-state resolver returned no authenticated manifest authority")
     return result
 
 
@@ -518,8 +523,7 @@ class StagedExecutionContext:
             and Path(provider.root).resolve() != location.root.resolve()
         ):
             raise StagedExecutionContextError(
-                "exact-parent artifact provider binding disagrees with the parent "
-                "execution root"
+                "exact-parent artifact provider binding disagrees with the parent execution root"
             )
         return provider
 
@@ -1287,9 +1291,7 @@ def with_staged_resolved_parents(
     second alias pointing elsewhere would contradict it.
     """
     merged = list(context.parent_execution_locations)
-    located = {
-        location.parent.model_dump_json(exclude_none=False) for location in merged
-    }
+    located = {location.parent.model_dump_json(exclude_none=False) for location in merged}
     for location in locations:
         key = location.parent.model_dump_json(exclude_none=False)
         if key in located:
@@ -1305,9 +1307,7 @@ def with_staged_resolved_parents(
     declared = tuple(sorted(bound.opened_artifact_providers))
     for location in bound.parent_execution_locations:
         names = (
-            (location.artifact_provider,)
-            if location.artifact_provider is not None
-            else declared
+            (location.artifact_provider,) if location.artifact_provider is not None else declared
         )
         parent_key = location.parent.model_dump_json(exclude_none=False)
         for name in names:
@@ -1402,50 +1402,34 @@ def _validate_runtime_root(root: Path | str, *, kind: str) -> Path:
         )
     if ".." in path.parts:
         raise StagedExecutionContextError(f"{kind} root must not contain lexical '..'")
-    descriptors = _open_directory_chain_no_follow(path, kind=kind)
-    for descriptor in reversed(descriptors):
-        os.close(descriptor)
+    descriptors = _open_runtime_root(path, kind=kind)
+    close_descriptors(reversed(descriptors))
     return path
 
 
 def _directory_identity(root: Path, *, kind: str) -> tuple[int, int]:
-    descriptors = _open_directory_chain_no_follow(root, kind=kind)
+    descriptors = _open_runtime_root(root, kind=kind)
     try:
         root_stat = os.fstat(descriptors[-1])
         return root_stat.st_dev, root_stat.st_ino
     finally:
-        for descriptor in reversed(descriptors):
-            os.close(descriptor)
+        close_descriptors(reversed(descriptors))
 
 
-def _open_directory_chain_no_follow(root: Path, *, kind: str) -> list[int]:
+def _open_runtime_root(root: Path, *, kind: str) -> list[int]:
     """Open every component of an absolute directory path without following links."""
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-    )
-    if not getattr(os, "O_DIRECTORY", 0) or not getattr(os, "O_NOFOLLOW", 0):
-        raise StagedExecutionContextError(
-            f"{kind} authority requires no-follow directory descriptors"
-        )
-    if not root.is_absolute():
-        raise StagedExecutionContextError(f"{kind} root must be absolute: {root}")
-    descriptors: list[int] = []
     try:
-        current = os.open(root.anchor, flags)
-        descriptors.append(current)
-        for component in root.parts[1:]:
-            current = os.open(component, flags, dir_fd=current)
-            descriptors.append(current)
-    except OSError as exc:
-        for descriptor in reversed(descriptors):
-            os.close(descriptor)
+        records = open_directory_chain(
+            root,
+            create=False,
+            error_factory=StagedExecutionContextError,
+            context=f"{kind} root authority",
+        )
+    except (OSError, StagedExecutionContextError) as exc:
         raise StagedExecutionContextError(
             f"{kind} root is unavailable, unsafe, or was replaced: {root}"
         ) from exc
-    return descriptors
+    return [descriptor for _, descriptor, _ in records]
 
 
 def _require_directory_identity(
@@ -1484,29 +1468,40 @@ def _retained_file_state(
     """Return one cheap no-follow file identity under a retained root."""
     relative = _validate_relative_execution_uri(relative)
     parts = PurePosixPath(relative).parts
-    descriptors = _open_directory_chain_no_follow(root, kind=kind)
-    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    descriptors = _open_runtime_root(root, kind=kind)
     try:
         current = descriptors[-1]
         root_stat = os.fstat(current)
         if (root_stat.st_dev, root_stat.st_ino) != expected_root_identity:
             raise StagedExecutionContextError(f"{kind} root authority changed")
         for component in parts[:-1]:
-            current = os.open(component, directory_flags, dir_fd=current)
+            current, _ = open_existing_path(
+                component,
+                rigor=SecurePathRigor.DIRECTORY_IDENTITY,
+                error_factory=StagedExecutionContextError,
+                context=f"{kind} directory component",
+                dir_fd=current,
+            )
             descriptors.append(current)
-        observed = os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
-        if not stat.S_ISREG(observed.st_mode):
-            raise StagedExecutionContextError(f"{kind} is not a regular file")
-        if require_single_link and observed.st_nlink != 1:
-            raise StagedExecutionContextError(f"{kind} has mutable hard-link aliases")
+        file_descriptor, observed = open_existing_file(
+            parts[-1],
+            rigor=(
+                SecurePathRigor.SINGLE_LINK_FILE_IDENTITY
+                if require_single_link
+                else SecurePathRigor.REGULAR_FILE_IDENTITY
+            ),
+            error_factory=StagedExecutionContextError,
+            context=kind,
+            dir_fd=current,
+        )
+        descriptors.append(file_descriptor)
         return _file_state(observed)
     except OSError as exc:
         raise StagedExecutionContextError(
             f"{kind} path traverses a symlink or unsafe component"
         ) from exc
     finally:
-        for descriptor in reversed(descriptors):
-            os.close(descriptor)
+        close_descriptors(reversed(descriptors))
 
 
 def _retained_file_snapshot(
@@ -1792,19 +1787,23 @@ def _read_retained_local_file(
 ) -> tuple[bytes, _RetainedFileSnapshot]:
     """Read one authenticated file relative to an exact retained root authority."""
     parts = PurePosixPath(relative).parts
-    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
     descriptors: list[int] = []
     directory_records: list[tuple[int, str, tuple[int, int]]] = []
     try:
-        descriptors.extend(_open_directory_chain_no_follow(root, kind=kind))
+        descriptors.extend(_open_runtime_root(root, kind=kind))
         current = descriptors[-1]
         root_identity = os.fstat(current)
         if (root_identity.st_dev, root_identity.st_ino) != expected_root_identity:
             raise StagedExecutionContextError(f"{kind} root authority changed before read")
         for component in parts[:-1]:
             parent_descriptor = current
-            current = os.open(component, directory_flags, dir_fd=parent_descriptor)
+            current, _ = open_existing_path(
+                component,
+                rigor=SecurePathRigor.DIRECTORY_IDENTITY,
+                error_factory=StagedExecutionContextError,
+                context=f"{kind} directory component",
+                dir_fd=parent_descriptor,
+            )
             descriptors.append(current)
             component_stat = os.fstat(current)
             directory_records.append(
@@ -1817,13 +1816,18 @@ def _read_retained_local_file(
         path_before = os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
         if stat.S_ISLNK(path_before.st_mode):
             raise StagedExecutionContextError(f"{kind} must not be a symlink")
-        file_descriptor = os.open(parts[-1], file_flags, dir_fd=current)
+        file_descriptor, before = open_existing_file(
+            parts[-1],
+            rigor=(
+                SecurePathRigor.SINGLE_LINK_FILE_IDENTITY
+                if require_single_link
+                else SecurePathRigor.REGULAR_FILE_IDENTITY
+            ),
+            error_factory=StagedExecutionContextError,
+            context=kind,
+            dir_fd=current,
+        )
         descriptors.append(file_descriptor)
-        before = os.fstat(file_descriptor)
-        if not stat.S_ISREG(before.st_mode):
-            raise StagedExecutionContextError(f"{kind} is not regular")
-        if require_single_link and before.st_nlink != 1:
-            raise StagedExecutionContextError(f"{kind} has mutable hard-link aliases")
         if (before.st_dev, before.st_ino) != (path_before.st_dev, path_before.st_ino):
             raise StagedExecutionContextError(f"{kind} identity changed before read")
         if before.st_size != expected_size:
@@ -1898,8 +1902,7 @@ def _read_retained_local_file(
             f"{kind} path traverses a symlink or unsafe component"
         ) from exc
     finally:
-        for descriptor in reversed(descriptors):
-            os.close(descriptor)
+        close_descriptors(reversed(descriptors))
 
 
 def _validate_relative_execution_uri(uri: str) -> str:

@@ -44,7 +44,6 @@ authenticated reference a previous run produced, and it may never author one.
 
 from __future__ import annotations
 
-import json
 import posixpath
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
@@ -54,6 +53,8 @@ from types import UnionType
 from typing import Annotated, Any, NoReturn, Union, get_args, get_origin
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
+
+from feedbax.contracts.strict_json import strict_json_loads
 
 from feedbax.contracts.authored_canonical import (
     CANONICAL_PIN_ALGORITHM,
@@ -128,6 +129,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     output_contract_of_document,
     parse_experiment_envelope,
 )
+from feedbax.contracts.parameter_contracts import ParameterContractError
 from feedbax.contracts.figure_roles import (
     FigureRoleBindingContract,
     FigureRowCustodyLocator,
@@ -301,7 +303,7 @@ def _authored_output_name(path: Path) -> str | None:
     failure here would report one broken envelope as a corpus-wide collision.
     """
     try:
-        document = json.loads(path.read_bytes())
+        document = strict_json_loads(path.read_bytes())
     except (OSError, ValueError):
         return None
     if not isinstance(document, Mapping):
@@ -2956,27 +2958,24 @@ class EnvelopeKernel:
         contract: LayerOutputContract,
         document: Mapping[str, Any],
     ) -> None:
-        """Validate an inner ``params`` block against the model its type names.
+        """Validate every parameter object owned by an output family.
 
-        A top-level document that delegates its authored content to ``params``
-        would otherwise be validated only as far as ``dict[str, Any]``, and the
-        family's real authored contract would never be checked at compile time at
-        all. The content type is read from the document's own discriminator.
+        Top-level output models deliberately keep parameter fields JSON-shaped.
+        This compile choke resolves their path and schema from the layer table so
+        extensible objects stay open deliberately while durable identities and
+        high-risk nested structures still fail closed.
         """
-        model = contract.params_model(document)
-        if model is None:
-            return
         try:
-            model.model_validate(document.get("params"))
-        except ValidationError as exc:
-            discriminator = str(contract.params_discriminator)
+            contract.validate_parameter_objects(document)
+        except ParameterContractError as exc:
             _reject(
                 ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
-                f"{context.envelope_ref}#params",
-                f"the compiled document's params are not valid for "
-                f"{discriminator}={document.get(discriminator)!r}: {exc}",
-                correct_home="the params block carries this content type's authored "
-                "contract; the base states it and the envelope's delta changes it",
+                f"{context.envelope_ref}#{exc.path}",
+                f"the compiled document's {exc.path} object does not satisfy declared "
+                f"parameter schema {exc.schema.schema_version!r}: {exc.cause}",
+                correct_home="the containing document declares this parameter "
+                "object's identity; its base owns the object and the envelope's "
+                "delta changes it",
             )
 
     def compile_envelope_file(

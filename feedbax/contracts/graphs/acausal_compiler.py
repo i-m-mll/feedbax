@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+import math
 from typing import Any, Type
 
 import diffrax as dfx
+import equinox as eqx
+import jax.numpy as jnp
 import optimistix as optx
 
 from feedbax.acausal.base import AcausalConnection, AcausalElement
@@ -66,6 +69,7 @@ from feedbax.contracts.domain import (
 )
 from feedbax.contracts.graph import ComponentSpec
 from feedbax.contracts.graphs.builders import build_component
+from feedbax.mechanics.skeleton.arm import TwoLinkArm
 
 
 _ELEMENT_BUILDERS: dict[str, Type[AcausalElement]] = {
@@ -328,10 +332,12 @@ def _diagnose_acausal_spec(
             diagnostics.extend(_diagnose_flattened_domains(graph, flattened, path))
             if not any(diagnostic.severity == "error" for diagnostic in diagnostics):
                 diagnostics.extend(
-                    _diagnose_structural_analysis(analyze_system(
-                        flattened.elements,
-                        flattened.connections,
-                    ))
+                    _diagnose_structural_analysis(
+                        analyze_system(
+                            flattened.elements,
+                            flattened.connections,
+                        )
+                    )
                 )
         except Exception as exc:  # noqa: BLE001 - converted to structured report.
             diagnostics.append(
@@ -422,9 +428,7 @@ def _diagnose_boundary_ports(graph: AcausalGraphSpec, path: str) -> list[DomainD
     diagnostics: list[DomainDiagnostic] = []
     seen: dict[str, str] = {}
     connected_boundary_nodes = {
-        node
-        for connection in graph.connections
-        for node in (connection.a[0], connection.b[0])
+        node for connection in graph.connections for node in (connection.a[0], connection.b[0])
     }
     for node_id, node_spec in graph.nodes.items():
         if node_spec.type != BOUNDARY_PORT_TYPE:
@@ -523,12 +527,426 @@ def _compile_planar_multibody_graph(
     if diagnostics:
         messages = "; ".join(diagnostic.message for diagnostic in diagnostics)
         raise ValueError(f"Planar multibody graph {node_name!r} is not compilable: {messages}")
-    return build_component(
+
+    values = _analytical_planar_values(graph, node_name)
+    analytical_meta = component_registry.get("AnalyticalMusculoskeletalPlant")
+    if analytical_meta is None:
+        raise ValueError("AnalyticalMusculoskeletalPlant is missing from the component registry.")
+    builder_params = dict(analytical_meta.default_params)
+    builder_params["dt"] = graph.solver.dt
+    mechanics = build_component(
         node_name,
         "AnalyticalMusculoskeletalPlant",
-        {"dt": graph.solver.dt, "n_steps": 1},
+        builder_params,
         component_registry=component_registry,
     )
+    skeleton = TwoLinkArm(
+        l=values.segment_lengths,
+        m=values.segment_masses,
+        I=values.segment_inertias,
+        s=values.segment_centers,
+        B=jnp.diag(jnp.asarray(values.joint_damping)),
+    )
+    plant = eqx.tree_at(
+        lambda value: (
+            value.skeleton,
+            value.segment_lengths,
+            value.moment_arms,
+            value.muscle_gear,
+            value.mt_reference_length,
+        ),
+        mechanics.plant,
+        (
+            skeleton,
+            jnp.asarray(values.segment_lengths),
+            jnp.asarray(values.moment_arms),
+            jnp.asarray(values.maximum_isometric_forces),
+            jnp.asarray(values.reference_lengths),
+        ),
+    )
+    return eqx.tree_at(lambda value: value.plant, mechanics, plant)
+
+
+@dataclass(frozen=True)
+class _AnalyticalPlanarValues:
+    segment_lengths: tuple[float, float]
+    segment_masses: tuple[float, float]
+    segment_centers: tuple[float, float]
+    segment_inertias: tuple[float, float]
+    joint_damping: tuple[float, float]
+    moment_arms: tuple[tuple[float, float], ...]
+    reference_lengths: tuple[float, ...]
+    maximum_isometric_forces: tuple[float, ...]
+
+
+def _analytical_planar_values(
+    graph: AcausalGraphSpec,
+    node_name: str,
+) -> _AnalyticalPlanarValues:
+    if graph.solver.solver_type != "euler" or graph.solver.root_finder is not None:
+        raise NotImplementedError(
+            f"Planar multibody graph {node_name!r} requests solver "
+            f"{graph.solver.solver_type!r} or a root finder, but the canonical "
+            "AnalyticalMusculoskeletalPlant builder supports Euler without a root finder."
+        )
+    if graph.subgraphs:
+        raise NotImplementedError(
+            f"Planar multibody graph {node_name!r} cannot compile nested subgraphs "
+            "into the analytical two-link plant."
+        )
+
+    by_type: dict[str, list[tuple[str, ComponentSpec]]] = {}
+    for node_id, node in graph.nodes.items():
+        by_type.setdefault(node.type, []).append((node_id, node))
+    supported_types = {
+        "ActuationInput",
+        "Anchor",
+        "MusclePath",
+        "PlanarLink",
+        "PointMarker",
+        "RevoluteJoint",
+        "SensorOutput",
+        "WorldFrame",
+    }
+    unsupported_types = sorted(set(by_type) - supported_types)
+    if unsupported_types:
+        raise NotImplementedError(
+            f"Planar multibody graph {node_name!r} contains unsupported node types "
+            f"{unsupported_types!r}."
+        )
+
+    worlds = by_type.get("WorldFrame", [])
+    anchors = by_type.get("Anchor", [])
+    links = dict(by_type.get("PlanarLink", []))
+    joints = dict(by_type.get("RevoluteJoint", []))
+    if (len(worlds), len(anchors), len(links), len(joints)) != (1, 1, 2, 2):
+        raise NotImplementedError(
+            f"Planar multibody graph {node_name!r} must contain exactly one WorldFrame, "
+            "one Anchor, two PlanarLinks, and two RevoluteJoints; got "
+            f"{len(worlds)}, {len(anchors)}, {len(links)}, and {len(joints)}."
+        )
+    world_id, world = worlds[0]
+    _require_supported_params(world_id, world, set())
+
+    root_joints = [
+        (joint_id, joint)
+        for joint_id, joint in joints.items()
+        if _param(joint, "parent_frame", "") == f"{world_id}.frame"
+    ]
+    if len(root_joints) != 1:
+        raise NotImplementedError(
+            f"Planar multibody graph {node_name!r} must have one root joint attached "
+            f"to {world_id + '.frame'!r}."
+        )
+    root_joint_id, root_joint = root_joints[0]
+    root_link_id = _proximal_link_id(
+        root_joint_id,
+        _param(root_joint, "child_frame", ""),
+        links,
+    )
+
+    child_joints = [
+        (joint_id, joint)
+        for joint_id, joint in joints.items()
+        if joint_id != root_joint_id
+        and _param(joint, "parent_frame", "") == f"{root_link_id}.distal"
+    ]
+    if len(child_joints) != 1:
+        raise NotImplementedError(
+            f"Planar multibody graph {node_name!r} is not the supported rooted serial "
+            f"two-link chain after {root_link_id + '.distal'!r}."
+        )
+    child_joint_id, child_joint = child_joints[0]
+    child_link_id = _proximal_link_id(
+        child_joint_id,
+        _param(child_joint, "child_frame", ""),
+        links,
+    )
+    if child_link_id == root_link_id:
+        raise NotImplementedError(
+            f"Planar multibody graph {node_name!r} attaches both joints to "
+            f"PlanarLink {root_link_id!r}."
+        )
+
+    anchor_id, anchor = anchors[0]
+    _require_supported_params(anchor_id, anchor, {"frame", "world_frame"})
+    if (
+        _param(anchor, "world_frame", "world.frame") != f"{world_id}.frame"
+        or _param(anchor, "frame", "") != f"{root_link_id}.proximal"
+    ):
+        raise NotImplementedError(
+            f"Anchor {anchor_id!r} must attach {world_id + '.frame'!r} to "
+            f"{root_link_id + '.proximal'!r}."
+        )
+    _require_serial_connections(
+        graph,
+        node_name=node_name,
+        world_id=world_id,
+        anchor_id=anchor_id,
+        root_joint_id=root_joint_id,
+        root_link_id=root_link_id,
+        child_joint_id=child_joint_id,
+        child_link_id=child_link_id,
+    )
+
+    ordered_links = ((root_link_id, links[root_link_id]), (child_link_id, links[child_link_id]))
+    lengths: list[float] = []
+    masses: list[float] = []
+    centers: list[float] = []
+    inertias: list[float] = []
+    for link_id, link in ordered_links:
+        _require_supported_params(link_id, link, {"length", "mass", "com", "inertia"})
+        length = _positive_param(link_id, link, "length", 0.3)
+        mass = _positive_param(link_id, link, "mass", 1.0)
+        com = _number_param(link_id, link, "com", 0.5)
+        expected_inertia = (1.0 / 3.0) * mass * length**2
+        inertia = _positive_param(link_id, link, "inertia", expected_inertia)
+        if not math.isclose(com, 0.5, rel_tol=0.0, abs_tol=1e-12):
+            raise NotImplementedError(
+                f"PlanarLink {link_id!r} com={com} is unsupported; the analytical "
+                "plant requires the center of mass at half the link length."
+            )
+        if not math.isclose(inertia, expected_inertia, rel_tol=1e-9, abs_tol=1e-12):
+            raise NotImplementedError(
+                f"PlanarLink {link_id!r} inertia={inertia} is unsupported; the analytical "
+                f"plant requires uniform-rod inertia {expected_inertia}."
+            )
+        lengths.append(length)
+        masses.append(mass)
+        centers.append(length * com)
+        inertias.append(inertia)
+
+    damping: list[float] = []
+    for joint_id, joint in ((root_joint_id, root_joint), (child_joint_id, child_joint)):
+        _require_supported_params(
+            joint_id,
+            joint,
+            {"parent_frame", "child_frame", "damping", "rest_angle", "limit_min", "limit_max"},
+        )
+        rest_angle = _number_param(joint_id, joint, "rest_angle", 0.0)
+        if rest_angle != 0.0:
+            raise NotImplementedError(
+                f"RevoluteJoint {joint_id!r} rest_angle={rest_angle} is unsupported; "
+                "the analytical plant uses zero-angle joint coordinates."
+            )
+        for limit_name in ("limit_min", "limit_max"):
+            if _param(joint, limit_name, None) is not None:
+                raise NotImplementedError(
+                    f"RevoluteJoint {joint_id!r} parameter {limit_name!r} is unsupported "
+                    "by the analytical plant."
+                )
+        joint_damping = _number_param(joint_id, joint, "damping", 0.0)
+        if joint_damping < 0.0:
+            raise ValueError(
+                f"RevoluteJoint {joint_id!r} damping must be non-negative, got {joint_damping}."
+            )
+        damping.append(joint_damping)
+
+    muscles = sorted(by_type.get("MusclePath", []))
+    if len(muscles) != 6:
+        raise NotImplementedError(
+            f"Planar multibody graph {node_name!r} has {len(muscles)} MusclePaths; "
+            "the canonical analytical builder requires exactly six."
+        )
+    expected_frames = [
+        f"{world_id}.frame",
+        f"{root_link_id}.distal",
+        f"{child_link_id}.distal",
+    ]
+    moment_arms: list[tuple[float, float]] = []
+    reference_lengths: list[float] = []
+    maximum_forces: list[float] = []
+    for muscle_id, muscle in muscles:
+        _require_supported_params(
+            muscle_id,
+            muscle,
+            {"path_points", "moment_arm", "reference_length", "max_isometric_force"},
+        )
+        _require_supported_muscle_path(muscle_id, muscle, expected_frames)
+        raw_moment_arm = _param(muscle, "moment_arm", [])
+        if not isinstance(raw_moment_arm, list) or len(raw_moment_arm) != 2:
+            raise ValueError(
+                f"MusclePath {muscle_id!r} moment_arm must contain exactly two numbers."
+            )
+        moment_arms.append(
+            (
+                _finite_number(muscle_id, "moment_arm[0]", raw_moment_arm[0]),
+                _finite_number(muscle_id, "moment_arm[1]", raw_moment_arm[1]),
+            )
+        )
+        reference_lengths.append(_positive_param(muscle_id, muscle, "reference_length", 0.2))
+        maximum_forces.append(_positive_param(muscle_id, muscle, "max_isometric_force", 1.0))
+
+    _require_analytical_boundary(by_type, node_name, child_link_id)
+    return _AnalyticalPlanarValues(
+        segment_lengths=(lengths[0], lengths[1]),
+        segment_masses=(masses[0], masses[1]),
+        segment_centers=(centers[0], centers[1]),
+        segment_inertias=(inertias[0], inertias[1]),
+        joint_damping=(damping[0], damping[1]),
+        moment_arms=tuple(moment_arms),
+        reference_lengths=tuple(reference_lengths),
+        maximum_isometric_forces=tuple(maximum_forces),
+    )
+
+
+def _proximal_link_id(
+    joint_id: str,
+    frame: Any,
+    links: Mapping[str, ComponentSpec],
+) -> str:
+    if not isinstance(frame, str) or not frame.endswith(".proximal"):
+        raise NotImplementedError(
+            f"RevoluteJoint {joint_id!r} child_frame must be a PlanarLink proximal frame; "
+            f"got {frame!r}."
+        )
+    link_id = frame.removesuffix(".proximal")
+    if link_id not in links:
+        raise NotImplementedError(
+            f"RevoluteJoint {joint_id!r} child_frame references missing PlanarLink {link_id!r}."
+        )
+    return link_id
+
+
+def _require_serial_connections(
+    graph: AcausalGraphSpec,
+    *,
+    node_name: str,
+    world_id: str,
+    anchor_id: str,
+    root_joint_id: str,
+    root_link_id: str,
+    child_joint_id: str,
+    child_link_id: str,
+) -> None:
+    expected = {
+        frozenset(((world_id, "frame"), (anchor_id, "world"))),
+        frozenset(((anchor_id, "frame"), (root_link_id, "proximal"))),
+        frozenset(((world_id, "frame"), (root_joint_id, "parent"))),
+        frozenset(((root_joint_id, "child"), (root_link_id, "proximal"))),
+        frozenset(((root_link_id, "distal"), (child_joint_id, "parent"))),
+        frozenset(((child_joint_id, "child"), (child_link_id, "proximal"))),
+    }
+    actual = {frozenset((connection.a, connection.b)) for connection in graph.connections}
+    if actual != expected:
+        raise NotImplementedError(
+            f"Planar multibody graph {node_name!r} connection topology is not the "
+            "supported rooted serial two-link chain."
+        )
+
+
+def _require_supported_muscle_path(
+    muscle_id: str,
+    muscle: ComponentSpec,
+    expected_frames: list[str],
+) -> None:
+    path_points = _param(muscle, "path_points", [])
+    if not isinstance(path_points, list):
+        raise ValueError(f"MusclePath {muscle_id!r} path_points must be a list.")
+    frames: list[str] = []
+    for point in path_points:
+        if not isinstance(point, dict) or set(point) - {"frame", "offset"}:
+            raise NotImplementedError(
+                f"MusclePath {muscle_id!r} contains a path point the analytical "
+                f"plant cannot represent: {point!r}."
+            )
+        frames.append(str(point.get("frame", "")))
+        if point.get("offset", [0.0, 0.0]) != [0.0, 0.0]:
+            raise NotImplementedError(
+                f"MusclePath {muscle_id!r} offset {point.get('offset')!r} is unsupported "
+                "by the constant-moment-arm analytical plant."
+            )
+    if frames != expected_frames:
+        raise NotImplementedError(
+            f"MusclePath {muscle_id!r} frame path {frames!r} is unsupported; "
+            f"expected {expected_frames!r}."
+        )
+
+
+def _require_analytical_boundary(
+    by_type: Mapping[str, list[tuple[str, ComponentSpec]]],
+    node_name: str,
+    terminal_link_id: str,
+) -> None:
+    inputs = by_type.get("ActuationInput", [])
+    sensors = by_type.get("SensorOutput", [])
+    markers = by_type.get("PointMarker", [])
+    if (len(inputs), len(sensors), len(markers)) != (1, 2, 1):
+        raise NotImplementedError(
+            f"Planar multibody graph {node_name!r} requires one ActuationInput, "
+            "two SensorOutputs, and one PointMarker for the analytical plant."
+        )
+    input_id, input_node = inputs[0]
+    _require_supported_params(input_id, input_node, {"port_name", "order", "source_kind", "units"})
+    if (
+        _param(input_node, "port_name", "u") != "excitation"
+        or _param(input_node, "source_kind", "force") != "muscle_excitation_vector"
+        or _param(input_node, "order", 0) != 0
+        or _param(input_node, "units", None) is not None
+    ):
+        raise NotImplementedError(
+            f"ActuationInput {input_id!r} must be the unadorned 'excitation' muscle vector."
+        )
+    observed: dict[str, str] = {}
+    for sensor_id, sensor in sensors:
+        _require_supported_params(sensor_id, sensor, {"port_name", "order", "quantity", "units"})
+        if _param(sensor, "order", 0) != 0 or _param(sensor, "units", None) is not None:
+            raise NotImplementedError(
+                f"SensorOutput {sensor_id!r} order or units are unsupported by the "
+                "analytical plant boundary."
+            )
+        observed[str(_param(sensor, "quantity", "position"))] = str(
+            _param(sensor, "port_name", "y")
+        )
+    if observed != {"effector": "effector", "state": "state"}:
+        raise NotImplementedError(
+            f"Planar multibody graph {node_name!r} must expose 'effector' and 'state'; "
+            f"got {observed!r}."
+        )
+    marker_id, marker = markers[0]
+    _require_supported_params(marker_id, marker, {"frame", "offset", "marker_name"})
+    if (
+        _param(marker, "frame", "") != f"{terminal_link_id}.distal"
+        or _param(marker, "offset", [0.0, 0.0]) != [0.0, 0.0]
+        or _param(marker, "marker_name", None) not in {None, "effector"}
+    ):
+        raise NotImplementedError(
+            f"PointMarker {marker_id!r} must be the zero-offset effector on "
+            f"{terminal_link_id + '.distal'!r}."
+        )
+
+
+def _param(node: ComponentSpec, key: str, default: Any) -> Any:
+    return node.params[key] if key in node.params else default
+
+
+def _require_supported_params(node_id: str, node: ComponentSpec, allowed: set[str]) -> None:
+    unsupported = sorted(set(node.params) - allowed)
+    if unsupported:
+        raise NotImplementedError(
+            f"{node.type} {node_id!r} has unsupported authored parameters {unsupported!r}."
+        )
+
+
+def _finite_number(node_id: str, key: str, value: Any) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Node {node_id!r} parameter {key!r} must be a number.") from exc
+    if not math.isfinite(result):
+        raise ValueError(f"Node {node_id!r} parameter {key!r} must be finite.")
+    return result
+
+
+def _number_param(node_id: str, node: ComponentSpec, key: str, default: float) -> float:
+    return _finite_number(node_id, key, _param(node, key, default))
+
+
+def _positive_param(node_id: str, node: ComponentSpec, key: str, default: float) -> float:
+    value = _number_param(node_id, node, key, default)
+    if value <= 0.0:
+        raise ValueError(f"Node {node_id!r} parameter {key!r} must be positive, got {value}.")
+    return value
 
 
 def _frame_ref(node_id: str, port_name: str) -> str:
@@ -583,10 +1001,7 @@ def _diagnose_planar_multibody_graph(
                 DomainDiagnostic(
                     severity="error",
                     code="mechanics.unanchored_chain",
-                    message=(
-                        f"Anchor {path}.{anchor_id} references missing root frame "
-                        f"{frame!r}."
-                    ),
+                    message=(f"Anchor {path}.{anchor_id} references missing root frame {frame!r}."),
                     node_ids=[anchor_id],
                     variables=[frame],
                 )
@@ -596,18 +1011,14 @@ def _diagnose_planar_multibody_graph(
         joint = graph.nodes[joint_id]
         parent_frame = _node_param_string(joint, "parent_frame")
         child_frame = _node_param_string(joint, "child_frame")
-        missing = [
-            frame for frame in (parent_frame, child_frame)
-            if frame not in valid_frames
-        ]
+        missing = [frame for frame in (parent_frame, child_frame) if frame not in valid_frames]
         if missing:
             diagnostics.append(
                 DomainDiagnostic(
                     severity="error",
                     code="mechanics.joint_frame_mismatch",
                     message=(
-                        f"RevoluteJoint {path}.{joint_id} references unknown frame(s) "
-                        f"{missing!r}."
+                        f"RevoluteJoint {path}.{joint_id} references unknown frame(s) {missing!r}."
                     ),
                     node_ids=[joint_id],
                     variables=missing,
@@ -831,8 +1242,7 @@ def _flatten_acausal_graph(
             subgraph = (graph.subgraphs or {}).get(node_id)
             if subgraph is None:
                 raise ValueError(
-                    f"Acausal composite node {node_path!r} requires an acausal "
-                    "interior subgraph."
+                    f"Acausal composite node {node_path!r} requires an acausal interior subgraph."
                 )
             child = _flatten_acausal_graph(
                 subgraph,
@@ -935,9 +1345,7 @@ def _instantiate_node(
         source_kind = str(params.get("source_kind", "force"))
         builder = _SOURCE_KIND_BUILDERS.get(source_kind)
         if builder is None:
-            raise ValueError(
-                f"Unknown ActuationInput source_kind {source_kind!r} at {node_path!r}"
-            )
+            raise ValueError(f"Unknown ActuationInput source_kind {source_kind!r} at {node_path!r}")
         port_name = _string_param(node_spec, "port_name", default="u", node_path=node_path)
         flattened.input_bindings[port_name] = node_id
         return builder(node_id)
@@ -953,9 +1361,7 @@ def _instantiate_node(
 
     builder = _ELEMENT_BUILDERS.get(node_type)
     if builder is None:
-        raise ValueError(
-            f"Unsupported acausal component type {node_type!r} at {node_path!r}"
-        )
+        raise ValueError(f"Unsupported acausal component type {node_type!r} at {node_path!r}")
     return builder(node_id, **params)
 
 

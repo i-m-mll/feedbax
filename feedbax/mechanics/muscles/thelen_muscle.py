@@ -18,8 +18,7 @@ from __future__ import annotations
 import logging
 import math
 
-import equinox as eqx
-from equinox import Module, field
+from equinox import field
 from equinox.nn import State, StateIndex
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
@@ -60,6 +59,7 @@ class RigidTendonHillMuscleThelen(Component):
     tau_activation: float = 0.015
     tau_deactivation: float = 0.05
     dt: float = 0.01
+    n_muscles: int = field(static=True)
 
     # Pre-computed passive element constants
     pe_k: float = field(static=True)
@@ -94,6 +94,7 @@ class RigidTendonHillMuscleThelen(Component):
         tau_deactivation: float = 0.05,
         dt: float = 0.01,
         initial_activation: float = 0.001,
+        n_muscles: int = 6,
     ):
         """Initialize Thelen rigid tendon muscle.
 
@@ -116,6 +117,9 @@ class RigidTendonHillMuscleThelen(Component):
         self.tau_activation = tau_activation
         self.tau_deactivation = tau_deactivation
         self.dt = dt
+        if int(n_muscles) < 1:
+            raise ValueError("n_muscles must be positive")
+        self.n_muscles = int(n_muscles)
 
         # Pre-compute passive element constants (from MotorNet)
         self.pe_k = 5.0

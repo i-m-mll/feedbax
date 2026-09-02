@@ -17,6 +17,8 @@ from typing import Any, Literal, Self, TextIO
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
+
 from feedbax.contracts.manifest import StrictModel
 from feedbax.contracts.metric_values import NumericBooleanJsonValue
 from feedbax.contracts.worker import MaterializedSlotAxisBinding, ProgressCoordinate
@@ -39,20 +41,14 @@ RUN_EVENT_CORE_TYPES = frozenset(
 )
 MAPPED_METRIC_VALUE_SCHEMA_ID = "feedbax.manifest.mapped_metric_value"
 MAPPED_METRIC_VALUE_SCHEMA_VERSION = "feedbax.manifest.mapped_metric_value.v1"
-STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID = (
-    "feedbax.manifest.structured_mapped_metric_value"
-)
-STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION = (
-    "feedbax.manifest.structured_mapped_metric_value.v1"
-)
+STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID = "feedbax.manifest.structured_mapped_metric_value"
+STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION = "feedbax.manifest.structured_mapped_metric_value.v1"
 
 
 class MappedMetricValue(StrictModel):
     """Lossless JSON envelope for one metric retaining declared mapped axes."""
 
-    schema_id: Literal["feedbax.manifest.mapped_metric_value"] = (
-        MAPPED_METRIC_VALUE_SCHEMA_ID
-    )
+    schema_id: Literal["feedbax.manifest.mapped_metric_value"] = MAPPED_METRIC_VALUE_SCHEMA_ID
     schema_version: Literal["feedbax.manifest.mapped_metric_value.v1"] = (
         MAPPED_METRIC_VALUE_SCHEMA_VERSION
     )
@@ -174,9 +170,9 @@ def normalize_serialized_metrics(
     coordinate_metrics = {
         name: value for name, value in coordinate.metrics.items() if name not in mapped
     }
-    coordinate_payload = coordinate.model_copy(
-        update={"metrics": coordinate_metrics}
-    ).model_dump(mode="json", exclude_none=True)
+    coordinate_payload = coordinate.model_copy(update={"metrics": coordinate_metrics}).model_dump(
+        mode="json", exclude_none=True
+    )
     normalized = dict(named_metrics)
     for name, axes in mapped.items():
         if isinstance(named_metrics[name], Mapping):
@@ -407,8 +403,8 @@ class RunEventEmitter:
         """Return whether a progress event should be emitted at the default cadence."""
         if total_batches is not None and total_batches <= 50:
             return True
-        return batch == 1 or batch % 10 == 0 or (
-            total_batches is not None and batch >= total_batches
+        return (
+            batch == 1 or batch % 10 == 0 or (total_batches is not None and batch >= total_batches)
         )
 
     def emit_progress(
@@ -526,8 +522,7 @@ class RunEventEmitter:
         self._dropped_events += 1
         self._record_warning(
             "io_write_dropped",
-            "RunEventEmitter dropped JSONL event after "
-            f"{attempts} write attempts for {self.path}",
+            f"RunEventEmitter dropped JSONL event after {attempts} write attempts for {self.path}",
         )
 
     def _write_batch_line(self, event: RunEvent) -> None:
@@ -619,7 +614,9 @@ class RunEventReader:
         """Yield events as they appear, replaying from ``from_seq`` first."""
         yielded_through: int | None = None
         while True:
-            events = self.read_all(from_seq=from_seq if yielded_through is None else yielded_through + 1)
+            events = self.read_all(
+                from_seq=from_seq if yielded_through is None else yielded_through + 1
+            )
             for event in events:
                 yielded_through = event.seq
                 yield event
@@ -643,8 +640,8 @@ class RunEventReader:
 
     def _event_from_line(self, line: str, *, line_number: int) -> RunEvent:
         try:
-            payload = json.loads(line)
-        except json.JSONDecodeError as exc:
+            payload = strict_json_loads(line)
+        except (json.JSONDecodeError, StrictJsonError) as exc:
             raise RunEventProtocolError(
                 f"Invalid RunEvent JSONL at {self.path}:{line_number}: {exc}"
             ) from exc
@@ -663,7 +660,9 @@ def reconcile_run_events(
     failed_sentinel: Path | None = None,
 ) -> ReconciledRunStatus:
     """Reconcile a row event log with completion sentinels."""
-    terminal_event = next((event for event in reversed(events) if event.type in RUN_EVENT_TERMINAL_TYPES), None)
+    terminal_event = next(
+        (event for event in reversed(events) if event.type in RUN_EVENT_TERMINAL_TYPES), None
+    )
     sentinel_status = _sentinel_status(done_sentinel=done_sentinel, failed_sentinel=failed_sentinel)
     event_status = _event_status(terminal_event)
     discrepancies: list[dict[str, Any]] = []

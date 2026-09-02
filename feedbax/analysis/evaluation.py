@@ -32,6 +32,8 @@ from typing import Any, Sequence
 import dill as pickle
 from pydantic import BaseModel, Field, model_validator
 
+from feedbax.contracts.strict_json import strict_json_loads
+
 from feedbax.contracts.evaluation_states import (
     EVALUATION_STATES_ARTIFACT_ROLE,
     load_evaluation_states_artifact,
@@ -1176,7 +1178,7 @@ def coerce_evaluation_run_spec(
     if isinstance(value, Mapping):
         payload: Mapping[str, Any] = value
     else:
-        payload = json.loads(Path(value).read_text(encoding="utf-8"))
+        payload = strict_json_loads(Path(value).read_text(encoding="utf-8"))
         if not isinstance(payload, Mapping):
             raise ValueError("EvaluationRunSpec document must be a JSON object")
     return EvaluationRunSpec.model_validate(migrate_evaluation_run_spec_payload(payload).payload)

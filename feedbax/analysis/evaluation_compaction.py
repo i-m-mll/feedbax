@@ -10,6 +10,8 @@ from typing import Any
 
 from pydantic import JsonValue
 
+from feedbax.contracts.strict_json import strict_json_loads
+
 from feedbax.analysis.execution_context import StagedExecutionContext
 from feedbax.contracts.evaluation_lifecycle import (
     EvaluationBatchConsumerDeclaration,
@@ -218,7 +220,7 @@ def merge_evaluation_batch_fragment(
         or fragment.metadata.get("consumer_parameters_sha256") != _parameters_sha256(declaration)
     ):
         raise ValueError(f"consumer leaf {declaration.leaf_id!r} fragment identity drifted")
-    fragment_payload = json.loads(provider.get_bytes(fragment))
+    fragment_payload = strict_json_loads(provider.get_bytes(fragment))
     expected_parent_authorities = _merge_parent_authorities(
         prior_merge_state,
         parent_authorities,
@@ -231,7 +233,7 @@ def merge_evaluation_batch_fragment(
         persisted = EvaluationBatchMergeCheckpoint.model_validate(
             migrate_structured_spec_payload(
                 "EvaluationBatchMergeCheckpoint",
-                json.loads(checkpoint.read_text(encoding="utf-8")),
+                strict_json_loads(checkpoint.read_text(encoding="utf-8")),
                 path=str(checkpoint),
             ).payload
         )
@@ -287,7 +289,9 @@ def merge_evaluation_batch_fragment(
             matrix_intent_hash=matrix_intent_hash,
         )
     prior_payload = (
-        json.loads(provider.get_bytes(prior_merge_state)) if prior_merge_state is not None else None
+        strict_json_loads(provider.get_bytes(prior_merge_state))
+        if prior_merge_state is not None
+        else None
     )
     consumer = _resolve_consumer(declaration, registry)
     next_state = consumer.merge(
@@ -420,7 +424,7 @@ def reclaim_evaluation_batch_caches(
     if checkpoint.is_file():
         evidence = EvaluationBatchReclamationEvidence.model_validate(
             _normalize_legacy_reclamation_checkpoint(
-                json.loads(checkpoint.read_text(encoding="utf-8"))
+                strict_json_loads(checkpoint.read_text(encoding="utf-8"))
             )
         )
         if (
@@ -436,7 +440,7 @@ def reclaim_evaluation_batch_caches(
     intent_path = custody_root / "reclamation-intents" / f"{batch.batch_id}.json"
     acknowledgement_hashes = [item.merge_state.sha256 for item in acknowledgements]
     if intent_path.is_file():
-        intent = json.loads(intent_path.read_text(encoding="utf-8"))
+        intent = strict_json_loads(intent_path.read_text(encoding="utf-8"))
         if (
             intent.get("matrix_intent_hash") != matrix_intent_hash
             or intent.get("batch") != batch.model_dump(mode="json", exclude_none=True)
@@ -453,7 +457,7 @@ def reclaim_evaluation_batch_caches(
     else:
         entries = []
         for outcome in outcomes:
-            manifest = json.loads(Path(outcome.manifest_path).read_text(encoding="utf-8"))
+            manifest = strict_json_loads(Path(outcome.manifest_path).read_text(encoding="utf-8"))
             cache = manifest.get("metadata", {}).get("cache", {})
             states_path = cache.get("states_path")
             if not isinstance(states_path, str) or not states_path:
@@ -567,7 +571,7 @@ def publish_evaluation_compaction_products(
         )
         state_parents = _parent_authorities_from_state(state_ref)
         _validate_publication_parent_authorities(state_parents, outcomes)
-        terminal_merge_state = json.loads(provider.get_bytes(state_ref))
+        terminal_merge_state = strict_json_loads(provider.get_bytes(state_ref))
         consumer = _resolve_consumer(declaration, registry)
         finalized.append(
             (
@@ -705,6 +709,7 @@ def _resolve_consumer(
 def _callback_parameters(
     declaration: EvaluationBatchConsumerDeclaration,
 ) -> Mapping[str, JsonValue]:
+    # Trusted internal round-trip: canonical_json_bytes serializes this in-memory mapping.
     return json.loads(canonical_json_bytes(declaration.parameters))
 
 
@@ -929,6 +934,7 @@ def _acknowledgement_matches_declaration(
 
 def _normalize_legacy_reclamation_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Bind unversioned historical acknowledgements to parameter-free identity."""
+    # Trusted internal round-trip: canonical_json_bytes serializes this admitted mapping.
     normalized = json.loads(canonical_json_bytes(payload))
     for acknowledgement in normalized.get("leaf_acknowledgements", []):
         parameters = acknowledgement.setdefault("parameters", {})

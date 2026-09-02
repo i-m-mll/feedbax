@@ -778,6 +778,24 @@ def test_axis_matrix_rejects_delta_to_missing_path(tmp_path: Path, evaluation_re
         materialize_evaluation_run_matrix(payload, repo_root=tmp_path, registry=evaluation_registry)
 
 
+def test_axis_matrix_applies_rfc_6902_list_append(tmp_path: Path, evaluation_registry) -> None:
+    payload = _axis_matrix_payload(tmp_path)
+    payload["axes"][0]["values"][0]["deltas"] = [
+        {"path": "training_run_ids.-", "op": "add", "value": "train-b"}
+    ]
+
+    rows = materialize_evaluation_run_matrix(
+        payload,
+        repo_root=tmp_path,
+        registry=evaluation_registry,
+    )
+
+    assert rows[0].payload.training_run_ids == ["train-a", "train-b"]
+    assert rows[1].payload.training_run_ids == ["train-a", "train-b"]
+    assert rows[2].payload.training_run_ids == ["train-a"]
+    assert rows[3].payload.training_run_ids == ["train-a"]
+
+
 def test_training_cross_group_delegates_to_matrix_core_and_matches_axis_order(
     monkeypatch,
 ) -> None:

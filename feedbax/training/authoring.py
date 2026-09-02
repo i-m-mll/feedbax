@@ -155,6 +155,7 @@ def _project_domain(
             separators=(",", ":"),
             sort_keys=True,
         )
+        # Trusted internal round-trip of the mapping serialized one line above.
         canonical = json.loads(encoded)
     except (TypeError, ValueError) as exc:
         raise TrainingMethodAuthoringError(

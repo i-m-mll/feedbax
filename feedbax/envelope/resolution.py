@@ -20,11 +20,12 @@ and pins the bytes that were read.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from feedbax.contracts.strict_json import strict_json_loads
 
 from feedbax.contracts.authored_canonical import (
     CANONICAL_PIN_ALGORITHM,
@@ -82,9 +83,7 @@ class InheritedValue:
     owner_ref: str
 
 
-def load_pinned(
-    repo_root: Path, ref: str, *, skips: tuple[str, ...] = ()
-) -> PinnedDocument | None:
+def load_pinned(repo_root: Path, ref: str, *, skips: tuple[str, ...] = ()) -> PinnedDocument | None:
     """Load and content-pin one repo-relative JSON document, if it exists.
 
     Returns ``None`` rather than raising when the reference does not name a
@@ -98,7 +97,7 @@ def load_pinned(
     if not path.is_file():
         return None
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = strict_json_loads(path.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return None
     if not isinstance(document, dict):

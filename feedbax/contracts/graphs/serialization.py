@@ -9,6 +9,7 @@ import jax.tree as jt
 from feedbax.models.feedback import FeedbackChannels
 from feedbax.runtime.channel import Channel
 from feedbax.runtime.components import (
+    Activation,
     Constant,
     DelayLine,
     Damper,
@@ -16,6 +17,7 @@ from feedbax.runtime.components import (
     ElementwiseAffineModulator,
     GRU,
     Gain,
+    Input,
     LSTM,
     Linear,
     MLP,
@@ -25,8 +27,10 @@ from feedbax.runtime.components import (
     Pulse,
     Ramp,
     Ravel,
+    Reshape,
     Saturation,
     Sine,
+    Scale,
     Spring,
     Sum,
 )
@@ -57,6 +61,7 @@ from feedbax.mechanics.linear_state_space import (
     StructuralLinearStateSpace,
 )
 from feedbax.mechanics.mechanics import Mechanics
+from feedbax.mechanics.backend import DiffraxBackend
 from feedbax.mechanics.muscles.relu_muscle import ReluMuscle
 from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.mechanics.plant import DirectForceInput
@@ -305,6 +310,23 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             params["noise_timing"] = noise_timing
         return params
 
+    def _analytical_plant_params(component: Mechanics) -> dict[str, Any]:
+        backend = component.backend
+        if not isinstance(backend, DiffraxBackend):
+            raise ValueError(
+                "AnalyticalMusculoskeletalPlant GraphSpec serialization requires "
+                "DiffraxBackend so n_steps has an exact authored representation"
+            )
+        if float(backend.control_dt) != float(component.dt):
+            raise ValueError(
+                "AnalyticalMusculoskeletalPlant backend control_dt must equal Mechanics dt"
+            )
+        return {
+            "dt": float(component.dt),
+            "n_steps": int(backend.n_substeps),
+            **component.plant.to_params(),
+        }
+
     def _prefixed_node(component_name: str, node_name: str) -> str:
         return f"{component_name}_{node_name}"
 
@@ -326,11 +348,25 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             continue
 
         if isinstance(component, SimpleStagedNetwork):
+            if component.sisu_gating != "additive":
+                raise ValueError(
+                    f"Cannot serialize SimpleStagedNetwork {name!r}: sisu_gating "
+                    f"{component.sisu_gating!r} has no explicit graph lowering"
+                )
             hidden_type_name = type(component.hidden).__name__
+            cell_params: dict[str, Any] = {}
             if hidden_type_name == "LSTMCell":
                 cell_type = "LSTM"
             elif isinstance(component.hidden, LeakyRNNCell):
                 cell_type = "VanillaRNN"
+                cell_params = {
+                    "activation": nonlinearity_name(component.hidden.nonlinearity),
+                    "use_bias": component.hidden.use_bias,
+                    "use_noise": component.hidden.use_noise,
+                    "noise_strength": float(component.hidden.noise_strength),
+                    "dt": float(component.hidden.dt),
+                    "tau": float(component.hidden.tau),
+                }
             elif hidden_type_name == "GRUCell":
                 cell_type = "GRU"
             else:
@@ -344,7 +380,12 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 hidden_size=component.hidden_size,
                 out_size=component.out_size,
                 cell_type=cell_type,
+                cell_params=cell_params,
+                encoding_size=component.encoding_size,
+                hidden_nonlinearity=nonlinearity_name(component.hidden_nonlinearity),
+                hidden_noise_std=component.hidden_noise_std,
                 out_nonlinearity=out_nonlinearity,
+                dtype=jnp.dtype(component.dtype).name,
                 population_structure=component.population_structure,
                 name=f"{name} recurrent controller",
                 description="Serialized SimpleStagedNetwork as explicit graph nodes",
@@ -395,6 +436,22 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 output_ports=list(component.output_ports),
             )
             continue
+        if isinstance(component, Input):
+            nodes[name] = ComponentSpec(
+                type="Input",
+                params={"output_port": component.output_port},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, Activation):
+            nodes[name] = ComponentSpec(
+                type="Activation",
+                params={"activation": component.activation_name},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
         if isinstance(component, Sum):
             nodes[name] = ComponentSpec(
                 type="Sum",
@@ -411,6 +468,22 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 output_ports=list(component.output_ports),
             )
             continue
+        if isinstance(component, Reshape):
+            nodes[name] = ComponentSpec(
+                type="Reshape",
+                params={"shape": list(component.shape)},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, Scale):
+            nodes[name] = ComponentSpec(
+                type="Scale",
+                params={"scale": _to_native(component.scale)},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
         if isinstance(component, ElementwiseAffineModulator):
             nodes[name] = ComponentSpec(
                 type="ElementwiseAffineModulator",
@@ -419,6 +492,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                     "baseline": component.baseline.tolist(),
                     "gain_init": component.gain.tolist(),
                     "bias_init": component.bias.tolist(),
+                    "trainable": component.trainable,
                 },
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
@@ -574,6 +648,10 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                     "hidden_size": component.hidden_size,
                     "activation": component.activation_name,
                     "use_bias": component.cell.use_bias,
+                    "use_noise": component.cell.use_noise,
+                    "noise_strength": float(component.cell.noise_strength),
+                    "dt": float(component.cell.dt),
+                    "tau": float(component.cell.tau),
                 },
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
@@ -623,6 +701,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             nodes[name] = ComponentSpec(
                 type="RigidTendonHillMuscleThelen",
                 params={
+                    "n_muscles": component.n_muscles,
                     "max_isometric_force": component.max_isometric_force,
                     "optimal_muscle_length": component.optimal_muscle_length,
                     "tendon_slack_length": component.tendon_slack_length,
@@ -650,9 +729,15 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                     plant_type = type(skeleton).__name__
             elif isinstance(component.plant, AnalyticalMusculoskeletalPlant):
                 plant_type = "AnalyticalMusculoskeletalPlant"
-            params = {
-                "dt": component.dt,
-            }
+            params = {"dt": component.dt}
+            if (
+                plant_type == "TwoLinkArm"
+                and isinstance(component.plant, DirectForceInput)
+                and isinstance(component.plant.skeleton, TwoLinkArm)
+            ):
+                params.update(component.plant.skeleton.to_params())
+            elif plant_type == "AnalyticalMusculoskeletalPlant":
+                params = _analytical_plant_params(component)
             nodes[name] = ComponentSpec(
                 type=plant_type,
                 params=params,

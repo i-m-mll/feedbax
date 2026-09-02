@@ -21,6 +21,7 @@ import zlib
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field as dataclass_field
+from functools import partial
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, Literal
@@ -34,6 +35,15 @@ from jax_cookbook import is_type
 import numpy as np
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from feedbax._secure_fs import (
+    SecurePathRigor,
+    directory_open_flags,
+    open_directory_chain,
+    open_existing_directory,
+    open_existing_file,
+    take_directory_chain_leaf,
+    validate_opened_path,
+)
 from feedbax.contracts.checkpoints import (
     BatchHistory,
     CheckpointContinuationRequest,
@@ -93,7 +103,12 @@ from feedbax.contracts.run_matrix import (
     StoppedRowStatus,
     TaskIdentityGate,
 )
-from feedbax.contracts.strict_json import DuplicateJsonKeyError, strict_json_loads
+from feedbax.contracts.strict_json import (
+    DuplicateJsonKeyError,
+    StrictJsonError,
+    strict_json_loads,
+    strict_model_validate_json,
+)
 from feedbax.contracts.training import (
     TRAINING_RUN_SPEC_SCHEMA_ID,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
@@ -499,7 +514,7 @@ def load_checkpoint_set(
             "native checkpoint manifest does not match its transaction directory"
         )
     try:
-        checkpoint_set = CheckpointSet.model_validate_json(checkpoint_set_bytes)
+        checkpoint_set = strict_model_validate_json(CheckpointSet, checkpoint_set_bytes)
     except ValidationError as exc:
         raise CheckpointCustodyError(
             f"native checkpoint set is invalid: {checkpoint_set_path}: {exc}"
@@ -1160,7 +1175,7 @@ def produce_checkpoint_custody_archive(
         context="checkpoint set",
     )
     try:
-        checkpoint_set = CheckpointSet.model_validate_json(checkpoint_set_bytes)
+        checkpoint_set = strict_model_validate_json(CheckpointSet, checkpoint_set_bytes)
     except ValidationError as exc:
         raise CheckpointReferenceResolutionError(f"checkpoint set is invalid: {exc}") from exc
     if (
@@ -1554,7 +1569,7 @@ def materialize_checkpoint_custody_archive(
         )
         checkpoint_set_bytes = checkpoint_set_path.read_bytes()
         try:
-            checkpoint_set = CheckpointSet.model_validate_json(checkpoint_set_bytes)
+            checkpoint_set = strict_model_validate_json(CheckpointSet, checkpoint_set_bytes)
         except ValidationError as exc:
             raise CheckpointReferenceResolutionError(
                 f"checkpoint archive set is invalid: {exc}"
@@ -1673,8 +1688,8 @@ def _extract_checkpoint_custody_archive(
                         )
                     raw_document = source.read(member.size + 1)
                     try:
-                        parsed = json.loads(raw_document)
-                    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                        parsed = strict_json_loads(raw_document)
+                    except (json.JSONDecodeError, UnicodeDecodeError, StrictJsonError) as exc:
                         raise CheckpointReferenceResolutionError(
                             "checkpoint archive document is invalid JSON"
                         ) from exc
@@ -1913,13 +1928,10 @@ class _SingleGzipMemberStream:
         self._framing.finish()
 
 
-def _archive_directory_flags() -> int:
-    required = ("O_DIRECTORY", "O_NOFOLLOW")
-    if any(not getattr(os, name, 0) for name in required):
-        raise CheckpointReferenceResolutionError(
-            "descriptor-relative no-follow archive operations are unsupported"
-        )
-    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+_archive_directory_flags = partial(
+    directory_open_flags,
+    error_factory=CheckpointReferenceResolutionError,
+)
 
 
 def _open_archive_member(
@@ -1939,17 +1951,16 @@ def _open_archive_member(
                 created = os.stat(part, dir_fd=directory_descriptor, follow_symlinks=False)
                 expected_identity = _identity(created)
                 directory_identities[traversed] = expected_identity
-            next_descriptor: int | None = os.open(
-                part, _archive_directory_flags(), dir_fd=directory_descriptor
+            next_descriptor: int | None = open_existing_directory(
+                part,
+                error_factory=CheckpointReferenceResolutionError,
+                context="checkpoint archive extraction directory",
+                dir_fd=directory_descriptor,
+                wrap_os_errors=False,
             )
             try:
                 opened = os.fstat(next_descriptor)
-                current = os.stat(part, dir_fd=directory_descriptor, follow_symlinks=False)
-                if (
-                    not stat.S_ISDIR(current.st_mode)
-                    or _identity(opened) != expected_identity
-                    or _identity(current) != expected_identity
-                ):
+                if _identity(opened) != expected_identity:
                     raise CheckpointReferenceResolutionError(
                         "checkpoint archive extraction directory identity changed"
                     )
@@ -1962,12 +1973,15 @@ def _open_archive_member(
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
         descriptor: int | None = os.open(parts[-1], flags, 0o600, dir_fd=directory_descriptor)
         try:
-            identity = _identity(os.fstat(descriptor))
-            current = os.stat(parts[-1], dir_fd=directory_descriptor, follow_symlinks=False)
-            if identity != _identity(current) or not stat.S_ISREG(current.st_mode):
-                raise CheckpointReferenceResolutionError(
-                    "checkpoint archive extraction file identity changed"
-                )
+            validate_opened_path(
+                parts[-1],
+                descriptor,
+                rigor=SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
+                error_factory=CheckpointReferenceResolutionError,
+                context="checkpoint archive extraction file",
+                dir_fd=directory_descriptor,
+                wrap_os_errors=False,
+            )
             result = descriptor
             descriptor = None
             return result
@@ -2310,30 +2324,18 @@ def _checkpoint_custody_relative_parts(
 
 def _open_checkpoint_custody_root(root: str | Path) -> int:
     """Pin one real custody root directory without following symlinks."""
-    root_path = os.fspath(root)
     try:
-        before = os.stat(root_path, follow_symlinks=False)
-        descriptor = os.open(root_path, _archive_directory_flags())
+        records = open_directory_chain(
+            Path(root),
+            create=False,
+            error_factory=CheckpointReferenceResolutionError,
+            context="checkpoint custody root",
+        )
+        return take_directory_chain_leaf(records)
     except OSError as exc:
         raise CheckpointReferenceResolutionError(
             "checkpoint custody root is not an available real directory"
         ) from exc
-    try:
-        opened = os.fstat(descriptor)
-        after = os.stat(root_path, follow_symlinks=False)
-        if (
-            not stat.S_ISDIR(before.st_mode)
-            or not stat.S_ISDIR(opened.st_mode)
-            or _identity(before) != _identity(opened)
-            or _identity(after) != _identity(opened)
-        ):
-            raise CheckpointReferenceResolutionError(
-                "checkpoint custody root identity changed while opening"
-            )
-        return descriptor
-    except Exception:
-        os.close(descriptor)
-        raise
 
 
 def _read_checkpoint_custody_member(
@@ -2347,14 +2349,10 @@ def _read_checkpoint_custody_member(
     try:
         for part in parts[:-1]:
             try:
-                before = os.stat(
+                next_descriptor = open_existing_directory(
                     part,
-                    dir_fd=directory_descriptor,
-                    follow_symlinks=False,
-                )
-                next_descriptor = os.open(
-                    part,
-                    _archive_directory_flags(),
+                    error_factory=CheckpointReferenceResolutionError,
+                    context=f"{context} directory",
                     dir_fd=directory_descriptor,
                 )
             except OSError as exc:
@@ -2362,21 +2360,6 @@ def _read_checkpoint_custody_member(
                     f"{context} directory traversal is unsafe or unavailable"
                 ) from exc
             try:
-                opened = os.fstat(next_descriptor)
-                after = os.stat(
-                    part,
-                    dir_fd=directory_descriptor,
-                    follow_symlinks=False,
-                )
-                if (
-                    not stat.S_ISDIR(before.st_mode)
-                    or not stat.S_ISDIR(opened.st_mode)
-                    or _identity(before) != _identity(opened)
-                    or _identity(after) != _identity(opened)
-                ):
-                    raise CheckpointReferenceResolutionError(
-                        f"{context} directory identity changed while traversing"
-                    )
                 os.close(directory_descriptor)
                 directory_descriptor = next_descriptor
                 next_descriptor = -1
@@ -2385,31 +2368,19 @@ def _read_checkpoint_custody_member(
                     os.close(next_descriptor)
 
         name = parts[-1]
-        flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
         try:
-            before = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
-            if not stat.S_ISREG(before.st_mode):
-                raise CheckpointReferenceResolutionError(f"{context} is not a regular file")
-            descriptor = os.open(name, flags, dir_fd=directory_descriptor)
+            descriptor, opened = open_existing_file(
+                name,
+                rigor=SecurePathRigor.REGULAR_FILE_IDENTITY,
+                error_factory=CheckpointReferenceResolutionError,
+                context=context,
+                dir_fd=directory_descriptor,
+            )
         except CheckpointReferenceResolutionError:
             raise
         except OSError as exc:
             raise CheckpointReferenceResolutionError(f"{context} is unsafe or unavailable") from exc
         try:
-            opened = os.fstat(descriptor)
-            after_open = os.stat(
-                name,
-                dir_fd=directory_descriptor,
-                follow_symlinks=False,
-            )
-            if (
-                not stat.S_ISREG(opened.st_mode)
-                or _identity(before) != _identity(opened)
-                or _identity(after_open) != _identity(opened)
-            ):
-                raise CheckpointReferenceResolutionError(
-                    f"{context} is not one stable regular file"
-                )
             chunks: list[bytes] = []
             while True:
                 chunk = os.read(descriptor, 1024 * 1024)

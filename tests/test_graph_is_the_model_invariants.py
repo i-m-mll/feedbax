@@ -27,7 +27,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import jax
-import jax.numpy as jnp
 import pytest
 
 from feedbax.component_registry import ComponentRegistry, required_interior_domain
@@ -408,9 +407,13 @@ def test_unknown_component_type_is_rejected_not_defaulted() -> None:
 def test_training_spec_without_a_loss_is_rejected_not_fabricated() -> None:
     """A loss-free run may not be compiled and trained against a fabricated MSE."""
     training_spec = _training_spec()
-    training_spec.pop("loss")
+    training_spec["loss"] = {
+        "type": "Composite",
+        "label": "empty",
+        "children": {},
+    }
 
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(GraphCompilationError) as exc_info:
         compile_training_run(
             component_registry=_registry(),
             graph_spec=_worker_linear_graph_spec(),
@@ -420,7 +423,7 @@ def test_training_spec_without_a_loss_is_rejected_not_fabricated() -> None:
             cfg=_worker_cfg(),
         )
 
-    assert "loss" in str(exc_info.value)
+    assert exc_info.value.diagnostics[0].code == "worker.missing_loss_terms"
 
 
 # ---------------------------------------------------------------------------
@@ -530,13 +533,6 @@ def _worker_cfg(**overrides) -> SimpleNamespace:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Unknown activation names are silently substituted with ReLU by "
-        "resolve_activation — see 8378254 item 1"
-    ),
-)
 def test_unknown_activation_name_is_not_silently_relu() -> None:
     """``activation='gelu'`` must be rejected or honoured, never turned into ReLU."""
     spec = GraphSpec(
@@ -554,66 +550,46 @@ def test_unknown_activation_name_is_not_silently_relu() -> None:
         output_bindings={"y": ("lin", "output")},
     )
 
-    try:
-        graph = spec_to_graph(spec, _registry())
-    except REFUSALS:
-        return  # Rejecting an unsupported activation is a conformant outcome.
-
-    built = graph.nodes["lin"]
-    # Observed today: activation_name == "gelu" while activation is jax.nn.relu,
-    # so the built model computes relu([-1, 1]) == [0, 1] instead of
-    # gelu([-1, 1]) == [-0.1588, 0.8412].
-    assert built.activation is not jax.nn.relu, (
-        f"declared activation {built.activation_name!r} silently built ReLU"
-    )
+    with pytest.raises(ValueError, match="Unknown activation 'gelu'.*Supported values"):
+        spec_to_graph(spec, _registry())
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "The 'LeakyRNNCell' vocabulary name aliases to VanillaRNN and drops "
-        "dt/tau/use_noise, yielding a non-leaky alpha=1 cell — see 8378254 item 5"
-    ),
-)
 def test_leaky_rnn_cell_vocabulary_builds_a_leaky_cell() -> None:
-    """Selecting a leaky cell must produce a leaky cell, or be rejected."""
-    try:
-        spec = network_template_graph(
-            {
-                "input_size": 3,
-                "hidden_size": 4,
-                "out_size": 2,
-                "hidden_type": "LeakyRNNCell",
-                "dt": 0.05,
-                "tau": 0.5,
-            }
-        )
-        graph = spec_to_graph(spec, _registry())
-    except REFUSALS:
-        return  # Removing the unreachable alias is a conformant outcome.
-
-    cell = graph.nodes["cell"].cell
-    # Observed today: cell.dt == 1.0 and cell.tau == 1.0, so alpha == 1.0 and
-    # the cell has no leak at all.
-    assert float(cell.dt) / float(cell.tau) < 1.0, (
-        f"LeakyRNNCell built with dt={float(cell.dt)}, tau={float(cell.tau)} "
-        "(alpha=1 means non-leaky)"
+    """The leaky vocabulary carries its dynamics through a GraphSpec round trip."""
+    spec = network_template_graph(
+        {
+            "input_size": 3,
+            "hidden_size": 4,
+            "out_size": 2,
+            "hidden_type": "LeakyRNNCell",
+            "activation": "relu",
+            "use_bias": False,
+            "dt": 0.05,
+            "tau": 0.5,
+            "use_noise": True,
+            "noise_strength": 0.03,
+        }
     )
+    first = spec_to_graph(spec, _registry())
+    second = spec_to_graph(graph_to_spec(first), _registry())
+
+    for graph in (first, second):
+        cell = graph.nodes["cell"].cell
+        assert float(cell.dt) == pytest.approx(0.05)
+        assert float(cell.tau) == pytest.approx(0.5)
+        assert cell.use_bias is False
+        assert cell.nonlinearity is jax.nn.relu
+        assert cell.use_noise is True
+        assert float(cell.noise_strength) == pytest.approx(0.03)
+        assert float(cell.alpha) == pytest.approx(0.1)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "An unset rollout length silently becomes the training batch count — "
-        "see 8378254 item 3"
-    ),
-)
 def test_rollout_length_is_not_silently_the_batch_count() -> None:
     """Rollout length is an architectural fact; it must be explicit."""
     cfg = SimpleNamespace(learning_rate=0.1, grad_clip=1.0, snapshot_interval=10)
 
-    try:
-        compiled = compile_training_run(
+    with pytest.raises(GraphCompilationError) as exc_info:
+        compile_training_run(
             component_registry=_registry(),
             graph_spec=_worker_linear_graph_spec(),
             training_spec=_training_spec(n_batches=7),
@@ -621,25 +597,13 @@ def test_rollout_length_is_not_silently_the_batch_count() -> None:
             task_binding_spec=_constant_task_binding_spec(),
             cfg=cfg,
         )
-    except REFUSALS:
-        return  # Requiring an explicit rollout length is a conformant outcome.
-
-    lengths = {int(value.shape[0]) for value in compiled.task_data.values()}
-    # Observed today: n_batches=7 with no n_reach_steps produces 7 timesteps.
-    assert lengths != {7}, f"rollout length {lengths} was taken from n_batches=7"
+    assert exc_info.value.diagnostics[0].code == "worker.missing_rollout_length"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Task data with no value_spec silently materializes zeros — "
-        "see 8378254 item 4"
-    ),
-)
 def test_task_data_without_a_value_spec_is_not_silently_zeros() -> None:
     """Unspecified task data is an incomplete model, not a zero signal."""
-    try:
-        compiled = compile_training_run(
+    with pytest.raises(GraphCompilationError) as exc_info:
+        compile_training_run(
             component_registry=_registry(),
             graph_spec=_worker_linear_graph_spec(),
             training_spec=_training_spec(),
@@ -647,23 +611,9 @@ def test_task_data_without_a_value_spec_is_not_silently_zeros() -> None:
             task_binding_spec=_worker_task_binding_spec(value_spec=None),
             cfg=_worker_cfg(),
         )
-    except REFUSALS:
-        return  # Requiring an explicit value_spec is a conformant outcome.
-
-    data = compiled.task_data["model_input"]
-    # Observed today: [[0.0], [0.0], [0.0], [0.0]].
-    assert not bool(jnp.all(data == 0.0)), (
-        f"task data with no value_spec silently became zeros: {data.tolist()}"
-    )
+    assert exc_info.value.diagnostics[0].code == "worker.missing_task_data_value_spec"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "A missing task workspace silently uses a hardcoded [[-0.25, -0.25], "
-        "[0.25, 0.25]] extent — see 8378254 item 4"
-    ),
-)
 def test_missing_task_workspace_is_not_silently_hardcoded() -> None:
     """The task's spatial extent must come from the task spec, not from source."""
     value_spec = {
@@ -673,8 +623,8 @@ def test_missing_task_workspace_is_not_silently_hardcoded() -> None:
         "shape": ["time", 4],
     }
 
-    try:
-        compiled = compile_training_run(
+    with pytest.raises(GraphCompilationError) as exc_info:
+        compile_training_run(
             component_registry=_registry(),
             graph_spec=_worker_linear_graph_spec(input_size=4),
             training_spec=_training_spec(),
@@ -685,17 +635,7 @@ def test_missing_task_workspace_is_not_silently_hardcoded() -> None:
             ),
             cfg=_worker_cfg(n_reach_steps=3),
         )
-    except REFUSALS:
-        return  # Requiring an explicit workspace is a conformant outcome.
-
-    data = compiled.task_data["model_input"]
-    # Observed today with params={}: first row is [-0.25, -0.25, 0.25, 0.25],
-    # i.e. the hardcoded workspace corners, identical to what an explicit
-    # workspace of [[-0.25, -0.25], [0.25, 0.25]] would produce.
-    hardcoded_start = jnp.asarray([-0.25, -0.25], dtype=jnp.float32)
-    assert not bool(jnp.allclose(data[0, :2], hardcoded_start)), (
-        f"missing workspace silently produced hardcoded extent: {data.tolist()}"
-    )
+    assert exc_info.value.diagnostics[0].code == "worker.missing_task_workspace"
 
 
 @pytest.mark.xfail(

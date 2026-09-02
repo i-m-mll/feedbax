@@ -18,6 +18,12 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
+from feedbax.contracts.strict_json import (
+    StrictJsonError,
+    strict_json_loads,
+    strict_model_validate_json,
+)
+
 from feedbax.contracts.evaluation_lifecycle import (
     EVALUATION_COLLECTION_OUTPUTS,
     EvaluationMatrixOrderedUnionEvidence,
@@ -137,7 +143,7 @@ for distribution in importlib.metadata.distributions():
     if not name or not version:
         raise RuntimeError("installed distribution lacks required name or version metadata")
     direct_url_text = distribution.read_text("direct_url.json")
-    direct_url = json.loads(direct_url_text) if direct_url_text is not None else None
+    direct_url = strict_json_loads(direct_url_text) if direct_url_text is not None else None
     if direct_url is not None and not isinstance(direct_url, dict):
         raise RuntimeError(f"distribution {name!r} has invalid direct_url.json")
     inventory.append({"direct_url": direct_url, "name": name, "version": version})
@@ -704,8 +710,8 @@ def _verify_successful_evaluation_terminal_custody(
     )
     try:
         recorded_union = EvaluationMatrixOrderedUnionEvidence.model_validate(union_payload)
-        durable_union = EvaluationMatrixOrderedUnionEvidence.model_validate_json(
-            expected_union_path.read_text(encoding="utf-8")
+        durable_union = strict_model_validate_json(
+            EvaluationMatrixOrderedUnionEvidence, expected_union_path.read_text(encoding="utf-8")
         )
     except (OSError, ValueError) as exc:
         raise LocalDriverError("evaluation reclamation ordered-union evidence is invalid") from exc
@@ -774,8 +780,8 @@ def _verify_successful_evaluation_terminal_custody(
     if _sha256_file(expected_certificate) != certificate_sha256:
         raise LocalDriverError("evaluation reclamation requires a durable passing certificate")
     try:
-        certificate = RunConformanceCertificate.model_validate_json(
-            expected_certificate.read_text(encoding="utf-8")
+        certificate = strict_model_validate_json(
+            RunConformanceCertificate, expected_certificate.read_text(encoding="utf-8")
         )
         assert_certificate_allows_completed_registration(certificate)
     except (OSError, ValueError) as exc:
@@ -834,8 +840,8 @@ def _reclaim_successful_evaluation_store(
         raise LocalDriverError(f"raw evaluation reclamation record is unsafe for {row.row_id!r}")
     if record_path.is_file():
         try:
-            loaded = json.loads(record_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            loaded = strict_json_loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, StrictJsonError) as exc:
             raise LocalDriverError(
                 f"raw evaluation reclamation record is invalid for {row.row_id!r}"
             ) from exc
@@ -1066,8 +1072,8 @@ def _probe_dependency_inventory(
         ) from exc
 
     try:
-        probe = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
+        probe = strict_json_loads(result.stdout)
+    except (json.JSONDecodeError, StrictJsonError) as exc:
         raise LocalDriverError(
             f"dependency inventory from interpreter {executable!r} was not valid JSON"
         ) from exc

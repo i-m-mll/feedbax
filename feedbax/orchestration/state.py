@@ -18,6 +18,8 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from feedbax.contracts.strict_json import strict_json_loads, strict_model_validate_json
+
 from feedbax.contracts.manifest import StrictModel
 from feedbax.orchestration.repo_realization import RepoRealizationPlan
 
@@ -280,7 +282,7 @@ class RunSetStateStore:
 
     def load(self) -> RunSetState:
         """Load the current state document."""
-        return RunSetState.model_validate_json(self.path.read_text(encoding="utf-8"))
+        return strict_model_validate_json(RunSetState, self.path.read_text(encoding="utf-8"))
 
     def save(self, state: RunSetState, *, crash_before_replace: bool = False) -> Path:
         """Atomically write ``state`` using temp-file plus ``os.replace``."""
@@ -352,9 +354,7 @@ class RunSetStateStore:
                 )
             )
             reserve_allocation_bytes = sum(
-                size
-                for _path, size, needs_replacement in requested_reserves
-                if needs_replacement
+                size for _path, size, needs_replacement in requested_reserves if needs_replacement
             )
             required_free_bytes = reserve_allocation_bytes + state_update_bytes
             observed_free_bytes = shutil.disk_usage(self.path.parent).free
@@ -384,8 +384,8 @@ class RunSetStateStore:
 
     def load_emergency(self) -> EmergencyRunSetRecord:
         """Load and strictly validate the current emergency recovery record."""
-        return EmergencyRunSetRecord.model_validate_json(
-            self.emergency_path.read_text(encoding="utf-8")
+        return strict_model_validate_json(
+            EmergencyRunSetRecord, self.emergency_path.read_text(encoding="utf-8")
         )
 
     def save_emergency(self, record: EmergencyRunSetRecord) -> Path:
@@ -537,7 +537,7 @@ class RunSetStateStore:
 def _read_lock_descriptor(descriptor: int) -> dict[str, Any]:
     try:
         size = os.fstat(descriptor).st_size
-        payload = json.loads(os.pread(descriptor, size, 0).decode("utf-8"))
+        payload = strict_json_loads(os.pread(descriptor, size, 0).decode("utf-8"))
         return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}

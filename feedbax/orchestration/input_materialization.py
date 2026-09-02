@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
+from feedbax.contracts.strict_json import strict_json_loads
+
 from feedbax.contracts.manifest import ArtifactRef
 from feedbax.contracts.staged_execution import validate_staged_binding_name
 from feedbax.orchestration.bundle import ResolvedAssemblyInput, RunBundle
@@ -70,9 +72,7 @@ class StagedRootReclamation:
     reclaimed_bytes: int
 
 
-_STAGED_ROOT_RECLAMATION_SCHEMA_VERSION = (
-    "feedbax.orchestration.staged_root_reclamation.v1"
-)
+_STAGED_ROOT_RECLAMATION_SCHEMA_VERSION = "feedbax.orchestration.staged_root_reclamation.v1"
 
 
 def preflight_resolved_inputs(bundle: RunBundle) -> tuple[list[str], list[dict[str, str]]]:
@@ -93,8 +93,14 @@ def preflight_resolved_inputs(bundle: RunBundle) -> tuple[list[str], list[dict[s
         parent = source.materializer.expected_parent_ref
         if not isinstance(parent.metadata.get("manifest_sha256"), str):
             failures.append(f"resolved_inputs[{index}] ParentRef lacks manifest digest")
-        observed.append({"role": source.target_role, "provider_binding": source.provider_binding,
-                         "artifact_sha256": source.artifact.sha256, "transaction_id": parent.id})
+        observed.append(
+            {
+                "role": source.target_role,
+                "provider_binding": source.provider_binding,
+                "artifact_sha256": source.artifact.sha256,
+                "transaction_id": parent.id,
+            }
+        )
     for custody in bundle.staged_roots:
         observed.append(
             {
@@ -107,7 +113,9 @@ def preflight_resolved_inputs(bundle: RunBundle) -> tuple[list[str], list[dict[s
     return failures, observed
 
 
-def preflight_input_provider_bindings(bundle: RunBundle, bindings: Sequence[InputProviderRootBinding]) -> tuple[list[str], list[dict[str, str]]]:
+def preflight_input_provider_bindings(
+    bundle: RunBundle, bindings: Sequence[InputProviderRootBinding]
+) -> tuple[list[str], list[dict[str, str]]]:
     failures, observed = preflight_resolved_inputs(bundle)
     observed = observed[: len(bundle.resolved_inputs)]
     try:
@@ -182,7 +190,9 @@ def preflight_bundle_input_bindings(
 
 
 def materialize_bundle_inputs(
-    bundle: RunBundle, *, destination_root: Path | str,
+    bundle: RunBundle,
+    *,
+    destination_root: Path | str,
     provider_bindings: Sequence[InputProviderRootBinding] = (),
     staged_root_bindings: Sequence[StagedRootSnapshotBinding] = (),
 ) -> tuple[StagedInput, ...]:
@@ -206,17 +216,22 @@ def materialize_bundle_inputs(
                 raise InputMaterializationError(f"input destination already exists: {destination}")
             authority = source.materializer
             result = materialize_checkpoint_custody_archive(
-                provider, _artifact_ref(resolved), destination,
+                provider,
+                _artifact_ref(resolved),
+                destination,
                 expected_parent_ref=authority.expected_parent_ref,
                 expected_transaction_root_sha256=authority.expected_transaction_root_sha256,
             )
-            expected = _expected_files(authority.expected_parent_ref.uri,
-                                       result.resolved_transaction.manifest.slots)
+            expected = _expected_files(
+                authority.expected_parent_ref.uri, result.resolved_transaction.manifest.slots
+            )
             files = _file_manifest(root, destination, expected)
         except InputMaterializationError:
             raise
         except Exception as exc:
-            raise InputMaterializationError(f"input {source.target_role!r} materialization failed: {exc}") from exc
+            raise InputMaterializationError(
+                f"input {source.target_role!r} materialization failed: {exc}"
+            ) from exc
         staged.append(StagedInput(source.target_role, destination, files))
     try:
         staged.extend(
@@ -321,9 +336,7 @@ def reclaim_materialized_staged_roots(
         )
         try:
             if _stat_identity(os.fstat(parent_descriptor)) != root_identity:
-                raise StagedRootCustodyError(
-                    "staged-root materialization parent was replaced"
-                )
+                raise StagedRootCustodyError("staged-root materialization parent was replaced")
             source_identity = os.stat(
                 materialized.name,
                 dir_fd=parent_descriptor,
@@ -527,8 +540,7 @@ def _staged_root_reclamation_marker_payload(
         "schema_version": _STAGED_ROOT_RECLAMATION_SCHEMA_VERSION,
         "run_set_id": bundle.run_set_id,
         "custodies": [
-            custody.model_dump(mode="json", exclude_none=True)
-            for custody in bundle.staged_roots
+            custody.model_dump(mode="json", exclude_none=True) for custody in bundle.staged_roots
         ],
         "isolated_directory_identity": list(isolated_identity),
     }
@@ -576,12 +588,11 @@ def _verify_staged_root_reclamation_marker(
             f"staged-root reclamation marker is not a regular file: {marker}"
         )
     try:
-        payload = json.loads(marker.read_text(encoding="utf-8"))
+        payload = strict_json_loads(marker.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise StagedRootCustodyError("staged-root reclamation marker is invalid") from exc
     expected_custodies = [
-        custody.model_dump(mode="json", exclude_none=True)
-        for custody in bundle.staged_roots
+        custody.model_dump(mode="json", exclude_none=True) for custody in bundle.staged_roots
     ]
     if (
         not isinstance(payload, dict)
@@ -589,9 +600,7 @@ def _verify_staged_root_reclamation_marker(
         or payload.get("run_set_id") != bundle.run_set_id
         or payload.get("custodies") != expected_custodies
     ):
-        raise StagedRootCustodyError(
-            "staged-root reclamation marker differs from bundle custody"
-        )
+        raise StagedRootCustodyError("staged-root reclamation marker differs from bundle custody")
     directory_identity = payload.get("isolated_directory_identity")
     if (
         not isinstance(directory_identity, list)
@@ -632,9 +641,7 @@ def _directory_identity(root: Path) -> tuple[int, int]:
 
 def _require_directory_identity(root: Path, expected: tuple[int, int]) -> None:
     if _directory_identity(root) != expected:
-        raise StagedRootCustodyError(
-            f"staged-root reclamation directory was replaced: {root}"
-        )
+        raise StagedRootCustodyError(f"staged-root reclamation directory was replaced: {root}")
 
 
 def _fsync_directory(root: Path) -> None:
@@ -668,18 +675,14 @@ def _remove_materialization_tree(
         if not stat.S_ISDIR(before.st_mode) or (
             expected_identity is not None and identity != expected_identity
         ):
-            raise StagedRootCustodyError(
-                f"staged-root removal target identity changed: {root}"
-            )
+            raise StagedRootCustodyError(f"staged-root removal target identity changed: {root}")
         directory_descriptor = os.open(
             root.name,
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW,
             dir_fd=parent_descriptor,
         )
         if _stat_identity(os.fstat(directory_descriptor)) != identity:
-            raise StagedRootCustodyError(
-                f"staged-root removal target changed before open: {root}"
-            )
+            raise StagedRootCustodyError(f"staged-root removal target changed before open: {root}")
         _remove_materialization_directory_contents(directory_descriptor)
         current = os.stat(
             root.name,
@@ -687,9 +690,7 @@ def _remove_materialization_tree(
             follow_symlinks=False,
         )
         if _stat_identity(current) != identity:
-            raise StagedRootCustodyError(
-                f"staged-root removal target was replaced: {root}"
-            )
+            raise StagedRootCustodyError(f"staged-root removal target was replaced: {root}")
         os.rmdir(root.name, dir_fd=parent_descriptor)
     finally:
         if directory_descriptor is not None:
@@ -723,9 +724,7 @@ def _remove_materialization_directory_contents(directory_descriptor: int) -> Non
                     follow_symlinks=False,
                 )
                 if _stat_identity(current) != identity:
-                    raise StagedRootCustodyError(
-                        "staged-root removal directory was replaced"
-                    )
+                    raise StagedRootCustodyError("staged-root removal directory was replaced")
                 os.rmdir(entry.name, dir_fd=directory_descriptor)
             finally:
                 os.close(child_descriptor)
@@ -737,9 +736,7 @@ def _remove_materialization_directory_contents(directory_descriptor: int) -> Non
             )
             try:
                 if _stat_identity(os.fstat(descriptor)) != identity:
-                    raise StagedRootCustodyError(
-                        "staged-root removal file changed before open"
-                    )
+                    raise StagedRootCustodyError("staged-root removal file changed before open")
             finally:
                 os.close(descriptor)
             current = os.stat(
@@ -748,17 +745,15 @@ def _remove_materialization_directory_contents(directory_descriptor: int) -> Non
                 follow_symlinks=False,
             )
             if _stat_identity(current) != identity:
-                raise StagedRootCustodyError(
-                    "staged-root removal file was replaced"
-                )
+                raise StagedRootCustodyError("staged-root removal file was replaced")
             os.unlink(entry.name, dir_fd=directory_descriptor)
         else:
-            raise StagedRootCustodyError(
-                f"unsupported staged-root removal member: {entry.name!r}"
-            )
+            raise StagedRootCustodyError(f"unsupported staged-root removal member: {entry.name!r}")
 
 
-def _bound_providers(inputs: Sequence[ResolvedAssemblyInput], bindings: Sequence[InputProviderRootBinding]) -> Mapping[str, ImmutableArtifactBlobProvider]:
+def _bound_providers(
+    inputs: Sequence[ResolvedAssemblyInput], bindings: Sequence[InputProviderRootBinding]
+) -> Mapping[str, ImmutableArtifactBlobProvider]:
     roots: dict[str, Path] = {}
     for binding in bindings:
         validate_staged_binding_name(binding.name)
@@ -768,9 +763,13 @@ def _bound_providers(inputs: Sequence[ResolvedAssemblyInput], bindings: Sequence
     specs = {item.custody.provider_binding: item.custody.provider for item in inputs}
     missing, extra = sorted(set(specs) - set(roots)), sorted(set(roots) - set(specs))
     if missing or extra:
-        raise InputMaterializationError(f"input provider bindings differ; missing={missing!r} unexpected={extra!r}")
-    return {name: open_immutable_artifact_blob_provider(spec, explicit_root=roots[name])
-            for name, spec in specs.items()}
+        raise InputMaterializationError(
+            f"input provider bindings differ; missing={missing!r} unexpected={extra!r}"
+        )
+    return {
+        name: open_immutable_artifact_blob_provider(spec, explicit_root=roots[name])
+        for name, spec in specs.items()
+    }
 
 
 def _artifact_ref(resolved: ResolvedAssemblyInput) -> ArtifactRef:
@@ -798,7 +797,9 @@ def _expected_files(uri: str | None, slots: Sequence[object]) -> set[str]:
     }
 
 
-def _file_manifest(root: Path, destination: Path, expected: set[str]) -> tuple[StagedInputFile, ...]:
+def _file_manifest(
+    root: Path, destination: Path, expected: set[str]
+) -> tuple[StagedInputFile, ...]:
     records, actual = [], set()
     for path in sorted(destination.rglob("*")):
         mode = path.lstat().st_mode
@@ -807,9 +808,14 @@ def _file_manifest(root: Path, destination: Path, expected: set[str]) -> tuple[S
         if path.is_file():
             data = path.read_bytes()
             actual.add(path.relative_to(destination).as_posix())
-            records.append(StagedInputFile(path.relative_to(root).as_posix(),
-                                           hashlib.sha256(data).hexdigest(), len(data)))
+            records.append(
+                StagedInputFile(
+                    path.relative_to(root).as_posix(), hashlib.sha256(data).hexdigest(), len(data)
+                )
+            )
     if actual != expected:
-        raise InputMaterializationError(f"materialized file set differs; missing={sorted(expected-actual)!r} "
-                                        f"unexpected={sorted(actual-expected)!r}")
+        raise InputMaterializationError(
+            f"materialized file set differs; missing={sorted(expected - actual)!r} "
+            f"unexpected={sorted(actual - expected)!r}"
+        )
     return tuple(records)

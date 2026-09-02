@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
 
+from feedbax.contracts.strict_json import strict_json_loads, strict_model_validate_json
+
 from feedbax.contracts.evaluation_lifecycle import (
     EvaluationBatchCompactionEvidence,
     EVALUATION_COLLECTION_OUTPUTS,
@@ -230,17 +232,19 @@ class EvaluationMatrixExecutorAdapter:
         missing = sorted(set(EVALUATION_COLLECTION_OUTPUTS) - set(collected))
         if missing:
             return missing
-        evidence = EvaluationLifecycleEvidence.model_validate_json(
-            Path(collected["evaluation-matrix-result.json"]).read_text(encoding="utf-8")
+        evidence = strict_model_validate_json(
+            EvaluationLifecycleEvidence,
+            Path(collected["evaluation-matrix-result.json"]).read_text(encoding="utf-8"),
         )
-        topology = EvaluationWorkerTopologyEvidence.model_validate_json(
-            Path(collected["evaluation-worker-topology.json"]).read_text(encoding="utf-8")
+        topology = strict_model_validate_json(
+            EvaluationWorkerTopologyEvidence,
+            Path(collected["evaluation-worker-topology.json"]).read_text(encoding="utf-8"),
         )
         compaction_path = Path(collected["evaluation-batch-compaction.json"])
         compaction = EvaluationBatchCompactionEvidence.model_validate(
             migrate_structured_spec_payload(
                 "EvaluationBatchCompactionEvidence",
-                json.loads(compaction_path.read_text(encoding="utf-8")),
+                strict_json_loads(compaction_path.read_text(encoding="utf-8")),
                 path=str(compaction_path),
             ).payload
         )
@@ -259,9 +263,7 @@ class EvaluationMatrixExecutorAdapter:
             batch_id for process in topology.processes for batch_id in process.ordered_batch_ids
         }
         timed_batch_ids = {
-            timing.batch_id
-            for process in topology.processes
-            for timing in process.batch_timings
+            timing.batch_id for process in topology.processes for timing in process.batch_timings
         }
         if topology.requested_worker_count != expected_worker_count or observed_batch_ids != {
             batch.batch_id for batch in plan.batches
@@ -318,9 +320,10 @@ def executor_family_adapter(family: ExecutionFamily) -> ExecutorFamilyAdapter:
 
 def evaluation_lifecycle_payload(path: Path | str) -> dict[str, object]:
     """Load and normalize collected evaluation terminal evidence."""
-    evidence = EvaluationLifecycleEvidence.model_validate_json(
-        Path(path).read_text(encoding="utf-8")
+    evidence = strict_model_validate_json(
+        EvaluationLifecycleEvidence, Path(path).read_text(encoding="utf-8")
     )
+    # Trusted internal projection of the model validated immediately above.
     return json.loads(evidence.model_dump_json())
 
 

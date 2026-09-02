@@ -128,7 +128,12 @@ def recurrent_controller_template_graph(
     hidden_size: int,
     out_size: int,
     cell_type: str = "GRU",
+    cell_params: Mapping[str, Any] | None = None,
+    encoding_size: int | None = None,
+    hidden_nonlinearity: str = "identity",
+    hidden_noise_std: float | None = None,
     out_nonlinearity: str = "identity",
+    dtype: object = "float32",
     population_structure: PopulationStructure | Mapping[str, object] | None = None,
     name: str = "Recurrent controller",
     description: str = "Explicit recurrent controller graph template",
@@ -139,18 +144,25 @@ def recurrent_controller_template_graph(
         cell_type,
         path="Recurrent Controller.params.cell_type",
     )
+    hidden_input_size = int(encoding_size) if encoding_size is not None else int(input_size)
     parameter_constraints = []
     if population_structure is not None:
         parameter_constraints = list(
             lower_population_constraints(
                 population_structure,
                 hidden_size=int(hidden_size),
-                input_size=int(input_size),
+                input_size=hidden_input_size,
                 out_size=int(out_size),
                 cell_type=normalized_cell_type,
             )
         )
     now = datetime.now().isoformat()
+    resolved_cell_params = {
+        "input_size": hidden_input_size,
+        "hidden_size": int(hidden_size),
+        "dtype": dtype,
+        **dict(cell_params or {}),
+    }
     nodes = {
         "input_mux": ComponentSpec(
             type="Mux",
@@ -160,10 +172,7 @@ def recurrent_controller_template_graph(
         ),
         "cell": ComponentSpec(
             type=normalized_cell_type,
-            params={
-                "input_size": int(input_size),
-                "hidden_size": int(hidden_size),
-            },
+            params=resolved_cell_params,
             input_ports=["input", "hidden", "cell"]
             if normalized_cell_type == "LSTM"
             else ["input", "hidden"],
@@ -178,32 +187,101 @@ def recurrent_controller_template_graph(
                 "output_size": int(out_size),
                 "use_bias": True,
                 "activation": out_nonlinearity,
+                "dtype": dtype,
             },
             input_ports=["input"],
             output_ports=["output"],
         ),
     }
-    wires = [
+    wires = []
+    cell_input_node = "input_mux"
+    if encoding_size is not None:
+        nodes["encoder"] = ComponentSpec(
+            type="Linear",
+            params={
+                "input_size": int(input_size),
+                "output_size": int(encoding_size),
+                "use_bias": True,
+                "activation": "identity",
+                "dtype": dtype,
+            },
+            input_ports=["input"],
+            output_ports=["output"],
+        )
+        wires.append(
+            WireSpec(
+                source_node="input_mux",
+                source_port="output",
+                target_node="encoder",
+                target_port="input",
+            )
+        )
+        cell_input_node = "encoder"
+    wires.append(
         WireSpec(
-            source_node="input_mux",
+            source_node=cell_input_node,
             source_port="output",
             target_node="cell",
             target_port="input",
-        ),
-    ]
+        )
+    )
     input_ports = ["input", "feedback"]
     input_bindings = {"input": ("input_mux", "in_0"), "feedback": ("input_mux", "in_1")}
+    hidden_node = "cell"
+    hidden_port = "hidden"
+    if hidden_nonlinearity != "identity":
+        nodes["hidden_activation"] = ComponentSpec(
+            type="Activation",
+            params={"activation": hidden_nonlinearity},
+            input_ports=["input"],
+            output_ports=["output"],
+        )
+        wires.append(
+            WireSpec(
+                source_node=hidden_node,
+                source_port=hidden_port,
+                target_node="hidden_activation",
+                target_port="input",
+            )
+        )
+        hidden_node = "hidden_activation"
+        hidden_port = "output"
+    if hidden_noise_std not in (None, 0, 0.0):
+        nodes["hidden_noise"] = ComponentSpec(
+            type="Channel",
+            params={
+                "delay": 0,
+                "noise_model": "additive_gaussian",
+                "noise_std": float(hidden_noise_std),
+                "add_noise": True,
+                "input_shape": [int(hidden_size)],
+            },
+            input_ports=["input"],
+            output_ports=["output"],
+        )
+        wires.append(
+            WireSpec(
+                source_node=hidden_node,
+                source_port=hidden_port,
+                target_node="hidden_noise",
+                target_port="input",
+            )
+        )
+        hidden_node = "hidden_noise"
+        hidden_port = "output"
     wires.extend(
         [
             WireSpec(
-                source_node="cell",
-                source_port="hidden",
+                source_node=hidden_node,
+                source_port=hidden_port,
                 target_node="readout",
                 target_port="input",
             ),
             *network_recurrent_wires(
                 normalized_cell_type,
                 int(hidden_size),
+                hidden_source_node=hidden_node,
+                hidden_source_port=hidden_port,
             ),
         ]
     )
@@ -215,7 +293,7 @@ def recurrent_controller_template_graph(
         input_bindings=input_bindings,
         output_bindings={
             "output": ("readout", "output"),
-            "hidden": ("cell", "hidden"),
+            "hidden": (hidden_node, hidden_port),
         },
         parameter_constraints=parameter_constraints,
         metadata=GraphMetadata(
@@ -255,6 +333,11 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
         hidden_size=hidden_size,
         out_size=out_size,
         cell_type=cell_type,
+        cell_params={
+            key: params[key]
+            for key in ("use_bias", "use_noise", "noise_strength", "dt", "tau", "activation")
+            if key in params
+        },
         out_nonlinearity=out_nonlinearity,
         population_structure=population_structure,
     )

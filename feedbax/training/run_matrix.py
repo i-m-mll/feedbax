@@ -16,6 +16,8 @@ from typing import Any, Callable, Protocol
 
 import equinox as eqx
 import jax.tree as jt
+from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
+
 from feedbax.contracts.expressions import ExpressionContext
 from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.experiment_compile_lock import load_compile_lock
@@ -125,8 +127,8 @@ def _load_pinned_canonical_document(
     if not resolved.is_relative_to(root):
         raise RunMatrixError(f"{field} escapes repo root: {ref}")
     try:
-        document = json.loads(resolved.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        document = strict_json_loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, StrictJsonError) as exc:
         raise RunMatrixError(f"{field} cannot load pinned JSON document: {ref}") from exc
     if not isinstance(document, dict):
         raise RunMatrixError(f"{field} must resolve to a JSON object: {ref}")
@@ -1312,7 +1314,7 @@ def _resolve_composed_base(
         if canonical_path in resolving:
             raise RunMatrixError(f"/base/ref authored composition cycle: {spec.base.ref}")
         data = path.read_bytes()
-        document = json.loads(data.decode("utf-8"))
+        document = strict_json_loads(data.decode("utf-8"))
         if spec.base.pin_algorithm == "legacy_raw_sha256":
             actual_hash = sha256_bytes(data)
             mismatch_name = "legacy raw sha256"
@@ -1378,8 +1380,10 @@ def _resolve_composed_base(
                     if resolved_path == source_path:
                         raise ValueError(f"/parent/ref authored composition cycle: {parent.ref}")
                     try:
-                        parent_document = json.loads(resolved_path.read_text(encoding="utf-8"))
-                    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                        parent_document = strict_json_loads(
+                            resolved_path.read_text(encoding="utf-8")
+                        )
+                    except (OSError, UnicodeError, json.JSONDecodeError, StrictJsonError) as exc:
                         raise ValueError(
                             f"/parent/ref cannot load JSON document: {parent.ref}"
                         ) from exc
@@ -1798,6 +1802,7 @@ def _planned_run_id(
     lowered_execution_payload_hash: str,
     lowerer_identities: list[RowLowererIdentity],
 ) -> str:
+    # Trusted internal copies of canonical bytes produced from the admitted mappings.
     custody_payload = json.loads(training_spec_canonical_bytes(payload))
     custody_axis_coordinates = json.loads(training_spec_canonical_bytes(axis_coordinates))
     provenance_identity = TrainingRowPlanningProvenance(
@@ -2013,9 +2018,9 @@ def _latest_manifest_pair(
 
 
 def _read_latest_manifest(root: Path) -> dict[str, Any]:
-    latest = json.loads((root / "latest.json").read_text(encoding="utf-8"))
+    latest = strict_json_loads((root / "latest.json").read_text(encoding="utf-8"))
     manifest_path = root / latest["manifest_relative_path"]
-    return json.loads(manifest_path.read_text(encoding="utf-8"))
+    return strict_json_loads(manifest_path.read_text(encoding="utf-8"))
 
 
 def _slot_digest_map(manifest: Mapping[str, Any]) -> dict[str, str]:
@@ -2410,7 +2415,7 @@ def _loaded_slot_instances(
 
 
 def _load_spec(path: Path) -> TrainingRunMatrixSpec:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = strict_json_loads(path.read_text(encoding="utf-8"))
     return TrainingRunMatrixSpec.model_validate(
         default_spec_registry.migrate("TrainingRunMatrixSpec", payload).payload
     )

@@ -9,6 +9,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from feedbax._secure_fs import (
+    SecurePathRigor,
+    open_directory_chain,
+    open_existing_directory,
+    open_existing_file,
+    take_directory_chain_leaf,
+    validate_opened_path,
+)
 from feedbax.orchestration.bundle import RunBundle, RunRowSpec
 from feedbax.orchestration.state import RunSetState
 
@@ -90,9 +98,7 @@ def recover_collected_outputs(
             context=f"collection recovery root for row {row.row_id!r}",
         )
         descriptors.append(source_fd)
-        named_descriptors.append(
-            (source_parent_fd, row.row_id, source_fd, "preserved row root")
-        )
+        named_descriptors.append((source_parent_fd, row.row_id, source_fd, "preserved row root"))
         source_identity = _identity(os.fstat(source_fd))
         source_entries = sorted(os.listdir(source_fd))
         expected_entries = sorted(logical_names)
@@ -137,11 +143,7 @@ def recover_collected_outputs(
             (destination_collected_fd, row.row_id, destination_row_fd, "recovery row root")
         )
         destination_root = (
-            bundle.run_set_dir
-            / ".stage-attempts"
-            / attempt_name
-            / "collected"
-            / row.row_id
+            bundle.run_set_dir / ".stage-attempts" / attempt_name / "collected" / row.row_id
         )
 
         output_paths: dict[str, str] = {}
@@ -176,7 +178,9 @@ def recover_collected_outputs(
         if sorted(os.listdir(source_fd)) != source_entries:
             raise CollectionRecoveryError("preserved collection root changed while copying")
         if _identity(os.fstat(source_fd)) != source_identity:
-            raise CollectionRecoveryError("preserved collection root identity changed while copying")
+            raise CollectionRecoveryError(
+                "preserved collection root identity changed while copying"
+            )
         _validate_named_descriptors(named_descriptors)
         try:
             final_run_identity = _binding_identity(
@@ -234,9 +238,7 @@ def _select_binding(
             "collection recovery is only valid while retrying a failed COLLECT stage"
         )
     if state.rows[row.row_id].status != "completed":
-        raise CollectionRecoveryError(
-            f"collection recovery requires completed row {row.row_id!r}"
-        )
+        raise CollectionRecoveryError(f"collection recovery requires completed row {row.row_id!r}")
     return selected[0]
 
 
@@ -364,9 +366,7 @@ def _copy_entry(
             ),
         )
     if not stat.S_ISDIR(before.st_mode):
-        raise CollectionRecoveryError(
-            f"unsupported preserved collection object: {source_name!r}"
-        )
+        raise CollectionRecoveryError(f"unsupported preserved collection object: {source_name!r}")
 
     destination_fd = _create_directory(
         destination_parent_fd,
@@ -392,7 +392,9 @@ def _copy_entry(
                     relative_prefix=child_relative,
                 )
             )
-        if sorted(os.listdir(source_fd)) != entries or _identity(os.fstat(source_fd)) != _identity(before):
+        if sorted(os.listdir(source_fd)) != entries or _identity(os.fstat(source_fd)) != _identity(
+            before
+        ):
             raise CollectionRecoveryError(
                 f"preserved collection directory changed while copying: {source_name!r}"
             )
@@ -417,16 +419,20 @@ def _copy_regular_file(
     before: os.stat_result,
     relative_path: str,
 ) -> _CopiedFile:
-    source_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
     destination_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
     source_fd: int | None = None
     destination_fd: int | None = None
     digest = hashlib.sha256()
     size = 0
     try:
-        source_fd = os.open(source_name, source_flags, dir_fd=source_parent_fd)
-        opened = os.fstat(source_fd)
-        if not stat.S_ISREG(opened.st_mode) or _identity(before) != _identity(opened):
+        source_fd, opened = open_existing_file(
+            source_name,
+            rigor=SecurePathRigor.REGULAR_FILE_IDENTITY,
+            error_factory=CollectionRecoveryError,
+            context=f"preserved collection file {source_name!r}",
+            dir_fd=source_parent_fd,
+        )
+        if _identity(before) != _identity(opened):
             raise CollectionRecoveryError(
                 f"preserved collection file changed before copying: {source_name!r}"
             )
@@ -457,6 +463,7 @@ def _copy_regular_file(
             destination_name,
             destination_fd,
             context="recovered file",
+            rigor=SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
         )
     finally:
         if destination_fd is not None:
@@ -495,13 +502,21 @@ def _open_directory(
     dir_fd: int | None = None,
     context: str,
 ) -> int:
-    if not getattr(os, "O_DIRECTORY", 0) or not getattr(os, "O_NOFOLLOW", 0):
-        raise CollectionRecoveryError(
-            "collection recovery requires no-follow directory descriptors"
-        )
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
     try:
-        return os.open(path, flags, dir_fd=dir_fd)
+        if dir_fd is not None:
+            return open_existing_directory(
+                path,
+                error_factory=CollectionRecoveryError,
+                context=context,
+                dir_fd=dir_fd,
+            )
+        records = open_directory_chain(
+            Path(path),
+            create=False,
+            error_factory=CollectionRecoveryError,
+            context=context,
+        )
+        return take_directory_chain_leaf(records)
     except OSError as exc:
         raise CollectionRecoveryError(f"{context} is unsafe or unavailable") from exc
 
@@ -526,11 +541,16 @@ def _validate_named_descriptor(
     descriptor: int,
     *,
     context: str,
+    rigor: SecurePathRigor = SecurePathRigor.DIRECTORY_IDENTITY,
 ) -> None:
-    named = _stat_member(parent_fd, name, context=context)
-    opened = os.fstat(descriptor)
-    if _identity(named) != _identity(opened):
-        raise CollectionRecoveryError(f"{context} was replaced while copying")
+    validate_opened_path(
+        name,
+        descriptor,
+        rigor=rigor,
+        error_factory=CollectionRecoveryError,
+        context=context,
+        dir_fd=parent_fd,
+    )
 
 
 def _identity(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
