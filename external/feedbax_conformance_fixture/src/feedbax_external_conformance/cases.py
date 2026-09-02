@@ -65,6 +65,10 @@ from feedbax.component_registry import (
     ComponentMigrationPack,
     ComponentRegistry,
 )
+from feedbax.contracts.manifest import (
+    EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
+    EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+)
 from feedbax.contracts import (
     ARRAY_VALUE_SCHEMA_ID,
     ARRAY_VALUE_SCHEMA_VERSION,
@@ -400,6 +404,8 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
 
         authored_evaluation = compile_evaluation_run_matrix(
             {
+                "schema_id": EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
+                "schema_version": EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
                 "base": {
                     "ref": "fixture_evaluation_base.json",
                     "sha256": "f65f9ae128d0b8361e5064b729c9078dec516d5cf7ca47e2aa65eab9c71a7195",
