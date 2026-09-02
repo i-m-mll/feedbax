@@ -6,22 +6,22 @@ import argparse
 import hashlib
 import os
 import shutil
+import stat
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from subprocess import CalledProcessError, PIPE, run as subprocess_run
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from feedbax.contracts.manifest import StrictModel
 
 
-REPO_SNAPSHOT_MANIFEST_SCHEMA_ID = "feedbax.orchestration.repo_snapshot_manifest"
-REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION = (
-    "feedbax.orchestration.repo_snapshot_manifest.v1"
-)
+REPO_SNAPSHOT_MANIFEST_SCHEMA_ID: Final = "feedbax.orchestration.repo_snapshot_manifest"
+REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V1: Final = "feedbax.orchestration.repo_snapshot_manifest.v1"
+REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION: Final = "feedbax.orchestration.repo_snapshot_manifest.v2"
 
 REPO_SNAPSHOT_CACHE_DIR_ENV = "FEEDBAX_REPO_SNAPSHOT_CACHE_DIR"
 
@@ -32,6 +32,10 @@ class RepoSnapshotError(RuntimeError):
     """Raised when governed repository bytes cannot be sealed safely."""
 
 
+class RepoSnapshotSourceFault(RepoSnapshotError):
+    """Raised when the tracked working tree cannot provide stable source provenance."""
+
+
 class RepoSnapshotCacheFault(RepoSnapshotError):
     """Raised when sealed cache bytes disagree with the content address holding them.
 
@@ -39,7 +43,8 @@ class RepoSnapshotCacheFault(RepoSnapshotError):
     disagreement there means the cache entry is damaged — truncated, emptied by an
     operating-system temporary-file reaper, or otherwise mutated. It is never evidence
     that the caller's own content differs, which is what `RepoSnapshotError` reports for
-    a tree verified against a recorded manifest authority.
+    a tree verified against a recorded manifest authority. Source-state failures use
+    `RepoSnapshotSourceFault` instead.
     """
 
 
@@ -49,17 +54,33 @@ class RepoSnapshotRecord(StrictModel):
     commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     dirty: bool
     content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     file_count: int = Field(ge=0)
 
 
 class RepoSnapshotManifest(StrictModel):
     """Versioned transfer authority for all configured local repositories."""
 
-    schema_id: Literal[REPO_SNAPSHOT_MANIFEST_SCHEMA_ID] = REPO_SNAPSHOT_MANIFEST_SCHEMA_ID
-    schema_version: Literal[REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION] = (
+    schema_id: Literal["feedbax.orchestration.repo_snapshot_manifest"] = (
+        REPO_SNAPSHOT_MANIFEST_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.orchestration.repo_snapshot_manifest.v2"] = (
         REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION
     )
     repos: dict[str, RepoSnapshotRecord] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_unsupported_version(cls, value: Any) -> Any:
+        if isinstance(value, Mapping):
+            version = value.get("schema_version", REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION)
+            if version != REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION:
+                raise ValueError(
+                    "unsupported repo snapshot manifest schema_version "
+                    f"{version!r}; older manifests cannot prove stable working-tree "
+                    "source provenance and are intentionally not migrated"
+                )
+        return value
 
 
 @dataclass(frozen=True)
@@ -83,6 +104,7 @@ class SealedRepoSnapshots:
 @dataclass(frozen=True)
 class _TrackedEntry:
     mode: bytes
+    object_id: bytes
     path_bytes: bytes
 
     @property
@@ -145,15 +167,15 @@ def seal_repo_snapshot(
     """Seal one Git top-level's tracked working-tree bytes without dereferencing links."""
     source_root = Path(root).expanduser().resolve()
     if _git(source_root, "rev-parse", "--show-cdup") != b"\n":
-        raise RepoSnapshotError(
+        raise RepoSnapshotSourceFault(
             f"configured repo root must equal the Git top level: {source_root}"
         )
 
-    commit = os.fsdecode(_git(source_root, "rev-parse", "HEAD").strip())
-    dirty = bool(_git(source_root, "status", "--porcelain=v1", "-z"))
+    commit = _head_commit(source_root)
+    dirty = _is_dirty(source_root)
     entries = _tracked_entries(source_root)
     if any(entry.mode == b"160000" for entry in entries):
-        raise RepoSnapshotError(
+        raise RepoSnapshotSourceFault(
             f"configured repo {name!r} contains a gitlink/submodule; govern it separately"
         )
 
@@ -161,27 +183,33 @@ def seal_repo_snapshot(
     parent.mkdir(parents=True, exist_ok=True)
     build_root = Path(tempfile.mkdtemp(prefix=".repo-snapshot-", dir=parent))
     try:
-        for entry in entries:
-            relative = _validated_relative_path(entry.path)
-            source = source_root / relative
-            if not source.is_symlink() and not source.exists():
-                continue
-            destination = build_root / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if source.is_symlink():
-                target = os.readlink(source)
-                os.symlink(target, destination)
-            elif source.is_file():
-                if entry.mode not in {b"100644", b"100755", b"120000"}:
-                    raise RepoSnapshotError(f"tracked regular file has unsafe type: {relative}")
-                with source.open("rb") as source_handle, destination.open("wb") as output:
-                    while chunk := source_handle.read(1024 * 1024):
-                        output.write(chunk)
-                destination.chmod(0o755 if source.stat().st_mode & 0o111 else 0o644)
-            else:
-                raise RepoSnapshotError(
-                    f"unsupported tracked Git mode {os.fsdecode(entry.mode)!r}: {relative}"
-                )
+        source_state_sha256 = _observe_source_state(
+            source_root,
+            commit=commit,
+            entries=entries,
+            destination_root=build_root,
+        )
+        _assert_git_state_unchanged(
+            source_root,
+            expected_commit=commit,
+            expected_entries=entries,
+            expected_dirty=dirty,
+        )
+        verified_source_state_sha256 = _observe_source_state(
+            source_root,
+            commit=commit,
+            entries=entries,
+        )
+        if verified_source_state_sha256 != source_state_sha256:
+            raise RepoSnapshotSourceFault(
+                f"tracked working-tree state changed while sealing configured repo {name!r}"
+            )
+        _assert_git_state_unchanged(
+            source_root,
+            expected_commit=commit,
+            expected_entries=entries,
+            expected_dirty=dirty,
+        )
         content_sha256, file_count = _snapshot_tree_identity(build_root)
         name_key = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
         staging_root = parent / name_key / content_sha256
@@ -191,6 +219,7 @@ def seal_repo_snapshot(
             commit=commit,
             dirty=dirty,
             content_sha256=content_sha256,
+            source_state_sha256=source_state_sha256,
             file_count=file_count,
         )
         return SealedRepoSnapshot(
@@ -297,7 +326,7 @@ def _git(root: Path, *args: str) -> bytes:
         ).stdout
     except CalledProcessError as exc:
         detail = os.fsdecode(exc.stderr).strip() or f"exit={exc.returncode}"
-        raise RepoSnapshotError(f"Git snapshot query failed for {root}: {detail}") from exc
+        raise RepoSnapshotSourceFault(f"Git snapshot query failed for {root}: {detail}") from exc
 
 
 def _tracked_entries(root: Path) -> list[_TrackedEntry]:
@@ -309,20 +338,280 @@ def _tracked_entries(root: Path) -> list[_TrackedEntry]:
         metadata, separator, path_bytes = record.partition(b"\t")
         parts = metadata.split(b" ")
         if not separator or len(parts) != 3:
-            raise RepoSnapshotError("git ls-files returned an invalid tracked-path record")
-        mode, _object_id, stage = parts
+            raise RepoSnapshotSourceFault("git ls-files returned an invalid tracked-path record")
+        mode, object_id, stage = parts
         if stage != b"0":
-            raise RepoSnapshotError(
+            raise RepoSnapshotSourceFault(
                 f"unmerged tracked path cannot be sealed: {os.fsdecode(path_bytes)!r}"
             )
-        entries.append(_TrackedEntry(mode=mode, path_bytes=path_bytes))
-    return entries
+        entries.append(_TrackedEntry(mode=mode, object_id=object_id, path_bytes=path_bytes))
+    return sorted(entries, key=lambda entry: entry.path_bytes)
+
+
+def _head_commit(root: Path) -> str:
+    return os.fsdecode(_git(root, "rev-parse", "HEAD").strip())
+
+
+def _is_dirty(root: Path) -> bool:
+    return bool(_git(root, "status", "--porcelain=v1", "-z"))
+
+
+def _assert_git_state_unchanged(
+    root: Path,
+    *,
+    expected_commit: str,
+    expected_entries: list[_TrackedEntry],
+    expected_dirty: bool,
+) -> None:
+    if _head_commit(root) != expected_commit:
+        raise RepoSnapshotSourceFault("Git HEAD changed while sealing the working-tree snapshot")
+    if _tracked_entries(root) != expected_entries:
+        raise RepoSnapshotSourceFault("Git index changed while sealing the working-tree snapshot")
+    if _is_dirty(root) != expected_dirty:
+        raise RepoSnapshotSourceFault(
+            "Git working-tree dirty state changed while sealing the snapshot"
+        )
+
+
+def _observe_source_state(
+    root: Path,
+    *,
+    commit: str,
+    entries: list[_TrackedEntry],
+    destination_root: Path | None = None,
+) -> str:
+    """Observe tracked source entries without following links.
+
+    When ``destination_root`` is present, the same opened descriptors that establish
+    source identity provide the copied bytes and executable modes. A second observation
+    without a destination proves that no tracked source fact changed across the copy.
+    """
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory is None:
+        raise RepoSnapshotSourceFault(
+            "safe repo snapshot sealing requires O_NOFOLLOW and O_DIRECTORY support"
+        )
+    try:
+        root_descriptor = os.open(root, os.O_RDONLY | directory | nofollow)
+    except OSError as exc:
+        raise RepoSnapshotSourceFault(
+            f"cannot open repo root without following links: {root}: {exc}"
+        ) from exc
+    digest = hashlib.sha256()
+    _hash_field(digest, b"feedbax.repo-snapshot-source-state.v1")
+    _hash_field(digest, commit.encode("ascii"))
+    try:
+        for entry in entries:
+            relative = _validated_relative_path(entry.path)
+            _hash_field(digest, entry.path_bytes)
+            _hash_field(digest, entry.mode)
+            _hash_field(digest, entry.object_id)
+            parent_descriptor = _open_parent_descriptor(
+                root_descriptor,
+                relative,
+                nofollow=nofollow,
+                directory=directory,
+            )
+            if parent_descriptor is None:
+                _hash_field(digest, b"missing")
+                continue
+            try:
+                _observe_source_entry(
+                    parent_descriptor,
+                    relative,
+                    digest=digest,
+                    destination_root=destination_root,
+                    nofollow=nofollow,
+                )
+            finally:
+                os.close(parent_descriptor)
+    finally:
+        os.close(root_descriptor)
+    return digest.hexdigest()
+
+
+def _open_parent_descriptor(
+    root_descriptor: int,
+    relative: Path,
+    *,
+    nofollow: int,
+    directory: int,
+) -> int | None:
+    descriptor = os.dup(root_descriptor)
+    try:
+        for part in relative.parts[:-1]:
+            try:
+                child = os.open(
+                    part,
+                    os.O_RDONLY | directory | nofollow,
+                    dir_fd=descriptor,
+                )
+            except FileNotFoundError:
+                os.close(descriptor)
+                return None
+            except OSError as exc:
+                raise RepoSnapshotSourceFault(
+                    f"cannot traverse tracked path without following links: {relative}: {exc}"
+                ) from exc
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except Exception:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise
+
+
+def _observe_source_entry(
+    parent_descriptor: int,
+    relative: Path,
+    *,
+    digest: Any,
+    destination_root: Path | None,
+    nofollow: int,
+) -> None:
+    leaf = relative.name
+    try:
+        before = os.stat(leaf, dir_fd=parent_descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        _hash_field(digest, b"missing")
+        return
+    except OSError as exc:
+        raise RepoSnapshotSourceFault(
+            f"cannot inspect tracked source path {relative}: {exc}"
+        ) from exc
+
+    if stat.S_ISLNK(before.st_mode):
+        _observe_symlink_source(
+            parent_descriptor,
+            leaf,
+            relative,
+            before=before,
+            digest=digest,
+            destination_root=destination_root,
+        )
+        return
+    if not stat.S_ISREG(before.st_mode):
+        raise RepoSnapshotSourceFault(f"tracked source path has unsafe file type: {relative}")
+    _observe_regular_source(
+        parent_descriptor,
+        leaf,
+        relative,
+        before=before,
+        digest=digest,
+        destination_root=destination_root,
+        nofollow=nofollow,
+    )
+
+
+def _observe_symlink_source(
+    parent_descriptor: int,
+    leaf: str,
+    relative: Path,
+    *,
+    before: os.stat_result,
+    digest: Any,
+    destination_root: Path | None,
+) -> None:
+    try:
+        target = os.readlink(leaf, dir_fd=parent_descriptor)
+        after = os.stat(leaf, dir_fd=parent_descriptor, follow_symlinks=False)
+    except OSError as exc:
+        raise RepoSnapshotSourceFault(
+            f"tracked symlink changed while being read: {relative}"
+        ) from exc
+    if not stat.S_ISLNK(after.st_mode) or _stat_identity(before) != _stat_identity(after):
+        raise RepoSnapshotSourceFault(f"tracked symlink changed while being read: {relative}")
+    _hash_field(digest, b"120000")
+    _hash_field(digest, os.fsencode(target))
+    if destination_root is not None:
+        destination = destination_root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(target, destination)
+
+
+def _observe_regular_source(
+    parent_descriptor: int,
+    leaf: str,
+    relative: Path,
+    *,
+    before: os.stat_result,
+    digest: Any,
+    destination_root: Path | None,
+    nofollow: int,
+) -> None:
+    try:
+        descriptor = os.open(leaf, os.O_RDONLY | nofollow, dir_fd=parent_descriptor)
+    except OSError as exc:
+        raise RepoSnapshotSourceFault(
+            f"cannot open tracked file without following links: {relative}: {exc}"
+        ) from exc
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or not _same_opened_object(before, opened):
+            raise RepoSnapshotSourceFault(
+                f"tracked file changed before it could be read: {relative}"
+            )
+        mode = b"100755" if opened.st_mode & 0o111 else b"100644"
+        _hash_field(digest, mode)
+        destination = destination_root / relative if destination_root is not None else None
+        output = None
+        if destination is not None:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            output = destination.open("wb")
+        try:
+            _stream_regular_source(descriptor, output, digest)
+        finally:
+            if output is not None:
+                output.close()
+        after = os.fstat(descriptor)
+        if _stat_identity(opened) != _stat_identity(after):
+            raise RepoSnapshotSourceFault(f"tracked file changed while being read: {relative}")
+        if destination is not None:
+            destination.chmod(0o755 if mode == b"100755" else 0o644)
+    finally:
+        os.close(descriptor)
+
+
+def _stream_regular_source(descriptor: int, output: Any, digest: Any) -> None:
+    while chunk := os.read(descriptor, 1024 * 1024):
+        if output is not None:
+            output.write(chunk)
+        digest.update(len(chunk).to_bytes(8, "big"))
+        digest.update(chunk)
+    digest.update((0).to_bytes(8, "big"))
+
+
+def _same_opened_object(before: os.stat_result, opened: os.stat_result) -> bool:
+    return (
+        before.st_dev,
+        before.st_ino,
+        stat.S_IFMT(before.st_mode),
+    ) == (
+        opened.st_dev,
+        opened.st_ino,
+        stat.S_IFMT(opened.st_mode),
+    )
+
+
+def _stat_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
 
 
 def _validated_relative_path(path: Path) -> Path:
     pure = PurePosixPath(path.as_posix())
     if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
-        raise RepoSnapshotError(f"unsafe tracked path: {path!s}")
+        raise RepoSnapshotSourceFault(f"unsafe tracked path: {path!s}")
     return Path(*pure.parts)
 
 

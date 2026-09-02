@@ -26,6 +26,7 @@ def _record(content: str = "1" * 64) -> RepoSnapshotRecord:
         commit="a" * 40,
         dirty=False,
         content_sha256=content,
+        source_state_sha256="b" * 64,
         file_count=2,
     )
 
