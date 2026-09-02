@@ -64,9 +64,9 @@ import {
   evaluationProtocolLabel,
   evaluationRunSummaries,
   formatMetric,
+  legacyManifestFallbackHash,
   runParameterSummary,
   selectedIds,
-  stableHash,
   trainingRunMetricValue,
   trainingInputSummaries,
   trainingRunSummaries,
@@ -79,6 +79,7 @@ import {
   type SpecHashStatus,
   type TrainingRunSummary,
 } from '@/utils/pipelineCollections';
+import { studioDraftHashes } from '@/utils/studioDraftHash';
 import {
   executionBackendForTarget,
   stageMetadataWithExecutionTarget,
@@ -1631,7 +1632,7 @@ function frozenSnapshotProjectionForRun(
       ? manifest.manifest_hash
       : typeof manifest.hash === 'string'
         ? manifest.hash
-        : stableHash(manifest);
+        : legacyManifestFallbackHash(manifest);
   return {
     source: 'training_run',
     runId: run.id,
@@ -1639,12 +1640,7 @@ function frozenSnapshotProjectionForRun(
     runStatus: run.status,
     manifestId,
     manifestHash,
-    specHashes: {
-      graph_spec: snapshot.graph_spec ? stableHash(snapshot.graph_spec) : null,
-      training_spec: snapshot.training_spec ? stableHash(snapshot.training_spec) : null,
-      task_spec: snapshot.task_spec ? stableHash(snapshot.task_spec) : null,
-      task_binding_spec: snapshot.task_binding_spec ? stableHash(snapshot.task_binding_spec) : null,
-    },
+    specHashes: studioDraftHashes(snapshot),
     snapshot,
   };
 }
@@ -1662,7 +1658,7 @@ function frozenSnapshotProjectionForEvaluationRun(
       ? manifest.manifest_hash
       : typeof manifest.hash === 'string'
         ? manifest.hash
-        : stableHash(manifest);
+        : legacyManifestFallbackHash(manifest);
   return {
     source: 'evaluation_run',
     runId: run.id,
@@ -1670,9 +1666,7 @@ function frozenSnapshotProjectionForEvaluationRun(
     runStatus: run.status,
     manifestId,
     manifestHash,
-    specHashes: {
-      evaluation_spec: snapshot.evaluation_spec ? stableHash(snapshot.evaluation_spec) : null,
-    },
+    specHashes: studioDraftHashes(snapshot),
     snapshot,
   };
 }
@@ -1687,6 +1681,8 @@ function specHashStatusLabel(status: SpecHashStatus): string {
       return 'missing in draft';
     case 'missing-snapshot':
       return 'missing in snapshot';
+    case 'rehash-required':
+      return 'rehash required';
   }
 }
 
@@ -1700,6 +1696,8 @@ function specHashStatusClass(status: SpecHashStatus): string {
       return 'text-slate-600 ring-slate-200';
     case 'missing-snapshot':
       return 'text-red-700 ring-red-200';
+    case 'rehash-required':
+      return 'text-amber-700 ring-amber-200';
   }
 }
 
@@ -3243,7 +3241,7 @@ function RunDetailPane({
 }: {
   run: TrainingRunSummary | null;
   frozenSnapshot: FrozenSnapshotProjection | null;
-  currentSpecHashes: Record<string, string | null>;
+  currentSpecHashes: import('@/utils/studioDraftHash').StudioDraftHashes;
   lossHistory: TrainingProgress[];
   onViewSnapshot: (run: TrainingRunSummary) => void;
   onBackToDraft: () => void;

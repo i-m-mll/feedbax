@@ -14,11 +14,12 @@ import {
   currentDraftSpecHashesForScenario,
   evaluationProtocolLabel,
   evaluationRunSummaries,
+  compareSpecHashes,
   selectedIds,
-  stableHash,
   trainingInputSummaries,
   trainingRunSummaries,
 } from '@/utils/pipelineCollections';
+import { studioDraftHashes } from '@/utils/studioDraftHash';
 
 function seededWorkspace() {
   const { graph, uiState } = createRlrmpModelGraph('RLRMP movement-ramp runs');
@@ -110,9 +111,7 @@ describe('pipeline collection summaries', () => {
               name: 'Pending train',
               status: 'pending',
               planned: true,
-              spec_hashes: {
-                training_spec: stableHash({ n_batches: 25 }),
-              },
+              spec_hashes: studioDraftHashes({ training_spec: { n_batches: 25 } }),
             },
           }],
         }],
@@ -139,6 +138,66 @@ describe('pipeline collection summaries', () => {
         }),
       ])
     );
+  });
+
+  it('marks legacy hashes rehash-required and agrees after current JSON round trips', () => {
+    const authored = { integral: 1, negative_zero: -0, nested: ['café'] };
+    const snapshot = studioDraftHashes({ training_spec: authored });
+    const current = studioDraftHashes({
+      training_spec: JSON.parse(JSON.stringify(authored)),
+    });
+    expect(compareSpecHashes(JSON.parse(JSON.stringify(snapshot)), current)).toEqual([
+      expect.objectContaining({ key: 'training_spec', status: 'unchanged' }),
+    ]);
+
+    const currentRows = trainingRunSummaries(
+      {
+        output_collections: [{
+          item_refs: [{
+            kind: 'TrainingRun',
+            id: 'feedbax-training-run:current',
+            role: 'training_run',
+            metadata: {
+              name: 'Current pending train',
+              status: 'pending',
+              planned: true,
+              spec_hashes: JSON.parse(JSON.stringify(snapshot)),
+            },
+          }],
+        }],
+      } as any,
+      { currentSpecHashes: current }
+    );
+    expect(currentRows[0]).toMatchObject({ status: 'pending', stale: false });
+
+    const rows = trainingRunSummaries(
+      {
+        output_collections: [{
+          item_refs: [{
+            kind: 'TrainingRun',
+            id: 'feedbax-training-run:legacy',
+            role: 'training_run',
+            metadata: {
+              name: 'Legacy pending train',
+              status: 'pending',
+              planned: true,
+              spec_hashes: JSON.parse(JSON.stringify({
+                training_spec: 'fnv1a:12345678',
+              })),
+            },
+          }],
+        }],
+      } as any,
+      { currentSpecHashes: current }
+    );
+    expect(rows[0]).toMatchObject({
+      status: 'stale',
+      stale: true,
+      staleReason: 'draft hash requires rehash',
+      specHashComparisons: [
+        expect.objectContaining({ key: 'training_spec', status: 'rehash-required' }),
+      ],
+    });
   });
 
   it('filters superseded training rows without hiding self-linked replacements', () => {

@@ -84,6 +84,7 @@ from feedbax.studio.sweep_matrix import (
 )
 from feedbax.training.run_matrix import MaterializedMatrixRow
 from feedbax.studio.schema import SchemaValidationIssue, validate_task_binding_schema
+from feedbax.studio.draft_hash import StudioDraftHashes, studio_draft_hashes
 from feedbax.contracts.graph import (
     GraphSpec,
     StudioArtifactRef,
@@ -1581,54 +1582,20 @@ def _pending_training_manifest_ref(
     return pending_ref
 
 
-def _manifest_spec_hashes(manifest: Any) -> dict[str, str]:
-    hashes: dict[str, str] = {}
+def _manifest_spec_hashes(manifest: Any) -> StudioDraftHashes:
+    payloads: dict[str, object] = {}
     for key in ("graph_spec", "training_spec", "task_spec", "task_binding_spec", "evaluation_spec"):
         payload = getattr(manifest, key, None)
         inline = getattr(payload, "inline", None)
         if isinstance(inline, dict):
-            hashes[key] = _stable_ui_hash(inline)
-    return hashes
+            payloads[key] = inline
+    return studio_draft_hashes(payloads)
 
 
-def _ui_spec_hashes(payloads: dict[str, Any]) -> dict[str, str]:
-    return {
-        key: _stable_ui_hash(value) for key, value in payloads.items() if isinstance(value, dict)
-    }
-
-
-def _stable_ui_hash(value: Any) -> str:
-    """Match Studio's synchronous FNV-1a draft hash used for stale badges."""
-
-    text = _stable_ui_stringify(value)
-    hash_value = 2166136261
-    for character in text:
-        hash_value ^= ord(character)
-        hash_value = (hash_value * 16777619) & 0xFFFFFFFF
-    return f"fnv1a:{hash_value:08x}"
-
-
-def _stable_ui_stringify(value: Any) -> str:
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return json.dumps(value, separators=(",", ":"), allow_nan=False)
-    if isinstance(value, str):
-        return json.dumps(value, separators=(",", ":"))
-    if isinstance(value, list):
-        return "[" + ",".join(_stable_ui_stringify(item) for item in value) + "]"
-    if isinstance(value, dict):
-        return (
-            "{"
-            + ",".join(
-                f"{json.dumps(key, separators=(',', ':'))}:{_stable_ui_stringify(value[key])}"
-                for key in sorted(value)
-            )
-            + "}"
-        )
-    return json.dumps(value, separators=(",", ":"), sort_keys=True, allow_nan=False)
+def _ui_spec_hashes(payloads: dict[str, Any]) -> StudioDraftHashes:
+    return studio_draft_hashes(
+        {key: value for key, value in payloads.items() if isinstance(value, dict)}
+    )
 
 
 def _training_seed(training_spec: dict[str, Any]) -> Any | None:

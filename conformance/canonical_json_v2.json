@@ -2,71 +2,89 @@
   "schema_id": "feedbax.conformance.canonical_json_v2",
   "schema_version": "feedbax.conformance.canonical_json_v2.v1",
   "algorithm": "canonical_json_v2",
+  "draft_hash": {
+    "schema_id": "feedbax.studio.draft_hashes",
+    "schema_version": "feedbax.studio.draft_hashes.v2",
+    "pin": "fnv1a32-canonical_json_v2"
+  },
   "cases": [
     {
       "case_id": "ordinary_nested",
       "input": {"form": "json", "value": {"z": [null, true, false, {"b": 2, "a": 1}], "a": "value"}},
-      "expected_utf8_hex": "7b2261223a2276616c7565222c227a223a5b6e756c6c2c747275652c66616c73652c7b2261223a312c2262223a327d5d7d"
+      "expected_utf8_hex": "7b2261223a2276616c7565222c227a223a5b6e756c6c2c747275652c66616c73652c7b2261223a312c2262223a327d5d7d",
+      "expected_draft_digest": "756dfb0b"
     },
     {
       "case_id": "integral_float",
       "input": {"form": "json", "value": 1.0},
-      "expected_utf8_hex": "31"
+      "expected_utf8_hex": "31",
+      "expected_draft_digest": "340ca71c"
     },
     {
       "case_id": "negative_zero",
       "input": {"form": "json", "value": -0.0},
-      "expected_utf8_hex": "30"
+      "expected_utf8_hex": "30",
+      "expected_draft_digest": "350ca8af"
     },
     {
       "case_id": "lower_decimal_threshold",
       "input": {"form": "json", "value": 0.000001},
-      "expected_utf8_hex": "302e303030303031"
+      "expected_utf8_hex": "302e303030303031",
+      "expected_draft_digest": "4ff86a68"
     },
     {
       "case_id": "lower_exponent_threshold",
       "input": {"form": "json", "value": 0.0000001},
-      "expected_utf8_hex": "31652d37"
+      "expected_utf8_hex": "31652d37",
+      "expected_draft_digest": "5228e5cf"
     },
     {
       "case_id": "upper_decimal_threshold",
       "input": {"form": "json", "value": 100000000000000000000.0},
-      "expected_utf8_hex": "313030303030303030303030303030303030303030"
+      "expected_utf8_hex": "313030303030303030303030303030303030303030",
+      "expected_draft_digest": "f96a3a1c"
     },
     {
       "case_id": "upper_exponent_threshold",
       "input": {"form": "json", "value": 1e21},
-      "expected_utf8_hex": "31652b3231"
+      "expected_utf8_hex": "31652b3231",
+      "expected_draft_digest": "b6a7b1f5"
     },
     {
       "case_id": "shortest_round_trip",
       "input": {"form": "json", "value": 333333333.33333329},
-      "expected_utf8_hex": "3333333333333333332e33333333333333"
+      "expected_utf8_hex": "3333333333333333332e33333333333333",
+      "expected_draft_digest": "91dc2aef"
     },
     {
       "case_id": "non_ascii",
       "input": {"form": "json", "value": "café Ελληνικά"},
-      "expected_utf8_hex": "22636166c3a920ce95cebbcebbceb7cebdceb9cebaceac22"
+      "expected_utf8_hex": "22636166c3a920ce95cebbcebbceb7cebdceb9cebaceac22",
+      "expected_draft_digest": "72de7a2f"
     },
     {
       "case_id": "unicode_not_normalized",
       "input": {"form": "json", "value": ["é", "é"]},
-      "expected_utf8_hex": "5b22c3a9222c2265cc81225d"
+      "expected_utf8_hex": "5b22c3a9222c2265cc81225d",
+      "expected_draft_digest": "381a3aa5"
     },
     {
       "case_id": "utf16_key_order",
       "input": {"form": "json", "value": {"": "bmp", "𐀀": "astral"}},
-      "expected_utf8_hex": "7b22f0908080223a2261737472616c222c22ee8080223a22626d70227d"
+      "expected_utf8_hex": "7b22f0908080223a2261737472616c222c22ee8080223a22626d70227d",
+      "expected_draft_digest": "1c86c353"
     },
     {
       "case_id": "escape_characters",
       "input": {"form": "json", "value": "\u0000\b\t\n\f\r\"\\"},
-      "expected_utf8_hex": "225c75303030305c625c745c6e5c665c725c225c5c22"
+      "expected_utf8_hex": "225c75303030305c625c745c6e5c665c725c225c5c22",
+      "expected_draft_digest": "347757c6"
     },
     {
       "case_id": "maximum_safe_integer",
       "input": {"form": "json", "value": 9007199254740991},
-      "expected_utf8_hex": "39303037313939323534373430393931"
+      "expected_utf8_hex": "39303037313939323534373430393931",
+      "expected_draft_digest": "acb189ab"
     },
     {
       "case_id": "unsafe_integer",

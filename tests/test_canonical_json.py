@@ -30,6 +30,14 @@ from feedbax.contracts.worker import (
     derive_consistency_predicate,
     toy_minimax_method_contract,
 )
+from feedbax.studio.draft_hash import (
+    STUDIO_DRAFT_HASH_PIN,
+    STUDIO_DRAFT_HASH_SCHEMA_ID,
+    STUDIO_DRAFT_HASH_SCHEMA_VERSION,
+    admit_studio_draft_hashes,
+    studio_draft_digest_v2,
+    studio_draft_hashes,
+)
 
 
 VECTOR_PATH = Path(__file__).resolve().parents[1] / "conformance/canonical_json_v2.json"
@@ -69,6 +77,11 @@ def test_canonical_json_v2_language_neutral_conformance_vector() -> None:
     assert vector["schema_id"] == "feedbax.conformance.canonical_json_v2"
     assert vector["schema_version"] == "feedbax.conformance.canonical_json_v2.v1"
     assert vector["algorithm"] == CANONICAL_JSON_V2
+    assert vector["draft_hash"] == {
+        "schema_id": STUDIO_DRAFT_HASH_SCHEMA_ID,
+        "schema_version": STUDIO_DRAFT_HASH_SCHEMA_VERSION,
+        "pin": STUDIO_DRAFT_HASH_PIN,
+    }
 
     observed_case_ids: set[str] = set()
     for case in vector["cases"]:
@@ -78,10 +91,36 @@ def test_canonical_json_v2_language_neutral_conformance_vector() -> None:
         value = _vector_value(case)
         if "expected_utf8_hex" in case:
             assert canonical_json_v2_bytes(value).hex() == case["expected_utf8_hex"], case_id
+            assert studio_draft_digest_v2(value) == case["expected_draft_digest"], case_id
             continue
         with pytest.raises(CanonicalJsonError) as exc_info:
             canonical_json_v2_bytes(value)
         assert exc_info.value.code.value == case["expected_error"], case_id
+        with pytest.raises(CanonicalJsonError) as digest_exc_info:
+            studio_draft_digest_v2(value)
+        assert digest_exc_info.value.code.value == case["expected_error"], case_id
+
+
+def test_studio_draft_hash_version_admission_and_json_round_trip() -> None:
+    legacy = admit_studio_draft_hashes({"training_spec": "fnv1a:12345678"})
+    assert legacy == {
+        "schema_id": "feedbax.studio.draft_hashes",
+        "schema_version": "feedbax.studio.draft_hashes.v1",
+        "pin": "fnv1a32-runtime_local_json_v1",
+        "rehash_required": True,
+        "hashes": {"training_spec": "fnv1a:12345678"},
+    }
+    assert admit_studio_draft_hashes(json.loads(json.dumps(legacy))) == legacy
+
+    current = studio_draft_hashes({"training_spec": {"integral": 1.0, "zero": -0.0}})
+    assert admit_studio_draft_hashes(json.loads(json.dumps(current))) == current
+
+    unknown = {**current, "pin": "fnv1a32-canonical_json_v999"}
+    with pytest.raises(ValueError, match="unsupported Studio draft hash pin"):
+        admit_studio_draft_hashes(unknown)
+    future = {**current, "schema_version": "feedbax.studio.draft_hashes.v999"}
+    with pytest.raises(ValueError, match="unsupported Studio draft hash schema version"):
+        admit_studio_draft_hashes(future)
 
 
 def test_canonical_json_v1_bytes_are_permanently_unchanged() -> None:
