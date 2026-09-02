@@ -246,6 +246,28 @@ Deprecation path, recorded now so no later change has to reconstruct it:
 - Until that procedure completes, both spellings are correct and neither is a
   transitional shim.
 
+## Experiment envelope compile-time parent authority
+
+`ExperimentEnvelopeParentAuthority` is part of the ratified
+`feedbax.contracts.experiment_envelope` surface beside
+`ExperimentEnvelopeCompileRequest`. A caller that compiles an envelope alias
+whose terminal training base is `resolved_output` supplies the exact typed
+parent, the existing `TrainingRowParentProvenance` identity, and immutable JSON
+bytes. Feedbax authenticates the artifact byte hash, declared payload schema,
+and resolved semantic hash before it proves or applies child-row deltas. The
+same authority tuple is retained through recursive compilation; no resolver,
+registry, filesystem search, or service lookup exists inside the compiler.
+
+Missing, ambiguous, undeclared, semantically drifted, and byte-drifted
+authorities use distinct closed `ExperimentEnvelopeRejectionCategory` members.
+The compiled matrix retains the exact resolved-output ref, semantic hash, row,
+and checkpoint transaction it inherited. Its compile lock additionally records
+the artifact id, raw byte hash, payload schema, role, and full typed parent in a
+`governed_parent` reference. That reference is compile-time input, not a plan
+edge. `feedbax.spec.experiment_compile_lock.v4` is current and introduces this
+reference; v1, v2, and v3 remain readable as their own grammars and reject a
+`governed_parent` reference rather than silently widening.
+
 ## Change procedure
 
 A breaking proposal opens an issue naming affected protocols, imports,

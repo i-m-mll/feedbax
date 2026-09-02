@@ -33,6 +33,8 @@ from pydantic import Field, model_validator
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.project_experiment import ProjectExperimentDeclaration
+from feedbax.contracts.run_composition import AuthoredIntentParent, ResolvedOutputParent
+from feedbax.contracts.run_matrix import TrainingRowParentProvenance
 
 EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID = "feedbax.spec.experiment_envelope_compile_result"
 EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_VERSION = (
@@ -71,6 +73,11 @@ class ExperimentEnvelopeRejectionCategory(StrEnum):
     RETIRED_BASE_FAMILY = "retired-base-family"
     UNRESOLVED_UPSTREAM_REFERENCE = "unresolved-upstream-reference"
     CO_CREATED_PROTECTED_DOCUMENT = "co-created-protected-document"
+    MISSING_PARENT_AUTHORITY = "missing-parent-authority"
+    AMBIGUOUS_PARENT_AUTHORITY = "ambiguous-parent-authority"
+    UNDECLARED_PARENT_AUTHORITY = "undeclared-parent-authority"
+    PARENT_SEMANTIC_DRIFT = "parent-semantic-drift"
+    PARENT_BYTE_DRIFT = "parent-byte-drift"
 
 
 class ExperimentEnvelopeRejection(ValueError):
@@ -126,6 +133,31 @@ class ExperimentEnvelopeCompilerError(ValueError):
 
 
 @dataclass(frozen=True)
+class ExperimentEnvelopeParentAuthority:
+    """Exact declared composition-parent bytes available during compilation.
+
+    The caller owns artifact acquisition. Feedbax receives the immutable bytes
+    together with the typed semantic parent and the existing governed-parent
+    provenance record, then authenticates all three before using the payload.
+    """
+
+    provenance: TrainingRowParentProvenance
+    parent: AuthoredIntentParent | ResolvedOutputParent
+    payload_bytes: bytes
+
+    def __init__(
+        self,
+        *,
+        provenance: TrainingRowParentProvenance,
+        parent: AuthoredIntentParent | ResolvedOutputParent,
+        payload_bytes: bytes,
+    ) -> None:
+        object.__setattr__(self, "provenance", provenance.model_copy(deep=True))
+        object.__setattr__(self, "parent", parent.model_copy(deep=True))
+        object.__setattr__(self, "payload_bytes", bytes(payload_bytes))
+
+
+@dataclass(frozen=True)
 class ExperimentEnvelopeCompileRequest:
     """Everything the compiler is given, and nothing more.
 
@@ -139,6 +171,7 @@ class ExperimentEnvelopeCompileRequest:
     repo_root: Path
     out_dir: Path
     project_declaration: ProjectExperimentDeclaration | None = None
+    parent_authorities: tuple[ExperimentEnvelopeParentAuthority, ...] = ()
 
 
 class ExperimentEnvelopeCompileResult(StrictModel):
@@ -230,6 +263,7 @@ def dispatch_experiment_envelope(
     repo_root: Path,
     out_dir: Path,
     project_declaration: ProjectExperimentDeclaration | None = None,
+    parent_authorities: Sequence[ExperimentEnvelopeParentAuthority] = (),
 ) -> ExperimentEnvelopeCompileResult:
     """Compile one authored envelope with the single built-in dialect compiler."""
     schema = envelope_schema_of(envelope)
@@ -245,6 +279,7 @@ def dispatch_experiment_envelope(
             repo_root=repo_root,
             out_dir=out_dir,
             project_declaration=project_declaration,
+            parent_authorities=tuple(parent_authorities),
         )
     )
     if result.envelope_schema != schema:
@@ -269,6 +304,7 @@ __all__ = [
     "EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID",
     "EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_VERSION",
     "ExperimentEnvelopeCompileRequest",
+    "ExperimentEnvelopeParentAuthority",
     "ExperimentEnvelopeCompileResult",
     "ExperimentEnvelopeCompilerError",
     "ExperimentEnvelopeRejection",

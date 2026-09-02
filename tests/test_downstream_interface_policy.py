@@ -67,9 +67,7 @@ GUARANTEED_IMPORTS = {
         "DeploymentPolicy",
         "RunBundle",
     ),
-    "feedbax.orchestration.assembly": (
-        "RunAssemblyRequest",
-    ),
+    "feedbax.orchestration.assembly": ("RunAssemblyRequest",),
     "feedbax.orchestration": (
         "ControlFilesystemPreflight",
         "ControlFilesystemPreflightError",
@@ -110,6 +108,7 @@ GUARANTEED_IMPORTS = {
     ),
     "feedbax.contracts.experiment_envelope": (
         "ExperimentEnvelopeCompileRequest",
+        "ExperimentEnvelopeParentAuthority",
         "ExperimentEnvelopeCompileResult",
         "ExperimentEnvelopeRejection",
         "ExperimentEnvelopeRejectionCategory",
