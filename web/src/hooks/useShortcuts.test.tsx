@@ -13,12 +13,6 @@ import {
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { TaskSpec, TrainingSpec } from '@/types/training';
 
-vi.mock('@/hooks/useGraphs', () => ({
-  useSaveGraph: () => ({
-    mutateAsync: vi.fn(),
-  }),
-}));
-
 function ShortcutHarness() {
   useAppShortcuts();
   return (

@@ -37,10 +37,6 @@ vi.mock('@/hooks/useFigureGenerationStatus', () => ({
   useFigureGenerationStatus: vi.fn(),
 }));
 
-vi.mock('@/hooks/useGraphs', () => ({
-  useSaveGraph: () => ({ mutateAsync: vi.fn() }),
-}));
-
 function AnalysisShortcutHarness() {
   useAppShortcuts();
   return <AnalysisPanel />;

@@ -36,8 +36,14 @@ export interface OpenTab {
   workspaceDocumentSnapshot: WorkspaceDocument | null;
 }
 
-type StoredGraphSnapshot = Omit<GraphSnapshot, 'past' | 'future' | 'saveRevision'> & {
+type StoredGraphSnapshot = Omit<
+  GraphSnapshot,
+  'past' | 'future' | 'saveRevision' | 'localRevision' | 'saveStatus' | 'saveError'
+> & {
   saveRevision?: number | null;
+  localRevision?: number;
+  saveStatus?: GraphSnapshot['saveStatus'];
+  saveError?: string | null;
   past?: GraphSnapshot['past'];
   future?: GraphSnapshot['future'];
   graphHistory?: unknown;
@@ -65,8 +71,11 @@ function captureGraphSnapshot(): GraphSnapshot {
     uiState: s.uiState,
     graphId: s.graphId,
     saveRevision: s.saveRevision,
+    localRevision: s.localRevision,
     isDirty: s.isDirty,
     lastSavedAt: s.lastSavedAt,
+    saveStatus: s.saveStatus,
+    saveError: s.saveError,
     graphStack: s.graphStack,
     currentGraphLabel: s.currentGraphLabel,
     currentContext: s.currentContext,
@@ -99,8 +108,11 @@ function makeInitialGraphSnapshot(): GraphSnapshot {
     uiState,
     graphId: null,
     saveRevision: null,
+    localRevision: 0,
     isDirty: false,
     lastSavedAt: null,
+    saveStatus: 'idle',
+    saveError: null,
     graphStack: [],
     currentGraphLabel: graph.metadata?.name ?? 'Model',
     currentContext: 'top-level',
@@ -125,8 +137,11 @@ function makeBlankGraphSnapshot(name: string): GraphSnapshot {
     uiState,
     graphId: null,
     saveRevision: null,
+    localRevision: 0,
     isDirty: false,
     lastSavedAt: null,
+    saveStatus: 'idle',
+    saveError: null,
     graphStack: [],
     currentGraphLabel: name,
     currentContext: 'top-level',
@@ -261,7 +276,10 @@ function captureCurrentTab(tab: OpenTab): OpenTab {
 function localStorageOrNull(): Storage | null {
   if (typeof window === 'undefined') return null;
   try {
-    return window.localStorage;
+    const storage = window.localStorage;
+    return typeof storage?.getItem === 'function' && typeof storage?.setItem === 'function'
+      ? storage
+      : null;
   } catch {
     return null;
   }
@@ -289,6 +307,9 @@ function graphSnapshotForRuntime(snapshot: StoredGraphSnapshot): GraphSnapshot {
   return {
     ...snapshot,
     saveRevision: snapshot.saveRevision ?? null,
+    localRevision: snapshot.localRevision ?? 0,
+    saveStatus: snapshot.saveStatus ?? 'idle',
+    saveError: snapshot.saveError ?? null,
     graph: normalizeGraphForStudioAuthoring(snapshot.graph),
     graphStack: (snapshot.graphStack ?? []).map(compactGraphLayerForStorage),
     past: [],
@@ -363,7 +384,7 @@ function restoreTabStores(tab: OpenTab) {
     highlightedProbeSelector: normalizedTab.trainingSnapshot.highlightedProbeSelector,
   });
   restoreAnalysisSnapshot(normalizedTab.analysisSnapshot);
-  useWorkspaceStore.getState().setWorkspace(normalizedTab.workspaceSnapshot);
+  useWorkspaceStore.getState().restoreWorkspace(normalizedTab.workspaceSnapshot);
   useWorkspaceStore
     .getState()
     .setWorkspaceDocument(normalizedTab.workspaceDocumentSnapshot);
@@ -429,7 +450,7 @@ interface ProjectsStoreState {
   tabs: OpenTab[];
   activeTabId: string;
   hasRestoredLocalTabs: boolean;
-  openNewTab: (name: string) => void;
+  openNewTab: (name: string) => string;
   openProjectInTab: (
     graphId: string,
     graph: GraphSpec,
@@ -442,11 +463,24 @@ interface ProjectsStoreState {
       saveRevision?: number | null;
       workspaceDocument?: WorkspaceDocument | null;
     },
-  ) => void;
+  ) => string;
   switchTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
   updateActiveTabLabel: (label: string) => void;
   renameTab: (tabId: string, name: string) => void;
+  markDocumentSaveStarted: (documentId: string) => void;
+  acknowledgeDocumentSave: (
+    documentId: string,
+    capturedLocalRevision: number,
+    graphId: string,
+    saveRevision: number,
+    workspaceDocument?: WorkspaceDocument | null,
+  ) => void;
+  markDocumentSaveFailed: (
+    documentId: string,
+    status: 'error' | 'conflict',
+    message: string,
+  ) => void;
 }
 
 function buildInitialTab(): OpenTab {
@@ -458,7 +492,7 @@ function buildInitialTab(): OpenTab {
     trainingSnapshot,
     analysisSnapshot,
   );
-  useWorkspaceStore.getState().setWorkspace(workspaceSnapshot);
+  useWorkspaceStore.getState().restoreWorkspace(workspaceSnapshot);
   return {
     tabId: generateTabId(),
     label: graphSnapshot.currentGraphLabel || 'Model',
@@ -519,12 +553,13 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
         highlightedProbeSelector: newTrainingSnapshot.highlightedProbeSelector,
       });
       restoreAnalysisSnapshot(newAnalysisSnapshot);
-      useWorkspaceStore.getState().setWorkspace(newWorkspaceSnapshot);
+      useWorkspaceStore.getState().restoreWorkspace(newWorkspaceSnapshot);
       useWorkspaceStore.getState().setWorkspaceDocument(null);
       resetTrajectoryStoreForTabSwitch();
       resetStatisticsStoreForTabSwitch();
 
       set({ tabs: [...updatedTabs, newTab], activeTabId: newTab.tabId });
+      return newTab.tabId;
     },
 
     openProjectInTab: (
@@ -586,7 +621,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
         highlightedProbeSelector: trainingSnapshot.highlightedProbeSelector,
       });
       restoreAnalysisSnapshot(restoredAnalysis);
-      useWorkspaceStore.getState().setWorkspace(restoredWorkspace);
+      useWorkspaceStore.getState().restoreWorkspace(restoredWorkspace);
       useWorkspaceStore
         .getState()
         .setWorkspaceDocument(options?.workspaceDocument ?? null);
@@ -601,6 +636,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
       } else {
         set({ tabs: [...updatedTabs, newTab], activeTabId: newTab.tabId });
       }
+      return newTab.tabId;
     },
 
     switchTab: (tabId) => {
@@ -633,7 +669,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
         highlightedProbeSelector: targetTrainingSnapshot.highlightedProbeSelector,
       });
       restoreAnalysisSnapshot(target.analysisSnapshot);
-      useWorkspaceStore.getState().setWorkspace(target.workspaceSnapshot);
+      useWorkspaceStore.getState().restoreWorkspace(target.workspaceSnapshot);
       useWorkspaceStore
         .getState()
         .setWorkspaceDocument(target.workspaceDocumentSnapshot);
@@ -676,7 +712,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
           highlightedProbeSelector: nextTrainingSnapshot.highlightedProbeSelector,
         });
         restoreAnalysisSnapshot(nextTab.analysisSnapshot);
-        useWorkspaceStore.getState().setWorkspace(nextTab.workspaceSnapshot);
+        useWorkspaceStore.getState().restoreWorkspace(nextTab.workspaceSnapshot);
         useWorkspaceStore
           .getState()
           .setWorkspaceDocument(nextTab.workspaceDocumentSnapshot);
@@ -716,9 +752,96 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
               ? { ...gs.graph.metadata, name }
               : { name, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), version: '1.0.0' },
           },
-          isDirty: true,
         });
+        useGraphStore.getState().markDirty();
       }
+    },
+
+    markDocumentSaveStarted: (documentId) => {
+      const { activeTabId, tabs } = get();
+      if (documentId === activeTabId) useGraphStore.getState().markSaveStarted();
+      set({
+        tabs: tabs.map((tab) =>
+          tab.tabId === documentId
+            ? {
+                ...tab,
+                graphSnapshot: {
+                  ...tab.graphSnapshot,
+                  saveStatus: 'saving',
+                  saveError: null,
+                },
+              }
+            : tab
+        ),
+      });
+    },
+
+    acknowledgeDocumentSave: (
+      documentId,
+      capturedLocalRevision,
+      graphId,
+      saveRevision,
+      workspaceDocument,
+    ) => {
+      const { activeTabId, tabs } = get();
+      if (documentId === activeTabId) {
+        useGraphStore
+          .getState()
+          .acknowledgeSave(capturedLocalRevision, graphId, saveRevision);
+        if (workspaceDocument !== undefined) {
+          useWorkspaceStore.getState().setWorkspaceDocument(workspaceDocument);
+        }
+      }
+      const acknowledgedAt = new Date().toISOString();
+      set({
+        tabs: tabs.map((tab) => {
+          if (tab.tabId !== documentId) return tab;
+          const liveRevision =
+            documentId === activeTabId
+              ? useGraphStore.getState().localRevision
+              : tab.graphSnapshot.localRevision;
+          const isCurrent = liveRevision === capturedLocalRevision;
+          return {
+            ...tab,
+            graphSnapshot: {
+              ...tab.graphSnapshot,
+              graphId,
+              saveRevision,
+              localRevision: liveRevision,
+              isDirty: isCurrent ? false : tab.graphSnapshot.isDirty,
+              lastSavedAt: isCurrent ? acknowledgedAt : tab.graphSnapshot.lastSavedAt,
+              saveStatus: 'idle',
+              saveError: null,
+            },
+            workspaceDocumentSnapshot:
+              workspaceDocument === undefined
+                ? tab.workspaceDocumentSnapshot
+                : workspaceDocument,
+          };
+        }),
+      });
+    },
+
+    markDocumentSaveFailed: (documentId, status, message) => {
+      const { activeTabId, tabs } = get();
+      if (documentId === activeTabId) {
+        useGraphStore.getState().markSaveFailed(status, message);
+      }
+      set({
+        tabs: tabs.map((tab) =>
+          tab.tabId === documentId
+            ? {
+                ...tab,
+                graphSnapshot: {
+                  ...tab.graphSnapshot,
+                  isDirty: true,
+                  saveStatus: status,
+                  saveError: message,
+                },
+              }
+            : tab
+        ),
+      });
     },
   };
 });

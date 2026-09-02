@@ -10,8 +10,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import clsx from 'clsx';
 import { toast } from 'sonner';
-import { useGraphsList, useSaveGraph } from '@/hooks/useGraphs';
-import { fetchGraph, exportGraph, createGraph, updateGraph } from '@/api/client';
+import { useGraphsList } from '@/hooks/useGraphs';
+import { fetchGraph, exportGraph } from '@/api/client';
 import { useGraphStore, createBlankGraph } from '@/stores/graphStore';
 import { actionErrorMessage } from '@/stores/storeActions';
 import {
@@ -23,16 +23,16 @@ import {
 import { useRunStore } from '@/stores/runStore';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { useCompileStatusStore } from '@/stores/compileStatusStore';
-import {
-  buildWorkspaceDocumentSnapshot,
-  buildWorkspaceSnapshot,
-  hydrateWorkspacePresentation,
-  useWorkspaceStore,
-} from '@/stores/workspaceStore';
+import { buildWorkspaceSnapshot, hydrateWorkspacePresentation } from '@/stores/workspaceStore';
 import { SettingsOverlay } from '@/components/layout/SettingsOverlay';
 import { PROJECT_TEMPLATES } from '@/data/project-templates';
 import { normalizeTrainingTrajectoryPayload } from '@/features/scenario/liveTraining';
 import type { AnalysisGraphSpec, AnalysisSnapshot } from '@/types/analysis';
+import {
+  buildDetachedStudioDocument,
+  saveActiveStudioDocument,
+  studioPersistence,
+} from '@/services/studioPersistence';
 
 type ProjectOverlaySection = 'projects' | 'examples' | 'import';
 
@@ -46,23 +46,20 @@ export function Header() {
   const pendingInputRef = useRef<HTMLInputElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const startupAutoloadAttemptedRef = useRef(false);
-  const saveMutation = useSaveGraph();
   const graphsQuery = useGraphsList();
   const {
-    graph,
-    uiState,
     graphId,
     graphStack,
     isDirty,
-    markSaved,
+    saveStatus,
+    saveError,
   } = useGraphStore(
     useShallow((state) => ({
-      graph: state.graph,
-      uiState: state.uiState,
       graphId: state.graphId,
       graphStack: state.graphStack,
       isDirty: state.isDirty,
-      markSaved: state.markSaved,
+      saveStatus: state.saveStatus,
+      saveError: state.saveError,
     }))
   );
   const {
@@ -96,16 +93,8 @@ export function Header() {
     if (inSubgraph) return;
     persistLocalProjectTabs();
     try {
-      const response = await saveMutation.mutateAsync({
-        graphId,
-        graph,
-        uiState,
-      });
-      if ('id' in response) {
-        markSaved(response.id, response.metadata.save_revision);
-      } else if (graphId) {
-        markSaved(graphId, response.metadata.save_revision);
-      }
+      const outcome = await saveActiveStudioDocument('manual');
+      if (!outcome.ok) return;
       persistLocalProjectTabs();
       toast.success('Project saved.', { id: 'project-save-success' });
     } catch (error) {
@@ -263,6 +252,8 @@ export function Header() {
         {tabs.map((tab) => {
           const isActive = tab.tabId === activeTabId;
           const isRenaming = renamingTabId === tab.tabId;
+          const tabSaveStatus = isActive ? saveStatus : tab.graphSnapshot.saveStatus;
+          const tabSaveError = isActive ? saveError : tab.graphSnapshot.saveError;
           return (
             <div
               key={tab.tabId}
@@ -312,7 +303,17 @@ export function Header() {
                 </span>
               )}
               {!isRenaming && (isActive ? isDirty : tab.graphSnapshot.isDirty) && (
-                <span className="flex-none text-amber-500 text-xs leading-none">•</span>
+                <span
+                  className={clsx(
+                    'flex-none text-xs leading-none',
+                    tabSaveStatus === 'error' || tabSaveStatus === 'conflict'
+                      ? 'text-red-500'
+                      : 'text-amber-500',
+                  )}
+                  title={tabSaveError ?? 'Unsaved changes'}
+                >
+                  •
+                </span>
               )}
               {!isRenaming && tabs.length > 1 && (
                 <span
@@ -387,7 +388,11 @@ export function Header() {
         </button>
         <button
           className="p-1.5 rounded-full hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
-          title={inSubgraph ? 'Return to model root to save' : 'Save'}
+          title={
+            inSubgraph
+              ? 'Return to model root to save'
+              : saveError ?? (saveStatus === 'saving' ? 'Saving' : 'Save')
+          }
           onClick={handleSave}
           disabled={inSubgraph}
         >
@@ -489,23 +494,18 @@ function ProjectOpenOverlay({
       }
 
       try {
-        const response = await createGraph(modelGraph, undefined, workspace);
-        const graphId = response.id;
-        const created = await fetchGraph(graphId);
-        const workspaceDocument = buildWorkspaceDocumentSnapshot(
-          created.workspace_document,
+        const detached = buildDetachedStudioDocument({
+          documentId: `template:${template.id}:${crypto.randomUUID()}`,
+          label: template.name,
+          graph: modelGraph,
           uiState,
           analysisSnapshot,
           workspace,
-        );
-        const updateResponse = await updateGraph(
-          graphId,
-          null,
-          workspaceDocument,
-          workspace,
-          response.metadata.save_revision,
-        );
-        useWorkspaceStore.getState().setWorkspaceDocument(workspaceDocument);
+        });
+        const outcome = await studioPersistence.save(detached, 'template');
+        studioPersistence.reset(detached.documentId);
+        if (outcome.ok === false) throw outcome.error;
+        const graphId = outcome.result.graphId;
         openProjectInTab(
           graphId,
           modelGraph,
@@ -514,8 +514,8 @@ function ProjectOpenOverlay({
           analysisSnapshot,
           workspace,
           {
-            saveRevision: updateResponse.metadata.save_revision,
-            workspaceDocument,
+            saveRevision: outcome.result.metadata.save_revision,
+            workspaceDocument: outcome.workspaceDocument,
           },
         );
         useRunStore.getState().hydrateFromWorkspace(workspace);
@@ -533,6 +533,7 @@ function ProjectOpenOverlay({
           analysisSnapshot,
           workspace,
         );
+        useGraphStore.getState().markDirty();
         useRunStore.getState().hydrateFromWorkspace(workspace);
       }
       persistLocalProjectTabs();

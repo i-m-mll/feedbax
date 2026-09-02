@@ -10,6 +10,7 @@ import {
   type PenzaiInspectorPayload,
   type PenzaiNodeRequest,
   type SelectionSpec,
+  type StudioPersistenceDocument,
   type WorkspaceDocument,
 } from "@/generated/studioContracts";
 import type {
@@ -53,13 +54,95 @@ export const STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID =
 export const STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION =
   'feedbax.spec.studio.persistence_document.v1' as const;
 
+export type StudioPersistenceEnvelope = Omit<StudioPersistenceDocument, 'workspace'> & {
+  workspace?: Record<string, unknown> | null;
+};
+
 export function studioPersistenceDocument(
   fields: Record<string, unknown>,
-): Record<string, unknown> {
+): StudioPersistenceEnvelope {
   return {
     schema_id: STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
     schema_version: STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
     ...fields,
+  } as StudioPersistenceEnvelope;
+}
+
+export function buildStudioPersistenceDocument({
+  graph,
+  workspaceDocument,
+  workspace,
+}: {
+  graph: GraphSpec;
+  workspaceDocument: WorkspaceDocument;
+  workspace: StudioWorkspaceSpec;
+}): StudioPersistenceEnvelope {
+  return studioPersistenceDocument({
+    graph,
+    workspace_document: workspaceDocument,
+    workspace: semanticWorkspaceForSave(workspace),
+  });
+}
+
+export interface StudioPersistenceResult {
+  graphId: string;
+  metadata: GraphMetadata;
+  created: boolean;
+}
+
+function persistenceMetadata(
+  path: string,
+  metadata: GraphMetadata,
+): GraphMetadata {
+  if (!Number.isInteger(metadata.save_revision) || (metadata.save_revision ?? -1) < 0) {
+    throw asApiRequestError(
+      new Error('Studio persistence response omitted save_revision'),
+      path,
+      'Studio persistence response did not carry a valid save revision.',
+    );
+  }
+  return metadata;
+}
+
+export async function persistStudioDocument(
+  graphId: string | null,
+  document: StudioPersistenceEnvelope,
+): Promise<StudioPersistenceResult> {
+  if (graphId) {
+    const path = `/api/graphs/${graphId}`;
+    const expectedRevision = document.expected_save_revision;
+    if (expectedRevision === undefined || expectedRevision === null) {
+      throw new Error('Saving an existing Studio document requires its server save revision.');
+    }
+    const response = parseContract(
+      'GraphUpdateResponse',
+      await requestJson(path, {
+        method: 'PUT',
+        headers: { 'If-Match': String(expectedRevision) },
+        body: JSON.stringify(document),
+      }),
+    );
+    return {
+      graphId,
+      metadata: persistenceMetadata(path, response.data.metadata as GraphMetadata),
+      created: false,
+    };
+  }
+  if (!document.graph) {
+    throw new Error('Creating a Studio document requires its graph.');
+  }
+  const path = '/api/graphs';
+  const response = parseContract(
+    'GraphCreateResponse',
+    await requestJson(path, {
+      method: 'POST',
+      body: JSON.stringify(document),
+    }),
+  );
+  return {
+    graphId: response.data.id,
+    metadata: persistenceMetadata(path, response.data.metadata as GraphMetadata),
+    created: true,
   };
 }
 
@@ -206,58 +289,6 @@ export async function compileGraphNode(
       "DomainCompileReport response did not match the Studio contract.",
     );
   }
-}
-
-export async function createGraph(
-  graph: GraphSpec,
-  workspaceDocument?: WorkspaceDocument | null,
-  workspace?: StudioWorkspaceSpec | null,
-) {
-  const payload = studioPersistenceDocument({ graph });
-  if (workspaceDocument !== undefined)
-    payload.workspace_document = workspaceDocument;
-  if (workspace !== undefined)
-    payload.workspace = semanticWorkspaceForSave(workspace);
-  const response = parseContract(
-    "GraphCreateResponse",
-    await requestJson(`/api/graphs`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    }),
-  );
-  return response.data;
-}
-
-export async function updateGraph(
-  graphId: string,
-  graph: GraphSpec | null,
-  workspaceDocument?: WorkspaceDocument | null,
-  workspace?: StudioWorkspaceSpec | null,
-  expectedSaveRevision?: number | null,
-) {
-  const payload = studioPersistenceDocument({});
-  if (graph !== null && graph !== undefined) payload.graph = graph;
-  if (workspaceDocument !== null && workspaceDocument !== undefined) {
-    payload.workspace_document = workspaceDocument;
-  }
-  if (workspace !== undefined)
-    payload.workspace = semanticWorkspaceForSave(workspace);
-  if (expectedSaveRevision !== undefined && expectedSaveRevision !== null) {
-    payload.expected_save_revision = expectedSaveRevision;
-  }
-  const headers: Record<string, string> = {};
-  if (expectedSaveRevision !== undefined && expectedSaveRevision !== null) {
-    headers["If-Match"] = String(expectedSaveRevision);
-  }
-  const response = parseContract(
-    "GraphUpdateResponse",
-    await requestJson(`/api/graphs/${graphId}`, {
-      method: "PUT",
-      headers,
-      body: JSON.stringify(payload),
-    }),
-  );
-  return response.data;
 }
 
 export function semanticWorkspaceForSave(

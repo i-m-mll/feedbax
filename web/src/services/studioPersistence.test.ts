@@ -1,0 +1,511 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ApiRequestError } from '@/api/request';
+import { studioPersistenceDocument, type StudioPersistenceResult } from '@/api/client';
+import type { WorkspaceDocument } from '@/generated/studioContracts';
+import type { GraphMetadata, GraphSpec, GraphUIState } from '@/types/graph';
+import type { StudioWorkspaceSpec } from '@/types/workspace';
+import { studioDraftHashes } from '@/utils/studioDraftHash';
+import {
+  StudioPersistenceCoordinator,
+  captureActiveStudioDocument,
+  startStudioPersistence,
+  studioPersistence,
+  type StudioDocumentDraft,
+  type StudioPersistenceDependencies,
+  type StudioSaveOutcome,
+} from '@/services/studioPersistence';
+import { useAnalysisStore } from '@/stores/analysisStore';
+import { useGraphStore } from '@/stores/graphStore';
+import { useTrainingStore } from '@/stores/trainingStore';
+import { useProjectsStore } from '@/stores/projectsStore';
+import { buildWorkspaceSnapshot, useWorkspaceStore } from '@/stores/workspaceStore';
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+const uiState: GraphUIState = {
+  viewport: { x: 0, y: 0, zoom: 1 },
+  node_states: {},
+};
+
+function metadata(saveRevision: number): GraphMetadata {
+  return {
+    name: 'Transaction test',
+    created_at: '2026-09-02T00:00:00Z',
+    updated_at: '2026-09-02T00:00:00Z',
+    version: '1.0.0',
+    save_revision: saveRevision,
+  };
+}
+
+function graph(saveRevision = 4): GraphSpec {
+  return {
+    nodes: {},
+    wires: [],
+    input_ports: [],
+    output_ports: [],
+    input_bindings: {},
+    output_bindings: {},
+    metadata: metadata(saveRevision),
+  };
+}
+
+function workspaceDocument(): WorkspaceDocument {
+  return {
+    schema_id: 'feedbax.workspace_document',
+    schema_version: '1',
+    semantic_root: {
+      semantic_document_sha256: 'a'.repeat(64),
+      authored_path: '/graph',
+    },
+    graph_ui_state: uiState,
+    workspace_ui_state: {},
+    stage_ui_state: {},
+    scenario_ui_state: {},
+    analysis_pages: [],
+    active_analysis_page_id: null,
+    semantic_anchors: {},
+  };
+}
+
+function workspace(): StudioWorkspaceSpec {
+  return {
+    id: 'workspace:transaction-test',
+    schema_id: 'feedbax.spec.studio.workspace',
+    schema_version: 'feedbax.spec.studio.workspace.v2',
+    label: 'Transaction test',
+    active_stage_id: null,
+    ui_state: {},
+    stages: [],
+    scenarios: {},
+    collections: [],
+    manifest_refs: [],
+    artifact_refs: [],
+    validation: { errors: [], warnings: [], metadata: {} },
+    metadata: {},
+  };
+}
+
+function draft({
+  documentId = 'document:a',
+  graphId = 'graph:a',
+  localRevision = 1,
+  saveRevision = 4,
+}: {
+  documentId?: string;
+  graphId?: string | null;
+  localRevision?: number;
+  saveRevision?: number | null;
+} = {}): StudioDocumentDraft {
+  const graphSpec = graph(saveRevision ?? 0);
+  const document = workspaceDocument();
+  const workspaceSpec = workspace();
+  return {
+    documentId,
+    label: documentId,
+    graphId,
+    localRevision,
+    saveRevision,
+    envelope: studioPersistenceDocument({
+      graph: graphSpec,
+      workspace_document: document,
+      workspace: workspaceSpec,
+    }),
+    draftHashes: studioDraftHashes({
+      graph_spec: graphSpec,
+      workspace_document: document,
+      workspace: workspaceSpec,
+    }),
+    workspace: workspaceSpec,
+  };
+}
+
+function result(saveRevision: number, graphId = 'graph:a', created = false): StudioPersistenceResult {
+  return { graphId, metadata: metadata(saveRevision), created };
+}
+
+function serverDocument(graphId = 'graph:a') {
+  return {
+    graph: graph(5),
+    workspace_document: workspaceDocument(),
+    demo_training_data: null,
+    metadata: metadata(5),
+    workspace: workspace(),
+    compile_reports: null,
+    graphId,
+  };
+}
+
+function harness(
+  persist: StudioPersistenceDependencies['persist'],
+  fetch: StudioPersistenceDependencies['fetch'] = vi.fn(async () => serverDocument()),
+) {
+  const started: StudioDocumentDraft[] = [];
+  const acknowledged: Array<{
+    draft: StudioDocumentDraft;
+    result: StudioPersistenceResult;
+    workspaceDocument?: WorkspaceDocument;
+  }> = [];
+  const failed: Array<{ draft: StudioDocumentDraft; outcome: Extract<StudioSaveOutcome, { ok: false }> }> = [];
+  const warnings: Array<{ draft: StudioDocumentDraft; message: string; error: unknown }> = [];
+  const dependencies: StudioPersistenceDependencies = {
+    persist,
+    fetch,
+    started: (captured) => started.push(captured),
+    acknowledged: (captured, persistenceResult, document) => {
+      acknowledged.push({ draft: captured, result: persistenceResult, workspaceDocument: document });
+    },
+    failed: (captured, outcome) => failed.push({ draft: captured, outcome }),
+    warning: (captured, message, error) => warnings.push({ draft: captured, message, error }),
+  };
+  return {
+    coordinator: new StudioPersistenceCoordinator(dependencies, 25),
+    started,
+    acknowledged,
+    failed,
+    warnings,
+  };
+}
+
+async function flushPromises(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe('document-scoped Studio persistence transactions', () => {
+  it('keeps a newer autosave edit dirty and submits it after the stale success', async () => {
+    vi.useFakeTimers();
+    const first = deferred<StudioPersistenceResult>();
+    const second = deferred<StudioPersistenceResult>();
+    const persist = vi
+      .fn<StudioPersistenceDependencies['persist']>()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    const { coordinator, acknowledged } = harness(persist);
+
+    coordinator.documentChanged(draft({ localRevision: 1 }));
+    await vi.advanceTimersByTimeAsync(25);
+    expect(persist).toHaveBeenCalledTimes(1);
+
+    coordinator.documentChanged(draft({ localRevision: 2 }));
+    await vi.advanceTimersByTimeAsync(25);
+    expect(persist).toHaveBeenCalledTimes(1);
+
+    first.resolve(result(5));
+    await flushPromises();
+    expect(acknowledged[0].draft.localRevision).toBe(1);
+    expect(persist).toHaveBeenCalledTimes(2);
+    expect(persist.mock.calls[1][1].expected_save_revision).toBe(5);
+
+    second.resolve(result(6));
+    await flushPromises();
+    expect(acknowledged.map((entry) => entry.draft.localRevision)).toEqual([1, 2]);
+  });
+
+  it('coalesces overlapping manual and shortcut saves for one document', async () => {
+    const pending = deferred<StudioPersistenceResult>();
+    const persist = vi.fn<StudioPersistenceDependencies['persist']>(() => pending.promise);
+    const { coordinator } = harness(persist);
+    const captured = draft({ localRevision: 7 });
+
+    const manual = coordinator.save(captured, 'manual');
+    const shortcut = coordinator.save(captured, 'shortcut');
+    expect(persist).toHaveBeenCalledTimes(1);
+
+    pending.resolve(result(5));
+    await expect(manual).resolves.toMatchObject({ ok: true, localRevision: 7 });
+    await expect(shortcut).resolves.toMatchObject({ ok: true, localRevision: 7 });
+    expect(persist).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows different documents to save independently and acknowledges the captured document', async () => {
+    const pendingA = deferred<StudioPersistenceResult>();
+    const pendingB = deferred<StudioPersistenceResult>();
+    const persist = vi.fn<StudioPersistenceDependencies['persist']>((graphId) =>
+      graphId === 'graph:a' ? pendingA.promise : pendingB.promise
+    );
+    const { coordinator, acknowledged } = harness(persist);
+
+    const saveA = coordinator.save(
+      draft({ documentId: 'document:a', graphId: 'graph:a' }),
+      'manual',
+    );
+    const saveB = coordinator.save(
+      draft({ documentId: 'document:b', graphId: 'graph:b' }),
+      'manual',
+    );
+    expect(persist).toHaveBeenCalledTimes(2);
+
+    pendingA.resolve(result(5, 'graph:a'));
+    await expect(saveA).resolves.toMatchObject({ ok: true, documentId: 'document:a' });
+    expect(acknowledged[0].draft.documentId).toBe('document:a');
+    expect(coordinator.state('document:b').inFlightRevision).toBe(1);
+
+    pendingB.resolve(result(9, 'graph:b'));
+    await expect(saveB).resolves.toMatchObject({ ok: true, documentId: 'document:b' });
+  });
+
+  it('creates graph, workspace, presentation, and analysis in one persistence mutation', async () => {
+    const persist = vi.fn<StudioPersistenceDependencies['persist']>(async () =>
+      result(0, 'graph:created', true)
+    );
+    const fetch = vi.fn<StudioPersistenceDependencies['fetch']>(async () =>
+      serverDocument('graph:created')
+    );
+    const { coordinator } = harness(persist, fetch);
+    const captured = draft({ graphId: null, saveRevision: null });
+
+    const outcome = await coordinator.save(captured, 'template');
+
+    expect(outcome).toMatchObject({
+      ok: true,
+      result: { graphId: 'graph:created', created: true },
+      workspaceDocument: { analysis_pages: [] },
+    });
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(persist.mock.calls[0][0]).toBeNull();
+    expect(persist.mock.calls[0][1]).toMatchObject({
+      graph: captured.envelope.graph,
+      workspace_document: captured.envelope.workspace_document,
+      workspace: captured.envelope.workspace,
+    });
+    expect(captured.draftHashes.schema_version).toBe('feedbax.studio.draft_hashes.v2');
+  });
+
+  it('keeps a successful create acknowledged when its follow-up reload fails', async () => {
+    const persist = vi.fn<StudioPersistenceDependencies['persist']>(async () =>
+      result(0, 'graph:created', true)
+    );
+    const fetch = vi.fn<StudioPersistenceDependencies['fetch']>(async () => {
+      throw new Error('reload unavailable');
+    });
+    const { coordinator, acknowledged, warnings } = harness(persist, fetch);
+    const captured = draft({ graphId: null, saveRevision: null });
+
+    const outcome = await coordinator.save(captured, 'template');
+
+    expect(outcome).toMatchObject({
+      ok: true,
+      result: { graphId: 'graph:created', created: true },
+      workspaceDocument: captured.envelope.workspace_document,
+    });
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(acknowledged).toHaveLength(1);
+    expect(warnings[0].message).toContain('could not reload');
+  });
+
+  it('holds a failed transaction for an explicit retry instead of retrying stale data', async () => {
+    vi.useFakeTimers();
+    const retry = deferred<StudioPersistenceResult>();
+    const persist = vi
+      .fn<StudioPersistenceDependencies['persist']>()
+      .mockRejectedValueOnce(new Error('network unavailable'))
+      .mockImplementationOnce(() => retry.promise);
+    const { coordinator, failed } = harness(persist);
+
+    const first = await coordinator.save(draft({ localRevision: 1 }), 'manual');
+    expect(first).toMatchObject({ ok: false, kind: 'error' });
+    expect(failed).toHaveLength(1);
+    expect(coordinator.state('document:a').blocked).toBe(true);
+
+    coordinator.documentChanged(draft({ localRevision: 2 }));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(persist).toHaveBeenCalledTimes(1);
+
+    const explicitRetry = coordinator.save(draft({ localRevision: 2 }), 'manual');
+    expect(persist).toHaveBeenCalledTimes(2);
+    retry.resolve(result(5));
+    await expect(explicitRetry).resolves.toMatchObject({ ok: true, localRevision: 2 });
+  });
+
+  it('keeps conflicts blocked and visible with the server comparison', async () => {
+    const persist = vi.fn<StudioPersistenceDependencies['persist']>(async () => {
+      throw new ApiRequestError('http', '/api/graphs/graph:a', 'stale', { status: 409 });
+    });
+    const { coordinator, failed } = harness(persist);
+
+    const outcome = await coordinator.save(draft(), 'manual');
+
+    expect(outcome).toMatchObject({ ok: false, kind: 'conflict' });
+    expect(failed[0].outcome.message).toContain('Save conflict');
+    expect(coordinator.state('document:a').blocked).toBe(true);
+  });
+});
+
+describe('persisted mutation revisions', () => {
+  it('advances for graph history, workspace, training, analysis, and empty-page clearing', () => {
+    useGraphStore.getState().resetGraph();
+    useAnalysisStore.getState().resetAnalysis();
+    const initialGraph = useGraphStore.getState().capturePersistedGraph();
+    useWorkspaceStore.getState().setWorkspace(buildWorkspaceSnapshot({
+      workspace: null,
+      graph: initialGraph.graph,
+      uiState: initialGraph.uiState,
+      trainingSpec: useTrainingStore.getState().trainingSpec,
+      taskSpec: useTrainingStore.getState().taskSpec,
+      analysisSnapshot: useAnalysisStore.getState().captureSnapshot(),
+    }));
+
+    const beforeGraph = useGraphStore.getState().localRevision;
+    useGraphStore.getState().addRetainedObservable({
+      id: 'observable:test',
+      label: 'Test observable',
+      source: { node_id: 'missing', port: 'output' },
+    } as any);
+    expect(useGraphStore.getState().localRevision).toBeGreaterThan(beforeGraph);
+
+    const beforeUndo = useGraphStore.getState().localRevision;
+    useGraphStore.getState().undo();
+    useGraphStore.getState().redo();
+    expect(useGraphStore.getState().localRevision).toBeGreaterThanOrEqual(beforeUndo + 2);
+
+    const beforeWorkspace = useGraphStore.getState().localRevision;
+    useWorkspaceStore.getState().setActiveStageByKind('analysis');
+    expect(useGraphStore.getState().localRevision).toBeGreaterThan(beforeWorkspace);
+
+    const beforeTraining = useGraphStore.getState().localRevision;
+    useTrainingStore.getState().setTrainingSpec({ n_batches: 23 });
+    expect(useGraphStore.getState().localRevision).toBeGreaterThan(beforeTraining);
+
+    const beforeAnalysis = useGraphStore.getState().localRevision;
+    useAnalysisStore.getState().addPage('Temporary page');
+    const pageId = useAnalysisStore.getState().activePageId!;
+    expect(useGraphStore.getState().localRevision).toBeGreaterThan(beforeAnalysis);
+
+    const beforeClear = useGraphStore.getState().localRevision;
+    useAnalysisStore.getState().removePage(pageId);
+    expect(useGraphStore.getState().localRevision).toBeGreaterThan(beforeClear);
+    expect(useAnalysisStore.getState().captureSnapshot()).toEqual({
+      pages: [],
+      activePageId: null,
+    });
+  });
+
+  it('captures the latest workspace, training, and empty analysis state together', () => {
+    useGraphStore.getState().resetGraph();
+    useAnalysisStore.getState().resetAnalysis();
+    const persistedGraph = useGraphStore.getState().capturePersistedGraph();
+    useWorkspaceStore.getState().setWorkspace(buildWorkspaceSnapshot({
+      workspace: null,
+      graph: persistedGraph.graph,
+      uiState: persistedGraph.uiState,
+      trainingSpec: useTrainingStore.getState().trainingSpec,
+      taskSpec: useTrainingStore.getState().taskSpec,
+      analysisSnapshot: useAnalysisStore.getState().captureSnapshot(),
+    }));
+    useTrainingStore.getState().setTrainingSpec({ n_batches: 31 });
+    useAnalysisStore.getState().addPage('Cleared page');
+    useAnalysisStore.getState().removePage(useAnalysisStore.getState().activePageId!);
+
+    const captured = captureActiveStudioDocument();
+    const document = captured.envelope.workspace_document!;
+    const capturedWorkspace = captured.workspace;
+    const trainingStage = capturedWorkspace.stages.find((stage) => stage.kind === 'train')!;
+    const trainingScenario = capturedWorkspace.scenarios[trainingStage.scenario_id!];
+
+    expect(trainingScenario.training_spec?.n_batches).toBe(31);
+    expect(document.analysis_pages).toEqual([]);
+    expect(document.active_analysis_page_id).toBeNull();
+    expect(captured.draftHashes.schema_version).toBe('feedbax.studio.draft_hashes.v2');
+  });
+
+  it('never lets a stale acknowledgement clear a newer active revision', () => {
+    useGraphStore.getState().resetGraph();
+    const documentId = useProjectsStore.getState().activeTabId;
+    useGraphStore.getState().markDirty();
+    const capturedRevision = useGraphStore.getState().localRevision;
+    useGraphStore.getState().markDirty();
+
+    useProjectsStore.getState().acknowledgeDocumentSave(
+      documentId,
+      capturedRevision,
+      'graph:acknowledged',
+      5,
+      workspaceDocument(),
+    );
+
+    expect(useGraphStore.getState()).toMatchObject({
+      graphId: 'graph:acknowledged',
+      saveRevision: 5,
+      isDirty: true,
+      lastSavedAt: null,
+    });
+  });
+
+  it('queues a restored dirty document and preserves its identity across a tab switch', () => {
+    useGraphStore.getState().resetGraph();
+    useGraphStore.getState().hydrateGraph(graph(), uiState, 'graph:a', [], 4);
+    const documentA = useProjectsStore.getState().activeTabId;
+    useGraphStore.getState().markDirty();
+    const capturedRevision = useGraphStore.getState().localRevision;
+    const changed = vi
+      .spyOn(studioPersistence, 'documentChanged')
+      .mockImplementation(() => undefined);
+    const stop = startStudioPersistence();
+
+    try {
+      expect(changed).toHaveBeenCalledWith(expect.objectContaining({
+        documentId: documentA,
+        graphId: 'graph:a',
+        localRevision: capturedRevision,
+      }));
+      changed.mockClear();
+
+      const documentB = useProjectsStore.getState().openNewTab('Document B');
+
+      expect(documentB).not.toBe(documentA);
+      expect(changed).toHaveBeenCalledWith(expect.objectContaining({
+        documentId: documentA,
+        graphId: 'graph:a',
+        localRevision: capturedRevision,
+      }));
+    } finally {
+      stop();
+      changed.mockRestore();
+    }
+  });
+
+  it('applies a late acknowledgement to the captured inactive tab only', () => {
+    useGraphStore.getState().resetGraph();
+    useGraphStore.getState().hydrateGraph(graph(), uiState, 'graph:a', [], 4);
+    const documentA = useProjectsStore.getState().activeTabId;
+    useGraphStore.getState().markDirty();
+    const capturedRevision = useGraphStore.getState().localRevision;
+    const documentB = useProjectsStore.getState().openNewTab('Document B');
+
+    useProjectsStore.getState().acknowledgeDocumentSave(
+      documentA,
+      capturedRevision,
+      'graph:a',
+      5,
+      workspaceDocument(),
+    );
+
+    expect(useProjectsStore.getState().activeTabId).toBe(documentB);
+    expect(useGraphStore.getState().graphId).toBeNull();
+    const capturedTab = useProjectsStore.getState().tabs.find((tab) => tab.tabId === documentA)!;
+    expect(capturedTab.graphSnapshot).toMatchObject({
+      graphId: 'graph:a',
+      saveRevision: 5,
+      isDirty: false,
+    });
+  });
+});

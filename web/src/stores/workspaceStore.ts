@@ -36,6 +36,7 @@ import type {
   WorkspaceViewState,
 } from '@/types/workspace';
 import type { WorkspaceDocument } from '@/generated/studioContracts';
+import { useGraphStore } from '@/stores/graphStore';
 
 export function buildWorkspaceDocumentSnapshot(
   document: WorkspaceDocument | null,
@@ -61,6 +62,27 @@ export function buildWorkspaceDocumentSnapshot(
     ) as unknown as WorkspaceDocument['analysis_pages'],
     active_analysis_page_id: analysisSnapshot?.activePageId ?? null,
   };
+}
+
+export function buildNewWorkspaceDocumentSnapshot(
+  graphUiState: GraphUIState,
+  analysisSnapshot: AnalysisSnapshot | null,
+  workspace: StudioWorkspaceSpec | null,
+): WorkspaceDocument {
+  return buildWorkspaceDocumentSnapshot(
+    {
+      schema_id: 'feedbax.workspace_document',
+      schema_version: '1',
+      semantic_root: {
+        semantic_document_sha256: '0'.repeat(64),
+        authored_path: '/graph',
+      },
+      semantic_anchors: {},
+    },
+    graphUiState,
+    analysisSnapshot,
+    workspace,
+  );
 }
 
 export function hydrateWorkspacePresentation(
@@ -826,6 +848,7 @@ interface WorkspaceStoreState {
   lastTrainingExecutionPreparation: StudioTrainingExecutionPreparation | null;
   lastPipelineMaterializationResult: StudioPipelineMaterializationResult | null;
   setWorkspace: (workspace: StudioWorkspaceSpec | null) => void;
+  restoreWorkspace: (workspace: StudioWorkspaceSpec | null) => void;
   setWorkspaceDocument: (document: WorkspaceDocument | null) => void;
   setActiveStage: (stageId: string | null) => void;
   setActiveStageByKind: (kind: StudioStageKind) => void;
@@ -1000,20 +1023,42 @@ export function getWorkspaceViewMode(
   return 'authoring';
 }
 
-export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
+export const useWorkspaceStore = create<WorkspaceStoreState>((baseSet) => {
+  const set: typeof baseSet = (partial, replace) => {
+    let changedPersistedWorkspace = false;
+    baseSet((state) => {
+      const patch = typeof partial === 'function' ? partial(state) : partial;
+      changedPersistedWorkspace = Boolean(
+        patch &&
+        typeof patch === 'object' &&
+        patch !== state &&
+        'workspace' in patch &&
+        patch.workspace !== state.workspace
+      );
+      return patch;
+    }, replace as false);
+    if (changedPersistedWorkspace) useGraphStore.getState().markDirty();
+  };
+  const replaceWorkspace = (
+    workspace: StudioWorkspaceSpec | null,
+    setter: typeof baseSet,
+  ) => {
+    const normalizedWorkspace = normalizeWorkspaceForStudioState(workspace);
+    useSelectionContextStore
+      .getState()
+      .setFrozenSnapshot(frozenSnapshotProjectionFromWorkspace(normalizedWorkspace));
+    setter({ workspace: normalizedWorkspace });
+  };
+
+  return {
   workspace: null,
   workspaceDocument: null,
   lastTrainingExecutionPreparation: null,
   lastPipelineMaterializationResult: null,
 
-  setWorkspace: (workspace) => {
-    const normalizedWorkspace = normalizeWorkspaceForStudioState(workspace);
-    useSelectionContextStore
-      .getState()
-      .setFrozenSnapshot(frozenSnapshotProjectionFromWorkspace(normalizedWorkspace));
-    set({ workspace: normalizedWorkspace });
-  },
-  setWorkspaceDocument: (workspaceDocument) => set({ workspaceDocument }),
+  setWorkspace: (workspace) => replaceWorkspace(workspace, set),
+  restoreWorkspace: (workspace) => replaceWorkspace(workspace, baseSet),
+  setWorkspaceDocument: (workspaceDocument) => baseSet({ workspaceDocument }),
 
   setActiveStage: (stageId) =>
     set((state) => {
@@ -1410,4 +1455,5 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
         },
       };
     }),
-}));
+  };
+});
