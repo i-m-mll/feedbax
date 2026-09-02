@@ -45,7 +45,6 @@ authenticated reference a previous run produced, and it may never author one.
 from __future__ import annotations
 
 import hashlib
-import json
 import posixpath
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
@@ -55,8 +54,6 @@ from types import UnionType
 from typing import Annotated, Any, NoReturn, Union, get_args, get_origin
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
-
-from feedbax.contracts.strict_json import strict_json_loads
 
 from feedbax.contracts.authored_canonical import (
     CANONICAL_PIN_ALGORITHM,
@@ -998,6 +995,31 @@ def _resolve_matrix_base_payload(
     return payload, pin
 
 
+def _materialize_parent_matrix_base_payload(
+    base_payload: Mapping[str, Any],
+    deltas: Sequence[Any],
+    *,
+    field: str,
+) -> dict[str, Any]:
+    """Apply the parent matrix's ordered deltas to its authenticated base bytes."""
+    try:
+        resolved, _attribution, _written = apply_composition_deltas(
+            dict(base_payload),
+            [MatrixCompositionDelta.model_validate(delta) for delta in deltas],
+        )
+    except (ValidationError, ValueError) as exc:
+        _reject(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            field,
+            f"the parent matrix deltas do not apply to its exact base payload: {exc}",
+            correct_home=(
+                "the parent matrix's ordered deltas state its complete semantics relative "
+                "to the exact base bytes it authenticates"
+            ),
+        )
+    return resolved
+
+
 def _prove_patches_apply(
     payload: Mapping[str, Any], patches: Sequence[OverridePatch], *, field: str
 ) -> None:
@@ -1573,6 +1595,11 @@ def _lower_training(context: LayerCompileContext) -> LoweredLayer:
         context.repo_root,
         context.parent_authorities,
         field=f"{context.parent.ref}#base",
+    )
+    base_payload = _materialize_parent_matrix_base_payload(
+        base_payload,
+        parent.get("deltas") or [],
+        field=f"{context.parent.ref}#deltas",
     )
     appending = authored.rows_mode is TrainingRowsMode.APPEND
 

@@ -64,13 +64,19 @@ from feedbax.contracts.experiment_envelope_dialect import (
     ExperimentEnvelopeLayer,
 )
 from feedbax.contracts.migrations import default_spec_registry
+from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.run_composition import (
     CompositionNode,
     InlineIntentParent,
     ResolvedOutputParent,
     authored_envelope_hash,
 )
-from feedbax.contracts.run_matrix import TrainingRowParentProvenance
+from feedbax.contracts.run_matrix import (
+    MatrixCompositionDelta,
+    TrainingRowParentProvenance,
+    apply_composition_deltas,
+    apply_override_patches,
+)
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
 from feedbax.contracts.training import (
     LossTermSpec,
@@ -1934,6 +1940,19 @@ def _write_resolved_parent_alias_chain(
     repo: Path,
 ) -> tuple[Path, ResolvedOutputParent, dict[str, Any]]:
     payload = _standard_run_spec_payload()
+    payload["training"] = {"n_batches": 1}
+    inherited_diagnostics = {
+        "trace_schema_id": "rlrmp2.adaptive_lambda.method_trace",
+        "trace_schema_version": "rlrmp2.adaptive_lambda.method_trace.v1",
+        "measurement_basis": "held_out_probe",
+        "metric_payload_slot": "adaptive_method_trace",
+        "replica_axis": "replica",
+    }
+    child_diagnostics = {
+        **inherited_diagnostics,
+        "trace_schema_version": "rlrmp2.adaptive_lambda.method_trace.v3",
+        "measurement_basis": "training_batch",
+    }
     parent = ResolvedOutputParent(
         ref="artifact-blob:resolved-training-parent",
         resolved_root_hash=training_spec_sha256(payload),
@@ -1948,6 +1967,18 @@ def _write_resolved_parent_alias_chain(
                 {
                     "kind": "composition",
                     "parent": parent.model_dump(mode="json", exclude_none=True),
+                    "deltas": [
+                        {
+                            "layer_id": "mapped-adaptive-continuation",
+                            "patches": [
+                                {
+                                    "path": "training.training_diagnostics",
+                                    "op": "add",
+                                    "value": inherited_diagnostics,
+                                }
+                            ],
+                        }
+                    ],
                     "rows": [{"id": "condition-a", "label": "Condition A", "seed": 11}],
                 }
             ),
@@ -1972,9 +2003,9 @@ def _write_resolved_parent_alias_chain(
                             "layer_id": "condition-b",
                             "patches": [
                                 {
-                                    "path": "training_config.n_batches",
+                                    "path": "training.training_diagnostics",
                                     "op": "replace",
-                                    "value": 2,
+                                    "value": child_diagnostics,
                                 }
                             ],
                         },
@@ -1997,6 +2028,21 @@ def test_alias_child_authenticates_resolved_parent_bytes_before_applying_row_del
     ).compile_envelope_file(child_path, repo_root=repo)
 
     assert [row["row_id"] for row in outcome.document["rows"]] == ["condition-b"]
+    resolved_parent, _attribution, _written = apply_composition_deltas(
+        payload,
+        [MatrixCompositionDelta.model_validate(delta) for delta in outcome.document["deltas"]],
+    )
+    resolved_child = apply_override_patches(
+        resolved_parent,
+        [OverridePatch.model_validate(patch) for patch in outcome.document["rows"][0]["overrides"]],
+    )
+    assert resolved_child["training"]["training_diagnostics"] == {
+        "trace_schema_id": "rlrmp2.adaptive_lambda.method_trace",
+        "trace_schema_version": "rlrmp2.adaptive_lambda.method_trace.v3",
+        "measurement_basis": "training_batch",
+        "metric_payload_slot": "adaptive_method_trace",
+        "replica_axis": "replica",
+    }
     assert outcome.document["base"] == parent.model_dump(mode="json", exclude_none=True)
     governed = next(
         reference
