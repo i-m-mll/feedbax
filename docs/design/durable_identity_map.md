@@ -39,12 +39,12 @@ Pins authored inputs, compiled output, and the pre-run execution identity.
   - `RowProvenanceReference source_content_hash + pin_algorithm`
   - `AuthenticatedReceiptReference manifest_sha256 + size_bytes`
   - `compiled_document.content_hash + pin_algorithm`
-  - `execution_identity.sha256 + ordered inputs`
+  - `execution_identity.sha256 + ordered inputs + pin_algorithm`
 
 - In-repo assertions:
 
-  - `feedbax/contracts/experiment_compile_lock.py:build_compile_lock` (`14d7c419be47cde7`)
-  - `feedbax/contracts/experiment_compile_lock.py:load_compile_lock` (`af5f264c7c19c9f4`)
+  - `feedbax/contracts/experiment_compile_lock.py:build_compile_lock` (`c41fd511b23170da`)
+  - `feedbax/contracts/experiment_compile_lock.py:load_compile_lock` (`0a4900da2f89e50f`)
   - `tests/test_envelope_engine_kernel.py:test_execution_identity_is_stable_for_identical_inputs` (`2cacf7f29c62e493`)
 
 - Known downstream: rlrmp2 generated/*.compile-lock.json and its authored envelopes; the pinned snapshot contains 26 compile locks, all carrying canonical_json_v1 pins and execution_identity.
@@ -355,7 +355,7 @@ To verify the pinned downstream snapshot from a local checkout, run `uv run --no
 ## Current non-equivalences
 
 - `canonical-json-v1`, `training-spec-json-current`, and `publication-json-v1` use different JSON byte contracts. A refactor may share code only after proving the emitted bytes and schema migration boundary appropriate to each stored field.
-- Compile-lock `execution_identity.sha256` is mapped here as current behavior. This map does not pin or migrate an existing compile-lock artifact; that is a separate delivery.
+- Compile-lock `execution_identity.sha256` is pinned to canonical-json-v1 in v4. The explicit v3 migration asserts that pin only for locks with attributable built-in Feedbax compiler provenance; downstream-authored and unattributed digest shapes remain outside that migration.
 - Studio `fnv1a:` values are presentation revision markers, not authenticity proofs, and the current Python/TypeScript number spelling is not one byte domain.
 - Raw manifest, artifact, archive, array, and checkpoint blob digests remain exact material identity even when the bytes happen to decode as JSON.
 - Legacy persistence MD5 fields remain their declared current contracts and are never silently reinterpreted as SHA-256.

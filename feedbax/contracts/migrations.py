@@ -253,8 +253,8 @@ from feedbax.contracts.authoring_budget import (
 from feedbax.contracts.experiment_compile_lock import (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_ID,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
-    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
-    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+    migrate_compile_lock_v3_to_v4,
 )
 from feedbax.contracts.experiment_envelope import (
     EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID,
@@ -3360,10 +3360,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Compile-time plan pinning what an envelope compile read and decided, "
                 "with compiler contract and implementation provenance recorded apart."
             ),
-            supported_old_versions=(
-                EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
-                EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
-            ),
+            stance="migrate",
+            supported_old_versions=(EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,),
             required_tests=("tests/test_envelope_engine_kernel.py",),
             notes=(
                 "v2 adds the optional typed artifact contract a figure runtime input "
@@ -3374,8 +3372,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "A v1 lock stating a contract is refused as later grammar, and executing a "
                 "v1 root figure input reference is refused at lowering with an actionable "
                 "re-author-at-envelope-v5 diagnostic. v3 adds the closed "
-                "analysis_receipt_set consumer; v1/v2 remain readable only with their "
-                "singular analysis_input grammar."
+                "analysis_receipt_set consumer; the compile-lock loader keeps v1/v2 readable "
+                "only as their singular analysis_input grammar and does not restate them as "
+                "current. v4 pins execution_identity to "
+                "canonical_json_v1. Only v3 locks with attributable built-in Feedbax "
+                "compiler provenance migrate; other producers fail closed."
             ),
         ),
         _family(
@@ -5855,6 +5856,19 @@ def _migrate_evaluation_output_preflight_evidence_v1(
 
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "ExperimentCompileLock",
+    SchemaMigration(
+        source_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+        target_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
+        migration_id="experiment-compile-lock-v3-to-v4-execution-identity-pin",
+        migrate=migrate_compile_lock_v3_to_v4,
+        description=(
+            "Pin execution identity to canonical_json_v1 only when the v3 lock records "
+            "attributable built-in Feedbax compiler provenance."
+        ),
+    ),
+)
 default_spec_registry.register_migration(
     "RunSetState",
     SchemaMigration(
