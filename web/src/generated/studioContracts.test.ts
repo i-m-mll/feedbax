@@ -1,8 +1,13 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
+  AdditiveGraphChannelTargetSpecSchema,
   ConstantArrayValueSpecSchema,
+  GraphMetadataSchema,
+  SemanticAnchorSchema,
   SparseCooArrayValueSpecSchema,
   SparseCooEntrySpecSchema,
+  StudioPersistenceDocumentSchema,
+  StudioValueEnumerableSpecSchema,
 } from '@/generated/studioContracts';
 import type {
   ConstantArrayValueSpec,
@@ -23,6 +28,15 @@ describe('generated component-param array value contracts', () => {
     expectTypeOf<SparseCooEntrySpec['value']>().toEqualTypeOf<
       boolean | number | 'nan' | '+inf' | '-inf'
     >();
+  });
+
+  it('projects list, item, and safe-integer constraints', () => {
+    expect(SparseCooEntrySpecSchema.safeParse({ coordinate: [], value: 2 }).success).toBe(false);
+    expect(SparseCooEntrySpecSchema.safeParse({ coordinate: [-1], value: 2 }).success).toBe(false);
+    expect(
+      SparseCooEntrySpecSchema.safeParse({ coordinate: [Number.MAX_SAFE_INTEGER + 1], value: 2 })
+        .success,
+    ).toBe(false);
   });
 
   it('enforces integer coordinates and shapes', () => {
@@ -77,5 +91,50 @@ describe('generated component-param array value contracts', () => {
         true,
       );
     }
+  });
+});
+
+describe('generated Studio constraint parity', () => {
+  it('projects numeric bounds and string patterns', () => {
+    expect(
+      GraphMetadataSchema.safeParse({
+        name: 'test',
+        created_at: 'now',
+        updated_at: 'now',
+        save_revision: -1,
+      }).success,
+    ).toBe(false);
+    expect(
+      SemanticAnchorSchema.safeParse({
+        semantic_document_sha256: 'not-a-digest',
+        authored_path: 'graph',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('runs the same registered cross-field refinements as Python', () => {
+    expect(
+      AdditiveGraphChannelTargetSpecSchema.safeParse({
+        kind: 'edge',
+        target_node: 'target',
+        target_port: 'input',
+      }).success,
+    ).toBe(false);
+    expect(
+      StudioValueEnumerableSpecSchema.safeParse({
+        form: 'range',
+        start: 0,
+        stop: 1,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('fails closed on an unknown persistence-document version', () => {
+    expect(
+      StudioPersistenceDocumentSchema.safeParse({
+        schema_id: 'feedbax.spec.studio.persistence_document',
+        schema_version: 'feedbax.spec.studio.persistence_document.v99',
+      }).success,
+    ).toBe(false);
   });
 });

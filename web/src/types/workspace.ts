@@ -505,7 +505,8 @@ export interface StudioScenarioSpec {
 
 export interface StudioStageSpec {
   id: string;
-  schema_version?: 'feedbax.spec.studio.stage.v2' | string;
+  schema_id: 'feedbax.spec.studio.stage';
+  schema_version: 'feedbax.spec.studio.stage.v2';
   kind: StudioStageKind;
   label: string;
   status: StudioStageStatus;
@@ -523,7 +524,8 @@ export interface StudioStageSpec {
 
 export interface StudioWorkspaceSpec {
   id: string;
-  schema_version: 'feedbax.spec.studio.workspace.v2' | string;
+  schema_id: 'feedbax.spec.studio.workspace';
+  schema_version: 'feedbax.spec.studio.workspace.v2';
   label: string;
   active_stage_id?: string | null;
   stages: StudioStageSpec[];

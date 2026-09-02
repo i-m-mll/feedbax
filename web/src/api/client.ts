@@ -48,6 +48,21 @@ import type {
 } from "@/types/statistics";
 import { asApiRequestError, requestJson } from "@/api/request";
 
+export const STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID =
+  'feedbax.spec.studio.persistence_document' as const;
+export const STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION =
+  'feedbax.spec.studio.persistence_document.v1' as const;
+
+export function studioPersistenceDocument(
+  fields: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    schema_id: STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
+    schema_version: STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
+    ...fields,
+  };
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return requestJson(path, options) as Promise<T>;
 }
@@ -198,7 +213,7 @@ export async function createGraph(
   workspaceDocument?: WorkspaceDocument | null,
   workspace?: StudioWorkspaceSpec | null,
 ) {
-  const payload: Record<string, unknown> = { graph };
+  const payload = studioPersistenceDocument({ graph });
   if (workspaceDocument !== undefined)
     payload.workspace_document = workspaceDocument;
   if (workspace !== undefined)
@@ -220,7 +235,7 @@ export async function updateGraph(
   workspace?: StudioWorkspaceSpec | null,
   expectedSaveRevision?: number | null,
 ) {
-  const payload: Record<string, unknown> = {};
+  const payload = studioPersistenceDocument({});
   if (graph !== null && graph !== undefined) payload.graph = graph;
   if (workspaceDocument !== null && workspaceDocument !== undefined) {
     payload.workspace_document = workspaceDocument;
@@ -245,14 +260,34 @@ export async function updateGraph(
   return response.data;
 }
 
-function semanticWorkspaceForSave(
+export function semanticWorkspaceForSave(
   workspace: StudioWorkspaceSpec | null,
 ): Record<string, unknown> | null {
   if (!workspace) return null;
+  if (workspace.schema_id !== 'feedbax.spec.studio.workspace') {
+    throw new Error(`Unsupported Studio workspace schema identity: ${workspace.schema_id}`);
+  }
+  if (workspace.schema_version !== 'feedbax.spec.studio.workspace.v2') {
+    throw new Error(`Unsupported Studio workspace schema version: ${workspace.schema_version}`);
+  }
   const { ui_state: _workspaceUiState, ...semanticWorkspace } = workspace;
   return {
     ...semanticWorkspace,
-    stages: workspace.stages.map(({ ui_state: _uiState, ...stage }) => stage),
+    schema_id: 'feedbax.spec.studio.workspace',
+    schema_version: 'feedbax.spec.studio.workspace.v2',
+    stages: workspace.stages.map(({ ui_state: _uiState, ...stage }) => {
+      if (stage.schema_id !== 'feedbax.spec.studio.stage') {
+        throw new Error(`Unsupported Studio stage schema identity: ${stage.schema_id}`);
+      }
+      if (stage.schema_version !== 'feedbax.spec.studio.stage.v2') {
+        throw new Error(`Unsupported Studio stage schema version: ${stage.schema_version}`);
+      }
+      return {
+        ...stage,
+        schema_id: 'feedbax.spec.studio.stage',
+        schema_version: 'feedbax.spec.studio.stage.v2',
+      };
+    }),
     scenarios: Object.fromEntries(
       Object.entries(workspace.scenarios).map(([id, scenario]) => {
         const { ui_state: _uiState, ...semanticScenario } = scenario;

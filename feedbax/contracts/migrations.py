@@ -270,6 +270,11 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION_V4,
     LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
+    STUDIO_GRAPH_PROJECT_SCHEMA_ID,
+    STUDIO_GRAPH_PROJECT_SCHEMA_VERSION,
+    STUDIO_GRAPH_PROJECT_SCHEMA_VERSION_LEGACY,
+    STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
+    STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
     STUDIO_BIOMECHANICS_SCHEMA_ID,
     STUDIO_BIOMECHANICS_SCHEMA_VERSION,
     STUDIO_SCENARIO_SCHEMA_VERSION,
@@ -277,10 +282,14 @@ from feedbax.contracts.graph import (
     STUDIO_SCENARIO_SCHEMA_VERSION_V2,
     STUDIO_STAGE_SCHEMA_VERSION,
     STUDIO_STAGE_SCHEMA_VERSION_V1,
+    STUDIO_STAGE_SCHEMA_ID,
     STUDIO_WORKSPACE_SCHEMA_VERSION,
     STUDIO_WORKSPACE_SCHEMA_VERSION_V1,
+    STUDIO_WORKSPACE_SCHEMA_ID,
     GraphSpec,
+    StudioPersistenceDocument,
 )
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.array_values import (
     ARRAY_VALUE_SCHEMA_ID,
     ARRAY_VALUE_SCHEMA_VERSION,
@@ -1759,6 +1768,18 @@ def _migrate_studio_workspace_v1_to_v2_payload(payload: dict[str, Any]) -> dict[
     return migrated
 
 
+def _migrate_studio_graph_project_unversioned_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Stamp the released unversioned Studio graph-project document."""
+
+    return {
+        **payload,
+        "schema_id": STUDIO_GRAPH_PROJECT_SCHEMA_ID,
+        "schema_version": STUDIO_GRAPH_PROJECT_SCHEMA_VERSION,
+    }
+
+
 def migrate_graph_spec(
     payload: Mapping[str, Any] | GraphSpec,
     *,
@@ -2179,15 +2200,26 @@ def migrate_studio_stage_spec(
     registry: SpecSchemaRegistry | None = None,
 ) -> SpecMigrationResult:
     """Migrate or explicitly reject a Studio pipeline stage payload."""
-    return migrate_structured_spec_payload(
+    active_registry = registry or default_spec_registry
+    _validate_studio_document_identity(
+        "StudioStageSpec",
+        payload,
+        path=path,
+        registry=active_registry,
+    )
+    result = migrate_structured_spec_payload(
         "StudioStageSpec",
         payload,
         source_version=source_version,
         target_version=target_version,
         assume_current=assume_current,
         path=path,
-        registry=registry,
+        registry=active_registry,
     )
+    migrated = dict(result.payload)
+    migrated["schema_id"] = STUDIO_STAGE_SCHEMA_ID
+    migrated["schema_version"] = result.target_version
+    return replace(result, payload=migrated)
 
 
 def migrate_studio_workspace_spec(
@@ -2200,6 +2232,12 @@ def migrate_studio_workspace_spec(
 ) -> SpecMigrationResult:
     """Migrate a durable Studio workspace and nested scenario/stage payloads."""
     registry = registry or default_spec_registry
+    _validate_studio_document_identity(
+        "StudioWorkspaceSpec",
+        payload,
+        path=path,
+        registry=registry,
+    )
     result = registry.migrate(
         "StudioWorkspaceSpec",
         payload,
@@ -2207,6 +2245,8 @@ def migrate_studio_workspace_spec(
         target_version=target_version,
     )
     migrated_payload = dict(result.payload)
+    migrated_payload["schema_id"] = STUDIO_WORKSPACE_SCHEMA_ID
+    migrated_payload["schema_version"] = result.target_version
     records = [_record_with_spec_path(record, path) for record in result.migration_records]
 
     scenarios = migrated_payload.get("scenarios")
@@ -2272,6 +2312,106 @@ def migrate_studio_workspace_spec(
     )
 
 
+def _validate_studio_document_identity(
+    kind: str,
+    payload: Mapping[str, Any],
+    *,
+    path: str,
+    registry: SpecSchemaRegistry,
+) -> None:
+    """Require exact identity on current Studio documents and reject mismatches."""
+
+    family = registry.resolve(kind)
+    declared_id = payload.get("schema_id")
+    if declared_id is not None and declared_id != family.identity:
+        raise UnsupportedSpecVersion(
+            "Unsupported Studio document schema identity: "
+            f"family={kind!r}, path={path!r}, schema_id={declared_id!r}, "
+            f"expected_schema_id={family.identity!r}"
+        )
+
+
+def admit_studio_persistence_document(
+    payload: Mapping[str, Any],
+    *,
+    registry: SpecSchemaRegistry | None = None,
+) -> StudioPersistenceDocument:
+    """Admit, migrate, validate, and normalize one complete Studio save envelope."""
+
+    active_registry = registry or default_spec_registry
+    document = dict(payload)
+    canonical_json_v2_bytes(document)
+    family = active_registry.resolve("StudioPersistenceDocument")
+    if document.get("schema_id") != family.identity:
+        raise UnsupportedSpecVersion(
+            "Studio save ingress requires the exact persistence schema identity: "
+            f"schema_id={document.get('schema_id')!r}, expected={family.identity!r}"
+        )
+    result = active_registry.migrate("StudioPersistenceDocument", document)
+    admitted = dict(result.payload)
+
+    graph = admitted.get("graph")
+    if isinstance(graph, Mapping) or isinstance(graph, GraphSpec):
+        admitted["graph"] = migrate_graph_spec(
+            graph,
+            path="persistence_document/graph",
+            registry=active_registry,
+        ).payload
+
+    workspace = admitted.get("workspace")
+    if isinstance(workspace, Mapping):
+        _require_current_studio_save_identity(
+            "StudioWorkspaceSpec",
+            workspace,
+            path="persistence_document/workspace",
+            registry=active_registry,
+        )
+        stages = workspace.get("stages")
+        if isinstance(stages, list):
+            for index, stage in enumerate(stages):
+                if isinstance(stage, Mapping):
+                    _require_current_studio_save_identity(
+                        "StudioStageSpec",
+                        stage,
+                        path=f"persistence_document/workspace/stages/{index}",
+                        registry=active_registry,
+                    )
+        admitted["workspace"] = migrate_studio_workspace_spec(
+            workspace,
+            path="persistence_document/workspace",
+            registry=active_registry,
+        ).payload
+
+    validated = StudioPersistenceDocument.model_validate(admitted)
+    canonical_json_v2_bytes(validated.model_dump(mode="json", exclude_none=True))
+    return validated
+
+
+def _require_current_studio_save_identity(
+    kind: str,
+    payload: Mapping[str, Any],
+    *,
+    path: str,
+    registry: SpecSchemaRegistry,
+) -> None:
+    family = registry.resolve(kind)
+    declared_version = _payload_schema_version(payload)
+    if declared_version is None:
+        raise UnsupportedSpecVersion(
+            "Studio save documents must declare their schema version: "
+            f"family={kind!r}, path={path!r}"
+        )
+    if declared_version != family.current_version:
+        return
+    if payload.get("schema_id") != family.identity:
+        raise UnsupportedSpecVersion(
+            "Current Studio save documents must declare their exact schema identity: "
+            f"family={kind!r}, path={path!r}, schema_id={payload.get('schema_id')!r}, "
+            f"schema_version={family.current_version!r}, "
+            f"expected_schema_id={family.identity!r}"
+        )
+
+
 def _stamp_parent_carried_nested_schema_version(
     kind: str,
     payload: Mapping[str, Any],
@@ -2301,7 +2441,23 @@ def migrate_graph_project_payload(
 ) -> dict[str, Any]:
     """Migrate durable project-level graph and workspace payloads before validation."""
     registry = registry or default_spec_registry
-    migrated = dict(payload)
+    declared_id = payload.get("schema_id")
+    if declared_id is not None and declared_id != STUDIO_GRAPH_PROJECT_SCHEMA_ID:
+        raise UnsupportedSpecVersion(
+            "Unsupported Studio graph-project schema identity: "
+            f"schema_id={declared_id!r}, expected={STUDIO_GRAPH_PROJECT_SCHEMA_ID!r}"
+        )
+    source_version = _payload_schema_version(payload)
+    if source_version is None:
+        source_version = STUDIO_GRAPH_PROJECT_SCHEMA_VERSION_LEGACY
+    project_result = registry.migrate(
+        "StudioGraphProject",
+        payload,
+        source_version=source_version,
+    )
+    migrated = dict(project_result.payload)
+    migrated["schema_id"] = STUDIO_GRAPH_PROJECT_SCHEMA_ID
+    migrated["schema_version"] = STUDIO_GRAPH_PROJECT_SCHEMA_VERSION
     workspace_ui_state: dict[str, Any] = {}
     stage_ui_state: dict[str, dict[str, Any]] = {}
     scenario_ui_state: dict[str, dict[str, Any]] = {}
@@ -4889,6 +5045,37 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             )
         )
 
+    families.append(
+        _family(
+            "StudioGraphProject",
+            STUDIO_GRAPH_PROJECT_SCHEMA_ID,
+            STUDIO_GRAPH_PROJECT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.graph",
+            emitted_by=("feedbax.web.services.graph_service",),
+            consumed_by=("Studio graph load",),
+            description="Stored semantic graph and Studio workspace transaction.",
+            stance="migrate",
+            supported_old_versions=(STUDIO_GRAPH_PROJECT_SCHEMA_VERSION_LEGACY,),
+            required_tests=("tests/test_studio_workspace.py",),
+        )
+    )
+    families.append(
+        _family(
+            "StudioPersistenceDocument",
+            STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
+            STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.graph",
+            emitted_by=("Studio frontend save client",),
+            consumed_by=("Studio graph save ingress",),
+            description="Atomic graph, workspace, and presentation save transaction.",
+            rejected_old_versions=("feedbax.spec.studio.persistence_document.v0",),
+            required_tests=(
+                "tests/test_studio_workspace.py",
+                "web/src/generated/studioContracts.test.ts",
+            ),
+        )
+    )
+
     for kind, schema_id, description in (
         ("ArtifactRef", "feedbax.manifest.artifact_ref", "Manifest artifact reference."),
         (
@@ -6218,6 +6405,16 @@ default_spec_registry.register_migration(
             "Add optional provider-declared planar-chain reference poses in configuration "
             "coordinates."
         ),
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioGraphProject",
+    SchemaMigration(
+        source_version=STUDIO_GRAPH_PROJECT_SCHEMA_VERSION_LEGACY,
+        target_version=STUDIO_GRAPH_PROJECT_SCHEMA_VERSION,
+        migration_id="studio-graph-project-unversioned-to-v1",
+        migrate=_migrate_studio_graph_project_unversioned_payload,
+        description="Stamp the released unversioned Studio graph-project document.",
     ),
 )
 default_spec_registry.register_migration(

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 import json
+import os
 import uuid
 
 from feedbax.contracts.acausal import AcausalGraphSpec
@@ -17,6 +18,7 @@ from feedbax.contracts.graphs.normalization import (
     normalize_workspace_for_studio_authoring,
 )
 from feedbax.contracts.migrations import migrate_graph_project_payload
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.domain import DomainDiagnostic
 from feedbax.contracts.graph import (
     AnalysisPageSpec,
@@ -343,6 +345,7 @@ class GraphService:
     ) -> GraphProject:
         with open(path, "r", encoding="utf-8") as file:
             data = json.load(file)
+        canonical_json_v2_bytes(data)
         data = migrate_graph_project_payload(data)
         project = normalize_project_for_studio_authoring(
             GraphProject.model_validate(data),
@@ -352,9 +355,24 @@ class GraphService:
         return project
 
     def _save_project(self, path: Path, project: GraphProject) -> None:
-        self._ensure_workspace(project)
-        with open(path, "w", encoding="utf-8") as file:
-            json.dump(project.model_dump(), file, indent=2)
+        normalized = project.model_dump(mode="json")
+        canonical_json_v2_bytes(normalized)
+        validated = GraphProject.model_validate(normalized)
+        serialized = json.dumps(
+            validated.model_dump(mode="json"),
+            indent=2,
+            allow_nan=False,
+        )
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with open(temporary, "w", encoding="utf-8") as file:
+                file.write(serialized)
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temporary, path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
 
     def _ensure_workspace(
         self,
@@ -382,12 +400,9 @@ class GraphService:
             active_analysis_page_id=current_workspace.active_analysis_page_id,
             component_registry=component_registry,
         )
-        if (
-            current_workspace.semantic_root != expected_root.semantic_root
-            or (
-                component_registry is not None
-                and current_workspace.semantic_anchors != expected_root.semantic_anchors
-            )
+        if current_workspace.semantic_root != expected_root.semantic_root or (
+            component_registry is not None
+            and current_workspace.semantic_anchors != expected_root.semantic_anchors
         ):
             project.workspace_document = expected_root
         if project.workspace is not None:
@@ -422,9 +437,7 @@ class GraphService:
         else:
             from feedbax.contracts.authored_canonical import canonical_sha256
 
-            document_sha256 = canonical_sha256(
-                document.model_dump(mode="json", exclude_none=True)
-            )
+            document_sha256 = canonical_sha256(document.model_dump(mode="json", exclude_none=True))
         return WorkspaceDocument(
             semantic_root=SemanticAnchor(
                 semantic_document_sha256=document_sha256,

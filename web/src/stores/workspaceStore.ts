@@ -85,6 +85,9 @@ export function hydrateWorkspacePresentation(
 }
 
 const WORKSPACE_SCHEMA_VERSION = 'feedbax.spec.studio.workspace.v2';
+const WORKSPACE_SCHEMA_ID = 'feedbax.spec.studio.workspace';
+const STAGE_SCHEMA_ID = 'feedbax.spec.studio.stage';
+const STAGE_SCHEMA_VERSION = 'feedbax.spec.studio.stage.v2';
 const SCENARIO_SCHEMA_VERSION = 'feedbax.spec.studio.scenario.v3';
 const OBJECTIVE_SCHEMA_VERSION = 'feedbax.studio.objective.v1';
 
@@ -486,6 +489,8 @@ function defaultStage(
 ): StudioStageSpec {
   return {
     id: DEFAULT_STAGE_IDS[kind as keyof typeof DEFAULT_STAGE_IDS] ?? generateId('stage'),
+    schema_id: STAGE_SCHEMA_ID,
+    schema_version: STAGE_SCHEMA_VERSION,
     kind,
     label,
     status: 'draft',
@@ -718,6 +723,7 @@ export function buildWorkspaceSnapshot({
     workspace ??
     {
       id: generateId('studio-workspace'),
+      schema_id: WORKSPACE_SCHEMA_ID,
       schema_version: WORKSPACE_SCHEMA_VERSION,
       label: projectName ?? graph.metadata?.name ?? 'Studio workspace',
       active_stage_id: DEFAULT_STAGE_IDS.train,

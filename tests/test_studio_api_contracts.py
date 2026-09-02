@@ -8,7 +8,7 @@ from typing import get_args, get_origin
 import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, model_validator
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
@@ -532,7 +532,7 @@ def test_generated_array_value_contracts_preserve_strict_scalar_and_index_types(
     constant_schema = emit_schema(ConstantArrayValueSpec)
     scalar_type = 'boolean | number | "nan" | "+inf" | "-inf"'
     scalar_schema = (
-        "z.union([z.boolean(), z.number().int(), z.number(), "
+        "z.union([z.boolean(), z.number().int().safe(), z.number().finite(), "
         'z.union([z.literal("nan"), z.literal("+inf"), z.literal("-inf")])])'
     )
 
@@ -542,9 +542,9 @@ def test_generated_array_value_contracts_preserve_strict_scalar_and_index_types(
     assert f"value: {scalar_type};" in entry_interface
     assert f"fill: {scalar_type};" in sparse_interface
     assert f"value: {scalar_type};" in constant_interface
-    assert '"coordinate": z.array(z.number().int())' in entry_schema
-    assert '"shape": z.array(z.number().int())' in sparse_schema
-    assert '"shape": z.array(z.number().int())' in constant_schema
+    assert '"coordinate": z.array(z.number().int().safe().gte(0)).min(1)' in entry_schema
+    assert '"shape": z.array(z.number().int().safe().gt(0)).min(1)' in sparse_schema
+    assert '"shape": z.array(z.number().int().safe().gt(0)).min(1)' in constant_schema
     assert f'"value": {scalar_schema}' in entry_schema
     assert f'"fill": {scalar_schema}' in sparse_schema
     assert f'"value": {scalar_schema}' in constant_schema
@@ -561,3 +561,18 @@ def test_generated_array_value_contracts_preserve_strict_scalar_and_index_types(
     assert "unknown[]" not in rendered
     assert " unknown |" not in rendered
     assert "z.unknown()" not in rendered
+
+
+def test_generator_fails_for_unregistered_cross_field_constraint() -> None:
+    class UnprojectableConstraint(BaseModel):
+        left: int
+        right: int
+
+        @model_validator(mode="after")
+        def validate_order(self) -> "UnprojectableConstraint":
+            if self.left > self.right:
+                raise ValueError("left must not exceed right")
+            return self
+
+    with pytest.raises(ValueError, match="Unprojectable material Pydantic model constraint"):
+        emit_schema(UnprojectableConstraint)

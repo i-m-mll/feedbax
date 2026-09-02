@@ -2229,7 +2229,11 @@ def test_fresh_studio_stage_can_opt_into_current_versionless_spec() -> None:
 
     result = migrate_studio_stage_spec(payload, assume_current=True)
 
-    assert result.payload == payload
+    assert result.payload == {
+        **payload,
+        "schema_id": "feedbax.spec.studio.stage",
+        "schema_version": "feedbax.spec.studio.stage.v2",
+    }
     assert result.source_version == default_spec_registry.resolve("StudioStageSpec").current_version
 
 

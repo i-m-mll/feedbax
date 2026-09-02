@@ -17,6 +17,8 @@ const trainingSpec: TrainingSpec = {
 
 const stage: StudioStageSpec = {
   id: 'stage:train',
+  schema_id: 'feedbax.spec.studio.stage',
+  schema_version: 'feedbax.spec.studio.stage.v2',
   kind: 'train',
   label: 'Train',
   status: 'draft',

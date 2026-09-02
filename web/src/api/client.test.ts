@@ -3,6 +3,7 @@ import {
   previewStudioEvaluationMatrix,
   runStudioEvaluationLocalExecution,
   sampleTaskTrials,
+  semanticWorkspaceForSave,
   stageStudioEvaluationMatrix,
   updateGraph,
 } from '@/api/client';
@@ -59,11 +60,17 @@ describe('graph API save concurrency', () => {
 
     const workspace = {
       id: 'workspace:test',
+      schema_id: 'feedbax.spec.studio.workspace',
       schema_version: 'feedbax.spec.studio.workspace.v2',
       label: 'Test',
       active_stage_id: 'stage:train',
       ui_state: { top_pane: { kind: 'model' } },
-      stages: [{ id: 'stage:train', ui_state: { collapsed: true } }],
+      stages: [{
+        id: 'stage:train',
+        schema_id: 'feedbax.spec.studio.stage',
+        schema_version: 'feedbax.spec.studio.stage.v2',
+        ui_state: { collapsed: true },
+      }],
       scenarios: {
         'scenario:train': {
           id: 'scenario:train',
@@ -83,13 +90,45 @@ describe('graph API save concurrency', () => {
     expect(options.headers).toMatchObject({ 'If-Match': '4' });
     const body = JSON.parse(options.body as string);
     expect(body).toMatchObject({
+      schema_id: 'feedbax.spec.studio.persistence_document',
+      schema_version: 'feedbax.spec.studio.persistence_document.v1',
       expected_save_revision: 4,
       graph,
       workspace_document: workspaceDocument,
     });
     expect(body.workspace).not.toHaveProperty('ui_state');
+    expect(body.workspace).toMatchObject({
+      schema_id: 'feedbax.spec.studio.workspace',
+      schema_version: 'feedbax.spec.studio.workspace.v2',
+    });
+    expect(body.workspace.stages[0]).toMatchObject({
+      schema_id: 'feedbax.spec.studio.stage',
+      schema_version: 'feedbax.spec.studio.stage.v2',
+    });
     expect(body.workspace.stages[0]).not.toHaveProperty('ui_state');
     expect(body.workspace.scenarios['scenario:train']).not.toHaveProperty('ui_state');
+  });
+
+  it('refuses missing current workspace and stage identities before request', () => {
+    const workspace = {
+      id: 'workspace:test',
+      schema_version: 'feedbax.spec.studio.workspace.v2',
+      label: 'Test',
+      stages: [],
+      scenarios: {},
+      collections: [],
+      manifest_refs: [],
+      validation: { errors: [], warnings: [] },
+      metadata: {},
+    } as any;
+    expect(() => semanticWorkspaceForSave(workspace)).toThrow(/workspace schema identity/);
+
+    workspace.schema_id = 'feedbax.spec.studio.workspace';
+    workspace.stages = [{
+      id: 'stage:train',
+      schema_version: 'feedbax.spec.studio.stage.v2',
+    }];
+    expect(() => semanticWorkspaceForSave(workspace)).toThrow(/stage schema identity/);
   });
 });
 
