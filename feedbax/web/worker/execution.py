@@ -128,6 +128,8 @@ def compile_training_run(
         if isinstance(training_spec, TrainingSpec)
         else TrainingSpec.model_validate(training_spec)
     )
+    if not _has_executable_loss_leaf(training_model.loss):
+        raise _missing_loss_terms_error()
     if training_model.batch_size != 1:
         raise GraphCompilationError(
             "Unsupported training batch size",
@@ -150,6 +152,7 @@ def compile_training_run(
         binding_payload = migrate_studio_task_binding_spec(task_binding_spec).payload
         _reject_unsupported_task_data_value_spec_modes(binding_payload)
         binding_model = StudioTaskBindingSpec.model_validate(binding_payload)
+    _validate_authored_execution_inputs(binding_model, task_spec, cfg)
     binding_errors = [
         issue
         for issue in validate_task_binding_schema(
@@ -213,7 +216,7 @@ def compile_training_run(
         ) from exc
 
     graph, task_inputs = expose_task_inputs(graph, binding_model)
-    n_steps = int(getattr(cfg, "n_reach_steps", None) or training_model.n_batches or 1)
+    n_steps = int(cfg.n_reach_steps)
     task_data = _materialize_task_data(binding_model, task_spec, n_steps)
     try:
         retention_plan = lower_retention_plan(graph_model, training_model, task_spec=task_spec)
@@ -230,6 +233,8 @@ def compile_training_run(
             ],
         ) from exc
     loss_terms = retention_plan.loss_terms
+    if not loss_terms:
+        raise _missing_loss_terms_error()
     trace_requests = _compile_trace_requests(graph_model, retention_plan)
     trainable_nodes = _derive_trainable_nodes(graph_model, component_registry)
     trainable_filter = _trainable_filter(graph, trainable_nodes)
@@ -258,6 +263,30 @@ def compile_training_run(
     )
     _dry_run(compiled)
     return compiled
+
+
+def _has_executable_loss_leaf(loss: Any) -> bool:
+    children = getattr(loss, "children", None)
+    if children:
+        return any(_has_executable_loss_leaf(child) for child in children.values())
+    return getattr(loss, "type", None) != "Composite"
+
+
+def _missing_loss_terms_error() -> GraphCompilationError:
+    return GraphCompilationError(
+        "Training run has no executable loss terms",
+        [
+            DomainDiagnostic(
+                severity="error",
+                code="worker.missing_loss_terms",
+                message=(
+                    "Training requires at least one authored loss term; "
+                    "add a loss selector before starting the run"
+                ),
+                location={"path": "/training_spec/loss"},
+            )
+        ],
+    )
 
 
 def run_training_graph(
@@ -562,6 +591,84 @@ def _materialize_task_data(
     return data
 
 
+def _validate_authored_execution_inputs(
+    task_binding_spec: StudioTaskBindingSpec,
+    task_spec: dict[str, Any],
+    cfg: Any,
+) -> None:
+    diagnostics: list[DomainDiagnostic] = []
+    raw_n_steps = getattr(cfg, "n_reach_steps", None)
+    if raw_n_steps is None:
+        diagnostics.append(
+            DomainDiagnostic(
+                severity="error",
+                code="worker.missing_rollout_length",
+                message=(
+                    "Training requires an explicit rollout length in "
+                    "training_config.n_reach_steps or task_spec.params.n_steps"
+                ),
+                location={"path": "/training_config/n_reach_steps"},
+            )
+        )
+    else:
+        try:
+            if int(raw_n_steps) <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="worker.invalid_rollout_length",
+                    message=(
+                        "Training rollout length must be a positive integer; "
+                        f"got {raw_n_steps!r}"
+                    ),
+                    location={"path": "/training_config/n_reach_steps"},
+                )
+            )
+
+    bound_data_ids = {binding.source_data_id for binding in task_binding_spec.bindings}
+    for index, item in enumerate(task_binding_spec.exposed_data):
+        if item.id not in bound_data_ids:
+            continue
+        if item.value_spec is None:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="worker.missing_task_data_value_spec",
+                    message=(
+                        f"Bound task data {item.id!r} at {item.path!r} requires an authored "
+                        "value_spec; the worker will not invent a zero signal"
+                    ),
+                    location={"path": f"/task_binding_spec/exposed_data/{index}/value_spec"},
+                    details={"data_id": item.id, "data_path": item.path},
+                )
+            )
+            continue
+        if item.value_spec.mode == "function" and item.value_spec.function_id in {
+            "delayed_reach_target_position",
+            "delayed_reach_movement_target",
+        }:
+            params = task_spec.get("params") if isinstance(task_spec, Mapping) else None
+            workspace = params.get("workspace") if isinstance(params, Mapping) else None
+            if workspace is None:
+                diagnostics.append(
+                    DomainDiagnostic(
+                        severity="error",
+                        code="worker.missing_task_workspace",
+                        message=(
+                            f"Task data function {item.value_spec.function_id!r} requires "
+                            "task_spec.params.workspace; the worker will not invent bounds"
+                        ),
+                        location={"path": "/task_spec/params/workspace"},
+                        details={"data_id": item.id, "function_id": item.value_spec.function_id},
+                    )
+                )
+
+    if diagnostics:
+        raise GraphCompilationError("Training run is missing authored execution inputs", diagnostics)
+
+
 def _reject_unsupported_task_data_value_spec_modes(task_binding_spec: Mapping[str, Any]) -> None:
     for item in task_binding_spec.get("exposed_data", []):
         if not isinstance(item, Mapping):
@@ -585,7 +692,9 @@ def _materialize_one_task_data(
     value_spec = item.value_spec
     shape = _runtime_shape(item.expected_shape, n_steps)
     if value_spec is None:
-        return jnp.zeros(shape, dtype=jnp.float32)
+        raise ValueError(
+            f"Task data {item.id!r} at {item.path!r} requires an authored value_spec"
+        )
     if value_spec.mode == "constant":
         if value_spec.value is None:
             raise ValueError(
@@ -637,7 +746,9 @@ def _delayed_reach_target_position(
     shape: tuple[int, ...],
 ) -> jax.Array:
     params = task_spec.get("params", {}) if isinstance(task_spec, dict) else {}
-    workspace = params.get("workspace") or [[-0.25, -0.25], [0.25, 0.25]]
+    workspace = params.get("workspace")
+    if workspace is None:
+        raise ValueError("Delayed-reach task data requires task_spec.params.workspace")
     start = jnp.asarray(workspace[0], dtype=jnp.float32)
     end = jnp.asarray(workspace[1], dtype=jnp.float32)
     progress = jnp.linspace(0.0, 1.0, n_steps, dtype=jnp.float32)[:, None]
@@ -779,10 +890,7 @@ def _evaluate_loss(
     rollout: dict[str, Any],
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     if not compiled.loss_terms:
-        output_name = next(iter(rollout["outputs"]))
-        value = rollout["outputs"][output_name]
-        loss = jnp.mean(jnp.square(value))
-        return loss, {"default_output": loss}
+        raise ValueError("Training requires at least one authored loss term")
     return evaluate_loss_plan(compiled.loss_terms, _rollout_trace_map(rollout))
 
 

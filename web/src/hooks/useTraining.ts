@@ -97,7 +97,12 @@ function buildTrainingConfig(
   const n_reach_steps =
     typeof task.params?.n_steps === 'number'
       ? task.params.n_steps
-      : 80;
+      : null;
+  if (n_reach_steps === null || n_reach_steps <= 0) {
+    throw new Error(
+      'Training requires a positive task rollout length in task.params.n_steps.'
+    );
+  }
 
   return {
     n_batches,

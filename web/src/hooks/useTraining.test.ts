@@ -2,12 +2,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   TRAINING_PROGRESS_BATCH_INTERVAL_MS,
   TRAINING_WS_MAX_RECONNECT_ATTEMPTS,
+  buildTrainingConfig,
   createTrainingProgressBatcher,
   formatTrainingDiagnostic,
   shouldReconnectTrainingWebSocket,
   trainingWebSocketReconnectDelayMs,
 } from '@/hooks/useTraining';
 import { useTrainingStore } from '@/stores/trainingStore';
+
+describe('training config authoring', () => {
+  it('refuses to invent a rollout length when the task omits one', () => {
+    expect(() =>
+      buildTrainingConfig({ type: 'Generic', params: {} }, 10, 1, 0.001)
+    ).toThrow('Training requires a positive task rollout length in task.params.n_steps.');
+  });
+});
 
 describe('training WebSocket reconnect policy', () => {
   it('backs off retries and caps the delay', () => {
