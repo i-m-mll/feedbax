@@ -6,6 +6,7 @@ import uuid
 from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 
 from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID, AcausalGraphSpec
 from feedbax.contracts.array_values import _parse_array_value_payload
@@ -19,9 +20,7 @@ GRAPH_SPEC_SCHEMA_VERSION_V3 = "feedbax.spec.graph.v3"
 GRAPH_SPEC_SCHEMA_VERSION_V4 = "feedbax.spec.graph.v4"
 GRAPH_SPEC_SCHEMA_VERSION = "feedbax.spec.graph.v5"
 LEGACY_GRAPH_SPEC_SCHEMA_VERSION = "1.0.0"
-ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID = (
-    "feedbax.spec.analysis_data_product_requirement"
-)
+ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID = "feedbax.spec.analysis_data_product_requirement"
 ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION = (
     "feedbax.spec.analysis_data_product_requirement.v1"
 )
@@ -40,10 +39,7 @@ def _is_value_spec_like_payload(value: Any) -> bool:
     schema_version = value.get("schema_version")
     return (
         schema_id == STUDIO_VALUE_SPEC_SCHEMA_ID
-        or (
-            isinstance(schema_version, str)
-            and schema_version.startswith("feedbax.studio.value.")
-        )
+        or (isinstance(schema_version, str) and schema_version.startswith("feedbax.studio.value."))
         or (
             isinstance(schema_version, str)
             and schema_version.startswith(f"{STUDIO_VALUE_SPEC_SCHEMA_ID}.")
@@ -150,10 +146,7 @@ class AdditiveGraphChannelTargetSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_target(self) -> "AdditiveGraphChannelTargetSpec":
-        if self.kind == "edge" and (self.source_node is None or self.source_port is None):
-            raise ValueError("edge additive channel adapters require source_node and source_port")
-        if self.kind == "input" and (self.source_node is not None or self.source_port is not None):
-            raise ValueError("input additive channel adapters must not set source_node/source_port")
+        validate_cross_field_refinements(type(self).__name__, self)
         return self
 
 
@@ -354,9 +347,7 @@ class AnalysisDataProductRequirement(BaseModel):
         if not self.role.strip():
             raise ValueError("AnalysisDataProductRequirement role must not be empty")
         if not self.product_schema_id.strip():
-            raise ValueError(
-                "AnalysisDataProductRequirement product_schema_id must not be empty"
-            )
+            raise ValueError("AnalysisDataProductRequirement product_schema_id must not be empty")
         return self
 
 
@@ -458,6 +449,7 @@ class GraphSpec(BaseModel):
                     f"expected one of {GRAPH_SPEC_SCHEMA_ID!r}, {ACAUSAL_GRAPH_SCHEMA_ID!r}"
                 )
         return subgraphs
+
 
 GraphSubgraphSpec = Union[GraphSpec, AcausalGraphSpec]
 
@@ -600,6 +592,12 @@ class AnalysisPageSpec(BaseModel):
     expanded_field_paths: List[str] = Field(default_factory=list)
 
 
+STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID = "feedbax.spec.studio.persistence_document"
+STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION = "feedbax.spec.studio.persistence_document.v1"
+STUDIO_GRAPH_PROJECT_SCHEMA_ID = "feedbax.spec.studio.graph_project"
+STUDIO_GRAPH_PROJECT_SCHEMA_VERSION_LEGACY = "feedbax.spec.studio.graph_project.unversioned"
+STUDIO_GRAPH_PROJECT_SCHEMA_VERSION = "feedbax.spec.studio.graph_project.v1"
+STUDIO_WORKSPACE_SCHEMA_ID = "feedbax.spec.studio.workspace"
 STUDIO_WORKSPACE_SCHEMA_VERSION_V1 = "feedbax.spec.studio.workspace.v1"
 STUDIO_WORKSPACE_SCHEMA_VERSION = "feedbax.spec.studio.workspace.v2"
 WORKSPACE_DOCUMENT_SCHEMA_ID = "feedbax.workspace_document"
@@ -608,6 +606,7 @@ LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION = "feedbax.studio.scenario.v1"
 STUDIO_SCENARIO_SCHEMA_VERSION_V1 = "feedbax.spec.studio.scenario.v1"
 STUDIO_SCENARIO_SCHEMA_VERSION_V2 = "feedbax.spec.studio.scenario.v2"
 STUDIO_SCENARIO_SCHEMA_VERSION = "feedbax.spec.studio.scenario.v3"
+STUDIO_STAGE_SCHEMA_ID = "feedbax.spec.studio.stage"
 STUDIO_STAGE_SCHEMA_VERSION_V1 = "feedbax.spec.studio.stage.v1"
 STUDIO_STAGE_SCHEMA_VERSION = "feedbax.spec.studio.stage.v2"
 STUDIO_BIOMECHANICS_SCHEMA_ID = "feedbax.spec.studio.biomechanics"
@@ -736,22 +735,7 @@ class StudioValueEnumerableSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_form_payload(self) -> "StudioValueEnumerableSpec":
-        if self.form == "list":
-            if not self.values:
-                raise ValueError("sweep list enumerables require at least one value")
-            return self
-        if self.form == "range":
-            if self.start is None or self.stop is None or self.count is None:
-                raise ValueError("sweep range enumerables require start, stop, and count")
-            if self.count < 1:
-                raise ValueError("sweep range count must be positive")
-            if self.scale == "log" and (self.start <= 0 or self.stop <= 0):
-                raise ValueError("log sweep ranges require positive start and stop")
-            return self
-        if self.sampler is None or self.n is None:
-            raise ValueError("sweep sampler enumerables require sampler and n")
-        if self.n < 1:
-            raise ValueError("sweep sampler n must be positive")
+        validate_cross_field_refinements(type(self).__name__, self)
         return self
 
 
@@ -767,17 +751,7 @@ class StudioValueVariationSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_scope_payload(self) -> "StudioValueVariationSpec":
-        if self.scope == "sweep" and self.enumerable is None:
-            raise ValueError("sweep variation requires an enumerable list, range, or sampler+n")
-        if self.scope != "sweep" and self.enumerable is not None:
-            raise ValueError("enumerable payloads are only valid for sweep variation")
-        if self.scope == "run" and self.stochastic_policy not in (None, "shared_per_run"):
-            raise ValueError("run variation samples once and shares within the run")
-        if self.scope == "replicate" and self.stochastic_policy not in (
-            None,
-            "resample_per_replicate",
-        ):
-            raise ValueError("replicate variation resamples per replicate")
+        validate_cross_field_refinements(type(self).__name__, self)
         return self
 
 
@@ -826,7 +800,9 @@ class StudioValueSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: str = STUDIO_VALUE_SPEC_SCHEMA_VERSION
-    value_form: Literal["literal", "reference", "expression", "function", "schedule", "distribution"]
+    value_form: Literal[
+        "literal", "reference", "expression", "function", "schedule", "distribution"
+    ]
     variation: StudioValueVariationSpec = Field(
         default_factory=lambda: StudioValueVariationSpec(scope="fixed")
     )
@@ -875,18 +851,7 @@ class StudioValueSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_value_variation(self) -> "StudioValueSpec":
-        expected_mode = "constant" if self.value_form == "literal" else self.value_form
-        if self.mode != expected_mode:
-            raise ValueError("StudioValueSpec mode must match value_form compatibility alias")
-        if self.value_form == "literal" and self.variation.scope != "sweep":
-            if self.sampling_scope not in (None, "fixed"):
-                raise ValueError("literal fixed values must not carry a sampling_scope")
-        if self.value_form == "distribution" and self.variation.scope == "run":
-            if self.variation.stochastic_policy not in (None, "shared_per_run"):
-                raise ValueError("run distribution specs sample once and share")
-        if self.value_form == "distribution" and self.variation.scope == "replicate":
-            if self.variation.stochastic_policy not in (None, "resample_per_replicate"):
-                raise ValueError("replicate distribution specs resample per replicate")
+        validate_cross_field_refinements(type(self).__name__, self)
         return self
 
 
@@ -945,7 +910,9 @@ class StudioTaskTimelineSegmentSpec(BaseModel):
 class StudioTaskTimelineSpec(BaseModel):
     """Structured task timeline stored under Studio task specs."""
 
-    schema_version: str = "feedbax.spec.studio.task_timeline.v1"
+    schema_version: Literal["feedbax.spec.studio.task_timeline.v1"] = (
+        "feedbax.spec.studio.task_timeline.v1"
+    )
     epochs: List[StudioTaskEpochSpec] = Field(default_factory=list)
     signals: List[StudioTaskTimelineSignalSpec] = Field(default_factory=list)
     segments: List[StudioTaskTimelineSegmentSpec] = Field(default_factory=list)
@@ -999,7 +966,9 @@ class StudioTaskBindingSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "feedbax.spec.studio.task_bindings.v2"
+    schema_version: Literal["feedbax.spec.studio.task_bindings.v2"] = (
+        "feedbax.spec.studio.task_bindings.v2"
+    )
     exposed_data: List[StudioTaskDataSpec] = Field(default_factory=list)
     bindings: List[StudioTaskBinding] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -1033,9 +1002,7 @@ class StudioBiomechanicsSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_id: Literal[STUDIO_BIOMECHANICS_SCHEMA_ID] = STUDIO_BIOMECHANICS_SCHEMA_ID
-    schema_version: Literal[STUDIO_BIOMECHANICS_SCHEMA_VERSION] = (
-        STUDIO_BIOMECHANICS_SCHEMA_VERSION
-    )
+    schema_version: Literal[STUDIO_BIOMECHANICS_SCHEMA_VERSION] = STUDIO_BIOMECHANICS_SCHEMA_VERSION
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -1074,7 +1041,8 @@ class StudioStageSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    schema_version: str = STUDIO_STAGE_SCHEMA_VERSION
+    schema_id: Literal[STUDIO_STAGE_SCHEMA_ID] = STUDIO_STAGE_SCHEMA_ID
+    schema_version: Literal[STUDIO_STAGE_SCHEMA_VERSION] = STUDIO_STAGE_SCHEMA_VERSION
     kind: StudioStageKind
     label: str
     status: StudioStageStatus = "draft"
@@ -1095,7 +1063,8 @@ class StudioWorkspaceSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    schema_version: str = STUDIO_WORKSPACE_SCHEMA_VERSION
+    schema_id: Literal[STUDIO_WORKSPACE_SCHEMA_ID] = STUDIO_WORKSPACE_SCHEMA_ID
+    schema_version: Literal[STUDIO_WORKSPACE_SCHEMA_VERSION] = STUDIO_WORKSPACE_SCHEMA_VERSION
     label: str
     active_stage_id: Optional[str] = None
     stages: List[StudioStageSpec] = Field(default_factory=list)
@@ -1122,9 +1091,7 @@ class WorkspaceDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_id: Literal[WORKSPACE_DOCUMENT_SCHEMA_ID] = WORKSPACE_DOCUMENT_SCHEMA_ID
-    schema_version: Literal[WORKSPACE_DOCUMENT_SCHEMA_VERSION] = (
-        WORKSPACE_DOCUMENT_SCHEMA_VERSION
-    )
+    schema_version: Literal[WORKSPACE_DOCUMENT_SCHEMA_VERSION] = WORKSPACE_DOCUMENT_SCHEMA_VERSION
     semantic_root: SemanticAnchor
     graph_ui_state: GraphUIState = Field(default_factory=GraphUIState)
     workspace_ui_state: Dict[str, Any] = Field(default_factory=dict)
@@ -1136,25 +1103,35 @@ class WorkspaceDocument(BaseModel):
 
     @model_validator(mode="after")
     def validate_semantic_anchors(self) -> "WorkspaceDocument":
-        if self.semantic_root.authored_path != "/graph":
-            raise ValueError("WorkspaceDocument semantic_root must target /graph")
-        revision = self.semantic_root.semantic_document_sha256
-        stale = [
-            name
-            for name, anchor in self.semantic_anchors.items()
-            if anchor.semantic_document_sha256 != revision
-        ]
-        if stale:
-            raise ValueError(
-                "WorkspaceDocument semantic anchors target a different semantic revision: "
-                + ", ".join(sorted(stale))
-            )
+        validate_cross_field_refinements(type(self).__name__, self)
         return self
+
+
+class StudioPersistenceDocument(BaseModel):
+    """One admitted Studio save transaction.
+
+    The envelope is intentionally independent of HTTP create/update semantics.
+    It binds the graph, semantic workspace, and presentation document to one
+    schema-version decision before any of those fields can reach storage.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_id: Literal[STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID]
+    schema_version: Literal[STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION]
+    graph: Optional[GraphSpec] = None
+    workspace_document: Optional[WorkspaceDocument] = None
+    workspace: Optional[StudioWorkspaceSpec] = None
+    expected_save_revision: Optional[int] = Field(default=None, ge=0)
 
 
 class GraphProject(BaseModel):
     """Semantic graph and separately versioned Studio presentation authority."""
 
+    schema_id: Literal[STUDIO_GRAPH_PROJECT_SCHEMA_ID] = STUDIO_GRAPH_PROJECT_SCHEMA_ID
+    schema_version: Literal[STUDIO_GRAPH_PROJECT_SCHEMA_VERSION] = (
+        STUDIO_GRAPH_PROJECT_SCHEMA_VERSION
+    )
     metadata: GraphMetadata
     graph: GraphSpec
     workspace_document: WorkspaceDocument

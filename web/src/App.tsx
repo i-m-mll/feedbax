@@ -15,7 +15,12 @@ import {
   buildWorkspaceSnapshot,
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
-import { fetchGraph, updateGraph } from '@/api/client';
+import {
+  fetchGraph,
+  semanticWorkspaceForSave,
+  studioPersistenceDocument,
+  updateGraph,
+} from '@/api/client';
 import { isHttpConflict } from '@/api/request';
 import { summarizeSaveConflict } from '@/utils/saveConflict';
 import {
@@ -190,12 +195,12 @@ export default function App() {
         clearTimeout(timerRef.current);
         timerRef.current = null;
       }
-      const beaconPayload: Record<string, unknown> = {
+      const beaconPayload = studioPersistenceDocument({
         graph: rootGraph,
         workspace_document: workspaceDocument,
         expected_save_revision: graphStore.saveRevision,
-      };
-      beaconPayload.workspace = workspace;
+      });
+      beaconPayload.workspace = semanticWorkspaceForSave(workspace);
       const body = new Blob(
         [JSON.stringify(beaconPayload)],
         { type: 'application/json' }

@@ -79,7 +79,8 @@ describe('save conflict summaries', () => {
         uiState: { ...baseUi, viewport: { x: 2, y: 0, zoom: 1 } },
         workspace: {
           id: 'workspace:server',
-          schema_version: 'feedbax.spec.studio.workspace.v1',
+          schema_id: 'feedbax.spec.studio.workspace',
+          schema_version: 'feedbax.spec.studio.workspace.v2',
           label: 'Server workspace',
           active_stage_id: null,
           stages: [],
