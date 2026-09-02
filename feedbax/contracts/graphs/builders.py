@@ -11,65 +11,13 @@ import jax.random as jr
 
 from feedbax.models.feedback import FeedbackChannels
 from feedbax.runtime.channel import Channel, ChannelSpec
-from feedbax.runtime.components import (
-    Activation,
-    Constant,
-    Damper,
-    DelayLine,
-    Demux,
-    ElementwiseAffineModulator,
-    GRU,
-    Gain,
-    Input,
-    LSTM,
-    Linear,
-    MLP,
-    MatMul,
-    Multiply,
-    Mux,
-    Noise,
-    Pulse,
-    Ramp,
-    Ravel,
-    Saturation,
-    Scale,
-    Sigmoid,
-    Sine,
-    Spring,
-    Reshape,
-    Subtract,
-    Sum,
-)
-from feedbax.runtime.affine_composer import (
-    AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
-    AffineValueComposer,
-)
-from feedbax.control.affine import build_affine_feedback_controller
-from feedbax.runtime.filters import FirstOrderFilter
 from feedbax.runtime.graph import Component
 from feedbax.intervene.intervene import (
-    AddNoise,
-    AddNoiseParams,
-    ConstantInput,
-    ConstantInputParams,
-    Copy,
-    CurlField,
-    CurlFieldParams,
-    DynamicsMatrixPerturb,
-    DynamicsMatrixPerturbParams,
-    FixedField,
-    FixedFieldParams,
-    NetworkClamp,
-    NetworkConstantInput,
-    NetworkIntervenorParams,
     ThresholdLatchedForce,
     ThresholdLatchedForceParams,
 )
 from feedbax.objectives.loss import CompositeLoss
-from feedbax.mechanics.linear_state_space import (
-    LinearStateSpace,
-    StructuralLinearStateSpace,
-)
+from feedbax.mechanics.linear_state_space import StructuralLinearStateSpace
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 from feedbax.mechanics.backend import DiffraxBackend
 from feedbax.mechanics.body import BodyPreset, default_2link_bounds
@@ -79,16 +27,12 @@ from feedbax.mechanics.muscle_config import (
     default_6muscle_2link_segment_lengths,
     default_6muscle_2link_topology,
 )
-from feedbax.mechanics.muscles.relu_muscle import ReluMuscle
-from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
-from feedbax.mechanics.templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.models.networks import (
     LeakyRNNCell,
     SimpleStagedNetwork,
-    VanillaRNN,
     population_structure_from_spec,
 )
 from feedbax.models.support import identity_func
@@ -100,8 +44,6 @@ from feedbax.components.penzai import (
     penzai_state_variable_paths,
 )
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
-from feedbax.contracts.graphs.prototypes import array_proto_from_shape
-from feedbax.runtime.state_feedback import build_state_feedback_selector
 from feedbax.tasks import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
 from feedbax.tasks.presets import (
     apply_delayed_reaches_preset,
@@ -281,20 +223,6 @@ def _build_analytical_musculoskeletal_plant(params: Mapping[str, Any]) -> Mechan
         dt=dt,
         backend=backend,
         key=jr.PRNGKey(0),
-    )
-
-
-def _build_linear_state_space(params: Mapping[str, Any]) -> LinearStateSpace:
-    return LinearStateSpace(
-        A=jnp.asarray(params["A"]),
-        B=jnp.asarray(params["B"]),
-        B_w=None if params.get("B_w") is None else jnp.asarray(params["B_w"]),
-        dt=float(params.get("dt", 1.0)),
-        initial_state=None
-        if params.get("initial_state") is None
-        else jnp.asarray(params["initial_state"]),
-        pos_slice=tuple(params.get("pos_slice", [0, 2])),
-        vel_slice=tuple(params.get("vel_slice", [2, 4])),
     )
 
 
@@ -478,17 +406,6 @@ def _build_feedback_channels(params: Mapping[str, Any]) -> FeedbackChannels:
     return FeedbackChannels(channel, spec)
 
 
-def _build_filter(params: Mapping[str, Any]) -> FirstOrderFilter:
-    input_proto = array_proto_from_shape(params.get("input_shape"))
-    return FirstOrderFilter(
-        tau_rise=float(params.get("tau_rise", 0.05)),
-        tau_decay=float(params.get("tau_decay", 0.05)),
-        dt=float(params.get("dt", 0.001)),
-        input_proto=input_proto,
-        init_value=float(params.get("init_value", 0.0)),
-    )
-
-
 def _build_task_component(task_type: str, params: Mapping[str, Any]) -> TaskComponent:
     loss_func = CompositeLoss(())
     if task_type == "SimpleReaches":
@@ -502,6 +419,11 @@ def _build_task_component(task_type: str, params: Mapping[str, Any]) -> TaskComp
         )
     elif task_type == "DelayedReaches":
         params = apply_delayed_reaches_preset(params)
+        if params.get("n_control_stages") is not None:
+            params = {
+                **params,
+                "n_steps": int(params["n_control_stages"]) + 1,
+            }
         task = DelayedReaches(
             loss_func=loss_func,
             n_steps=delayed_reaches_n_steps_from_params(params),
@@ -574,256 +496,6 @@ def _build_penzai_adapter(params: Mapping[str, Any]) -> Component:
     )
 
 
-def _build_gain(params: Mapping[str, Any]) -> Gain:
-    return Gain(gain=float(params.get("gain", 1.0)))
-
-
-def _build_input(params: Mapping[str, Any]) -> Input:
-    return Input(output_port=str(params.get("output_port", "output")))
-
-
-def _build_sum(params: Mapping[str, Any]) -> Sum:
-    return Sum()
-
-
-def _build_subtract(params: Mapping[str, Any]) -> Subtract:
-    return Subtract()
-
-
-def _build_multiply(params: Mapping[str, Any]) -> Multiply:
-    return Multiply()
-
-
-def _build_reshape(params: Mapping[str, Any]) -> Reshape:
-    shape = params.get("shape", params.get("output_shape", [1, 1]))
-    if not isinstance(shape, (list, tuple)):
-        raise ValueError("Reshape requires 'shape' as a list of integers")
-    return Reshape(shape=shape)
-
-
-def _build_matmul(params: Mapping[str, Any]) -> MatMul:
-    return MatMul()
-
-
-def _build_scale(params: Mapping[str, Any]) -> Scale:
-    return Scale(scale=params.get("scale", 1.0))
-
-
-def _build_sigmoid(params: Mapping[str, Any]) -> Sigmoid:
-    return Sigmoid()
-
-
-def _build_activation(params: Mapping[str, Any]) -> Activation:
-    activation_name = str(params.get("activation", "identity"))
-    return Activation(activation_name, resolve_nonlinearity(activation_name))
-
-
-def _build_elementwise_affine_modulator(
-    params: Mapping[str, Any],
-) -> ElementwiseAffineModulator:
-    signal_shape = params.get("signal_shape")
-    if not isinstance(signal_shape, (list, tuple)):
-        raise ValueError("ElementwiseAffineModulator requires array parameter 'signal_shape'")
-    return ElementwiseAffineModulator(
-        signal_shape=signal_shape,
-        baseline=params.get("baseline", 1.0),
-        gain_init=params.get("gain_init", 0.0),
-        bias_init=params.get("bias_init", 0.0),
-        trainable=bool(params.get("trainable", True)),
-    )
-
-
-def _build_constant(params: Mapping[str, Any]) -> Constant:
-    return Constant(value=params.get("value", 0.0))
-
-
-def _build_ramp(params: Mapping[str, Any]) -> Ramp:
-    return Ramp(
-        slope=params.get("slope", 1.0),
-        intercept=params.get("intercept", 0.0),
-        dt=float(params.get("dt", 0.01)),
-    )
-
-
-def _build_sine(params: Mapping[str, Any]) -> Sine:
-    return Sine(
-        amplitude=params.get("amplitude", 1.0),
-        frequency=float(params.get("frequency", 1.0)),
-        phase=float(params.get("phase", 0.0)),
-        offset=params.get("offset", 0.0),
-        dt=float(params.get("dt", 0.01)),
-    )
-
-
-def _build_pulse(params: Mapping[str, Any]) -> Pulse:
-    return Pulse(
-        amplitude=params.get("amplitude", 1.0),
-        period=float(params.get("period", 1.0)),
-        duty_cycle=float(params.get("duty_cycle", 0.5)),
-        offset=params.get("offset", 0.0),
-        dt=float(params.get("dt", 0.01)),
-    )
-
-
-def _build_noise(params: Mapping[str, Any]) -> Noise:
-    shape = params.get("shape", [1])
-    if not isinstance(shape, (list, tuple)):
-        shape = [int(shape)]
-    return Noise(
-        mean=float(params.get("mean", 0.0)),
-        std=float(params.get("std", 1.0)),
-        shape=shape,
-    )
-
-
-def _build_saturation(params: Mapping[str, Any]) -> Saturation:
-    return Saturation(
-        min_val=float(params.get("min_val", -1.0)),
-        max_val=float(params.get("max_val", 1.0)),
-    )
-
-
-def _build_delay_line(params: Mapping[str, Any]) -> DelayLine:
-    input_proto = array_proto_from_shape(params.get("input_shape"))
-    return DelayLine(
-        delay=int(params.get("delay", 1)),
-        init_value=float(params.get("init_value", 0.0)),
-        input_proto=input_proto,
-    )
-
-
-def _build_mlp(params: Mapping[str, Any]) -> MLP:
-    hidden_sizes = params.get("hidden_sizes", [64])
-    if not isinstance(hidden_sizes, (list, tuple)):
-        hidden_sizes = [int(hidden_sizes)]
-    return MLP(
-        input_size=int(params.get("input_size", 1)),
-        output_size=int(params.get("output_size", 1)),
-        hidden_sizes=hidden_sizes,
-        activation=str(params.get("activation", "relu")),
-        final_activation=str(params.get("final_activation", "identity")),
-        dtype=_compat_dtype(params),
-        key=jr.PRNGKey(0),
-    )
-
-
-def _build_linear(params: Mapping[str, Any]) -> Linear:
-    return Linear(
-        input_size=int(params.get("input_size", 1)),
-        output_size=int(params.get("output_size", 1)),
-        use_bias=bool(params.get("use_bias", True)),
-        activation=str(params.get("activation", "identity")),
-        dtype=_compat_dtype(params),
-        key=jr.PRNGKey(0),
-    )
-
-
-def _build_mux(params: Mapping[str, Any]) -> Mux:
-    return Mux(n_inputs=int(params.get("n_inputs", 2)))
-
-
-def _build_demux(params: Mapping[str, Any]) -> Demux:
-    sizes = params.get("sizes")
-    if not isinstance(sizes, (list, tuple)):
-        raise ValueError("Demux requires 'sizes' as a non-empty list of positive integers")
-    return Demux(sizes=sizes)
-
-
-def _build_gru(params: Mapping[str, Any]) -> GRU:
-    return GRU(
-        input_size=int(params.get("input_size", 1)),
-        hidden_size=int(params.get("hidden_size", 1)),
-        dtype=_compat_dtype(params),
-        key=jr.PRNGKey(0),
-    )
-
-
-def _build_vanilla_rnn(params: Mapping[str, Any]) -> VanillaRNN:
-    activation_name = str(params.get("activation", params.get("nonlinearity", "tanh")))
-    dtype = params.get("dtype", jnp.float32) or jnp.float32
-    return VanillaRNN(
-        input_size=int(params.get("input_size", 1)),
-        hidden_size=int(params.get("hidden_size", 1)),
-        activation_name=activation_name,
-        nonlinearity=resolve_nonlinearity(activation_name),
-        use_bias=bool(params.get("use_bias", True)),
-        use_noise=bool(params.get("use_noise", False)),
-        noise_strength=float(params.get("noise_strength", 0.01)),
-        dt=float(params.get("dt", 1.0)),
-        tau=float(params.get("tau", 1.0)),
-        dtype=dtype,
-        key=jr.PRNGKey(0),
-    )
-
-
-def _build_lstm(params: Mapping[str, Any]) -> LSTM:
-    return LSTM(
-        input_size=int(params.get("input_size", 1)),
-        hidden_size=int(params.get("hidden_size", 1)),
-        dtype=_compat_dtype(params),
-        key=jr.PRNGKey(0),
-    )
-
-
-def _build_spring(params: Mapping[str, Any]) -> Spring:
-    return Spring(stiffness=float(params.get("stiffness", 1.0)))
-
-
-def _build_damper(params: Mapping[str, Any]) -> Damper:
-    return Damper(damping=float(params.get("damping", 1.0)))
-
-
-def _build_relu_muscle(params: Mapping[str, Any]) -> ReluMuscle:
-    return ReluMuscle(
-        max_isometric_force=float(params.get("max_isometric_force", 500.0)),
-        tau_activation=float(params.get("tau_activation", 0.015)),
-        tau_deactivation=float(params.get("tau_deactivation", 0.05)),
-        min_activation=float(params.get("min_activation", 0.0)),
-        dt=float(params.get("dt", 0.01)),
-        initial_activation=float(params.get("initial_activation", 0.0)),
-    )
-
-
-def _build_rigid_tendon_hill_muscle_thelen(
-    params: Mapping[str, Any],
-) -> RigidTendonHillMuscleThelen:
-    return RigidTendonHillMuscleThelen(
-        max_isometric_force=float(params.get("max_isometric_force", 500.0)),
-        optimal_muscle_length=float(params.get("optimal_muscle_length", 0.1)),
-        tendon_slack_length=float(params.get("tendon_slack_length", 0.1)),
-        vmax_factor=float(params.get("vmax_factor", 10.0)),
-        min_activation=float(params.get("min_activation", 0.001)),
-        tau_activation=float(params.get("tau_activation", 0.015)),
-        tau_deactivation=float(params.get("tau_deactivation", 0.05)),
-        dt=float(params.get("dt", 0.01)),
-        initial_activation=float(params.get("initial_activation", 0.001)),
-        n_muscles=int(params.get("n_muscles", 6)),
-    )
-
-
-def _build_curl_field(params: Mapping[str, Any]) -> CurlField:
-    return CurlField(
-        params=CurlFieldParams(
-            scale=float(params.get("scale", 1.0)),
-            amplitude=float(params.get("amplitude", 1.0)),
-            active=bool(params.get("active", False)),
-        ),
-        label=str(params.get("label", "curl_field")),
-    )
-
-
-def _build_fixed_field(params: Mapping[str, Any]) -> FixedField:
-    return FixedField(
-        params=FixedFieldParams(
-            scale=float(params.get("scale", 1.0)),
-            amplitude=float(params.get("amplitude", 1.0)),
-            field=jnp.asarray(params.get("field", [0.0, 0.0])),
-            active=bool(params.get("active", False)),
-        ),
-        label=str(params.get("label", "fixed_field")),
-    )
-
-
 def _build_threshold_latched_force(params: Mapping[str, Any]) -> ThresholdLatchedForce:
     return ThresholdLatchedForce(
         state_selector=params["state_selector"],
@@ -838,25 +510,6 @@ def _build_threshold_latched_force(params: Mapping[str, Any]) -> ThresholdLatche
             ramp_duration=float(params.get("ramp_duration", 0.0)),
         ),
         label=str(params.get("label", "threshold_latched_force")),
-    )
-
-
-def _build_dynamics_matrix_perturb(params: Mapping[str, Any]) -> DynamicsMatrixPerturb:
-    if "mass" not in params or params["mass"] is None:
-        raise ValueError("DynamicsMatrixPerturb requires explicit mass matching the wired plant")
-    delta_A = jnp.asarray(params.get("delta_A", [[0.0, 0.0, 0.0, 0.0]] * 2))
-    if delta_A.ndim != 2:
-        raise ValueError("DynamicsMatrixPerturb delta_A must be a rank-2 array")
-    if delta_A.shape[1] != 2 * delta_A.shape[0]:
-        raise ValueError("DynamicsMatrixPerturb delta_A must have shape (n_dim, 2 * n_dim)")
-    return DynamicsMatrixPerturb(
-        params=DynamicsMatrixPerturbParams(
-            scale=float(params.get("scale", 1.0)),
-            active=bool(params.get("active", False)),
-            delta_A=delta_A,
-        ),
-        label=str(params.get("label", "dynamics_matrix_perturb")),
-        mass=float(params["mass"]),
     )
 
 
@@ -881,113 +534,20 @@ def _build_structural_linear_state_space(
     )
 
 
-def _build_affine_value_composer(params: Mapping[str, Any]) -> AffineValueComposer:
-    schema_version = str(params.get("schema_version", AFFINE_VALUE_COMPOSER_SCHEMA_VERSION))
-    if schema_version != AFFINE_VALUE_COMPOSER_SCHEMA_VERSION:
-        raise ValueError(
-            "AffineValueComposer unsupported schema_version "
-            f"{schema_version!r}; expected {AFFINE_VALUE_COMPOSER_SCHEMA_VERSION!r}"
-        )
-    return AffineValueComposer(
-        output_block_size=int(params.get("output_block_size", 1)),
-        feature_rules=params.get(
-            "feature_rules",
-            [{"kind": "identity", "state_slice": [0, 1]}],
-        ),
-        gain_init=params.get("gain_init"),
-        bias_init=params.get("bias_init"),
-        use_bias=bool(params.get("use_bias", True)),
-        label=str(params.get("label", "affine_value_composer")),
-    )
+def _build_two_link_arm(params: Mapping[str, Any]) -> Mechanics:
+    return _build_mechanics({**dict(params), "plant_type": "TwoLinkArm"})
 
 
-_BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
-    "Activation": _build_activation,
-    "Gain": _build_gain,
-    "Input": _build_input,
-    "Sum": _build_sum,
-    "Subtract": _build_subtract,
-    "Multiply": _build_multiply,
-    "Reshape": _build_reshape,
-    "MatMul": _build_matmul,
-    "Scale": _build_scale,
-    "Sigmoid": _build_sigmoid,
-    "ElementwiseAffineModulator": _build_elementwise_affine_modulator,
-    "Constant": _build_constant,
-    "Ravel": lambda params: Ravel(),
-    "Ramp": _build_ramp,
-    "Sine": _build_sine,
-    "Pulse": _build_pulse,
-    "Noise": _build_noise,
-    "Saturation": _build_saturation,
-    "DelayLine": _build_delay_line,
-    "Linear": _build_linear,
-    "MLP": _build_mlp,
-    "Mux": _build_mux,
-    "Demux": _build_demux,
-    "GRU": _build_gru,
-    "VanillaRNN": _build_vanilla_rnn,
-    "LSTM": _build_lstm,
-    "Spring": _build_spring,
-    "Damper": _build_damper,
-    "ReluMuscle": _build_relu_muscle,
-    "RigidTendonHillMuscleThelen": _build_rigid_tendon_hill_muscle_thelen,
-    "Arm6MuscleRigidTendon": lambda params: Arm6MuscleRigidTendon(
-        dt=float(params.get("dt", 0.01)),
-        max_isometric_force=float(params.get("max_isometric_force", 500.0)),
-        optimal_muscle_length=float(params.get("optimal_muscle_length", 0.1)),
-        tendon_slack_length=float(params.get("tendon_slack_length", 0.1)),
-    ),
-    "PointMass8MuscleRelu": lambda params: PointMass8MuscleRelu(
-        n_pairs=int(params.get("n_pairs", 4)),
-        max_isometric_force=float(params.get("max_isometric_force", 500.0)),
-        dt=float(params.get("dt", 0.01)),
-    ),
-    "AnalyticalMusculoskeletalPlant": _build_analytical_musculoskeletal_plant,
-    "LinearStateSpace": _build_linear_state_space,
-    "StructuralLinearStateSpace": _build_structural_linear_state_space,
-    "StateFeedbackSelector": build_state_feedback_selector,
-    "AffineFeedbackController": build_affine_feedback_controller,
-    "Channel": _build_channel,
-    "FeedbackChannels": _build_feedback_channels,
-    "FirstOrderFilter": _build_filter,
-    "CurlField": _build_curl_field,
-    "FixedField": _build_fixed_field,
-    "ThresholdLatchedForce": _build_threshold_latched_force,
-    "DynamicsMatrixPerturb": _build_dynamics_matrix_perturb,
-    "AffineValueComposer": _build_affine_value_composer,
-    "AddNoise": lambda params: AddNoise(
-        params=AddNoiseParams(
-            scale=float(params.get("scale", 1.0)),
-            active=bool(params.get("active", False)),
-        )
-    ),
-    "NetworkClamp": lambda params: NetworkClamp(
-        params=NetworkIntervenorParams(
-            scale=float(params.get("scale", 1.0)),
-            active=bool(params.get("active", False)),
-        )
-    ),
-    "NetworkConstantInput": lambda params: NetworkConstantInput(
-        params=NetworkIntervenorParams(
-            scale=float(params.get("scale", 1.0)),
-            active=bool(params.get("active", False)),
-        )
-    ),
-    "ConstantInput": lambda params: ConstantInput(
-        params=ConstantInputParams(
-            scale=float(params.get("scale", 1.0)),
-            active=bool(params.get("active", False)),
-        )
-    ),
-    "Copy": lambda params: Copy(),
-    "TwoLinkArm": lambda params: _build_mechanics({**dict(params), "plant_type": "TwoLinkArm"}),
-    "PointMass": lambda params: _build_mechanics({**dict(params), "plant_type": "PointMass"}),
-    "SimpleReaches": lambda params: _build_task_component("SimpleReaches", params),
-    "DelayedReaches": lambda params: _build_task_component("DelayedReaches", params),
-    "Stabilization": lambda params: _build_task_component("Stabilization", params),
-    "PenzaiAdapter": _build_penzai_adapter,
-}
+def _build_point_mass(params: Mapping[str, Any]) -> Mechanics:
+    return _build_mechanics({**dict(params), "plant_type": "PointMass"})
+
+
+def _build_simple_reaches(params: Mapping[str, Any]) -> TaskComponent:
+    return _build_task_component("SimpleReaches", params)
+
+
+def _build_delayed_reaches(params: Mapping[str, Any]) -> TaskComponent:
+    return _build_task_component("DelayedReaches", params)
 
 
 _DISPLAY_ONLY_MESSAGES: dict[str, str] = {
@@ -1040,19 +600,6 @@ def _template_builder_error(meta: Any, component_registry: Any) -> str | None:
         f"contains node types without registered builders: {details}"
     )
     return message
-
-
-def register_builtin_component_builders(registry: Any) -> None:
-    for name, builder in _BUILDERS.items():
-        registry.register_builder(name, builder, provenance="feedbax")
-    for name in registry.names():
-        meta = registry.get(name)
-        if meta is not None and meta.builder is None:
-            registry.register_builder(
-                name,
-                _unsupported_component_builder(name),
-                provenance="feedbax",
-            )
 
 
 def _unsupported_component_message(

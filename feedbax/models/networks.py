@@ -1246,16 +1246,28 @@ class VanillaRNN(Component):
         hidden_size: int,
         *,
         activation_name: str = "tanh",
-        nonlinearity: Callable = jnp.tanh,
+        nonlinearity: Callable | None = None,
         use_bias: bool = True,
         use_noise: bool = False,
         noise_strength: float = 0.01,
         dt: float = 1.0,
         tau: float = 1.0,
         dtype: object = jnp.float32,
-        key: PRNGKeyArray,
+        key: PRNGKeyArray | None = None,
     ):
         dtype = dtype or jnp.float32
+        if nonlinearity is None:
+            nonlinearities = {
+                "tanh": jnp.tanh,
+                "relu": jax.nn.relu,
+                "identity": identity_func,
+            }
+            try:
+                nonlinearity = nonlinearities[activation_name]
+            except KeyError as exc:
+                raise ValueError(f"Unknown VanillaRNN activation {activation_name!r}") from exc
+        if key is None:
+            key = jr.PRNGKey(0)
         self.input_size = int(input_size)
         self.hidden_size = int(hidden_size)
         self.activation_name = str(activation_name)
