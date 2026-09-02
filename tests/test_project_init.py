@@ -1,4 +1,4 @@
-"""``feedbax init`` creates exactly seven things, twice, without ever rewriting.
+"""``feedbax init`` creates exactly eight things, twice, without losing user bytes.
 
 The value of an initializer is not that it saves typing; it is that the thing it
 produces is *exactly* what the framework expects, and that running it again on a
@@ -10,6 +10,8 @@ than overwrites.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -48,7 +50,7 @@ def _entries(root: Path) -> set[str]:
 # --- the exact inventory ----------------------------------------------------
 
 
-def test_a_new_project_gets_exactly_the_seven_entries(tmp_path: Path) -> None:
+def test_a_new_project_gets_exactly_the_eight_entries(tmp_path: Path) -> None:
     root = _project(tmp_path)
 
     report = project_init.initialize(root)
@@ -57,6 +59,7 @@ def test_a_new_project_gets_exactly_the_seven_entries(tmp_path: Path) -> None:
     assert _entries(root) == set(project_init.entry_paths(report.package))
     assert set(project_init.entry_paths("spinnaker_study")) == {
         PROJECT_DECLARATION_FILENAME,
+        ".gitignore",
         "specs/experiment/authoring_budget.json",
         "ci/feedbax-science-surface.toml",
         "pyproject.toml",
@@ -90,12 +93,46 @@ def test_nothing_speculative_is_created(tmp_path: Path) -> None:
 
     project_init.initialize(root)
 
-    for absent in ("generated", "specs/experiment/example.envelope.json", ".git", ".gitignore"):
+    for absent in ("generated", "specs/experiment/example.envelope.json", ".git"):
         assert not (root / absent).exists(), absent
+    assert (root / ".gitignore").read_text(encoding="utf-8") == "/generated/\n"
     assert list((root / "specs/experiment").iterdir()) == [
         root / "specs/experiment/authoring_budget.json"
     ]
     assert (root / "src" / "spinnaker_study" / "__init__.py").read_text().count("\n") == 1
+
+
+def test_the_output_rule_is_root_anchored(tmp_path: Path) -> None:
+    root = _project(tmp_path)
+    project_init.initialize(root)
+    (root / "generated").mkdir()
+    (root / "generated" / "lock.json").touch()
+    (root / "web" / "src" / "generated").mkdir(parents=True)
+    (root / "web" / "src" / "generated" / "contract.ts").touch()
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+    subprocess.run(["git", "init", "-q", root], check=True, env=env)
+
+    root_output = subprocess.run(
+        ["git", "-C", root, "check-ignore", "--no-index", "-q", "generated/lock.json"],
+        check=False,
+        env=env,
+    )
+    nested_source = subprocess.run(
+        [
+            "git",
+            "-C",
+            root,
+            "check-ignore",
+            "--no-index",
+            "-q",
+            "web/src/generated/contract.ts",
+        ],
+        check=False,
+        env=env,
+    )
+
+    assert root_output.returncode == 0
+    assert nested_source.returncode == 1
 
 
 # --- what it writes is what Feedbax reads -----------------------------------
@@ -226,6 +263,32 @@ def test_a_customized_declaration_is_kept_not_reset(tmp_path: Path) -> None:
     assert load_project_declaration(root).envelope_directory == "studies"
 
 
+def test_an_existing_gitignore_keeps_its_bytes_and_gains_the_declared_rule(
+    tmp_path: Path,
+) -> None:
+    root = _project(tmp_path)
+    original = b"*.secret\r\n# project rule with opaque bytes: \xff"
+    (root / ".gitignore").write_bytes(original)
+    declaration = project_init.default_declaration_document("spinnaker-study")
+    declaration["output_directory"] = "build/compiler-output"
+    (root / PROJECT_DECLARATION_FILENAME).write_text(
+        json.dumps(declaration, indent=2) + "\n", encoding="utf-8"
+    )
+
+    project_init.initialize(root)
+
+    assert (root / ".gitignore").read_bytes() == original + b"\n/build/compiler-output/\n"
+
+
+def test_a_second_run_does_not_duplicate_the_output_ignore_rule(tmp_path: Path) -> None:
+    root = _project(tmp_path)
+    project_init.initialize(root)
+
+    project_init.initialize(root)
+
+    assert (root / ".gitignore").read_text(encoding="utf-8") == "/generated/\n"
+
+
 def test_an_existing_python_project_keeps_its_own_packaging(tmp_path: Path) -> None:
     root = _project(tmp_path)
     pyproject = root / "pyproject.toml"
@@ -307,11 +370,11 @@ def test_a_failed_write_leaves_the_repository_as_it_found_it(
     real_write = project_init.write_atomic
     calls: list[Path] = []
 
-    def failing_write(path: Path, text: str) -> None:
+    def failing_write(path: Path, content: str | bytes) -> None:
         calls.append(path)
         if len(calls) == 3:
             raise OSError("disk went away")
-        real_write(path, text)
+        real_write(path, content)
 
     monkeypatch.setattr(project_init, "write_atomic", failing_write)
 
@@ -319,6 +382,30 @@ def test_a_failed_write_leaves_the_repository_as_it_found_it(
         project_init.initialize(root)
 
     assert _entries(root) == set()
+
+
+def test_a_failed_write_restores_an_existing_gitignore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    original = b"*.secret\r\nopaque=\xff"
+    (root / ".gitignore").write_bytes(original)
+    real_write = project_init.write_atomic
+    calls = 0
+
+    def failing_write(path: Path, content: str | bytes) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise OSError("disk went away")
+        real_write(path, content)
+
+    monkeypatch.setattr(project_init, "write_atomic", failing_write)
+
+    with pytest.raises(OSError, match="disk went away"):
+        project_init.initialize(root)
+
+    assert (root / ".gitignore").read_bytes() == original
 
 
 # --- the bootstrap boundary is stated, not hidden ---------------------------

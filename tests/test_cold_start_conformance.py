@@ -78,6 +78,7 @@ PACKAGE_NAME = "vantry_study"
 
 #: Exactly what ``feedbax init`` is responsible for in an empty directory.
 EXPECTED_INIT_INVENTORY: tuple[str, ...] = (
+    ".gitignore",
     "AGENTS.md",
     "CLAUDE.md",
     "ci/feedbax-science-surface.toml",
@@ -450,8 +451,8 @@ def test_the_wheel_ships_the_agent_instruction_template(
 # --------------------------------------------------------------------------
 
 
-def test_init_creates_exactly_the_seven_entries(initialized: ColdStartProject) -> None:
-    """An empty directory gets seven entries, and no eighth."""
+def test_init_creates_exactly_the_eight_entries(initialized: ColdStartProject) -> None:
+    """An empty directory gets the complete eight-entry project contract."""
     created = sorted(
         path.relative_to(initialized.root).as_posix()
         for path in initialized.root.rglob("*")
@@ -462,6 +463,7 @@ def test_init_creates_exactly_the_seven_entries(initialized: ColdStartProject) -
     assert os.readlink(initialized.root / "CLAUDE.md") == "AGENTS.md"
     assert not (initialized.root / "generated").exists()
     assert not (initialized.root / ".git").exists()
+    assert (initialized.root / ".gitignore").read_text(encoding="utf-8") == "/generated/\n"
 
 
 def test_init_states_the_schema_identity_of_everything_durable_it_writes(
