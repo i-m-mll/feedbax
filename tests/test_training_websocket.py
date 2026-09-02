@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,7 @@ websockets = pytest.importorskip("starlette.websockets")
 WebSocketState = websockets.WebSocketState
 from feedbax.web.app import create_app  # noqa: E402
 from feedbax.web.worker.client import WorkerEventStreamError  # noqa: E402
+from feedbax.web.worker.transport import DEFAULT_WORKER_LIMITS  # noqa: E402
 from feedbax.web.ws import training  # noqa: E402
 
 
@@ -49,10 +51,10 @@ def test_training_ws_sends_upstream_errors_and_closes(monkeypatch) -> None:
     error = websocket.sent[0]
     assert error["type"] == "training_error"
     assert error["job_id"] == "job-1"
-    assert error["error"] == "worker failed"
+    assert error["error"] == "Training worker stream failed."
     assert error["batch"] == 0
     assert error["diagnostics"][0]["code"] == "internal"
-    assert error["diagnostics"][0]["message"] == "worker failed"
+    assert error["diagnostics"][0]["message"] == "Training worker stream failed."
     assert error["seq"] >= 0
     assert isinstance(error["emitted_at_ms"], int)
     assert error["schema_version"] == "feedbax.spec.studio.api_transport.v3"
@@ -94,6 +96,25 @@ def test_training_ws_send_disconnect_exits_without_error(monkeypatch) -> None:
     asyncio.run(training.training_ws(websocket, "job-2"))
 
     assert websocket.sent == []
+
+
+def test_training_ws_refuses_event_over_shared_size_budget(monkeypatch) -> None:
+    async def stream_progress(job_id: str):
+        yield SimpleNamespace(raw={"type": "training_progress", "job_id": job_id})
+
+    websocket = FakeWebSocket()
+    monkeypatch.setattr(training.training_service, "stream_progress", stream_progress)
+    monkeypatch.setattr(
+        training.training_service,
+        "worker_limits",
+        lambda: replace(DEFAULT_WORKER_LIMITS, event_bytes=8),
+    )
+
+    asyncio.run(training.training_ws(websocket, "job-budget"))
+
+    assert len(websocket.sent) == 1
+    assert websocket.sent[0]["type"] == "training_error"
+    assert "size budget" in websocket.sent[0]["error"]
 
 
 def test_training_ws_streams_events_over_real_websocket(monkeypatch) -> None:

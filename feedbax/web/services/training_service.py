@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import socket
@@ -13,8 +14,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, NoReturn, Optional, Sequence
-
-import httpx
 
 from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
@@ -61,6 +60,13 @@ from feedbax.orchestration.stages import (
 from feedbax.orchestration.state import RunSetState
 import feedbax.web.worker.client as worker_client
 from feedbax.web.services.worker_driver import load_worker_execution_payload
+from feedbax.web.worker.transport import (
+    DEFAULT_WORKER_LIMITS,
+    WorkerConsumptionLimits,
+    WorkerConfigurationError,
+    WorkerEndpoint,
+    WorkerResponseError,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -133,6 +139,23 @@ def _orchestration_parent_root() -> Path:
     return Path.home() / ".cache" / "feedbax" / "orchestration"
 
 
+def _allowed_worker_origins_from_env() -> tuple[str, ...]:
+    raw = os.environ.get("FEEDBAX_WORKER_ALLOWED_ORIGINS")
+    if raw is None:
+        return ()
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise WorkerConfigurationError(
+            "FEEDBAX_WORKER_ALLOWED_ORIGINS must be a JSON array of exact origins"
+        ) from exc
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise WorkerConfigurationError(
+            "FEEDBAX_WORKER_ALLOWED_ORIGINS must be a JSON array of exact origins"
+        )
+    return tuple(value)
+
+
 # ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
@@ -149,11 +172,15 @@ class TrainingService:
       variable before construction, or by calling :meth:`connect_remote`.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, allowed_remote_origins: Sequence[str] | None = None) -> None:
         self._port: Optional[int] = None
         self._process: Optional[subprocess.Popen] = None
-        self._base_url: Optional[str] = None
-        self._auth_token: Optional[str] = None
+        self._endpoint: WorkerEndpoint | None = None
+        self._allowed_remote_origins = tuple(
+            allowed_remote_origins
+            if allowed_remote_origins is not None
+            else _allowed_worker_origins_from_env()
+        )
         self._remote: bool = False
         self._lock = asyncio.Lock()
         self._job_refs_by_job: dict[str, _JobRef] = {}
@@ -163,8 +190,7 @@ class TrainingService:
         # directly to an external worker.
         env_url = os.environ.get("FEEDBAX_WORKER_URL")
         if env_url:
-            self._base_url = env_url.rstrip("/")
-            self._remote = True
+            self.connect_remote(env_url, os.environ.get("FEEDBAX_WORKER_AUTH_TOKEN"))
 
     # ------------------------------------------------------------------
     # Remote mode
@@ -177,46 +203,60 @@ class TrainingService:
         forward all requests to the given URL.
 
         Args:
-            url: Base URL of the remote worker, e.g. ``"http://100.1.2.3:8765"``.
-            auth_token: Optional bearer token required by the remote worker.
+            url: Exact worker origin. Non-loopback origins must use HTTPS and
+                appear in the server-configured allowlist.
+            auth_token: Bearer token required for every non-loopback worker.
         """
+        endpoint = WorkerEndpoint.create(
+            url,
+            credential=auth_token,
+            allowed_origins=self._allowed_remote_origins,
+        )
         self._terminate_worker()
-        self._base_url = url.rstrip("/")
-        self._auth_token = auth_token
+        self._endpoint = endpoint
         self._remote = True
 
     def worker_mode(self) -> str:
         """Return ``"remote"`` or ``"local"`` depending on current configuration."""
         return "remote" if self._remote else "local"
 
+    def worker_url(self) -> str | None:
+        """Return the configured credential-free exact origin, if any."""
+        return self._endpoint.origin if self._endpoint is not None else None
+
+    def worker_limits(self) -> WorkerConsumptionLimits:
+        """Return the request policy governing the current or next local worker."""
+        return self._endpoint.limits if self._endpoint is not None else DEFAULT_WORKER_LIMITS
+
     # ------------------------------------------------------------------
     # Worker subprocess lifecycle
     # ------------------------------------------------------------------
 
-    async def _ensure_worker(self) -> str:
+    async def _ensure_worker(self) -> WorkerEndpoint:
         """Lazily start the worker subprocess and wait for it to be healthy.
 
         In remote mode the URL is already configured — this simply returns it.
 
         Returns:
-            The worker base URL, e.g. ``"http://127.0.0.1:54321"``.
+            The validated worker endpoint and request policy.
 
         Raises:
             RuntimeError: If the worker does not respond within 5 seconds.
         """
         async with self._lock:
             if self._remote:
-                if self._base_url is None:
+                if self._endpoint is None:
                     raise RuntimeError("Remote worker URL is not configured")
-                return self._base_url
+                return self._endpoint
 
             if self._process is not None and self._process.poll() is None:
-                # Worker is already alive.
-                return self._base_url  # type: ignore[return-value]
+                if self._endpoint is None:
+                    raise RuntimeError("Local worker endpoint is not configured")
+                return self._endpoint
 
             port = _find_free_port()
             self._port = port
-            self._base_url = f"http://127.0.0.1:{port}"
+            self._endpoint = WorkerEndpoint.create(f"http://127.0.0.1:{port}")
 
             self._process = subprocess.Popen(
                 [sys.executable, "-m", "feedbax.web.worker", "--port", str(port)],
@@ -226,22 +266,21 @@ class TrainingService:
             )
 
             try:
-                await worker_client.wait_for_health(self._base_url, timeout=5.0, interval=0.1)
+                await worker_client.wait_for_health(self._endpoint, timeout=5.0, interval=0.1)
             except Exception as exc:
                 stderr = _worker_stderr_excerpt(self._process)
                 self._terminate_worker()
                 detail = f": {stderr}" if stderr else ""
                 raise RuntimeError(f"Worker subprocess failed health check{detail}") from exc
-            return self._base_url
+            return self._endpoint
 
     def _terminate_worker(self) -> None:
         """Terminate the worker subprocess if it is running."""
         process = self._process
         self._process = None
-        self._base_url = None
+        self._endpoint = None
         self._port = None
         self._remote = False
-        self._auth_token = None
 
         if process is not None:
             try:
@@ -300,7 +339,7 @@ class TrainingService:
         Returns:
             The job ID assigned by the worker.
         """
-        base_url = await self._ensure_worker()
+        endpoint = await self._ensure_worker()
         body = {
             "total_batches": total_batches,
             "training_config": training_config,
@@ -317,9 +356,14 @@ class TrainingService:
             registry=registry,
             driver_registry=driver_registry,
             driver_context=lambda _bundle: DriverConstructionContext(
-                configuration={"base_url": base_url},
+                configuration={
+                    "base_url": endpoint.origin,
+                    "allowed_origins": tuple(sorted(endpoint.allowed_origins)),
+                },
                 credentials=(
-                    {"worker_http_token": self._auth_token} if self._auth_token is not None else {}
+                    {"worker_http_token": endpoint.credential}
+                    if endpoint.credential is not None
+                    else {}
                 ),
             ),
             conformance_registry=conformance_registry,
@@ -347,18 +391,17 @@ class TrainingService:
         Also kills the subprocess if the HTTP request fails (local mode only).
         """
         ref = self._job_ref_for(job_id)
-        if self._base_url is None:
+        if self._endpoint is None:
             if ref is None:
                 raise ValueError(f"Unknown job {job_id!r}")
             return
         try:
             await worker_client.stop_job(
-                self._base_url,
+                self._endpoint,
                 job_id,
-                auth_token=self._auth_token,
             )
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
+        except WorkerResponseError as exc:
+            if exc.status_code == 404:
                 raise ValueError(f"Unknown job {job_id!r}") from exc
             raise
         except Exception:
@@ -368,17 +411,17 @@ class TrainingService:
                     self._process.kill()
                 except OSError:
                     pass
+            raise
 
     async def worker_connected(self) -> bool:
         """Return whether the configured worker responds to health checks."""
-        if self._base_url is None:
+        if self._endpoint is None:
             return False
         try:
             await worker_client.wait_for_health(
-                self._base_url,
+                self._endpoint,
                 timeout=0.5,
                 interval=0.05,
-                auth_token=self._auth_token,
             )
             return True
         except Exception:
@@ -389,18 +432,19 @@ class TrainingService:
         fallback = self._status_from_state(job_id)
         if fallback is not None:
             return fallback
-        if self._base_url is None or (
+        if self._endpoint is None or (
             not self._remote and self._process is not None and self._process.poll() is not None
         ):
             return None
         try:
             status = await worker_client.get_status(
-                self._base_url,
+                self._endpoint,
                 job_id,
-                auth_token=self._auth_token,
             )
             return status
         except Exception:
+            if self._remote:
+                raise
             return fallback
 
     def make_error_event(self, job_id: str, error: str) -> TrainingEvent:
@@ -458,14 +502,13 @@ class TrainingService:
         Yields:
             :class:`TrainingEvent` instances wrapping raw event dicts.
         """
-        if self._base_url is None:
+        if self._endpoint is None:
             async for event in self._stream_from_event_log(job_id):
                 yield event
             return
         async for event in worker_client.stream_events(
-            self._base_url,
+            self._endpoint,
             job_id,
-            auth_token=self._auth_token,
         ):
             event = self._normalize_training_event(job_id, event)
             yield TrainingEvent(raw=event)
@@ -483,7 +526,7 @@ class TrainingService:
             A dict with checkpoint metadata (keys: ``batch``, ``loss``,
             ``weights_available``), or ``None`` if the job is unknown.
         """
-        if self._base_url is None:
+        if self._endpoint is None:
             status = self._status_from_state(job_id)
             if status is None:
                 return None
@@ -495,13 +538,14 @@ class TrainingService:
             }
         try:
             data = await worker_client.get_checkpoint(
-                self._base_url,
+                self._endpoint,
                 job_id,
-                auth_token=self._auth_token,
             )
             data["job_id"] = job_id
             return data
         except Exception:
+            if self._remote:
+                raise
             status = self._status_from_state(job_id)
             if status is None:
                 return None
@@ -514,15 +558,16 @@ class TrainingService:
 
     async def latest_manifest(self, job_id: str) -> Optional[dict]:
         """Return the durable training manifest for *job_id* when available."""
-        if self._base_url is None:
+        if self._endpoint is None:
             return None
         try:
             return await worker_client.get_manifest(
-                self._base_url,
+                self._endpoint,
                 job_id,
-                auth_token=self._auth_token,
             )
         except Exception:
+            if self._remote:
+                raise
             return None
 
     async def download_checkpoint(self, job_id: str, dest_path: str) -> None:
@@ -536,17 +581,16 @@ class TrainingService:
             ValueError: If *job_id* is unknown to the worker.
             RuntimeError: If no worker is configured.
         """
-        if self._base_url is None:
+        if self._endpoint is None:
             raise RuntimeError("No worker configured")
         try:
             await worker_client.download_checkpoint(
-                self._base_url,
+                self._endpoint,
                 job_id,
                 dest_path,
-                auth_token=self._auth_token,
             )
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
+        except WorkerResponseError as exc:
+            if exc.status_code == 404:
                 raise ValueError(f"Unknown job {job_id!r}") from exc
             raise
 

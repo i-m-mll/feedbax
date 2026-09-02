@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import hmac
 import json
 import logging
 import os
@@ -425,9 +426,7 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg", bootstrap_state: Bootstra
         emit=lambda event: _emit(job, event),
     )
     try:
-        terminal_status = (
-            WorkerStatus.IDLE if job.stop_event.is_set() else WorkerStatus.COMPLETED
-        )
+        terminal_status = WorkerStatus.IDLE if job.stop_event.is_set() else WorkerStatus.COMPLETED
         with job._state_lock:
             job.last_loss = result.final_loss
             job.batch = result.final_batch
@@ -613,7 +612,7 @@ def create_app(
         if auth_token is None:
             # Auth not configured — allow all requests.
             return
-        if credentials is None or credentials.credentials != auth_token:
+        if credentials is None or not hmac.compare_digest(credentials.credentials, auth_token):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
     # All routes share this dependency.

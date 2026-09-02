@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
@@ -22,12 +21,6 @@ from feedbax.web.services.training_service import training_service
 
 router = APIRouter()
 _BILLABLE_CONFIRMATION_TOKEN = "launch-billable-gcp-worker"
-_MACHINE_TYPE_ESTIMATES_USD = {
-    "n1-standard-4": 0.20,
-    "n1-standard-8": 0.40,
-    "n2-standard-4": 0.22,
-    "n2-standard-8": 0.44,
-}
 
 
 class LaunchCostEstimate(BaseModel):
@@ -128,27 +121,11 @@ class OrchestrationTargetsResponse(BaseModel):
     targets: list[OrchestrationTarget]
 
 
-def _estimate_launch_cost(machine_type: str, preemptible: bool) -> LaunchCostEstimate:
-    base = _MACHINE_TYPE_ESTIMATES_USD.get(machine_type)
-    basis = "static machine-type estimate"
-    if base is None:
-        pieces = machine_type.rsplit("-", 1)
-        base = 0.05 * (int(pieces[1]) if len(pieces) == 2 and pieces[1].isdigit() else 4)
-        basis = "vCPU-name estimate"
-    hourly = base * (0.30 if preemptible else 1.0)
-    return LaunchCostEstimate(
-        hourly_estimate=round(hourly, 4),
-        machine_type=machine_type,
-        preemptible=preemptible,
-        basis=basis,
-    )
-
-
 @router.post("/launch", response_model=LaunchResponse)
 async def reserve_launch(payload: LaunchRequest) -> LaunchResponse:
     """Create an inert, exact reservation without contacting GCP."""
     try:
-        invocation = invocation_from_document(payload.invocation)
+        invocation_from_document(payload.invocation)
         plan = backend_plan_from_document(payload.backend_plan)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -159,47 +136,12 @@ async def reserve_launch(payload: LaunchRequest) -> LaunchResponse:
             status_code=422,
             detail="GCP BackendPlan must carry an authenticated effect reservation cost boundary",
         )
-    instance_name = (
-        "feedbax-worker-" + hashlib.sha256(plan.external_effect_key.encode()).hexdigest()[:12]
-    )
-    parameters = {
-        "project": payload.project,
-        "zone": payload.zone,
-        "machine_type": payload.machine_type,
-        "preemptible": payload.preemptible,
-        "worker_port": payload.worker_port,
-        "instance_name": instance_name,
-        "install_spec": payload.install_spec.model_dump(mode="json"),
-        "startup_timeout_seconds": min(plan.timeout_seconds, 900),
-        "worker_health_timeout_seconds": min(plan.timeout_seconds, 900),
-        "poll_interval_seconds": 2.0,
-    }
-    try:
-        intent, reservation = get_studio_controller(training_service).reserve_cloud_launch(
-            invocation,
-            plan,
-            parameters=parameters,
-            ttl_seconds=payload.reservation_ttl_seconds,
-            secrets={
-                key: value
-                for key, value in {
-                    "worker_auth_token": payload.worker_auth_token,
-                    "tailscale_auth_key": payload.tailscale_auth_key,
-                }.items()
-                if value is not None
-            },
-        )
-    except (ValueError, ControllerProtocolError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    assert reservation.expires_at is not None
-    return LaunchResponse(
-        status="awaiting_authentication",
-        intent_id=intent.intent_id,
-        reservation_id=reservation.reservation_id,
-        expires_at=reservation.expires_at.isoformat(),
-        instance_name=instance_name,
-        cost_estimate=_estimate_launch_cost(payload.machine_type, payload.preemptible),
-        expected_cost=plan.expected_cost.model_dump(mode="json"),
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            "GCP Studio worker launch is unavailable because this adapter cannot establish "
+            "a verifiable HTTPS worker origin"
+        ),
     )
 
 
@@ -380,8 +322,8 @@ async def list_orchestration_targets() -> OrchestrationTargetsResponse:
                 label="GCP",
                 billable=True,
                 launch_mode="durable-controller",
-                available=True,
-                notes=["Requires authentication of one exact inert reservation."],
+                available=False,
+                notes=["Unavailable until the adapter provides a verifiable HTTPS worker origin."],
             ),
             OrchestrationTarget(
                 id="runpod",

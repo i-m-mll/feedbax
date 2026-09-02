@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from feedbax.web.worker import client as worker_client
+from feedbax.web.worker.transport import WorkerEndpoint
 
 
 class _FailingAsyncClient:
@@ -22,11 +23,11 @@ class _FailingAsyncClient:
 
 
 class _TerminalResponse:
-    def raise_for_status(self) -> None:
-        return None
+    status_code = 200
+    headers: dict[str, str] = {}
 
-    async def aiter_lines(self):
-        yield 'data: {"type": "training_complete", "job_id": "job-terminal", "seq": 4}'
+    async def aiter_bytes(self):
+        yield b'data: {"type": "training_complete", "job_id": "job-terminal", "seq": 4}\n'
 
 
 class _TerminalStream:
@@ -57,15 +58,14 @@ class _TerminalAsyncClient:
 
 class _AcceptedResponse:
     failure: Exception | None = None
+    status_code = 200
+    headers: dict[str, str] = {}
 
-    def raise_for_status(self) -> None:
-        return None
-
-    async def aiter_lines(self):
+    async def aiter_bytes(self):
         if self.failure is not None:
             raise self.failure
         if False:
-            yield ""
+            yield b""
 
 
 class _AcceptedStream:
@@ -95,12 +95,12 @@ class _AcceptedAsyncClient:
 
 
 async def _consume_stream() -> list[dict]:
+    endpoint = WorkerEndpoint.create("http://127.0.0.1:8765", credential="secret-token")
     return [
         event
         async for event in worker_client.stream_events(
-            "http://worker.invalid/secret",
+            endpoint,
             "job-secret",
-            auth_token="secret-token",
         )
     ]
 
@@ -141,9 +141,7 @@ def test_stream_events_returns_cleanly_after_terminal_event(monkeypatch) -> None
 
     events = asyncio.run(_collect_terminal_stream())
 
-    assert events == [
-        {"type": "training_complete", "job_id": "job-terminal", "seq": 4}
-    ]
+    assert events == [{"type": "training_complete", "job_id": "job-terminal", "seq": 4}]
     assert _TerminalAsyncClient.attempts == 1
 
 
@@ -184,7 +182,5 @@ def test_accepted_stream_exhausts_complete_attempts_with_backoff(
 
 
 async def _collect_terminal_stream() -> list[dict]:
-    return [
-        event
-        async for event in worker_client.stream_events("http://worker", "job-terminal")
-    ]
+    endpoint = WorkerEndpoint.create("http://127.0.0.1:8765")
+    return [event async for event in worker_client.stream_events(endpoint, "job-terminal")]

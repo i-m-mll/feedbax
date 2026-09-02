@@ -7,7 +7,7 @@ import json
 import threading
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +35,15 @@ from feedbax.orchestration.drivers.capabilities import (
 from feedbax.orchestration.events import RUN_EVENT_TERMINAL_TYPES, RunEvent
 from feedbax.orchestration.state import RunSetState
 from feedbax.web.worker.identity import require_worker_job_id
+from feedbax.web.worker.transport import (
+    DEFAULT_WORKER_LIMITS,
+    SSEConsumptionBudget,
+    WorkerEndpoint,
+    WorkerResponseError,
+    WorkerTransportError,
+    _check_response,
+    request_json_sync,
+)
 
 
 @dataclass
@@ -80,11 +89,21 @@ class WorkerHttpDriver:
         *,
         base_url: str,
         auth_token: str | None = None,
+        allowed_origins: tuple[str, ...] = (),
         request_timeout: float = 10.0,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.auth_token = auth_token
-        self.request_timeout = request_timeout
+        limits = replace(
+            DEFAULT_WORKER_LIMITS,
+            read_seconds=min(DEFAULT_WORKER_LIMITS.read_seconds, request_timeout),
+            request_seconds=request_timeout,
+        )
+        self.endpoint = WorkerEndpoint.create(
+            base_url,
+            credential=auth_token,
+            allowed_origins=allowed_origins,
+            limits=limits,
+        )
+        self.base_url = self.endpoint.origin
         self._stream_lock = threading.Lock()
         self._teardown_started = False
         self._streams: dict[str, _OwnedStream] = {}
@@ -116,8 +135,6 @@ class WorkerHttpDriver:
         row: RunRowSpec,
         state: RunSetState,
     ) -> Mapping[str, Any]:
-        import httpx
-
         del state
         row_id = require_worker_job_id(row.row_id)
         paths = _row_paths(bundle, row_id)
@@ -132,13 +149,7 @@ class WorkerHttpDriver:
         paths["started"].write_text(str(time.time()), encoding="utf-8")
 
         body = _worker_start_body(bundle, row)
-        response = httpx.post(
-            f"{self.base_url}/start",
-            json=body,
-            headers=self._headers(),
-            timeout=self.request_timeout,
-        )
-        response.raise_for_status()
+        request_json_sync(self.endpoint, "POST", "/start", json_body=body)
         self._ensure_stream_thread(bundle, row)
         return {"row_id": row.row_id, "status": "running"}
 
@@ -148,8 +159,6 @@ class WorkerHttpDriver:
         row: RunRowSpec,
         state: RunSetState,
     ) -> DriverRowProbe:
-        import httpx
-
         del state
         row_id = require_worker_job_id(row.row_id)
         paths = _row_paths(bundle, row_id)
@@ -161,18 +170,17 @@ class WorkerHttpDriver:
                 detail=paths["failed"].read_text(encoding="utf-8").strip() or None,
             )
         try:
-            response = httpx.get(
-                f"{self.base_url}/jobs/{row.row_id}/status",
-                headers=self._headers(),
-                timeout=2.0,
+            payload = request_json_sync(
+                self.endpoint,
+                "GET",
+                f"/jobs/{row.row_id}/status",
             )
-            if response.status_code == 404:
+        except WorkerResponseError as exc:
+            if exc.status_code == 404:
                 return self._orphan_probe(row.row_id)
-            response.raise_for_status()
-        except Exception as exc:
             return self._orphan_probe(row.row_id, detail=str(exc))
-
-        payload = response.json()
+        except WorkerTransportError:
+            return self._orphan_probe(row.row_id, detail="worker request failed")
         status = payload.get("status")
         if status == "completed":
             paths["done"].write_text("status=completed\n", encoding="utf-8")
@@ -190,16 +198,10 @@ class WorkerHttpDriver:
         row: RunRowSpec,
         state: RunSetState,
     ) -> Mapping[str, Any]:
-        import httpx
-
         del state
         row_id = require_worker_job_id(row.row_id)
         try:
-            httpx.post(
-                f"{self.base_url}/jobs/{row_id}/stop",
-                headers=self._headers(),
-                timeout=5.0,
-            ).raise_for_status()
+            request_json_sync(self.endpoint, "POST", f"/jobs/{row_id}/stop")
         finally:
             failed = _row_paths(bundle, row_id)["failed"]
             failed.write_text("stopped\n", encoding="utf-8")
@@ -237,8 +239,8 @@ class WorkerHttpDriver:
             if response is not None:
                 try:
                     response.close()
-                except Exception as exc:
-                    failures.append(f"{row_id}: response close failed: {exc}")
+                except Exception:
+                    failures.append(f"{row_id}: response close failed")
         for row_id, stream in streams:
             thread = stream.thread
             if thread is None:
@@ -261,11 +263,6 @@ class WorkerHttpDriver:
         if failures:
             raise WorkerStreamTeardownError("; ".join(failures))
         return {"driver": "worker-http"}
-
-    def _headers(self) -> dict[str, str]:
-        if self.auth_token is None:
-            return {}
-        return {"Authorization": f"Bearer {self.auth_token}"}
 
     def _ensure_stream_thread(self, bundle: RunBundle, row: RunRowSpec) -> None:
         row_id = require_worker_job_id(row.row_id)
@@ -303,38 +300,40 @@ class WorkerHttpDriver:
         if stream is None:
             stream = _OwnedStream()
         try:
+            self.endpoint.revalidate_address()
+            consumption = SSEConsumptionBudget(self.endpoint.limits)
             with httpx.stream(
                 "GET",
-                f"{self.base_url}/jobs/{row_id}/stream",
-                headers=self._headers(),
-                timeout=self.request_timeout,
+                self.endpoint.url(f"/jobs/{row_id}/stream"),
+                headers=self.endpoint.authorization_headers(),
+                timeout=self.endpoint.limits.httpx_timeout(),
+                follow_redirects=False,
             ) as response:
                 with self._stream_lock:
                     stream.response = response
                 if stream.cancel.is_set():
                     response.close()
                     return
-                response.raise_for_status()
-                response.request.extensions["timeout"]["read"] = None
-                for line in response.iter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    payload = line[len("data:") :].strip()
-                    if not payload:
-                        continue
-                    event = RunEvent.model_validate_json(payload)
-                    with paths["event_log"].open("a", encoding="utf-8") as handle:
-                        handle.write(event.model_dump_json(exclude_none=True) + "\n")
-                    if event.type == "complete":
-                        paths["done"].write_text("event=complete\n", encoding="utf-8")
-                    elif event.type == "failed":
-                        paths["failed"].write_text("event=failed\n", encoding="utf-8")
-                    if event.type in RUN_EVENT_TERMINAL_TYPES:
-                        return
+                _check_response(response)
+                for chunk in response.iter_bytes():
+                    for payload in consumption.feed(chunk):
+                        event = RunEvent.model_validate_json(payload)
+                        with paths["event_log"].open("a", encoding="utf-8") as handle:
+                            handle.write(event.model_dump_json(exclude_none=True) + "\n")
+                        if event.type == "complete":
+                            paths["done"].write_text("event=complete\n", encoding="utf-8")
+                        elif event.type == "failed":
+                            paths["failed"].write_text("event=failed\n", encoding="utf-8")
+                        if event.type in RUN_EVENT_TERMINAL_TYPES:
+                            return
         except Exception as exc:
             if not stream.cancel.is_set():
                 with self._stream_lock:
-                    self._stream_errors[row_id] = str(exc)
+                    self._stream_errors[row_id] = (
+                        str(exc)
+                        if isinstance(exc, WorkerTransportError)
+                        else "worker event stream failed"
+                    )
         finally:
             with self._stream_lock:
                 stream.response = None
@@ -368,11 +367,17 @@ def worker_http_driver_registration() -> DriverRegistration:
         if not isinstance(base_url, str) or not base_url.strip():
             raise ValueError("worker-http driver configuration requires a non-empty base_url")
         request_timeout = configuration.get("request_timeout", 10.0)
-        if not isinstance(request_timeout, (int, float)):
+        if isinstance(request_timeout, bool) or not isinstance(request_timeout, (int, float)):
             raise TypeError("worker-http request_timeout must be numeric")
+        allowed_origins = configuration.get("allowed_origins", ())
+        if not isinstance(allowed_origins, (tuple, list)) or not all(
+            isinstance(origin, str) for origin in allowed_origins
+        ):
+            raise TypeError("worker-http allowed_origins must be a sequence of exact origins")
         driver = WorkerHttpDriver(
             base_url=base_url,
             auth_token=context.credentials.get("worker_http_token"),
+            allowed_origins=tuple(allowed_origins),
             request_timeout=float(request_timeout),
         )
         if driver.realized_capabilities != realized:
