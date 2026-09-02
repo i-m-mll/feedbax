@@ -22,10 +22,12 @@ from feedbax.contracts.figures import (
     TraceFamilyIndex,
     TraceFamilyRange,
 )
-from feedbax.contracts.manifest import (
-    AnalysisRunManifest,
+from feedbax.contracts.base import (
     ParentRef,
     canonical_json_bytes,
+)
+from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
     figure_manifest_id,
     safe_manifest_key,
     spec_payload,

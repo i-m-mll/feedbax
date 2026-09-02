@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import Field, field_validator
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 
 
 SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID = "feedbax.orchestration.shadow_launch_evidence"

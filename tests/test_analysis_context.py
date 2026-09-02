@@ -28,11 +28,13 @@ from feedbax.analysis.materialization import (
     ExistingAnalysisArtifact,
     MaterializationResult,
 )
+from feedbax.contracts.base import (
+    ArtifactRef,
+    ParentRef,
+)
 from feedbax.contracts.manifest import (
     AnalysisRunSpec,
-    ArtifactRef,
     DataProductParentRef,
-    ParentRef,
     REGENERATION_SPEC_SCHEMA_ID,
     RegenerationCommand,
     RegenerationSpec,

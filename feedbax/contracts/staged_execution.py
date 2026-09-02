@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import field_validator
 
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 
 
 STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID = "feedbax.spec.staged_execution"

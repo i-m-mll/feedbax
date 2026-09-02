@@ -19,7 +19,7 @@ from feedbax.contracts.figures import (
     PerturbationTiming,
     SceneCamera,
 )
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 from feedbax.plot import apply_default_template
 from feedbax.plot.colors import color_add_alpha, sample_colorscale_unique
 

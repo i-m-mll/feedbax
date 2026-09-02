@@ -8,7 +8,8 @@ from feedbax.analysis.evaluation import (
     EvaluationRecipeRegistry,
     EvaluationRecipeResult,
 )
-from feedbax.contracts.manifest import EvaluationRunSpec, ParentRef
+from feedbax.contracts.base import ParentRef
+from feedbax.contracts.manifest import EvaluationRunSpec
 from feedbax.contracts.migrations import SpecSchemaFamily, SpecSchemaRegistry
 from feedbax.testing.evaluation_contract import (
     check_evaluation_recipe,

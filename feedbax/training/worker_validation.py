@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import Field
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.worker import (
     FIXED_UPDATE_KERNEL_SIGNATURE,
     AxisRole,

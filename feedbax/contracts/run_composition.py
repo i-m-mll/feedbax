@@ -10,7 +10,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import Field, model_validator
 
 from feedbax.contracts.authored_canonical import CANONICAL_PIN_ALGORITHM
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.run_matrix import (
     ContinuationReconciliation as ContinuationReconciliation,
     DurableSlotTransform as DurableSlotTransform,

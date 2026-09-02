@@ -23,10 +23,12 @@ from feedbax.contracts.figures import (
     SlotSpec,
     TraceBinding,
 )
-from feedbax.contracts.manifest import (
-    AnalysisRunManifest,
+from feedbax.contracts.base import (
     ParentRef,
     canonical_json_bytes,
+)
+from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
     safe_manifest_key,
     spec_payload,
     write_manifest,

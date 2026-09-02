@@ -5,12 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     ArtifactRef,
     StrictModel,
+    sha256_file,
+)
+from feedbax.contracts.manifest import (
     TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
     TrainingRunManifest,
-    sha256_file,
 )
 from feedbax.contracts.run_matrix import (
     TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION,

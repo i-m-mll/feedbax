@@ -8,12 +8,14 @@ from typing import Any
 
 from pydantic import Field, model_validator
 
-from feedbax.contracts.manifest import (
-    TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
-    TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
+from feedbax.contracts.base import (
     StrictModel,
     canonical_json_bytes,
     sha256_bytes,
+)
+from feedbax.contracts.manifest import (
+    TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
+    TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
 )
 from feedbax.contracts.matrix_core import ContentPinnedJsonBase, load_content_pinned_json_base
 from feedbax.contracts.run_matrix import (

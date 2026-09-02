@@ -14,7 +14,8 @@ from pathlib import Path
 import pytest
 
 import feedbax.persistence.artifact_custody as custody_module
-from feedbax.contracts.manifest import ArtifactRef, store_bytes_artifact
+from feedbax.contracts.base import ArtifactRef
+from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.persistence import (
     ArtifactBlobContainmentError,
     ArtifactBlobCustodyError,

@@ -4,24 +4,26 @@ from pathlib import Path
 
 import pytest
 
-from feedbax.contracts.manifest import (
-    AnalysisRunManifest,
+from feedbax.contracts.base import (
     ArtifactRef,
     EntrypointRef,
     ParentRef,
     Provenance,
+    canonical_json_bytes,
+    file_hash_ref,
+    sha256_bytes,
+    sha256_file,
+    tree_hash_ref,
+)
+from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
     REGENERATION_SPEC_SCHEMA_ID,
     REGENERATION_SPEC_SCHEMA_VERSION,
     RegenerationCommand,
     RegenerationSpec,
     ReportManifest,
-    canonical_json_bytes,
-    file_hash_ref,
     load_manifest,
-    sha256_bytes,
-    sha256_file,
     spec_payload,
-    tree_hash_ref,
     write_manifest,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion

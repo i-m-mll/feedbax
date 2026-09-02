@@ -28,7 +28,11 @@ from feedbax.analysis.execution_context import (
     StagedCheckpointCustodyRootBinding,
     resolve_staged_execution_context,
 )
-from feedbax.contracts.manifest import TrainingRunManifest, load_manifest, sha256_bytes
+from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.manifest import (
+    TrainingRunManifest,
+    load_manifest,
+)
 from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,

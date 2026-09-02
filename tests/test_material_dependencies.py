@@ -28,10 +28,12 @@ from feedbax.contracts import (
     training_run_certification,
     validate_material_dependency_admission,
 )
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     ArtifactRef,
-    EvaluationRunSpec,
     ParentRef,
+)
+from feedbax.contracts.manifest import (
+    EvaluationRunSpec,
     TrainingRunManifest,
     evaluation_run_manifest_id,
 )

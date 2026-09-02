@@ -26,10 +26,12 @@ from feedbax.contracts.figures import (
     TraceFamilyRange,
 )
 from feedbax.contracts.migrations import default_spec_registry
-from feedbax.contracts.manifest import (
-    AnalysisRunManifest,
+from feedbax.contracts.base import (
     ParentRef,
     canonical_json_bytes,
+)
+from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
     figure_manifest_id,
     safe_manifest_key,
     spec_payload,

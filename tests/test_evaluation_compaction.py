@@ -31,14 +31,16 @@ from feedbax.contracts.evaluation_lifecycle import (
     EvaluationMatrixBatchPlan,
     EvaluationMatrixBatchUnit,
 )
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
-    AnalysisRunManifest,
     ParentRef,
+    sha256_bytes,
+)
+from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
     evaluation_states_cache_path,
     load_manifest,
-    sha256_bytes,
 )
 from feedbax.contracts.staged_execution import (
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,

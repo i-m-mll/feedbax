@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 
 
 WORKER_CONTRACT_SCHEMA_ID = "feedbax.spec.worker.execution_program"

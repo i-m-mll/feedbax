@@ -23,9 +23,10 @@ from feedbax.contracts.evaluation_states import (
     evaluation_states_container_bytes_v3, load_authenticated_evaluation_states_artifact,
     load_evaluation_states_container_bytes, store_evaluation_states_artifact,
 )
+from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.contracts.manifest import (
-    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION, EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3,
-    store_bytes_artifact,
+    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
+    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion
 

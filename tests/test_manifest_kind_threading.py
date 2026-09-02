@@ -21,13 +21,15 @@ import pytest
 from feedbax.analysis.bundles import _execution_parent_ref_for_manifest
 from feedbax.analysis.reports import resolve_report_inputs
 from feedbax.analysis.specs import ManifestKindMismatch
+from feedbax.contracts.base import (
+    ParentRef,
+    Provenance,
+)
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
     EvaluationRunManifest,
     EvaluationRunSpec,
-    ParentRef,
-    Provenance,
     ReportSpec,
     TrainingRunManifest,
     spec_payload,

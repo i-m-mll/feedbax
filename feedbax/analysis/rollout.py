@@ -38,11 +38,11 @@ import jax.tree as jt
 from jax.tree_util import keystr
 from jaxtyping import PyTree
 
-from feedbax.contracts.manifest import (
-    EvaluationRunSpec,
+from feedbax.contracts.base import (
     canonical_json_bytes,
     sha256_bytes,
 )
+from feedbax.contracts.manifest import EvaluationRunSpec
 
 __all__ = [
     "EvaluationStateCapture",

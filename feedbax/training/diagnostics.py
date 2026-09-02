@@ -15,7 +15,8 @@ from feedbax.contracts.execution_context import (
     ScheduleContextDiagnostic,
 )
 from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError, ArtifactBlobProvider
-from feedbax.contracts.manifest import StrictModel, TrainingRunManifest
+from feedbax.contracts.base import StrictModel
+from feedbax.contracts.manifest import TrainingRunManifest
 from feedbax.contracts.metric_values import NumericBooleanJsonValue
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.contracts.worker import ProgressCoordinate

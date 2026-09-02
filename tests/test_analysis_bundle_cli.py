@@ -40,13 +40,15 @@ from feedbax.contracts.analysis_bundle_composition import (
     ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_ID,
     ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_VERSION,
 )
+from feedbax.contracts.base import (
+    ParentRef,
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     EvaluationRunSpec,
-    ParentRef,
     TrainingRunManifest,
-    canonical_json_bytes,
     load_manifest,
-    sha256_bytes,
     write_manifest,
 )
 from feedbax.contracts.staged_execution import (

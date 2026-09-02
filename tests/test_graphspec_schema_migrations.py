@@ -32,11 +32,13 @@ from feedbax.contracts.array_values import (
     ARRAY_VALUE_SCHEMA_ID,
     ARRAY_VALUE_SCHEMA_VERSION,
 )
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     ArtifactMigrationRecord,
+    ParentRef,
+)
+from feedbax.contracts.manifest import (
     GraphSpecManifest,
     ModelArtifactManifest,
-    ParentRef,
     SpecPayload,
     load_graph_spec_from_manifest,
     spec_payload,

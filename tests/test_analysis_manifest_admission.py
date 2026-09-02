@@ -34,14 +34,16 @@ from feedbax.analysis.specs import (
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.contracts.evaluation_states import EVALUATION_STATES_ARTIFACT_ROLE
+from feedbax.contracts.base import (
+    ArtifactRef,
+    ParentRef,
+    Provenance,
+)
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
-    ArtifactRef,
     EvaluationRunManifest,
     EvaluationRunSpec,
-    ParentRef,
-    Provenance,
     analysis_run_manifest_id,
     canonical_manifest_path,
     safe_manifest_key,

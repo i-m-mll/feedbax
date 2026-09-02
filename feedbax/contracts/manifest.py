@@ -8,38 +8,59 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import subprocess
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
+from feedbax.contracts.artifact_store import (
+    _retention_artifact_payload,
+    _validate_retention_artifact_ref_metadata,
+    store_artifact,
+    store_json_artifact,
+)
+from feedbax.contracts.base import (
+    AUTHENTICATED_MANIFEST_REF_SCHEMA_ID as AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+)
+from feedbax.contracts.base import (
+    AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION as AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+)
+from feedbax.contracts.base import (
+    ArrayStoreRef,
+    ArtifactMigrationRecord,
+    ArtifactRef,
+    ArtifactValidationRecord,
+    EntrypointRef,
+    FileHashRef,
+    ParentRef,
+    Provenance,
+    StrictModel,
+    TreeHashRef,
+    authenticated_manifest_ref_profile,
+    canonical_json_bytes,
+    collect_git_provenance,
+    default_manifest_root,
+    feedbax_version,
+    sha256_bytes,
+    utc_now,
+)
+from feedbax.contracts.base import (
+    authenticated_manifest_ref_metadata as authenticated_manifest_ref_metadata,
+)
 from feedbax.contracts.graph import AnalysisInputRequirement
 from feedbax.contracts.retention_artifact_schema import (
-    RETENTION_ARTIFACT_ROLE_SCHEMAS,
-    retained_observables_to_json,
     retention_artifact_metadata,
-    retention_artifact_schema,
 )
 from feedbax.contracts.schema_namespace import validate_schema_identity
 from feedbax.contracts.strict_json import strict_json_loads
-
-try:
-    from importlib.metadata import PackageNotFoundError, version
-except ImportError:  # pragma: no cover - Python 3.12 always has importlib.metadata.
-    PackageNotFoundError = Exception  # type: ignore[assignment]
-    version = None  # type: ignore[assignment]
-
 
 SCHEMA_VERSION = "feedbax.manifest.v1"
 TRAINING_RUN_SET_SCHEMA_VERSION_V1 = SCHEMA_VERSION
 TRAINING_RUN_SET_SCHEMA_VERSION = "feedbax.manifest.training_run_set.v2"
 PROVIDER_VERSION = "feedbax-provider.v1"
-DEFAULT_MANIFEST_ROOT_ENV = "FEEDBAX_RUNS_DIR"
 REGENERATION_SPEC_SCHEMA_ID = "feedbax.spec.regeneration"
 REGENERATION_SPEC_SCHEMA_VERSION = "feedbax.spec.regeneration.v1"
 ANALYSIS_DATA_PRODUCT_SCHEMA_ID = "feedbax.manifest.analysis_data_product"
@@ -103,185 +124,7 @@ TRAINING_RUN_CERTIFICATION_MIGRATION_TABLE = {
 }
 STAGED_EVALUATION_PREREQUISITE_SCHEMA_ID = "feedbax.spec.staged_evaluation_prerequisite"
 STAGED_EVALUATION_PREREQUISITE_SCHEMA_VERSION = "feedbax.spec.staged_evaluation_prerequisite.v1"
-AUTHENTICATED_MANIFEST_REF_SCHEMA_ID = "feedbax.ref.authenticated_manifest"
-AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION = "feedbax.ref.authenticated_manifest.v1"
-
-_AUTHENTICATED_MANIFEST_REF_PROFILE_DISCRIMINATORS = frozenset(
-    {"ref_schema_id", "ref_schema_version"}
-)
-_AUTHENTICATED_MANIFEST_REF_PROFILE_KEYS = _AUTHENTICATED_MANIFEST_REF_PROFILE_DISCRIMINATORS | {
-    "manifest_sha256",
-    "size_bytes",
-}
-
 ManifestStatus = Literal["pending", "running", "completed", "failed", "cancelled", "stale"]
-
-
-def feedbax_version() -> str:
-    """Return the installed Feedbax package version, or a useful local fallback."""
-    if version is None:
-        return "unknown"
-    try:
-        return version("feedbax")
-    except PackageNotFoundError:
-        return "unknown"
-
-
-def utc_now() -> datetime:
-    """Return a timezone-aware UTC timestamp with stable second precision."""
-    return datetime.now(timezone.utc).replace(microsecond=0)
-
-
-def default_manifest_root() -> Path:
-    """Return the root directory for local manifests and artifacts."""
-    configured = os.environ.get(DEFAULT_MANIFEST_ROOT_ENV)
-    if configured:
-        return Path(configured).expanduser()
-    return Path.cwd() / "feedbax_runs"
-
-
-class StrictModel(BaseModel):
-    """Base model for provider-contract records."""
-
-    model_config = ConfigDict(extra="forbid")
-
-
-class ArtifactRef(StrictModel):
-    """Reference to a large output artifact stored outside a manifest."""
-
-    role: str
-    logical_name: str
-    artifact_id: Optional[str] = None
-    sha256: Optional[str] = None
-    media_type: str = "application/octet-stream"
-    size_bytes: Optional[int] = None
-    storage_backend: str = "feedbax-local"
-    uri: Optional[str] = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class ArrayStoreRef(StrictModel):
-    """Reference to a role-addressed parameter/state array store."""
-
-    role: Literal["params", "state", "optimizer", "history"]
-    schema_version: str
-    storage_backend: str
-    logical_name: str
-    artifact_id: Optional[str] = None
-    sha256: Optional[str] = None
-    uri: Optional[str] = None
-    array_count: int
-    roles: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class ArtifactValidationRecord(StrictModel):
-    """Validation outcome for a durable artifact or migration step."""
-
-    name: str
-    status: Literal["passed", "failed", "warning"]
-    checked_at: datetime = Field(default_factory=utc_now)
-    schema_version: Optional[str] = None
-    details: dict[str, Any] = Field(default_factory=dict)
-
-
-class ArtifactMigrationRecord(StrictModel):
-    """Provenance for a schema-to-schema artifact migration."""
-
-    migration_id: str
-    source_schema_version: str
-    target_schema_version: str
-    applied_at: datetime = Field(default_factory=utc_now)
-    tool: str = "feedbax"
-    deterministic: bool = True
-    validation: list[ArtifactValidationRecord] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class EntrypointRef(StrictModel):
-    """How a manifest-producing operation was invoked."""
-
-    kind: str
-    command: Optional[str] = None
-    name: Optional[str] = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class ParentRef(StrictModel):
-    """Reference to an input spec, parent manifest, or parent artifact."""
-
-    kind: str
-    id: str
-    role: Optional[str] = None
-    uri: Optional[str] = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-def authenticated_manifest_ref_metadata(digest: str, size_bytes: int) -> dict[str, Any]:
-    """Return the ref metadata one ``(sha256, size)`` custody profile authenticates.
-
-    This is the producer half of :func:`authenticated_manifest_ref_profile`: a
-    caller that already holds an authenticated profile — because a custody
-    document or a compile lock stated it — states it as ref metadata here rather
-    than assembling the four keys itself, so a producer can never emit a profile
-    the reader would refuse.
-
-    Raises:
-        ValueError: The digest is not a lowercase SHA-256 or the size is not a
-            non-negative integer. An invalid profile is refused at the producer
-            rather than written and refused later.
-    """
-    if (
-        not isinstance(digest, str)
-        or len(digest) != 64
-        or any(character not in "0123456789abcdef" for character in digest)
-    ):
-        raise ValueError(f"authenticated manifest ref digest {digest!r} is not a SHA-256")
-    if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes < 0:
-        raise ValueError(f"authenticated manifest ref size {size_bytes!r} is not a byte count")
-    return {
-        "ref_schema_id": AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
-        "ref_schema_version": AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
-        "manifest_sha256": digest,
-        "size_bytes": size_bytes,
-    }
-
-
-def authenticated_manifest_ref_profile(ref: ParentRef) -> tuple[str, int] | None:
-    """Return one ref's authenticated byte profile, if it declares one.
-
-    Partial or unsupported authenticated profiles raise rather than degrading to
-    an unauthenticated manifest reference.
-    """
-
-    discriminators = _AUTHENTICATED_MANIFEST_REF_PROFILE_DISCRIMINATORS.intersection(ref.metadata)
-    if not discriminators:
-        return None
-    present = _AUTHENTICATED_MANIFEST_REF_PROFILE_KEYS.intersection(ref.metadata)
-    if present != _AUTHENTICATED_MANIFEST_REF_PROFILE_KEYS:
-        missing = ", ".join(sorted(_AUTHENTICATED_MANIFEST_REF_PROFILE_KEYS - present))
-        raise ValueError(f"Authenticated manifest ref {ref.id!r} is incomplete: {missing}")
-    schema_id = ref.metadata["ref_schema_id"]
-    schema_version = ref.metadata["ref_schema_version"]
-    digest = ref.metadata["manifest_sha256"]
-    size = ref.metadata["size_bytes"]
-    if schema_id != AUTHENTICATED_MANIFEST_REF_SCHEMA_ID:
-        raise ValueError(f"Unsupported authenticated manifest ref schema_id: {schema_id!r}")
-    if schema_version != AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION:
-        raise ValueError(
-            f"Unsupported authenticated manifest ref schema_version: {schema_version!r}"
-        )
-    if (
-        not isinstance(digest, str)
-        or len(digest) != 64
-        or any(character not in "0123456789abcdef" for character in digest)
-    ):
-        raise ValueError(f"Authenticated manifest ref {ref.id!r} has invalid SHA-256")
-    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
-        raise ValueError(f"Authenticated manifest ref {ref.id!r} has invalid byte size")
-    if ref.uri is not None:
-        raise ValueError("Authenticated manifest refs must keep machine-local locators out of uri")
-    return digest, size
 
 
 class StagedEvaluationPrerequisite(StrictModel):
@@ -307,50 +150,6 @@ class EvaluationParamsBase(StrictModel):
     """Strict public base for recipe params, including Feedbax-reserved fields."""
 
     staged_prerequisites: dict[str, StagedEvaluationPrerequisite] | None = None
-
-
-class Provenance(StrictModel):
-    """Shared provenance fields recorded on durable manifests."""
-
-    source_repo: Optional[str] = None
-    source_branch: Optional[str] = None
-    source_commit: Optional[str] = None
-    dirty: Optional[bool] = None
-    entrypoint: Optional[EntrypointRef] = None
-    issues: list[str] = Field(default_factory=list)
-    parents: list[ParentRef] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class FileHashRef(StrictModel):
-    """Deterministic content hash for one source or artifact file."""
-
-    path: str
-    sha256: str
-    size_bytes: int
-    role: Optional[str] = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class TreeHashEntry(StrictModel):
-    """One file entry included in a deterministic tree hash."""
-
-    path: str
-    sha256: str
-    size_bytes: int
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class TreeHashRef(StrictModel):
-    """Deterministic hash for a directory tree and its member file hashes."""
-
-    path: str
-    sha256: str
-    file_count: int
-    total_size_bytes: int
-    files: list[TreeHashEntry] = Field(default_factory=list)
-    role: Optional[str] = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class RegenerationCommand(StrictModel):
@@ -1466,17 +1265,6 @@ SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND: dict[str, tuple[str, ...]] = {
 }
 
 
-def canonical_json_bytes(value: Any) -> bytes:
-    """Serialize a value using stable JSON for hashing."""
-    if isinstance(value, BaseModel):
-        value = value.model_dump(mode="json", exclude_none=True)
-    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-
-
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
 def analysis_data_product_identity_envelope(product: AnalysisDataProduct) -> dict[str, Any]:
     """Return the semantic envelope hashed into ``product_identity_hash``.
 
@@ -1526,73 +1314,6 @@ def analysis_data_product_identity_envelope(product: AnalysisDataProduct) -> dic
 def analysis_data_product_identity_hash(product: AnalysisDataProduct) -> str:
     """Hash the deterministic semantic envelope for an analysis data product."""
     return sha256_bytes(canonical_json_bytes(analysis_data_product_identity_envelope(product)))
-
-
-def sha256_file(path: Path | str) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def file_hash_ref(
-    path: Path | str,
-    *,
-    root: Path | str | None = None,
-    role: Optional[str] = None,
-    metadata: Optional[dict[str, Any]] = None,
-) -> FileHashRef:
-    """Return a deterministic hash reference for one file."""
-    file_path = Path(path)
-    display_path = str(file_path if root is None else file_path.relative_to(Path(root)))
-    stat = file_path.stat()
-    return FileHashRef(
-        path=display_path,
-        sha256=sha256_file(file_path),
-        size_bytes=stat.st_size,
-        role=role,
-        metadata=dict(metadata or {}),
-    )
-
-
-def tree_hash_ref(
-    path: Path | str,
-    *,
-    root: Path | str | None = None,
-    role: Optional[str] = None,
-    include_files: bool = True,
-    metadata: Optional[dict[str, Any]] = None,
-) -> TreeHashRef:
-    """Return a deterministic hash reference for regular files under a directory."""
-    tree_path = Path(path)
-    if not tree_path.is_dir():
-        raise NotADirectoryError(tree_path)
-
-    entries: list[TreeHashEntry] = []
-    total_size = 0
-    for file_path in sorted(candidate for candidate in tree_path.rglob("*") if candidate.is_file()):
-        relative_path = str(file_path.relative_to(tree_path))
-        stat = file_path.stat()
-        total_size += stat.st_size
-        entries.append(
-            TreeHashEntry(
-                path=relative_path,
-                sha256=sha256_file(file_path),
-                size_bytes=stat.st_size,
-            )
-        )
-    digest_payload = [entry.model_dump(mode="json", exclude_none=True) for entry in entries]
-    display_path = str(tree_path if root is None else tree_path.relative_to(Path(root)))
-    return TreeHashRef(
-        path=display_path,
-        sha256=sha256_bytes(canonical_json_bytes(digest_payload)),
-        file_count=len(entries),
-        total_size_bytes=total_size,
-        files=entries if include_files else [],
-        role=role,
-        metadata=dict(metadata or {}),
-    )
 
 
 def _spec_payload_record_metadata(
@@ -1739,292 +1460,6 @@ def spec_payload(kind: str, inline: dict[str, Any], ref: Optional[str] = None) -
     """Build a registry-stamped spec payload hashed after inline migration."""
     payload = SpecPayload(kind=kind, inline=inline, ref=ref)
     return migrate_spec_payload(payload, path=kind, assume_current=True)
-
-
-def collect_git_provenance(cwd: Path | str | None = None) -> Provenance:
-    """Collect best-effort local Git provenance without mutating repository state."""
-    repo_cwd = Path(cwd) if cwd is not None else Path.cwd()
-
-    def _git(*args: str) -> Optional[str]:
-        try:
-            proc = subprocess.run(
-                ["git", *args],
-                cwd=repo_cwd,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-        except (OSError, subprocess.CalledProcessError):
-            return None
-        return proc.stdout.strip() or None
-
-    status = _git("status", "--porcelain")
-    return Provenance(
-        source_repo=_git("config", "--get", "remote.origin.url"),
-        source_branch=_git("rev-parse", "--abbrev-ref", "HEAD"),
-        source_commit=_git("rev-parse", "HEAD"),
-        dirty=(bool(status) if status is not None else None),
-    )
-
-
-def _artifact_path(root: Path, digest: str) -> Path:
-    return root / "artifacts" / "sha256" / digest[:2] / digest
-
-
-_ARTIFACT_STREAM_CHUNK_BYTES = 1024 * 1024
-
-
-def _file_content_identity(path: Path) -> tuple[str, int]:
-    """Return the streamed ``(sha256, size_bytes)`` identity of a file."""
-    digest = hashlib.sha256()
-    size_bytes = 0
-    with Path(path).open("rb") as stream:
-        while chunk := stream.read(_ARTIFACT_STREAM_CHUNK_BYTES):
-            digest.update(chunk)
-            size_bytes += len(chunk)
-    return digest.hexdigest(), size_bytes
-
-
-DEFAULT_ARTIFACT_MEDIA_TYPE = "application/octet-stream"
-
-ARTIFACT_MEDIA_TYPES_BY_EXTENSION: dict[str, str] = {
-    "html": "text/html",
-    "json": "application/json",
-    "svg": "image/svg+xml",
-    "png": "image/png",
-    "jpg": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "webp": "image/webp",
-    "pdf": "application/pdf",
-    "npz": "application/x-npz",
-}
-
-
-def media_type_for_extension(
-    extension: str,
-    *,
-    default: str = DEFAULT_ARTIFACT_MEDIA_TYPE,
-) -> str:
-    """Return the artifact media type registered for a file extension.
-
-    This is the single source for extension-to-media-type mapping used when storing
-    artifacts. The extension may be given with or without a leading dot and in any case.
-
-    Args:
-        extension: File extension such as `"png"`, `".PNG"`, or a `Path.suffix` value.
-        default: Media type returned for an unregistered extension.
-    """
-    return ARTIFACT_MEDIA_TYPES_BY_EXTENSION.get(extension.lstrip(".").lower(), default)
-
-
-def store_artifact(
-    source_path: Path | str,
-    *,
-    root: Path | str | None = None,
-    role: str,
-    logical_name: Optional[str] = None,
-    media_type: str = "application/octet-stream",
-    metadata: Optional[dict[str, Any]] = None,
-) -> ArtifactRef:
-    """Copy an artifact into the local content-addressed store and return its ref.
-
-    The published canonical bytes are read back and verified against the source
-    content identity before the reference is returned, so the returned digest and
-    size always describe the bytes actually stored. A source that changes during
-    the copy, or a canonical destination that already holds different bytes,
-    fails closed without overwriting the existing canonical file.
-    """
-    source = Path(source_path)
-    if not source.exists():
-        raise FileNotFoundError(source)
-    root_path = Path(root) if root is not None else default_manifest_root()
-    expected_identity = _file_content_identity(source)
-    data = source.read_bytes()
-    if (sha256_bytes(data), len(data)) != expected_identity:
-        from feedbax.persistence.artifact_custody import ArtifactBlobIntegrityError
-
-        raise ArtifactBlobIntegrityError(f"artifact source bytes changed during store: {source}")
-    artifact_metadata = dict(metadata or {})
-    artifact_metadata.setdefault("original_uri", str(source))
-    return store_bytes_artifact(
-        data,
-        root=root_path,
-        role=role,
-        logical_name=logical_name or source.name,
-        media_type=media_type,
-        metadata=artifact_metadata,
-    )
-
-
-def store_json_artifact(
-    value: Any,
-    *,
-    root: Path | str | None = None,
-    role: str,
-    logical_name: str,
-    metadata: Optional[dict[str, Any]] = None,
-) -> ArtifactRef:
-    """Write stable JSON into the local content-addressed store.
-
-    The serialized bytes are published through the same verified byte store as
-    :func:`store_bytes_artifact`, so the canonical file is read back and compared
-    against the serialized payload, including when the canonical name already exists.
-    """
-    data = json.dumps(value, indent=2, sort_keys=True).encode() + b"\n"
-    return store_bytes_artifact(
-        data,
-        root=root,
-        role=role,
-        logical_name=logical_name,
-        media_type="application/json",
-        metadata=metadata,
-    )
-
-
-def store_bytes_artifact(
-    data: bytes,
-    *,
-    root: Path | str | None = None,
-    role: str,
-    logical_name: str,
-    media_type: str = "application/octet-stream",
-    metadata: Optional[dict[str, Any]] = None,
-) -> ArtifactRef:
-    """Atomically write opaque bytes into the local content-addressed store.
-
-    The canonical name is published only after the exact temporary bytes are
-    flushed and verified. Platforms without descriptor-relative, no-follow
-    operations fail closed at the common BlobStore boundary.
-    """
-    if not isinstance(data, bytes):
-        raise TypeError("artifact data must be bytes")
-    from feedbax.persistence.publication import LocalBlobStore
-
-    root_path = Path(root) if root is not None else default_manifest_root()
-    blob = LocalBlobStore(Path(root_path).absolute()).stage(data)
-    dest = _artifact_path(root_path, blob.digest)
-    artifact_metadata = dict(metadata or {})
-    artifact_metadata.setdefault("relative_path", str(dest.relative_to(root_path)))
-    return ArtifactRef(
-        role=role,
-        logical_name=logical_name,
-        artifact_id=f"artifact://sha256/{blob.digest}",
-        sha256=blob.digest,
-        media_type=media_type,
-        size_bytes=blob.size_bytes,
-        uri=str(dest),
-        metadata=artifact_metadata,
-    )
-
-
-def _validate_retention_artifact_version(
-    role: str,
-    payload: dict[str, Any],
-    *,
-    path: str,
-) -> dict[str, Any]:
-    """Validate or stamp a governed retention artifact payload."""
-    from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
-
-    kind, expected_schema_id, current_version = retention_artifact_schema(role)
-    schema_id = payload.get("schema_id")
-    if schema_id is not None and schema_id != expected_schema_id:
-        raise UnsupportedSpecVersion(
-            "Unsupported retention artifact schema identity: "
-            f"path={path!r}, role={role!r}, kind={kind!r}, "
-            f"schema_id={schema_id!r}, expected={expected_schema_id!r}"
-        )
-
-    source_version = payload.get("schema_version")
-    if source_version is not None and not isinstance(source_version, str):
-        raise UnsupportedSpecVersion(
-            "Retention artifact schema_version must be a string: "
-            f"path={path!r}, role={role!r}, kind={kind!r}, "
-            f"schema_version={source_version!r}"
-        )
-    if isinstance(source_version, str) and source_version and source_version != current_version:
-        try:
-            default_spec_registry.migrate(kind, payload, source_version=source_version)
-        except UnsupportedSpecVersion as exc:
-            raise UnsupportedSpecVersion(
-                "Unsupported retention artifact schema version: "
-                f"path={path!r}, role={role!r}, kind={kind!r}; {exc}"
-            ) from exc
-
-    stamped = dict(payload)
-    stamped["schema_id"] = expected_schema_id
-    stamped["schema_version"] = current_version
-    return stamped
-
-
-def _retention_artifact_payload(
-    role: str,
-    value: Any,
-    *,
-    path: str,
-) -> dict[str, Any]:
-    if role == "retained_observables":
-        if (
-            isinstance(value, dict)
-            and ("schema_id" in value or "schema_version" in value)
-            and "observables" in value
-        ):
-            payload = dict(value)
-        else:
-            payload = retained_observables_to_json(value)
-    elif role == "retention_plan":
-        if not isinstance(value, dict):
-            raise TypeError(
-                "retention_plan artifact payload must be a mapping: "
-                f"path={path!r}, got={type(value).__name__}"
-            )
-        payload = dict(value)
-    else:
-        payload = value
-    if not isinstance(payload, dict):
-        raise TypeError(
-            "retention artifact payload must be a mapping after schema wrapping: "
-            f"path={path!r}, role={role!r}, got={type(payload).__name__}"
-        )
-    return _validate_retention_artifact_version(role, payload, path=path)
-
-
-def _validate_retention_artifact_ref_metadata(data: dict[str, Any]) -> dict[str, Any]:
-    artifacts = data.get("artifacts")
-    if not isinstance(artifacts, list):
-        return data
-    normalized = dict(data)
-    for index, artifact in enumerate(artifacts):
-        if not isinstance(artifact, dict):
-            continue
-        role = artifact.get("role")
-        if role not in RETENTION_ARTIFACT_ROLE_SCHEMAS:
-            continue
-        metadata = artifact.get("metadata")
-        if not isinstance(metadata, dict):
-            metadata = {}
-        missing = [
-            key
-            for key in ("schema_id", "schema_version")
-            if not isinstance(metadata.get(key), str) or not metadata.get(key)
-        ]
-        if missing:
-            from feedbax.contracts.migrations import UnsupportedSpecVersion
-
-            raise UnsupportedSpecVersion(
-                "Retention artifact ref is missing governed schema metadata: "
-                f"path='artifacts/{index}/metadata', role={role!r}, missing={missing}"
-            )
-        _validate_retention_artifact_version(
-            role,
-            {
-                "schema_id": metadata["schema_id"],
-                "schema_version": metadata["schema_version"],
-            },
-            path=f"artifacts/{index}/metadata",
-        )
-    return normalized
 
 
 #: Durable `(manifest kind) -> manifest-root subdirectory` storage layout.

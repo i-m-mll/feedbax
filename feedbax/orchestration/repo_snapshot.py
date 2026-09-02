@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 
 
 REPO_SNAPSHOT_MANIFEST_SCHEMA_ID = "feedbax.orchestration.repo_snapshot_manifest"

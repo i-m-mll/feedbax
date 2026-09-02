@@ -14,7 +14,11 @@ from feedbax.analysis.evaluation import (
     EvaluationRecipeResult,
     execute_evaluation_run_spec,
 )
-from feedbax.contracts.manifest import EvaluationRunManifest, EvaluationRunSpec, ParentRef
+from feedbax.contracts.base import ParentRef
+from feedbax.contracts.manifest import (
+    EvaluationRunManifest,
+    EvaluationRunSpec,
+)
 from feedbax.analysis.types import AnalysisInputData
 from feedbax.config.namespace import TreeNamespace
 

@@ -104,7 +104,7 @@ COLD_START_LINE_BUDGET: int = DEFAULT_AUTHORING_BUDGET_LAYERS["evaluation"]["max
 SCIENCE_SOURCE = '''"""The one thing this project owns: a tally over an authored span."""
 
 from feedbax.analysis.evaluation import EvaluationRecipeResult
-from feedbax.contracts.manifest import store_bytes_artifact
+from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.plugins import (
     EVALUATION_RECIPES,
     FamilyRequirement,

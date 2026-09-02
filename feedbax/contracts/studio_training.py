@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from pydantic import Field, field_validator
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.spec_storage import (
     TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
     TrainingRunExecutionCapsule,

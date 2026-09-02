@@ -34,7 +34,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
 
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     ParentRef,
     StrictModel,
     authenticated_manifest_ref_profile,

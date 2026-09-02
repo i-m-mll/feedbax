@@ -14,7 +14,7 @@ from feedbax.contracts.checkpoints import (
     CheckpointContinuationRequest,
     CheckpointSegmentLineage,
 )
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.worker import (
     AxisSpec,
     CheckpointBarrierSpec,

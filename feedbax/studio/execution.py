@@ -35,10 +35,16 @@ from feedbax.analysis.evaluation import (
 from feedbax.analysis.reports import STUDIO_REPORT_TYPE, execute_report_spec
 from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
 from feedbax.analysis.specs import execute_analysis_run_spec
-from feedbax.contracts.manifest import (
-    AnalysisRunSpec,
+from feedbax.contracts.base import (
     ArtifactRef,
     EntrypointRef,
+    ParentRef,
+    Provenance,
+    default_manifest_root,
+    utc_now,
+)
+from feedbax.contracts.manifest import (
+    AnalysisRunSpec,
     EvaluationRunSpec,
     EvaluationRunManifest,
     CheckpointCandidateRef,
@@ -47,18 +53,14 @@ from feedbax.contracts.manifest import (
     CheckpointSelectionGroup,
     CheckpointSelectionManifest,
     CheckpointSelectionSpec,
-    ParentRef,
-    Provenance,
     ReportSpec,
     TrainingRunManifest,
     checkpoint_selection_manifest_id,
-    default_manifest_root,
     evaluation_run_manifest_id,
     evaluation_states_cache_path,
     load_manifest,
     planned_training_run_manifest_id,
     spec_payload,
-    utc_now,
     write_manifest,
 )
 from feedbax.contracts.selection import (

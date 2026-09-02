@@ -22,7 +22,10 @@ import pytest
 
 from feedbax.contracts.expressions import ValueQuery
 from feedbax.contracts.extraction import SourceBinding, load_expression_context
-from feedbax.contracts.manifest import canonical_json_bytes, sha256_bytes
+from feedbax.contracts.base import (
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.matrix_core import (
     SOURCE_DOCUMENT_INHERITANCE_KEY,
     materialize_inherited_document,

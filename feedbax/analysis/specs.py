@@ -60,6 +60,13 @@ from feedbax.analysis.validation import (
     validate_evaluation_states_structure_provider,
     validate_namespaced_type_key,
 )
+from feedbax.contracts.base import (
+    ArtifactRef,
+    ParentRef,
+    Provenance,
+    canonical_json_bytes,
+    default_manifest_root,
+)
 from feedbax.contracts.manifest import (
     MANIFEST_KIND_DIRECTORIES,
     AnalysisEvaluationStateResolutionCode,
@@ -68,14 +75,9 @@ from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
     AnyManifest,
-    ArtifactRef,
     EvaluationRunManifest,
     EvaluationRunSpec,
-    ParentRef,
-    Provenance,
-    canonical_json_bytes,
     canonical_manifest_candidate_paths,
-    default_manifest_root,
     analysis_run_manifest_id,
     evaluation_states_cache_path,
     load_manifest,

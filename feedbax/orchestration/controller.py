@@ -20,7 +20,10 @@ from typing import Any, Literal, Protocol, get_args
 
 from pydantic import Field, field_validator, model_validator
 
-from feedbax.contracts.manifest import StrictModel, canonical_json_bytes
+from feedbax.contracts.base import (
+    StrictModel,
+    canonical_json_bytes,
+)
 from feedbax.execution.records import Invocation, invocation_from_document
 from feedbax.orchestration.realization import (
     Attempt,

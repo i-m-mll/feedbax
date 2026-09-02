@@ -15,7 +15,7 @@ from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import Field, model_validator
 
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     ArtifactMigrationRecord,
     ArtifactRef,
     ParentRef,

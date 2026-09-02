@@ -12,7 +12,7 @@ import textwrap
 
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
-from feedbax.contracts.manifest import ParentRef
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.run_matrix import (
     TRAINING_ROW_LOWERER_REF_FIELD,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,

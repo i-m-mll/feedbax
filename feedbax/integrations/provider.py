@@ -26,14 +26,18 @@ from feedbax.contracts.descriptors import (
     SelectorRoleIdentity,
     VariableDescriptor,
 )
-from feedbax.contracts.manifest import (
-    AnalysisDataProduct,
-    AnalysisRunManifest,
-    AnalysisRunSpec,
+from feedbax.contracts.base import (
     ArrayStoreRef,
     ArtifactRef,
     ArtifactMigrationRecord,
     ArtifactValidationRecord,
+    feedbax_version,
+    utc_now,
+)
+from feedbax.contracts.manifest import (
+    AnalysisDataProduct,
+    AnalysisRunManifest,
+    AnalysisRunSpec,
     CheckpointCandidateRef,
     CheckpointScoreSummary,
     CheckpointScorerIdentity,
@@ -53,9 +57,7 @@ from feedbax.contracts.manifest import (
     SCHEMA_VERSION,
     TrainingRunManifest,
     TrainingRunSetManifest,
-    feedbax_version,
     load_graph_spec_from_manifest,
-    utc_now,
 )
 from feedbax.contracts.selection import SelectionSpec
 from feedbax.contracts.training_matrix_composition import TrainingRunMatrixDeltaSpec

@@ -11,19 +11,21 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import String
 
-from feedbax.contracts.manifest import (
-    BaseManifest,
+from feedbax.contracts.base import (
     EntrypointRef,
-    EvaluationRunManifest,
-    EvaluationRunSpec,
     ParentRef,
     Provenance,
-    TrainingRunManifest,
     default_manifest_root,
+    utc_now,
+)
+from feedbax.contracts.manifest import (
+    BaseManifest,
+    EvaluationRunManifest,
+    EvaluationRunSpec,
+    TrainingRunManifest,
     evaluation_run_manifest_id,
     load_manifest,
     spec_payload,
-    utc_now,
     write_manifest,
 )
 from feedbax.contracts.manifest_packet import (

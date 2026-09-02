@@ -83,14 +83,14 @@ from typing import Any, Literal, TypeAlias
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from feedbax.contracts.expressions import Expr, ValueExpr
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     ArtifactRef,
     ParentRef,
-    SpecPayload,
     StrictModel,
     canonical_json_bytes,
     sha256_bytes,
 )
+from feedbax.contracts.manifest import SpecPayload
 from feedbax.contracts.matrix_core import ContentPinnedJsonBase, SourceDocumentInheritance
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.selection import ManifestPredicate

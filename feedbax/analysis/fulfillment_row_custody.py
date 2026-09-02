@@ -84,7 +84,7 @@ from feedbax.contracts.figure_roles import (
     per_row_binding_keys,
     resolve_figure_input_roles,
 )
-from feedbax.contracts.manifest import ParentRef
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.row_index import (
     AuthenticatedRowIndex,
     ResolvedRowSet,

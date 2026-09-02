@@ -23,7 +23,11 @@ from typing import Any, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from feedbax.contracts.manifest import ArtifactRef, ParentRef, StrictModel
+from feedbax.contracts.base import (
+    ArtifactRef,
+    ParentRef,
+    StrictModel,
+)
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes
 from feedbax.contracts.value_identity import ValueIdentityRecord
 

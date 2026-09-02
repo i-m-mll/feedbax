@@ -16,7 +16,7 @@ import pytest
 
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
-from feedbax.contracts.manifest import ParentRef
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.run_matrix import (
     RowLowererIdentity,

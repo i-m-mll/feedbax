@@ -79,17 +79,19 @@ from feedbax.analysis.fulfillment_adapters import (
     execute_node,
     expand_evaluation_matrix_node,
 )
+from feedbax.contracts.base import (
+    ArtifactRef,
+    StrictModel,
+    sha256_bytes,
+    utc_now,
+)
+from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.contracts.manifest import (
     AnalysisDataProduct,
     AnyManifest,
-    ArtifactRef,
-    StrictModel,
     load_manifest_bytes,
     normalize_manifest_spec_payloads,
     safe_manifest_key,
-    sha256_bytes,
-    store_bytes_artifact,
-    utc_now,
 )
 from feedbax.persistence.manifest_index import index_manifest_file
 

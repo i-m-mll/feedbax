@@ -7,9 +7,9 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.manifest import (
     EvaluationRunManifest,
-    ParentRef,
     TrainingRunManifest,
     load_manifest,
     spec_payload,

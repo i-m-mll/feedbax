@@ -13,9 +13,9 @@ from pydantic import Field, field_validator, model_validator
 from feedbax.contracts.expressions import Coalesce, MapObjectList, ValueExpr, ValueQuery
 from feedbax.contracts.extraction import SourceBinding
 from feedbax.contracts.matrix_core import RowDerivation
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.manifest import (
     OverridePatch,
-    StrictModel,
     TrainingSweepAxis,
     TrainingSweepCombinationSpec,
 )

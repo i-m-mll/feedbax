@@ -11,11 +11,13 @@ from pydantic import ValidationError
 
 import feedbax.contracts as public_contracts
 import feedbax.contracts.training_matrix_composition as training_composition
+from feedbax.contracts.base import (
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
-    canonical_json_bytes,
-    sha256_bytes,
 )
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.run_matrix import (

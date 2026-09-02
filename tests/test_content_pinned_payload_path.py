@@ -15,7 +15,10 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from feedbax.contracts.manifest import canonical_json_bytes, sha256_bytes
+from feedbax.contracts.base import (
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.matrix_core import (
     ContentPinnedJsonBase,
     load_content_pinned_json_base,

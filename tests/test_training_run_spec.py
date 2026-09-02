@@ -5,10 +5,12 @@ import copy
 import pytest
 from pydantic import ValidationError
 
-from feedbax.contracts.manifest import (
-    TrainingRunManifest,
+from feedbax.contracts.base import (
     canonical_json_bytes,
     sha256_bytes,
+)
+from feedbax.contracts.manifest import (
+    TrainingRunManifest,
     spec_payload,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
