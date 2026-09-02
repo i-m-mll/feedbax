@@ -39,6 +39,7 @@ from feedbax.compiler.serialization import (
     graph_to_spec,
     prototypes_from_task_bindings,
 )
+from feedbax.compiler import GraphCompilationError
 from tests.graph_compiler_test_support import spec_to_graph
 from feedbax.compiler.prototypes import output_prototypes_for_node
 from feedbax.compiler.prototypes import infer_node_input_prototypes
@@ -1290,7 +1291,7 @@ def test_dynamics_matrix_perturb_graphspec_rejects_bad_delta_shape() -> None:
 
 
 def test_dynamics_matrix_perturb_graphspec_requires_explicit_mass() -> None:
-    with pytest.raises(ValueError, match="missing required parameter.*'mass'"):
+    with pytest.raises(GraphCompilationError) as caught:
         spec_to_graph(
             _single_node_spec(
                 "DynamicsMatrixPerturb",
@@ -1300,6 +1301,10 @@ def test_dynamics_matrix_perturb_graphspec_requires_explicit_mass() -> None:
             ),
             component_registry=_components(),
         )
+
+    diagnostic = caught.value.record.diagnostics[0]
+    assert diagnostic.code == "compiler.type_resolution.unresolved_component_type"
+    assert "mass: Field required (missing)" in diagnostic.observed_condition
 
 
 def _affine_composer_params() -> dict[str, Any]:
@@ -1589,7 +1594,7 @@ def test_affine_value_composer_registry_metadata() -> None:
 
 
 def test_channel_rejects_unknown_noise_model() -> None:
-    with pytest.raises(ValueError, match="Unsupported Channel noise_model"):
+    with pytest.raises(GraphCompilationError) as caught:
         spec_to_graph(
             GraphSpec(
                 nodes={
@@ -1607,6 +1612,15 @@ def test_channel_rejects_unknown_noise_model() -> None:
             ),
             component_registry=_components(),
         )
+
+    diagnostic = caught.value.record.diagnostics[0]
+    assert diagnostic.code == "compiler.type_resolution.unresolved_component_type"
+    assert "noise_model" in diagnostic.observed_condition
+    assert "literal_error" in diagnostic.observed_condition
+    assert (
+        "Only canonical Channel noise parameters are accepted"
+        in diagnostic.observed_condition
+    )
 
 
 def test_demux_graphspec_materializes_and_round_trips_dynamic_ports() -> None:

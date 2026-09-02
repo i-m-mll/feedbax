@@ -2,23 +2,23 @@
   "schema": "feedbax.import_cycle_baseline.v1",
   "description": "Upper bound on package-level import-cycle edges. This set may shrink, never grow. Regenerate deliberately with: uv run --no-sync python scripts/import_cycle_baseline.py --write",
   "summary": {
-    "classified_import_edges": 1673,
-    "cross_package_import_edges": 888,
-    "packages": 31,
-    "package_edges": 149,
+    "classified_import_edges": 1690,
+    "cross_package_import_edges": 928,
+    "packages": 30,
+    "package_edges": 146,
     "packages_in_largest_cycle": 26,
-    "mutually_dependent_package_pairs": 16,
+    "mutually_dependent_package_pairs": 12,
     "cycle_package_edges": 123,
     "largest_cycle_packages": [
       "acausal",
       "analysis",
       "bin",
+      "compiler",
       "component_registry",
       "components",
       "config",
       "contracts",
       "control",
-      "declarations",
       "execution",
       "feedbax",
       "governance",
@@ -140,8 +140,52 @@
       "training"
     ],
     [
+      "compiler",
+      "acausal"
+    ],
+    [
+      "compiler",
+      "component_registry"
+    ],
+    [
+      "compiler",
+      "components"
+    ],
+    [
+      "compiler",
+      "contracts"
+    ],
+    [
+      "compiler",
+      "intervene"
+    ],
+    [
+      "compiler",
+      "mechanics"
+    ],
+    [
+      "compiler",
+      "models"
+    ],
+    [
+      "compiler",
+      "objectives"
+    ],
+    [
+      "compiler",
+      "runtime"
+    ],
+    [
+      "compiler",
+      "tasks"
+    ],
+    [
       "component_registry",
       "acausal"
+    ],
+    [
+      "component_registry",
+      "compiler"
     ],
     [
       "component_registry",
@@ -153,15 +197,15 @@
     ],
     [
       "component_registry",
-      "declarations"
-    ],
-    [
-      "component_registry",
       "intervene"
     ],
     [
       "component_registry",
       "mechanics"
+    ],
+    [
+      "component_registry",
+      "models"
     ],
     [
       "component_registry",
@@ -181,39 +225,7 @@
     ],
     [
       "contracts",
-      "acausal"
-    ],
-    [
-      "contracts",
-      "component_registry"
-    ],
-    [
-      "contracts",
-      "components"
-    ],
-    [
-      "contracts",
-      "control"
-    ],
-    [
-      "contracts",
       "execution"
-    ],
-    [
-      "contracts",
-      "intervene"
-    ],
-    [
-      "contracts",
-      "mechanics"
-    ],
-    [
-      "contracts",
-      "models"
-    ],
-    [
-      "contracts",
-      "objectives"
     ],
     [
       "contracts",
@@ -224,24 +236,8 @@
       "persistence"
     ],
     [
-      "contracts",
-      "runtime"
-    ],
-    [
-      "contracts",
-      "tasks"
-    ],
-    [
       "control",
       "runtime"
-    ],
-    [
-      "declarations",
-      "contracts"
-    ],
-    [
-      "declarations",
-      "training"
     ],
     [
       "execution",
@@ -442,6 +438,10 @@
     [
       "studio",
       "analysis"
+    ],
+    [
+      "studio",
+      "compiler"
     ],
     [
       "studio",

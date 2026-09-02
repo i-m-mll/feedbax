@@ -45,10 +45,7 @@ from feedbax.components.penzai import (
 )
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.tasks import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
-from feedbax.tasks.presets import (
-    apply_delayed_reaches_preset,
-    delayed_reaches_n_steps_from_params,
-)
+from feedbax.tasks.presets import apply_delayed_reaches_preset
 
 
 _HIDDEN_TYPES: dict[str, Callable[..., eqx.Module]] = {
@@ -418,15 +415,14 @@ def _build_task_component(task_type: str, params: Mapping[str, Any]) -> TaskComp
             eval_grid_n=int(params.get("eval_grid_n", 1)),
         )
     elif task_type == "DelayedReaches":
-        params = apply_delayed_reaches_preset(params)
-        if params.get("n_control_stages") is not None:
-            params = {
-                **params,
-                "n_steps": int(params["n_control_stages"]) + 1,
-            }
+        n_steps = (
+            int(params["n_control_stages"]) + 1
+            if params.get("n_control_stages") is not None
+            else int(params["n_steps"])
+        )
         task = DelayedReaches(
             loss_func=loss_func,
-            n_steps=delayed_reaches_n_steps_from_params(params),
+            n_steps=n_steps,
             workspace=jnp.asarray(params.get("workspace", [[-1.0, -1.0], [1.0, 1.0]])),
             preset=params.get("preset", None),
             train_endpoint_mode=str(params.get("train_endpoint_mode", "workspace")),
@@ -544,6 +540,12 @@ def _build_point_mass(params: Mapping[str, Any]) -> Mechanics:
 
 def _build_simple_reaches(params: Mapping[str, Any]) -> TaskComponent:
     return _build_task_component("SimpleReaches", params)
+
+
+def _project_delayed_reaches_params(params: Mapping[str, Any]) -> dict[str, Any]:
+    if params.get("preset") == "delayed_center_out":
+        return apply_delayed_reaches_preset(params)
+    return dict(params)
 
 
 def _build_delayed_reaches(params: Mapping[str, Any]) -> TaskComponent:
