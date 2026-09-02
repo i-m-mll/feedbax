@@ -12,7 +12,6 @@ from pathlib import Path
 
 
 IMPORT_TO_DISTRIBUTION_OVERRIDES = {
-    "PyQt5": "pyqt5",
     "jax_cookbook": "jax-cookbook",
     "ruamel": "ruamel-yaml",
     "sklearn": "scikit-learn",
@@ -27,7 +26,6 @@ OPTIONAL_NAMESPACE_IMPORT_ALLOWLIST = {
     ("feedbax.analysis", "scikit-learn"): "analysis extra module imports sklearn at module import time",
     ("feedbax.analysis", "sqlalchemy"): "analysis extra module imports sqlalchemy at module import time",
     ("feedbax.bin.analysis", "plotly"): "analysis CLI belongs to the analysis extra",
-    ("feedbax.bin.plotly_viewer", "pyqt5"): "plotly viewer CLI belongs to the plotlyviewer extra",
     ("feedbax.persistence", "alembic"): "persistence extra module imports alembic at module import time",
     ("feedbax.persistence", "matplotlib"): (
         "persistence extra module imports matplotlib at module import time"
