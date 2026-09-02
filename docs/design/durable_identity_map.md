@@ -10,18 +10,34 @@ A **semantic identity** answers whether two declared meanings are the same after
 
 | Encoder | Kind | Algorithm / version | Authoritative bytes | Producer provenance |
 | --- | --- | --- | --- | --- |
-| `canonical-json-v1` | semantic content identity | SHA-256; `canonical_json_v1` | Parsed JSON or a null-omitted Pydantic JSON projection; sorted keys, compact separators, UTF-8. Python json defaults remain part of this v1 domain: ASCII escaping is enabled and non-finite floats are not rejected by the encoder. | `feedbax/contracts/manifest.py:canonical_json_bytes` (`5207cce4e514baa8`)<br>`feedbax/contracts/authored_canonical.py:canonical_sha256` (`dac067ece5e53f1e`) |
-| `training-spec-json-current` | semantic intent and resolved execution identity | SHA-256; `unversioned encoder; carried by versioned schema families` | Normalized JSON with string-only object keys, sorted compact UTF-8, non-ASCII characters emitted directly, non-finite floats rejected, and negative zero normalized to zero. | `feedbax/contracts/spec_storage.py:training_spec_canonical_bytes` (`bbc6226df1f65fd8`)<br>`feedbax/contracts/spec_storage.py:training_spec_sha256` (`995538feab4eb3d2`) |
-| `publication-json-v1` | semantic protocol-record identity | SHA-256; `feedbax.publication.v1` | Strict protocol JSON model projection; sorted compact UTF-8, non-ASCII characters emitted directly, and non-finite floats rejected. Negative zero is not normalized. | `feedbax/contracts/publication.py:canonical_bytes` (`7e6cc33829a5fff1`) |
-| `raw-sha256` | byte/material identity | SHA-256; `raw bytes` | The exact byte string read, written, archived, transferred, or held in custody; no JSON parsing or canonicalization is implied. | `feedbax/contracts/manifest.py:sha256_bytes` (`16f22cc72b76b356`)<br>`feedbax/contracts/manifest.py:sha256_file` (`0f50ba5d30a60a6a`)<br>`feedbax/contracts/publication.py:BlobRef.from_bytes` (`4b5f43c687704186`) |
-| `checkpoint-content-v2` | mixed semantic structure and exact checkpoint material identity | SHA-256; `feedbax.training_checkpoint.structural_abi.content.v2` | Array leaves use contiguous C-order bytes. Structural records, leaf lists, slot roots, and transaction roots use canonical-json-v1; the run-contract projection additionally normalizes signed zero. | `feedbax/training/checkpoint_custody.py:structural_abi_fingerprint` (`1c269169e4614040`)<br>`feedbax/training/checkpoint_custody.py:_leaf_content_digests` (`9e4b838df1146933`)<br>`feedbax/training/checkpoint_custody.py:_slot_root_sha256` (`b68a8dfa9a80785a`)<br>`feedbax/training/checkpoint_custody.py:_transaction_root_sha256` (`e3ee752c86ab9386`)<br>`feedbax/training/checkpoint_custody.py:_run_contract_hash` (`4fc520d353bb149c`) |
-| `evaluation-states-v3` | mixed array/material and metadata identity | SHA-256; `feedbax.manifest.evaluation_states_container.v3` | Array leaves use contiguous C-order bytes; metadata leaves use sorted compact JSON with non-finite floats rejected; the structure fingerprint names the PyTree shape. | `feedbax/contracts/evaluation_states.py:_array_digest` (`732bdd77b4b4e6c6`)<br>`feedbax/contracts/evaluation_states.py:_canonical_json_bytes` (`65a38a0dd51f078e`)<br>`feedbax/contracts/evaluation_states.py:_treedef_structure_fingerprint` (`3bc2e604ab726ac0`) |
-| `value-identity-v1` | authored, semantic numeric, and runtime realization identities | SHA-256; `feedbax.value_identity.v1` | Authored and realization envelopes use training-spec-json-current. Semantic values use a versioned JSON header followed by little-endian C-order array bytes with signed zero and NaN normalization. | `feedbax/contracts/value_identity.py:authored_value_sha256` (`fdbf1ff9744c2c2e`)<br>`feedbax/contracts/value_identity.py:semantic_value_sha256` (`d71ce6682814a1f8`)<br>`feedbax/contracts/value_identity.py:realization_value_sha256` (`0c8fdf75ba6efc4c`) |
-| `studio-fnv1a-draft` | persisted presentation-revision comparison | 32-bit FNV-1a; `unversioned fnv1a prefix contract` | A recursively key-sorted JSON-like string. Python and TypeScript implementations are separate current producers; integral floats and negative zero are known to serialize differently and are owned by the Studio convergence lanes. | `feedbax/studio/execution.py:_stable_ui_hash` (`32f5eba494833d46`)<br>`web/src/utils/pipelineCollections.ts:stableHash` (`0f1d7df020cdacbb`) |
-| `legacy-model-md5-v2` | serialized model material identity | MD5; `ModelRecord.hash_version v2` | The YAML hyperparameter prefix and Equinox serialized leaves, byte for byte. The version field is mandatory and other versions fail closed. | `feedbax/persistence/database.py:hash_pytree` (`f1b220f905d02f46`) |
-| `legacy-evaluation-md5` | legacy semantic record identity | MD5; `unversioned legacy evaluation/figure contract` | UTF-8 of joined model hashes, names, and default-spaced sorted JSON parameters; figure identity adds the evaluation hash and figure identifier. | `feedbax/persistence/database.py:generate_eval_hash` (`8d67551e2bc40929`)<br>`feedbax/persistence/database.py:generate_figure_hash` (`81954a2de0ed7d59`) |
-| `implementation-json-sha256` | producer implementation provenance | SHA-256; `producer-specific declared dependency projection` | A sorted compact JSON projection of the declared implementation identity and its registered dependencies. It identifies producing code, not authored scientific JSON. | `feedbax/training/row_lowering.py:training_row_lowerer_implementation_sha256` (`515269b3dadacae6`)<br>`feedbax/training/authoring.py:training_method_authoring_implementation_sha256` (`d46e7e9d747d8eb1`) |
-| `repo-realization-sha256` | environment and source-material realization identity | SHA-256; `feedbax orchestration current schemas` | Schema-specific sorted compact JSON projections plus exact lockfile, patch, staged root, and repository snapshot byte digests. These identities describe a realized execution environment, not authored experiment semantics. | `feedbax/orchestration/repo_snapshot.py:snapshot_manifest_digest` (`58e7b83dba35f253`)<br>`feedbax/orchestration/repo_realization.py:repo_realization_plan_digest` (`02d3dec5f240ab2b`)<br>`feedbax/orchestration/drivers/local.py:compute_environment_fingerprint` (`0225cf5ae3ad3797`) |
+| `canonical-json-v1` | semantic content identity | SHA-256; `canonical_json_v1` | Parsed JSON or a null-omitted Pydantic JSON projection; sorted keys, compact separators, UTF-8. Python json defaults remain part of this v1 domain: ASCII escaping is enabled and non-finite floats are not rejected by the encoder. | `feedbax/contracts/canonical_json.py:canonical_json_v1_bytes` (`2e74138946539a4a`)<br>`feedbax/contracts/manifest.py:canonical_json_bytes` (`465434f45c4c0d1a`)<br>`feedbax/contracts/authored_canonical.py:canonical_sha256` (`04ef9202bc86d977`) |
+| `canonical-json-v2` | strict cross-language semantic JSON identity | SHA-256; `canonical_json_v2` | Strict JSON encoded as compact UTF-8 with unnormalized non-ASCII text, deterministic JSON escapes, UTF-16 code-unit object-key order, ECMAScript-compatible shortest finite binary64 number spelling, negative zero normalized to zero, and integers restricted to the JavaScript safe range. Non-JSON values, lone surrogates, cycles, non-string keys, NaN, infinities, and unsafe integers reject with typed errors. | `feedbax/contracts/canonical_json.py:canonical_json_v2_bytes` (`246476fe7b8ff5b7`)<br>`feedbax/contracts/canonical_json.py:canonical_json_bytes_for_algorithm` (`da423e0a6c384d29`) |
+| `training-spec-json-current` | semantic intent and resolved execution identity | SHA-256; `unversioned encoder; carried by versioned schema families` | Normalized JSON with string-only object keys, sorted compact UTF-8, non-ASCII characters emitted directly, non-finite floats rejected, and negative zero normalized to zero. | `feedbax/contracts/spec_storage.py:training_spec_canonical_bytes` (`012b0617844eff61`)<br>`feedbax/contracts/spec_storage.py:training_spec_sha256` (`683567a756e5e57d`) |
+| `publication-json-v1` | semantic protocol-record identity | SHA-256; `feedbax.publication.v1` | Strict protocol JSON model projection; sorted compact UTF-8, non-ASCII characters emitted directly, and non-finite floats rejected. Negative zero is not normalized. | `feedbax/contracts/publication.py:canonical_bytes` (`a75d0abb5db83a3a`) |
+| `raw-sha256` | byte/material identity | SHA-256; `raw bytes` | The exact byte string read, written, archived, transferred, or held in custody; no JSON parsing or canonicalization is implied. | `feedbax/contracts/manifest.py:sha256_bytes` (`7224332505e6c8b4`)<br>`feedbax/contracts/manifest.py:sha256_file` (`079219c7d03be499`)<br>`feedbax/contracts/publication.py:BlobRef.from_bytes` (`bb2bee230a5ea17c`) |
+| `checkpoint-content-v2` | mixed semantic structure and exact checkpoint material identity | SHA-256; `feedbax.training_checkpoint.structural_abi.content.v2` | Array leaves use contiguous C-order bytes. Structural records, leaf lists, slot roots, and transaction roots use canonical-json-v1; the run-contract projection additionally normalizes signed zero. | `feedbax/training/checkpoint_custody.py:structural_abi_fingerprint` (`f35bfed5ef19b2f1`)<br>`feedbax/training/checkpoint_custody.py:_leaf_content_digests` (`21d3d7127840b980`)<br>`feedbax/training/checkpoint_custody.py:_slot_root_sha256` (`c7d1b719bf6dda1d`)<br>`feedbax/training/checkpoint_custody.py:_transaction_root_sha256` (`997855a751635c01`)<br>`feedbax/training/checkpoint_custody.py:_run_contract_hash` (`48e296dd0ceb2338`) |
+| `evaluation-states-v3` | mixed array/material and metadata identity | SHA-256; `feedbax.manifest.evaluation_states_container.v3` | Array leaves use contiguous C-order bytes; metadata leaves use sorted compact JSON with non-finite floats rejected; the structure fingerprint names the PyTree shape. | `feedbax/contracts/evaluation_states.py:_array_digest` (`b1e916c0837d2143`)<br>`feedbax/contracts/evaluation_states.py:_canonical_json_bytes` (`772f5f2f1d11706b`)<br>`feedbax/contracts/evaluation_states.py:_treedef_structure_fingerprint` (`bd9bcfde0110baf7`) |
+| `value-identity-v1` | authored, semantic numeric, and runtime realization identities | SHA-256; `feedbax.value_identity.v1` | Authored and realization envelopes use training-spec-json-current. Semantic values use a versioned JSON header followed by little-endian C-order array bytes with signed zero and NaN normalization. | `feedbax/contracts/value_identity.py:authored_value_sha256` (`52b94d4c947a72e1`)<br>`feedbax/contracts/value_identity.py:semantic_value_sha256` (`db274f713d045f30`)<br>`feedbax/contracts/value_identity.py:realization_value_sha256` (`88705e8ead19c901`) |
+| `studio-fnv1a-draft` | persisted presentation-revision comparison | 32-bit FNV-1a; `unversioned fnv1a prefix contract` | A recursively key-sorted JSON-like string. Python and TypeScript implementations are separate current producers; integral floats and negative zero are known to serialize differently and are owned by the Studio convergence lanes. | `feedbax/studio/execution.py:_stable_ui_hash` (`7868cd55cc109791`)<br>`web/src/utils/pipelineCollections.ts:stableHash` (`0f1d7df020cdacbb`) |
+| `legacy-model-md5-v2` | serialized model material identity | MD5; `ModelRecord.hash_version v2` | The YAML hyperparameter prefix and Equinox serialized leaves, byte for byte. The version field is mandatory and other versions fail closed. | `feedbax/persistence/database.py:hash_pytree` (`13f2470393debdd7`) |
+| `legacy-evaluation-md5` | legacy semantic record identity | MD5; `unversioned legacy evaluation/figure contract` | UTF-8 of joined model hashes, names, and default-spaced sorted JSON parameters; figure identity adds the evaluation hash and figure identifier. | `feedbax/persistence/database.py:generate_eval_hash` (`9d149c12716e9ea4`)<br>`feedbax/persistence/database.py:generate_figure_hash` (`e9e68aaa22905567`) |
+| `implementation-json-sha256` | producer implementation provenance | SHA-256; `producer-specific declared dependency projection` | A sorted compact JSON projection of the declared implementation identity and its registered dependencies. It identifies producing code, not authored scientific JSON. | `feedbax/training/row_lowering.py:training_row_lowerer_implementation_sha256` (`a71a15bceb3a92a5`)<br>`feedbax/training/authoring.py:training_method_authoring_implementation_sha256` (`f9a8971a50a1d3e9`) |
+| `repo-realization-sha256` | environment and source-material realization identity | SHA-256; `feedbax orchestration current schemas` | Schema-specific sorted compact JSON projections plus exact lockfile, patch, staged root, and repository snapshot byte digests. These identities describe a realized execution environment, not authored experiment semantics. | `feedbax/orchestration/repo_snapshot.py:snapshot_manifest_digest` (`066b2bff50c08ded`)<br>`feedbax/orchestration/repo_realization.py:repo_realization_plan_digest` (`67db7b7f6247cdd1`)<br>`feedbax/orchestration/drivers/local.py:compute_environment_fingerprint` (`c2be53ac08a82c25`) |
+
+## Canonical JSON migration decisions
+
+The shared `canonical_json_v2` conformance vector is `conformance/canonical_json_v2.json`. Python consumes it now; TypeScript consumers must consume the same tracked file rather than restating its cases.
+
+| Durable carriers | Current domain | Decision | Version boundary |
+| --- | --- | --- | --- |
+| ExperimentCompileLock envelope/base/lineage/content_pin/compiled_document/execution_identity digests; authored composition and manifest content pins | `canonical-json-v1` | remain v1; existing and newly emitted compile-lock v4 pins stay offline-verifiable | no schema migration in this lane |
+| descriptor_basis_hash, acausal interior_content_hash, checkpoint structural JSON, run-bundle identity, staged-root identity, repo-realization plan identity, stage-input identity, preparation identity, and implementation-dependency identities | `canonical-json-v1` | remain byte-for-byte v1 through the shared legacy helper | byte-neutral consolidation; stored schema versions do not change |
+| ConsistencyPredicateSpec.phase_program_digest | `canonical-json-v2 for newly produced records` | v2 records migrate to v3 with canonical_json_v1 pinned beside the unchanged digest; new v3 records pin canonical_json_v2 | feedbax.manifest.worker.consistency_predicate.v2 -> v3 |
+| Penzai DomainCompileReport.interior_content_hash | `legacy default=str JSON` | remain on the legacy permissive domain; no digest is relabelled as v2 | requires a future DomainCompileReport schema migration owned with Studio |
+| expression_hash and resolved-semantics snapshot node hashes | `UTF-8-direct strict JSON variants` | remain on their existing domains; no digest is relabelled as v2 | requires migrations of the owning expression and snapshot schemas |
+| evaluation-states metadata and structure digests | `evaluation-states-v3` | remain on evaluation-states-v3; no digest is relabelled as v2 | requires a future evaluation-states container schema migration |
+| training-spec storage and publication protocol hashes | `training-spec-json-current and publication-json-v1` | remain separate named domains; similar strictness does not imply equal bytes | their owning durable schema families do not migrate in this lane |
+| Studio Python/TypeScript fnv1a presentation revision hashes | `studio-fnv1a-draft` | remain unchanged for the dedicated Studio persistence and parity lanes | explicitly out of scope here |
 
 ## Durable surfaces
 
@@ -43,12 +59,31 @@ Pins authored inputs, compiled output, and the pre-run execution identity.
 
 - In-repo assertions:
 
-  - `feedbax/contracts/experiment_compile_lock.py:build_compile_lock` (`c41fd511b23170da`)
-  - `feedbax/contracts/experiment_compile_lock.py:load_compile_lock` (`0a4900da2f89e50f`)
-  - `tests/test_envelope_engine_kernel.py:test_execution_identity_is_stable_for_identical_inputs` (`2cacf7f29c62e493`)
+  - `feedbax/contracts/experiment_compile_lock.py:build_compile_lock` (`5e3b82b1ac087af8`)
+  - `feedbax/contracts/experiment_compile_lock.py:load_compile_lock` (`25baa20cfb3ccf3c`)
+  - `tests/test_envelope_engine_kernel.py:test_execution_identity_is_stable_for_identical_inputs` (`24977bdf6be4531d`)
 
 - Known downstream: rlrmp2 generated/*.compile-lock.json and its authored envelopes; the pinned snapshot contains 26 compile locks, all carrying canonical_json_v1 pins and execution_identity.
 - Boundary: All content_hash fields are canonical parsed-document identity. manifest_sha256 is an exact receipt-file digest and must not be described as canonical JSON.
+
+### worker-consistency-predicate
+
+Pins the phase program from which checkpoint consistency rules were derived.
+
+- Identity kind: semantic content identity.
+- Encoder(s): `canonical-json-v1`, `canonical-json-v2`.
+- Carriers:
+
+  - `ConsistencyPredicateSpec.phase_program_digest + pin_algorithm`
+
+- In-repo assertions:
+
+  - `feedbax/contracts/worker.py:migrate_consistency_predicate_payload` (`22ad5fa39c75ce10`)
+  - `tests/test_canonical_json.py:test_consistency_predicate_v2_migration_preserves_and_pins_its_digest` (`80ebe80f0d045d92`)
+  - `tests/test_canonical_json.py:test_new_consistency_predicates_pin_canonical_json_v2` (`dceeef46503bc0cf`)
+
+- Known downstream: Checkpoint transactions embed ConsistencyPredicateSpec as worker authority.
+- Boundary: Migrated v2 records retain v1 digest meaning; newly derived v3 records use v2. The pin selects the verifier and unknown pins reject.
 
 ### compiler-graph-and-workspace-anchor
 
@@ -65,8 +100,8 @@ Binds an authored graph document to resolved graph semantics and Studio state.
 
 - In-repo assertions:
 
-  - `feedbax/compiler/graph.py:ResolvedGraph.validate_identity` (`70d472efb2b967d8`)
-  - `tests/test_graph_compiler.py:test_compile_graph_is_deterministic_and_records_runtime_key_order` (`728eb68156051132`)
+  - `feedbax/compiler/graph.py:ResolvedGraph.validate_identity` (`b9a1777edc0ddb41`)
+  - `tests/test_graph_compiler.py:test_compile_graph_is_deterministic_and_records_runtime_key_order` (`9de5ab1ecd3a945f`)
 
 - Known downstream: Studio WorkspaceDocument semantic_root and semantic_anchors.
 - Boundary: These SHA-256 values are not the Studio fnv1a spec_hashes used for stale badges.
@@ -89,9 +124,9 @@ Carries semantic spec identities, composition layers, and content-pinned parents
 
 - In-repo assertions:
 
-  - `feedbax/contracts/manifest.py:_ensure_spec_payload_hash` (`861f9f4223deebbf`)
-  - `feedbax/contracts/matrix_core.py:load_content_pinned_json_base` (`15a428d12f28cebd`)
-  - `feedbax/contracts/figures.py:figure_composition_payload_identity_sha256` (`a4e23f35672b5ba2`)
+  - `feedbax/contracts/manifest.py:_ensure_spec_payload_hash` (`37c5345f244544a1`)
+  - `feedbax/contracts/matrix_core.py:load_content_pinned_json_base` (`98ccb31e7e987baf`)
+  - `feedbax/contracts/figures.py:figure_composition_payload_identity_sha256` (`0592c75f10307d8e`)
 
 - Known downstream: rlrmp2 imports canonical_json_bytes directly for comparator, stabilization, and post-run identities and keeps content-pinned specs plus generated composition outputs.
 - Boundary: SpecPayload.source_sha256 and artifact/manifest refs can name source or stored bytes; their producer must be followed before assigning a canonical JSON domain.
@@ -113,9 +148,9 @@ Separates authored intent, composed intent, resolved semantics, and execution.
 
 - In-repo assertions:
 
-  - `feedbax/contracts/spec_storage.py:TrainingRunExecutionCapsule._validate_identity` (`dbbae7c54a5170a7`)
-  - `feedbax/contracts/spec_storage.py:training_run_execution_hash` (`f84390b2f8445f90`)
-  - `tests/test_training_spec_storage.py:test_snapshot_rows_are_complete_and_seed_changes_execution_identity` (`7e1f5bcf5f1032e0`)
+  - `feedbax/contracts/spec_storage.py:TrainingRunExecutionCapsule._validate_identity` (`c1d11f8d82845753`)
+  - `feedbax/contracts/spec_storage.py:training_run_execution_hash` (`6ca7aab3710c0627`)
+  - `tests/test_training_spec_storage.py:test_snapshot_rows_are_complete_and_seed_changes_execution_identity` (`ab7e27ff196804bc`)
 
 - Known downstream: rlrmp2 production code imports training_spec_sha256 for adaptive-lambda row lowering, fork locks, preparation, and materialized task identity.
 - Boundary: dependency_lock_digest and environment_digest are material/environment inputs quoted inside a semantic capsule; they are not authored JSON identities.
@@ -137,9 +172,9 @@ Joins exact blobs to logical artifact, checkpoint, and publication identities.
 
 - In-repo assertions:
 
-  - `feedbax/contracts/publication.py:ArtifactRecord._validate_record` (`f68ecb99292a31d4`)
-  - `feedbax/contracts/publication.py:CheckpointSet._validate_checkpoint` (`9bd85c2df3789a78`)
-  - `tests/test_publication_protocol.py:test_publication_is_idempotent_and_conflicting_replay_fails_closed` (`578c1d0bcb23e505`)
+  - `feedbax/contracts/publication.py:ArtifactRecord._validate_record` (`19da7cac4edcaf66`)
+  - `feedbax/contracts/publication.py:CheckpointSet._validate_checkpoint` (`540ea2ed8a77e6e7`)
+  - `tests/test_publication_protocol.py:test_publication_is_idempotent_and_conflicting_replay_fails_closed` (`2d3039013a2e76c4`)
 
 - Known downstream: rlrmp2's native CheckpointSet and publication-adoption acceptance path.
 - Boundary: BlobRef.digest always identifies exact bytes, even when those bytes contain JSON.
@@ -164,9 +199,9 @@ Authenticates checkpoint leaves, slots, transaction roots, run contracts, and fo
 
 - In-repo assertions:
 
-  - `feedbax/training/checkpoint_custody.py:load_checkpoint_set` (`dc9188660103dd6f`)
-  - `feedbax/training/checkpoint_custody.py:load_checkpoint_custody_documents` (`1ae041e1052e2807`)
-  - `tests/test_checkpoint_custody.py:test_checkpoint_transaction_derives_slots_and_loads_multi_slot_state` (`e43e267c35ee5d2e`)
+  - `feedbax/training/checkpoint_custody.py:load_checkpoint_set` (`ed203b48d0e7e5a0`)
+  - `feedbax/training/checkpoint_custody.py:load_checkpoint_custody_documents` (`2a9213f879dbeb8f`)
+  - `tests/test_checkpoint_custody.py:test_checkpoint_transaction_derives_slots_and_loads_multi_slot_state` (`f090519dd0ed87d0`)
 
 - Known downstream: rlrmp2 pinned checkpoint-root, archive, manifest, slot, and transform identities in fork declarations, generated locks, and release acceptance.
 - Boundary: Archive/manifest/blob hashes are material identity. Structural ABI, run-contract, slot-root, and transaction-root hashes are derived semantic/integrity identities.
@@ -187,8 +222,8 @@ Authenticates evaluation arrays, metadata, structure, and the stored container.
 
 - In-repo assertions:
 
-  - `feedbax/contracts/evaluation_states.py:load_evaluation_states_container_bytes` (`838e65abe48d737b`)
-  - `tests/test_evaluation_states_v3.py:test_v3_round_trip_is_deterministic_and_preserves_namedtuple_types` (`1716cb33a6004b65`)
+  - `feedbax/contracts/evaluation_states.py:load_evaluation_states_container_bytes` (`bb3b5368b6a6edd9`)
+  - `tests/test_evaluation_states_v3.py:test_v3_round_trip_is_deterministic_and_preserves_namedtuple_types` (`877e5d596fa3f433`)
 
 - Known downstream: rlrmp2 comparator and post-run products assert state-array, state-container, and manifest identities; raw channel arrays are hashed as raw C-order bytes.
 - Boundary: A state array sha256 is raw array bytes, not canonical JSON.
@@ -209,8 +244,8 @@ Keeps authored declaration, normalized numeric value, and runtime realization di
 
 - In-repo assertions:
 
-  - `feedbax/contracts/value_identity.py:ValueIdentityRecord._validate_identity_chain_and_expectation` (`fc1645fc9c66a457`)
-  - `tests/test_value_identity.py:test_expected_semantic_mismatch_fails_closed_and_chain_is_preserved` (`709321918bb6f4c0`)
+  - `feedbax/contracts/value_identity.py:ValueIdentityRecord._validate_identity_chain_and_expectation` (`b4154db398731578`)
+  - `tests/test_value_identity.py:test_expected_semantic_mismatch_fails_closed_and_chain_is_preserved` (`d18ec6e42cedc1f0`)
 
 - Known downstream: No pinned rlrmp2 artifact was found to embed feedbax.value_identity.v1 at the snapshot.
 - Boundary: semantic_sha256 includes normalized numeric bytes; it is neither source JSON nor stored artifact bytes.
@@ -248,8 +283,8 @@ Names saved model files, evaluation records, and figure records in the legacy da
 
 - In-repo assertions:
 
-  - `feedbax/persistence/database.py:validate_model_hash_version` (`c17b34f20ce9db38`)
-  - `tests/test_persistence_imports.py:test_model_record_rejects_unsupported_hash_version` (`8f65498f6fd25cad`)
+  - `feedbax/persistence/database.py:validate_model_hash_version` (`5a6305d296fda20b`)
+  - `tests/test_persistence_imports.py:test_model_record_rejects_unsupported_hash_version` (`513f43571010e97b`)
 
 - Known downstream: Legacy Feedbax database and figure paths; no rlrmp2 source import found.
 - Boundary: These MD5 identities are not any Feedbax SHA-256 canonical JSON domain.
@@ -268,8 +303,8 @@ Pins the exact registered producer/lowerer or transform implementation.
 
 - In-repo assertions:
 
-  - `feedbax/training/row_lowering.py:TrainingRowLowererRegistry.lower` (`56025c07b2985951`)
-  - `tests/test_training_row_lowering.py:test_registry_rejects_conflicting_registration_implementation` (`b03955a647c5ccdd`)
+  - `feedbax/training/row_lowering.py:TrainingRowLowererRegistry.lower` (`27de6b0f30675563`)
+  - `tests/test_training_row_lowering.py:test_registry_rejects_conflicting_registration_implementation` (`a3d8003e0c0235a1`)
 
 - Known downstream: rlrmp2 registers and pins adaptive-lambda row-lowerer and fork-transform implementations.
 - Boundary: This proves producing code identity; it does not identify authored or emitted document bytes.
@@ -291,9 +326,9 @@ Pins source snapshots, dependency locks, staged roots, bundles, and realized env
 
 - In-repo assertions:
 
-  - `feedbax/orchestration/repo_snapshot.py:seal_repo_snapshot` (`145887a22be17d26`)
-  - `feedbax/orchestration/repo_realization.py:seal_local_repo_realizations` (`d575c425b2336698`)
-  - `tests/test_repo_snapshot.py:test_snapshot_is_immutable_after_seal_and_distinguishes_dirty_bytes` (`612d1f66c3048a0b`)
+  - `feedbax/orchestration/repo_snapshot.py:seal_repo_snapshot` (`87354df5cbc2aafb`)
+  - `feedbax/orchestration/repo_realization.py:seal_local_repo_realizations` (`f78325620dae5e64`)
+  - `tests/test_repo_snapshot.py:test_snapshot_is_immutable_after_seal_and_distinguishes_dirty_bytes` (`ee67814ede4bda23`)
 
 - Known downstream: rlrmp2 execution plans and release evidence quote Feedbax bundle and environment identities.
 - Boundary: These fields describe deployed/source material and environment state, not experiment intent.
@@ -341,7 +376,7 @@ The `downstream-authored-raw-sha256` rows are deliberately separate. Those produ
 
 ## Drift guard
 
-The companion inventory currently contains 306 annotated hash/digest/fingerprint/pin field candidates from `feedbax/`. It records every exact class field and a domain-routing hint in `docs/design/durable_identity_field_inventory.v1.json`.
+The companion inventory currently contains 307 annotated hash/digest/fingerprint/pin field candidates from `feedbax/`. It records every exact class field and a domain-routing hint in `docs/design/durable_identity_field_inventory.v1.json`.
 
 `uv run --no-sync python scripts/check_durable_identity_map.py --check` fails when:
 
@@ -354,7 +389,8 @@ To verify the pinned downstream snapshot from a local checkout, run `uv run --no
 
 ## Current non-equivalences
 
-- `canonical-json-v1`, `training-spec-json-current`, and `publication-json-v1` use different JSON byte contracts. A refactor may share code only after proving the emitted bytes and schema migration boundary appropriate to each stored field.
+- `canonical-json-v1`, `canonical-json-v2`, `training-spec-json-current`, and `publication-json-v1` use different JSON byte contracts. A refactor may share code only after proving the emitted bytes and schema migration boundary appropriate to each stored field.
+- Worker consistency-predicate v2 records migrate to v3 by pinning their unchanged `phase_program_digest` to `canonical_json_v1`; only newly derived v3 records use and pin `canonical_json_v2`.
 - Compile-lock `execution_identity.sha256` is pinned to canonical-json-v1 in v4. The explicit v3 migration asserts that pin only for locks with attributable built-in Feedbax compiler provenance; downstream-authored and unattributed digest shapes remain outside that migration.
 - Studio `fnv1a:` values are presentation revision markers, not authenticity proofs, and the current Python/TypeScript number spelling is not one byte domain.
 - Raw manifest, artifact, archive, array, and checkpoint blob digests remain exact material identity even when the bytes happen to decode as JSON.

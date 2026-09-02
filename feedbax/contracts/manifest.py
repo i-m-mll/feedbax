@@ -18,6 +18,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.graph import AnalysisInputRequirement
 from feedbax.contracts.retention_artifact_schema import (
     RETENTION_ARTIFACT_ROLE_SCHEMAS,
@@ -1467,10 +1468,10 @@ SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND: dict[str, tuple[str, ...]] = {
 
 
 def canonical_json_bytes(value: Any) -> bytes:
-    """Serialize a value using stable JSON for hashing."""
+    """Serialize with the permanent public ``canonical_json_v1`` contract."""
     if isinstance(value, BaseModel):
         value = value.model_dump(mode="json", exclude_none=True)
-    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return canonical_json_v1_bytes(value)
 
 
 def sha256_bytes(data: bytes) -> str:

@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.manifest import (
     ParentRef,
     TrainingRunManifest,
@@ -192,7 +193,7 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def _canonical_json_sha256(payload: Mapping[str, Any]) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = canonical_json_v1_bytes(payload)
     return hashlib.sha256(encoded).hexdigest()
 
 

@@ -2,7 +2,7 @@
   "schema_id": "feedbax.governance.durable_identity_field_inventory",
   "schema_version": "feedbax.governance.durable_identity_field_inventory.v1",
   "scope": "Lexical inventory of hash, digest, fingerprint, and pin-bearing annotated class fields under feedbax/. The durable identity map supplies the authoritative domain boundaries; domain_hint is a review routing aid.",
-  "field_count": 306,
+  "field_count": 307,
   "fields": [
     {
       "path": "feedbax/analysis/bundles.py",
@@ -1612,7 +1612,14 @@
       "class": "ConsistencyPredicateSpec",
       "field": "phase_program_digest",
       "annotation": "str",
-      "domain_hint": "canonical-json-v1-or-cross-boundary-reference"
+      "domain_hint": "canonical-json-v2-or-migrated-canonical-json-v1"
+    },
+    {
+      "path": "feedbax/contracts/worker.py",
+      "class": "ConsistencyPredicateSpec",
+      "field": "pin_algorithm",
+      "annotation": "Literal['canonical_json_v1', 'canonical_json_v2']",
+      "domain_hint": "canonical-json-v2-or-migrated-canonical-json-v1"
     },
     {
       "path": "feedbax/contracts/workspace_replay.py",

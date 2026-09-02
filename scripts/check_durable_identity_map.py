@@ -57,6 +57,14 @@ class Surface:
     boundary: str
 
 
+@dataclass(frozen=True)
+class CanonicalJsonMigrationDecision:
+    carriers: str
+    current_domain: str
+    decision: str
+    version_boundary: str
+
+
 ENCODERS = (
     Encoder(
         id="canonical-json-v1",
@@ -69,8 +77,26 @@ ENCODERS = (
             "escaping is enabled and non-finite floats are not rejected by the encoder."
         ),
         producers=(
+            Anchor("feedbax/contracts/canonical_json.py", "canonical_json_v1_bytes"),
             Anchor("feedbax/contracts/manifest.py", "canonical_json_bytes"),
             Anchor("feedbax/contracts/authored_canonical.py", "canonical_sha256"),
+        ),
+    ),
+    Encoder(
+        id="canonical-json-v2",
+        identity_kind="strict cross-language semantic JSON identity",
+        algorithm="SHA-256",
+        version="canonical_json_v2",
+        bytes_contract=(
+            "Strict JSON encoded as compact UTF-8 with unnormalized non-ASCII text, deterministic "
+            "JSON escapes, UTF-16 code-unit object-key order, ECMAScript-compatible shortest "
+            "finite binary64 number spelling, negative zero normalized to zero, and integers "
+            "restricted to the JavaScript safe range. Non-JSON values, lone surrogates, cycles, "
+            "non-string keys, NaN, infinities, and unsafe integers reject with typed errors."
+        ),
+        producers=(
+            Anchor("feedbax/contracts/canonical_json.py", "canonical_json_v2_bytes"),
+            Anchor("feedbax/contracts/canonical_json.py", "canonical_json_bytes_for_algorithm"),
         ),
     ),
     Encoder(
@@ -276,6 +302,34 @@ SURFACES = (
         boundary=(
             "All content_hash fields are canonical parsed-document identity. manifest_sha256 is "
             "an exact receipt-file digest and must not be described as canonical JSON."
+        ),
+    ),
+    Surface(
+        id="worker-consistency-predicate",
+        meaning="Pins the phase program from which checkpoint consistency rules were derived.",
+        identity_kind="semantic content identity",
+        encoders=("canonical-json-v1", "canonical-json-v2"),
+        carriers=(
+            "ConsistencyPredicateSpec.phase_program_digest + pin_algorithm",
+        ),
+        assertions=(
+            Anchor(
+                "feedbax/contracts/worker.py",
+                "migrate_consistency_predicate_payload",
+            ),
+            Anchor(
+                "tests/test_canonical_json.py",
+                "test_consistency_predicate_v2_migration_preserves_and_pins_its_digest",
+            ),
+            Anchor(
+                "tests/test_canonical_json.py",
+                "test_new_consistency_predicates_pin_canonical_json_v2",
+            ),
+        ),
+        downstream="Checkpoint transactions embed ConsistencyPredicateSpec as worker authority.",
+        boundary=(
+            "Migrated v2 records retain v1 digest meaning; newly derived v3 records use v2. The "
+            "pin selects the verifier and unknown pins reject."
         ),
     ),
     Surface(
@@ -557,6 +611,68 @@ SURFACES = (
 )
 
 
+CANONICAL_JSON_MIGRATION_DECISIONS = (
+    CanonicalJsonMigrationDecision(
+        carriers=(
+            "ExperimentCompileLock envelope/base/lineage/content_pin/compiled_document/"
+            "execution_identity digests; authored composition and manifest content pins"
+        ),
+        current_domain="canonical-json-v1",
+        decision="remain v1; existing and newly emitted compile-lock v4 pins stay offline-verifiable",
+        version_boundary="no schema migration in this lane",
+    ),
+    CanonicalJsonMigrationDecision(
+        carriers=(
+            "descriptor_basis_hash, acausal interior_content_hash, checkpoint structural JSON, "
+            "run-bundle identity, staged-root identity, repo-realization plan identity, stage-input "
+            "identity, preparation identity, and implementation-dependency identities"
+        ),
+        current_domain="canonical-json-v1",
+        decision="remain byte-for-byte v1 through the shared legacy helper",
+        version_boundary="byte-neutral consolidation; stored schema versions do not change",
+    ),
+    CanonicalJsonMigrationDecision(
+        carriers="ConsistencyPredicateSpec.phase_program_digest",
+        current_domain="canonical-json-v2 for newly produced records",
+        decision=(
+            "v2 records migrate to v3 with canonical_json_v1 pinned beside the unchanged digest; "
+            "new v3 records pin canonical_json_v2"
+        ),
+        version_boundary="feedbax.manifest.worker.consistency_predicate.v2 -> v3",
+    ),
+    CanonicalJsonMigrationDecision(
+        carriers="Penzai DomainCompileReport.interior_content_hash",
+        current_domain="legacy default=str JSON",
+        decision="remain on the legacy permissive domain; no digest is relabelled as v2",
+        version_boundary="requires a future DomainCompileReport schema migration owned with Studio",
+    ),
+    CanonicalJsonMigrationDecision(
+        carriers="expression_hash and resolved-semantics snapshot node hashes",
+        current_domain="UTF-8-direct strict JSON variants",
+        decision="remain on their existing domains; no digest is relabelled as v2",
+        version_boundary="requires migrations of the owning expression and snapshot schemas",
+    ),
+    CanonicalJsonMigrationDecision(
+        carriers="evaluation-states metadata and structure digests",
+        current_domain="evaluation-states-v3",
+        decision="remain on evaluation-states-v3; no digest is relabelled as v2",
+        version_boundary="requires a future evaluation-states container schema migration",
+    ),
+    CanonicalJsonMigrationDecision(
+        carriers="training-spec storage and publication protocol hashes",
+        current_domain="training-spec-json-current and publication-json-v1",
+        decision="remain separate named domains; similar strictness does not imply equal bytes",
+        version_boundary="their owning durable schema families do not migrate in this lane",
+    ),
+    CanonicalJsonMigrationDecision(
+        carriers="Studio Python/TypeScript fnv1a presentation revision hashes",
+        current_domain="studio-fnv1a-draft",
+        decision="remain unchanged for the dedicated Studio persistence and parity lanes",
+        version_boundary="explicitly out of scope here",
+    ),
+)
+
+
 DOWNSTREAM = {
     "repository": "github.com/i-m-mll/rlrmp-star",
     "revision": "964b9c3d31f092d2c3126915de30aa371a987e87",
@@ -625,6 +741,11 @@ def _field_domain_hint(path: str, class_name: str, field: str) -> str:
         return "value-identity-v1"
     if "evaluation_states.py" in path:
         return "evaluation-states-v3"
+    if path == "feedbax/contracts/worker.py" and field in {
+        "phase_program_digest",
+        "pin_algorithm",
+    }:
+        return "canonical-json-v2-or-migrated-canonical-json-v1"
     if "publication.py" in path:
         return "publication-json-v1-or-raw-sha256"
     if "checkpoints.py" in path or "checkpoint_custody.py" in path:
@@ -825,6 +946,25 @@ def render_map(inventory: dict[str, object]) -> str:
             f"`{encoder.version}` | {encoder.bytes_contract} | {producers} |"
         )
 
+    lines.extend(
+        [
+            "",
+            "## Canonical JSON migration decisions",
+            "",
+            "The shared `canonical_json_v2` conformance vector is "
+            "`conformance/canonical_json_v2.json`. Python consumes it now; TypeScript consumers "
+            "must consume the same tracked file rather than restating its cases.",
+            "",
+            "| Durable carriers | Current domain | Decision | Version boundary |",
+            "| --- | --- | --- | --- |",
+        ]
+    )
+    for decision in CANONICAL_JSON_MIGRATION_DECISIONS:
+        lines.append(
+            f"| {decision.carriers} | `{decision.current_domain}` | {decision.decision} | "
+            f"{decision.version_boundary} |"
+        )
+
     lines.extend(["", "## Durable surfaces", ""])
     for surface in SURFACES:
         lines.extend(
@@ -906,9 +1046,13 @@ def render_map(inventory: dict[str, object]) -> str:
             "",
             "## Current non-equivalences",
             "",
-            "- `canonical-json-v1`, `training-spec-json-current`, and `publication-json-v1` use different "
-            "JSON byte contracts. A refactor may share code only after proving the emitted bytes and "
-            "schema migration boundary appropriate to each stored field.",
+            "- `canonical-json-v1`, `canonical-json-v2`, `training-spec-json-current`, and "
+            "`publication-json-v1` use different JSON byte contracts. A refactor may share code only "
+            "after proving the emitted bytes and schema migration boundary appropriate to each "
+            "stored field.",
+            "- Worker consistency-predicate v2 records migrate to v3 by pinning their unchanged "
+            "`phase_program_digest` to `canonical_json_v1`; only newly derived v3 records use and pin "
+            "`canonical_json_v2`.",
             "- Compile-lock `execution_identity.sha256` is pinned to canonical-json-v1 in v4. The "
             "explicit v3 migration asserts that pin only for locks with attributable built-in "
             "Feedbax compiler provenance; downstream-authored and unattributed digest shapes remain "
