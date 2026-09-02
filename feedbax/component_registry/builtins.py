@@ -1296,6 +1296,30 @@ def register_builtin_components(registry: _Registry) -> None:
     )
     registry.register(
         declare_component(
+            name="Activation",
+            category="Math",
+            description="Apply a named elementwise activation.",
+            param_schema=[
+                ParamSchema(
+                    name="activation",
+                    type="enum",
+                    options=["identity", "tanh", "relu", "sigmoid", "softmax"],
+                    default="identity",
+                    required=True,
+                ),
+            ],
+            input_ports=["input"],
+            output_ports=["output"],
+            icon="Activity",
+            port_types=PortTypeSpec(
+                inputs={"input": PortType(dtype="any")},
+                outputs={"output": PortType(dtype="any")},
+            ),
+            output_prototype_fn=input_passthrough_output_prototype,
+        )
+    )
+    registry.register(
+        declare_component(
             name="ElementwiseAffineModulator",
             category="Math",
             description=(
@@ -1556,6 +1580,12 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParamSchema(name="input_size", type="int", default=4, min=1, required=True),
                 ParamSchema(name="hidden_size", type="int", default=4, min=1, required=True),
                 ParamSchema(name="use_bias", type="bool", default=True, required=False),
+                ParamSchema(name="use_noise", type="bool", default=False, required=False),
+                ParamSchema(
+                    name="noise_strength", type="float", default=0.01, min=0, required=False
+                ),
+                ParamSchema(name="dt", type="float", default=1.0, min=0, required=False),
+                ParamSchema(name="tau", type="float", default=1.0, min=0, required=False),
                 ParamSchema(
                     name="activation",
                     type="enum",
