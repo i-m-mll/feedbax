@@ -128,6 +128,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     output_contract_of_document,
     parse_experiment_envelope,
 )
+from feedbax.contracts.parameter_contracts import ParameterContractError
 from feedbax.contracts.figure_roles import (
     FigureRoleBindingContract,
     FigureRowCustodyLocator,
@@ -2956,27 +2957,24 @@ class EnvelopeKernel:
         contract: LayerOutputContract,
         document: Mapping[str, Any],
     ) -> None:
-        """Validate an inner ``params`` block against the model its type names.
+        """Validate every parameter object owned by an output family.
 
-        A top-level document that delegates its authored content to ``params``
-        would otherwise be validated only as far as ``dict[str, Any]``, and the
-        family's real authored contract would never be checked at compile time at
-        all. The content type is read from the document's own discriminator.
+        Top-level output models deliberately keep parameter fields JSON-shaped.
+        This compile choke resolves their path and schema from the layer table so
+        extensible objects stay open deliberately while durable identities and
+        high-risk nested structures still fail closed.
         """
-        model = contract.params_model(document)
-        if model is None:
-            return
         try:
-            model.model_validate(document.get("params"))
-        except ValidationError as exc:
-            discriminator = str(contract.params_discriminator)
+            contract.validate_parameter_objects(document)
+        except ParameterContractError as exc:
             _reject(
                 ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
-                f"{context.envelope_ref}#params",
-                f"the compiled document's params are not valid for "
-                f"{discriminator}={document.get(discriminator)!r}: {exc}",
-                correct_home="the params block carries this content type's authored "
-                "contract; the base states it and the envelope's delta changes it",
+                f"{context.envelope_ref}#{exc.path}",
+                f"the compiled document's {exc.path} object does not satisfy declared "
+                f"parameter schema {exc.schema.schema_version!r}: {exc.cause}",
+                correct_home="the containing document declares this parameter "
+                "object's identity; its base owns the object and the envelope's "
+                "delta changes it",
             )
 
     def compile_envelope_file(

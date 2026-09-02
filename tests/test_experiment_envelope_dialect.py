@@ -32,6 +32,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3,
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V4,
+    EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V5,
     EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID,
     EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
     EXPERIMENT_ENVELOPE_FAMILY,
@@ -154,7 +155,7 @@ def test_the_dialect_is_one_family_at_six_enumerated_versions() -> None:
         EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5: EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6,
     }
     assert EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION == (
-        "feedbax.experiment_envelope.compiler.v5"
+        "feedbax.experiment_envelope.compiler.v6"
     )
     assert EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1 == (
         "feedbax.experiment_envelope.compiler.v1"
@@ -179,6 +180,9 @@ def test_the_dialect_is_one_family_at_six_enumerated_versions() -> None:
     )
     assert compiler_contract_version_for_schema(EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5) == (
         EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V4
+    )
+    assert EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V5 == (
+        "feedbax.experiment_envelope.compiler.v5"
     )
     assert compiler_contract_version_for_schema(EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V6) == (
         EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION

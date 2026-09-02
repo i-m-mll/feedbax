@@ -57,6 +57,12 @@ from feedbax.contracts.manifest import (
     load_graph_spec_from_manifest,
     utc_now,
 )
+from feedbax.contracts.parameter_contracts import (
+    AnalysisBundleParams,
+    AnalysisParams,
+    FigureAssemblerParams,
+    FigureTraceParams,
+)
 from feedbax.contracts.selection import SelectionSpec
 from feedbax.contracts.training_matrix_composition import TrainingRunMatrixDeltaSpec
 from feedbax.contracts.migrations import (
@@ -276,6 +282,10 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "LossTermSpec": LossTermSpec,
         "EvaluationRunSpec": EvaluationRunSpec,
         "AnalysisRunSpec": AnalysisRunSpec,
+        "AnalysisParams": AnalysisParams,
+        "AnalysisBundleParams": AnalysisBundleParams,
+        "FigureAssemblerParams": FigureAssemblerParams,
+        "FigureTraceParams": FigureTraceParams,
         "ReportSpec": ReportSpec,
         "RegenerationSpec": RegenerationSpec,
         "AnalysisDataProduct": AnalysisDataProduct,
