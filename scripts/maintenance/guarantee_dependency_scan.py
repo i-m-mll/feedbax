@@ -916,6 +916,7 @@ class Corpus:
     artifact_files: list[str] = field(default_factory=list)
     snapshot_roots: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    revision: str | None = None
     _tracked: frozenset[str] | None = None
 
     def all_files(self) -> list[str]:
@@ -945,6 +946,7 @@ class Corpus:
             "name": self.name,
             "role": self.role,
             "root": str(self.root),
+            "revision": self.revision,
             "source_file_count": len(self.source_files),
             "artifact_file_count": len(self.artifact_files),
             "sealed_source_snapshot_roots": sorted(self.snapshot_roots),
@@ -972,6 +974,36 @@ def tracked_files(root: Path) -> list[str]:
     return sorted(
         entry for entry in result.stdout.decode("utf-8", "surrogateescape").split("\0") if entry
     )
+
+
+def pinned_revision(root: Path) -> str:
+    """Return the exact commit backing tracked bytes, refusing a dirty corpus."""
+    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0")
+    status = subprocess.run(
+        ["git", "--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=no"],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    if status.returncode != 0:
+        raise ScanError(
+            f"{root}: could not verify tracked corpus bytes: "
+            f"{status.stderr.decode('utf-8', 'replace').strip()}"
+        )
+    if status.stdout:
+        raise ScanError(f"{root}: tracked corpus bytes differ from HEAD; refusing an unpinned scan")
+    revision = subprocess.run(
+        ["git", "--no-optional-locks", "rev-parse", "HEAD"],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if revision.returncode != 0:
+        raise ScanError(f"{root}: could not resolve corpus revision: {revision.stderr.strip()}")
+    return revision.stdout.strip()
 
 
 def detect_snapshot_roots(artifact_root: Path) -> list[Path]:
@@ -1034,6 +1066,7 @@ def build_corpus(spec: Mapping[str, Any], library_root: Path, scan_artifacts: bo
     include_suffixes = tuple(s.lower() for s in source.get("include_suffixes") or ())
     if mode == "git-tracked":
         listing = tracked_files(root)
+        corpus.revision = pinned_revision(root)
     elif mode == "filesystem":
         listing = sorted(
             str(p.relative_to(root))
@@ -1529,6 +1562,7 @@ class Analyzer:
         detail: str = "",
         loader: Sequence[str] | None = None,
         loader_kind: str = "",
+        strength: str | None = None,
     ) -> Record:
         if loader is None:
             loader, loader_kind = self._loader_for(item, channel)
@@ -1545,7 +1579,11 @@ class Analyzer:
             loader=tuple(loader),
             loader_kind=loader_kind,
             evidence_class=evidence,
-            strength="namespace" if item.kind == "namespace" else "direct",
+            strength=(
+                strength
+                if strength is not None
+                else "namespace" if item.kind == "namespace" else "direct"
+            ),
             detail=detail,
             tier=corpus.tier(relpath),
         )
@@ -2135,6 +2173,7 @@ class Analyzer:
                         item,
                         "binary-store-identity",
                         evidence=evidence,
+                        strength="presence-only",
                         detail=f"byte offset {hits[needle]} in an opaque or oversized store; "
                         f"nominal channel {channel}",
                     )
@@ -2382,6 +2421,7 @@ def build_verdicts(
             ]
             hits = [record for record in live if record.strength == "direct"]
             namespace_only = [record for record in live if record.strength == "namespace"]
+            presence_only = [record for record in live if record.strength == "presence-only"]
             channels = sorted({record.channel for record in hits})
             other = {
                 klass: sum(
@@ -2396,6 +2436,8 @@ def build_verdicts(
             unhealthy = sorted(set(CHANNELS) - healthy_channels)
             if hits:
                 verdict = "consumed"
+            elif presence_only:
+                verdict = "indeterminate"
             elif unhealthy:
                 verdict = "indeterminate"
             elif namespace_only:
@@ -2420,6 +2462,9 @@ def build_verdicts(
                 "occurrence_count": sum(record.occurrences_in_file for record in hits),
                 "namespace_reference_records": len(namespace_only),
                 "namespace_reference_files": sorted({r.path for r in namespace_only})[:10],
+                "presence_only_records": len(presence_only),
+                "presence_only_channels": sorted({r.channel for r in presence_only}),
+                "presence_only_files": sorted({r.path for r in presence_only})[:10],
                 "excluded_evidence": other,
                 "withheld_because_channels_broken": unhealthy if not hits else [],
             }
@@ -2533,6 +2578,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     out_path = Path(args.out) if args.out else library_root / DEFAULT_OUTPUT
 
     guarantees = GuaranteeSet.load(manifest_path, doc_path)
+    library_revision = pinned_revision(library_root)
     runtime = collect_runtime_facts(library_root)
 
     items, loaders = prepare_items_and_loaders(
@@ -2604,6 +2650,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "schema_version": OUTPUT_SCHEMA_VERSION,
         "inputs": {
             "library_root": str(library_root),
+            "scanner_revision": library_revision,
             "policy_manifest": {
                 "path": guarantees.manifest_path,
                 "sha256": guarantees.manifest_sha256,

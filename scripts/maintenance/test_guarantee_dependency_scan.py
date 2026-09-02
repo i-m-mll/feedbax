@@ -88,7 +88,7 @@ def test_manifest_deferred_rows_resolve_to_a_real_inventory(guarantees: Any) -> 
         assert row.names_origin == "manifest-inventory"
         assert len(row.public_names) > 5, row_id
     assert {
-        "TRAINING_METHODS",
+        "TRAINING_PROGRAMS",
         "FamilyRequirement",
         "PluginRegistration",
         "RegistrationContext",
@@ -296,6 +296,26 @@ def test_pickled_class_identity_is_found(scanner: Any, analyzer: Any, tmp_path: 
         record.channel == "pickle-class-identity" and record.item == "GraphSpec"
         for record in records
     )
+
+
+def test_opaque_binary_presence_is_indeterminate(
+    scanner: Any, analyzer: Any, guarantees: Any, tmp_path: Path
+) -> None:
+    (tmp_path / "state.bin").write_bytes(b"feedbax.value_identity.v1")
+    corpus = _corpus(scanner, tmp_path)
+    records = analyzer.analyze(corpus, "state.bin")
+    hits = [record for record in records if record.row_id == "value-identity"]
+    assert hits and {record.strength for record in hits} == {"presence-only"}
+
+    verdict = scanner.build_verdicts(
+        guarantees,
+        hits,
+        [corpus],
+        set(scanner.CHANNELS),
+    )["test"]["rows"]["value-identity"]
+    assert verdict["verdict"] == "indeterminate"
+    assert verdict["record_count"] == 0
+    assert verdict["presence_only_records"] == len(hits)
 
 
 # ---------------------------------------------------------------------------
