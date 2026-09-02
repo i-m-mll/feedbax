@@ -439,13 +439,9 @@ def resolve_evaluation_matrix_authoring(
         )
         flattened = flatten_evaluation_run_matrix_delta(delta, repo_root=repo_root)
         return EvaluationRunMatrixSpec.model_validate(flattened.payload), flattened
-    # Matrix documents shipped before the family stamped a version, so a
-    # versionless document is admitted as current; every declared version still
-    # migrates or fails closed through the shared path.
     migrated = migrate_authored_document(
         "EvaluationRunMatrixSpec",
         spec,
-        versionless="accept_as_current",
         path="evaluation_matrix_spec",
     )
     return EvaluationRunMatrixSpec.model_validate(migrated.payload), None

@@ -12,16 +12,13 @@ three different migration behaviours. This module is the single place where an
 authored document's own ``schema_version`` declaration is read and handed to the
 registry, so the resolvers cannot drift again.
 
-Versionless documents are the one place where families legitimately differ:
-a family that has always stamped its documents rejects a versionless document,
-while a family whose released documents predate the stamp accepts it as current.
-That choice is a per-family policy that each call site states explicitly through
-``versionless``; it is never an accident of which registry entrypoint was used.
+Versionless documents fail closed. The loaders consume durable authored material;
+they do not stamp new current payloads and therefore must never infer a version.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, Mapping, TypeAlias
+from typing import Any, Mapping
 
 from feedbax.contracts.migrations import (
     SpecMigrationResult,
@@ -32,30 +29,14 @@ from feedbax.contracts.migrations import (
 )
 
 __all__ = [
-    "VersionlessDocumentPolicy",
     "migrate_authored_document",
 ]
-
-
-VersionlessDocumentPolicy: TypeAlias = Literal["reject", "accept_as_current"]
-"""How one family treats an authored document that carries no ``schema_version`` key.
-
-This policy governs absence of the key only. A document that carries the key
-with a null or otherwise non-string value has made a malformed declaration and
-fails closed regardless of the policy.
-
-``"reject"`` fails closed: every released document of the family carries a
-stamp, so an unstamped document is malformed rather than old.
-``"accept_as_current"`` admits it as the current version, which is only correct
-for a family whose documents may legitimately omit the stamp.
-"""
 
 
 def migrate_authored_document(
     kind: str,
     document: Mapping[str, Any],
     *,
-    versionless: VersionlessDocumentPolicy,
     path: str = "spec",
     registry: SpecSchemaRegistry | None = None,
 ) -> SpecMigrationResult:
@@ -69,16 +50,14 @@ def migrate_authored_document(
     must not fall through to a version-free code path.
 
     Presence is decided by the key, not by its value: a document carrying
-    ``"schema_version": null`` has declared a version and declared it malformed,
-    so it fails closed here even under an ``"accept_as_current"`` policy. Only a
-    document with no ``schema_version`` key at all is versionless. Reading the
-    declaration with a value test instead would let an old document that stamps
-    an explicit null be assumed current and skip migration entirely.
+    ``"schema_version": null`` has declared a version and declared it malformed.
+    A document with no ``schema_version`` key at all is versionless and also fails
+    closed. Reading the declaration with a value test would collapse those two
+    distinct invalid cases.
 
     Args:
         kind: Registered structured spec family, e.g. ``"AnalysisRunSpec"``.
         document: The authored document payload.
-        versionless: This family's policy for a document with no declaration.
         path: Spec path recorded on emitted migration records.
         registry: Structured spec registry; defaults to the process registry.
 
@@ -88,7 +67,7 @@ def migrate_authored_document(
     Raises:
         UnsupportedSpecVersion: The declared version is malformed, explicitly
             unsupported, or has no registered migration path to the current
-            version; or the document is versionless under a ``"reject"`` policy.
+            version; or the document is versionless.
     """
     active_registry = registry or default_spec_registry
     is_declared = "schema_version" in document
@@ -106,7 +85,7 @@ def migrate_authored_document(
         kind,
         document,
         source_version=declared,
-        assume_current=not is_declared and versionless == "accept_as_current",
+        assume_current=False,
         path=path,
         registry=active_registry,
     )
