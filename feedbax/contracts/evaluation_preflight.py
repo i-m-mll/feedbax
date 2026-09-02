@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 
 
 EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID = "feedbax.spec.evaluation_output_preflight_policy"

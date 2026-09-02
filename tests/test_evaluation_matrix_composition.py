@@ -22,6 +22,10 @@ from feedbax.contracts.evaluation_composition import (
     evaluation_matrix_delta_envelope_hash,
     flatten_evaluation_run_matrix_delta,
 )
+from feedbax.contracts.base import (
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_ID,
     EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
@@ -29,8 +33,6 @@ from feedbax.contracts.manifest import (
     EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
-    canonical_json_bytes,
-    sha256_bytes,
 )
 
 

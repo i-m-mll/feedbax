@@ -18,7 +18,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 from feedbax.orchestration.repo_realization import RepoRealizationPlan
 
 

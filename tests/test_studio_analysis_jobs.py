@@ -18,11 +18,13 @@ from feedbax.analysis.specs import (
     execute_analysis_run_spec,
 )
 from feedbax.analysis.manifest_inputs import is_authenticated_manifest_ref
+from feedbax.contracts.base import (
+    ArtifactRef,
+    ParentRef,
+)
 from feedbax.contracts.manifest import (
     AnalysisRunSpec,
-    ArtifactRef,
     EvaluationRunSpec,
-    ParentRef,
     analysis_run_manifest_id,
     load_manifest,
 )

@@ -12,18 +12,20 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     ArtifactRef,
-    BaseManifest,
-    MANIFEST_MODELS,
     StrictModel,
     default_manifest_root,
     feedbax_version,
-    load_manifest,
-    safe_manifest_key,
     sha256_bytes,
     sha256_file,
     utc_now,
+)
+from feedbax.contracts.manifest import (
+    BaseManifest,
+    MANIFEST_MODELS,
+    load_manifest,
+    safe_manifest_key,
 )
 from feedbax.contracts.migrations import (
     SpecSchemaRegistry,

@@ -6,13 +6,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     ArtifactMigrationRecord,
+    canonical_json_bytes,
+    sha256_bytes,
+)
+from feedbax.contracts.manifest import (
     SpecPayload,
     TrainingRunManifest,
-    canonical_json_bytes,
     normalize_manifest_spec_payloads,
-    sha256_bytes,
     spec_payload,
     training_run_manifest_id,
 )

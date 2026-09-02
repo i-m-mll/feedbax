@@ -12,22 +12,24 @@ from feedbax.contracts.artifact_custody import (
     ImmutableArtifactBlobProviderConfig,
     ImmutableArtifactBlobProviderSpec,
 )
-from feedbax.contracts.manifest import (
-    AnalysisRunManifest,
-    AnalysisRunSpec,
+from feedbax.contracts.base import (
     ArrayStoreRef,
     ArtifactRef,
     EntrypointRef,
+    ParentRef,
+    Provenance,
+    sha256_file,
+)
+from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
+    AnalysisRunSpec,
     EvaluationRunManifest,
     EvaluationRunSpec,
     ModelArtifactManifest,
-    ParentRef,
-    Provenance,
     ReportManifest,
     ReportSpec,
     TrainingRunManifest,
     load_manifest,
-    sha256_file,
     spec_payload,
     write_manifest,
     write_training_run_manifest,

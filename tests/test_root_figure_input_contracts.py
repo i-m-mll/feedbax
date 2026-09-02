@@ -64,10 +64,12 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
 )
 from feedbax.contracts.figures import FigureInputRoleAuthority
-from feedbax.contracts.manifest import (
-    AnalysisRunManifest,
+from feedbax.contracts.base import (
     canonical_json_bytes,
     sha256_bytes,
+)
+from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
     spec_payload,
 )
 from feedbax.contracts.authored_canonical import canonical_sha256

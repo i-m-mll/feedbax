@@ -108,7 +108,7 @@ from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeRejectionCategory,
 )
 from feedbax.contracts.figure_roles import FigureRoleBindingContract
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 
 EXPERIMENT_COMPILE_LOCK_SCHEMA_ID = "feedbax.spec.experiment_compile_lock"
 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v1"

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Callable, Mapping, Protocol
 
 from pydantic import Field, JsonValue, model_validator
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.evaluation_lifecycle import EvaluationMatrixBatchPlan
 from feedbax.contracts.evaluation_preflight import (
     EvaluationOutputPreflightEvidence,

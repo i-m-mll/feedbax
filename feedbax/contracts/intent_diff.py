@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.run_composition import FlattenedIntent
 
 if TYPE_CHECKING:

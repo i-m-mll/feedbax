@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
-from feedbax.contracts.manifest import ArtifactRef
+from feedbax.contracts.base import ArtifactRef
 from feedbax.contracts.staged_execution import validate_staged_binding_name
 from feedbax.orchestration.bundle import ResolvedAssemblyInput, RunBundle
 from feedbax.orchestration.staged_root_custody import (

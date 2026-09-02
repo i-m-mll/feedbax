@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from feedbax.analysis.evaluation import EvaluationRecipeResult
 from feedbax.analysis.reports import REPORT_RENDER_ROLE, ReportRecipeResult
-from feedbax.contracts.manifest import store_bytes_artifact
+from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.plugins import (
     EVALUATION_RECIPES,
     REPORT_RECIPES,

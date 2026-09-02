@@ -15,12 +15,12 @@ from pydantic import Field, model_validator
 
 from feedbax.contracts.expressions import ContextItem, ExpressionContext, ValueExpr, evaluate_query
 from feedbax.contracts.extraction import SourceBinding, load_expression_context, set_dotted_path
-from feedbax.contracts.manifest import (
-    OverridePatch,
+from feedbax.contracts.base import (
     StrictModel,
     canonical_json_bytes,
     sha256_bytes,
 )
+from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.strict_json import strict_json_loads
 
 

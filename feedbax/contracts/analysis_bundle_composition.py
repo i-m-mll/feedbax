@@ -8,14 +8,16 @@ from typing import Any
 
 from pydantic import Field, model_validator
 
+from feedbax.contracts.base import (
+    StrictModel,
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_ID,
     ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
     ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_ID,
     ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_VERSION,
-    StrictModel,
-    canonical_json_bytes,
-    sha256_bytes,
 )
 from feedbax.contracts.matrix_core import ContentPinnedJsonBase, load_content_pinned_json_base
 from feedbax.contracts.migrations import default_spec_registry

@@ -65,12 +65,14 @@ from feedbax.analysis.figures import (
 )
 from feedbax.analysis.manifest_inputs import is_authenticated_manifest_ref
 from feedbax.contracts.figure_roles import FigureRowCustodyLocator
-from feedbax.contracts.manifest import (
-    AnalysisRunManifest,
+from feedbax.contracts.base import (
     ParentRef,
     authenticated_manifest_ref_profile,
     canonical_json_bytes,
     sha256_bytes,
+)
+from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
     spec_payload,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider

@@ -33,12 +33,14 @@ from feedbax.contracts.figures import (
     TraceFamily,
     TraceFamilyIndex,
 )
-from feedbax.contracts.manifest import (
-    OverridePatch,
+from feedbax.contracts.base import (
     ParentRef,
     canonical_json_bytes,
-    figure_manifest_id,
     sha256_bytes,
+)
+from feedbax.contracts.manifest import (
+    OverridePatch,
+    figure_manifest_id,
 )
 from feedbax.contracts.matrix_core import (
     SOURCE_DOCUMENT_INHERITANCE_KEY,

@@ -68,26 +68,30 @@ from feedbax.contracts.matrix_core import (
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.run_matrix import apply_composition_deltas
 from feedbax.contracts.strict_json import DuplicateJsonKeyError, strict_json_loads
+from feedbax.contracts.base import (
+    EntrypointRef,
+    ParentRef,
+    Provenance,
+    ArtifactRef,
+    canonical_json_bytes,
+    collect_git_provenance,
+    default_manifest_root,
+    sha256_bytes,
+)
+from feedbax.contracts.artifact_store import (
+    media_type_for_extension,
+    store_artifact,
+    store_json_artifact,
+)
 from feedbax.contracts.manifest import (
     AnyManifest,
-    EntrypointRef,
     FigureBindingRecord,
     FigureManifest,
     FigurePieceResolution,
     ManifestStatus,
-    ParentRef,
-    Provenance,
-    ArtifactRef,
     SpecPayload,
-    canonical_json_bytes,
-    collect_git_provenance,
-    default_manifest_root,
     figure_manifest_id,
-    media_type_for_extension,
-    sha256_bytes,
     spec_payload,
-    store_artifact,
-    store_json_artifact,
     write_manifest,
 )
 from feedbax.plot.colors import sample_colorscale_at, sample_colorscale_unique

@@ -301,6 +301,11 @@ from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_VERSION_V1,
     REPRESENTATION_SCHEMA_VERSION_V0,
 )
+from feedbax.contracts.base import (
+    ArtifactMigrationRecord,
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_ID,
     ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
@@ -351,9 +356,6 @@ from feedbax.contracts.manifest import (
     REGENERATION_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SET_SCHEMA_VERSION,
     TRAINING_RUN_SET_SCHEMA_VERSION_V1,
-    ArtifactMigrationRecord,
-    canonical_json_bytes,
-    sha256_bytes,
 )
 from feedbax.contracts.manifest import (
     SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION,

@@ -28,6 +28,10 @@ from feedbax.contracts.analysis_composition import (
     analysis_run_delta_envelope_hash,
     flatten_analysis_run_delta,
 )
+from feedbax.contracts.base import (
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_ID,
     ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
@@ -36,8 +40,6 @@ from feedbax.contracts.manifest import (
     ANALYSIS_RUN_SPEC_SCHEMA_ID,
     ANALYSIS_RUN_SPEC_SCHEMA_VERSION,
     AnalysisRunSpec,
-    canonical_json_bytes,
-    sha256_bytes,
 )
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 

@@ -15,6 +15,7 @@ import json
 
 import pytest
 
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.manifest import (
     EVALUATION_RUN_SPEC_SCHEMA_ID,
     EVALUATION_RUN_SPEC_SCHEMA_VERSION,
@@ -22,7 +23,6 @@ from feedbax.contracts.manifest import (
     REPORT_SPEC_SCHEMA_ID,
     REPORT_SPEC_SCHEMA_VERSION,
     EvaluationRunSpec,
-    ParentRef,
     ReportSpec,
     evaluation_run_manifest_id,
     load_manifest_bytes,

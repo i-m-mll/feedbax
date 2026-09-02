@@ -24,14 +24,17 @@ from feedbax.analysis.fulfillment import (
     receipt_path,
     resolve_artifact_bytes,
 )
+from feedbax.contracts.base import (
+    ArtifactRef,
+    ParentRef,
+    Provenance,
+)
+from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
-    ArtifactRef,
     EvaluationRunManifest,
     EvaluationRunSpec,
-    ParentRef,
-    Provenance,
     ReportManifest,
     ReportSpec,
     StagedEvaluationPrerequisite,
@@ -39,7 +42,6 @@ from feedbax.contracts.manifest import (
     evaluation_run_manifest_id,
     report_manifest_id,
     spec_payload,
-    store_bytes_artifact,
     write_manifest,
 )
 

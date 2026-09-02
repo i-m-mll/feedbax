@@ -6,10 +6,10 @@ import numpy as np
 
 from feedbax.analysis.evaluation import EvaluationRecipeResult, execute_evaluation_run_spec
 from feedbax.analysis.specs import AnalysisRecipeResult, execute_analysis_run_spec
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.manifest import (
     AnalysisRunSpec,
     EvaluationRunSpec,
-    ParentRef,
     evaluation_states_cache_path,
     load_manifest,
 )

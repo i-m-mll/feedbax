@@ -45,22 +45,24 @@ from pydantic import Field, model_validator
 
 from feedbax.analysis.figures import FigureExecutionPlan
 from feedbax.contracts.figures import FigureSpec
+from feedbax.contracts.base import (
+    ArtifactRef,
+    ParentRef,
+    StrictModel,
+    canonical_json_bytes,
+)
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
     AnyManifest,
-    ArtifactRef,
     EvaluationRunManifest,
     EvaluationRunSpec,
     FigureManifest,
-    ParentRef,
     ReportManifest,
     ReportSpec,
     SpecPayload,
     StagedEvaluationPrerequisite,
-    StrictModel,
     analysis_run_manifest_id,
-    canonical_json_bytes,
     canonical_manifest_path,
     evaluation_run_manifest_id,
     load_manifest_bytes,

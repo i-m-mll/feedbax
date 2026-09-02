@@ -63,7 +63,7 @@ from feedbax.contracts.experiment_compile_lock import (
     AuthenticatedReceiptReference,
     CheckpointInitializationBinding,
 )
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
     ParentRef,

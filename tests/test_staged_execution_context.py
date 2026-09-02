@@ -40,15 +40,17 @@ from feedbax.analysis.evaluation_inputs import (
 from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
 from feedbax.bin.analysis import main as analysis_main
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
+from feedbax.contracts.base import (
+    ParentRef,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
     EvaluationRunSpec,
-    ParentRef,
     SpecPayload,
     TrainingRunManifest,
     canonical_manifest_relative_path,
-    sha256_bytes,
     write_manifest,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry

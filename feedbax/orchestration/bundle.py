@@ -15,7 +15,11 @@ from pydantic import Field, field_validator, model_validator
 
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.evaluation_preflight import EvaluationOutputPreflightEvidence
-from feedbax.contracts.manifest import ArtifactMigrationRecord, ParentRef, StrictModel
+from feedbax.contracts.base import (
+    ArtifactMigrationRecord,
+    ParentRef,
+    StrictModel,
+)
 from feedbax.contracts.run_matrix import TrainingRowProvenance
 from feedbax.contracts.staged_execution import validate_staged_binding_name
 from feedbax.contracts.spec_storage import (

@@ -192,7 +192,7 @@ from feedbax.contracts.training import (
     TrainingConfig,
     TrainingSpec,
 )
-from feedbax.contracts.manifest import ParentRef
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.selection import (
     ManifestPredicate,
     SelectionPreview,

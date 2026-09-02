@@ -26,7 +26,7 @@ from feedbax.contracts.artifact_custody import (
     ArtifactBlobReferenceError,
     ImmutableArtifactBlobProviderSpec,
 )
-from feedbax.contracts.manifest import ArtifactRef
+from feedbax.contracts.base import ArtifactRef
 
 
 _ARTIFACT_ID_PREFIX = "artifact://sha256/"

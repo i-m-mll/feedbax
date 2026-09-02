@@ -7,8 +7,8 @@ from typing import Any, Literal, Protocol
 
 from pydantic import Field
 
-from feedbax.contracts.manifest import StrictModel
-from feedbax.contracts.manifest import ArtifactRef
+from feedbax.contracts.base import StrictModel
+from feedbax.contracts.base import ArtifactRef
 
 
 IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID = "feedbax.spec.immutable_artifact_blob_provider"

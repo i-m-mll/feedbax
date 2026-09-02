@@ -26,26 +26,30 @@ from feedbax.contracts.checkpoints import (
     CheckpointLineageRef,
     CheckpointTransactionManifest,
 )
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     EntrypointRef,
-    ManifestStatus,
     ParentRef,
     Provenance,
+    ArtifactRef,
+    canonical_json_bytes,
+    default_manifest_root,
+    sha256_bytes,
+    utc_now,
+)
+from feedbax.contracts.artifact_store import (
+    store_bytes_artifact,
+    store_json_artifact,
+)
+from feedbax.contracts.manifest import (
+    ManifestStatus,
     TRAINING_RUN_CERTIFICATION_SCHEMA_ID,
     TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION,
     TrainingRunCertification,
     TrainingRunManifest,
     TrainingManifestMetadataProjectionCustody,
     TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY,
-    ArtifactRef,
-    canonical_json_bytes,
-    default_manifest_root,
     safe_manifest_key,
-    sha256_bytes,
-    store_bytes_artifact,
-    store_json_artifact,
     training_run_manifest_id,
-    utc_now,
     write_manifest,
 )
 from feedbax.contracts.nan_attribution import (

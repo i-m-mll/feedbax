@@ -21,8 +21,12 @@ from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.experiment_compile_lock import load_compile_lock
 from feedbax.contracts.extraction import load_expression_context
 from feedbax.contracts.matrix_core import apply_row_derivations, ordered_index_product
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     Provenance,
+    canonical_json_bytes,
+    sha256_bytes,
+)
+from feedbax.contracts.manifest import (
     SpecPayload,
     TrainingRunAxisCoordinate,
     TrainingRunSetAxes,
@@ -31,10 +35,8 @@ from feedbax.contracts.manifest import (
     TrainingSweepAxisGroup,
     TrainingSweepAxisVariation,
     TrainingSweepCombinationSpec,
-    canonical_json_bytes,
     planned_training_run_manifest_id,
     planned_training_run_set_manifest_id,
-    sha256_bytes,
     spec_payload,
 )
 from feedbax.contracts.run_matrix import (

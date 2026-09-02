@@ -9,12 +9,14 @@ from pathlib import Path, PurePosixPath
 import stat
 from urllib.parse import unquote, urlsplit
 
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
-    AnyManifest,
     ParentRef,
     authenticated_manifest_ref_profile,
+)
+from feedbax.contracts.manifest import (
+    AnyManifest,
     canonical_manifest_relative_path,
     load_manifest_bytes,
 )

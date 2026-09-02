@@ -6,7 +6,10 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from feedbax.contracts.manifest import ArtifactRef, StrictModel
+from feedbax.contracts.base import (
+    ArtifactRef,
+    StrictModel,
+)
 
 
 EVALUATION_COMPACT_PRODUCT_UNION_SCHEMA_ID = "feedbax.spec.evaluation_compact_product_union"

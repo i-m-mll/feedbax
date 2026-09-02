@@ -31,10 +31,12 @@ from feedbax.contracts.evaluation_states import (
     _treedef_structure_fingerprint,
     load_authenticated_evaluation_states_artifact,
 )
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     ArtifactRef,
-    EvaluationRunManifest,
     ParentRef,
+)
+from feedbax.contracts.manifest import (
+    EvaluationRunManifest,
     load_manifest_bytes as parse_manifest_bytes,
 )
 from feedbax.contracts.staged_execution import (

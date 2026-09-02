@@ -8,16 +8,16 @@ from pathlib import Path
 import pytest
 
 from feedbax.analysis.context import AnalysisRunContext
+from feedbax.contracts.base import ParentRef
+from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
     EvaluationRunManifest,
-    ParentRef,
     ReportManifest,
     TrainingRunManifest,
     load_manifest,
     spec_payload,
-    store_bytes_artifact,
     write_manifest,
 )
 from feedbax.contracts.manifest_packet import (

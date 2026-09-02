@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.manifest import (
     SCHEMA_VERSION,
     CheckpointCandidateRef,
@@ -15,7 +16,6 @@ from feedbax.contracts.manifest import (
     CheckpointSelectionGroup,
     CheckpointSelectionManifest,
     CheckpointSelectionSpec,
-    ParentRef,
     checkpoint_selection_manifest_id,
     load_manifest,
     normalize_checkpoint_selection_lineage,

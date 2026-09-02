@@ -24,10 +24,12 @@ from feedbax.contracts.studio_api import (
     GenerateAnalysisResponse,
 )
 from feedbax.contracts.figures import FIGURE_COMPOSITION_SPEC_SCHEMA_ID, FigureSpec
-from feedbax.contracts.manifest import (
-    AnalysisRunSpec,
+from feedbax.contracts.base import (
     ArtifactRef,
     ParentRef,
+)
+from feedbax.contracts.manifest import (
+    AnalysisRunSpec,
     analysis_run_manifest_id,
     figure_manifest_id,
 )

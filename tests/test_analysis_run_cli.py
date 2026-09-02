@@ -30,15 +30,17 @@ from feedbax.contracts.analysis_composition import AnalysisRunDeltaSpec
 from feedbax.bin import analysis as analysis_cli
 from feedbax.config import PLOTLY_CONFIG
 from feedbax.config.yaml import get_yaml_loader
+from feedbax.contracts.base import (
+    ParentRef,
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_RUN_DELTA_SPEC_SCHEMA_ID,
     ANALYSIS_RUN_DELTA_SPEC_SCHEMA_VERSION,
     AnalysisRunSpec,
-    ParentRef,
     TrainingRunManifest,
-    canonical_json_bytes,
     load_manifest,
-    sha256_bytes,
 )
 from feedbax.contracts.staged_execution import (
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,

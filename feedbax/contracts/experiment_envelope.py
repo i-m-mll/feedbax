@@ -31,7 +31,7 @@ from typing import Any
 
 from pydantic import Field, model_validator
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.project_experiment import ProjectExperimentDeclaration
 
 EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID = "feedbax.spec.experiment_envelope_compile_result"

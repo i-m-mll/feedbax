@@ -45,29 +45,33 @@ from feedbax.contracts.figures import (
     FIGURE_SPEC_SCHEMA_VERSION,
     FigureSpec,
 )
-from feedbax.contracts.manifest import (
-    AnalysisDataProduct,
-    AnalysisRunManifest,
-    AnyManifest,
+from feedbax.contracts.base import (
     ArtifactRef,
     EntrypointRef,
-    EvaluationRunManifest,
-    FigureManifest,
-    ManifestStatus,
     ParentRef,
     Provenance,
-    ReportManifest,
-    ReportSpec,
-    SpecPayload,
     StrictModel,
     canonical_json_bytes,
     collect_git_provenance,
     default_manifest_root,
-    report_manifest_id,
     sha256_bytes,
-    spec_payload,
+)
+from feedbax.contracts.artifact_store import (
     store_bytes_artifact,
     store_json_artifact,
+)
+from feedbax.contracts.manifest import (
+    AnalysisDataProduct,
+    AnalysisRunManifest,
+    AnyManifest,
+    EvaluationRunManifest,
+    FigureManifest,
+    ManifestStatus,
+    ReportManifest,
+    ReportSpec,
+    SpecPayload,
+    report_manifest_id,
+    spec_payload,
     write_manifest,
 )
 

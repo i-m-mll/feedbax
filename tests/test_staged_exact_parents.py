@@ -33,16 +33,18 @@ from feedbax.analysis.execution_context import (
 )
 from feedbax.analysis.manifest_inputs import resolve_manifest_input
 from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     ArtifactRef,
-    EvaluationRunSpec,
     ParentRef,
+    sha256_bytes,
+)
+from feedbax.contracts.manifest import (
+    EvaluationRunSpec,
     TRAINING_RUN_CERTIFICATION_SCHEMA_ID,
     TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION,
     TrainingRunCertification,
     TrainingRunManifest,
     evaluation_run_manifest_id,
-    sha256_bytes,
     write_manifest,
 )
 from feedbax.contracts.material_dependencies import (

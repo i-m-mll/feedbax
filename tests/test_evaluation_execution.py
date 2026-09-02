@@ -33,21 +33,23 @@ from feedbax.contracts.matrix_core import (
     ContentPinnedJsonBase,
     load_content_pinned_json_base,
 )
+from feedbax.contracts.base import (
+    ParentRef,
+    Provenance,
+    sha256_file,
+    sha256_bytes,
+    canonical_json_bytes,
+)
+from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.contracts.manifest import (
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
     EvaluationRunSpec,
     EvaluationRunManifest,
-    ParentRef,
-    Provenance,
     evaluation_run_manifest_id,
     evaluation_states_cache_path,
     load_manifest,
-    sha256_file,
-    sha256_bytes,
     spec_payload,
-    store_bytes_artifact,
-    canonical_json_bytes,
 )
 from feedbax.persistence.manifest_index import rebuild_manifest_index
 

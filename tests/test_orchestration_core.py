@@ -22,7 +22,8 @@ from pydantic import ValidationError
 from feedbax.orchestration import AuthorizedBatchStop, RowConformanceRuntimeInputs
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
-from feedbax.contracts.manifest import ParentRef, TrainingRunManifest
+from feedbax.contracts.base import ParentRef
+from feedbax.contracts.manifest import TrainingRunManifest
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
 from feedbax.contracts.spec_storage import (
     build_resolved_semantics_snapshot,

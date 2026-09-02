@@ -13,7 +13,14 @@ from pydantic import BaseModel
 
 from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.context import AnalysisArtifactFile, AnalysisRunContext
-from feedbax.contracts.manifest import ArtifactRef, ParentRef, RegenerationSpec, SpecPayload
+from feedbax.contracts.base import (
+    ArtifactRef,
+    ParentRef,
+)
+from feedbax.contracts.manifest import (
+    RegenerationSpec,
+    SpecPayload,
+)
 from feedbax.analysis.types import AnalysisInputData
 
 

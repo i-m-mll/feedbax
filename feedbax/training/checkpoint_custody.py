@@ -67,7 +67,7 @@ from feedbax.contracts.checkpoints import (
     structural_abi_leaf_content_projection,
 )
 from feedbax.contracts.artifact_custody import ArtifactBlobProvider
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     ArtifactRef,
     ArtifactMigrationRecord,
     ParentRef,

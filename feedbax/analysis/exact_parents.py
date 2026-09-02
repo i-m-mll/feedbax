@@ -6,7 +6,10 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from feedbax.contracts.manifest import ParentRef, StrictModel
+from feedbax.contracts.base import (
+    ParentRef,
+    StrictModel,
+)
 from feedbax.contracts.material_dependencies import MaterialDependencySet
 
 

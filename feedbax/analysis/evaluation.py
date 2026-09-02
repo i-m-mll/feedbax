@@ -37,17 +37,22 @@ from feedbax.contracts.evaluation_states import (
     load_evaluation_states_artifact,
     store_evaluation_states_artifact,
 )
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     ArtifactRef,
     EntrypointRef,
+    Provenance,
+    collect_git_provenance,
+    default_manifest_root,
+    StrictModel,
+    canonical_json_bytes,
+    sha256_bytes,
+)
+from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     EvaluationRunSpec,
     StagedEvaluationPrerequisite,
     ManifestStatus,
-    Provenance,
     canonical_manifest_path,
-    collect_git_provenance,
-    default_manifest_root,
     evaluation_run_manifest_id,
     evaluation_states_cache_path,
     load_manifest,
@@ -57,9 +62,6 @@ from feedbax.contracts.manifest import (
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID,
     EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION,
-    StrictModel,
-    canonical_json_bytes,
-    sha256_bytes,
 )
 from feedbax.contracts.evaluation_composition import (
     EvaluationRunMatrixDeltaSpec,

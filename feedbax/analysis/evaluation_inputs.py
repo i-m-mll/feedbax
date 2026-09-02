@@ -25,7 +25,11 @@ from feedbax.analysis.manifest_inputs import (
     is_authenticated_manifest_ref,
     restated_parent_differences,
 )
-from feedbax.contracts.manifest import EvaluationRunSpec, ParentRef, TrainingRunManifest
+from feedbax.contracts.base import ParentRef
+from feedbax.contracts.manifest import (
+    EvaluationRunSpec,
+    TrainingRunManifest,
+)
 from feedbax.contracts.strict_json import DuplicateJsonKeyError, strict_json_loads
 
 

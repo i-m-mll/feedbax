@@ -17,7 +17,10 @@ from feedbax.contracts.evaluation_lifecycle import (
     EvaluationWorkerTopologyEvidence,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.contracts.manifest import canonical_json_bytes, sha256_bytes
+from feedbax.contracts.base import (
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.migrations import migrate_structured_spec_payload
 from feedbax.orchestration.bundle import ExecutionFamily, RunBundle, RunRowSpec
 from feedbax.orchestration.drivers.native_execution import (

@@ -17,12 +17,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import MetaData, Table, inspect, select
 from sqlalchemy.engine import Engine
 
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     EntrypointRef,
-    EvaluationRunManifest,
-    EvaluationRunSpec,
     ParentRef,
     Provenance,
+)
+from feedbax.contracts.manifest import (
+    EvaluationRunManifest,
+    EvaluationRunSpec,
     spec_payload,
 )
 

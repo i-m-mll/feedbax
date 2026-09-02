@@ -27,15 +27,17 @@ from feedbax.contracts.evaluation_lifecycle import (
     EvaluationMatrixBatchUnit,
 )
 from feedbax.contracts.evaluation_preflight import EvaluationOutputPreflightPolicy
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+    canonical_json_bytes,
+    sha256_bytes,
+)
+from feedbax.contracts.manifest import (
     EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
-    canonical_json_bytes,
-    sha256_bytes,
 )
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.orchestration import (
