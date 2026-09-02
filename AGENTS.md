@@ -66,6 +66,23 @@ rejection. A breaking change follows the policy's deprecation, duration,
 release, external-fixture, and owner-ratification gates.
 <!-- feedbax-downstream-stability:end -->
 
+## Protected-Merge Surface Admission
+
+A protected merge that adds a durable schema family, authoring grammar,
+guaranteed public surface, plugin or provider family, or cloud lifecycle state
+machine requires explicit owner approval of that surface increase. The recorded
+approval must explain why an existing concept cannot absorb the need; ordinary
+approval of the merge request without that decision and reason is not enough.
+
+For every change that touches one of these boundaries, the auth spec must:
+
+- state the additions, changes, and removals in each of the five surface
+  categories above, including categories with no delta; and
+- name the exact downstream consumer and artifact corpus examined, pin its
+  revision or custody references, and report the result. Include `rlrmp2` when
+  it consumes the affected contract. If no relevant corpus exists, say so
+  explicitly; absence is not compatibility evidence.
+
 ## Artifact Schema And Migrations
 
 Durable artifact/schema changes require explicit migration handling. This is
