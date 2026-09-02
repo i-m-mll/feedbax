@@ -110,7 +110,8 @@ def test_causal_composite_builds_from_subgraph_not_outer_params() -> None:
         out_port="force_2d",
     )
 
-    graph = spec_to_graph(spec, _registry())
+    registry = _registry()
+    graph = spec_to_graph(spec, registry)
     built = graph.nodes["plant"]
 
     assert isinstance(built, Graph)
@@ -120,6 +121,11 @@ def test_causal_composite_builds_from_subgraph_not_outer_params() -> None:
     assert built.output_ports == ("force_2d",)
     # No muscle machinery was constructed from the outer params.
     assert not any("Muscle" in type(node).__name__ for node in built.nodes.values())
+
+    serialized = graph_to_spec(graph, registry)
+    assert serialized.nodes["plant"].params == {}
+    assert serialized.subgraphs is not None
+    assert serialized.subgraphs["plant"].nodes["scale"].params == {"gain": 7.0}
 
 
 def test_editing_the_subgraph_changes_the_built_artifact() -> None:
@@ -695,13 +701,6 @@ def test_missing_task_workspace_is_not_silently_hardcoded() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "A composite node with a populated subgraph still requires outer params "
-        "that are never used to construct anything — new finding, not in 8378254"
-    ),
-)
 def test_composite_with_a_subgraph_does_not_require_unused_outer_params() -> None:
     """If the interior is authoritative, the outer params cannot gate the build."""
     interior = _gain_interior(3.0, in_port="excitation", out_port="torques")
