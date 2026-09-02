@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from feedbax.contracts.expressions import Coalesce, ValueQuery
+from feedbax.contracts.matrix_core import apply_override_patches as matrix_core_apply_override_patches
 from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.contracts.checkpoints import CheckpointSegmentLineage
 from feedbax.contracts.run_matrix import (
@@ -126,20 +127,29 @@ def test_matrix_v5_object_materializes_without_v6_reinterpretation(tmp_path: Pat
 
 def test_apply_override_patches_is_fail_closed() -> None:
     base = {"a": {"b": 1}, "items": [0, 1]}
+    added_value = {"nested": [3]}
 
     patched = apply_override_patches(
         base,
         [
             {"path": "a.b", "op": "replace", "value": 2},  # type: ignore[list-item]
-            {"path": "a.c", "op": "add", "value": 3},  # type: ignore[list-item]
+            {"path": "a.c", "op": "add", "value": added_value},  # type: ignore[list-item]
+            {"path": "a.c", "op": "replace", "value": {"nested": [4]}},  # type: ignore[list-item]
             {"path": "items.0", "op": "remove"},  # type: ignore[list-item]
         ],
     )
 
-    assert patched == {"a": {"b": 2, "c": 3}, "items": [1]}
+    assert patched == {"a": {"b": 2, "c": {"nested": [4]}}, "items": [1]}
     assert base == {"a": {"b": 1}, "items": [0, 1]}
+    assert added_value == {"nested": [3]}
+    with pytest.raises(ValueError, match="already exists"):
+        apply_override_patches(base, [{"path": "a.b", "op": "add", "value": 2}])  # type: ignore[list-item]
     with pytest.raises(ValueError, match="missing"):
         apply_override_patches(base, [{"path": "a.x", "op": "replace", "value": 2}])  # type: ignore[list-item]
+
+
+def test_run_matrix_reexports_matrix_core_override_patch_authority() -> None:
+    assert apply_override_patches is matrix_core_apply_override_patches
 
 
 def test_apply_override_patches_append_via_numeric_index() -> None:
