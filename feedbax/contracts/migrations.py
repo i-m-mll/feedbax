@@ -255,6 +255,7 @@ from feedbax.contracts.experiment_compile_lock import (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
 )
 from feedbax.contracts.experiment_envelope import (
     EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID,
@@ -3362,6 +3363,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             supported_old_versions=(
                 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
                 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
+                EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
             ),
             required_tests=("tests/test_envelope_engine_kernel.py",),
             notes=(
@@ -3374,7 +3376,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "v1 root figure input reference is refused at lowering with an actionable "
                 "re-author-at-envelope-v5 diagnostic. v3 adds the closed "
                 "analysis_receipt_set consumer; v1/v2 remain readable only with their "
-                "singular analysis_input grammar."
+                "singular analysis_input grammar. v4 adds the governed_parent compile-time "
+                "input, carrying the exact typed parent and artifact byte/schema identity; "
+                "v1/v2/v3 remain readable but cannot be relabelled to carry that reference."
             ),
         ),
         _family(
