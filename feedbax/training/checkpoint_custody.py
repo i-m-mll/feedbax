@@ -103,7 +103,12 @@ from feedbax.contracts.run_matrix import (
     StoppedRowStatus,
     TaskIdentityGate,
 )
-from feedbax.contracts.strict_json import DuplicateJsonKeyError, strict_json_loads
+from feedbax.contracts.strict_json import (
+    DuplicateJsonKeyError,
+    StrictJsonError,
+    strict_json_loads,
+    strict_model_validate_json,
+)
 from feedbax.contracts.training import (
     TRAINING_RUN_SPEC_SCHEMA_ID,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
@@ -509,7 +514,7 @@ def load_checkpoint_set(
             "native checkpoint manifest does not match its transaction directory"
         )
     try:
-        checkpoint_set = CheckpointSet.model_validate_json(checkpoint_set_bytes)
+        checkpoint_set = strict_model_validate_json(CheckpointSet, checkpoint_set_bytes)
     except ValidationError as exc:
         raise CheckpointCustodyError(
             f"native checkpoint set is invalid: {checkpoint_set_path}: {exc}"
@@ -1170,7 +1175,7 @@ def produce_checkpoint_custody_archive(
         context="checkpoint set",
     )
     try:
-        checkpoint_set = CheckpointSet.model_validate_json(checkpoint_set_bytes)
+        checkpoint_set = strict_model_validate_json(CheckpointSet, checkpoint_set_bytes)
     except ValidationError as exc:
         raise CheckpointReferenceResolutionError(f"checkpoint set is invalid: {exc}") from exc
     if (
@@ -1564,7 +1569,7 @@ def materialize_checkpoint_custody_archive(
         )
         checkpoint_set_bytes = checkpoint_set_path.read_bytes()
         try:
-            checkpoint_set = CheckpointSet.model_validate_json(checkpoint_set_bytes)
+            checkpoint_set = strict_model_validate_json(CheckpointSet, checkpoint_set_bytes)
         except ValidationError as exc:
             raise CheckpointReferenceResolutionError(
                 f"checkpoint archive set is invalid: {exc}"
@@ -1683,8 +1688,8 @@ def _extract_checkpoint_custody_archive(
                         )
                     raw_document = source.read(member.size + 1)
                     try:
-                        parsed = json.loads(raw_document)
-                    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                        parsed = strict_json_loads(raw_document)
+                    except (json.JSONDecodeError, UnicodeDecodeError, StrictJsonError) as exc:
                         raise CheckpointReferenceResolutionError(
                             "checkpoint archive document is invalid JSON"
                         ) from exc

@@ -29,6 +29,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
+from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
+
 from feedbax.contracts.training import (
     TrainingProgramRegistry,
     TrainingRunSpec,
@@ -194,6 +196,7 @@ import platform
 from pathlib import Path
 import sys
 
+# Trusted internal command argument serialized by this process for this probe.
 declaration = json.loads(sys.argv[1])
 declared_python = declaration["python_version"]
 observed_python = platform.python_version()
@@ -3096,7 +3099,7 @@ def _authenticated_row_training_spec(row: RunRowSpec) -> TrainingRunSpec | None:
         raise ValueError(
             f"training execution payload digest mismatch; expected={ref.sha256} actual={actual}"
         )
-    payload = json.loads(data)
+    payload = strict_json_loads(data)
     if not isinstance(payload, Mapping):
         raise ValueError("training execution payload must be a JSON object")
     if (
@@ -3492,8 +3495,8 @@ def validate_realized_runpod_environment_fingerprint(
 ) -> None:
     """Fail closed unless a realized fingerprint binds the declared environment."""
     try:
-        payload = json.loads(fingerprint)
-    except json.JSONDecodeError as exc:
+        payload = strict_json_loads(fingerprint)
+    except (json.JSONDecodeError, StrictJsonError) as exc:
         raise RunPodDriverError("realized RunPod environment probe returned invalid JSON") from exc
     declared_environment = environment_declaration_identity_projection(bundle.environment)
     expected = {
@@ -3846,6 +3849,7 @@ def build_remote_content_digest_command(paths: Mapping[str, str]) -> str:
     """Hash path names, entry kinds, symlink targets, and file bytes, not metadata."""
     script = r"""
 import hashlib,json,os,sys
+# Trusted internal command argument serialized by build_remote_content_digest_command.
 paths=json.loads(sys.argv[1])
 def digest(root):
     h=hashlib.sha256()
@@ -4143,7 +4147,7 @@ def _registered_row_payload(row: RunRowSpec) -> dict[str, Any] | None:
     path = Path(ref.uri)
     if _sha256_file(path) != ref.sha256:
         raise RunPodDriverError(f"registered payload digest mismatch for row {row.row_id!r}")
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = strict_json_loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, Mapping):
         raise RunPodDriverError("registered row payload must be a JSON object")
     if (
@@ -4188,8 +4192,8 @@ def _iter_structured_error_messages(text: str) -> Iterable[str]:
         if not line:
             continue
         try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
+            payload = strict_json_loads(line)
+        except (json.JSONDecodeError, StrictJsonError):
             continue
         if isinstance(payload, Mapping):
             message = payload.get("error")
@@ -4225,8 +4229,8 @@ def _classify_create_failure(
     if _is_no_capacity_create_response(stdout, stderr):
         return "non-retryable", detail
     try:
-        payload = json.loads(result.stdout or result.stderr)
-    except json.JSONDecodeError:
+        payload = strict_json_loads(result.stdout or result.stderr)
+    except (json.JSONDecodeError, StrictJsonError):
         payload = None
     if isinstance(payload, Mapping):
         code = str(payload.get("statusCode") or payload.get("code") or "").lower()
@@ -4278,8 +4282,8 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> tuple[str, str]:
 
 def _json_object(payload: str) -> dict[str, Any]:
     try:
-        loaded = json.loads(payload)
-    except json.JSONDecodeError as exc:
+        loaded = strict_json_loads(payload)
+    except (json.JSONDecodeError, StrictJsonError) as exc:
         raise RunPodDriverError(f"invalid JSON payload: {exc}") from exc
     if isinstance(loaded, Mapping):
         return dict(loaded)
@@ -4288,7 +4292,7 @@ def _json_object(payload: str) -> dict[str, Any]:
 
 def _parse_runpod_pod_inventory(payload: str) -> tuple[ProviderPodInventoryRecord, ...]:
     """Parse supported inventory shapes without discarding provider pod names."""
-    loaded = json.loads(payload)
+    loaded = strict_json_loads(payload)
     if isinstance(loaded, list):
         pods = loaded
     elif isinstance(loaded, Mapping):
