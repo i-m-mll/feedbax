@@ -185,6 +185,16 @@ from feedbax.contracts.run_composition import (
     EXECUTION_DEPENDENCY_SCHEMA_VERSION,
 )
 from feedbax.contracts.lineage import LINEAGE_EVENT_SCHEMA_ID, LINEAGE_EVENT_SCHEMA_VERSION
+from feedbax.contracts.parameter_contracts import (
+    ANALYSIS_BUNDLE_PARAMS_SCHEMA_ID,
+    ANALYSIS_BUNDLE_PARAMS_SCHEMA_VERSION,
+    ANALYSIS_PARAMS_SCHEMA_ID,
+    ANALYSIS_PARAMS_SCHEMA_VERSION,
+    FIGURE_ASSEMBLER_PARAMS_SCHEMA_ID,
+    FIGURE_ASSEMBLER_PARAMS_SCHEMA_VERSION,
+    FIGURE_TRACE_PARAMS_SCHEMA_ID,
+    FIGURE_TRACE_PARAMS_SCHEMA_VERSION,
+)
 from feedbax.contracts.nan_attribution import (
     NAN_ATTRIBUTION_DETECTION_SCHEMA_ID,
     NAN_ATTRIBUTION_DETECTION_SCHEMA_VERSION,
@@ -3216,6 +3226,57 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "tests/test_figure_trace_families.py",
                 "tests/test_figure_colorbar.py",
             ),
+        ),
+        _family(
+            "AnalysisParams",
+            ANALYSIS_PARAMS_SCHEMA_ID,
+            ANALYSIS_PARAMS_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.parameter_contracts",
+            emitted_by=("feedbax.integrations.provider.provider_manifest",),
+            consumed_by=("feedbax.envelope.compile.EnvelopeKernel",),
+            description=(
+                "Open scientific parameters identified by the containing analysis type, "
+                "with fail-closed durable identity and artifact-reference structures."
+            ),
+            stance="reject",
+            rejected_old_versions=(f"{ANALYSIS_PARAMS_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_parameter_contracts.py",),
+        ),
+        _family(
+            "AnalysisBundleParams",
+            ANALYSIS_BUNDLE_PARAMS_SCHEMA_ID,
+            ANALYSIS_BUNDLE_PARAMS_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.parameter_contracts",
+            emitted_by=("feedbax.integrations.provider.provider_manifest",),
+            consumed_by=("feedbax.envelope.compile.EnvelopeKernel",),
+            description="Open shared analysis-bundle parameter object.",
+            stance="reject",
+            rejected_old_versions=(f"{ANALYSIS_BUNDLE_PARAMS_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_parameter_contracts.py",),
+        ),
+        _family(
+            "FigureAssemblerParams",
+            FIGURE_ASSEMBLER_PARAMS_SCHEMA_ID,
+            FIGURE_ASSEMBLER_PARAMS_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.parameter_contracts",
+            emitted_by=("feedbax.integrations.provider.provider_manifest",),
+            consumed_by=("feedbax.envelope.compile.EnvelopeKernel",),
+            description="Deliberately open figure-assembler parameter vocabulary.",
+            stance="reject",
+            rejected_old_versions=(f"{FIGURE_ASSEMBLER_PARAMS_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_parameter_contracts.py",),
+        ),
+        _family(
+            "FigureTraceParams",
+            FIGURE_TRACE_PARAMS_SCHEMA_ID,
+            FIGURE_TRACE_PARAMS_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.parameter_contracts",
+            emitted_by=("feedbax.integrations.provider.provider_manifest",),
+            consumed_by=("feedbax.envelope.compile.EnvelopeKernel",),
+            description=("Deliberately open figure styling vocabulary with typed common fields."),
+            stance="reject",
+            rejected_old_versions=(f"{FIGURE_TRACE_PARAMS_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_parameter_contracts.py",),
         ),
         _family(
             "FigureCompositionSpec",
