@@ -1759,6 +1759,10 @@ def test_default_policy_matrix_exercises_accept_migrate_or_reject_behavior() -> 
         policy = family.policy
         assert policy is not None
         if policy.stance == "migrate":
+            if family.kind == "ExperimentCompileLock":
+                # Its migration requires a complete old lock with attributable producer
+                # provenance; the focused compile-lock tests exercise that fail-closed path.
+                continue
             for old_version in policy.supported_old_versions:
                 payload = {"schema_version": old_version}
                 if family.kind == "StudioValueSpec":

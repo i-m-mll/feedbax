@@ -259,7 +259,7 @@ SURFACES = (
             "RowProvenanceReference source_content_hash + pin_algorithm",
             "AuthenticatedReceiptReference manifest_sha256 + size_bytes",
             "compiled_document.content_hash + pin_algorithm",
-            "execution_identity.sha256 + ordered inputs",
+            "execution_identity.sha256 + ordered inputs + pin_algorithm",
         ),
         assertions=(
             Anchor("feedbax/contracts/experiment_compile_lock.py", "build_compile_lock"),
@@ -909,8 +909,10 @@ def render_map(inventory: dict[str, object]) -> str:
             "- `canonical-json-v1`, `training-spec-json-current`, and `publication-json-v1` use different "
             "JSON byte contracts. A refactor may share code only after proving the emitted bytes and "
             "schema migration boundary appropriate to each stored field.",
-            "- Compile-lock `execution_identity.sha256` is mapped here as current behavior. This map "
-            "does not pin or migrate an existing compile-lock artifact; that is a separate delivery.",
+            "- Compile-lock `execution_identity.sha256` is pinned to canonical-json-v1 in v4. The "
+            "explicit v3 migration asserts that pin only for locks with attributable built-in "
+            "Feedbax compiler provenance; downstream-authored and unattributed digest shapes remain "
+            "outside that migration.",
             "- Studio `fnv1a:` values are presentation revision markers, not authenticity proofs, and "
             "the current Python/TypeScript number spelling is not one byte domain.",
             "- Raw manifest, artifact, archive, array, and checkpoint blob digests remain exact material "
