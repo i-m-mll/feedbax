@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import Field, model_validator
 
+from feedbax.contracts._parent_delta import _flatten_content_pinned_parent_deltas
 from feedbax.contracts.manifest import (
     ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_ID,
     ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
@@ -19,7 +20,7 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.matrix_core import ContentPinnedJsonBase, load_content_pinned_json_base
 from feedbax.contracts.migrations import default_spec_registry
-from feedbax.contracts.run_matrix import MatrixCompositionDelta, apply_composition_deltas
+from feedbax.contracts.run_matrix import MatrixCompositionDelta
 
 ANALYSIS_BUNDLE_SPEC_SCHEMA_ID = "feedbax.spec.analysis_bundle"
 
@@ -35,9 +36,7 @@ class AnalysisBundleDeltaSpec(StrictModel):
     @model_validator(mode="after")
     def _validate_delta_spec(self) -> "AnalysisBundleDeltaSpec":
         if self.schema_id != ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_ID:
-            raise ValueError(
-                f"unsupported AnalysisBundleDeltaSpec schema_id {self.schema_id!r}"
-            )
+            raise ValueError(f"unsupported AnalysisBundleDeltaSpec schema_id {self.schema_id!r}")
         if self.schema_version != ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_VERSION:
             raise ValueError(
                 f"unsupported AnalysisBundleDeltaSpec schema_version {self.schema_version!r}"
@@ -108,51 +107,38 @@ def flatten_analysis_bundle_delta(
     repo_root: Path | str | None = None,
 ) -> FlattenedAnalysisBundle:
     """Resolve pinned parents root-to-child into one flat bundle document."""
-    chain: list[tuple[str, AnalysisBundleDeltaSpec]] = []
-    seen: set[str] = set()
-    current = spec
-    while True:
-        digest = analysis_bundle_delta_envelope_hash(current)
-        if digest in seen:
-            raise ValueError("analysis bundle delta parent composition cycle detected")
-        seen.add(digest)
-        chain.append((digest, current))
-        parent_payload = load_content_pinned_json_base(current.parent, repo_root=repo_root)
-        parent_schema_id = parent_payload.get("schema_id")
-        if parent_schema_id == ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_ID:
-            current = AnalysisBundleDeltaSpec.model_validate(parent_payload)
-            continue
-        if parent_schema_id != ANALYSIS_BUNDLE_SPEC_SCHEMA_ID:
-            raise ValueError(
-                "analysis bundle delta parent must declare schema_id "
-                f"{ANALYSIS_BUNDLE_SPEC_SCHEMA_ID!r} or "
-                f"{ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_ID!r}, got {parent_schema_id!r}"
-            )
-        payload = default_spec_registry.migrate("AnalysisBundleSpec", parent_payload).payload
-        break
-
-    attribution: dict[str, str] = {}
-    written: set[str] = set()
-    layers: list[AnalysisBundleCompositionLayer] = []
-    for digest, node in reversed(chain):
-        payload, local_attribution, written = apply_composition_deltas(
-            payload, node.deltas, ancestor_written_paths=written
-        )
-        attribution.update(local_attribution)
-        layers.append(
-            AnalysisBundleCompositionLayer(
-                envelope_sha256=digest,
-                parent_ref=node.parent.ref,
-                parent_sha256=node.parent.sha256,
-                layer_ids=[delta.layer_id for delta in node.deltas],
-                parent_payload_path=node.parent.payload_path,
-            )
-        )
+    flattened = _flatten_content_pinned_parent_deltas(
+        spec,
+        repo_root=repo_root,
+        envelope_hash=analysis_bundle_delta_envelope_hash,
+        parent_of=lambda node: node.parent,
+        load_parent=load_content_pinned_json_base,
+        deltas_of=lambda node: node.deltas,
+        parse_delta_parent=AnalysisBundleDeltaSpec.model_validate,
+        terminal_payload=lambda payload: default_spec_registry.migrate(
+            "AnalysisBundleSpec", payload
+        ).payload,
+        layer_from_node=lambda digest, node: AnalysisBundleCompositionLayer(
+            envelope_sha256=digest,
+            parent_ref=node.parent.ref,
+            parent_sha256=node.parent.sha256,
+            layer_ids=[delta.layer_id for delta in node.deltas],
+            parent_payload_path=node.parent.payload_path,
+        ),
+        delta_schema_id=ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_ID,
+        terminal_schema_id=ANALYSIS_BUNDLE_SPEC_SCHEMA_ID,
+        cycle_error="analysis bundle delta parent composition cycle detected",
+        invalid_parent_error=lambda schema_id: (
+            "analysis bundle delta parent must declare schema_id "
+            f"{ANALYSIS_BUNDLE_SPEC_SCHEMA_ID!r} or "
+            f"{ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_ID!r}, got {schema_id!r}"
+        ),
+    )
     return FlattenedAnalysisBundle(
         authored=spec.model_dump(mode="json", exclude_none=True),
-        payload=payload,
-        attribution=attribution,
-        layers=layers,
+        payload=flattened.payload,
+        attribution=flattened.attribution,
+        layers=flattened.layers,
     )
 
 
@@ -168,13 +154,9 @@ def analysis_bundle_composition_provenance(
             "ref": flattened.root_bundle.parent_ref,
             "sha256": flattened.root_bundle.parent_sha256,
         },
-        "layers": [
-            layer.model_dump(mode="json", exclude_none=True) for layer in flattened.layers
-        ],
+        "layers": [layer.model_dump(mode="json", exclude_none=True) for layer in flattened.layers],
         "attribution": dict(flattened.attribution),
-        "flattened_bundle_sha256": sha256_bytes(
-            canonical_json_bytes(dict(flattened.payload))
-        ),
+        "flattened_bundle_sha256": sha256_bytes(canonical_json_bytes(dict(flattened.payload))),
     }
 
 
