@@ -16,6 +16,7 @@ from feedbax.compiler.templates import (
     recurrent_controller_template_graph,
     simple_feedback_template_graph,
 )
+from feedbax.compiler import GraphCompilationError
 from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
 from feedbax.models.networks import LeakyRNNCell, SimpleStagedNetwork, VanillaRNN
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
@@ -611,34 +612,32 @@ def test_authoring_normalization_does_not_turn_unsupported_runtime_params_into_p
     assert "modulator_input" not in normalized.nodes["network"].params
 
 
-def test_legacy_runtime_network_serialization_inlines_explicit_controller_nodes() -> None:
+def test_opaque_runtime_network_serialization_requires_authored_subgraph_identity() -> None:
     network = SimpleStagedNetwork(
         input_size=4,
         hidden_size=3,
         out_size=2,
         key=jax.random.PRNGKey(5),
     )
-    spec = graph_to_spec(
-        Graph(
-            nodes={"network": network},
-            input_ports=["input", "feedback"],
-            output_ports=["output", "hidden"],
-            input_bindings={"input": ("network", "input"), "feedback": ("network", "feedback")},
-            output_bindings={"output": ("network", "output"), "hidden": ("network", "hidden")},
+    with pytest.raises(
+        ValueError,
+        match="Programmatic graph component reverse resolution must match exactly one",
+    ):
+        graph_to_spec(
+            Graph(
+                nodes={"network": network},
+                input_ports=["input", "feedback"],
+                output_ports=["output", "hidden"],
+                input_bindings={
+                    "input": ("network", "input"),
+                    "feedback": ("network", "feedback"),
+                },
+                output_bindings={
+                    "output": ("network", "output"),
+                    "hidden": ("network", "hidden"),
+                },
+            )
         )
-    )
-    assert spec.subgraphs is None
-    assert "network" not in spec.nodes
-    assert set(spec.nodes) == {"network_input_mux", "network_cell", "network_readout"}
-    assert spec.input_bindings == {
-        "input": ("network_input_mux", "in_0"),
-        "feedback": ("network_input_mux", "in_1"),
-    }
-    assert spec.output_bindings == {
-        "output": ("network_readout", "output"),
-        "hidden": ("network_cell", "hidden"),
-    }
-    assert spec.nodes["network_cell"].params["input_size"] == 4
 
 
 def test_linear_activation_from_graph_spec_is_honored() -> None:
@@ -958,8 +957,12 @@ def test_spec_to_graph_rejects_missing_required_registry_param() -> None:
         output_bindings={"output": ("gain", "output")},
     )
 
-    with pytest.raises(ValueError, match="Gain node 'gain'.*'gain'"):
-        spec_to_graph(spec, {"Gain": registry.get("Gain")})
+    with pytest.raises(GraphCompilationError) as caught:
+        spec_to_graph(spec, registry)
+
+    diagnostic = caught.value.record.diagnostics[0]
+    assert diagnostic.code == "compiler.type_resolution.unresolved_component_type"
+    assert "gain: Field required (missing)" in diagnostic.observed_condition
 
 
 def test_spec_to_graph_rejects_missing_network_subgraph_during_prototype_inference() -> None:

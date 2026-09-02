@@ -7,6 +7,7 @@ from typing import Any, Protocol
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from feedbax.contracts.component import DynamicPortPolicy, PortType, PortTypeSpec
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, PENZAI_DOMAIN_ID
@@ -116,6 +117,15 @@ _DEFAULT_STRUCTURAL_DELTA_A = SparseCooArrayValueSpec(
     fill=0.0,
     entries=(),
 ).model_dump(mode="json")
+
+
+class _ConstantParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    value: JsonValue = Field(
+        default=0.0,
+        json_schema_extra={"feedbax": {"type": "object", "required": True}},
+    )
 
 
 def _extract_analytical_plant_params(component: Any, model: Any) -> Any:
@@ -1571,9 +1581,7 @@ def register_builtin_components(registry: _Registry) -> None:
             runtime_type=Constant,
             category="Sources",
             description="Constant value output.",
-            parameter_fields=[
-                ParameterField(name="value", type="float", default=0.0, required=True),
-            ],
+            param_model=_ConstantParams,
             input_ports=[],
             output_ports=["output"],
             icon="Circle",
@@ -1696,7 +1704,6 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="DelayLine",
             runtime_type=DelayLine,
-            build_context_fields=("input_shape",),
             constructor=ComponentConstructorPlan(
                 context_adapters={"input_shape": ("input_proto", "array_prototype")}
             ),
@@ -1705,6 +1712,7 @@ def register_builtin_components(registry: _Registry) -> None:
             parameter_fields=[
                 ParameterField(name="delay", type="int", default=1, min=0, required=True),
                 ParameterField(name="init_value", type="float", default=0.0, required=False),
+                ParameterField(name="input_shape", type="array", default=None, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -2398,7 +2406,6 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="FirstOrderFilter",
             runtime_type=FirstOrderFilter,
-            build_context_fields=("input_shape",),
             constructor=ComponentConstructorPlan(
                 context_adapters={"input_shape": ("input_proto", "array_prototype")}
             ),
@@ -2411,6 +2418,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 ),
                 ParameterField(name="dt", type="float", default=0.001, min=0.0, required=True),
                 ParameterField(name="init_value", type="float", default=0.0, required=False),
+                ParameterField(name="input_shape", type="array", default=None, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -2466,7 +2474,8 @@ def register_builtin_components(registry: _Registry) -> None:
                         FixedFieldParams,
                         ("scale", "amplitude", "field", "active"),
                     )
-                }
+                },
+                array_conversions={"field": None},
             ),
             attribute_paths={
                 "scale": "_initial_state.scale",
@@ -2586,7 +2595,8 @@ def register_builtin_components(registry: _Registry) -> None:
                         DynamicsMatrixPerturbParams,
                         ("scale", "delta_A", "active"),
                     )
-                }
+                },
+                array_conversions={"delta_A": (2, 4)},
             ),
             attribute_paths={
                 "scale": "_initial_state.scale",
@@ -3134,6 +3144,7 @@ def register_builtin_components(registry: _Registry) -> None:
             name="DelayedReaches",
             builder=_builders._build_delayed_reaches,
             extractor=_extract_delayed_reaches_params,
+            param_projection=_builders._project_delayed_reaches_params,
             override_reason="n_control_stages is transformed into the task step count",
             attribute_paths={
                 "n_steps": "task.n_steps",

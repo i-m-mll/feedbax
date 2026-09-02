@@ -35,6 +35,7 @@ ComponentBuilder = Callable[[Mapping[str, Any]], "Component"]
 OutputPrototypeFn = Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]]
 ComponentParamModel = type[BaseModel]
 ComponentParamExtractor = Callable[["Component", BaseModel], BaseModel]
+ComponentParamProjection = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ class ComponentConstructorPlan:
     context_adapters: Mapping[str, tuple[str, Literal["array_prototype"]]] = field(
         default_factory=dict
     )
+    array_conversions: Mapping[str, tuple[int, ...] | None] = field(default_factory=dict)
 
 
 def _unsupported_declared_builder(component_type: str) -> ComponentBuilder:
@@ -292,6 +294,7 @@ class ComponentParamContract:
     runtime_type: type["Component"] | None = None
     constructor: ComponentConstructorPlan = field(default_factory=ComponentConstructorPlan)
     attribute_paths: Mapping[str, str] = field(default_factory=dict)
+    projection: ComponentParamProjection | None = None
     extractor: ComponentParamExtractor | None = None
     override_reason: str | None = None
 
@@ -318,7 +321,8 @@ class ComponentParamContract:
         return "custom" if self.builder is not None or self.extractor is not None else "generic"
 
     def validate(self, params: Mapping[str, Any]) -> ComponentParamValidation:
-        missing = self.required_fields - set(params)
+        projected = dict(self.projection(params)) if self.projection is not None else dict(params)
+        missing = self.required_fields - set(projected)
         if missing:
             return ComponentParamValidation(
                 failures=tuple(
@@ -327,7 +331,7 @@ class ComponentParamContract:
                 )
             )
         try:
-            return ComponentParamValidation(value=self.model.model_validate(dict(params)))
+            return ComponentParamValidation(value=self.model.model_validate(projected))
         except ValidationError as exc:
             return ComponentParamValidation(
                 failures=tuple(
@@ -375,6 +379,18 @@ class ComponentParamContract:
                 from feedbax.compiler.prototypes import array_proto_from_shape
 
                 constructor_values[target] = array_proto_from_shape(values.get(source))
+        if self.constructor.array_conversions:
+            import jax.numpy as jnp
+
+            for source, expected_shape in self.constructor.array_conversions.items():
+                target = self.constructor.renames.get(source, source)
+                converted = jnp.asarray(constructor_values[target])
+                if expected_shape is not None and converted.shape != expected_shape:
+                    raise ValueError(
+                        f"{self.component_type} {source} must have shape "
+                        f"{expected_shape!r}; got {converted.shape!r}"
+                    )
+                constructor_values[target] = converted
         for target, (group_type, names) in self.constructor.groups.items():
             constructor_values[target] = group_type(
                 **{
@@ -394,9 +410,23 @@ class ComponentParamContract:
         raw = {}
         for name, model_field in self.model.model_fields.items():
             path = self.attribute_paths.get(name, name)
-            value = (
-                model_field.default if path == "$default" else _read_attribute_path(component, path)
-            )
+            if name in self.constructor.context_adapters:
+                target, adapter = self.constructor.context_adapters[name]
+                if adapter == "array_prototype":
+                    from feedbax.compiler.prototypes import shape_from_proto
+
+                    value = shape_from_proto(_read_attribute_path(component, target))
+                    if value is None:
+                        raise ValueError(
+                            f"{self.component_type} parameter {name!r} is not recoverable "
+                            f"from runtime prototype {target!r}"
+                        )
+            else:
+                value = (
+                    model_field.default
+                    if path == "$default"
+                    else _read_attribute_path(component, path)
+                )
             raw[name] = _json_value(value)
         return self.require(raw)
 
@@ -613,6 +643,7 @@ def declare_component(
     constructor: ComponentConstructorPlan | None = None,
     attribute_paths: Mapping[str, str] | None = None,
     build_context_fields: Sequence[str] = (),
+    param_projection: ComponentParamProjection | None = None,
     extractor: ComponentParamExtractor | None = None,
     override_reason: str | None = None,
     output_prototype_fn: OutputPrototypeFn | None = None,
@@ -659,6 +690,7 @@ def declare_component(
         runtime_type=runtime_type,
         constructor=constructor or ComponentConstructorPlan(),
         attribute_paths=dict(attribute_paths or {}),
+        projection=param_projection,
         extractor=extractor,
         override_reason=override_reason,
     )

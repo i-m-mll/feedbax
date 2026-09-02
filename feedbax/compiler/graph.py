@@ -412,6 +412,13 @@ def _require_component_types(graph: GraphSpec, component_registry: Any) -> None:
             _require_component_types(subgraph, component_registry)
 
 
+def _has_derived_dimensions(graph: GraphSpec) -> bool:
+    return bool(graph.derived_dimensions) or any(
+        isinstance(subgraph, GraphSpec) and _has_derived_dimensions(subgraph)
+        for subgraph in (graph.subgraphs or {}).values()
+    )
+
+
 def compile_graph(
     document: GraphDocument,
     component_registry: Any,
@@ -437,14 +444,27 @@ def compile_graph(
         action="correct the authored graph payload or migrate it through a registered schema",
         operation=parse_graph,
     )
-    _compile_phase(
+    def resolve_component_types() -> GraphSpec:
+        graph_with_derived_dimensions = (
+            normalize_derived_dimensions(
+                authored_graph,
+                input_prototypes,
+                component_registry=component_registry,
+            )
+            if _has_derived_dimensions(authored_graph)
+            else authored_graph
+        )
+        _require_component_types(graph_with_derived_dimensions, component_registry)
+        return graph_with_derived_dimensions
+
+    typed_graph = _compile_phase(
         phase=CompilerPhase.TYPE_RESOLUTION,
         code="compiler.type_resolution.unresolved_component_type",
         anchor=graph_anchor,
         document_sha256=document_sha256,
         expected="every authored component type resolves exactly once in the supplied registry",
         action="register the missing component declaration or correct its authored type identity",
-        operation=lambda: _require_component_types(authored_graph, component_registry),
+        operation=resolve_component_types,
     )
     graph = _compile_phase(
         phase=CompilerPhase.COMPOSITE_AND_ACAUSAL_LOWERING,
@@ -453,7 +473,7 @@ def compile_graph(
         document_sha256=document_sha256,
         expected="every authored lowering rule produces one valid literal semantic graph",
         action="correct the authored composite, acausal, or channel-adapter declaration",
-        operation=lambda: materialize_additive_channel_adapters(authored_graph),
+        operation=lambda: materialize_additive_channel_adapters(typed_graph),
     )
 
     def solve_constraints() -> GraphSpec:

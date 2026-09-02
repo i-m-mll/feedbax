@@ -4,8 +4,6 @@ from typing import Any, Literal, Mapping, Sequence, cast
 
 from feedbax.runtime.graph import Component, ComponentBinding, Graph, Wire
 from feedbax.contracts.component import DynamicPortPolicyError, validate_dynamic_port_layout
-from feedbax.tasks import apply_delayed_reaches_preset
-from feedbax.tasks.presets import delayed_reaches_n_steps_from_params
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
@@ -323,9 +321,6 @@ def _instantiate_graph(
             )
             if unsupported_message is not None:
                 raise NotImplementedError(unsupported_message)
-        if node_type == "DelayedReaches":
-            node_params = apply_delayed_reaches_preset(node_params)
-            node_params.setdefault("n_steps", delayed_reaches_n_steps_from_params(node_params))
         params = node_params
         declared_input_ports, declared_output_ports = _validate_dynamic_component_ports(
             node_name,

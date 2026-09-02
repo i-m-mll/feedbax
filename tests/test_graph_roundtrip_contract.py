@@ -71,10 +71,12 @@ _NONE_VALUES: dict[tuple[str, str], Any] = {
     ("Channel", "input_shape"): [3],
     ("Channel", "noise_role"): "motor_command",
     ("Channel", "noise_timing"): "post_controller",
+    ("DelayLine", "input_shape"): [3],
     ("DelayedReaches", "n_control_stages"): 49,
     ("DelayedReaches", "go_cue_event_name"): "go",
     ("DynamicsMatrixPerturb", "mass"): 1.25,
     ("FeedbackChannels", "input_shape"): [[3], [3]],
+    ("FirstOrderFilter", "input_shape"): [3],
     ("LinearStateSpace", "B_w"): [[0.1], [0.2], [0.3], [0.4]],
     ("StructuralLinearStateSpace", "B_w"): [[0.1], [0.2], [0.3], [0.4]],
     ("StateFeedbackSelector", "expected_state_dim"): 4,
@@ -197,7 +199,9 @@ def _single_node_spec(
         }
     )
     prototype_shape = (2,)
-    if component_type == "Channel" and isinstance(params.get("input_shape"), list):
+    if component_type in {"Channel", "DelayLine", "FirstOrderFilter"} and isinstance(
+        params.get("input_shape"), list
+    ):
         prototype_shape = tuple(int(dim) for dim in params["input_shape"])
     prototypes = {("node", port): jnp.zeros(prototype_shape) for port in input_ports}
     return spec, prototypes
