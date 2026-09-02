@@ -10,6 +10,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
+
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.manifest import TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID
 from feedbax.contracts.run_matrix import (
@@ -141,8 +143,8 @@ def _read_artifact(ref: SchemaArtifactRef, label: str) -> dict[str, Any]:
         raise MatrixAuthorityError(f"{label} is not locally materialized")
     try:
         data = Path(ref.uri).read_bytes()
-        payload = json.loads(data)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        payload = strict_json_loads(data)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, StrictJsonError) as exc:
         raise MatrixAuthorityError(f"{label} is unavailable or invalid JSON") from exc
     if hashlib.sha256(data).hexdigest() != ref.sha256:
         raise MatrixAuthorityError(f"{label} custody digest mismatch")

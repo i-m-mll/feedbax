@@ -44,7 +44,6 @@ authenticated reference a previous run produced, and it may never author one.
 
 from __future__ import annotations
 
-import json
 import posixpath
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
@@ -54,6 +53,8 @@ from types import UnionType
 from typing import Annotated, Any, NoReturn, Union, get_args, get_origin
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
+
+from feedbax.contracts.strict_json import strict_json_loads
 
 from feedbax.contracts.authored_canonical import (
     CANONICAL_PIN_ALGORITHM,
@@ -301,7 +302,7 @@ def _authored_output_name(path: Path) -> str | None:
     failure here would report one broken envelope as a corpus-wide collision.
     """
     try:
-        document = json.loads(path.read_bytes())
+        document = strict_json_loads(path.read_bytes())
     except (OSError, ValueError):
         return None
     if not isinstance(document, Mapping):

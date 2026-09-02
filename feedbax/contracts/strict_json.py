@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from collections.abc import Callable
+from typing import Any, Protocol, TypeVar
 
 __all__ = [
     "DuplicateJsonKeyError",
     "StrictJsonError",
     "strict_json_loads",
+    "strict_model_validate_json",
 ]
 
 _BARE_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -90,12 +92,20 @@ def _locate(
     return None
 
 
-def strict_json_loads(data: str | bytes | bytearray, *, ref: str | None = None) -> Any:
+def strict_json_loads(
+    data: str | bytes | bytearray,
+    *,
+    ref: str | None = None,
+    parse_constant: Callable[[str], Any] | None = None,
+) -> Any:
     """Parse one JSON document, refusing any duplicated object member name.
 
     Args:
         data: The document bytes or text, exactly as :func:`json.loads` accepts.
         ref: Optional document name used in the refusal message.
+        parse_constant: Optional standard-library callback for non-finite
+            constants. This preserves a caller's established scalar policy;
+            duplicate-member refusal remains owned here.
 
     Returns:
         The same value :func:`json.loads` would return for a document with no
@@ -123,7 +133,8 @@ def strict_json_loads(data: str | bytes | bytearray, *, ref: str | None = None) 
             retained.append(obj)
         return obj
 
-    parsed = json.loads(data, object_pairs_hook=hook)
+    kwargs = {"parse_constant": parse_constant} if parse_constant is not None else {}
+    parsed = json.loads(data, object_pairs_hook=hook, **kwargs)
     if duplicates:
         located = _locate(parsed, duplicates, "$")
         if located is None:  # pragma: no cover - unreachable while ids stay live
@@ -132,3 +143,34 @@ def strict_json_loads(data: str | bytes | bytearray, *, ref: str | None = None) 
         json_path, key = located
         raise DuplicateJsonKeyError(key, json_path, ref=ref)
     return parsed
+
+
+_ModelT = TypeVar("_ModelT")
+
+
+class _JsonModel(Protocol[_ModelT]):
+    @classmethod
+    def model_validate_json(cls, data: str | bytes | bytearray, **kwargs: Any) -> _ModelT: ...
+
+
+def strict_model_validate_json(
+    model: _JsonModel[_ModelT],
+    data: str | bytes | bytearray,
+    *,
+    ref: str | None = None,
+    **kwargs: Any,
+) -> _ModelT:
+    """Refuse duplicated object members and preserve Pydantic's other semantics.
+
+    Pydantic remains the authority for every non-duplicate behavior, including
+    Unicode-surrogate, trailing-input, non-finite-number, and error semantics. A
+    standard-library parse failure therefore delegates to Pydantic so its
+    established result or exception remains unchanged.
+    """
+    try:
+        strict_json_loads(data, ref=ref)
+    except DuplicateJsonKeyError:
+        raise
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return model.model_validate_json(data, **kwargs)
+    return model.model_validate_json(data, **kwargs)

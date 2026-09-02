@@ -1,5 +1,4 @@
 import fnmatch
-import json
 import os
 import time
 from collections.abc import Callable, Sequence
@@ -16,6 +15,7 @@ from jax_cookbook import is_module, is_type
 from sqlalchemy.orm import Session
 
 from feedbax.config import PATHS
+from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.persistence.database import (
     get_model_record,
     load_tree_with_hps,
@@ -94,7 +94,7 @@ def display_model_filechooser(
 
     def display_params(path, html_widget):
         with open(path, "r") as f:
-            params = json.load(f)
+            params = strict_json_loads(f.read(), ref=str(path))
         params_str = eqx.tree_pformat(
             params, truncate_leaf=lambda x: isinstance(x, list) and len(x) > 10
         )

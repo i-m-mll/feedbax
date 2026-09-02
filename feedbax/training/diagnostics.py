@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import Field, ValidationError, model_validator
 
+from feedbax.contracts.strict_json import strict_model_validate_json
+
 from feedbax.contracts.execution_context import (
     NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID,
     NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION,
@@ -92,16 +94,12 @@ class TrainingDiagnostics(StrictModel):
     """Durable diagnostics emitted by the native training executor."""
 
     kind: Literal["TrainingDiagnostics"] = "TrainingDiagnostics"
-    schema_id: Literal["feedbax.manifest.training_diagnostics"] = (
-        TRAINING_DIAGNOSTICS_SCHEMA_ID
-    )
+    schema_id: Literal["feedbax.manifest.training_diagnostics"] = TRAINING_DIAGNOSTICS_SCHEMA_ID
     schema_version: Literal[
         "feedbax.manifest.training_diagnostics.v2",
         "feedbax.manifest.training_diagnostics.v3",
         "feedbax.manifest.training_diagnostics.v4",
-    ] = (
-        TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2
-    )
+    ] = TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2
     manifest_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
     terminal_status: Literal["completed", "cancelled", "failed"]
@@ -115,9 +113,7 @@ class TrainingDiagnostics(StrictModel):
     seeds: list[int] = Field(default_factory=list)
     lr_trace: list[LearningRateDiagnostic] = Field(default_factory=list)
     checkpoint_coordinates: list[int] = Field(default_factory=list)
-    checkpoint_transactions: list[CheckpointTransactionDiagnostic] = Field(
-        default_factory=list
-    )
+    checkpoint_transactions: list[CheckpointTransactionDiagnostic] = Field(default_factory=list)
     resume_context: ScheduleContextDiagnostic | None = None
     optimizer_build_context: ScheduleContextDiagnostic | None = None
     method_trace: MethodTrainingTrace | None = None
@@ -139,9 +135,7 @@ class TrainingDiagnostics(StrictModel):
                 "cumulative_completed_batches"
             )
         if self.segment_completed_batches > self.completed_batches:
-            raise ValueError(
-                "segment_completed_batches cannot exceed the cumulative batch count"
-            )
+            raise ValueError("segment_completed_batches cannot exceed the cumulative batch count")
         if self.method_trace is not None and self.schema_version not in {
             TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
             TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4,
@@ -199,9 +193,13 @@ def load_method_training_trace(
         kind = "truncated" if "size" in str(exc).lower() else "missing"
         raise MethodTrainingTraceLoadError(kind, f"method trace custody failed: {exc}") from exc
     try:
-        diagnostics = TrainingDiagnostics.model_validate_json(data)
+        diagnostics = strict_model_validate_json(TrainingDiagnostics, data)
     except ValidationError as exc:
-        kind = "truncated" if any(error["type"] == "json_invalid" for error in exc.errors()) else "schema"
+        kind = (
+            "truncated"
+            if any(error["type"] == "json_invalid" for error in exc.errors())
+            else "schema"
+        )
         raise MethodTrainingTraceLoadError(kind, f"method trace payload is invalid: {exc}") from exc
     if diagnostics.schema_version not in {
         TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
@@ -211,13 +209,17 @@ def load_method_training_trace(
             "schema", "method trace requires diagnostics schema v3 or v4"
         )
     if diagnostics.manifest_id != manifest.id or diagnostics.run_id != manifest.job_id:
-        raise MethodTrainingTraceLoadError("provenance", "method trace names a different manifest or run")
+        raise MethodTrainingTraceLoadError(
+            "provenance", "method trace names a different manifest or run"
+        )
     try:
         if manifest.training_spec is None:
             raise ValueError("missing embedded TrainingRunSpec")
         run_spec = TrainingRunSpec.model_validate(manifest.training_spec.inline)
     except (ValueError, ValidationError) as exc:
-        raise MethodTrainingTraceLoadError("provenance", f"method authority is invalid: {exc}") from exc
+        raise MethodTrainingTraceLoadError(
+            "provenance", f"method authority is invalid: {exc}"
+        ) from exc
     declaration = run_spec.worker_execution.method_contract.training_diagnostics
     trace = diagnostics.method_trace
     if declaration is None or trace is None:
@@ -255,8 +257,12 @@ def load_method_training_trace(
         raise MethodTrainingTraceLoadError("duplicate", "method trace duplicates coordinates")
     outside = set(coordinates) - expected_coordinates
     if outside:
-        raise MethodTrainingTraceLoadError("out_of_range", f"method trace has out-of-range coordinates: {sorted(outside)!r}")
+        raise MethodTrainingTraceLoadError(
+            "out_of_range", f"method trace has out-of-range coordinates: {sorted(outside)!r}"
+        )
     missing = expected_coordinates - set(coordinates)
     if missing:
-        raise MethodTrainingTraceLoadError("gap", f"method trace has coordinate gaps: {sorted(missing)!r}")
+        raise MethodTrainingTraceLoadError(
+            "gap", f"method trace has coordinate gaps: {sorted(missing)!r}"
+        )
     return trace

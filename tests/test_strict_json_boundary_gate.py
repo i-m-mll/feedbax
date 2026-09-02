@@ -1,4 +1,4 @@
-"""Structural gate: every JSON parse in ``feedbax/contracts`` is accounted for.
+"""Structural gate: every JSON parse in audited authority packages is accounted for.
 
 ``feedbax/contracts`` is the layer that reads authority documents — manifests,
 packets, envelopes, compile locks, content-pinned bases, declarations, array
@@ -21,9 +21,8 @@ last-value-wins behavior for a repeated object member name:
 * pydantic's ``Model.model_validate_json`` and ``TypeAdapter(...).validate_json``
   (measured: pydantic 2.12 keeps the last value exactly as ``json.loads`` does).
 
-Scope note: this gate covers ``feedbax/contracts`` only, which is the audited
-authority-document layer. Parsers elsewhere in the package (orchestration,
-training, analysis, web) are outside it.
+The audited packages are the contract, envelope, analysis, orchestration, and
+training layers. Web transport decoding remains outside this gate.
 """
 
 from __future__ import annotations
@@ -36,7 +35,16 @@ import pytest
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.strict_json_boundary_contract]
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BOUNDARY_PACKAGE = Path("feedbax/contracts")
+BOUNDARY_PACKAGES = tuple(
+    Path(package)
+    for package in (
+        "feedbax/contracts",
+        "feedbax/envelope",
+        "feedbax/analysis",
+        "feedbax/orchestration",
+        "feedbax/training",
+    )
+)
 
 #: The strict loader itself parses with ``json.loads``; that call *is* the
 #: boundary implementation.
@@ -62,6 +70,39 @@ TRUSTED_INTERNAL_PARSES: dict[tuple[str, str], str] = {
     ("feedbax/contracts/evaluation_states.py", "_encode_mixed_leaves"): (
         "Round-trip of ``_canonical_metadata_leaf_bytes`` output for an "
         "in-memory leaf; canonical serialization emits each member once."
+    ),
+    ("feedbax/analysis/evaluation_compaction.py", "_callback_parameters"): (
+        "Round-trip of canonical bytes serialized from the in-memory declaration parameters."
+    ),
+    (
+        "feedbax/analysis/evaluation_compaction.py",
+        "_normalize_legacy_reclamation_checkpoint",
+    ): "Deep copy of an already-parsed mapping through its canonical serialization.",
+    ("feedbax/analysis/evaluation_inputs.py", "_validate_training_manifest"): (
+        "Pydantic re-validates candidate.raw_bytes only after those exact bytes were admitted by "
+        "strict_json_loads in _load_candidate."
+    ),
+    ("feedbax/analysis/harness.py", "_execute_evaluation_batch_partition"): (
+        "Deep copy of in-memory declaration parameters through json.dumps output."
+    ),
+    ("feedbax/orchestration/conformance.py", "check_manifest_valid"): (
+        "Normalization round-trips of the in-memory observed and expected mappings through "
+        "json.dumps output."
+    ),
+    ("feedbax/orchestration/executor_family.py", "evaluation_lifecycle_payload"): (
+        "Projection of a model admitted by strict_model_validate_json immediately beforehand."
+    ),
+    ("feedbax/training/authoring.py", "_project_domain"): (
+        "Round-trip of the projector mapping through json.dumps output in the same try block."
+    ),
+    ("feedbax/training/executor.py", "prepare_training_manifest_metadata_projection"): (
+        "Round-trips of canonical bytes serialized from models or mappings already held here."
+    ),
+    ("feedbax/training/row_lowering.py", "GovernedTrainingRowParent.payload"): (
+        "Fresh copy of canonical bytes produced by this instance from its constructor payload."
+    ),
+    ("feedbax/training/run_matrix.py", "_planned_run_id"): (
+        "Fresh copies of canonical bytes serialized from the admitted payload and coordinates."
     ),
 }
 
@@ -94,15 +135,15 @@ def _permissive_parse_calls(tree: ast.AST) -> list[tuple[str, int, str]]:
             if attr == "decode" and isinstance(value, ast.Call):
                 callee = value.func
                 name = (
-                    callee.attr
-                    if isinstance(callee, ast.Attribute)
-                    else getattr(callee, "id", "")
+                    callee.attr if isinstance(callee, ast.Attribute) else getattr(callee, "id", "")
                 )
                 if name == "JSONDecoder":
                     found.append((_qualified_name(stack), node.lineno, ast.unparse(node.func)))
-        inner = stack + [node] if isinstance(
-            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-        ) else stack
+        inner = (
+            stack + [node]
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            else stack
+        )
         for child in ast.iter_child_nodes(node):
             visit(child, inner)
 
@@ -111,8 +152,12 @@ def _permissive_parse_calls(tree: ast.AST) -> list[tuple[str, int, str]]:
 
 
 def _boundary_modules() -> list[Path]:
-    root = REPO_ROOT / BOUNDARY_PACKAGE
-    return sorted(path for path in root.rglob("*.py") if "__pycache__" not in path.parts)
+    return sorted(
+        path
+        for package in BOUNDARY_PACKAGES
+        for path in (REPO_ROOT / package).rglob("*.py")
+        if "__pycache__" not in path.parts
+    )
 
 
 def _observed_parses() -> dict[tuple[str, str], list[int]]:
@@ -127,7 +172,7 @@ def _observed_parses() -> dict[tuple[str, str], list[int]]:
     return observed
 
 
-def test_no_unaccounted_permissive_json_parse_in_the_contracts_layer() -> None:
+def test_no_unaccounted_permissive_json_parse_in_audited_packages() -> None:
     """A JSON parse here is either the strict loader or a documented exception."""
     observed = _observed_parses()
     offenders = sorted(key for key in observed if key not in TRUSTED_INTERNAL_PARSES)
@@ -137,7 +182,7 @@ def test_no_unaccounted_permissive_json_parse_in_the_contracts_layer() -> None:
     )
     assert not offenders, (
         "Permissive JSON parsing reached an unaccounted site in "
-        f"{BOUNDARY_PACKAGE.as_posix()}:\n{detail}\n"
+        f"{', '.join(package.as_posix() for package in BOUNDARY_PACKAGES)}:\n{detail}\n"
         "This layer reads authority documents, where a repeated object member "
         "name states two authorities for one fact and the standard parse "
         "silently keeps the last. Route the call through "

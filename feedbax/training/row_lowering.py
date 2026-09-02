@@ -63,6 +63,7 @@ class GovernedTrainingRowParent:
 
     def payload(self) -> dict[str, Any]:
         """Return a fresh JSON copy of the governed parent payload."""
+        # Trusted internal copy: __init__ produced these canonical bytes from payload.
         payload = json.loads(self._payload_json)
         if not isinstance(payload, dict):
             raise TrainingRowLowererRegistryError(

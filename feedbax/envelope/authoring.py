@@ -20,6 +20,8 @@ import json
 from collections.abc import Callable, Mapping
 from typing import Any, NoReturn
 
+from feedbax.contracts.strict_json import DuplicateJsonKeyError, strict_json_loads
+
 from feedbax.contracts.authored_canonical import emit_text
 from feedbax.contracts.authoring_budget import AuthoringBudgets, LayerBudget
 from feedbax.contracts.experiment_envelope import (
@@ -40,22 +42,7 @@ def _reject(
     *,
     correct_home: str | None = None,
 ) -> NoReturn:
-    raise ExperimentEnvelopeRejection(
-        category, message, field=field, correct_home=correct_home
-    )
-
-
-def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    seen: set[str] = set()
-    for key, _value in pairs:
-        if key in seen:
-            _reject(
-                ExperimentEnvelopeRejectionCategory.DUPLICATE_KEY,
-                key,
-                "the same key is authored twice in one object",
-            )
-        seen.add(key)
-    return dict(pairs)
+    raise ExperimentEnvelopeRejection(category, message, field=field, correct_home=correct_home)
 
 
 def _reject_constant(name: str) -> NoReturn:
@@ -236,9 +223,13 @@ def read_authored_document(
     widest = budgets.widest
     text = guard_authored_bytes(raw, widest, field=field)
     try:
-        document = json.loads(
-            text, object_pairs_hook=_reject_duplicate_keys, parse_constant=_reject_constant
-        )
+        document = strict_json_loads(text, ref=field, parse_constant=_reject_constant)
+    except DuplicateJsonKeyError as exc:
+        raise ExperimentEnvelopeRejection(
+            ExperimentEnvelopeRejectionCategory.DUPLICATE_KEY,
+            "the same key is authored twice in one object",
+            field=exc.key,
+        ) from exc
     except ExperimentEnvelopeRejection:
         raise
     except json.JSONDecodeError as exc:
