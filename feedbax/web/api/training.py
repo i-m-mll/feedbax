@@ -77,7 +77,9 @@ class TrainingRequest(BaseModel):
 @router.post("", response_model=TrainingStartResponse)
 async def start_training(payload: TrainingRequest, request: Request) -> TrainingStartResponse:
     training_config = (
-        payload.training_config.model_dump() if payload.training_config is not None else None
+        payload.training_config.model_dump(exclude_unset=True)
+        if payload.training_config is not None
+        else None
     )
     job_id = await training_service.start_training(
         payload.training_spec.n_batches,

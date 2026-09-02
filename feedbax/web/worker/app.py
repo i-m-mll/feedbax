@@ -254,7 +254,7 @@ class _TrainingCfg:
     grad_clip: float | None = 1.0
     hidden_dim: int = 128
     network_type: str = "gru"
-    n_reach_steps: int = 80
+    n_reach_steps: int | None = None
     effort_weight: float = 2.5
     snapshot_interval: int = 100
 
@@ -345,7 +345,7 @@ def _extract_training_cfg(
 ) -> _TrainingCfg:
     """Parse a raw config dict into a normalized _TrainingCfg.
 
-    Falls back to defaults for any missing or invalid field.
+    Parses optional worker controls while leaving authored model facts absent.
 
     Args:
         training_config: Optional dict from the ``/start`` request body.
@@ -353,7 +353,8 @@ def _extract_training_cfg(
             ``n_reach_steps`` and ``effort_weight`` when present.
 
     Returns:
-        A _TrainingCfg with all fields populated.
+        A normalized config. ``n_reach_steps`` remains absent unless the caller
+        or task authored a rollout length.
     """
     cfg = _TrainingCfg()
     if training_config is None and task_spec is None:

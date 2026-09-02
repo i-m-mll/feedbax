@@ -34,6 +34,7 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.web.worker.app import _Job, _require_worker_specs
 from feedbax.web.worker.checkpoint import CheckpointCleanupError
+from feedbax.web.worker.diagnostics import GraphCompilationError
 
 
 def _linear_graph_spec(component_type: str = "Linear", output_size: int = 1) -> dict:
@@ -1288,17 +1289,18 @@ def test_compile_training_run_lowers_segment_aggregation_with_task_timeline() ->
     assert compiled.loss_terms[0].metadata["time_mask"]["epoch_ids"] == ["epoch:1"]
 
 
-def test_compile_training_run_allows_absent_optional_task_data_value_spec_default() -> None:
+def test_compile_training_run_rejects_bound_task_data_without_value_spec() -> None:
     task_binding_spec = deepcopy(_task_binding_spec())
     task_binding_spec["exposed_data"][0].pop("value_spec")
 
-    compiled = compile_training_run(
-        component_registry=ComponentRegistry(load_user_components=False),
-        graph_spec=_linear_graph_spec(),
-        training_spec=_training_spec(),
-        task_spec={"type": "Generic", "params": {}},
-        task_binding_spec=task_binding_spec,
-        cfg=_cfg(),
-    )
+    with pytest.raises(GraphCompilationError) as exc_info:
+        compile_training_run(
+            component_registry=ComponentRegistry(load_user_components=False),
+            graph_spec=_linear_graph_spec(),
+            training_spec=_training_spec(),
+            task_spec={"type": "Generic", "params": {}},
+            task_binding_spec=task_binding_spec,
+            cfg=_cfg(),
+        )
 
-    assert jnp.allclose(compiled.task_data["model_input"], 0.0)
+    assert exc_info.value.diagnostics[0].code == "worker.missing_task_data_value_spec"

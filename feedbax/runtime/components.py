@@ -35,7 +35,13 @@ def _callable_name(activation: Callable) -> str:
 
 def resolve_activation(activation: str | Callable) -> tuple[str, Callable]:
     if isinstance(activation, str):
-        return activation, NAMED_ACTIVATIONS.get(activation, jax.nn.relu)
+        try:
+            return activation, NAMED_ACTIVATIONS[activation]
+        except KeyError as exc:
+            vocabulary = ", ".join(NAMED_ACTIVATIONS)
+            raise ValueError(
+                f"Unknown activation {activation!r}. Supported values: {vocabulary}"
+            ) from exc
     if callable(activation):
         return _callable_name(activation), activation
     raise TypeError("activation must be a string name or callable")
