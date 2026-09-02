@@ -8,12 +8,16 @@ declarations plus update kernels; it does not resolve to a method-owned runner.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
+from feedbax.contracts.canonical_json import (
+    CANONICAL_JSON_V1,
+    CANONICAL_JSON_V2,
+    canonical_json_v2_bytes,
+)
 from feedbax.contracts.manifest import StrictModel
 
 
@@ -21,7 +25,8 @@ WORKER_CONTRACT_SCHEMA_ID = "feedbax.spec.worker.execution_program"
 WORKER_CONTRACT_SCHEMA_VERSION_V1 = "feedbax.spec.worker.execution_program.v1"
 WORKER_CONTRACT_SCHEMA_VERSION = "feedbax.spec.worker.execution_program.v2"
 CONSISTENCY_PREDICATE_SCHEMA_ID = "feedbax.manifest.worker.consistency_predicate"
-CONSISTENCY_PREDICATE_SCHEMA_VERSION = "feedbax.manifest.worker.consistency_predicate.v2"
+CONSISTENCY_PREDICATE_SCHEMA_VERSION_V2 = "feedbax.manifest.worker.consistency_predicate.v2"
+CONSISTENCY_PREDICATE_SCHEMA_VERSION = "feedbax.manifest.worker.consistency_predicate.v3"
 FIXED_UPDATE_KERNEL_SIGNATURE = ("slots", "coordinate", "context")
 NATIVE_TRAINING_COLLECTION_OUTPUTS = (
     "manifest.json",
@@ -662,6 +667,26 @@ class ConsistencyPredicateSpec(StrictModel):
     generator_hash: str = CONSISTENCY_PREDICATE_GENERATOR_HASH
     rules: list[ConsistencyPredicateRule]
     phase_program_digest: str
+    pin_algorithm: Literal["canonical_json_v1", "canonical_json_v2"]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_v2(cls, value: Any) -> Any:
+        return migrate_consistency_predicate_payload(value)
+
+    @model_validator(mode="after")
+    def _validate_schema_identity(self) -> "ConsistencyPredicateSpec":
+        if self.schema_id != CONSISTENCY_PREDICATE_SCHEMA_ID:
+            raise ValueError(
+                f"unsupported ConsistencyPredicateSpec schema_id: {self.schema_id!r}, "
+                f"expected {CONSISTENCY_PREDICATE_SCHEMA_ID!r}"
+            )
+        if self.schema_version != CONSISTENCY_PREDICATE_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported ConsistencyPredicateSpec schema_version: "
+                f"{self.schema_version!r}, expected {CONSISTENCY_PREDICATE_SCHEMA_VERSION!r}"
+            )
+        return self
 
 
 class EffectivePhaseSpec(StrictModel):
@@ -714,8 +739,19 @@ class WorkerMappingRow(StrictModel):
     notes: str = ""
 
 
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+def migrate_consistency_predicate_payload(value: Any) -> Any:
+    """Migrate v2 by pinning its existing digest bytes to ``canonical_json_v1``."""
+
+    if not isinstance(value, dict):
+        return value
+    if value.get("schema_version") != CONSISTENCY_PREDICATE_SCHEMA_VERSION_V2:
+        return value
+    if "pin_algorithm" in value:
+        raise ValueError("ConsistencyPredicateSpec v2 does not admit pin_algorithm")
+    migrated = dict(value)
+    migrated["schema_version"] = CONSISTENCY_PREDICATE_SCHEMA_VERSION
+    migrated["pin_algorithm"] = CANONICAL_JSON_V1
+    return migrated
 
 
 def derive_consistency_predicate(program: PhaseProgramSpec) -> ConsistencyPredicateSpec:
@@ -774,7 +810,8 @@ def derive_consistency_predicate(program: PhaseProgramSpec) -> ConsistencyPredic
     payload = program.model_dump(mode="json", exclude_none=True)
     return ConsistencyPredicateSpec(
         rules=rules,
-        phase_program_digest=hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest(),
+        phase_program_digest=hashlib.sha256(canonical_json_v2_bytes(payload)).hexdigest(),
+        pin_algorithm=CANONICAL_JSON_V2,
     )
 
 

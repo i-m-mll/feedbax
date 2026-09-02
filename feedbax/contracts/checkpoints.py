@@ -7,7 +7,6 @@ state, slot integrity, and run-contract binding for training writers.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,6 +14,7 @@ from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import Field, model_validator
 
+from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.manifest import (
     ArtifactMigrationRecord,
     ArtifactRef,
@@ -768,7 +768,7 @@ class CheckpointForkPlan(StrictModel):
 def _canonical_json(value: Any) -> str:
     """Return a stable JSON representation used by local model validators."""
     try:
-        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+        return canonical_json_v1_bytes(value).decode("utf-8")
     except (TypeError, ValueError) as exc:
         raise ValueError("checkpoint fork transform parameters must be JSON-serializable") from exc
 
