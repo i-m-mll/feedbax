@@ -2,7 +2,7 @@
   "schema_id": "feedbax.governance.durable_identity_field_inventory",
   "schema_version": "feedbax.governance.durable_identity_field_inventory.v1",
   "scope": "Lexical inventory of hash, digest, fingerprint, and pin-bearing annotated class fields under feedbax/. The durable identity map supplies the authoritative domain boundaries; domain_hint is a review routing aid.",
-  "field_count": 305,
+  "field_count": 306,
   "fields": [
     {
       "path": "feedbax/analysis/bundles.py",
@@ -1786,6 +1786,13 @@
       "path": "feedbax/orchestration/repo_snapshot.py",
       "class": "RepoSnapshotRecord",
       "field": "content_sha256",
+      "annotation": "str",
+      "domain_hint": "repo-realization-sha256-or-raw-sha256"
+    },
+    {
+      "path": "feedbax/orchestration/repo_snapshot.py",
+      "class": "RepoSnapshotRecord",
+      "field": "source_state_sha256",
       "annotation": "str",
       "domain_hint": "repo-realization-sha256-or-raw-sha256"
     },

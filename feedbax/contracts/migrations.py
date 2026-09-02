@@ -491,6 +491,8 @@ from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_VERSION_V2,
     RUN_SET_STATE_SCHEMA_VERSION_V3,
     RUN_SET_STATE_SCHEMA_VERSION_V4,
+    RUN_SET_STATE_SCHEMA_VERSION_V5,
+    migrate_run_set_state_v5_to_v6,
 )
 from feedbax.orchestration.repo_realization import (
     REPO_REALIZATION_PLAN_SCHEMA_ID,
@@ -5853,6 +5855,19 @@ def _migrate_evaluation_output_preflight_evidence_v1(
 
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "RunSetState",
+    SchemaMigration(
+        source_version=RUN_SET_STATE_SCHEMA_VERSION_V5,
+        target_version=RUN_SET_STATE_SCHEMA_VERSION,
+        migration_id="run-set-state-v5-to-v6-non-authoritative-pids",
+        migrate=migrate_run_set_state_v5_to_v6,
+        description=(
+            "Preserve legacy PIDs as diagnostics while explicitly withholding process "
+            "identity and signal authority."
+        ),
+    ),
+)
 default_spec_registry.register_migration(
     "ControllerEvent",
     SchemaMigration(

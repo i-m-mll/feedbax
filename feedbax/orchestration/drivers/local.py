@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -66,7 +67,7 @@ from feedbax.orchestration.input_materialization import (
 )
 from feedbax.orchestration.repo_snapshot import git_common_dir
 from feedbax.orchestration.staged_root_custody import StagedRootSnapshotBinding
-from feedbax.orchestration.state import PreflightCheckEntry, RunSetState
+from feedbax.orchestration.state import PreflightCheckEntry, ProcessIdentity, RunSetState
 from feedbax.training import publish_directory_no_replace
 
 
@@ -77,6 +78,7 @@ class LocalDriverError(RuntimeError):
 JAX_COMPILATION_CACHE_DIR_ENV = "JAX_COMPILATION_CACHE_DIR"
 FEEDBAX_JAX_COMPILATION_CACHE_DIR_ENV = "FEEDBAX_JAX_COMPILATION_CACHE_DIR"
 FEEDBAX_DISABLE_JAX_COMPILATION_CACHE_ENV = "FEEDBAX_DISABLE_JAX_COMPILATION_CACHE"
+FEEDBAX_PROCESS_IDENTITY_ENV = "FEEDBAX_PROCESS_IDENTITY"
 
 
 def resolve_jax_compilation_cache_dir() -> Path | None:
@@ -343,14 +345,26 @@ class LocalOrchestrationDriver:
         if paths["failed"].exists():
             return {"row_id": row.row_id, "status": "failed"}
         if row.row_id in self._processes and self._processes[row.row_id].poll() is None:
-            return {"row_id": row.row_id, "pid": self._processes[row.row_id].pid}
+            pid = self._processes[row.row_id].pid
+            identity, detail = _verified_local_process_identity(paths, bundle, row, pid)
+            if identity is None:
+                return _unverified_local_launch(bundle, row, paths, pid, detail)
+            return {
+                "row_id": row.row_id,
+                "pid": pid,
+                "process_identity": identity.model_dump(mode="json"),
+            }
         if paths["started"].exists():
             pid = _read_pid(paths["pid"])
             if pid and _pid_alive(pid):
+                identity, detail = _verified_local_process_identity(paths, bundle, row, pid)
+                if identity is None:
+                    return _unverified_local_launch(bundle, row, paths, pid, detail)
                 self._processes.pop(row.row_id, None)
                 return {
                     "row_id": row.row_id,
                     "pid": pid,
+                    "process_identity": identity.model_dump(mode="json"),
                     "status": "launched",
                     "adopted": True,
                 }
@@ -394,6 +408,8 @@ class LocalOrchestrationDriver:
             }
         )
         env["PYTHONPATH"] = _prepend_feedbax_source_root(env.get("PYTHONPATH"))
+        launch_token = secrets.token_hex(32)
+        env[FEEDBAX_PROCESS_IDENTITY_ENV] = launch_token
         jax_cache_dir = resolve_jax_compilation_cache_dir()
         if jax_cache_dir is None:
             env.pop(JAX_COMPILATION_CACHE_DIR_ENV, None)
@@ -426,8 +442,21 @@ class LocalOrchestrationDriver:
         stdout.close()
         stderr.close()
         self._processes[row.row_id] = process
+        identity = ProcessIdentity(
+            run_set_id=bundle.run_set_id,
+            row_id=row.row_id,
+            pid=process.pid,
+            process_group_id=process.pid,
+            launch_token=launch_token,
+        )
+        _atomic_write_local_json(paths["process_identity"], identity.model_dump(mode="json"))
         paths["pid"].write_text(f"{process.pid}\n", encoding="utf-8")
-        return {"row_id": row.row_id, "pid": process.pid, "command": command}
+        return {
+            "row_id": row.row_id,
+            "pid": process.pid,
+            "process_identity": identity.model_dump(mode="json"),
+            "command": command,
+        }
 
     def probe(
         self,
@@ -440,7 +469,10 @@ class LocalOrchestrationDriver:
         if process is not None:
             returncode = process.poll()
             if returncode is None:
-                return DriverRowProbe(status="running", pid=process.pid)
+                identity, detail = _verified_local_process_identity(paths, bundle, row, process.pid)
+                if identity is None:
+                    return DriverRowProbe(status="failed", pid=process.pid, detail=detail)
+                return DriverRowProbe(status="running", pid=process.pid, process_identity=identity)
             if returncode == 0:
                 paths["done"].write_text("0\n", encoding="utf-8")
                 return DriverRowProbe(status="completed", pid=process.pid)
@@ -453,7 +485,10 @@ class LocalOrchestrationDriver:
         if paths["pid"].exists():
             pid = _read_pid(paths["pid"])
             if pid and _pid_alive(pid):
-                return DriverRowProbe(status="running", pid=pid)
+                identity, detail = _verified_local_process_identity(paths, bundle, row, pid)
+                if identity is None:
+                    return DriverRowProbe(status="failed", pid=pid, detail=detail)
+                return DriverRowProbe(status="running", pid=pid, process_identity=identity)
             return DriverRowProbe(status="failed", pid=pid, detail="pid exited without sentinel")
         return DriverRowProbe(status="pending")
 
@@ -466,8 +501,15 @@ class LocalOrchestrationDriver:
         paths = _row_paths(bundle, row.row_id)
         process = self._processes.get(row.row_id)
         pid = process.pid if process is not None else _read_pid(paths["pid"])
-        if pid:
-            _terminate_process_group(pid, process=process)
+        expected = state.rows.get(row.row_id)
+        group_alive = (
+            expected is not None
+            and expected.process_identity is not None
+            and _process_group_alive(expected.process_identity.process_group_id)
+        )
+        if pid and (_pid_alive(pid) or group_alive):
+            identity = _authorize_local_signal(paths, bundle, row, state, pid)
+            _terminate_process_group(identity.process_group_id, process=process)
         paths["failed"].write_text("stopped\n", encoding="utf-8")
         return {"row_id": row.row_id, "pid": pid, "status": "stopped"}
 
@@ -478,17 +520,25 @@ class LocalOrchestrationDriver:
         state: RunSetState,
     ) -> Mapping[str, Any]:
         """Ask a local row to stop itself at its next durable checkpoint."""
-        del state
         paths = _row_paths(bundle, row.row_id)
         process = self._processes.get(row.row_id)
         pid = process.pid if process is not None else _read_pid(paths["pid"])
-        if pid and _pid_alive(pid):
+        expected = state.rows.get(row.row_id)
+        group_alive = (
+            expected is not None
+            and expected.process_identity is not None
+            and _process_group_alive(expected.process_identity.process_group_id)
+        )
+        if pid and (_pid_alive(pid) or group_alive):
+            identity = _authorize_local_signal(paths, bundle, row, state, pid)
             try:
-                os.killpg(pid, signal.SIGINT)
+                os.killpg(identity.process_group_id, signal.SIGINT)
             except ProcessLookupError:
                 pass
-            except OSError:
-                os.kill(pid, signal.SIGINT)
+            except OSError as exc:
+                raise LocalDriverError(
+                    f"could not signal verified local row process group {identity.process_group_id}"
+                ) from exc
         return {"row_id": row.row_id, "pid": pid, "status": "stop_requested"}
 
     def collect(
@@ -937,41 +987,44 @@ def _atomic_write_local_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def _terminate_process_group(
-    pid: int,
+    process_group_id: int,
     *,
     process: subprocess.Popen[bytes] | None,
     timeout_seconds: float = 2.0,
 ) -> None:
     """Terminate a row's whole process group even when its leader already exited."""
     try:
-        os.killpg(pid, signal.SIGTERM)
+        os.killpg(process_group_id, signal.SIGTERM)
     except ProcessLookupError:
         return
-    except OSError:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
+    except OSError as exc:
+        raise LocalDriverError(
+            f"could not terminate verified process group {process_group_id}"
+        ) from exc
     deadline = time.monotonic() + timeout_seconds
-    while _process_group_alive(pid) and time.monotonic() < deadline:
+    while _process_group_alive(process_group_id) and time.monotonic() < deadline:
         if process is not None:
             process.poll()
         time.sleep(0.01)
-    if _process_group_alive(pid):
+    if _process_group_alive(process_group_id):
         try:
-            os.killpg(pid, signal.SIGKILL)
+            os.killpg(process_group_id, signal.SIGKILL)
         except ProcessLookupError:
             pass
     if process is not None:
         try:
             process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired as exc:
-            raise LocalDriverError(f"local row process group {pid} did not terminate") from exc
+            raise LocalDriverError(
+                f"local row process group {process_group_id} did not terminate"
+            ) from exc
     deadline = time.monotonic() + timeout_seconds
-    while _process_group_alive(pid) and time.monotonic() < deadline:
+    while _process_group_alive(process_group_id) and time.monotonic() < deadline:
         time.sleep(0.01)
-    if _process_group_alive(pid):
-        raise LocalDriverError(f"local row process group {pid} remained live after SIGKILL")
+    if _process_group_alive(process_group_id):
+        raise LocalDriverError(
+            f"local row process group {process_group_id} remained live after SIGKILL"
+        )
 
 
 def _process_group_alive(pgid: int) -> bool:
@@ -980,8 +1033,9 @@ def _process_group_alive(pgid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
-    return True
+        pass
+    members, error = _process_group_member_pids(pgid)
+    return True if error is not None else bool(members)
 
 
 def _reclaim_failed_row_tree(
@@ -1040,6 +1094,7 @@ def _row_paths(bundle: RunBundle, row_id: str) -> dict[str, Path]:
         "row_dir": row_dir,
         "started": sentinels / f"{row_id}.started",
         "pid": sentinels / f"{row_id}.pid",
+        "process_identity": sentinels / f"{row_id}.process.json",
         "done": sentinels / f"{row_id}.done",
         "failed": sentinels / f"{row_id}.failed",
         "event_log": events / f"{row_id}.events.jsonl",
@@ -1194,6 +1249,155 @@ def _read_pid(path: Path) -> int | None:
         return int(path.read_text(encoding="utf-8").strip())
     except Exception:
         return None
+
+
+def _read_local_process_identity(path: Path) -> tuple[ProcessIdentity | None, str | None]:
+    if not path.is_file():
+        return None, "process identity record is missing"
+    try:
+        return ProcessIdentity.model_validate_json(path.read_text(encoding="utf-8")), None
+    except Exception as exc:
+        return None, f"process identity record is invalid: {exc}"
+
+
+def _process_environment_contains(pid: int, launch_token: str) -> tuple[bool, str | None]:
+    expected = f"{FEEDBAX_PROCESS_IDENTITY_ENV}={launch_token}"
+    proc_environ = Path(f"/proc/{pid}/environ")
+    if proc_environ.is_file():
+        try:
+            values = proc_environ.read_bytes().split(b"\0")
+        except OSError as exc:
+            return False, f"process environment is unreadable: {exc}"
+        return expected.encode() in values, None
+    try:
+        result = subprocess.run(
+            ["ps", "eww", "-p", str(pid), "-o", "command="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"process environment inspection failed: {exc}"
+    if result.returncode != 0:
+        return False, f"process environment inspection exited {result.returncode}"
+    return expected in result.stdout.split(), None
+
+
+def _verified_local_process_identity(
+    paths: Mapping[str, Path],
+    bundle: RunBundle,
+    row: RunRowSpec,
+    pid: int,
+) -> tuple[ProcessIdentity | None, str]:
+    identity, error = _read_local_process_identity(paths["process_identity"])
+    if identity is None:
+        return None, error or "process identity is unavailable"
+    if identity.run_set_id != bundle.run_set_id or identity.row_id != row.row_id:
+        return None, "process identity belongs to a different run set or row"
+    if identity.pid != pid:
+        return None, "process identity PID does not match the observed PID"
+    if _pid_alive(pid):
+        try:
+            observed_group = os.getpgid(pid)
+        except OSError as exc:
+            return None, f"process group identity is unverifiable: {exc}"
+        if observed_group != identity.process_group_id:
+            return None, "process group identity does not match the observed process group"
+    members, member_error = _process_group_member_pids(identity.process_group_id)
+    if member_error is not None:
+        return None, member_error
+    if not members:
+        return None, "process group exited before identity verification"
+    for member_pid in members:
+        carries_token, token_error = _process_environment_contains(
+            member_pid, identity.launch_token
+        )
+        if token_error is not None:
+            remaining, _ = _process_group_member_pids(identity.process_group_id)
+            if member_pid not in remaining:
+                continue
+            return None, token_error
+        if not carries_token:
+            remaining, _ = _process_group_member_pids(identity.process_group_id)
+            if member_pid not in remaining:
+                continue
+            return None, (
+                f"process group member {member_pid} does not carry the persisted launch identity"
+            )
+    return identity, "verified"
+
+
+def _process_group_member_pids(
+    process_group_id: int,
+) -> tuple[tuple[int, ...], str | None]:
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,pgid=,stat="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return (), f"process group membership inspection failed: {exc}"
+    if result.returncode != 0:
+        return (), f"process group membership inspection exited {result.returncode}"
+    members = []
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 3:
+            continue
+        try:
+            pid, group = (int(value) for value in fields[:2])
+        except ValueError:
+            continue
+        if group == process_group_id and not fields[2].startswith("Z"):
+            members.append(pid)
+    return tuple(members), None
+
+
+def _authorize_local_signal(
+    paths: Mapping[str, Path],
+    bundle: RunBundle,
+    row: RunRowSpec,
+    state: RunSetState,
+    pid: int,
+) -> ProcessIdentity:
+    expected = state.rows.get(row.row_id)
+    if expected is None or expected.process_identity is None:
+        raise LocalDriverError(
+            f"refusing to signal live local row {row.row_id!r}: durable process identity is absent"
+        )
+    observed, detail = _verified_local_process_identity(paths, bundle, row, pid)
+    if observed is None or observed != expected.process_identity:
+        raise LocalDriverError(f"refusing to signal live local row {row.row_id!r}: {detail}")
+    return observed
+
+
+def _unverified_local_launch(
+    bundle: RunBundle,
+    row: RunRowSpec,
+    paths: Mapping[str, Path],
+    pid: int,
+    detail: str,
+) -> Mapping[str, Any]:
+    message = f"refusing to adopt live PID without verified process identity: {detail}"
+    discrepancy = {
+        "code": "unverified_process_identity",
+        "message": message,
+        "pid": pid,
+        "run_set_id": bundle.run_set_id,
+        "row_id": row.row_id,
+    }
+    paths["failed"].write_text(message + "\n", encoding="utf-8")
+    return {
+        "row_id": row.row_id,
+        "pid": pid,
+        "status": "failed",
+        "detail": message,
+        "event_discrepancies": [discrepancy],
+    }
 
 
 def _pid_alive(pid: int) -> bool:
