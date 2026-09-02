@@ -3901,7 +3901,13 @@ def test_stage_certify_refuses_mismatched_science_repo_revision(
     certificate_path = bundle.run_set_dir / "conformance.json"
     certificate_bytes_before = certificate_path.read_bytes()
 
-    record = RepoSnapshotRecord(commit="c" * 40, dirty=False, content_sha256="1" * 64, file_count=2)
+    record = RepoSnapshotRecord(
+        commit="c" * 40,
+        dirty=False,
+        content_sha256="1" * 64,
+        source_state_sha256="2" * 64,
+        file_count=2,
+    )
     plan = RepoRealizationPlan.create(
         primary_repo="rlrmp2",
         repos={
