@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import errno
 import hashlib
 import json
 import os
 import re
-import stat
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +14,14 @@ from urllib.parse import unquote, urlsplit
 
 from pydantic import ValidationError
 
+from feedbax._secure_fs import (
+    SecurePathRigor,
+    close_descriptors,
+    open_directory_chain,
+    open_existing_directory,
+    open_existing_file,
+    take_directory_chain_leaf,
+)
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
     StagedExecutionContext,
@@ -32,7 +38,6 @@ from feedbax.contracts.strict_json import DuplicateJsonKeyError, strict_json_loa
 _TRAINING_MANIFEST_KIND = "TrainingRunManifest"
 _TRAINING_MANIFEST_ROLE = "training_run"
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
-_OPEN_SUPPORTS_DIR_FD = os.open in os.supports_dir_fd
 
 
 class EvaluationInputResolutionError(ValueError):
@@ -315,18 +320,14 @@ def _resolve_ref_uri(uri: str) -> Path:
 
 @contextmanager
 def _open_root_fd(root: Path) -> Iterator[int]:
-    if not _OPEN_SUPPORTS_DIR_FD or not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):
-        raise EvaluationInputPathError(
-            "Secure descriptor-relative manifest resolution is unavailable on this platform"
-        )
-    directory_flag = getattr(os, "O_DIRECTORY", 0)
-    if not directory_flag:
-        raise EvaluationInputPathError(
-            "Secure descriptor-relative manifest resolution requires O_DIRECTORY"
-        )
-    flags = os.O_RDONLY | directory_flag | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
     try:
-        root_fd = os.open(root, flags)
+        records = open_directory_chain(
+            root,
+            create=False,
+            error_factory=EvaluationInputPathError,
+            context="evaluation input manifest root",
+        )
+        root_fd = take_directory_chain_leaf(records)
     except OSError as exc:
         raise EvaluationInputPathError(f"Unable to securely open manifest root: {root}") from exc
     try:
@@ -340,22 +341,32 @@ def _read_candidate(relative: Path, root: Path, root_fd: int) -> _ManifestCandid
         raise EvaluationInputPathError(
             f"Evaluation input manifest path escapes the allowed root: {relative}"
         )
-    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
     opened_directories: list[int] = []
     parent_fd = root_fd
     try:
         for component in relative.parts[:-1]:
-            next_fd = os.open(component, directory_flags, dir_fd=parent_fd)
+            next_fd = open_existing_directory(
+                component,
+                error_factory=EvaluationInputPathError,
+                context=f"evaluation input manifest directory {relative}",
+                dir_fd=parent_fd,
+            )
             opened_directories.append(next_fd)
             parent_fd = next_fd
-        file_fd = os.open(relative.parts[-1], file_flags, dir_fd=parent_fd)
+        file_fd, _ = open_existing_file(
+            relative.parts[-1],
+            rigor=SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
+            error_factory=EvaluationInputPathError,
+            context=f"evaluation input manifest {relative}",
+            dir_fd=parent_fd,
+        )
+    except FileNotFoundError as exc:
+        error = EvaluationInputReferenceError(
+            f"Evaluation input manifest does not exist: {relative}"
+        )
+        raise error from exc
     except OSError as exc:
-        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
-            error = EvaluationInputPathError(
-                f"Evaluation input manifest path contains a symlink or non-directory: {relative}"
-            )
-        elif exc.errno == errno.ENOENT:
+        if isinstance(exc, FileNotFoundError):
             error = EvaluationInputReferenceError(
                 f"Evaluation input manifest does not exist: {relative}"
             )
@@ -365,15 +376,9 @@ def _read_candidate(relative: Path, root: Path, root_fd: int) -> _ManifestCandid
             )
         raise error from exc
     finally:
-        for directory_fd in reversed(opened_directories):
-            os.close(directory_fd)
+        close_descriptors(reversed(opened_directories))
 
     try:
-        file_stat = os.fstat(file_fd)
-        if not stat.S_ISREG(file_stat.st_mode):
-            raise EvaluationInputPathError(
-                f"Evaluation input manifest is not a regular file: {relative}"
-            )
         with os.fdopen(file_fd, "rb", closefd=True) as file:
             raw_bytes = file.read()
     except Exception:
