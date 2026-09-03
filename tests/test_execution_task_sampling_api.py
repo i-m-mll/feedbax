@@ -47,7 +47,10 @@ def test_sample_task_trials_accepts_reaching_task_registry_alias(client: TestCli
         json={
             "task_spec": {
                 "type": "feedbax.task.ReachingTask",
-                "params": {"n_steps": 6},
+                "params": {
+                    "n_steps": 6,
+                    "workspace": [[-1.0, -1.0], [1.0, 1.0]],
+                },
             },
             "seed": 0,
             "count": 1,

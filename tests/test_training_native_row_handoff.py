@@ -1127,7 +1127,13 @@ def test_runpod_native_resume_seeds_before_started_sentinel(tmp_path: Path) -> N
     assert command.index(".checkpoint-seed-attempt") < command.rindex(".started")
 
 
-def test_runpod_dry_run_uses_exact_remote_builder_without_transport(tmp_path: Path) -> None:
+def test_runpod_dry_run_uses_exact_remote_builder_without_transport(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "feedbax.orchestration.drivers.runpod.secrets.token_hex",
+        lambda _: "a" * 64,
+    )
     continuation = CheckpointContinuationRequest(
         source_completed_batches=1,
         additional_batches=1,

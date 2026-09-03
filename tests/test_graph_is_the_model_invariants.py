@@ -556,7 +556,10 @@ def test_unknown_activation_name_is_not_silently_relu() -> None:
         output_bindings={"y": ("lin", "output")},
     )
 
-    with pytest.raises(ValueError, match="Unknown activation 'gelu'.*Supported values"):
+    with pytest.raises(
+        ValueError,
+        match=r"compiler\.type_resolution\.unresolved_component_type.*activation",
+    ):
         spec_to_graph(spec, _registry())
 
 

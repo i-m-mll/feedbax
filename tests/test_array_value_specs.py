@@ -53,8 +53,8 @@ def test_sparse_coo_canonicalizes_row_major_and_materializes_fill() -> None:
 @pytest.mark.parametrize(
     ("updates", "match"),
     [
-        ({"shape": []}, "positive dimensions"),
-        ({"shape": [2, 0]}, "positive dimensions"),
+        ({"shape": []}, "at least 1 item"),
+        ({"shape": [2, 0]}, "greater than 0"),
         ({"shape": [True, 2]}, "valid integer"),
         ({"dtype": "<f4"}, "Input should be"),
         (

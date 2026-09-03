@@ -977,7 +977,11 @@ class TestCheckpointInitializationLowering:
                 "program_step": 1,
             },
             segment_lineage=CheckpointSegmentLineage(start_batch=0, segment_batch_count=1),
-            consistency_predicate={"rules": [], "phase_program_digest": "c" * 64},
+            consistency_predicate={
+                "rules": [],
+                "phase_program_digest": "c" * 64,
+                "pin_algorithm": "canonical_json_v2",
+            },
             run_contract_binding={
                 "training_run_spec_schema_id": "feedbax.spec.training_run",
                 "training_run_spec_schema_version": "feedbax.spec.training_run.v4",

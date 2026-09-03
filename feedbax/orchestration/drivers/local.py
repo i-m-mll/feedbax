@@ -1261,7 +1261,7 @@ def _read_local_process_identity(path: Path) -> tuple[ProcessIdentity | None, st
     if not path.is_file():
         return None, "process identity record is missing"
     try:
-        return ProcessIdentity.model_validate_json(path.read_text(encoding="utf-8")), None
+        return strict_model_validate_json(ProcessIdentity, path.read_text(encoding="utf-8")), None
     except Exception as exc:
         return None, f"process identity record is invalid: {exc}"
 

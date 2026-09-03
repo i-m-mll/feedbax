@@ -102,8 +102,9 @@ def test_driver_policy_schema_heads_match_reviewed_690_contract() -> None:
 def test_persistence_policy_schema_heads_match_reviewed_b85_contract() -> None:
     orchestration = importlib.import_module("feedbax.orchestration")
 
-    assert orchestration.RUN_SET_STATE_SCHEMA_VERSION == "feedbax.orchestration.run_set_state.v5"
+    assert orchestration.RUN_SET_STATE_SCHEMA_VERSION == "feedbax.orchestration.run_set_state.v6"
     assert orchestration.RUN_SET_STATE_SCHEMA_VERSION_V4 == "feedbax.orchestration.run_set_state.v4"
+    assert orchestration.RUN_SET_STATE_SCHEMA_VERSION_V5 == "feedbax.orchestration.run_set_state.v5"
     assert (
         orchestration.EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION
         == "feedbax.orchestration.emergency_run_set_record.v1"

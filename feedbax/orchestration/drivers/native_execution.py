@@ -29,7 +29,15 @@ import runpy
 import stat
 import sys
 
-strict_json_loads = runpy.run_path("feedbax/contracts/strict_json.py")["strict_json_loads"]
+strict_json_path = None
+for search_root in sys.path:
+    candidate = pathlib.Path(search_root or ".") / "feedbax" / "contracts" / "strict_json.py"
+    if candidate.is_file():
+        strict_json_path = candidate
+        break
+if strict_json_path is None:
+    raise RuntimeError("feedbax strict JSON authority is unavailable")
+strict_json_loads = runpy.run_path(str(strict_json_path))["strict_json_loads"]
 
 source, attempt, target, authority_json = sys.argv[1:]
 authority = strict_json_loads(authority_json)
