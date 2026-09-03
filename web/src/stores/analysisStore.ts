@@ -83,6 +83,7 @@ function layoutNodes(
   dataSourceId: string,
   dataSourceOutputs: string[],
   transformNodes: Array<{ id: string; transform: TransformSpec }> = [],
+  nodePositions: Record<string, { x: number; y: number }> = {},
 ): Node[] {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
@@ -115,7 +116,10 @@ function layoutNodes(
   nodes.push({
     id: dataSourceId,
     type: 'dataSource',
-    position: { x: dsNode.x - DATA_SOURCE_NODE_WIDTH / 2, y: dsNode.y - DATA_SOURCE_NODE_HEIGHT / 2 },
+    position: nodePositions[dataSourceId] ?? {
+      x: dsNode.x - DATA_SOURCE_NODE_WIDTH / 2,
+      y: dsNode.y - DATA_SOURCE_NODE_HEIGHT / 2,
+    },
     data: {
       label: 'AnalysisInputData',
       outputs: dataSourceOutputs,
@@ -128,7 +132,7 @@ function layoutNodes(
     nodes.push({
       id,
       type: spec.role === 'dependency' ? 'analysisDep' : 'analysis',
-      position: { x: n.x - NODE_WIDTH / 2, y: n.y - NODE_HEIGHT / 2 },
+      position: nodePositions[id] ?? { x: n.x - NODE_WIDTH / 2, y: n.y - NODE_HEIGHT / 2 },
       data: {
         spec,
         label: spec.label,
@@ -142,7 +146,10 @@ function layoutNodes(
     nodes.push({
       id: tn.id,
       type: 'transform',
-      position: { x: n.x - TRANSFORM_NODE_WIDTH / 2, y: n.y - TRANSFORM_NODE_HEIGHT / 2 },
+      position: nodePositions[tn.id] ?? {
+        x: n.x - TRANSFORM_NODE_WIDTH / 2,
+        y: n.y - TRANSFORM_NODE_HEIGHT / 2,
+      },
       data: {
         transform: tn.transform,
         label: tn.transform.label,
@@ -322,7 +329,6 @@ function analysisPageToWire(page: AnalysisPageSpec): AnalysisPageWire {
     graph_spec: page.graphSpec as unknown as Record<string, unknown>,
     input_requirements: analysisInputRequirementsForPage(page),
     eval_params: page.evalParams,
-    viewport: page.viewport,
     eval_run_id: page.evalRunId,
     expanded_field_paths: page.expandedFieldPaths ?? [],
   };
@@ -443,6 +449,7 @@ interface AnalysisStoreState {
   renamePage: (id: string, name: string) => void;
   switchPage: (id: string) => void;
   setViewport: (viewport: AnalysisViewport) => void;
+  persistRenderedLayout: () => void;
   setEvalParams: (params: EvalParametrization) => void;
   setEvalRunId: (id: string | null) => void;
   setExpandedFieldPaths: (paths: string[]) => void;
@@ -455,8 +462,12 @@ interface AnalysisStoreState {
 const DATA_SOURCE_OUTPUTS = ['states', 'inputs', 'outputs', 'targets', 'metadata'];
 
 let nextNodeId = 1;
-function genNodeId(): string {
-  return `analysis_${nextNodeId++}`;
+function genNodeId(existingIds: ReadonlySet<string>): string {
+  let id: string;
+  do {
+    id = `analysis_${nextNodeId++}`;
+  } while (existingIds.has(id));
+  return id;
 }
 
 let nextWireId = 1;
@@ -485,6 +496,9 @@ function captureActivePage(state: AnalysisStoreState): AnalysisPageSpec | null {
     }),
     evalParams: { ...state.evalParams },
     viewport: { ...state.viewport },
+    nodePositions: Object.fromEntries(
+      state.nodes.map((node) => [node.id, { ...node.position }])
+    ),
     evalRunId: state.evalRunId,
     expandedFieldPaths: [...state.expandedFieldPaths],
   };
@@ -546,9 +560,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   onNodesChange: (changes) => {
     const graphNodeIds = new Set(Object.keys(get().graphSpec?.nodes ?? {}));
     const supportedChanges = changes.filter(
-      (change) =>
-        change.type !== 'position' &&
-        (change.type !== 'remove' || graphNodeIds.has(change.id)),
+      (change) => change.type !== 'remove' || graphNodeIds.has(change.id),
     );
     const removedNodeIds = new Set(
       supportedChanges
@@ -556,6 +568,9 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
         .map((change) => change.id),
     );
     const removesAnalysisNode = removedNodeIds.size > 0;
+    const commitsPosition = supportedChanges.some(
+      (change) => change.type === 'position' && change.position && change.dragging !== true
+    );
 
     set((state) => ({
       nodes: applyNodeChanges(supportedChanges, state.nodes),
@@ -585,6 +600,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
     if (removesAnalysisNode) {
       markProjectDirty();
       syncAnalysisStageDraft(get(), 'analysis_graph_node_removed');
+    } else if (commitsPosition) {
+      markProjectDirty();
     }
   },
 
@@ -626,7 +643,15 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       }
     }
 
-    const nodes = layoutNodes(spec.nodes, expandedWires, spec.dataSourceId, DATA_SOURCE_OUTPUTS, transformNodes);
+    const currentPage = get().pages.find((page) => page.id === get().activePageId);
+    const nodes = layoutNodes(
+      spec.nodes,
+      expandedWires,
+      spec.dataSourceId,
+      DATA_SOURCE_OUTPUTS,
+      transformNodes,
+      currentPage?.nodePositions,
+    );
     const edges = buildEdges(expandedWires);
     set({ graphSpec: spec, nodes, edges });
   },
@@ -677,7 +702,11 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   },
 
   addAnalysisNode: (classDef, position) => {
-    const id = genNodeId();
+    const state = get();
+    const id = genNodeId(new Set([
+      ...Object.keys(state.graphSpec?.nodes ?? {}),
+      ...state.nodes.map((node) => node.id),
+    ]));
     const spec: AnalysisNodeSpec = {
       id,
       type: classDef.name,
@@ -966,6 +995,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       inputRequirements: [],
       evalParams: {},
       viewport: { ...DEFAULT_VIEWPORT },
+      nodePositions: {},
       evalRunId: null,
       expandedFieldPaths: [],
     };
@@ -1052,7 +1082,14 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
           pages: filteredPages,
           activePageId: target.id,
           graphSpec: spec,
-          nodes: layoutNodes(spec.nodes, expandedWires, spec.dataSourceId, DATA_SOURCE_OUTPUTS, transformNodes),
+          nodes: layoutNodes(
+            spec.nodes,
+            expandedWires,
+            spec.dataSourceId,
+            DATA_SOURCE_OUTPUTS,
+            transformNodes,
+            target.nodePositions,
+          ),
           edges: buildEdges(expandedWires),
           viewport: { ...target.viewport },
           evalParams: { ...target.evalParams },
@@ -1136,7 +1173,14 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       pages: updatedPages,
       activePageId: id,
       graphSpec: spec,
-      nodes: layoutNodes(spec.nodes, expandedWires, spec.dataSourceId, DATA_SOURCE_OUTPUTS, transformNodes),
+      nodes: layoutNodes(
+        spec.nodes,
+        expandedWires,
+        spec.dataSourceId,
+        DATA_SOURCE_OUTPUTS,
+        transformNodes,
+        target.nodePositions,
+      ),
       edges: buildEdges(expandedWires),
       viewport: { ...target.viewport },
       evalParams: { ...target.evalParams },
@@ -1151,7 +1195,39 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   },
 
   setViewport: (viewport) => {
-    set({ viewport });
+    const current = get().viewport;
+    if (
+      current.x === viewport.x
+      && current.y === viewport.y
+      && current.zoom === viewport.zoom
+    ) return;
+    set({ viewport: { ...viewport } });
+    markProjectDirty();
+  },
+
+  persistRenderedLayout: () => {
+    const state = get();
+    const activePage = captureActivePage(state);
+    if (!activePage) return;
+    const storedPage = state.pages.find((page) => page.id === activePage.id);
+    const storedPositions = storedPage?.nodePositions ?? {};
+    const renderedPositions = activePage.nodePositions ?? {};
+    const storedIds = Object.keys(storedPositions);
+    const renderedIds = Object.keys(renderedPositions);
+    const positionsMatch = storedIds.length === renderedIds.length
+      && renderedIds.every((nodeId) => {
+        const stored = storedPositions[nodeId];
+        const rendered = renderedPositions[nodeId];
+        return stored?.x === rendered.x && stored?.y === rendered.y;
+      });
+    const viewportMatches = Boolean(
+      storedPage
+      && storedPage.viewport.x === activePage.viewport.x
+      && storedPage.viewport.y === activePage.viewport.y
+      && storedPage.viewport.zoom === activePage.viewport.zoom
+    );
+    if (positionsMatch && viewportMatches) return;
+    set({ pages: mergeActivePageIntoPages(state.pages, activePage) });
     markProjectDirty();
   },
 
@@ -1252,7 +1328,14 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       pages,
       activePageId: activePage.id,
       graphSpec: spec,
-      nodes: layoutNodes(spec.nodes, expandedWires, spec.dataSourceId, DATA_SOURCE_OUTPUTS, transformNodes),
+      nodes: layoutNodes(
+        spec.nodes,
+        expandedWires,
+        spec.dataSourceId,
+        DATA_SOURCE_OUTPUTS,
+        transformNodes,
+        activePage.nodePositions,
+      ),
       edges: buildEdges(expandedWires),
       viewport: { ...activePage.viewport },
       evalParams: { ...activePage.evalParams },

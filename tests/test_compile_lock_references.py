@@ -539,6 +539,7 @@ def test_a_prior_lock_remains_readable_as_the_grammar_it_names() -> None:
         **_lock_with_figure_input(None),
         "schema_version": EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
     }
+    del lock["execution_identity"]["pin_algorithm"]
 
     loaded = load_compile_lock(lock, field="lock")
 
@@ -550,6 +551,7 @@ def test_a_prior_lock_stating_a_contract_is_refused_by_version() -> None:
         **_lock_with_figure_input(_figure_contract()),
         "schema_version": EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
     }
+    del lock["execution_identity"]["pin_algorithm"]
 
     with pytest.raises(ExperimentEnvelopeRejection) as caught:
         load_compile_lock(lock, field="lock")

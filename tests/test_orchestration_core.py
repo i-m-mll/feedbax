@@ -181,6 +181,8 @@ from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_VERSION_V2,
     RUN_SET_STATE_SCHEMA_VERSION_V3,
     RUN_SET_STATE_SCHEMA_VERSION_V4,
+    RUN_SET_STATE_SCHEMA_VERSION_V5,
+    ProcessIdentity,
     RowState,
     RunSetState,
     RunSetStateStore,
@@ -1456,6 +1458,21 @@ def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> N
             store.load()
         with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
             default_spec_registry.migrate("RunSetState", stale_state)
+    legacy_pid_state = old.model_dump(mode="json")
+    legacy_pid_state["schema_version"] = RUN_SET_STATE_SCHEMA_VERSION_V5
+    legacy_pid_state["rows"]["row"]["pid"] = 4242
+    store.path.write_text(json.dumps(legacy_pid_state), encoding="utf-8")
+
+    admitted = store.load()
+    migrated = default_spec_registry.migrate("RunSetState", legacy_pid_state)
+
+    assert admitted.schema_version == RUN_SET_STATE_SCHEMA_VERSION
+    assert admitted.rows["row"].pid == 4242
+    assert admitted.rows["row"].process_identity is None
+    assert migrated.payload["rows"]["row"]["process_identity"] is None
+    assert migrated.migration_records[0].migration_id == (
+        "run-set-state-v5-to-v6-non-authoritative-pids"
+    )
     old_payload = _bundle(tmp_path).model_dump(mode="json")
     for old_version in (
         RUN_BUNDLE_SCHEMA_VERSION_V1,
@@ -2292,13 +2309,13 @@ def test_request_assembly_certifies_all_core_checks_with_independent_identity(
         "training": executable_payload,
     }
     expected_intent_hash = "da602d442a5356281bf648ca49032739ba6255cdb427bb0da09cfa65bb4d332f"
-    expected_root_hash = "4d61e465261b5115df71d07ea60d53b6121322a5527e0a033b62047fcb2310ad"
-    expected_execution_hash = "1d6dd9eb9f07694aeec192fe6b2bb53785711ddad17854569ac8f63b16aec921"
+    expected_root_hash = "ab8025b0862a288840a0675d482d28e44bd965571ae2af5c1d282193bfe2a3f8"
+    expected_execution_hash = "83a51c5526a2208e94d944e4633a02d27a3e89448767292f0cb96d53c946dc93"
     expected_artifact_hashes = {
         "authored": "e1aeb77d847c6b24011becca0db24da2f25e68f3cf542fdb4639615a266f8dc9",
-        "payload": "7b32a1b9d28a5ccfd907a14904ed14c9af90074d996b0a27647d7ba1f3a3adbf",
-        "snapshot": "a36d64645240d7f3742b5af8367c4ad1f145981e2d0378528945d26a2fbfec8d",
-        "capsule": "a0657205c9b16c9247bf8177e588a6c48ce0a61f8940439b158f06ef83a5f14c",
+        "payload": "c6dc8f70fc7014e2f44cd79d82c60484cd073f7bdbcc11dec0fd958cb39340c9",
+        "snapshot": "104f0e6b98760327375535c470972e6127af2945f29f2482ae7655b9e0546c45",
+        "capsule": "a6b485ea68ae9173a6003f277e0a138ee268e059eaf6fc20628f33a863a952bd",
     }
     assert (
         training_spec_sha256(StudioTrainingAssemblySpec.model_validate(authored).worker_payload())
@@ -3463,9 +3480,17 @@ def test_failed_local_teardown_terminates_orphaned_worker_process_group(
     assert child_pid_path.is_file()
     assert driver._processes["failed"].poll() == 0
     assert _process_group_alive(launch["pid"])
+    identity = ProcessIdentity.model_validate(launch["process_identity"])
     failed = state.model_copy(
         update={
-            "rows": {"failed": RowState(status="failed", error="leader exited")},
+            "rows": {
+                "failed": RowState(
+                    status="failed",
+                    pid=identity.pid,
+                    process_identity=identity,
+                    error="leader exited",
+                )
+            },
             "stages": {
                 "STAGE_INPUTS": StageState(status="completed"),
                 "COLLECT": StageState(status="failed"),
@@ -3902,7 +3927,13 @@ def test_stage_certify_refuses_mismatched_science_repo_revision(
     certificate_path = bundle.run_set_dir / "conformance.json"
     certificate_bytes_before = certificate_path.read_bytes()
 
-    record = RepoSnapshotRecord(commit="c" * 40, dirty=False, content_sha256="1" * 64, file_count=2)
+    record = RepoSnapshotRecord(
+        commit="c" * 40,
+        dirty=False,
+        content_sha256="1" * 64,
+        source_state_sha256="2" * 64,
+        file_count=2,
+    )
     plan = RepoRealizationPlan.create(
         primary_repo="rlrmp2",
         repos={
@@ -4468,7 +4499,9 @@ def test_register_binds_certificate_to_run_rows_and_certify_path(
         engine._stage_register(state)
 
 
-def test_local_driver_adopts_live_started_pid_without_spawning(tmp_path: Path) -> None:
+def test_local_driver_refuses_unrelated_live_pid_without_spawning_or_signaling(
+    tmp_path: Path,
+) -> None:
     marker = tmp_path / "spawned.txt"
     compiled_row = _compiled_row(
         "row-a",
@@ -4493,13 +4526,88 @@ def test_local_driver_adopts_live_started_pid_without_spawning(tmp_path: Path) -
             row,
             RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()}),
         )
+        assert process.poll() is None
     finally:
         process.terminate()
         process.wait(timeout=5)
 
     assert outputs["pid"] == process.pid
-    assert outputs["adopted"] is True
+    assert outputs["status"] == "failed"
+    assert outputs["event_discrepancies"][0]["code"] == "unverified_process_identity"
     assert not marker.exists()
+
+
+def test_local_driver_recovers_and_stops_exact_owned_process_group(tmp_path: Path) -> None:
+    bundle = _bundle(
+        tmp_path,
+        rows=[
+            _compiled_row(
+                "row-a",
+                command=[sys.executable, "-c", "import time; time.sleep(30)"],
+            )
+        ],
+    )
+    row = bundle.row("row-a")
+    initial = RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()})
+    launcher = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+    launcher.provision(bundle, initial)
+    launched = launcher.launch_row(bundle, row, initial)
+    identity = ProcessIdentity.model_validate(launched["process_identity"])
+    recovered_state = initial.with_row(
+        row.row_id,
+        RowState(status="launched", pid=identity.pid, process_identity=identity),
+    )
+    recovered = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+
+    adopted = recovered.launch_row(bundle, row, recovered_state)
+    stopped = recovered.stop_row(bundle, row, recovered_state)
+
+    assert adopted["adopted"] is True
+    assert adopted["process_identity"] == identity.model_dump(mode="json")
+    assert stopped["status"] == "stopped"
+    launcher._processes[row.row_id].wait(timeout=5)
+    assert not _process_group_alive(identity.process_group_id)
+
+
+def test_local_driver_refuses_replaced_pid_without_signaling_either_process(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(
+        tmp_path,
+        rows=[
+            _compiled_row(
+                "row-a",
+                command=[sys.executable, "-c", "import time; time.sleep(30)"],
+            )
+        ],
+    )
+    row = bundle.row("row-a")
+    initial = RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()})
+    launcher = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+    launcher.provision(bundle, initial)
+    launched = launcher.launch_row(bundle, row, initial)
+    identity = ProcessIdentity.model_validate(launched["process_identity"])
+    owned_state = initial.with_row(
+        row.row_id,
+        RowState(status="launched", pid=identity.pid, process_identity=identity),
+    )
+    unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    pid_path = bundle.run_set_dir / "sentinels" / "row-a.pid"
+    pid_path.write_text(f"{unrelated.pid}\n", encoding="utf-8")
+    try:
+        recovered = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+        outputs = recovered.launch_row(bundle, row, owned_state)
+
+        assert outputs["status"] == "failed"
+        assert "PID does not match" in outputs["detail"]
+        assert unrelated.poll() is None
+        assert launcher._processes[row.row_id].poll() is None
+    finally:
+        unrelated.terminate()
+        unrelated.wait(timeout=5)
+        pid_path.write_text(f"{identity.pid}\n", encoding="utf-8")
+        launcher.stop_row(bundle, row, owned_state)
+        launcher._processes[row.row_id].wait(timeout=5)
 
 
 def _launch_row_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:

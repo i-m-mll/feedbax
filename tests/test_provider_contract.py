@@ -995,8 +995,7 @@ def test_task_validation_reports_pathful_step_count_errors() -> None:
     mismatch = validate_task_spec(
         {
             "type": "DelayedReaches",
-            "timeline": {"n_steps": 140},
-            "params": {"n_steps": 120},
+            "params": {"n_steps": 120, "n_reach_steps": 140},
         }
     )
 
@@ -1284,7 +1283,10 @@ def test_studio_task_timeline_spec_validates_value_specs() -> None:
     )
 
     assert timeline.epochs[0].length.mode == "constant"
-    assert timeline.signals[0].epoch_ids == ["epoch:0"]
+    assert timeline.schema_version == "feedbax.spec.studio.task_timeline.v2"
+    assert timeline.epoch_value_specs[0].target_id == "inputs"
+    assert timeline.epoch_value_specs[0].epoch_id == "epoch:0"
+    assert timeline.epoch_value_specs[0].value_spec.mode == "distribution"
     assert timeline.signals[0].value_spec is not None
     assert timeline.signals[0].value_spec.mode == "distribution"
     assert timeline.signals[0].value_schema["shape"] == [2]
@@ -1854,7 +1856,8 @@ def test_studio_schema_reports_invalid_dynamic_policy_parameter_as_typed_issue(
     )
 
     issue = next(issue for issue in schema.issues if issue.type == "dynamic_port_policy_invalid")
-    assert "must be an integer" in issue.message
+    assert "n_inputs" in issue.message
+    assert issue.location == {"path": "/graph/nodes/mux/params"}
 
 
 def test_provider_validation_materializes_omitted_dynamic_ports(
@@ -2872,13 +2875,17 @@ def test_worker_training_cfg_uses_task_n_steps() -> None:
     assert cfg.n_reach_steps == 140
 
 
-def test_worker_training_cfg_uses_timeline_task_n_steps() -> None:
+def test_worker_training_cfg_does_not_take_rollout_length_from_timeline() -> None:
     cfg = _extract_training_cfg(
         {"n_batches": 4, "n_reach_steps": 80},
-        {"type": "DelayedReaches", "timeline": {"n_steps": 150}, "params": {"n_steps": 140}},
+        {
+            "type": "DelayedReaches",
+            "timeline": {"schema_version": "feedbax.spec.studio.task_timeline.v2"},
+            "params": {"n_steps": 140},
+        },
     )
 
-    assert cfg.n_reach_steps == 150
+    assert cfg.n_reach_steps == 140
 
 
 def test_worker_training_cfg_parses_grad_clip_absent_null_and_float() -> None:

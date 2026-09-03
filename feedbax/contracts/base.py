@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import subprocess
 from datetime import datetime, timezone
@@ -11,6 +10,8 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 
 try:
     from importlib.metadata import PackageNotFoundError, version
@@ -244,10 +245,10 @@ class TreeHashRef(StrictModel):
 
 
 def canonical_json_bytes(value: Any) -> bytes:
-    """Serialize a value using stable JSON for hashing."""
+    """Serialize with the permanent public ``canonical_json_v1`` contract."""
     if isinstance(value, BaseModel):
         value = value.model_dump(mode="json", exclude_none=True)
-    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return canonical_json_v1_bytes(value)
 
 
 def sha256_bytes(data: bytes) -> str:

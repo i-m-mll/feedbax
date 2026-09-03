@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -12,6 +11,7 @@ from feedbax.contracts.array_values import (
     ARRAY_VALUE_SCHEMA_VERSION,
     _parse_array_value_payload,
 )
+from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 
 if TYPE_CHECKING:
     from feedbax.contracts.graph import ComponentSpec, GraphMetadata
@@ -148,11 +148,7 @@ def canonical_acausal_graph_payload(graph: AcausalGraphSpec) -> dict[str, Any]:
 def canonical_acausal_graph_json(graph: AcausalGraphSpec) -> str:
     """Return canonical JSON for an acausal graph interior."""
 
-    return json.dumps(
-        canonical_acausal_graph_payload(graph),
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    return canonical_json_v1_bytes(canonical_acausal_graph_payload(graph)).decode("utf-8")
 
 
 def acausal_interior_content_hash(graph: AcausalGraphSpec) -> str:

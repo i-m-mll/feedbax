@@ -28,7 +28,10 @@ RUN_SET_STATE_SCHEMA_VERSION_V1 = "feedbax.orchestration.run_set_state.v1"
 RUN_SET_STATE_SCHEMA_VERSION_V2 = "feedbax.orchestration.run_set_state.v2"
 RUN_SET_STATE_SCHEMA_VERSION_V3 = "feedbax.orchestration.run_set_state.v3"
 RUN_SET_STATE_SCHEMA_VERSION_V4 = "feedbax.orchestration.run_set_state.v4"
-RUN_SET_STATE_SCHEMA_VERSION = "feedbax.orchestration.run_set_state.v5"
+RUN_SET_STATE_SCHEMA_VERSION_V5 = "feedbax.orchestration.run_set_state.v5"
+RUN_SET_STATE_SCHEMA_VERSION = "feedbax.orchestration.run_set_state.v6"
+PROCESS_IDENTITY_SCHEMA_ID = "feedbax.orchestration.process_identity"
+PROCESS_IDENTITY_SCHEMA_VERSION = "feedbax.orchestration.process_identity.v1"
 EMERGENCY_RUN_SET_RECORD_SCHEMA_ID = "feedbax.orchestration.emergency_run_set_record"
 EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION = "feedbax.orchestration.emergency_run_set_record.v1"
 REGISTRATION_HISTORY_SCHEMA_ID = "feedbax.orchestration.registration_history"
@@ -134,12 +137,28 @@ class StageState(StrictModel):
     checks: list[PreflightCheckEntry] = Field(default_factory=list)
 
 
+class ProcessIdentity(StrictModel):
+    """Durable authority for one run-owned process group."""
+
+    schema_id: Literal["feedbax.orchestration.process_identity"] = PROCESS_IDENTITY_SCHEMA_ID
+    schema_version: Literal["feedbax.orchestration.process_identity.v1"] = (
+        PROCESS_IDENTITY_SCHEMA_VERSION
+    )
+    mechanism: Literal["environment-token-v1"] = "environment-token-v1"
+    run_set_id: str = Field(min_length=1)
+    row_id: str = Field(min_length=1)
+    pid: int = Field(gt=0)
+    process_group_id: int = Field(gt=0)
+    launch_token: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class RowState(StrictModel):
     """Durable state for one row."""
 
     status: RowStatusName = "pending"
     event_seq_high_water_mark: int = -1
     pid: int | None = None
+    process_identity: ProcessIdentity | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     last_event_type: str | None = None
@@ -231,7 +250,7 @@ class RunSetState(StrictModel):
     """Atomic JSON state document for one run set."""
 
     schema_id: Literal["feedbax.orchestration.run_set_state"] = RUN_SET_STATE_SCHEMA_ID
-    schema_version: Literal["feedbax.orchestration.run_set_state.v5"] = RUN_SET_STATE_SCHEMA_VERSION
+    schema_version: Literal["feedbax.orchestration.run_set_state.v6"] = RUN_SET_STATE_SCHEMA_VERSION
     run_set_id: str
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -268,6 +287,24 @@ class RunSetState(StrictModel):
         return self.model_copy(update={"rows": rows, "updated_at": utc_now()})
 
 
+def migrate_run_set_state_v5_to_v6(payload: dict[str, Any]) -> dict[str, Any]:
+    """Make every legacy PID explicitly non-authoritative.
+
+    Version 5 persisted only a numeric PID. The number remains diagnostic data,
+    while the new identity field is deliberately empty so recovery cannot adopt
+    or signal a process until a current driver proves run-owned identity.
+    """
+    migrated = dict(payload)
+    rows = {}
+    for row_id, row_value in dict(migrated.get("rows", {})).items():
+        row = dict(row_value)
+        row["process_identity"] = None
+        rows[row_id] = row
+    migrated["rows"] = rows
+    migrated["schema_version"] = RUN_SET_STATE_SCHEMA_VERSION
+    return migrated
+
+
 class RunSetStateStore:
     """Read/write helper for one run-set state document."""
 
@@ -281,7 +318,12 @@ class RunSetStateStore:
 
     def load(self) -> RunSetState:
         """Load the current state document."""
-        return strict_model_validate_json(RunSetState, self.path.read_text(encoding="utf-8"))
+        payload = strict_json_loads(self.path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and payload.get("schema_version") == (
+            RUN_SET_STATE_SCHEMA_VERSION_V5
+        ):
+            payload = migrate_run_set_state_v5_to_v6(payload)
+        return RunSetState.model_validate(payload)
 
     def save(self, state: RunSetState, *, crash_before_replace: bool = False) -> Path:
         """Atomically write ``state`` using temp-file plus ``os.replace``."""

@@ -103,6 +103,18 @@ The Studio backend is FastAPI under `feedbax/web/`.
 - `feedbax/web/ws/training.py` relays the worker SSE stream to browser
   WebSocket clients and closes defensively on disconnects.
 
+The local development worker is an explicit loopback origin such as
+`http://127.0.0.1:8765` and needs no credential. Every other worker is remote:
+it must use HTTPS, resolve only to public network addresses, match one exact
+origin in the server-side `FEEDBAX_WORKER_ALLOWED_ORIGINS` JSON array, and use
+the bearer credential supplied through `FEEDBAX_WORKER_AUTH_TOKEN` or the
+connect API. Worker HTTP, checkpoint, SSE, and browser WebSocket consumption
+share finite time, byte, event-size, and event-count limits. Redirects and
+unsafe or unverifiable configurations are refused. The current GCP Studio
+adapter is unavailable because it cannot yet establish this verified HTTPS
+worker identity; the provider-neutral orchestration core remains the lifecycle
+authority.
+
 The simulation WebSocket at `feedbax/web/ws/simulation.py` currently sends one
 empty `simulation_state` message and closes. Do not document it as a production
 simulation preview.

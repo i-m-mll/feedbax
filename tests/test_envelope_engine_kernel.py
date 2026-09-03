@@ -37,6 +37,7 @@ from feedbax.contracts.experiment_compile_lock import (
     build_compile_lock,
     check_plan_receipt_boundary,
     load_compile_lock,
+    migrate_compile_lock_v3_to_v4,
 )
 from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeParentAuthority,
@@ -568,6 +569,7 @@ def test_lock_pins_the_envelope_and_the_compiled_document() -> None:
     assert lock["compiled_document"]["content_hash"] == canonical_sha256(document)
     assert lock["envelope"]["pin_algorithm"] == CANONICAL_PIN_ALGORITHM
     assert lock["compiled_document"]["pin_algorithm"] == CANONICAL_PIN_ALGORITHM
+    assert lock["execution_identity"]["pin_algorithm"] == CANONICAL_PIN_ALGORITHM
 
 
 def test_execution_identity_moves_with_an_identity_contribution() -> None:
@@ -611,6 +613,67 @@ def test_lock_loader_accepts_the_current_version_and_rechecks_the_boundary() -> 
     assert loaded["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION
 
 
+def test_lock_loader_migrates_attributable_feedbax_v3_execution_identity() -> None:
+    lock = _lock()
+    lock["schema_version"] = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3
+    del lock["execution_identity"]["pin_algorithm"]
+    lock["compiler_implementation"] = {
+        "code_unit": "feedbax.envelope.entrypoint",
+        "package_versions": {"feedbax": "0.2.0"},
+    }
+
+    migrated = default_spec_registry.migrate("ExperimentCompileLock", lock)
+    loaded = load_compile_lock(lock, field="generated/probe.compile-lock.json")
+
+    assert migrated.migrated
+    assert migrated.payload == loaded
+    assert loaded["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4
+    assert loaded["execution_identity"]["pin_algorithm"] == CANONICAL_PIN_ALGORITHM
+
+
+@pytest.mark.parametrize(
+    "implementation",
+    [
+        {
+            "code_unit": "downstream.authored.compiler",
+            "package_versions": {"feedbax": "0.2.0"},
+        },
+        {
+            "code_unit": "feedbax.envelope.entrypoint",
+            "package_versions": {"feedbax": None},
+        },
+    ],
+)
+def test_v3_pin_migration_refuses_downstream_or_unattributed_producers(
+    implementation: dict[str, Any],
+) -> None:
+    lock = _lock()
+    lock["schema_version"] = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3
+    del lock["execution_identity"]["pin_algorithm"]
+    lock["compiler_implementation"] = implementation
+
+    with pytest.raises(ExperimentEnvelopeRejection, match="must remain unpinned"):
+        load_compile_lock(lock, field="generated/probe.compile-lock.json")
+
+
+def test_v3_pin_migration_refuses_a_downstream_authored_digest_shape() -> None:
+    document = {
+        "schema_version": EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+        "sha256": "a" * 64,
+    }
+
+    with pytest.raises(ExperimentEnvelopeRejection, match="only a Feedbax experiment"):
+        migrate_compile_lock_v3_to_v4(document, field="specs/authored.analysis.json")
+
+
+def test_current_lock_rejects_an_unknown_execution_identity_pin() -> None:
+    lock = _lock()
+    lock["execution_identity"]["pin_algorithm"] = "canonical_json_v99"
+
+    with pytest.raises(ExperimentEnvelopeRejection, match="canonical_json_v1"):
+        load_compile_lock(lock, field="generated/probe.compile-lock.json")
+
+
 def test_lock_loader_refuses_a_lock_edited_to_carry_a_receipt_fact() -> None:
     lock = _lock()
     lock["run_id"] = "run-1"
@@ -642,7 +705,7 @@ def test_lock_loader_rejects_a_foreign_family() -> None:
         load_compile_lock(lock, field="compiled/probe.compile-lock.json")
 
 
-# -- the whole v1 document is validated on read ---------------------------------
+# -- the whole compile-lock document is validated on read -----------------------
 
 
 def _compiled_lock(repo: Path, alias: str = "widened") -> dict[str, Any]:
@@ -738,6 +801,10 @@ def _identity_inputs(lock: dict[str, Any]) -> None:
     lock["execution_identity"]["inputs"] = []
 
 
+def _identity_pin(lock: dict[str, Any]) -> None:
+    del lock["execution_identity"]["pin_algorithm"]
+
+
 @pytest.mark.parametrize(
     ("damage", "category", "match"),
     [
@@ -814,9 +881,14 @@ def _identity_inputs(lock: dict[str, Any]) -> None:
             ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
             "names the facts it was built from",
         ),
+        (
+            _identity_pin,
+            ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
+            "pin_algorithm",
+        ),
     ],
 )
-def test_the_loader_refuses_a_lock_damaged_anywhere_in_the_v1_document(
+def test_the_loader_refuses_a_lock_damaged_anywhere_in_the_current_document(
     repo: Path, damage: Any, category: Any, match: str
 ) -> None:
     """A consumer that trusts a lock trusts all of it, so all of it is checked."""
@@ -869,7 +941,12 @@ def test_the_lock_migration_slot_exists_in_the_shared_spec_registry() -> None:
     assert family.identity == EXPERIMENT_COMPILE_LOCK_SCHEMA_ID
     assert family.current_version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION
     assert family.policy is not None
-    assert default_spec_registry.available_migrations("ExperimentCompileLock") == ()
+    assert family.policy.stance == "migrate"
+    assert family.policy.supported_old_versions == (EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,)
+    migrations = default_spec_registry.available_migrations("ExperimentCompileLock")
+    assert len(migrations) == 1
+    assert migrations[0].source_version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3
+    assert migrations[0].target_version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4
 
 
 # -- lineage resolution -----------------------------------------------------
@@ -1149,7 +1226,7 @@ def test_a_receipt_without_a_digest_is_a_locator_not_a_fabricated_authentication
     }
 
 
-def test_v6_complete_receipt_set_lowers_to_the_v3_lock_binding(repo: Path) -> None:
+def test_v6_complete_receipt_set_lowers_to_the_v4_lock_binding(repo: Path) -> None:
     path = envelope_path(repo, "set-summary")
     write_envelope(
         path,
@@ -1646,7 +1723,10 @@ def _lock_at_version_v1(lock: dict[str, Any]) -> dict[str, Any]:
     that, where re-signing the bases would only record whatever the code now
     emits.
     """
-    return {**lock, "schema_version": EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1}
+    legacy = json.loads(json.dumps(lock))
+    legacy["schema_version"] = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1
+    del legacy["execution_identity"]["pin_algorithm"]
+    return legacy
 
 
 def test_prior_and_authority_free_root_document_lock_bytes_match_signed_base(

@@ -46,6 +46,16 @@ from feedbax.contracts.acausal import (  # noqa: F401
     RootFinderSpec,
     SolverConfigSpec,
 )
+from feedbax.contracts.canonical_json import (
+    CANONICAL_JSON_V1,
+    CANONICAL_JSON_V2,
+    CanonicalJsonAlgorithm,
+    CanonicalJsonError,
+    CanonicalJsonErrorCode,
+    canonical_json_bytes_for_algorithm,
+    canonical_json_v1_bytes,
+    canonical_json_v2_bytes,
+)
 from feedbax.contracts.representation import (
     MUSCLE_PATH_GEOMETRY_SCHEMA_ID,
     MUSCLE_PATH_GEOMETRY_SCHEMA_VERSION,
@@ -449,6 +459,7 @@ from feedbax.contracts.worker import (
     CONSISTENCY_PREDICATE_GENERATOR_HASH,
     CONSISTENCY_PREDICATE_SCHEMA_ID,
     CONSISTENCY_PREDICATE_SCHEMA_VERSION,
+    CONSISTENCY_PREDICATE_SCHEMA_VERSION_V2,
     FIXED_UPDATE_KERNEL_SIGNATURE,
     PPO_MAPPING_TABLE,
     WORKER_CONTRACT_SCHEMA_ID,
@@ -485,6 +496,7 @@ from feedbax.contracts.worker import (
     UpdateStepSpec,
     WorkerMappingRow,
     derive_consistency_predicate,
+    migrate_consistency_predicate_payload,
     supervised_executor_mapping,
     toy_adaptive_curriculum_method_contract,
     toy_minimax_method_contract,
@@ -556,6 +568,8 @@ from feedbax.contracts.studio_api import (
 )
 
 __all__ = [
+    "CANONICAL_JSON_V1",
+    "CANONICAL_JSON_V2",
     "ARRAY_VALUE_SCHEMA_ID",
     "ARRAY_VALUE_SCHEMA_VERSION",
     "ADMISSION_WAIVER_SCHEMA_ID",
@@ -599,6 +613,10 @@ __all__ = [
     "CONSISTENCY_PREDICATE_GENERATOR_HASH",
     "CONSISTENCY_PREDICATE_SCHEMA_ID",
     "CONSISTENCY_PREDICATE_SCHEMA_VERSION",
+    "CONSISTENCY_PREDICATE_SCHEMA_VERSION_V2",
+    "CanonicalJsonAlgorithm",
+    "CanonicalJsonError",
+    "CanonicalJsonErrorCode",
     "CheckpointProgressPolicySpec",
     "ComponentDescriptor",
     "ComponentDefinition",
@@ -957,6 +975,9 @@ __all__ = [
     "descriptor_basis_hash",
     "descriptor_basis_identity_envelope",
     "derive_consistency_predicate",
+    "canonical_json_bytes_for_algorithm",
+    "canonical_json_v1_bytes",
+    "canonical_json_v2_bytes",
     "canonical_expression_json",
     "compile_workspace_replay_retention",
     "default_training_program_registry",
@@ -968,6 +989,7 @@ __all__ = [
     "materialize_array_value",
     "imported_npz_workspace_replay_product",
     "materialize_extraction_product",
+    "migrate_consistency_predicate_payload",
     "migrate_selection_spec_payload",
     "predicate_matches_row",
     "preview_selection_spec",

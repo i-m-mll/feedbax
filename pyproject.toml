@@ -43,6 +43,7 @@ dependencies = [
     "treescope>=0.1.1",
     "tqdm>=4.67.1",
     "jax-cookbook",
+    "rfc8785>=0.1.4",
 ]
 
 [project.optional-dependencies]

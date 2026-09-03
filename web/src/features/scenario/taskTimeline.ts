@@ -1,8 +1,10 @@
 import type { ParamValue } from '@/types/graph';
 import type { TaskSpec } from '@/types/training';
+import { StudioTaskTimelineSpecSchema } from '@/generated/studioContracts';
 import type {
   StudioTaskTimelineSignalSpec,
   StudioTaskTimelineSpec,
+  StudioEpochValueSpec,
   StudioValueSpec,
   StudioTaskBindingSpec,
   StudioTaskTimelineSegmentSpec,
@@ -10,7 +12,10 @@ import type {
   ValueSchema,
 } from '@/types/workspace';
 
-export const TASK_TIMELINE_SCHEMA_VERSION = 'feedbax.studio.task_timeline.v1';
+export const TASK_TIMELINE_SCHEMA_ID = 'feedbax.spec.studio.task_timeline';
+export const TASK_TIMELINE_SCHEMA_VERSION = 'feedbax.spec.studio.task_timeline.v2';
+export const EPOCH_VALUE_SCHEMA_ID = 'feedbax.spec.studio.epoch_value';
+export const EPOCH_VALUE_SCHEMA_VERSION = 'feedbax.spec.studio.epoch_value.v1';
 export const VALUE_SCHEMA_VERSION = 'feedbax.spec.studio.value.v2';
 
 type ValueVariationScope =
@@ -336,26 +341,13 @@ function signal(
 ): StudioTaskTimelineSignalSpec {
   const valueSchema = signalValueSchema(id, label, kind, path);
   const valueSpec = delayedReachTaskDataValueSpec(id, task, valueSchema);
-  const epochIds = [...epochSet].sort((a, b) => a - b).map((index) => `epoch:${index}`);
   return {
     id,
     label,
     kind,
     task_data_id: id,
     path,
-    epoch_ids: epochIds,
     value_spec: valueSpec,
-    epoch_value_specs: Object.fromEntries(
-      Array.from({ length: DELAYED_REACH_EPOCH_LABELS.length }, (_, index) => {
-        const epochId = `epoch:${index}`;
-        return [
-          epochId,
-          epochIds.includes(epochId)
-            ? activeEpochValueSpec(valueSpec)
-            : inactiveEpochValueSpec(valueSpec),
-        ];
-      })
-    ),
     value_schema: valueSchema,
     task_data_schema: timelineTaskDataSchema(id, label, kind, path, valueSchema),
     metadata: {
@@ -377,34 +369,56 @@ function signal(
 
 function existingTimelineFromTask(task: TaskSpec): StudioTaskTimelineSpec | null {
   const timeline = task.timeline;
-  if (!timeline || typeof timeline !== 'object' || Array.isArray(timeline)) return null;
-  const record = timeline as unknown as Partial<StudioTaskTimelineSpec>;
-  if (!Array.isArray(record.epochs) || !Array.isArray(record.signals)) return null;
-  return {
-    schema_version: record.schema_version ?? TASK_TIMELINE_SCHEMA_VERSION,
-    epochs: record.epochs,
-    signals: record.signals.map((signalSpec) => {
-      if (signalSpec.epoch_value_specs) return signalSpec;
-      return {
-        ...signalSpec,
-        epoch_value_specs: Object.fromEntries(
-          record.epochs.map((epoch) => {
-            return [
-              epoch.id,
-              signalSpec.epoch_ids.includes(epoch.id)
-                ? activeEpochValueSpec(signalSpec.value_spec)
-                : inactiveEpochValueSpec(signalSpec.value_spec),
-            ];
-          })
-        ),
-      };
-    }),
-    segments: record.segments,
+  if (timeline == null) return null;
+  if (typeof timeline !== 'object' || Array.isArray(timeline)) {
+    throw new Error('Task timeline must be an object with an explicit schema version.');
+  }
+  const record = timeline as unknown as Record<string, unknown>;
+  if (!Array.isArray(record.epochs) || !Array.isArray(record.signals)) {
+    throw new Error('Task timeline must declare epoch and signal arrays.');
+  }
+  if (record.schema_version === TASK_TIMELINE_SCHEMA_VERSION) {
+    return StudioTaskTimelineSpecSchema.parse(record) as unknown as StudioTaskTimelineSpec;
+  }
+  if (record.schema_version !== 'feedbax.spec.studio.task_timeline.v1' &&
+      record.schema_version !== 'feedbax.studio.task_timeline.v1') {
+    throw new Error(`Unsupported task timeline schema version: ${String(record.schema_version)}`);
+  }
+  const signals = record.signals as Array<StudioTaskTimelineSignalSpec & {
+    epoch_ids?: string[];
+    epoch_value_specs?: Record<string, StudioValueSpec | null>;
+  }>;
+  const entries: StudioEpochValueSpec[] = signals.flatMap((signalSpec) => {
+    const targetId = signalSpec.task_data_id ?? signalSpec.id;
+    return (record.epochs as StudioTaskTimelineSpec['epochs']).flatMap((epoch) => {
+      const explicit = signalSpec.epoch_value_specs?.[epoch.id];
+      const valueSpec = explicit ?? (
+        signalSpec.epoch_ids?.includes(epoch.id)
+          ? activeEpochValueSpec(signalSpec.value_spec)
+          : inactiveEpochValueSpec(signalSpec.value_spec)
+      );
+      return valueSpec ? [{
+        schema_id: EPOCH_VALUE_SCHEMA_ID,
+        schema_version: EPOCH_VALUE_SCHEMA_VERSION,
+        target_id: targetId,
+        epoch_id: epoch.id,
+        value_spec: valueSpec,
+      }] : [];
+    });
+  });
+  const migrated = {
+    schema_id: TASK_TIMELINE_SCHEMA_ID,
+    schema_version: TASK_TIMELINE_SCHEMA_VERSION,
+    epochs: record.epochs as StudioTaskTimelineSpec['epochs'],
+    signals: signals.map(({ epoch_ids: _epochIds, epoch_value_specs: _values, ...signalSpec }) => signalSpec),
+    epoch_value_specs: canonicalEpochValueSpecs(entries, record.epochs as StudioTaskTimelineSpec['epochs']),
+    segments: record.segments as StudioTaskTimelineSpec['segments'],
     metadata: {
-      ...(record.metadata ?? {}),
-      n_steps: task.params?.n_steps ?? record.metadata?.n_steps ?? null,
+      ...((record.metadata as Record<string, unknown> | undefined) ?? {}),
+      n_steps: task.params?.n_steps ?? null,
     },
   };
+  return StudioTaskTimelineSpecSchema.parse(migrated) as unknown as StudioTaskTimelineSpec;
 }
 
 function delayedReachSegments(epochCount: number): StudioTaskTimelineSegmentSpec[] {
@@ -531,43 +545,66 @@ export function delayedReachTimelineFromTask(task: TaskSpec): StudioTaskTimeline
       },
     };
   });
+  const signals = [
+    signal(
+      'target_position',
+      'Target position',
+      'signal',
+      'inputs.effector_target',
+      asIndexSet(params.target_on_epochs),
+      task
+    ),
+    signal(
+      'hold',
+      'Hold/go cue',
+      'signal',
+      'inputs.hold',
+      asIndexSet(params.hold_epochs),
+      task
+    ),
+    signal(
+      'target_on',
+      'Target shown',
+      'signal',
+      'inputs.target_on',
+      asIndexSet(params.target_on_epochs),
+      task
+    ),
+    signal(
+      'movement_target',
+      'Movement target',
+      'target',
+      'targets.effector',
+      asIndexSet(params.move_epochs),
+      task
+    ),
+  ];
+  const epochValueSpecs: StudioEpochValueSpec[] = signals.flatMap((signalSpec) => {
+    const targetId = signalSpec.task_data_id ?? signalSpec.id;
+    const activeIndexes = signalSpec.id === 'hold'
+      ? asIndexSet(params.hold_epochs)
+      : signalSpec.id === 'movement_target'
+        ? asIndexSet(params.move_epochs)
+        : asIndexSet(params.target_on_epochs);
+    return epochs.flatMap((epoch) => {
+      const valueSpec = activeIndexes.has(epoch.index)
+        ? activeEpochValueSpec(signalSpec.value_spec)
+        : inactiveEpochValueSpec(signalSpec.value_spec);
+      return valueSpec ? [{
+        schema_id: EPOCH_VALUE_SCHEMA_ID,
+        schema_version: EPOCH_VALUE_SCHEMA_VERSION,
+        target_id: targetId,
+        epoch_id: epoch.id,
+        value_spec: valueSpec,
+      }] : [];
+    });
+  });
   return {
+    schema_id: TASK_TIMELINE_SCHEMA_ID,
     schema_version: TASK_TIMELINE_SCHEMA_VERSION,
     epochs,
-    signals: [
-      signal(
-        'target_position',
-        'Target position',
-        'signal',
-        'inputs.effector_target',
-        asIndexSet(params.target_on_epochs),
-        task
-      ),
-      signal(
-        'hold',
-        'Hold/go cue',
-        'signal',
-        'inputs.hold',
-        asIndexSet(params.hold_epochs),
-        task
-      ),
-      signal(
-        'target_on',
-        'Target shown',
-        'signal',
-        'inputs.target_on',
-        asIndexSet(params.target_on_epochs),
-        task
-      ),
-      signal(
-        'movement_target',
-        'Movement target',
-        'target',
-        'targets.effector',
-        asIndexSet(params.move_epochs),
-        task
-      ),
-    ],
+    signals,
+    epoch_value_specs: canonicalEpochValueSpecs(epochValueSpecs, epochs),
     segments: delayedReachSegments(epochCount),
     metadata: {
       task_type: task.type,
@@ -587,10 +624,25 @@ function signalEpochIndexes(
   const signalSpec = timeline.signals.find((item) => item.id === signalId)
     ?? timeline.signals.find((item) => fallbackIds.includes(item.id));
   if (!signalSpec) return [];
-  return signalSpec.epoch_ids
-    .map((id) => Number(id.replace(/^epoch:/, '')))
-    .filter((index) => Number.isInteger(index) && index >= 0)
+  const targetId = signalSpec.task_data_id ?? signalSpec.id;
+  const epochById = new Map(timeline.epochs.map((epoch) => [epoch.id, epoch.index]));
+  return timeline.epoch_value_specs
+    .filter((entry) => entry.target_id === targetId && isActiveEpochValueSpec(entry.value_spec))
+    .map((entry) => epochById.get(entry.epoch_id))
+    .filter((index): index is number => index !== undefined)
     .sort((a, b) => a - b);
+}
+
+function canonicalEpochValueSpecs(
+  entries: StudioTaskTimelineSpec['epoch_value_specs'],
+  epochs: StudioTaskTimelineSpec['epochs']
+): StudioTaskTimelineSpec['epoch_value_specs'] {
+  const epochOrder = new Map(epochs.map((epoch) => [epoch.id, epoch.index]));
+  return [...entries].sort((a, b) =>
+    a.target_id.localeCompare(b.target_id) ||
+    (epochOrder.get(a.epoch_id) ?? Number.MAX_SAFE_INTEGER) -
+      (epochOrder.get(b.epoch_id) ?? Number.MAX_SAFE_INTEGER)
+  );
 }
 
 function rangeFromValue(value: StudioValueSpec): [number, number] | null {
@@ -682,32 +734,30 @@ export function toggleDelayedReachSignalEpoch(
     signalId === 'target_on' || signalId === 'target_position'
       ? new Set(['target_on', 'target_position'])
       : new Set([signalId]);
-  return {
-    ...timeline,
-    signals: timeline.signals.map((item) => {
-      if (!linkedSignalIds.has(item.id)) return item;
-      const epochIds = new Set(item.epoch_ids);
-      if (enabled) {
-        epochIds.add(epochId);
-      } else {
-        epochIds.delete(epochId);
-      }
-      return {
-        ...item,
-        epoch_ids: [...epochIds].sort(),
-      };
-    }),
-  };
+  return timeline.signals
+    .filter((item) => linkedSignalIds.has(item.id))
+    .reduce(
+      (current, item) => updateTaskTimelineSignalEpochValueSpec(
+        current,
+        item.id,
+        epochId,
+        (enabled ? activeEpochValueSpec(item.value_spec) : inactiveEpochValueSpec(item.value_spec))!
+      ),
+      timeline
+    );
 }
 
 export function signalEpochValueSpec(
-  signalSpec: StudioTaskTimelineSignalSpec,
+  timeline: StudioTaskTimelineSpec,
+  signalId: string,
   epochId: string
 ): StudioValueSpec | null {
-  if (signalSpec.epoch_value_specs?.[epochId]) return signalSpec.epoch_value_specs[epochId] ?? null;
-  return signalSpec.epoch_ids.includes(epochId)
-    ? activeEpochValueSpec(signalSpec.value_spec)
-    : inactiveEpochValueSpec(signalSpec.value_spec);
+  const signalSpec = timeline.signals.find((item) => item.id === signalId);
+  if (!signalSpec) return null;
+  const targetId = signalSpec.task_data_id ?? signalSpec.id;
+  return timeline.epoch_value_specs.find(
+    (entry) => entry.target_id === targetId && entry.epoch_id === epochId
+  )?.value_spec ?? null;
 }
 
 export function updateTaskTimelineSignalEpochValueSpec(
@@ -720,28 +770,30 @@ export function updateTaskTimelineSignalEpochValueSpec(
     signalId === 'target_on' || signalId === 'target_position'
       ? new Set(['target_on', 'target_position'])
       : new Set([signalId]);
+  const targetIds = new Set(
+    timeline.signals
+      .filter((item) => linkedSignalIds.has(item.id))
+      .map((item) => item.task_data_id ?? item.id)
+  );
+  const nextEntries = timeline.epoch_value_specs.filter(
+    (entry) => !(targetIds.has(entry.target_id) && entry.epoch_id === epochId)
+  );
+  for (const targetId of targetIds) {
+    nextEntries.push({
+      schema_id: EPOCH_VALUE_SCHEMA_ID,
+      schema_version: EPOCH_VALUE_SCHEMA_VERSION,
+      target_id: targetId,
+      epoch_id: epochId,
+      value_spec: valueSpec,
+    });
+  }
   return {
     ...timeline,
-    signals: timeline.signals.map((item) => {
-      if (!linkedSignalIds.has(item.id)) return item;
-      const epochValueSpecs = {
-        ...(item.epoch_value_specs ?? {}),
-        [epochId]: valueSpec,
-      };
-      const epochIds = Object.entries(epochValueSpecs)
-        .filter(([, candidate]) => isActiveEpochValueSpec(candidate))
-        .map(([id]) => id)
-        .sort();
-      return {
-        ...item,
-        epoch_ids: epochIds,
-        epoch_value_specs: epochValueSpecs,
-        metadata: {
-          ...item.metadata,
-          epoch_value_specs_updated_from: 'task_timeline_epoch_value_editor',
-        },
-      };
-    }),
+    epoch_value_specs: canonicalEpochValueSpecs(nextEntries, timeline.epochs),
+    metadata: {
+      ...timeline.metadata,
+      epoch_value_specs_updated_from: 'task_timeline_epoch_value_editor',
+    },
   };
 }
 
@@ -795,12 +847,16 @@ export function delayedReachTimelinePreview(
     n_steps: nSteps,
     epochs,
     signals: timeline.signals.map((signalSpec) => {
-      const activeEpochs = new Set(signalSpec.epoch_ids);
+      const targetId = signalSpec.task_data_id ?? signalSpec.id;
+      const activeEpochIds = timeline.epoch_value_specs
+        .filter((entry) => entry.target_id === targetId && isActiveEpochValueSpec(entry.value_spec))
+        .map((entry) => entry.epoch_id);
+      const activeEpochs = new Set(activeEpochIds);
       return {
         id: signalSpec.id,
         label: signalSpec.label,
         kind: signalSpec.kind,
-        active_epoch_ids: signalSpec.epoch_ids,
+        active_epoch_ids: activeEpochIds,
         active_ranges: epochs
           .filter((epoch) => activeEpochs.has(epoch.id))
           .map((epoch) => ({ start_min: epoch.start_min, end_max: epoch.end_max })),

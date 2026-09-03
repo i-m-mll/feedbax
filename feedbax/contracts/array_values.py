@@ -31,6 +31,8 @@ CanonicalArrayDType: TypeAlias = Literal[
 NonfinitePolicy: TypeAlias = Literal["forbid", "allow"]
 NonfiniteToken: TypeAlias = Literal["nan", "+inf", "-inf"]
 ArrayScalar: TypeAlias = StrictBool | StrictInt | StrictFloat | NonfiniteToken
+SparseCoordinateIndex: TypeAlias = Annotated[StrictInt, Field(ge=0)]
+ArrayDimension: TypeAlias = Annotated[StrictInt, Field(gt=0)]
 
 
 class SparseCooEntrySpec(BaseModel):
@@ -38,16 +40,8 @@ class SparseCooEntrySpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    coordinate: tuple[StrictInt, ...]
+    coordinate: Annotated[tuple[SparseCoordinateIndex, ...], Field(min_length=1)]
     value: ArrayScalar
-
-    @model_validator(mode="after")
-    def validate_coordinate(self) -> "SparseCooEntrySpec":
-        if not self.coordinate:
-            raise ValueError("sparse COO coordinates must not be empty")
-        if any(index < 0 for index in self.coordinate):
-            raise ValueError("sparse COO coordinates must be non-negative")
-        return self
 
 
 class _ArrayValueSpecBase(BaseModel):
@@ -55,15 +49,9 @@ class _ArrayValueSpecBase(BaseModel):
 
     schema_id: Literal["feedbax.spec.component_param.array_value"]
     schema_version: Literal["feedbax.spec.component_param.array_value.v1"]
-    shape: tuple[StrictInt, ...]
+    shape: Annotated[tuple[ArrayDimension, ...], Field(min_length=1)]
     dtype: CanonicalArrayDType
     nonfinite: NonfinitePolicy
-
-    @model_validator(mode="after")
-    def validate_shape(self) -> "_ArrayValueSpecBase":
-        if not self.shape or any(size <= 0 for size in self.shape):
-            raise ValueError("array value shape must contain only positive dimensions")
-        return self
 
 
 class SparseCooArrayValueSpec(_ArrayValueSpecBase):

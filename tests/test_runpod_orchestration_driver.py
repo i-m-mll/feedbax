@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 import signal
 import shutil
 import subprocess
@@ -104,7 +105,13 @@ from feedbax.orchestration.stages import (
     _DeferredOperatorSignal,
     _ScopedSignalSupervisor,
 )
-from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore, StageState
+from feedbax.orchestration.state import (
+    ProcessIdentity,
+    RowState,
+    RunSetState,
+    RunSetStateStore,
+    StageState,
+)
 from feedbax.orchestration.revision import resolve_feedbax_revision
 
 
@@ -170,6 +177,36 @@ class FakeRunPodTransport:
                 return self.environment_probe_result
             declaration = json.loads(shlex.split(command)[-1])
             return CommandResult(0, _realized_fingerprint(declaration))
+        if "identity_status='missing'" in command:
+            if self.ssh_results:
+                return self.ssh_results.pop(0)
+            identity = {
+                "schema_id": "feedbax.orchestration.process_identity",
+                "schema_version": "feedbax.orchestration.process_identity.v1",
+                "mechanism": "environment-token-v1",
+                "run_set_id": "2026-01-02-deadbeef",
+                "row_id": "warm",
+                "pid": 4321,
+                "process_group_id": 4321,
+                "launch_token": "a" * 64,
+            }
+            return CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "gpu": "",
+                        "rows": {
+                            "warm": {
+                                "status": "running",
+                                "pid": 4321,
+                                "process_identity": identity,
+                                "identity_status": "owned",
+                                "detail": None,
+                            }
+                        },
+                    }
+                ),
+            )
         if command.startswith("cat ") and not self.ssh_results:
             return CommandResult(0, "4321\n")
         if self.ssh_results:
@@ -2885,7 +2922,7 @@ def test_launch_row_exports_contract_env_without_per_row_deadman(tmp_path: Path)
     launch_command = transport.ssh_commands[0]
     assert "setsid -f bash -lc" in launch_command
     assert "</dev/null" in launch_command
-    assert "while [ ! -s" in launch_command
+    assert "while { [ ! -s" in launch_command
     assert "FEEDBAX_RUN_SET_ID=2026-01-02-deadbeef" in launch_command
     assert "FEEDBAX_ROW_ID=warm" in launch_command
     assert (
@@ -2895,13 +2932,92 @@ def test_launch_row_exports_contract_env_without_per_row_deadman(tmp_path: Path)
     assert "FEEDBAX_ENV_FINGERPRINT=fingerprint-123" in launch_command
     assert "JAX_COMPILATION_CACHE_DIR=/workspace/jax_cache" in launch_command
     assert "XLA_PYTHON_CLIENT_PREALLOCATE=false" in launch_command
-    assert 'kill -0 "$pid"' in launch_command
-    assert (
-        "orphaned launch: started sentinel present, process dead, no terminal sentinel"
-        in launch_command
-    )
+    assert "FEEDBAX_PROCESS_IDENTITY=" in launch_command
+    assert "feedbax.orchestration.process_identity.v1" in launch_command
+    assert "refusing to adopt started row without verified process identity" in launch_command
+    assert outputs["process_identity"]["run_set_id"] == bundle.run_set_id
     assert "rm -f" in launch_command
     assert all("deadman" not in command for command in transport.ssh_commands)
+
+
+def test_runpod_launch_refuses_unverified_recovered_pid(tmp_path: Path) -> None:
+    class UnverifiedRecoveryTransport(FakeRunPodTransport):
+        def ssh(self, command: str) -> CommandResult:
+            if "identity_status='missing'" in command:
+                self.ssh_commands.append(command)
+                return CommandResult(
+                    0,
+                    json.dumps(
+                        {
+                            "gpu": "",
+                            "rows": {
+                                "warm": {
+                                    "status": "failed",
+                                    "pid": 4321,
+                                    "process_identity": None,
+                                    "identity_status": "missing",
+                                    "detail": "process identity record is missing",
+                                }
+                            },
+                        }
+                    ),
+                )
+            return super().ssh(command)
+
+    bundle = _bundle(tmp_path)
+    transport = UnverifiedRecoveryTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
+        transport=transport,
+    )
+
+    outputs = driver.launch_row(bundle, bundle.rows[0], _state(bundle))
+
+    assert outputs["status"] == "failed"
+    assert outputs["pid"] == 4321
+    assert outputs["event_discrepancies"][0]["code"] == "unverified_process_identity"
+
+
+def test_runpod_stop_requires_and_checks_durable_process_identity(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    row = bundle.rows[0]
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
+        transport=transport,
+    )
+    pid_only = _state(bundle).model_copy(
+        update={"rows": {row.row_id: RowState(status="running", pid=4321)}}
+    )
+
+    with pytest.raises(RunPodDriverError, match="durable process identity is absent"):
+        driver.stop_row(bundle, row, pid_only)
+
+    assert transport.ssh_commands == []
+
+    identity = ProcessIdentity(
+        run_set_id=bundle.run_set_id,
+        row_id=row.row_id,
+        pid=4321,
+        process_group_id=4321,
+        launch_token="b" * 64,
+    )
+    owned = pid_only.model_copy(
+        update={
+            "rows": {
+                row.row_id: RowState(status="running", pid=identity.pid, process_identity=identity)
+            }
+        }
+    )
+    transport.queue_ssh(CommandResult(0, json.dumps({"status": "stopped", "detail": None})))
+
+    stopped = driver.stop_row(bundle, row, owned)
+
+    assert stopped["status"] == "stopped"
+    command = transport.ssh_commands[-1]
+    assert "os.killpg(process_group_id, signal.SIGTERM)" in command
+    assert "process group member" in command
+    assert identity.launch_token in command
 
 
 def test_remote_sentinel_uses_session_detacher_instead_of_background_shell() -> None:
@@ -3236,13 +3352,15 @@ def test_deadman_is_verified_and_started_once_during_environment_realization(
     assert "command -v runpodctl" in joined
     assert all(text in joined for text in ("RUNPOD_API_KEY=$(tr", "runpodctl get pod pod-123"))
     watchdog = next(command for command in transport.ssh_commands if "deadman.pid" in command)
-    assert 'kill -0 "$(cat "$pid_file")"' in watchdog
+    assert "feedbax.orchestration.process_identity.v1" in watchdog
+    assert "FEEDBAX_PROCESS_IDENTITY=" in watchdog
     assert "setsid -f bash -lc" in watchdog
     assert "echo $$ >" in watchdog
     assert "deadman.installed" in watchdog
     assert 'newest=$(stat -c %Y "$installed"' in watchdog
     assert 'find "$run_dir/.stage-attempts" -type f -print' in watchdog
     assert 'rm -f "$pid_file"' in watchdog
+    assert "deadman.process.json" in watchdog
     assert 'runpodctl remove pod "$pod_id"' in watchdog
     assert ">>" in watchdog
     assert "/logs/deadman.log" in watchdog
@@ -3530,6 +3648,8 @@ class RemoteSmokeTransport(FakeRunPodTransport):
     def __init__(self, *, probe_status: str) -> None:
         super().__init__()
         self.probe_status = probe_status
+        self.identity_status = "owned"
+        self.terminal_status = probe_status if probe_status in {"completed", "failed"} else None
 
     def ssh(self, command: str) -> CommandResult:
         self.ssh_commands.append(command)
@@ -3547,17 +3667,38 @@ class RemoteSmokeTransport(FakeRunPodTransport):
                 ),
             )
         if "reports={}" in command:
+
+            def report(row_id: str) -> dict[str, Any]:
+                identity = {
+                    "schema_id": "feedbax.orchestration.process_identity",
+                    "schema_version": "feedbax.orchestration.process_identity.v1",
+                    "mechanism": "environment-token-v1",
+                    "run_set_id": "2026-01-02-deadbeef",
+                    "row_id": f"smoke-{row_id}",
+                    "pid": 5000,
+                    "process_group_id": 5000,
+                    "launch_token": "c" * 64,
+                }
+                return {
+                    "status": self.probe_status,
+                    "terminal_status": self.terminal_status,
+                    "pid": identity["pid"],
+                    "process_identity": identity,
+                    "identity_status": self.identity_status,
+                }
+
             return CommandResult(
                 0,
                 json.dumps(
                     {
                         "rows": {
-                            f"smoke-{row_id}": {"status": self.probe_status}
-                            for row_id in ("warm", "cool", "hot")
+                            f"smoke-{row_id}": report(row_id) for row_id in ("warm", "cool", "hot")
                         }
                     }
                 ),
             )
+        if "os.killpg(process_group_id, signal.SIGTERM)" in command:
+            return CommandResult(0, json.dumps({"status": "stopped", "detail": None}))
         if "smoke executor log lacks a typed result" in command:
             return CommandResult(
                 0,
@@ -3654,7 +3795,10 @@ def test_smoke_policy_does_not_change_real_launch_identity(tmp_path: Path) -> No
             execution_namespace=namespace,
         )
 
-    assert launch_command(smoke_bundle) == launch_command(no_smoke_bundle)
+    def normalize(command: str) -> str:
+        return re.sub(r"\b[0-9a-f]{64}\b", "<digest>", command)
+
+    assert normalize(launch_command(smoke_bundle)) == normalize(launch_command(no_smoke_bundle))
     assert row.execution.row_provenance is not None
     assert row.execution.row_provenance.planned_run_id in launch_command(smoke_bundle)
 
@@ -3777,8 +3921,12 @@ def test_runpod_remote_smoke_deadline_escalates_and_records_failure(tmp_path: Pa
 
     assert raised.value.evidence["status"] == "failed"
     assert raised.value.evidence["cleanup_status"] == "removed"
-    termination = next(command for command in transport.ssh_commands if "kill -TERM" in command)
-    assert "kill -KILL" in termination
+    termination = next(
+        command
+        for command in transport.ssh_commands
+        if "os.killpg(process_group_id, signal.SIGTERM)" in command
+    )
+    assert "os.killpg(process_group_id, signal.SIGKILL)" in termination
     assert "/sentinels/smoke-warm.failed" in termination
 
 
@@ -3799,7 +3947,29 @@ def test_runpod_remote_smoke_failed_probe_records_failure(tmp_path: Path) -> Non
 
     assert raised.value.evidence["status"] == "failed"
     assert raised.value.evidence["cleanup_status"] == "removed"
-    assert not any("kill -TERM" in command for command in transport.ssh_commands)
+    assert not any("os.killpg" in command for command in transport.ssh_commands)
+
+
+def test_runpod_remote_smoke_preserves_unverified_live_process(tmp_path: Path) -> None:
+    bundle = _native_smoke_bundle(tmp_path)
+    transport = RemoteSmokeTransport(probe_status="failed")
+    transport.identity_status = "mismatch"
+    transport.terminal_status = None
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            pod_id="pod-smoke",
+            remote_run_root="/remote/runs",
+            local_repos={"feedbax": tmp_path},
+        ),
+        transport=transport,
+    )
+
+    with pytest.raises(RunPodRemoteSmokeError) as raised:
+        driver.smoke_row(bundle, bundle.rows[0], _state(bundle))
+
+    assert raised.value.evidence["cleanup_status"] == "failed"
+    assert not any("os.killpg" in command for command in transport.ssh_commands)
+    assert not any("rm -rf" in command for command in transport.ssh_commands)
 
 
 def test_runpod_preflight_rejects_non_native_smoke_row_by_name(tmp_path: Path) -> None:
@@ -5284,7 +5454,7 @@ def test_collect_recovery_rejects_destination_replacement_race(
         collection_recovery_bindings=[CollectionRecoveryBinding(row.row_id, preserved)],
     )
 
-    with pytest.raises(CollectionRecoveryError, match="replaced while copying"):
+    with pytest.raises(CollectionRecoveryError, match="attempt root identity changed while opening"):
         driver.collect(bundle, row, _completed_recovery_state(bundle))
 
 

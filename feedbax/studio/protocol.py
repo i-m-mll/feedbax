@@ -52,23 +52,13 @@ def _task_params(task_spec: dict[str, Any] | TaskSpec | None) -> dict[str, Any]:
     return params if isinstance(params, dict) else {}
 
 
-def _task_timeline(task_spec: dict[str, Any] | TaskSpec | None) -> dict[str, Any]:
-    if task_spec is None:
-        return {}
-    timeline = spec_field(task_spec, "timeline", {})
-    return timeline if isinstance(timeline, dict) else {}
-
-
 def task_n_steps_values(
     task_spec: dict[str, Any] | TaskSpec | None,
 ) -> list[tuple[str, Any]]:
     """Return declared Studio task step-count candidates with spec paths."""
 
     params = _task_params(task_spec)
-    timeline = _task_timeline(task_spec)
     values: list[tuple[str, Any]] = []
-    if "n_steps" in timeline:
-        values.append(("/timeline/n_steps", timeline["n_steps"]))
     if "n_steps" in params:
         values.append(("/params/n_steps", params["n_steps"]))
     if "n_reach_steps" in params:
@@ -93,9 +83,10 @@ def infer_task_n_steps(
 ) -> Optional[int]:
     """Infer the scenario-owned task step count from ``task_spec``.
 
-    Top-level task timelines are preferred over task params, then compact
-    ``n_steps``/``n_reach_steps`` task params are used. Invalid candidates are
-    ignored here so callers can use provider validation for pathful errors.
+    Compact ``n_steps``/``n_reach_steps`` task params are used. The typed task
+    timeline describes epochs inside that fixed runtime length; it does not own
+    the rollout length. Invalid candidates are ignored here so callers can use
+    provider validation for pathful errors.
     """
 
     params = _task_params(task_spec)

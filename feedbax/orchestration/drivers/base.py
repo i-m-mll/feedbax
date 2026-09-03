@@ -8,7 +8,7 @@ from typing import Any, Protocol
 
 from feedbax.orchestration.bundle import RunBundle, RunRowSpec
 from feedbax.orchestration.drivers.capabilities import RealizedDriverCapabilities
-from feedbax.orchestration.state import RunSetState
+from feedbax.orchestration.state import ProcessIdentity, RunSetState
 
 
 @dataclass(frozen=True)
@@ -17,6 +17,7 @@ class DriverRowProbe:
 
     status: str
     pid: int | None = None
+    process_identity: ProcessIdentity | None = None
     detail: str | None = None
     metadata: Mapping[str, Any] | None = None
 

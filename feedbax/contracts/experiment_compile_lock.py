@@ -110,6 +110,9 @@ from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeRejection,
     ExperimentEnvelopeRejectionCategory,
 )
+from feedbax.contracts.experiment_envelope_dialect import (
+    EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID,
+)
 from feedbax.contracts.figure_roles import FigureRoleBindingContract
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.run_composition import AuthoredIntentParent, ResolvedOutputParent
@@ -129,18 +132,16 @@ EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_
 EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
-    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
 )
 
-#: Versions this loader accepts, mapped to the version they migrate to. Empty:
-#: v1 is read as v1 rather than restated as v2, because the only thing v2 adds is
-#: a contract v1 does not carry, and stamping a v2 version onto a document that
-#: still lacks it would rename the absence instead of filling it. A project-owned
-#: lock family that migrates into this one registers its edge here and in
-#: ``default_spec_registry`` in one change, which is the slot the downstream
-#: conversion lane fills.
-EXPERIMENT_COMPILE_LOCK_MIGRATION_TABLE: dict[str, str] = {}
+#: Versions this loader migrates, mapped to their explicit target. v1 and v2
+#: remain readable as exactly their own grammars. Only v3 was emitted by the
+#: current Feedbax encoder without an execution-identity algorithm pin, so only
+#: provenance-attributable v3 locks have a migration edge.
+EXPERIMENT_COMPILE_LOCK_MIGRATION_TABLE: dict[str, str] = {
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3: EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
+}
 
 #: Facts that only exist after a run is allocated. They belong to the run
 #: receipt; a lock must never grow a key from this set, at the top level or
@@ -789,6 +790,7 @@ def build_compile_lock(inputs: CompileLockInputs) -> dict[str, Any]:
         "execution_identity": {
             "sha256": canonical_sha256(preimage),
             "inputs": identity_inputs,
+            "pin_algorithm": CANONICAL_PIN_ALGORITHM,
         },
     }
     if inputs.issue is not None:
@@ -1076,7 +1078,12 @@ def _validate_lock_provenance(lock: Mapping[str, Any], field: str) -> None:
             _lock_text(installed, locator, "a compiler package version")
 
 
-def _validate_lock_execution_identity(lock: Mapping[str, Any], field: str) -> None:
+def _validate_lock_execution_identity(
+    lock: Mapping[str, Any],
+    field: str,
+    *,
+    pin_required: bool,
+) -> None:
     """Re-derive execution identity from the lock's own facts.
 
     Everything the writer hashed is in the document the reader is holding, so an
@@ -1086,8 +1093,15 @@ def _validate_lock_execution_identity(lock: Mapping[str, Any], field: str) -> No
     """
     what = "a compile lock's execution identity"
     identity = _lock_mapping(lock["execution_identity"], f"{field}#execution_identity", what)
-    _lock_keys(identity, ("sha256", "inputs"), f"{field}#execution_identity", what)
+    keys = ("sha256", "inputs", "pin_algorithm") if pin_required else ("sha256", "inputs")
+    _lock_keys(identity, keys, f"{field}#execution_identity", what)
     _lock_digest(identity["sha256"], f"{field}#execution_identity.sha256", f"{what} sha256")
+    if pin_required and identity["pin_algorithm"] != CANONICAL_PIN_ALGORITHM:
+        _lock_reject(
+            f"{field}#execution_identity.pin_algorithm",
+            f"{what} pin_algorithm is {CANONICAL_PIN_ALGORITHM!r}; found "
+            f"{identity['pin_algorithm']!r}",
+        )
     inputs = _lock_sequence(
         identity["inputs"], f"{field}#execution_identity.inputs", f"{what} inputs"
     )
@@ -1114,7 +1128,12 @@ def _validate_lock_execution_identity(lock: Mapping[str, Any], field: str) -> No
         )
 
 
-def _validate_compile_lock_body(lock: Mapping[str, Any], field: str) -> None:
+def _validate_compile_lock_body(
+    lock: Mapping[str, Any],
+    field: str,
+    *,
+    pin_required: bool,
+) -> None:
     """Validate the whole document, not only the blocks a reader happens to use.
 
     A lock is the compile-side half of the custody boundary: every consumer that
@@ -1164,7 +1183,7 @@ def _validate_compile_lock_body(lock: Mapping[str, Any], field: str) -> None:
     _validate_lock_resolved_deltas(lock, field)
     _validate_lock_assertions(lock, field)
     _validate_lock_provenance(lock, field)
-    _validate_lock_execution_identity(lock, field)
+    _validate_lock_execution_identity(lock, field, pin_required=pin_required)
 
 
 def _refuse_v1_figure_input_contract(references: Sequence[Any], *, field: str) -> None:
@@ -1225,47 +1244,12 @@ def _refuse_pre_v4_governed_parent(references: Sequence[Any], *, field: str) -> 
             )
 
 
-def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
-    """Read one compile lock, failing closed on an unsupported version.
-
-    A version absent from both the supported set and the migration table has no
-    path forward and is refused with both named. The plan/receipt boundary is
-    re-checked on read, so a lock that was edited into carrying a receipt fact is
-    caught by the reader as well as by the writer. Every reference is re-validated
-    against the closed union for the same reason: a lock whose references were
-    edited into a shape the plan lane cannot read is caught here, not there.
-
-    The rest of the v1 document is validated to the same standard — the envelope
-    pin, the parent and its lineage, the resolved deltas, the checked assertions,
-    the compiled document's identity, both halves of compiler provenance, and an
-    execution identity re-derived from the lock's own facts. A reader that
-    validated only what it happened to touch would let a lock edited anywhere
-    else load cleanly.
-    """
-    if not isinstance(document, Mapping):
-        raise ExperimentEnvelopeRejection(
-            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
-            "a compile lock is a JSON object",
-            field=field,
-        )
-    found_id = document.get("schema_id")
-    if found_id != EXPERIMENT_COMPILE_LOCK_SCHEMA_ID:
-        raise ExperimentEnvelopeRejection(
-            ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
-            f"expected schema_id {EXPERIMENT_COMPILE_LOCK_SCHEMA_ID!r}, found {found_id!r}",
-            field=f"{field}#schema_id",
-        )
-    version = document.get("schema_version")
-    if version not in EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS:
-        raise ExperimentEnvelopeRejection(
-            ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
-            f"unsupported schema_version {version!r}; "
-            f"supported={list(EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS)}; "
-            f"migration table={EXPERIMENT_COMPILE_LOCK_MIGRATION_TABLE!r}; "
-            "migration_intentionally_absent=yes",
-            field=f"{field}#schema_version",
-        )
-    lock = dict(document)
+def _validate_compile_lock_payload(
+    lock: Mapping[str, Any],
+    *,
+    field: str,
+    version: str,
+) -> None:
     check_plan_receipt_boundary(lock)
     references = lock.get("references", [])
     if not isinstance(references, Sequence) or isinstance(references, (str, bytes)):
@@ -1298,7 +1282,118 @@ def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
         )
     for index, record in enumerate(provenance):
         parse_row_provenance_reference(record, field=f"{field}#row_provenance[{index}]")
-    _validate_compile_lock_body(lock, field)
+    _validate_compile_lock_body(
+        lock,
+        field,
+        pin_required=version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
+    )
+
+
+def migrate_compile_lock_v3_to_v4(
+    document: Mapping[str, Any],
+    *,
+    field: str = "ExperimentCompileLock migration input",
+) -> dict[str, Any]:
+    """Pin a validated v3 lock attributed to the built-in Feedbax compiler.
+
+    The migration never searches for digest-shaped objects. Its input must be one
+    exact v3 compile lock whose own producer record names the built-in Feedbax
+    entrypoint and a concrete Feedbax package version.
+    """
+    lock = dict(document)
+    if lock.get("schema_id") != EXPERIMENT_COMPILE_LOCK_SCHEMA_ID:
+        _lock_reject(
+            f"{field}#schema_id",
+            "only a Feedbax experiment compile lock can receive an execution-identity pin",
+            ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+        )
+    if lock.get("schema_version") != EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3:
+        _lock_reject(
+            f"{field}#schema_version",
+            "the execution-identity pin migration accepts exactly "
+            f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3!r}; found "
+            f"{lock.get('schema_version')!r}",
+            ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+        )
+    _validate_compile_lock_payload(
+        lock,
+        field=field,
+        version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+    )
+    contract = lock["compiler_contract"]
+    implementation = lock["compiler_implementation"]
+    package_versions = implementation["package_versions"]
+    feedbax_version = package_versions.get("feedbax")
+    if (
+        contract["contract_id"] != EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID
+        or implementation["code_unit"] != "feedbax.envelope.entrypoint"
+        or set(package_versions) != {"feedbax"}
+        or not isinstance(feedbax_version, str)
+        or not feedbax_version.strip()
+    ):
+        _lock_reject(
+            f"{field}#compiler_implementation",
+            "the v3 execution-identity pin can be asserted only for a lock with "
+            "attributable built-in Feedbax compiler provenance; downstream-authored "
+            "or unattributed documents must remain unpinned",
+        )
+    migrated = dict(lock)
+    migrated["schema_version"] = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4
+    migrated["execution_identity"] = {
+        **lock["execution_identity"],
+        "pin_algorithm": CANONICAL_PIN_ALGORITHM,
+    }
+    return migrated
+
+
+def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
+    """Read one compile lock, failing closed on an unsupported version.
+
+    A version absent from both the supported set and the migration table has no
+    path forward and is refused with both named. The plan/receipt boundary is
+    re-checked on read, so a lock that was edited into carrying a receipt fact is
+    caught by the reader as well as by the writer. Every reference is re-validated
+    against the closed union for the same reason: a lock whose references were
+    edited into a shape the plan lane cannot read is caught here, not there.
+
+    The rest of the v1 document is validated to the same standard — the envelope
+    pin, the parent and its lineage, the resolved deltas, the checked assertions,
+    the compiled document's identity, both halves of compiler provenance, and an
+    execution identity re-derived from the lock's own facts. A reader that
+    validated only what it happened to touch would let a lock edited anywhere
+    else load cleanly.
+    """
+    if not isinstance(document, Mapping):
+        raise ExperimentEnvelopeRejection(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "a compile lock is a JSON object",
+            field=field,
+        )
+    found_id = document.get("schema_id")
+    if found_id != EXPERIMENT_COMPILE_LOCK_SCHEMA_ID:
+        raise ExperimentEnvelopeRejection(
+            ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+            f"expected schema_id {EXPERIMENT_COMPILE_LOCK_SCHEMA_ID!r}, found {found_id!r}",
+            field=f"{field}#schema_id",
+        )
+    version = document.get("schema_version")
+    if (
+        version not in EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS
+        and version not in EXPERIMENT_COMPILE_LOCK_MIGRATION_TABLE
+    ):
+        raise ExperimentEnvelopeRejection(
+            ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+            f"unsupported schema_version {version!r}; "
+            f"supported={list(EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS)}; "
+            f"migration table={EXPERIMENT_COMPILE_LOCK_MIGRATION_TABLE!r}; "
+            "migration_intentionally_absent=yes",
+            field=f"{field}#schema_version",
+        )
+    lock = dict(document)
+    if version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3:
+        lock = migrate_compile_lock_v3_to_v4(lock, field=field)
+        version = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4
+    _validate_compile_lock_payload(lock, field=field, version=version)
     return lock
 
 
@@ -1357,6 +1452,7 @@ __all__ = [
     "compile_lock_plan_edges",
     "compile_lock_reference_record",
     "load_compile_lock",
+    "migrate_compile_lock_v3_to_v4",
     "parse_compile_lock_reference",
     "parse_row_provenance_reference",
     "row_provenance_record",

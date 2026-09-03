@@ -55,7 +55,8 @@ const embeddedProduct: WorkspaceReplayProduct = {
 
 const workspace: StudioWorkspaceSpec = {
   id: 'workspace:test',
-  schema_version: 'feedbax.studio.workspace.v1',
+  schema_id: 'feedbax.spec.studio.workspace',
+  schema_version: 'feedbax.spec.studio.workspace.v2',
   label: 'Workspace',
   active_stage_id: 'stage:eval',
   stages: [],
@@ -70,6 +71,8 @@ const workspace: StudioWorkspaceSpec = {
 
 const stage: StudioStageSpec = {
   id: 'stage:eval',
+  schema_id: 'feedbax.spec.studio.stage',
+  schema_version: 'feedbax.spec.studio.stage.v2',
   kind: 'eval',
   label: 'Eval',
   status: 'completed',

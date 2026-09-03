@@ -11,11 +11,15 @@ from pathlib import Path
 import pytest
 
 import feedbax
+import feedbax.orchestration.repo_snapshot as repo_snapshot_module
 from feedbax.orchestration.repo_snapshot import (
     REPO_SNAPSHOT_CACHE_DIR_ENV,
+    REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION,
+    REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V1,
     RepoSnapshotCacheFault,
     RepoSnapshotError,
     RepoSnapshotManifest,
+    RepoSnapshotSourceFault,
     default_repo_snapshot_cache_dir,
     restore_repo_snapshots,
     seal_repo_snapshot,
@@ -62,8 +66,120 @@ def test_snapshot_contains_only_tracked_working_tree_bytes(tmp_path: Path) -> No
     assert not (snapshot.staging_root / "ignored-dir").exists()
     assert snapshot.record.dirty
     assert snapshot.record.file_count == 3
+    assert snapshot.record.source_state_sha256 != snapshot.record.content_sha256
     assert snapshot.staging_root.stat().st_mode & 0o222 == 0
     assert snapshot.staging_root.joinpath("tracked.txt").stat().st_mode & 0o222 == 0
+
+
+def test_v1_manifest_is_rejected_because_it_lacks_source_provenance() -> None:
+    payload = {
+        "schema_id": "feedbax.orchestration.repo_snapshot_manifest",
+        "schema_version": REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V1,
+        "repos": {},
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=r"cannot prove stable working-tree source provenance.*not migrated",
+    ):
+        RepoSnapshotManifest.model_validate(payload)
+
+    assert REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION.endswith(".v2")
+
+
+def test_snapshot_rejects_file_swapped_to_symlink_before_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _repo(tmp_path)
+    tracked = root / "tracked.txt"
+    external = tmp_path / "external.txt"
+    external.write_text("external bytes\n", encoding="utf-8")
+    original_open = repo_snapshot_module.os.open
+    swapped = False
+
+    def swap_before_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if path == "tracked.txt" and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            tracked.unlink()
+            tracked.symlink_to(external)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(repo_snapshot_module.os, "open", swap_before_open)
+
+    with pytest.raises(RepoSnapshotSourceFault, match="without following links"):
+        seal_repo_snapshot("repo", root, snapshot_parent=tmp_path / "snapshots")
+
+    assert swapped
+    assert not list((tmp_path / "snapshots").glob("*/*"))
+
+
+@pytest.mark.parametrize("mutation", ["bytes", "mode"])
+def test_snapshot_rejects_bytes_or_mode_changed_during_open_file_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    root = _repo(tmp_path)
+    tracked = root / "tracked.txt"
+    original_stream = repo_snapshot_module._stream_regular_source
+    mutated = False
+
+    def mutate_after_stream(descriptor, output, digest):
+        nonlocal mutated
+        original_stream(descriptor, output, digest)
+        opened = os.fstat(descriptor)
+        current = tracked.stat()
+        if not mutated and (opened.st_dev, opened.st_ino) == (current.st_dev, current.st_ino):
+            mutated = True
+            if mutation == "bytes":
+                tracked.write_text("changed during seal\n", encoding="utf-8")
+            else:
+                tracked.chmod(0o755)
+
+    monkeypatch.setattr(
+        repo_snapshot_module,
+        "_stream_regular_source",
+        mutate_after_stream,
+    )
+
+    with pytest.raises(RepoSnapshotSourceFault, match="changed while being read"):
+        seal_repo_snapshot("repo", root, snapshot_parent=tmp_path / "snapshots")
+
+    assert mutated
+
+
+def test_snapshot_rejects_source_swap_between_copy_and_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _repo(tmp_path)
+    tracked = root / "tracked.txt"
+    tracked.write_text("dirty before seal\n", encoding="utf-8")
+    external = tmp_path / "external.txt"
+    external.write_text("external bytes\n", encoding="utf-8")
+    original_observe = repo_snapshot_module._observe_source_state
+    observations = 0
+
+    def swap_after_copy(*args, **kwargs):
+        nonlocal observations
+        identity = original_observe(*args, **kwargs)
+        observations += 1
+        if observations == 1:
+            tracked.unlink()
+            tracked.symlink_to(external)
+        return identity
+
+    monkeypatch.setattr(repo_snapshot_module, "_observe_source_state", swap_after_copy)
+
+    with pytest.raises(
+        RepoSnapshotSourceFault,
+        match="tracked working-tree state changed while sealing",
+    ):
+        seal_repo_snapshot("repo", root, snapshot_parent=tmp_path / "snapshots")
+
+    assert observations == 2
 
 
 def test_snapshot_is_immutable_after_seal_and_distinguishes_dirty_bytes(
@@ -205,9 +321,7 @@ def test_wholesale_local_rsync_deletes_stale_ungoverned_file(tmp_path: Path) -> 
     assert not remote.joinpath("space name.txt").stat().st_mode & 0o111
 
     (root / "tracked.txt").unlink()
-    after_deletion = seal_repo_snapshot(
-        "repo", root, snapshot_parent=tmp_path / "snapshots"
-    )
+    after_deletion = seal_repo_snapshot("repo", root, snapshot_parent=tmp_path / "snapshots")
     subprocess.run(
         [
             rsync,
@@ -373,9 +487,7 @@ def test_concurrent_sealers_repair_a_reaped_cache_entry(tmp_path: Path) -> None:
     assert not failures, "a reaped cache entry must not fail concurrent later runs:\n" + (
         "\n".join(failures)
     )
-    assert {result["content_sha256"] for result in results} == {
-        seeded.record.content_sha256
-    }
+    assert {result["content_sha256"] for result in results} == {seeded.record.content_sha256}
     restored = seeded.staging_root
     assert restored.stat().st_mode & 0o222 == 0
     verify_repo_snapshot(

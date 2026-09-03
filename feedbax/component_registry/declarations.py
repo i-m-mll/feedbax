@@ -14,6 +14,7 @@ from feedbax.contracts.component import (
     ComponentIdentity,
     ComponentMigrationInfo,
     DynamicPortPolicy,
+    DynamicPortPolicyError,
     PortTypeSpec,
 )
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
@@ -71,7 +72,7 @@ class MissingPrototypeInput(ValueError):
     """An output prototype needs an input prototype not yet known."""
 
 
-class ComponentParamValidationError(ValueError):
+class ComponentParamValidationError(DynamicPortPolicyError):
     """A component parameter payload failed its declared closed contract."""
 
     def __init__(

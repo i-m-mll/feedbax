@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import secrets
@@ -14,6 +13,7 @@ from typing import Any, Literal, TypeAlias
 from pydantic import Field, field_validator, model_validator
 
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
+from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.evaluation_preflight import EvaluationOutputPreflightEvidence
 from feedbax.contracts.base import (
     ArtifactMigrationRecord,
@@ -81,7 +81,7 @@ def default_orchestration_root(run_set_id: str) -> Path:
 def canonical_run_bundle_sha256(bundle: "RunBundle") -> str:
     """Return the SHA-256 identity of the persisted run-bundle representation."""
     payload = bundle.model_dump(mode="json", exclude_none=True)
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = canonical_json_v1_bytes(payload)
     return hashlib.sha256(encoded).hexdigest()
 
 

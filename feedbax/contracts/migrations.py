@@ -263,15 +263,16 @@ from feedbax.contracts.authoring_budget import (
 from feedbax.contracts.experiment_compile_lock import (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_ID,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
-    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
-    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+    migrate_compile_lock_v3_to_v4,
 )
 from feedbax.contracts.experiment_envelope import (
     EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID,
     EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_VERSION,
 )
 from feedbax.contracts.graph import (
+    ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID,
+    ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION,
     ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_ID,
@@ -281,6 +282,16 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION_V4,
     LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
+    STUDIO_GRAPH_PROJECT_SCHEMA_ID,
+    STUDIO_GRAPH_PROJECT_SCHEMA_VERSION,
+    STUDIO_GRAPH_PROJECT_SCHEMA_VERSION_LEGACY,
+    STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
+    STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
+    STUDIO_EPOCH_VALUE_SPEC_SCHEMA_ID,
+    STUDIO_EPOCH_VALUE_SPEC_SCHEMA_VERSION,
+    STUDIO_TASK_TIMELINE_SCHEMA_ID,
+    STUDIO_TASK_TIMELINE_SCHEMA_VERSION,
+    STUDIO_TASK_TIMELINE_SCHEMA_VERSION_V1,
     STUDIO_BIOMECHANICS_SCHEMA_ID,
     STUDIO_BIOMECHANICS_SCHEMA_VERSION,
     STUDIO_SCENARIO_SCHEMA_VERSION,
@@ -288,10 +299,14 @@ from feedbax.contracts.graph import (
     STUDIO_SCENARIO_SCHEMA_VERSION_V2,
     STUDIO_STAGE_SCHEMA_VERSION,
     STUDIO_STAGE_SCHEMA_VERSION_V1,
+    STUDIO_STAGE_SCHEMA_ID,
     STUDIO_WORKSPACE_SCHEMA_VERSION,
     STUDIO_WORKSPACE_SCHEMA_VERSION_V1,
+    STUDIO_WORKSPACE_SCHEMA_ID,
     GraphSpec,
+    StudioPersistenceDocument,
 )
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.array_values import (
     ARRAY_VALUE_SCHEMA_ID,
     ARRAY_VALUE_SCHEMA_VERSION,
@@ -504,6 +519,8 @@ from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_VERSION_V2,
     RUN_SET_STATE_SCHEMA_VERSION_V3,
     RUN_SET_STATE_SCHEMA_VERSION_V4,
+    RUN_SET_STATE_SCHEMA_VERSION_V5,
+    migrate_run_set_state_v5_to_v6,
 )
 from feedbax.orchestration.repo_realization import (
     REPO_REALIZATION_PLAN_SCHEMA_ID,
@@ -512,6 +529,7 @@ from feedbax.orchestration.repo_realization import (
 from feedbax.orchestration.repo_snapshot import (
     REPO_SNAPSHOT_MANIFEST_SCHEMA_ID,
     REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION,
+    REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V1,
 )
 from feedbax.orchestration.events import (
     MAPPED_METRIC_VALUE_SCHEMA_ID,
@@ -1708,6 +1726,13 @@ def _migrate_studio_value_spec_v1_payload(payload: dict[str, Any]) -> dict[str, 
     return StudioValueSpec.model_validate(payload).model_dump(mode="json", exclude_none=True)
 
 
+def _migrate_studio_task_timeline_v1_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Move legacy per-signal epoch membership into explicit epoch-value entries."""
+    from feedbax.contracts.graph import StudioTaskTimelineSpec
+
+    return StudioTaskTimelineSpec.model_validate(payload).model_dump(mode="json", exclude_none=True)
+
+
 def _migrate_representation_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Promote v1 representations to the capability-aware v2 envelope."""
     migrated = dict(payload)
@@ -1767,6 +1792,18 @@ def _migrate_studio_workspace_v1_to_v2_payload(payload: dict[str, Any]) -> dict[
     migrated = dict(payload)
     migrated.pop("ui_state", None)
     return migrated
+
+
+def _migrate_studio_graph_project_unversioned_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Stamp the released unversioned Studio graph-project document."""
+
+    return {
+        **payload,
+        "schema_id": STUDIO_GRAPH_PROJECT_SCHEMA_ID,
+        "schema_version": STUDIO_GRAPH_PROJECT_SCHEMA_VERSION,
+    }
 
 
 def migrate_graph_spec(
@@ -2189,15 +2226,26 @@ def migrate_studio_stage_spec(
     registry: SpecSchemaRegistry | None = None,
 ) -> SpecMigrationResult:
     """Migrate or explicitly reject a Studio pipeline stage payload."""
-    return migrate_structured_spec_payload(
+    active_registry = registry or default_spec_registry
+    _validate_studio_document_identity(
+        "StudioStageSpec",
+        payload,
+        path=path,
+        registry=active_registry,
+    )
+    result = migrate_structured_spec_payload(
         "StudioStageSpec",
         payload,
         source_version=source_version,
         target_version=target_version,
         assume_current=assume_current,
         path=path,
-        registry=registry,
+        registry=active_registry,
     )
+    migrated = dict(result.payload)
+    migrated["schema_id"] = STUDIO_STAGE_SCHEMA_ID
+    migrated["schema_version"] = result.target_version
+    return replace(result, payload=migrated)
 
 
 def migrate_studio_workspace_spec(
@@ -2210,6 +2258,12 @@ def migrate_studio_workspace_spec(
 ) -> SpecMigrationResult:
     """Migrate a durable Studio workspace and nested scenario/stage payloads."""
     registry = registry or default_spec_registry
+    _validate_studio_document_identity(
+        "StudioWorkspaceSpec",
+        payload,
+        path=path,
+        registry=registry,
+    )
     result = registry.migrate(
         "StudioWorkspaceSpec",
         payload,
@@ -2217,6 +2271,8 @@ def migrate_studio_workspace_spec(
         target_version=target_version,
     )
     migrated_payload = dict(result.payload)
+    migrated_payload["schema_id"] = STUDIO_WORKSPACE_SCHEMA_ID
+    migrated_payload["schema_version"] = result.target_version
     records = [_record_with_spec_path(record, path) for record in result.migration_records]
 
     scenarios = migrated_payload.get("scenarios")
@@ -2282,6 +2338,112 @@ def migrate_studio_workspace_spec(
     )
 
 
+def _validate_studio_document_identity(
+    kind: str,
+    payload: Mapping[str, Any],
+    *,
+    path: str,
+    registry: SpecSchemaRegistry,
+) -> None:
+    """Require exact identity on current Studio documents and reject mismatches."""
+
+    family = registry.resolve(kind)
+    declared_id = payload.get("schema_id")
+    if declared_id is not None and declared_id != family.identity:
+        raise UnsupportedSpecVersion(
+            "Unsupported Studio document schema identity: "
+            f"family={kind!r}, path={path!r}, schema_id={declared_id!r}, "
+            f"expected_schema_id={family.identity!r}"
+        )
+
+
+def admit_studio_persistence_document(
+    payload: Mapping[str, Any],
+    *,
+    registry: SpecSchemaRegistry | None = None,
+) -> StudioPersistenceDocument:
+    """Admit, migrate, validate, and normalize one complete Studio save envelope."""
+
+    active_registry = registry or default_spec_registry
+    document = dict(payload)
+    canonical_json_v2_bytes(document)
+    family = active_registry.resolve("StudioPersistenceDocument")
+    if document.get("schema_id") != family.identity:
+        raise UnsupportedSpecVersion(
+            "Studio save ingress requires the exact persistence schema identity: "
+            f"schema_id={document.get('schema_id')!r}, expected={family.identity!r}"
+        )
+    result = active_registry.migrate("StudioPersistenceDocument", document)
+    admitted = dict(result.payload)
+
+    graph = admitted.get("graph")
+    if isinstance(graph, Mapping) or isinstance(graph, GraphSpec):
+        admitted["graph"] = migrate_graph_spec(
+            graph,
+            path="persistence_document/graph",
+            registry=active_registry,
+        ).payload
+
+    workspace = admitted.get("workspace")
+    if isinstance(workspace, Mapping):
+        _require_current_studio_save_identity(
+            "StudioWorkspaceSpec",
+            workspace,
+            path="persistence_document/workspace",
+            registry=active_registry,
+        )
+        stages = workspace.get("stages")
+        if isinstance(stages, list):
+            for index, stage in enumerate(stages):
+                if isinstance(stage, Mapping):
+                    _require_current_studio_save_identity(
+                        "StudioStageSpec",
+                        stage,
+                        path=f"persistence_document/workspace/stages/{index}",
+                        registry=active_registry,
+                    )
+        admitted["workspace"] = migrate_studio_workspace_spec(
+            workspace,
+            path="persistence_document/workspace",
+            registry=active_registry,
+        ).payload
+
+    workspace_document = admitted.get("workspace_document")
+    if isinstance(workspace_document, Mapping):
+        admitted["workspace_document"] = _migrate_workspace_document_analysis_layout(
+            workspace_document
+        )
+
+    validated = StudioPersistenceDocument.model_validate(admitted)
+    canonical_json_v2_bytes(validated.model_dump(mode="json", exclude_none=True))
+    return validated
+
+
+def _require_current_studio_save_identity(
+    kind: str,
+    payload: Mapping[str, Any],
+    *,
+    path: str,
+    registry: SpecSchemaRegistry,
+) -> None:
+    family = registry.resolve(kind)
+    declared_version = _payload_schema_version(payload)
+    if declared_version is None:
+        raise UnsupportedSpecVersion(
+            "Studio save documents must declare their schema version: "
+            f"family={kind!r}, path={path!r}"
+        )
+    if declared_version != family.current_version:
+        return
+    if payload.get("schema_id") != family.identity:
+        raise UnsupportedSpecVersion(
+            "Current Studio save documents must declare their exact schema identity: "
+            f"family={kind!r}, path={path!r}, schema_id={payload.get('schema_id')!r}, "
+            f"schema_version={family.current_version!r}, "
+            f"expected_schema_id={family.identity!r}"
+        )
+
+
 def _stamp_parent_carried_nested_schema_version(
     kind: str,
     payload: Mapping[str, Any],
@@ -2304,6 +2466,30 @@ def _stamp_parent_carried_nested_schema_version(
     return payload_dict
 
 
+def _migrate_workspace_document_analysis_layout(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Admit pre-layout presentation documents as an explicit empty layout."""
+    migrated = dict(payload)
+    if "analysis_canvas_layout" in migrated:
+        return migrated
+    pages = []
+    for raw_page in migrated.get("analysis_pages") or []:
+        if not isinstance(raw_page, Mapping):
+            pages.append(raw_page)
+            continue
+        page = dict(raw_page)
+        page.pop("viewport", None)
+        pages.append(page)
+    migrated["analysis_pages"] = pages
+    migrated["analysis_canvas_layout"] = {
+        "schema_id": ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID,
+        "schema_version": ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION,
+        "stages": {},
+    }
+    return migrated
+
+
 def migrate_graph_project_payload(
     payload: Mapping[str, Any],
     *,
@@ -2311,7 +2497,23 @@ def migrate_graph_project_payload(
 ) -> dict[str, Any]:
     """Migrate durable project-level graph and workspace payloads before validation."""
     registry = registry or default_spec_registry
-    migrated = dict(payload)
+    declared_id = payload.get("schema_id")
+    if declared_id is not None and declared_id != STUDIO_GRAPH_PROJECT_SCHEMA_ID:
+        raise UnsupportedSpecVersion(
+            "Unsupported Studio graph-project schema identity: "
+            f"schema_id={declared_id!r}, expected={STUDIO_GRAPH_PROJECT_SCHEMA_ID!r}"
+        )
+    source_version = _payload_schema_version(payload)
+    if source_version is None:
+        source_version = STUDIO_GRAPH_PROJECT_SCHEMA_VERSION_LEGACY
+    project_result = registry.migrate(
+        "StudioGraphProject",
+        payload,
+        source_version=source_version,
+    )
+    migrated = dict(project_result.payload)
+    migrated["schema_id"] = STUDIO_GRAPH_PROJECT_SCHEMA_ID
+    migrated["schema_version"] = STUDIO_GRAPH_PROJECT_SCHEMA_VERSION
     workspace_ui_state: dict[str, Any] = {}
     stage_ui_state: dict[str, dict[str, Any]] = {}
     scenario_ui_state: dict[str, dict[str, Any]] = {}
@@ -2374,6 +2576,9 @@ def migrate_graph_project_payload(
         workspace_document.setdefault("stage_ui_state", stage_ui_state)
         workspace_document.setdefault("scenario_ui_state", scenario_ui_state)
         migrated["workspace_document"] = workspace_document
+    migrated["workspace_document"] = _migrate_workspace_document_analysis_layout(
+        migrated["workspace_document"]
+    )
     return migrated
 
 
@@ -3421,11 +3626,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Compile-time plan pinning what an envelope compile read and decided, "
                 "with compiler contract and implementation provenance recorded apart."
             ),
-            supported_old_versions=(
-                EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
-                EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
-                EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
-            ),
+            stance="migrate",
+            supported_old_versions=(EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,),
             required_tests=("tests/test_envelope_engine_kernel.py",),
             notes=(
                 "v2 adds the optional typed artifact contract a figure runtime input "
@@ -3437,9 +3639,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "v1 root figure input reference is refused at lowering with an actionable "
                 "re-author-at-envelope-v5 diagnostic. v3 adds the closed "
                 "analysis_receipt_set consumer; v1/v2 remain readable only with their "
-                "singular analysis_input grammar. v4 adds the governed_parent compile-time "
-                "input, carrying the exact typed parent and artifact byte/schema identity; "
-                "v1/v2/v3 remain readable but cannot be relabelled to carry that reference."
+                "singular analysis_input grammar. v4 both pins execution_identity to "
+                "canonical_json_v1 and admits the governed_parent compile-time input with "
+                "exact typed parent and artifact byte/schema identity. Only attributable "
+                "built-in Feedbax v3 locks migrate; v1/v2 remain readable, and older "
+                "grammars cannot be relabelled to carry governed_parent."
             ),
         ),
         _family(
@@ -4211,7 +4415,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.orchestration.repo_snapshot.seal_repo_snapshots",),
             consumed_by=("feedbax.orchestration.drivers.runpod.RunPodOrchestrationDriver",),
             description="Sealed tracked-working-tree transfer authority.",
-            rejected_old_versions=("feedbax.orchestration.repo_snapshot_manifest.v0",),
+            rejected_old_versions=(
+                "feedbax.orchestration.repo_snapshot_manifest.v0",
+                REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V1,
+            ),
             required_tests=(
                 "tests/test_repo_snapshot.py",
                 "tests/test_structured_spec_migrations.py",
@@ -4949,6 +5156,52 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             )
         )
 
+    families.append(
+        _family(
+            "StudioGraphProject",
+            STUDIO_GRAPH_PROJECT_SCHEMA_ID,
+            STUDIO_GRAPH_PROJECT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.graph",
+            emitted_by=("feedbax.web.services.graph_service",),
+            consumed_by=("Studio graph load",),
+            description="Stored semantic graph and Studio workspace transaction.",
+            stance="migrate",
+            supported_old_versions=(STUDIO_GRAPH_PROJECT_SCHEMA_VERSION_LEGACY,),
+            required_tests=("tests/test_studio_workspace.py",),
+        )
+    )
+    families.append(
+        _family(
+            "StudioPersistenceDocument",
+            STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
+            STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.graph",
+            emitted_by=("Studio frontend save client",),
+            consumed_by=("Studio graph save ingress",),
+            description="Atomic graph, workspace, and presentation save transaction.",
+            rejected_old_versions=("feedbax.spec.studio.persistence_document.v0",),
+            required_tests=(
+                "tests/test_studio_workspace.py",
+                "web/src/generated/studioContracts.test.ts",
+            ),
+        )
+    )
+    families.append(
+        _family(
+            "AnalysisCanvasLayoutDocument",
+            ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID,
+            ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.graph",
+            emitted_by=("Studio frontend whole-document persistence",),
+            consumed_by=("Studio Analysis Canvas",),
+            description="Presentation-only Analysis Canvas node geometry and viewport.",
+            required_tests=(
+                "tests/test_studio_workspace.py",
+                "web/src/stores/analysisStore.test.ts",
+            ),
+        )
+    )
+
     for kind, schema_id, description in (
         ("ArtifactRef", "feedbax.manifest.artifact_ref", "Manifest artifact reference."),
         (
@@ -5298,8 +5551,13 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         (
             "StudioTaskTimelineSpec",
-            "feedbax.spec.studio.task_timeline",
+            STUDIO_TASK_TIMELINE_SCHEMA_ID,
             "Structured Studio-authored task timeline.",
+        ),
+        (
+            "StudioEpochValueSpec",
+            STUDIO_EPOCH_VALUE_SPEC_SCHEMA_ID,
+            "One authored value over one named task epoch interval.",
         ),
         ("StudioValueSpec", "feedbax.spec.studio.value", "Structured Studio-authored value."),
     ):
@@ -5337,6 +5595,19 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             stance = "migrate"
             supported = ("feedbax.spec.studio.value.v1", "feedbax.studio.value.v1")
             rejected = ("feedbax.spec.studio.value.v0",)
+        elif kind == "StudioTaskTimelineSpec":
+            current_version = STUDIO_TASK_TIMELINE_SCHEMA_VERSION
+            stance = "migrate"
+            supported = (
+                STUDIO_TASK_TIMELINE_SCHEMA_VERSION_V1,
+                "feedbax.studio.task_timeline.v1",
+            )
+            rejected = ("feedbax.spec.studio.task_timeline.v0",)
+        elif kind == "StudioEpochValueSpec":
+            current_version = STUDIO_EPOCH_VALUE_SPEC_SCHEMA_VERSION
+            stance = "reject"
+            supported = None
+            rejected = ("feedbax.spec.studio.epoch_value.v0",)
         else:
             current_version = f"{schema_id}.v1"
             stance = "reject"
@@ -5917,6 +6188,32 @@ def _migrate_evaluation_output_preflight_evidence_v1(
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
 default_spec_registry.register_migration(
+    "ExperimentCompileLock",
+    SchemaMigration(
+        source_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+        target_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
+        migration_id="experiment-compile-lock-v3-to-v4-execution-identity-pin",
+        migrate=migrate_compile_lock_v3_to_v4,
+        description=(
+            "Pin execution identity to canonical_json_v1 only when the v3 lock records "
+            "attributable built-in Feedbax compiler provenance."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "RunSetState",
+    SchemaMigration(
+        source_version=RUN_SET_STATE_SCHEMA_VERSION_V5,
+        target_version=RUN_SET_STATE_SCHEMA_VERSION,
+        migration_id="run-set-state-v5-to-v6-non-authoritative-pids",
+        migrate=migrate_run_set_state_v5_to_v6,
+        description=(
+            "Preserve legacy PIDs as diagnostics while explicitly withholding process "
+            "identity and signal authority."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
     "ControllerEvent",
     SchemaMigration(
         source_version=CONTROLLER_EVENT_SCHEMA_VERSION_V1,
@@ -6252,6 +6549,16 @@ default_spec_registry.register_migration(
             "Add optional provider-declared planar-chain reference poses in configuration "
             "coordinates."
         ),
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioGraphProject",
+    SchemaMigration(
+        source_version=STUDIO_GRAPH_PROJECT_SCHEMA_VERSION_LEGACY,
+        target_version=STUDIO_GRAPH_PROJECT_SCHEMA_VERSION,
+        migration_id="studio-graph-project-unversioned-to-v1",
+        migrate=_migrate_studio_graph_project_unversioned_payload,
+        description="Stamp the released unversioned Studio graph-project document.",
     ),
 )
 default_spec_registry.register_migration(
@@ -6646,6 +6953,26 @@ default_spec_registry.register_migration(
         migration_id="studio-value-spec-v1-to-v2",
         migrate=_migrate_studio_value_spec_v1_payload,
         description="Split legacy mode/sampling_scope into value_form and variation.",
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioTaskTimelineSpec",
+    SchemaMigration(
+        source_version=STUDIO_TASK_TIMELINE_SCHEMA_VERSION_V1,
+        target_version=STUDIO_TASK_TIMELINE_SCHEMA_VERSION,
+        migration_id="studio-task-timeline-v1-to-v2-epoch-values",
+        migrate=_migrate_studio_task_timeline_v1_payload,
+        description="Move per-signal epoch membership into explicit epoch-value entries.",
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioTaskTimelineSpec",
+    SchemaMigration(
+        source_version="feedbax.studio.task_timeline.v1",
+        target_version=STUDIO_TASK_TIMELINE_SCHEMA_VERSION,
+        migration_id="studio-task-timeline-frontend-v1-to-v2-epoch-values",
+        migrate=_migrate_studio_task_timeline_v1_payload,
+        description="Normalize the legacy frontend timeline spelling and epoch values.",
     ),
 )
 default_spec_registry.register_migration(

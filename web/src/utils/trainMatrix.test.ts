@@ -39,6 +39,8 @@ function scenario(): StudioScenarioSpec {
 function stage(selectionSpec: Record<string, unknown>): StudioStageSpec {
   return {
     id: 'stage:train',
+    schema_id: 'feedbax.spec.studio.stage',
+    schema_version: 'feedbax.spec.studio.stage.v2',
     kind: 'train',
     label: 'Train',
     status: 'draft',

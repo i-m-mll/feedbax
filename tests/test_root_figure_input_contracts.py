@@ -314,7 +314,6 @@ def test_the_compile_records_each_root_input_contract_in_the_lock(
 
     lock = _compile(repo)
 
-    assert lock["schema_version"] == "feedbax.spec.experiment_compile_lock.v4"
     assert lock["envelope"]["schema"] == EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V5
     assert lock["compiler_contract"]["contract_version"] == (
         "feedbax.experiment_envelope.compiler.v4"

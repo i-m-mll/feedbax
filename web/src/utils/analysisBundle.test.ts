@@ -12,6 +12,8 @@ import type { StudioScenarioSpec, StudioStageSpec } from '@/types/workspace';
 function stage(selectionSpec: Record<string, unknown>): StudioStageSpec {
   return {
     id: 'stage:analysis',
+    schema_id: 'feedbax.spec.studio.stage',
+    schema_version: 'feedbax.spec.studio.stage.v2',
     kind: 'analysis',
     label: 'Analysis',
     status: 'draft',

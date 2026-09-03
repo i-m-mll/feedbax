@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 from collections.abc import Mapping
 from datetime import timedelta
@@ -25,16 +24,13 @@ from feedbax.orchestration.controller import (
 )
 from feedbax.orchestration.realization import BackendPlan, ExpectedCost
 from feedbax.web.orchestration.gcp import (
-    InstanceConfig,
     InstanceInfo,
     InstanceStatus,
-    create_instance,
     delete_instance,
     get_instance,
     list_instances,
 )
-from feedbax.web.orchestration.startup_script import FeedbaxInstallSpec
-from feedbax.web.worker.client import wait_for_health
+from feedbax.web.worker.transport import WorkerConfigurationError
 
 
 def _controller_path() -> Path:
@@ -71,33 +67,10 @@ class GcpEffectAdapter:
             )
         if reservation.effect_class != "cloud-machine-acquisition":
             raise ValueError(f"GCP adapter does not implement {reservation.effect_class!r}")
-        config = self._config(reservation)
-        instance_name = str(parameters["instance_name"])
-        info = await create_instance(config, instance_name)
-        deadline = asyncio.get_running_loop().time() + float(parameters["startup_timeout_seconds"])
-        while info.status != InstanceStatus.RUNNING:
-            if info.status in {
-                InstanceStatus.TERMINATED,
-                InstanceStatus.STOPPING,
-                InstanceStatus.PREEMPTED,
-            }:
-                raise RuntimeError(f"GCP instance entered {info.status.value}")
-            if asyncio.get_running_loop().time() >= deadline:
-                raise RuntimeError("timed out waiting for GCP instance readiness")
-            await asyncio.sleep(float(parameters["poll_interval_seconds"]))
-            info = await get_instance(config.project, config.zone, instance_name)
-        worker_url = self._worker_url(info, config.worker_port)
-        secrets = self._secret_material.get(reservation.reservation_id, {})
-        auth_token = secrets.get("worker_auth_token")
-        await wait_for_health(
-            worker_url,
-            timeout=float(parameters["worker_health_timeout_seconds"]),
-            interval=float(parameters["poll_interval_seconds"]),
-            auth_token=auth_token,
+        raise WorkerConfigurationError(
+            "GCP Studio worker acquisition is unavailable because the legacy adapter "
+            "cannot establish a verifiable HTTPS worker origin"
         )
-        if self.training_service is not None:
-            self.training_service.connect_remote(worker_url, auth_token)
-        return self._observation(info, worker_url, reservation.expected_cost)
 
     async def reconcile(self, reservation: EffectReservation) -> EffectObservation | None:
         parameters = reservation.normalized_parameters
@@ -124,10 +97,7 @@ class GcpEffectAdapter:
                 status="succeeded" if terminal else "running",
                 observations=({"provider_status": info.status.value},),
             )
-        worker_url = None
-        if info.status == InstanceStatus.RUNNING and info.external_ip is not None:
-            worker_url = self._worker_url(info, int(parameters["worker_port"]))
-        return self._observation(info, worker_url, reservation.expected_cost)
+        return self._observation(info, None, reservation.expected_cost)
 
     async def observe_inventory(self, scope: Mapping[str, Any]) -> ProviderInventoryObservation:
         if set(scope) != {"project", "zone"}:
@@ -153,26 +123,6 @@ class GcpEffectAdapter:
             observed_at=utc_now(),
             resources=resources,
         )
-
-    def _config(self, reservation: EffectReservation) -> InstanceConfig:
-        parameters = reservation.normalized_parameters
-        secrets = self._secret_material.get(reservation.reservation_id, {})
-        return InstanceConfig(
-            project=str(parameters["project"]),
-            zone=str(parameters["zone"]),
-            machine_type=str(parameters["machine_type"]),
-            preemptible=bool(parameters["preemptible"]),
-            worker_port=int(parameters["worker_port"]),
-            auth_token=secrets.get("worker_auth_token"),
-            ts_auth_key=secrets.get("tailscale_auth_key"),
-            install_spec=FeedbaxInstallSpec.from_mapping(dict(parameters["install_spec"])),
-        )
-
-    @staticmethod
-    def _worker_url(info: InstanceInfo, worker_port: int) -> str:
-        if info.external_ip is None:
-            raise RuntimeError("running GCP instance has no external IP")
-        return f"http://{info.external_ip}:{worker_port}"
 
     @staticmethod
     def _observation(

@@ -13,7 +13,7 @@ from feedbax.web.orchestration import controller as studio_controller_module
 from tests.test_durable_controller import _Adapter, _gcp_plan
 
 
-def test_launch_endpoint_stops_at_an_inert_named_reservation(monkeypatch, tmp_path) -> None:
+def test_launch_endpoint_refuses_gcp_before_reservation(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "events.jsonl"))
     monkeypatch.setattr(studio_controller_module, "studio_controller", None)
     invocation, plan = _gcp_plan()
@@ -34,22 +34,10 @@ def test_launch_endpoint_stops_at_an_inert_named_reservation(monkeypatch, tmp_pa
         },
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["status"] == "awaiting_authentication"
-    assert payload["intent_id"]
-    assert payload["reservation_id"]
+    assert response.status_code == 422
+    assert "verifiable HTTPS worker origin" in response.json()["detail"]
     events = studio_controller_module.get_studio_controller().controller.store.read_all()
-    assert [event.event_type for event in events][-1] == "effect_reservation_created"
-    assert "external_effect_dispatched" not in {event.event_type for event in events}
-    status = client.get(
-        "/api/orchestration/status",
-        params={"intent_id": payload["intent_id"], "refresh": "false"},
-    )
-    assert status.status_code == 200
-    assert status.json()["reservation_id"] == payload["reservation_id"]
-    assert status.json()["status"] == "awaiting_authentication"
-    assert status.json()["orphaned_resources"] == []
+    assert events == []
 
 
 def test_authentication_rejects_evidence_for_an_unknown_reservation(monkeypatch, tmp_path) -> None:
